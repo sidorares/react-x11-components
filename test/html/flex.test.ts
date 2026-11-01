@@ -4,7 +4,10 @@ import assert from 'node:assert';
 import { act, cleanup, waitFor } from 'react-x11/test';
 import { Yoga } from 'react-x11/yoga';
 import { parseColor } from '../../src/html/css/values.js';
-import { naturalLayoutsMade } from '../../src/html/layout/flex.js';
+import {
+  flexItemsMade,
+  naturalLayoutsMade,
+} from '../../src/html/layout/flex.js';
 import { boxLayoutsMade, standsMade } from '../../src/html/layout/block.js';
 import {
   appendChild,
@@ -18,9 +21,11 @@ import {
   boxOf,
   clipsAround,
   fillsOf,
+  findById,
   linesOf,
   metric,
   render,
+  renderScrolled,
   renderWithBytes,
   rulesIn,
   svgBytes,
@@ -3860,3 +3865,300 @@ metric(
     assert.ok(made <= 11, `${made} natural layouts in the row`);
   },
 );
+
+test('a long row whose items neither grow nor shrink is not laid out again at another width', async () => {
+  // nothing in it depends on its width: a webmail page's strip of 2,499
+  // senders was a Yoga node an item at every step of a window's edge, to
+  // find them where they stood
+  const items = Array.from(
+    { length: 200 },
+    (_, i) => `<div id="i${i}" style="flex:none;width:30px">${i}</div>`,
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style>' +
+      `<div id="row" style="display:flex;overflow:hidden;align-items:center">${items}</div>`,
+    300,
+    400,
+  );
+  const x = boxOf(el, 'i150').x;
+  const made = flexItemsMade();
+  await resize(300, 380);
+  assert.strictEqual(boxOf(el, 'row').width, 380, 'the row took the width');
+  assert.strictEqual(boxOf(el, 'i150').x, x);
+  const asked = flexItemsMade() - made;
+  assert.ok(asked < 20, `${asked} items given to Yoga, of a row of 200`);
+});
+
+test('a long row is laid out as a whole layout has it at any width, over generated documents', async () => {
+  // what is kept is held to a document laid out at that width from nothing.
+  // Each of `FLAWS` is a way for a row to depend on its width, each in a row
+  // that fits the widths it is laid out at, where it has room to share out,
+  // or that does not, where it has none
+  const seeds = Number(process.env.ROW_SEEDS ?? FLAWS.length * 2);
+  let kept = 0;
+  let steps = 0;
+  for (let seed = Number(process.env.ROW_FROM ?? 0); seed < seeds; seed += 1) {
+    let at = seed * 7907 + 1;
+    const next = () => {
+      at = (at * 1103515245 + 12345) % 2147483648;
+      return at / 2147483648;
+    };
+    const pick = <T>(list: readonly T[]): T =>
+      list[Math.floor(next() * list.length)];
+    const flaw = FLAWS[seed % FLAWS.length];
+    const row = [
+      'display:flex',
+      pick(['', 'gap:1px']),
+      pick(['', 'align-items:center', 'align-items:baseline']),
+      pick(['', 'overflow:hidden', 'overflow:auto']),
+      pick(['', 'padding:0 4px', 'padding:0 1%']),
+      flaw.row ?? '',
+    ]
+      .filter(Boolean)
+      .join(';');
+    const count = 66 + Math.floor(next() * 8);
+    const place = Math.floor(next() * count);
+    // once in a row that fits its widths, and once in one that does not
+    const tiny = seed < FLAWS.length;
+    const items = Array.from({ length: count }, (_, i) => {
+      const own = tiny
+        ? 'width:4px'
+        : pick(['width:24px', 'width:30px;margin:0 2px', 'padding:0 3px']);
+      const css =
+        i === place
+          ? `flex:none;${own};${flaw.item ?? ''}`
+          : `flex:none;${own}`;
+      const body = i === place ? (flaw.text ?? 't') : tiny ? '' : `t${i}`;
+      return `<div id="i${i}" style="${css}">${body}</div>`;
+    }).join('');
+    const held = `<div id="row" style="${row}">${items}</div>`;
+    const source =
+      '<style>body{margin:0;font:12px sans-serif}</style>' +
+      (flaw.around
+        ? flaw.around(held)
+        : pick([
+            held,
+            `<div style="display:flex;flex-direction:column">${held}</div>`,
+            `<div style="display:flex"><div style="flex:1;min-width:0">${held}</div><i style="flex:none;width:20px">x</i></div>`,
+            `<p>words before it</p>${held}`,
+          ]));
+    const laid = (el: Parameters<typeof boxOf>[0]) =>
+      [
+        'row',
+        ...(flaw.text?.includes('id="far"') ? ['far'] : []),
+        ...Array.from({ length: count }, (_, i) => `i${i}`),
+      ].flatMap((id) => {
+        const b = boxOf(el, id);
+        return [b.x, b.y, b.width, b.height];
+      });
+    const widths = [380, 300, 330];
+    const { el, resize } = await renderScrolled(source, 300, 400);
+    const stepped: number[][] = [];
+    for (const width of widths) {
+      const made = flexItemsMade();
+      await resize(300, width);
+      steps += 1;
+      if (flexItemsMade() - made < 30) kept += 1;
+      stepped.push(laid(el));
+    }
+    await cleanup();
+    for (const [step, width] of widths.entries()) {
+      const fresh = await renderScrolled(source, 300, width);
+      const whole = laid(fresh.el);
+      await cleanup();
+      const off = stepped[step].findIndex(
+        (v, i) => Math.abs(v - whole[i]) > 1e-6,
+      );
+      assert.ok(
+        off < 0,
+        `seed ${seed} (${JSON.stringify({ ...flaw, around: !!flaw.around })}) at ${width}: value ${off}, ${stepped[step][off]} where a whole layout has ${whole[off]}\nrow ${row}`,
+      );
+    }
+  }
+  assert.ok(kept >= steps / 10, `${kept} of ${steps} steps kept the row`);
+});
+
+test('a long row kept from one layout to the next takes what changed in it', async () => {
+  const row = (texts: string[]) =>
+    '<div id="row" style="display:flex;overflow:hidden">' +
+    texts
+      .map(
+        (text, i) =>
+          `<div id="i${i}" style="flex:none;padding:0 2px">${text}</div>`,
+      )
+      .join('') +
+    '</div>';
+  const texts = Array.from({ length: 70 }, (_, i) => `item ${i}`);
+  const { el, resize } = await renderScrolled(
+    `<style>body{margin:0}</style>${row(texts)}`,
+    300,
+    400,
+  );
+  const holder = findById(el.document, 'i5')!;
+  const text = holder.children[0] as unknown as { data: string };
+  texts[5] = 'a good deal longer than it was';
+  text.data = texts[5];
+  el.touchDocument([{ type: 'characterData', target: text as never }]);
+  await act();
+  await resize(300, 380);
+  const stepped = texts.map((_, i) => boxOf(el, `i${i}`).x);
+  await cleanup();
+  const fresh = await renderScrolled(
+    `<style>body{margin:0}</style>${row(texts)}`,
+    300,
+    380,
+  );
+  texts.forEach((_, i) => {
+    assert.ok(
+      Math.abs(boxOf(fresh.el, `i${i}`).x - stepped[i]) < 1e-6,
+      `i${i} stands at ${stepped[i]}`,
+    );
+  });
+});
+
+test('a long row is not kept once something in it has changed in place', async () => {
+  // a length taken in place keeps every box and every serial: what is
+  // forgotten of a box's sizes is all that says so
+  const items = Array.from(
+    { length: 70 },
+    (_, i) => `<div id="i${i}" style="flex:none;width:20px">x</div>`,
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    `<style>body{margin:0}</style><div id="row" style="display:flex">${items}</div>`,
+    300,
+    400,
+  );
+  const item = findById(el.document, 'i5')!;
+  const after = boxOf(el, 'i6').x;
+  item.attribs.style = 'flex:none;width:50px';
+  el.touchDocument([
+    { type: 'attributes', target: item, attributeName: 'style' },
+  ]);
+  await resize(300, 380);
+  assert.strictEqual(boxOf(el, 'i5').width, 50);
+  assert.strictEqual(boxOf(el, 'i6').x, after + 30);
+});
+
+test('a long row takes an item put at its end', async () => {
+  const items = Array.from(
+    { length: 70 },
+    (_, i) => `<div id="i${i}" style="flex:none;width:20px">x</div>`,
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    `<style>body{margin:0}</style><div id="row" style="display:flex">${items}</div>`,
+    300,
+    400,
+  );
+  const row = findById(el.document, 'row')!;
+  const added = createHtmlElement('div', {
+    id: 'new',
+    style: 'flex:none;width:20px',
+  });
+  appendChild(row, added);
+  el.touchDocument([
+    { type: 'childList', target: row, addedNodes: [added], removedNodes: [] },
+  ]);
+  await resize(300, 380);
+  assert.strictEqual(boxOf(el, 'new').x, 70 * 20);
+});
+
+test('a long row is not kept once a probe of what is around it has laid out its items', async () => {
+  // a box's narrowest is asked for when it is first squeezed, and asks each
+  // item in a row of it, laying out at no width one it cannot answer for:
+  // kept as it stands, what is in the item is a word to a line
+  const source =
+    '<style>body{margin:0;font:2px sans-serif}</style>' +
+    '<div style="display:flex"><div id="wrap"><div id="row" style="display:flex">' +
+    Array.from(
+      { length: 70 },
+      (_, i) =>
+        `<div id="i${i}" style="flex:none"><div style="display:grid"><span id="s${i}">a b</span></div></div>`,
+    ).join('') +
+    '</div></div><div style="flex:none;width:180px">x</div></div>';
+  const { el, resize } = await renderScrolled(source, 300, 700);
+  assert.strictEqual(boxOf(el, 'wrap').x + 180 < 700, true);
+  assert.strictEqual(linesOf(el, 's5').length, 1);
+  await resize(300, 300);
+  assert.strictEqual(linesOf(el, 's5').length, 1);
+});
+
+const LONG_TEXT =
+  'a line of text that is wider than any width this row is at '.repeat(2);
+
+/** Half as tall as it is wide, so that a height in it moves with the width. */
+const inRatio = (held: string): string =>
+  `<div style="aspect-ratio:2;display:flex;flex-direction:column">${held}</div>`;
+
+/** Each way a long row can depend on its width, and some that do not. */
+const FLAWS: {
+  row?: string;
+  item?: string;
+  text?: string;
+  around?: (held: string) => string;
+}[] = [
+  {},
+  { row: 'height:50px' },
+  { row: 'align-items:baseline' },
+  { row: 'justify-content:center' },
+  { row: 'justify-content:flex-end' },
+  { row: 'justify-content:space-between' },
+  { row: 'flex-direction:row-reverse' },
+  { row: 'flex-wrap:wrap' },
+  { row: 'direction:rtl' },
+  { row: 'gap:1%' },
+  { item: 'flex:1 0 auto' },
+  { item: 'flex:0 1 auto;width:80px' },
+  { item: 'flex-basis:4%' },
+  { item: 'width:5%' },
+  { item: 'min-width:9%' },
+  { item: 'max-width:1%' },
+  { item: 'margin-left:auto' },
+  { item: 'margin-right:auto' },
+  { item: 'margin-left:1%' },
+  { item: 'margin-right:1%' },
+  { item: 'padding-left:1%' },
+  { item: 'padding-right:1%' },
+  { item: 'width:fit-content', text: LONG_TEXT },
+  { item: 'min-width:fit-content;width:1px', text: LONG_TEXT },
+  { item: 'max-width:fit-content;width:900px', text: LONG_TEXT },
+  { item: 'position:absolute;right:0' },
+  { row: 'position:relative', item: 'position:absolute;right:0' },
+  { text: '<i id="far" style="position:absolute;right:0">x</i>' },
+  {
+    row: 'position:relative',
+    text: '<i id="far" style="position:absolute;right:0">x</i>',
+  },
+  {
+    text: '<b id="far" style="display:block;position:relative;left:5px">x</b>',
+  },
+  { item: 'position:relative;left:3px' },
+  { row: 'height:50%', around: inRatio },
+  {
+    row: 'flex:1;align-items:flex-end',
+    around: (held) =>
+      `<div style="display:flex;flex-direction:column;min-height:30vw">${held}</div>`,
+  },
+  { row: 'flex:1;align-items:flex-end', around: inRatio },
+  { row: 'min-height:40%;align-items:flex-end', around: inRatio },
+  { row: 'max-height:5%;align-items:stretch', around: inRatio },
+];
+
+test('the one item that may flex in a box that wraps still has its flex base size', async () => {
+  // Yoga gives such an item none, where it would fill the box whatever it
+  // was, which on lines is where they break: Chrome's
+  const place = async (flex: string): Promise<number[]> => {
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="display:flex;flex-wrap:wrap;width:100px">' +
+        `<div id="a" style="flex:${flex};height:4px"></div>` +
+        '<div id="b" style="flex:none;width:30px;height:4px"></div></div>',
+      400,
+    );
+    const el = view(node);
+    const [a, b] = [boxOf(el, 'a'), boxOf(el, 'b')];
+    await cleanup();
+    return [a.width, b.x, b.y];
+  };
+  assert.deepStrictEqual(await place('1 1 300px'), [100, 0, 4]);
+  assert.deepStrictEqual(await place('1 1 90px'), [100, 0, 4]);
+  assert.deepStrictEqual(await place('1 1 60px'), [70, 70, 0]);
+});

@@ -37,6 +37,7 @@ import { parseStylesheet } from '../../src/html/css/parse.js';
 import type { RootLook } from '../../src/html/css/style.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import { Html } from '../../src/index.js';
+import { mulberry32 } from '../mulberry32.js';
 import {
   FONTS,
   boxOf,
@@ -2797,18 +2798,6 @@ test('a :has() of what an element takes from one around it, :lang(), is restyled
 // value than the new (`Cascade._flips`): the shapes of both are many, and
 // a sheet of them is held to it apart (`anchored`).
 
-/** mulberry32: the same document for the same seed. */
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 const CLASSES = ['a', 'b', 'c', 'd'];
 /** The classes only rules at trees' edges test, so that what such a rule
  *  reaches is not one an ordinary rule's test of the class reaches too. */
@@ -3674,7 +3663,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   let whole = 0;
   let tookOver = 0;
   for (let seed = 1; seed <= 32; seed += 1) {
-    const next = random(seed * 7919);
+    const next = mulberry32(seed * 7919);
     // what runs a `@keyframes` no sheet has yet, held half way through it
     const css =
       `${rulesFor(next, true)}\n.a { animation: k 1s paused -0.5s }\n` +
@@ -4324,7 +4313,7 @@ test('in a document of form controls, a refresh told what changed comes to the s
   const seeds = Number(process.env.CONTROL_SEEDS ?? 8);
   const from = Number(process.env.CONTROL_FROM ?? 1);
   for (let seed = from; seed < from + seeds; seed += 1) {
-    const next = random(seed * 6271);
+    const next = mulberry32(seed * 6271);
     const css = controlRulesFor(next);
     const { result, node } = await render(
       `<style>body{margin:0}\n${css}</style><body>${controlMarkupFor(next)}</body>`,
@@ -5168,7 +5157,7 @@ async function refreshesAgree(
 ): Promise<{ whole: number; inPlace: number; frame: number; build: number }> {
   const ways = { whole: 0, inPlace: 0, frame: 0, build: 0 };
   for (let seed = firstSeed; seed < firstSeed + seeds; seed += 1) {
-    const next = random(seed);
+    const next = mulberry32(seed);
     // a sheet of anchored shapes has none of those that reach everything,
     // which would make it a refresh of everything and test none of them,
     // and every other one nothing outside a `:has()` that reaches all of

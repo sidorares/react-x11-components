@@ -14,7 +14,7 @@
 import { AUTO, isPct, resolveOrNull } from '../css/values.js';
 import type { Len } from '../css/values.js';
 import type { ComputedStyle } from '../css/style.js';
-import { Box, CLIPPED_CELLS, COLLAPSED_CELLS, isBlank } from './boxes.js';
+import { Box, clipCell, COLLAPSED_CELLS, isBlank } from './boxes.js';
 import {
   CELL_CONTENT,
   FLEXED_HEIGHT,
@@ -73,7 +73,8 @@ export function layoutTable(
   // a percentage of a width that is not known is `auto`: the table is as
   // wide as its columns where its content is measured (`cyclicWidth`)
   const own =
-    table.style.width === AUTO || cyclicWidth(table.style, contentWidth);
+    table.style.width === AUTO ||
+    cyclicWidth(table.style, table.parent?.width ?? contentWidth);
   // — and one a grid stretches across its area is as wide as that, as a
   // table with a width of its own is (`STRETCHED_ACROSS`)
   const auto = own && !STRETCHED_ACROSS.has(table);
@@ -643,7 +644,7 @@ function placeRows(
     cell.box.width = width;
     if (clip) {
       cell.box.height = height;
-      CLIPPED_CELLS.add(cell.box);
+      clipCell(cell.box);
     } else {
       cell.box.height = Math.max(inner, height);
     }

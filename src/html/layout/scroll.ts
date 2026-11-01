@@ -19,7 +19,7 @@
 import type { Element } from 'domhandler';
 
 import { scrolls } from '../css/style.js';
-import { CLAMPED } from './boxes.js';
+import { CLAMPED, clampBox, unclampBox } from './boxes.js';
 import type { Box, BoxTree, LineBox } from './boxes.js';
 import { clipsOverflow, containingBlockOf, hasRect, holds } from '../paint.js';
 
@@ -87,6 +87,13 @@ const SCROLLED = new WeakSet<BoxTree>();
 /** Each scroll container's scrollable overflow, worked out once a layout
  *  (`extentOf`): what its content comes to doesn't change as it scrolls. */
 let extents = new WeakMap<Box, { width: number; height: number }>();
+
+/** How many boxes measuring scroll containers has walked (`extentOf`), for a
+ *  test to count what a paint walks. */
+let extentWalkedCount = 0;
+export function extentWalked(): number {
+  return extentWalkedCount;
+}
 
 /**
  * How far below a box's content top what a layout that stopped set aside
@@ -384,6 +391,7 @@ function extentOf(
     dx: number,
     dy: number,
   ) => {
+    extentWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') return;
     if (child.outOfFlow) {
       if (escapes(child, box)) return;
@@ -475,24 +483,31 @@ const BAR_SLOP = 4;
 /**
  * The bars a scroll container draws: on each axis whose `overflow` the user
  * may scroll (`auto`, `scroll`) and whose content overflows, but where
- * `scrollbar-width: none` or a page's `::-webkit-scrollbar` (`hidden`)
+ * `scrollbar-width: none` or a page's `::-webkit-scrollbar` (`hiddenOf`)
  * hides it. Each stops short of the other's corner where both show.
+ *
+ * Asked in the order the answers cost: the style, then the extent, a walk of
+ * what the container holds once a layout, then `hiddenOf`, a selector match
+ * every time. So `overflow: hidden`, which a script may scroll and which no
+ * bar shows on, costs a style read however much it holds, and a paint never
+ * measures it: `scrollStateOf` does, for what reads `scrollHeight`.
  */
 export function scrollBarsOf(
   box: Box,
   scale: number,
-  hidden: { x: boolean; y: boolean },
+  hiddenOf?: (box: Box) => { x: boolean; y: boolean },
 ): ScrollBar[] {
+  const wheelX = wheelScrolls(box, 'x');
+  const wheelY = wheelScrolls(box, 'y');
+  if (!wheelX && !wheelY) return [];
   if (!isScroller(box) || box.style.scrollbarWidth === 'none') return [];
   const state = scrollStateOf(box);
-  const shows = (axis: 'x' | 'y') =>
-    wheelScrolls(box, axis) &&
-    !hidden[axis] &&
-    (axis === 'x'
-      ? state.width > state.clientWidth + 0.5
-      : state.height > state.clientHeight + 0.5);
-  const x = shows('x');
-  const y = shows('y');
+  const overflowsX = wheelX && state.width > state.clientWidth + 0.5;
+  const overflowsY = wheelY && state.height > state.clientHeight + 0.5;
+  if (!overflowsX && !overflowsY) return [];
+  const hidden = hiddenOf?.(box);
+  const x = overflowsX && !hidden?.x;
+  const y = overflowsY && !hidden?.y;
   const thickness =
     (box.style.scrollbarWidth === 'thin' ? THIN_BAR : BAR) * scale;
   const inset = BAR_INSET * scale;
@@ -648,8 +663,8 @@ export function updatePositionVisibility(
             !!viewport &&
             outside(anchor, viewport))));
     if (hidden === CLAMPED.has(box)) continue;
-    if (hidden) CLAMPED.add(box);
-    else CLAMPED.delete(box);
+    if (hidden) clampBox(box);
+    else unclampBox(box);
     changed.push(box);
   }
   return changed;

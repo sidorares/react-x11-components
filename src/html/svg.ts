@@ -20,7 +20,7 @@ import { isSvgRoot, mutationGeneration, rawTextOf } from './dom.js';
 import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
-import { quotedFamilies, urlIds, useHref } from './css/shapes.js';
+import { isUse, quotedFamilies, urlIds, useHref } from './css/shapes.js';
 import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
 import { parseMath } from './css/calc.js';
@@ -559,6 +559,10 @@ export class SvgDrawing {
   private _reached: { key: string; end: End; edges: Edges | null } | null =
     null;
 
+  /** What it is drawn from (`drawnFrom`), and where that ended; undefined
+   *  until it is first asked for (`keptAs`). */
+  private _from: DrawnFrom | undefined = undefined;
+
   /** The element an SVG image's URL names by its fragment, its own
    *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
   private readonly _target: Element | null;
@@ -819,6 +823,43 @@ export class SvgDrawing {
   }
 
   /**
+   * What a raster of the drawing `w` by `h` device pixels is kept by
+   * (`PaintOptions.drawingKept`), from the arguments `draw` is handed: all it
+   * is set from, as text, or null where no raster can stand for it. By what
+   * the drawing says and not by the drawing, since a `refresh()` makes every
+   * drawing of a document again (`inlineDrawing`), and a page's scripts
+   * refresh at most of its frames; and so the same icon on every row of a
+   * list is one raster. **Anything new `draw` reads joins this key.** No text
+   * is set in a drawing that has a key (`drawnFrom`), which leaves of its
+   * font only the size an `em` in it is of.
+   */
+  keptAs(
+    w: number,
+    h: number,
+    scale: number,
+    color: string,
+    fill: string | null,
+    stroke: string | null,
+    shapes: ShapeStyles | null,
+    em: number,
+    inherited: string,
+    units: DrawingUnits | null,
+  ): string | null {
+    if (this._failed || !(w > 0 && h > 0)) return null;
+    if (!this._from || this._from.ends.some(moved)) {
+      this._from = drawnFrom(this._root);
+    }
+    const from = this._from;
+    // a rule may name what is outside the drawing, which no key here holds
+    if (!from.source || shapes?.key.includes('url(')) return null;
+    let key =
+      `inline|${from.source}|${w}x${h}|${scale}|${color}|${fill}|${stroke}` +
+      `|${em}|${inherited}|${shapes?.key ?? ''}`;
+    if (from.units) key += `|${units?.rem}|${units?.vw}|${units?.vh}`;
+    return key;
+  }
+
+  /**
    * Whether the drawing sets text: glyphs, which a context that does not
    * scale text with its transform — ntk's — sets level whatever turns the
    * box the drawing is in. Asked again once more of a streamed drawing has
@@ -1033,6 +1074,101 @@ export class SvgDrawing {
       return null;
     }
   }
+}
+
+/** What `keptAs` keeps a drawing's raster by, of what it says itself. */
+interface DrawnFrom {
+  /** The number of its text (`sourceNumber`), the same for two drawings
+   *  that say the same; 0 where no raster can stand for it. */
+  source: number;
+  /** Whether a `rem` or a `vw` may be in what it is drawn from. */
+  units: boolean;
+  /** Where each part of it ended: more of a stream, and it is read again. */
+  ends: End[];
+}
+
+/** Every text drawings were drawn from, by a number for it, the same while
+ *  the text is here: what a key is built from at each paint of each
+ *  drawing, where the text itself would be hashed again each time. */
+const SOURCES = new Map<string, number>();
+let sourceChars = 0;
+let sources = 0;
+
+/** How much text `SOURCES` holds before it is forgotten wholesale: a
+ *  drawing read after that has a new number, and its raster is made again. */
+const SOURCES_KEPT = 8 * 1024 * 1024;
+
+function sourceNumber(text: string): number {
+  let n = SOURCES.get(text);
+  if (n === undefined) {
+    sourceChars += text.length;
+    if (sourceChars > SOURCES_KEPT) {
+      SOURCES.clear();
+      sourceChars = text.length;
+    }
+    n = ++sources;
+    SOURCES.set(text, n);
+  }
+  return n;
+}
+
+/**
+ * What a drawing says, for a raster of it (`keptAs`): its elements, their
+ * attributes and how they nest, and those of each element outside it that
+ * it names — by a `<use>`, an icon sprite's, or by a `url(#…)` (`copyTree`)
+ * — and of what those name. Two drawings that come to one text draw the
+ * same. No raster stands for a drawing that sets text, which a face arriving
+ * would set anew, or has a `<foreignObject>`, whose HTML no text here holds,
+ * or names what the document does not have: a stream may bring it, and it
+ * is read again when the document moves on.
+ */
+function drawnFrom(root: Element): DrawnFrom {
+  const ends = [endOf(root)];
+  const pending = [root];
+  const seen = new Set(pending);
+  let ids: Map<string, Element> | null = null;
+  let text = '';
+  let refused = false;
+  const name = (id: string): void => {
+    ids ??= idsUnder(root);
+    if (ids.has(id) || root.attribs.id === id) return;
+    const top = documentOf(root);
+    const target = elementById(top, id);
+    if (!target) {
+      refused = true;
+      ends.push(endOf(top));
+    } else if (!seen.has(target)) {
+      seen.add(target);
+      pending.push(target);
+      ends.push(endOf(target));
+    }
+  };
+  const read = (el: Element): void => {
+    const local = localName(el.name);
+    if (local === 'text' || local === 'foreignobject') {
+      refused = true;
+      return;
+    }
+    text += `<${el.name}`;
+    for (const attr in el.attribs) text += `\0${attr}\0${el.attribs[attr]}`;
+    urlIds(el.name, el.attribs, name);
+    const used = isUse(el) ? useHref(el) : null;
+    if (used !== null) name(used);
+    for (const child of el.children) {
+      if (child.type === 'tag') read(child as Element);
+    }
+    // where it ends: what is in a group is painted as the group says
+    text += '>';
+  };
+  for (let at = 0; at < pending.length && !refused; at += 1) {
+    read(pending[at]);
+  }
+  if (refused) return { source: 0, units: false, ends };
+  return {
+    source: sourceNumber(text),
+    units: pending.length > 1 || lengthsToWorkOut(root),
+    ends,
+  };
 }
 
 /**

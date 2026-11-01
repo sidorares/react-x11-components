@@ -89,12 +89,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
-import {
-  alphaOf,
-  inkColor,
-  isTransparent,
-  resolve as resolveLength,
-} from './css/values.js';
+import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
 import type { UsedBox } from './computed.js';
@@ -114,6 +109,7 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  isRootElement,
   readsFace,
   highlightKey,
 } from './css/cascade.js';
@@ -243,6 +239,7 @@ import {
   carryBlockers,
   containmentApplies,
   containsOutOfFlow,
+  forgetLayout,
   forgetSizes,
   heldBack,
   heldShift,
@@ -262,6 +259,7 @@ import {
   commitLastPositions,
   placedStyleOf,
   resolvedInsets,
+  usedMargins,
   restickToViewport,
   restickWithin,
   retranslate,
@@ -271,7 +269,12 @@ import {
   forgetSizesIn,
   isInlineLevel,
 } from './layout/block.js';
-import { frameModeOf, onPage, pageSides } from './layout/writing.js';
+import {
+  frameModeOf,
+  onPage,
+  pageMargins,
+  pageSides,
+} from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -400,6 +403,7 @@ import {
   intersectionClips,
   apartFromLines,
   apartOf,
+  carryLayers,
   layered,
   layerOf,
   onLine,
@@ -7176,14 +7180,15 @@ export class HtmlViewNode extends Node {
    * waiting, for a script that may read nothing a box decides (`comesFromBox`):
    * a style is right whether its text has been set again or not, since the
    * lists and the lengths read from a face are, and what a box answers is
-   * asked for again if it is read (`layoutOwed`). `keepsAuto` is
-   * `cssomStyle`'s, for what takes the computed value.
+   * asked for again if it is read (`layoutOwed`). `computed` is for what
+   * takes the computed value: it keeps `cssomStyle`'s `min-width: auto`, and
+   * asks no box of a `::before` or an `::after`.
    */
   computedStyle(
     element: Element,
     pseudo: string | null = null,
     waits = false,
-    keepsAuto = false,
+    computed = false,
   ): Record<string, string> | null {
     if (waits) this._prepare(this.abs.width || 1);
     else this._settle();
@@ -7196,28 +7201,34 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      const generated = this._pseudoBoxOf(tree, element, pseudo);
       // one placed by a position option has that option's style, and the
       // insets its layout came to (CSS Anchor Positioning 1, 6.2)
-      const generated = this._pseudoBoxOf(tree, element, pseudo);
       const placed = generated && this._placedStyle(generated);
-      if (generated && placed) {
-        return cssomStyle(
-          placed,
-          this._scale,
-          this._usedBox(generated, placed),
-        );
-      }
       // one the rules give no `content` is styled by them all the same
-      const own = this._atNow(element, () =>
-        cascade.pseudoComputedStyle(element, pseudo, style),
-      );
+      const own =
+        placed ??
+        this._atNow(element, () =>
+          cascade.pseudoComputedStyle(element, pseudo, style),
+        );
       // and one no rule styles has the style it would be made with all
       // the same, its element's inherited, as a browser answers for it
+      const read = own ?? inherit(style, cascade.initial);
+      // the box of a `display: contents` one only sets its content, and is
+      // none of its own (`contentsStyle`), and a box a drag set aside is a
+      // width ago, where its rules are now
+      const used =
+        generated && read.display !== 'contents' && !heldBack(tree, generated);
       return cssomStyle(
-        own ?? inherit(style, cascade.initial),
+        read,
         this._scale,
-        null,
-        keepsAuto || (!!generated && isItem(generated)),
+        !used
+          ? null
+          : computed
+            ? this._edgesOf(generated, read)
+            : this._usedBox(generated, read),
+        computed || (!!generated && isItem(generated)),
+        !generated,
       );
     }
     const key = pseudo ? highlightKey(pseudo) : null;
@@ -7227,9 +7238,31 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo) return null;
     const box = this._ownBoxOf(tree, element);
-    if (!box) return cssomStyle(style, this._scale, null);
+    if (!box) {
+      return cssomStyle(
+        style,
+        this._scale,
+        null,
+        false,
+        !!style.transform && this._unrendered(element, style),
+      );
+    }
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+  }
+
+  /**
+   * Whether a `display` says nothing renders an element, its own or one
+   * around it. No box of ours is not the test: what an `<svg>` draws, what
+   * `content-visibility: hidden` holds and a canvas's fallback have none
+   * here, and a browser has one for each.
+   */
+  private _unrendered(element: Element, style: ComputedStyle): boolean {
+    if (style.display === 'none' || style.display === 'contents') return true;
+    for (let at = flatParentOf(element); at; at = flatParentOf(at)) {
+      if (this._styleOf(at)?.display === 'none') return true;
+    }
+    return false;
   }
 
   /** The style of the position option a box was placed by
@@ -7244,19 +7277,10 @@ export class HtmlViewNode extends Node {
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
   private _usedBox(box: Box, style: ComputedStyle): UsedBox {
-    // margins are no part of a box: worked out again, as layout did, from
-    // the width of the block that holds it
-    const across = box.parent ? box.parent.contentWidth : this.abs.width;
-    const margin = (len: Len) => resolveLength(len, across);
     const used: UsedBox = {
       width: box.width,
       height: box.height,
-      margin: [
-        margin(style.marginTop),
-        margin(style.marginRight),
-        margin(style.marginBottom),
-        margin(style.marginLeft),
-      ],
+      margin: usedMargins(box),
       border: [
         box.borderTop,
         box.borderRight,
@@ -7265,6 +7289,7 @@ export class HtmlViewNode extends Node {
       ],
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
+      inline: box.kind === 'inline',
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)
@@ -7272,6 +7297,7 @@ export class HtmlViewNode extends Node {
     if (mode) {
       used.width = box.height;
       used.height = box.width;
+      used.margin = pageMargins(used.margin, mode);
       used.border = pageSides(used.border, mode);
       used.padding = pageSides(used.padding, mode);
       if (used.insets) {
@@ -7286,6 +7312,39 @@ export class HtmlViewNode extends Node {
         );
       }
     }
+    // a margin written as a length reads as written, whatever an
+    // over-constrained line made of it
+    const written = [
+      style.marginTop,
+      style.marginRight,
+      style.marginBottom,
+      style.marginLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.margin[i] = len;
+    });
+    return used;
+  }
+
+  /**
+   * What a frame `getKeyframes()` makes up reads of a box. Chrome takes the
+   * computed value there, but for margins and padding, which it reads as
+   * `getComputedStyle` does whichever it is asked for: a length as `style`
+   * has it, and anything else as the box is laid out now, under whatever
+   * animation is running on it.
+   */
+  private _edgesOf(box: Box, style: ComputedStyle): UsedBox {
+    const used = this._usedBox(box, style);
+    const written = [
+      style.paddingTop,
+      style.paddingRight,
+      style.paddingBottom,
+      style.paddingLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.padding[i] = len;
+    });
+    used.edgesOnly = true;
     return used;
   }
 
@@ -8949,7 +9008,7 @@ export class HtmlViewNode extends Node {
     let snapTyped = false;
     // what was kept of the sizes of a box at other lengths, and of every
     // box it is in, which take it in
-    for (const box of resizedBoxes) forgetSizes(box);
+    for (const box of resizedBoxes) forgetLayout(box);
     this._resizedInPlace = resizedBoxes;
     for (const [box, style] of restyled) {
       const was = box.style;
@@ -11844,6 +11903,7 @@ export class HtmlViewNode extends Node {
     }
     this._firstBoxes = { tree: built.tree, of: first };
     carryBlockers(tree, built.tree, built.replaced, built.added);
+    carryLayers(tree, built);
     return built.tree;
   }
 
@@ -12772,8 +12832,9 @@ export class HtmlViewNode extends Node {
     frames.sort((a, b) => a.offset - b.offset);
     // the values it runs from and to where the rule has no frame there:
     // the style under its animations
-    const record = this._underlyingRecord(element, pseudo) ?? {};
+    let record: Record<string, string> | undefined;
     const underlying = (): Record<string, string> => {
+      record ??= this._underlyingRecord(element, pseudo) ?? {};
       const out: Record<string, string> = {};
       for (const prop of animated) {
         if (record[prop] !== undefined) out[prop] = record[prop];
@@ -12806,6 +12867,7 @@ export class HtmlViewNode extends Node {
     element: Element,
     pseudo: string,
   ): Record<string, string> | null {
+    this._settle();
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
@@ -12836,7 +12898,13 @@ export class HtmlViewNode extends Node {
       parentStyle,
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex',
     );
-    return cssomStyle(style, this._scale, null, true);
+    const box = this._ownBoxOf(tree, element);
+    return cssomStyle(
+      style,
+      this._scale,
+      box && this._edgesOf(box, style),
+      true,
+    );
   }
 
   cssAnimationsOf(
@@ -13656,12 +13724,15 @@ export class HtmlViewNode extends Node {
   }
 
   private _barsOf(box: Box): ScrollBar[] {
-    const hidden =
-      box.el && this._cascade
-        ? this._cascade.scrollbarHidden(box.el, box.style)
-        : BARS_SHOWN;
-    return scrollBarsOf(box, this._scale, hidden);
+    return scrollBarsOf(box, this._scale, this._barsHidden);
   }
+
+  /** Which of a container's bars the page hides: a selector match, which
+   *  `scrollBarsOf` asks last, of a bar that would show. */
+  private _barsHidden = (box: Box): { x: boolean; y: boolean } =>
+    box.el && this._cascade
+      ? this._cascade.scrollbarHidden(box.el, box.style)
+      : BARS_SHOWN;
 
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
@@ -14687,10 +14758,7 @@ export class HtmlViewNode extends Node {
       selectionColor: this.selectionColor,
       highlights: this._litRanges(),
       litReplaced: this._litReplaced(),
-      scrollbarHidden: (box) =>
-        box.el && this._cascade
-          ? this._cascade.scrollbarHidden(box.el, box.style)
-          : BARS_SHOWN,
+      scrollbarHidden: this._barsHidden,
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           return box.el && tagOf(box.el) === 'canvas'
@@ -14785,11 +14853,6 @@ function inForeignObject(
 function elementParent(el: Element): Element | null {
   const parent = el.parent;
   return parent && parent.type === 'tag' ? (parent as Element) : null;
-}
-
-/** Whether an element is its document's root: its parent the document. */
-function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */

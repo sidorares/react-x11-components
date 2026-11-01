@@ -163,6 +163,10 @@ export function framedStyle(
   out.maxHeightKeyword = style.maxWidthKeyword;
   out.widthSize = style.heightSize;
   out.heightSize = style.widthSize;
+  out.minWidthSize = style.minHeightSize;
+  out.minHeightSize = style.minWidthSize;
+  out.maxWidthSize = style.maxHeightSize;
+  out.maxHeightSize = style.maxWidthSize;
   out.containIntrinsicWidth = style.containIntrinsicHeight;
   out.containIntrinsicHeight = style.containIntrinsicWidth;
   out.overflowX = style.overflowY;
@@ -591,7 +595,24 @@ export function pageSides<T>(
   frame: readonly [T, T, T, T],
   mode: WritingMode,
 ): [T, T, T, T] {
-  const sides = turnsUp(mode) ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES;
+  return drawnAt(frame, turnsUp(mode) ? ANTICLOCKWISE_SIDES : CLOCKWISE_SIDES);
+}
+
+/** A framed box's margins as `pageSides` has its other sides, which
+ *  `vertical-lr` hands its frame in another order (`REFLECTED_MARGINS`). */
+export function pageMargins<T>(
+  frame: readonly [T, T, T, T],
+  mode: WritingMode,
+): [T, T, T, T] {
+  return reflects(mode)
+    ? drawnAt(frame, REFLECTED_MARGINS)
+    : pageSides(frame, mode);
+}
+
+function drawnAt<T>(
+  frame: readonly [T, T, T, T],
+  sides: readonly Side[],
+): [T, T, T, T] {
   const out = [...frame] as [T, T, T, T];
   for (let i = 0; i < 4; i += 1) out[FRAME_SIDES.indexOf(sides[i])] = frame[i];
   return out;

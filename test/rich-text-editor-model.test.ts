@@ -59,6 +59,7 @@ import {
   setColumnAlign,
   tableRepair,
 } from '../src/rich-text-editor/tables.js';
+import { mulberry32 } from './mulberry32.js';
 
 const { nodes: N, marks: M } = schema;
 const p = (...content: (PMNode | string)[]): PMNode =>
@@ -168,11 +169,11 @@ test('block keys stay one per block, where it is, through a run of edits', () =>
   // an edit is, every block has a key, the key says where the block is and
   // which node it is, no key names two blocks, and a block no edit touched
   // keeps its key.
-  let seed = 7;
-  const rand = (n: number): number => {
-    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
-    return seed % n;
-  };
+  // by the high bits: this generator's low bit took turns, so `% 6` after an
+  // even number of draws was odd or even for good, and half of the edits
+  // below were never made
+  const random = mulberry32(7);
+  const rand = (n: number): number => Math.floor(random() * n);
   const para = (i: number): PMNode => p(`paragraph ${i} of the document`);
   let state = EditorState.create({
     doc: doc(...Array.from({ length: 40 }, (_, i) => para(i))),
@@ -534,13 +535,7 @@ test('markdown ↔ document: GFM constructs map to the reference schema', () => 
 });
 
 test('markdown ↔ document: a generated corpus keeps its text, and settles after one trip', () => {
-  let seed = 0x5eed;
-  const rnd = (): number => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  const rnd = mulberry32(0x5eed);
   const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)];
   const ALPHABET = [
     'a',
@@ -663,13 +658,7 @@ test('markdown ↔ document: a generated corpus keeps its text, and settles afte
 });
 
 test('a value handed in: a reset that keeps the nodes it did not change, read by resuming the last parse', () => {
-  let seed = 0xa11ce;
-  const rnd = (): number => {
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  const rnd = mulberry32(0xa11ce);
   const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)];
   const WORDS = ['a', 'word', '**b**', '_i_', '`c`', '[l](u)', '~~s~~', 'aa'];
   const words = (): string =>
@@ -813,11 +802,7 @@ test('markdown out: a bracket is escaped only where it could be part of a link (
 
   // and over generated bracket-heavy text, plain and linked, what is read
   // back is the document written — not only its text
-  let seed = 761;
-  const rnd = (): number => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x80000000;
-  };
+  const rnd = mulberry32(761);
   const PARTS = [
     '[',
     ']',

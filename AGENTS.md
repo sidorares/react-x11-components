@@ -154,7 +154,13 @@ finds out from a blank window has been failed by the page.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git
   ignores it, and nothing in the repo edits it by hand.
 - `test/` — `node --test` files run through `tsx`, one per component plus
-  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`).
+  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`). **What a test
+  makes up comes from `mulberry32`** (`test/mulberry32.ts`), whose numbers are
+  all good. `seed * 1103515245 + 12345` on a double loses its low bits and
+  comes round in 10,466 numbers, or 220 from some seeds, and the same on
+  integers has a low bit that takes turns, so `seed % 6` can leave half of a
+  test's cases unmade. Neither says so: `<Html>`'s `rem` was wrong in one
+  generated document in twelve for as long as its tests could not make one.
 - `test/html/` — `<Html>`'s tests, a file a subject (`floats.test.ts`,
   `tables.test.ts`, `media.test.ts`, …) over the `harness.ts` they share.
   They were one file of eighteen thousand lines that every change appended
@@ -1660,6 +1666,22 @@ items' heights**: anything new that makes one so — a ratio handed to Yoga,
 a basis read from a height the measure found — turns sizing off for its
 row, or the widths come out of heights nobody measured.
 
+**A long row that comes to the same at any width keeps its layout** (`Row`,
+`keptRow`, from `ROW_FROM` items). Items that neither grow nor shrink, one
+after another from a row's start, stand in the same places however wide it is,
+so a new width gives Yoga nothing to work out: a webmail page's strip of 2,499
+senders, `overflow: hidden` around the few that show, was a Yoga node an item
+at every step of a window's edge, some 40% of a step's layout. Three things are
+load-bearing. **Anything new that makes where an item stands depend on the
+row's width joins `placesFromItsStart` or `sizedApartFromItsRow`**, and a case
+in `FLAWS` (`test/html/flex.test.ts`), each of which is a way to, in a row that
+has room to share out and in one that does not. **Anything new that changes an
+item in place forgets the row** (`forgetSizes`, through `forgetMaxContent`):
+that is all that says a length taken in place moved it, since it keeps its box
+and its serial. And **an item a probe laid out is not kept** (`Row.serials`): a
+box's narrowest is first asked for when it is squeezed, and lays out at no width
+an item it cannot answer for.
+
 **Three phases, three invalidation reasons, and the split is the component.**
 Boxes depend on the DOM and the stylesheets; layout depends on the width;
 paint depends on neither. So a resize skips the cascade and an expose skips
@@ -2252,7 +2274,7 @@ of the scrollport of each box around that scrolls, clips and transforms
 counted (`_lazyAway`). With scripting off an image never waits, since a server
 could read a reader's way down a page from what it was asked for and when.
 The browsers were asked before any of this was written, and the docs page
-names where they differ. Seven things are load-bearing.
+names where they differ. Eight things are load-bearing.
 
 - **Until `load` near is `LAZY_LOADING_PX`, since a document's first boxes are
   a guess.** Its first layout comes before its head's scripts, and Wikipedia's
@@ -2760,7 +2782,10 @@ page's body took 44,000 boxes to find, a strip of 2,499 senders among them,
 twice a load. It answers or it turns down, and null is the probe, as a grid, a
 table and an edge that is a percentage of the room are. Three things are
 load-bearing. **A box no layout has reached has no lines**, and reads as nothing
-(`layoutSerial` 0): a flex box asks about an item before its first layout.
+(`layoutSerial` 0): a flex box asks about an item before its first layout. So
+is a box a restyle gave other lengths in place (`forgetLayout`) or a block set
+again in a face that came (`forgetSizesIn`), whose last layout says the word
+and the padding of before.
 **What a layout that stops set aside is not in `children`** (`stopping`), and a
 size measured without it is kept for the box's life. And **what it answers is
 held to Chromium and not to the probe** (`test/html/min-contents.ts`, every width
@@ -2769,7 +2794,7 @@ it answers joins that document**, whose cases are sized boxes rather than text,
 and regenerated rather than written.
 
 **What an item gives is Chromium's, and not quite what CSS Flexbox 9.9.1
-says** (`itemAtNarrowest`). Its width, or its content at its narrowest. A basis
+says** (`itemAt`, by way of `itemAtNarrowest`). Its width, or its content at its narrowest. A basis
 that is a length then has a say along a line that does not wrap: an item that
 may not grow is no wider than it, and one that may not shrink no narrower. Then
 its limits, its automatic minimum among them, which matters only there, since
@@ -2787,16 +2812,88 @@ anything inside a least width at that width, so a nested `flex: none` gave its
 widest, and a child `width: 100%` a percentage of a least width that was no width
 of its own. A flex box is asked of its items, with no layout of it, and a box
 laid out at no width is read as it was, so that a level of nesting does not
-lay out again all it holds. Only what has lines of its own and was laid out
+lay out again all it holds. A grid is no such box: it has a flex box's
+`display`, so ask `flexItems`, and it is as wide as its last layout's tracks.
+Only what has lines of its own and was laid out
 wider is asked of its words or laid out at no width. **What a walk lays out is forgotten around it**
 (`forgetAround`): the layout after the probe keeps what around it has not moved,
-by `Box.layoutSerial`, which would leave it at no width. **A flex box's
-max-content width does not go by any of this**, and it is a gap: it is read from
-a layout with no limit on its width, each item at its content whatever its
-basis. All that keeps it honest is a floor, for an item that may not shrink, or
-a box with room for that width would never ask for the narrower one that is
-wider. Chromium caps and floors there as well, and `width: max-content`
-inside a flex box inherits the difference.
+by `Box.layoutSerial`, which would leave it at no width.
+
+**A flex box's max-content width goes by the same rule** (`itemAtWidest`, in
+`intrinsicWidth`'s `atWidest` walk), with an item's content at its widest for
+its size and at its narrowest for its automatic minimum. It is Chromium's, read
+off some 180,000 small documents, and again not quite 9.9.1's: there is no flex
+fraction in it, so `flex: 2 1 40px` beside `flex: 1 1 40px` is their contents
+side by side. A basis has its say along a row that wraps as well as one that
+does not, all its items being on one line at its widest, and such a row is no
+narrower than its narrowest (`widestInALine`), which only a basis under its
+item or a margin that takes room back can reach. A column that wraps is as wide
+as each line's widest side by side (`COLUMN_LINES`), which a layout has to say.
+The size an item starts its line at is what a basis says, its automatic minimum
+in it (`start`), so a basis under what a percentage squeezed away raises an
+image to its natural width and a basis of nothing does not. A basis of `auto`
+is a width of its own, which shows only there. And an item with a ratio takes
+what it makes of its height for a width, its limits through the ratio before
+its basis has its say, and is no narrower than its content unless it may be,
+where its content is its size and no basis has taken it under that.
+Eight things are load-bearing.
+
+- **A layout with no limit on its width says an item's widest only where it
+  laid the item out there.** One with a basis of a length it laid out at that.
+  So `widestOf` reads what the flex box's own layout measured (`MAX_CONTENT`),
+  asks a nested flex box of its items, and lays out only the rest, once in the
+  item's life; an item down a column laid out with no limit is read as the
+  column measured it, or as it was laid out. An item's automatic minimum is
+  asked only where a basis took it under its content, and not where its lines
+  say it is no wider than the basis at its narrowest (`narrowerThan`, over
+  `wordBound`'s strict form, which refuses a percentage and what is not a
+  flow). So no leaf is laid out twice for it, and box layouts come to what they
+  did: measure that again before making the walk ask more, on sized boxes as
+  well as text, since a line of words answers `exactMinContent` with no layout
+  and a line of inline blocks does not. Sent through `widestOf`, every item down
+  a column cost half as much again of every layout of a nested page; laid out at
+  no width for its minimum, a row of inline blocks in a basis made half as many
+  layouts again, which pages of text never showed.
+- **A block at its `max-width` may have wrapped**, as one a `calc-size()` of
+  `auto` held to a width may, which what it drew does not say, and its width
+  says nothing of its content: `max-width: 7px` around nothing
+  is no width. A line that wrapped says the content is wider than the limit, with
+  no layout of it (`softWrapped`), so a long article in a flex row is not set
+  again at no width; only one that drew less and did not wrap is asked
+  (`widestOf`). A forced break says nothing of the kind.
+- **A float is as wide as it shrank to**, which a walk reads rather than what it
+  holds (`widestAsLaid`): that was laid out inside the width, a percentage of it
+  and all, so `padding: 0 5%` in one came back a tenth wider each level out.
+- **A percentage squeezes what is replaced at its narrowest and nowhere else**
+  (`compressed`): its content has no size at all there, which a keyword asks
+  for as much as anything, and only a least width of a length holds it. At its
+  widest, and for its automatic minimum, a percentage is `auto` and it is its
+  natural width.
+- **What is replaced has one size of its content**, whatever width it has of its
+  own, which `contentSizedWidth` reads from the element: laid out to find it,
+  `width: 40px; max-width: min-content` was as wide as its width.
+- **An item a flex box shrank with no line to show for it may be wider than it
+  was drawn** (`seen.cut`): what is replaced, or a width that is a size of its
+  content. Taken for what it drew, a box around one read as fitting the width it
+  was given, and gave up its own minimum.
+- **A wrapped box's lines are Chromium's only past Yoga's `singleFlexChild`**
+  (`NO_GROWTH`). Yoga gives the one item that may both grow and shrink, where no
+  other may do either, no flex base size, as it fills the box whatever it was,
+  and on lines that is where they break: `flex: 1 1 300px` beside `flex: none`
+  in a row of 100 stayed on one line.
+- **A table's percentage width is `auto` where its containing block has no width
+  at all** (`cyclicWidth` of the parent's), and not only where its own came out
+  unlimited: under a `max-width` it filled the limit.
+
+`test/html/max-contents.ts` is to this what `min-contents.ts` is to the
+narrowest, written by the same script with `--widest`, in a room wider than any
+case can use, and some of its cases are around a float, an `inline-flex`, a
+keyword width or a table's cell, each of which asks in its own way. Both hold
+keyword sizes, ratios and wrapped columns of a height. A generated document that
+reads a box's size some way no case does is worth a run of the fuzz behind them
+before it is believed: a float around these cases was 561 of 1,500 wrong when
+the fixture had none. A grid's tracks are not held to this yet: some 3% of them
+differ, in its own limits and in ratios it stretches.
 
 **A probe takes a block it laid out before in the same room for what it
 came to then** (`Stand`, `STOOD`): how far down it reached, the margin it
@@ -2847,6 +2944,25 @@ a layout can change in how a box is drawn, besides its rect, its lines
 and its marker, joins `reshaped`**, or a refresh leaves it drawn as it
 was.
 
+**A box is laid out where it stands, and what its layout keeps stays there**
+(`layoutSubtree`). A flex or grid item, a table's cell and what a probe
+measures were laid out at the origin and moved to their place, and a move
+walks all a box holds (`translate`): what a layout kept was moved to the
+origin of each box around it and out again, level by level. A webmail page's
+strip of senders, some 12,900 boxes in some twenty flex boxes, was walked some
+60 times a step of a window's edge to land where it was, and that halved the
+widths a drag painted a second. Standing, a box that stays moves nothing, and one that goes
+elsewhere moves once. Three things are load-bearing. **Nothing a subtree's
+layout reads may be a position**: what it holds is read from its corner, as
+`contentBottom` reads it and a baseline less the box's `y`, and anything new
+that reads back what a layout decided does the same. Holding every subtree at
+a far origin through the suite is how to look for one that does not. **What
+stops a layout (`until`) is said from the box being laid out**, and not from
+where it stands, which a probe of what is around it may have left anywhere:
+read from there, a drag's layout set aside all of what could be seen. And
+sums come out in other last bits at another origin, so **places are compared
+to a millionth of a pixel**, as `SAME_PLACE` compares them, never with `===`.
+
 **The passes after a layout that keeps blocks walk what they move, and
 the walk of the ink keeps the rest's** (`Blockers.moved`, `KEPT_INK` in
 `paint.ts`). A box the passes after a flow move, or move what it holds —
@@ -2865,22 +2981,56 @@ place calls `noteMoving`**, as a restyle in place does, or a layout that
 lays the box out again leaves it where the flow put it. **Anything new
 that moves boxes or changes their ink outside a layout walks the tree's
 ink whole** (`computePaintBounds` with no `KeptInk`), which makes every
-record stale, or a later walk keeps ink of where the boxes were: a sticky
-box the pane's scroll places is one walk of part of it
-(`boundsAfterMove`), and why no ink under one is kept, and a box a
-transform moved in place is the other (`inkAfterMove`), whose walk makes the
-records stale as a whole one does. A restyle in place that only moved boxes
-walks those and the boxes around them as far as they have to grow, and
-gathers no layers, since `movable` lets through no change of a stacking
-context: a spinner turning at the foot of a mail page's list walked all
-13,000 of its elements at every frame. What is around it stays as large as
-it grew, which a culled paint takes as more to draw, never less; a box on
-a line goes from its block, whose lines say how far it reaches past them
-(`LINE_INK`). And **a text or a
+record stale, **or walks what moved, where what moved is in `moved`**
+(`boundsAfterMove`), or a later walk keeps ink of where the boxes were. A
+sticky box the pane's scroll places is one such walk, and why no ink under one
+is kept, and a box a transform moved in place is the other (`inkAfterMove`).
+No walk reads a record of what is in `moved`, which is every box around what
+moved. A record inside it says where the block stood, so it goes by itself
+where the block stands elsewhere, and is right where it stands there again:
+ink is in a block's own coordinates. Every other record is of ink nothing
+moved, so a walk of what moved leaves them: stale at each frame of a mail
+page's spinner, all of them sent the layout after down its 12,000 boxes. A
+restyle in place that only moved boxes walks those and the boxes
+around them as far as they have to grow, and gathers no layers, since
+`movable` lets through no change of a stacking context: that spinner, turning
+at the foot of a list, walked all 13,000 of the page's elements at every
+frame. What is around it stays as large as it grew, which a culled paint takes
+as more to draw, never less; a box on a line goes from its block, whose lines
+say how far it reaches past them (`LINE_INK`). And **a text or a
 break carries its element's style and is no box of its own**: no pass
 moves it, and no scroll places it (`stickyBlock`). Taken for a sticky
 box, a sticky element's text was held where its rect had drifted to, and
 the ink around it grown to reach it.
+
+**The order of the layers is worked out once for a tree, and a build brings
+it up to date** (`LAYERS_HELD`, `stackAfterLayout`, `carryLayers`).
+`hoistNegative` and `stackLayers` read styles and the tree's shape, which no
+width moves, so neither walks a tree a layout laid out before: at each of a
+drag's layouts, `hoistNegative` walked all of a mail page's 14,800 boxes and
+`stackLayers` 4,100, some 3 ms of layouts that laid out 500. A build of subtrees carries them to its tree: nothing to do where
+nothing it took out or put in is in a list, and otherwise the stacking contexts
+around the splice, and each new one in it, gather what they hold at the next
+layout, once it has said which boxes hold layers (`Box.holdsLayers`), each
+leaving the contexts in it as they are. That page's spinner is built again in
+its button at most steps of a drag, and the button is a context of a few boxes.
+Five things are load-bearing. **What a layout decides that either reads is
+in `layerMarks`**: a box past a clamp point (`clampBox`, `unclampBox`), which
+no list holds, and a cell's clip (`clipCell`), which a layer is under; a layout
+that moves it walks the tree, and `ellipsizeLines` says only what its cut hid or
+showed that it had not. **So is a box set aside**: `stackAfterLayout` is told
+`cut`, walks what the layout left, and what it finds is held by no later layout.
+**What a restyle in place changes that either reads is `HoverChange.order`**,
+which walks the tree there (`reorders`); every other field they read falls to
+the end of `hoverChange` and builds the boxes, so anything new taken in place
+that makes a box a layer, a context or a clip sets `order`. **What no context's
+lists say is walked for** (`carryLayers`' `reached`): a box in the top layer and
+an inline box that is a layer, whose lists are the tree's, and a context under
+what a clamp hides, which no walk reaches. And **`LINES_APART` is by a block's
+lines**, which a layout makes new, so it is the one part noted after every
+layout, from the inline boxes the last walk found (`noteApartLines`).
+`treeLines` holds the lists to a whole build in every fuzz that calls it, and
+`LAYERED_SEEDS` and `LAYERED_FROM` sweep documents of nothing else.
 
 **A stream's chunk is a change the parser tells of, and builds the ends of
 what it touched** (`HtmlSource.takeAppended`, `_parsedChanges`,
@@ -3094,6 +3244,46 @@ answers a page in CSS pixels from a style divides by both, as
 `cssomStyle` does. And **a length a child inherits is rescaled by its own
 zoom**: one added to `INHERITED` that holds a length joins `zoomedBy`, or a
 zoomed child inherits it at its parent's size.
+
+**What `getComputedStyle` reads of a box is what layout used** (`_usedBox`,
+`usedMargins`), for a `::before` and an `::after` as for an element. A
+margin is read from the box, which layout resolved against what it laid the
+box out in: worked out again from `box.parent`, a box in an inline box read
+none, a grid item a share of the grid and an absolute box a share of the
+wrong block. Four things are load-bearing. **What a box does not keep is
+noted beside it**: `placeBlock` shares room out to a block's `auto` margins
+and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
+`marginBottom` carries what hangs from the box for the next sibling to
+collapse with (`bottomStrut`), so anything new that gives a margin room
+tells `usedMargins`. Yoga shares room out to a flex item's `auto` margins and
+tells no one, so they are worked out from the item's line once the items are
+placed (`noteAutoMargins`, `FLEX_ROOM`), and only in a box with one: along it
+a share of what the line leaves free, and across it what the item leaves of
+the line. A line is found from where Yoga put its items (`itemLines`), and a
+row that wraps has the height of each worked out (`rowLineSizes`), so anything
+new told to Yoga that moves an item along a line or sizes one is read from the
+node there, as a baseline's margin is. An inline box keeps no rectangle, and an
+offset moves what is placed in it and not the lines it could be worked out from
+again, so `positionedIn` notes where a box stands in one (`PLACED_IN_INLINE`).
+**An inline box reads as it computes** (`UsedBox.inline`,
+`resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
+with no rectangle of its own. **What takes the computed value asks a box for
+its edges at most**: the frame `getKeyframes()` makes up reads margins and
+padding as Chrome does in either read of them, a length as the style under the
+animation has it and anything else off the box as the animation has moved it
+(`_edgesOf`, `UsedBox.edgesOnly`), and takes the rest as computed. A `::before`
+a drag set aside (`heldBack`), which is a width ago where its rules are now,
+and one of `display: contents`, whose box only sets its content and is none of
+its own (`contentsStyle`), ask no box at all. `_pseudoBoxOf` finds a box for
+all of them, so anything new it answers asks the same. And **no box of ours is
+not nothing rendered** (`_unrendered`, `cssomStyle`'s `unrendered`): what an
+`<svg>` draws, what `content-visibility: hidden` holds and a canvas's fallback
+have none here and one in Chrome, and a `box` of null says only that none was
+handed in. So `transform` reads `none` where a `display` says nothing renders
+the element, or a `::before` has no box, and anything new that reads a browser's
+answer for no box asks the same. That is asked only of an element with a
+transform: a page reads the styles of a closed dialog's contents by the
+thousand, and each read would walk the ancestors.
 
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
@@ -4247,6 +4437,26 @@ canvas none. `font` is no item of a computed style's list, which is of
 longhands, so a page that copies a style item by item, as html2canvas does,
 does not set it over them, or take them off with the `''` it reads.
 
+**A computed style's shorthands are composed as they are read**
+(`SHORTHANDS`, `COMPOSED`, `computed.ts`). `getComputedStyle` is read tens of
+thousands of times a load on some sites, and a hundred more names in every
+record were 60% more for a page that wants `display`, most of it in the JSON
+and the facade's maps. So a record holds the longhands, and inherits each
+shorthand as a getter: a read by name finds it, and `Object.keys` and
+`JSON.stringify` do not, which is what the bridge sends. A page's first read of
+a shorthand asks the host for all of them (`computed`'s `d`), kept until the
+next `take`. `font` and `overflow` stay in the record, read as they are on the
+way to a text measure and up a tree for what scrolls. Three things are
+load-bearing. **A shorthand reads its longhands as `cssomAt` resolved them**,
+where it has them, so a used margin stays used and `comesFromBox` holds: **one
+that reads a box joins `FROM_A_BOX`**, or it reads what the text still to be
+set again left it. **A record is read by name**: `{ ...record }` and
+`Object.hasOwn` see longhands alone. And **anything new that makes a list item
+of a name a browser does not list keeps it out of `take`'s `names`**: a page
+that copies a style item by item sets every item it finds. `SHORTHAND_ROWS` in
+`test/html/values.test.ts` is Chrome's answers, so a row is changed by asking
+Chrome again.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a
@@ -5088,6 +5298,27 @@ drag — a hand going back over the widths it came through — was made into a
 raster that nothing copied. Zen Garden 214's photographs were 278 of them
 in a drag of the bench's, and a frame's paint went from 17 ms to 10.
 
+**An inline `<svg>` is kept the same way, by what it says and not by the
+drawing** (`paintSvg`, `SvgDrawing.keptAs`). `SvgView` parses every path of
+a drawing at every draw, whatever it was handed, so a webmail page's sixty
+icons, which only moved, were a seventh of each frame of a drag. A
+`refresh()` makes every drawing of a document again (`inlineDrawing`), and
+that page refreshed at most frames, so a raster kept by the drawing, as an
+image's is, would hardly ever have been asked for twice. The key is the text
+of its elements and of each element outside it that it names (`drawnFrom`),
+with everything `draw` is handed besides, so nothing drops a raster: a
+drawing that changes has another key, and the old one ages out of the cache.
+It is also why the same icon on every row of a list is one raster. Four
+things are load-bearing. **Anything new `draw` reads joins `keptAs`**, or a
+raster outlives what it was set from. **`drawnFrom` finds what a drawing
+names as `copyTree` does**, or a change to a sprite's symbol draws the old
+one, and a chunk it ends in is one of its `ends`. **What the key cannot hold
+is refused, and draws as it did**: text, whose face arriving changes no
+key; a `<foreignObject>`'s HTML; a name the document does not have, which a
+stream may bring; and a `url()` a rule gives a shape, of which the key has
+only the name. And **only a drawing cut to its box is kept**, since a raster
+is its box's size, and only with no `PaintOptions.matrix`, as an image.
+
 **An animated image is the document's to play, and a frame is a repaint
 of the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
 here and not in core's `<image>` because `<Html>` draws its own images, so
@@ -5503,6 +5734,26 @@ opacity and, since a box is what counts (CSS Lists 3, 4.5), its counters.
 reach that half. **What a pseudo-element runs and starts reads
 `generatedStyle`**, never `box.style`, which has less than it does: its
 animations, and what a transition starts from.
+
+**A `calc-size()` reads as it was written and is laid out from numbers**
+(`css/calc-size.ts`). A style keeps each size's keyword and length as it
+would for any size, and beside them a `SizeOf` (`widthSize`, `minWidthSize`,
+`flexBasisSize` and their kin): `size` scaled and `plus` added, or the
+calculation itself where a function has `size` in it (`sizeAt`), and always
+its text, since a page reads the tree it wrote, which no two numbers say. A
+form that needs no box has its length in the size's field, and the `SizeOf`
+says only how it reads, so **anything that works a size out from a `SizeOf`
+asks that the field is `auto`** (`sizedWidth`, `finishHeight`), and
+**anything new that takes a size from a keyword does what `sizedBy` makes of
+it**, or `min-width: calc-size(fit-content, size + 7px)` comes out as the
+keyword alone. A check that a box's width is simple asks for the `SizeOf` as
+well as the keyword (`hasWidths`, `exactContribution`, `readsPercentBase`):
+`auto` beside a `SizeOf` is no `auto`. `test/html/calc-sizes.ts` is
+Chromium's answers over one document; regenerate it, do not write it by
+hand, and leave out of it a box that comes out right whatever the code
+does. A height's limit of a keyword is the content's, which only
+`finishHeight` has, so `clampHeight` is handed it there and answers without
+that limit everywhere else.
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
@@ -5922,7 +6173,13 @@ to the pane. And **the bars are a pass of their own at the end of
 context is painted in its context's flow passes, and nothing of its own
 paints after what it scrolls. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
-links and the page (`scrollBarAt`).
+links and the page (`scrollBarAt`). `isScroller` is true of a box that
+is `overflow: hidden`, which shows no bar, and `scrollStateOf` is a walk
+of all a container holds, once a layout: a webmail page keeps a strip of
+12,700 boxes in such a box, and measured it at every paint of a drag for
+no bar. So **anything new asked of a scroll container at every paint asks
+`wheelScrolls` before it asks `scrollStateOf`**, and leaves a selector
+(`scrollbarHidden`) for last, as `scrollBarsOf` does.
 
 **A scroll snaps by how it moved** (`layout/snap.ts`'s `SnapScroll`): an
 absolute one to the place nearest where it went, a relative one only ahead

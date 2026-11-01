@@ -21,6 +21,7 @@ import {
   resolveOrNull,
 } from '../css/values.js';
 import type { Len } from '../css/values.js';
+import { sizeAt } from '../css/calc-size.js';
 import {
   anchorCalls,
   anchorInset,
@@ -125,7 +126,7 @@ import type { Columns } from './multicol.js';
 import {
   BOX_RAISES,
   Box,
-  CLAMPED,
+  clampBox,
   COLUMN_BOXES,
   CLEARED_FROM,
   COLUMN_PIECES,
@@ -133,6 +134,7 @@ import {
   CUT_PIECES,
   GRID_TRACKS,
   FIRST_LINE,
+  layerMarks,
   GENERATED_FROM,
   INLINE_OFFSETS,
   MOVED_OFF_LINES,
@@ -144,6 +146,7 @@ import {
   columned,
   containmentApplies,
   isBlank,
+  unclampBox,
 } from './boxes.js';
 import type {
   BoxTree,
@@ -173,7 +176,13 @@ import {
 import type { FontsLike, InlineOptions, InlineResult } from './inline.js';
 import type { TextRun } from '../../richtext/index.js';
 import { forgetGridItem } from './css-grid.js';
-import { forgetMaxContent, layoutFlex, replacedMinimum } from './flex.js';
+import {
+  columnLines,
+  forgetMaxContent,
+  layoutFlex,
+  measuredMaxContent,
+  replacedMinimum,
+} from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
 import { collapseEdges } from './collapse.js';
 import {
@@ -199,9 +208,9 @@ import {
   drawsNothing,
   FIXED_BOXES,
   fixedToViewport,
-  hoistNegative,
+  forgetLayers,
   OUT_OF_FLOW_REACH,
-  stackLayers,
+  stackAfterLayout,
 } from '../paint.js';
 
 export interface LayoutContext {
@@ -942,7 +951,12 @@ function standAfter(
   let inner = NaN;
   const seen = { cut: false };
   if (typeof child.style.width !== 'number') {
-    inner = intrinsicWidth(child, seen);
+    inner = intrinsicWidth(
+      child,
+      seen,
+      undefined,
+      Number.isFinite(width) ? undefined : ctx,
+    );
   }
   noteStand(child, {
     width,
@@ -1250,7 +1264,7 @@ function movesWithFlow(box: Box, containing: Box | null): boolean {
   }
   if (s.widthKeyword || s.heightKeyword) return false;
   if (s.minWidthKeyword || s.maxWidthKeyword) return false;
-  if (s.minHeightKeyword || s.maxHeightKeyword) return false;
+  if (s.minHeightKeyword || s.maxHeightKeyword || s.maxHeightSize) return false;
   if (isPct(s.minWidth) || isPct(s.minHeight)) return false;
   if (s.maxWidth !== 'none' && isPct(s.maxWidth)) return false;
   if (s.maxHeight !== 'none' && isPct(s.maxHeight)) return false;
@@ -1677,6 +1691,7 @@ export function layoutDocument(
 ): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
+  const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
   framed.any = tree.vertical;
   const cuts =
@@ -1793,6 +1808,7 @@ export function layoutDocument(
     // from where it is drawn: this tree is laid out whole
     if (escapes(tree)) {
       LAID_WHOLE.add(tree);
+      forgetLayers(tree);
       return layoutDocument(tree, fonts, viewportWidth, viewportHeight, scale);
     }
   }
@@ -1891,8 +1907,7 @@ export function layoutDocument(
     tree.movedInline,
     moved ? { moves: moved, kept: ctx.reused! } : undefined,
   );
-  if (tree.negative) hoistNegative(root);
-  stackLayers(root);
+  stackAfterLayout(tree, layerMarks.moved !== marks, asideIn(tree));
 
   // The document is as tall as what overflows the root, not the root: an
   // `html, body { height: 100% }` a window tall holds a message longer than
@@ -2599,7 +2614,7 @@ function layoutChildren(
         hideClamped(child);
         continue;
       }
-      CLAMPED.delete(child);
+      unclampBox(child);
     }
     const handedHere = firstLine !== null;
     if (firstLine && !child.outOfFlow && !child.isFloat) {
@@ -3172,7 +3187,7 @@ function countLines(
  *  a layout before gave it: a hidden box is not laid out, and nothing —
  *  a selection, a caret — may find text in it where it stood. */
 function hideClamped(box: Box): void {
-  CLAMPED.add(box);
+  clampBox(box);
   const stack = [box];
   while (stack.length) {
     const at = stack.pop()!;
@@ -3369,6 +3384,13 @@ let layoutSerial = 0;
  *  lays out again. */
 export function boxLayoutsMade(): number {
   return layoutSerial;
+}
+
+/** How many boxes have been moved, for a test to count what moving what a
+ *  layout keeps walks. */
+let boxMoves = 0;
+export function boxesMoved(): number {
+  return boxMoves;
 }
 
 /**
@@ -3583,11 +3605,14 @@ export function measureIntrinsicWidth(
     if (!content && specified !== AUTO && Number.isFinite(box.width)) {
       return box.width;
     }
+    // nothing is drawn in what is replaced, which is the size it was given
+    if (box.kind === 'replaced') return box.width;
     return (
       intrinsicWidth(
         box,
         undefined,
         available === MIN_CONTENT_PROBE ? ctx : undefined,
+        available === Infinity ? ctx : undefined,
       ) + box.horizontalExtra
     );
   } finally {
@@ -3596,10 +3621,21 @@ export function measureIntrinsicWidth(
 }
 
 /**
- * Lay a box and everything under it out at a width, at the origin — what
+ * Lay a box and everything under it out at a width, where it stands — what
  * `LayoutContext.layoutSubtree` hands to `flex.ts` and `css-grid.ts`, and
  * what the shrink-to-fit probe and a table's cells use. A replaced box is
  * sized rather than laid out, because there is nothing inside it to lay out.
+ *
+ * Where it stands, and not at the origin, since its caller moves it to its
+ * place after and a move walks all it holds. At the origin, what a layout
+ * keeps in a box was moved there and then out again by each box around it
+ * that is laid out so: a webmail page's rows and its strip of senders, in
+ * some twenty flex boxes one inside another, were walked some 60 times a
+ * step of a window's edge, to land where they were. Standing, a box its layout leaves where it was
+ * moves nothing, and one that goes elsewhere moves once. So nothing a
+ * subtree's layout reads may be a position: what is in it is read from its
+ * corner, and what stops a layout (`until`) is said from it here, where it
+ * is said from the origin.
  */
 export function layoutSubtree(
   box: Box,
@@ -3640,7 +3676,13 @@ export function layoutSubtree(
     } else if (containing !== undefined) borderBox = width;
     else borderBox = clampWidth(box, width, NaN);
   }
-  layoutInternals(box, ctx, borderBox, 0, 0);
+  // an unbounded probe leaves a box that goes nowhere as it was (`moveTo`),
+  // and an infinite corner would be every position under it
+  const x = Number.isFinite(box.x) ? box.x : 0;
+  const y = Number.isFinite(box.y) ? box.y : 0;
+  if (y !== 0 && ctx.until !== undefined) ctx.until += y;
+  layoutInternals(box, ctx, borderBox, x, y);
+  if (y !== 0 && ctx.until !== undefined) ctx.until -= y;
 }
 
 /**
@@ -4590,10 +4632,15 @@ function acrossRatio(
  * its content is that height through its ratio (5.3). Null where it has
  * no ratio, no height or a length for a width.
  */
-export function ratioWidth(box: Box): number | null {
+export function ratioWidth(
+  box: Box,
+  /** Whether a width of its own is one that no size can be taken from, as a
+   *  percentage of nothing is. */
+  noWidth = box.style.width === AUTO,
+): number | null {
   const ratio = boxRatio(box);
   const style = box.style;
-  if (!ratio || style.width !== AUTO) return null;
+  if (!ratio || !noWidth) return null;
   const set = resolveOrNull(style.height, box.percentHeightBase);
   if (set === null) return null;
   const outer = clampHeight(
@@ -4667,6 +4714,9 @@ function finishHeight(box: Box, contentHeight: number): void {
   const set = specifiedHeight(box);
   // at least zero: a `calc()` may come to less
   const specified = set === null ? null : Math.max(0, set);
+  const extra = box.verticalExtra;
+  // the height an intrinsic limit is, as a border box
+  const content = contentHeight + extra;
   if (specified !== null && box.kind === 'table') {
     // A table's height is a least one, which `layoutTable` has shared out
     // to its rows: one set shorter than they are leaves them their height
@@ -4676,10 +4726,7 @@ function finishHeight(box: Box, contentHeight: number): void {
       box.style.boxSizing === 'border-box'
         ? specified
         : specified + box.verticalExtra;
-    box.height = Math.max(
-      clampHeight(box, outer),
-      contentHeight + box.verticalExtra,
-    );
+    box.height = Math.max(clampHeight(box, outer, content), content);
     return;
   }
   if (specified === null && box.style.aspectRatio) {
@@ -4695,64 +4742,104 @@ function finishHeight(box: Box, contentHeight: number): void {
       contentHeight = automatic ? Math.max(ratio, contentHeight) : ratio;
     }
   }
-  // a `calc-size()` of the content's height (CSS Values 5, 9)
-  if (specified === null && box.style.heightSize) {
-    box.height = clampHeight(
-      box,
-      sizedBy(
-        box.style.heightSize,
-        contentHeight + box.verticalExtra,
-        box.verticalExtra,
-        box.style.boxSizing,
-        box.percentHeightBase,
-      ),
-    );
-    return;
-  }
   const height = specified ?? contentHeight;
   const borderBox =
     box.style.boxSizing === 'border-box' && specified !== null
-      ? Math.max(height, box.verticalExtra)
-      : height + box.verticalExtra;
-  box.height = clampHeight(box, borderBox);
+      ? Math.max(height, extra)
+      : height + extra;
+  // a `calc-size()` of that height, its content's or `stretch`'s (CSS
+  // Values 5, 9)
+  const sized = box.style.height === AUTO ? box.style.heightSize : null;
+  box.height = clampHeight(
+    box,
+    sized
+      ? sizedBy(
+          sized,
+          borderBox,
+          extra,
+          box.style.boxSizing,
+          box.percentHeightBase,
+        )
+      : borderBox,
+    content,
+  );
 }
 
-export function clampHeight(box: Box, height: number): number {
+/**
+ * `height` within `min-height` and `max-height`, the minimum winning.
+ * `content` is the box's content's height as a border box, which an
+ * intrinsic limit is, and such a limit is none for a caller that does not
+ * have it yet.
+ */
+export function clampHeight(box: Box, height: number, content = NaN): number {
+  const style = box.style;
   let out = height;
   const base = box.percentHeightBase;
+  const most = heightLimit(
+    box,
+    style.maxHeightKeyword,
+    style.maxHeight === 'none' ? style.maxHeightSize : null,
+    content,
+  );
+  if (most !== null) out = Math.min(out, most);
   // a percentage of a height nothing sets is zero for a minimum (CSS 2.1
-  // 10.7), which leaves a `calc()` its pixels; so is `stretch`, which is a
-  // border-box height where it is one
-  if (box.style.maxHeightKeyword === 'stretch') {
-    out = Math.min(out, stretchHeight(box) ?? Infinity);
-  }
-  if (box.style.minHeightKeyword === 'stretch') {
-    out = Math.max(out, stretchHeight(box) ?? 0);
-  }
+  // 10.7), which leaves a `calc()` its pixels
   const min =
-    box.style.minHeight === AUTO
+    style.minHeight === AUTO
       ? 0
-      : resolve(box.style.minHeight, Number.isFinite(base) ? base : 0);
+      : resolve(style.minHeight, Number.isFinite(base) ? base : 0);
   const max =
-    box.style.maxHeight === 'none'
-      ? null
-      : resolveOrNull(box.style.maxHeight, base);
-  if (max !== null)
-    out = Math.min(
-      out,
-      max + (box.style.boxSizing === 'border-box' ? 0 : box.verticalExtra),
-    );
-  if (min !== null)
-    out = Math.max(
-      out,
-      min + (box.style.boxSizing === 'border-box' ? 0 : box.verticalExtra),
-    );
+    style.maxHeight === 'none' ? null : resolveOrNull(style.maxHeight, base);
+  const extra = style.boxSizing === 'border-box' ? 0 : box.verticalExtra;
+  if (max !== null) out = Math.min(out, max + extra);
+  if (min !== null) out = Math.max(out, min + extra);
+  const least = heightLimit(
+    box,
+    style.minHeightKeyword,
+    style.minHeight === AUTO ? style.minHeightSize : null,
+    content,
+  );
+  if (least !== null) out = Math.max(out, least);
   // no shorter than its padding and borders, as `clampWidth` is no
   // narrower
   return Math.max(box.verticalExtra, out);
 }
 
+/** A `min-height` or a `max-height` that is no length, as a border box: a
+ *  keyword's height, `stretch`'s where it has one, or a `calc-size()` of
+ *  either, or of nothing where it has no keyword. Null where it is none. */
+function heightLimit(
+  box: Box,
+  keyword: ContentSize | null,
+  sized: SizeOf | null,
+  content: number,
+): number | null {
+  if (!keyword && !sized) return null;
+  const height =
+    keyword === 'stretch' ? stretchHeight(box) : keyword ? content : 0;
+  if (height === null || Number.isNaN(height)) return null;
+  if (!sized) return height;
+  return sizedBy(
+    sized,
+    height,
+    box.verticalExtra,
+    box.style.boxSizing,
+    box.percentHeightBase,
+  );
+}
+
 /** Place a block-level box horizontally, honouring `margin: auto`. */
+/** What `placeBlock` left for a block's `auto` margins, less than none
+ *  where the box is too wide. No box keeps it in `marginLeft` and
+ *  `marginRight`, which the flow reads as what is written; only
+ *  `usedMargins` asks. */
+const AUTO_ROOM = new WeakMap<Box, number>();
+
+/** What a flex item's `auto` margins came to, top first, each side's where
+ *  it is one (`noteAutoMargins`): Yoga shares the room out and says nothing
+ *  of it. Only `usedMargins` asks. */
+export const FLEX_ROOM = new WeakMap<Box, [number, number, number, number]>();
+
 function placeBlock(
   box: Box,
   contentLeft: number,
@@ -4783,6 +4870,7 @@ function placeBlock(
     box.y = y;
     return;
   }
+  if (leftAuto || rightAuto) AUTO_ROOM.set(box, slack);
   if (slack > 0) {
     if (leftAuto && rightAuto) left = contentLeft + slack / 2 + box.marginLeft;
     else if (aligned) {
@@ -4823,19 +4911,9 @@ function blockWidth(
       keyword && ctx
         ? contentSizedWidth(box, ctx, keyword, room, percentBase)
         : room;
-    // a `calc-size()` of that width (CSS Values 5, 9)
-    if (style.widthSize) {
-      width = sizedBy(
-        style.widthSize,
-        width,
-        box.horizontalExtra,
-        style.boxSizing,
-        percentBase,
-      );
-    }
     return clampWidth(
       box,
-      transferredWidth(box, width),
+      transferredWidth(box, sizedWidth(box, width, percentBase)),
       percentBase,
       ctx,
       containingWidth,
@@ -4866,9 +4944,28 @@ export function sizedBy(
 ): number {
   const content = boxSizing !== 'border-box';
   const basis = content ? Math.max(0, border - extra) : border;
-  const plus = resolve(sized.plus, Number.isFinite(base) ? base : 0);
-  const value = Math.max(0, sized.size * basis + plus);
+  const of = Number.isFinite(base) ? base : 0;
+  const value = Math.max(
+    0,
+    sized.calc
+      ? resolve(sizeAt(sized, basis), of)
+      : sized.size * basis + resolve(sized.plus, of),
+  );
   return content ? value + extra : Math.max(value, extra);
+}
+
+/** The border-box width a box's `width` makes of the one `auto` or its
+ *  keyword gives it, where that is a `calc-size()` (CSS Values 5, 9). */
+export function sizedWidth(box: Box, width: number, base: number): number {
+  const { style } = box;
+  if (!style.widthSize || style.width !== AUTO) return width;
+  return sizedBy(
+    style.widthSize,
+    width,
+    box.horizontalExtra,
+    style.boxSizing,
+    base,
+  );
 }
 
 /**
@@ -4989,7 +5086,14 @@ export function clampWidth(
   if (style.maxWidthKeyword && ctx) {
     out = Math.min(
       out,
-      keywordWidth(box, ctx, style.maxWidthKeyword, containingWidth, room),
+      keywordWidth(
+        box,
+        ctx,
+        style.maxWidthKeyword,
+        style.maxWidthSize,
+        containingWidth,
+        room,
+      ),
     );
   }
   // `auto` is 0 but for a flex item, which `flex.ts` answers
@@ -5001,7 +5105,14 @@ export function clampWidth(
   if (style.minWidthKeyword && ctx) {
     out = Math.max(
       out,
-      keywordWidth(box, ctx, style.minWidthKeyword, containingWidth, room),
+      keywordWidth(
+        box,
+        ctx,
+        style.minWidthKeyword,
+        style.minWidthSize,
+        containingWidth,
+        room,
+      ),
     );
   }
   // and no narrower than its padding and borders: a `border-box` length
@@ -5011,18 +5122,28 @@ export function clampWidth(
 }
 
 /** An intrinsic `min-width` or `max-width` in the room a box's margins
- *  leave it. Apart from `clampWidth`, which every block is sized through,
- *  so that it makes nothing for the ones that have none. */
+ *  leave it, or a `calc-size()` of one. Apart from `clampWidth`, which
+ *  every block is sized through, so that it makes nothing for the ones
+ *  that have none. */
 function keywordWidth(
   box: Box,
   ctx: LayoutContext,
   keyword: ContentSize,
+  sized: SizeOf | null,
   containingWidth: number,
   stretchRoom = containingWidth,
 ): number {
   const of = keyword === 'stretch' ? stretchRoom : containingWidth;
   const room = Math.max(0, of - box.marginLeft - box.marginRight);
-  return contentSizedWidth(box, ctx, keyword, room, containingWidth);
+  const width = contentSizedWidth(box, ctx, keyword, room, containingWidth);
+  if (!sized) return width;
+  return sizedBy(
+    sized,
+    width,
+    box.horizontalExtra,
+    box.style.boxSizing,
+    containingWidth,
+  );
 }
 
 /**
@@ -5044,8 +5165,18 @@ export function contentSizedWidth(
   // `stretch` is the room, whatever the content (CSS Sizing 4)
   if (size === 'stretch') return Math.max(0, available);
   // a height of its own through a ratio is its content's width at any size
-  const fromRatio = ratioWidth(box);
+  const fromRatio = ratioWidth(box, true);
   if (fromRatio !== null) return fromRatio;
+  // what is replaced has one size of its content, whatever width it has of
+  // its own: laid out to find it, `width: 40px; max-width: min-content` was
+  // as wide as its width
+  if (box.kind === 'replaced') {
+    const own = ownIntrinsic(box);
+    if (own && !(own.missing & 1)) {
+      resolveEdges(box, Number.isFinite(percentBase) ? percentBase : 0);
+      return own.width + box.horizontalExtra;
+    }
+  }
   // the content's sizes, whatever width the box has of its own: a
   // `min-width: max-content` beside a `width` is its content's widest,
   // and a probe of the box at no width answered the probe's width
@@ -5128,7 +5259,8 @@ function shrinkToFitWidth(
   // `stretch` fills the room its margins leave, as a block's `auto` does
   if (style.widthKeyword === 'stretch') {
     const room = available - offset - box.marginLeft - box.marginRight;
-    return clampWidth(box, Math.max(0, room), available, ctx);
+    const width = sizedWidth(box, Math.max(0, room), available);
+    return clampWidth(box, width, available, ctx);
   }
   // a width its height gives it through its ratio, as a block's
   const fromRatio = ratioWidth(box);
@@ -5141,7 +5273,11 @@ function shrinkToFitWidth(
   // of its own
   const keyword = style.widthKeyword;
   if (keyword !== null && keyword !== 'fit-content') {
-    const width = contentSizedWidth(box, ctx, keyword, available, available);
+    const width = sizedWidth(
+      box,
+      contentSizedWidth(box, ctx, keyword, available, available),
+      available,
+    );
     return clampWidth(box, transferredWidth(box, width), available, ctx);
   }
   const probe = new FloatContext(0, Infinity);
@@ -5154,7 +5290,7 @@ function shrinkToFitWidth(
   let probed = false;
   if (content === undefined) {
     probeWhole(box, ctx, probe);
-    content = intrinsicWidth(box);
+    content = intrinsicWidth(box, undefined, undefined, ctx);
     PREFERRED.set(box, content);
     probed = true;
   }
@@ -5202,6 +5338,7 @@ function shrinkToFitWidth(
   }
   if (width > room)
     width = Math.min(width, Math.max(box.intrinsicMinContent, room));
+  width = sizedWidth(box, width, available);
   return clampWidth(box, transferredWidth(box, width), available, ctx);
 }
 
@@ -5238,17 +5375,35 @@ function forgetOne(at: Box): void {
 }
 
 /**
+ * `forgetSizes` of a box that took other lengths in place, and that no layout
+ * has reached it since, as none has one just built, nor the block its lines
+ * are on where it is inline: `exactMinContent` adds up a box's last layout, its
+ * lines and its edges, which are of the lengths it had. A flex item's automatic
+ * minimum came to the word and the padding of the width before.
+ */
+export function forgetLayout(box: Box): void {
+  forgetSizes(box);
+  for (let at: Box | null = box; at; at = at.parent) {
+    at.layoutSerial = 0;
+    if (at.kind !== 'inline') break;
+  }
+}
+
+/**
  * `forgetSizes` of all a box holds as well, and of the boxes around it up
  * to one a call before it reached, whose own way up was gone over then:
  * for a run of blocks set again, whose text may be in an inline-block's or
  * a table's cell (`HtmlViewNode._takeFaces`), where one call for each would
- * go over the document's root as many times.
+ * go over the document's root as many times. As in `forgetLayout`, no layout
+ * has reached what it holds since: its lines are in the face before.
  */
 export function forgetSizesIn(box: Box, up: Set<Box>): void {
+  box.layoutSerial = 0;
   const stack: Box[] = [...box.children];
   while (stack.length) {
     const at = stack.pop()!;
     forgetOne(at);
+    at.layoutSerial = 0;
     for (const child of at.children) stack.push(child);
   }
   for (let at: Box | null = box; at && !up.has(at); at = at.parent) {
@@ -5387,7 +5542,9 @@ function exactContribution(
     (child.layoutSerial === 0 && child.kind !== 'replaced') ||
     !lengthEdges(style) ||
     style.widthKeyword !== null ||
+    style.widthSize !== null ||
     style.minWidthKeyword !== null ||
+    style.minWidthSize !== null ||
     style.maxWidthKeyword !== null ||
     style.aspectRatio !== null ||
     style.lineClamp !== null ||
@@ -5430,6 +5587,46 @@ function itemAtNarrowest(
   ctx: LayoutContext | null,
   content: () => number | null,
 ): number | null {
+  return itemAt(child, along, ctx, content, null);
+}
+
+/**
+ * What an item gives its flex box's max-content width, by the rule that
+ * gives its min-content width (`itemAtNarrowest`) with its content at its
+ * widest in place of its narrowest, and nothing of a flex fraction: `flex:
+ * 2 1 40px` beside `flex: 1 1 40px` comes to their contents side by side,
+ * whatever 9.9.1 has them do. Its automatic minimum is its content at its
+ * narrowest all the same. And along a row a basis has its say whether the
+ * row wraps or not, since all its items are on one line at its widest.
+ */
+function itemAtWidest(child: Box, along: boolean, ctx: LayoutContext): number {
+  return itemAt(
+    child,
+    along,
+    ctx,
+    () => narrowestOf(child, ctx),
+    () => widestOf(child, ctx),
+  )!;
+}
+
+/**
+ * What an item gives its flex box, by the rule `itemAtNarrowest` and
+ * `itemAtWidest` set out: a size, which a basis then has its say over, within
+ * its limits. What a basis says is the size the item's line starts it at,
+ * which is no less than its automatic minimum, and that only a basis under
+ * what the item comes to can reach, or one over what a percentage squeezed
+ * away. Where nothing can reach it, it is not asked for: at its widest it is
+ * the one question here that asks for an item's narrowest.
+ */
+function itemAt(
+  child: Box,
+  along: boolean,
+  ctx: LayoutContext | null,
+  /** Its content at its narrowest. */
+  content: () => number | null,
+  /** Its content at its widest, where that is what is asked about. */
+  widest: (() => number) | null,
+): number | null {
   const style = child.style;
   // the content, the once: asked for twice at every level, a deep document
   // would ask 2^depth times
@@ -5438,54 +5635,132 @@ function itemAtNarrowest(
     known === undefined ? (known = content()) : known;
   const edges = extraInNoRoom(child);
   const extra = style.boxSizing === 'border-box' ? 0 : edges;
-  const ofContent = (size: ContentSize | null): number | null => {
-    if (size === null || size === 'stretch' || ctx === null) return null;
-    const width = contentSizedWidth(child, ctx, size, 0, 0);
-    forgetAround(child);
-    return width;
-  };
-  const stated =
-    ofContent(style.widthKeyword) ??
-    (typeof style.width === 'number'
-      ? Math.max(style.width + extra, edges)
-      : null);
-  let size = stated ?? least();
-  if (size === null) return null;
   // what is replaced may be as narrow as a percentage of nothing lets it be
-  // (CSS Sizing 3, 5.2.2), which is before a basis has its say
-  if (child.kind === 'replaced' && typeof style.maxWidth === 'object') {
-    size = edges;
-  }
-  const basis = along ? lengthBasis(style.flexBasis) : null;
-  if (basis !== null) {
-    const base = Math.max(basis + extra, edges);
-    if (style.flexGrow === 0) size = Math.min(size, base);
-    if (style.flexShrink === 0) size = Math.max(size, base);
-  }
+  // (CSS Sizing 3, 5.2.2), and then its content has no size at all, whatever
+  // asks for one: only a least width of a length holds it
+  const compressed =
+    !widest &&
+    child.kind === 'replaced' &&
+    (typeof style.maxWidth === 'object' || typeof style.width === 'object');
+  const ofContent = (
+    size: ContentSize | null,
+    sized: SizeOf | null,
+    squeezed = compressed,
+  ): number | null => {
+    if (size === null || size === 'stretch' || ctx === null) return null;
+    if (squeezed) return edges;
+    // `fit-content` at its widest has all the room it wants, and needs
+    // only the one size of its content
+    const width = widest
+      ? contentSizedWidth(
+          child,
+          ctx,
+          size === 'fit-content' ? 'max-content' : size,
+          Infinity,
+          0,
+        )
+      : contentSizedWidth(child, ctx, size, 0, 0);
+    forgetAround(child);
+    const through = transferredWidth(child, width);
+    return sized
+      ? sizedBy(sized, through, edges, style.boxSizing, NaN)
+      : through;
+  };
+  // what its ratio makes of a height of its own is its size too, as the
+  // size of its content, and no narrower than its content for that, unless
+  // it may be (`ratioMinimum`), with its edges as it is measured with them
+  if (style.aspectRatio !== null) resolveEdges(child, 0);
+  const own = typeof style.width === 'number';
+  const through = own ? null : ratioWidth(child, true);
+  const specified =
+    ofContent(style.widthKeyword, style.widthSize) ??
+    (own ? Math.max((style.width as number) + extra, edges) : null);
+  const stated = specified ?? through;
   const most = Math.min(
     typeof style.maxWidth === 'number' ? style.maxWidth + extra : Infinity,
-    ofContent(style.maxWidthKeyword) ?? Infinity,
+    ofContent(style.maxWidthKeyword, style.maxWidthSize, false) ?? Infinity,
   );
+  const basis = along ? lengthBasis(style) : null;
+  const base = basis === null ? NaN : Math.max(basis + extra, edges);
+  // what may neither grow nor shrink is its basis, and no content says more
+  const fixed = basis !== null && !style.flexGrow && !style.flexShrink;
+  let size = stated ?? (fixed ? Infinity : widest ? widest() : least());
+  if (size === null) return null;
+  // what a `calc-size()` of `auto` makes of its content
+  if (stated === null && !fixed) size = sizedWidth(child, size, NaN);
+  // which is before a basis has its say, as what a ratio makes of its least
+  // and greatest heights is
+  size = compressed ? edges : own ? size : transferredWidth(child, size);
+  const held = heldAtItsContent(style);
+  if (through !== null && held) {
+    const narrowest = least();
+    if (narrowest === null) return null;
+    size = Math.max(size, narrowest);
+  }
+  const before = size;
+  if (basis !== null) {
+    let start = base;
+    const squeezed = !style.flexShrink && compressed && base > size;
+    if (held && ((!style.flexGrow && base < size) || squeezed)) {
+      // what is known to be no wider than its basis at its narrowest has no
+      // say here, and at its widest that leaves it unasked
+      const narrowest =
+        child.kind === 'replaced'
+          ? replacedLeast(child, Infinity)
+          : widest && ctx?.fonts && narrowerThan(child, base, ctx.fonts)
+            ? base
+            : least();
+      if (narrowest === null) return null;
+      start = Math.max(
+        base,
+        Math.min(
+          transferredWidth(child, Math.max(narrowest, through ?? 0)),
+          specified ?? Infinity,
+          most,
+        ),
+      );
+    } else if (squeezed) {
+      start = Math.max(
+        base,
+        ofContent(style.minWidthKeyword, style.minWidthSize, false) ?? 0,
+      );
+    }
+    if (!style.flexGrow) size = Math.min(size, start);
+    if (!style.flexShrink) size = Math.max(size, start);
+  }
+  const table =
+    child.kind === 'table' &&
+    (!widest || size < before || stated !== null || most < size);
   size = Math.min(size, most);
   let floor = Math.max(
     edges,
     style.minWidth === AUTO ? 0 : resolve(style.minWidth, 0) + extra,
-    ofContent(style.minWidthKeyword) ?? 0,
+    ofContent(style.minWidthKeyword, style.minWidthSize) ?? 0,
   );
-  if ((basis !== null && heldAtItsContent(style)) || child.kind === 'table') {
+  if (table) {
     const narrowest = least();
     if (narrowest === null) return null;
-    floor = Math.max(
-      floor,
-      child.kind === 'table'
-        ? narrowest
-        : Math.min(narrowest, stated ?? Infinity, most),
-    );
+    floor = Math.max(floor, narrowest);
   }
   return (
     Math.max(size, floor) +
     edge(style.marginLeft, 0) +
     edge(style.marginRight, 0)
+  );
+}
+
+/**
+ * Whether a laid-out box is no wider than a width at its narrowest, as what
+ * its lines hold says with no layout of it (`wordBound`, an upper bound of
+ * that): laid out at no width, an item with a basis under its content was a
+ * layout more of it and all it holds for an answer that changed nothing.
+ */
+function narrowerThan(box: Box, width: number, fonts: FontsLike): boolean {
+  if (box.layoutSerial === 0) return false;
+  const edges = extraInNoRoom(box);
+  return (
+    wordBound(box, fonts, false, true) + edges <= width ||
+    wordBound(box, fonts, true, true) + edges <= width
   );
 }
 
@@ -5496,9 +5771,11 @@ function heldAtItsContent(style: ComputedStyle): boolean {
   );
 }
 
-/** A flex basis that is a length: not `auto` or `content`, which its content
- *  or its width answers, nor a percentage, even of a length added to it. */
-function lengthBasis(basis: ComputedStyle['flexBasis']): number | null {
+/** A flex basis that is a length, or the width of its own a basis of `auto`
+ *  takes: not `content`, which its content answers, nor a percentage, even of
+ *  a length added to it. */
+function lengthBasis(style: ComputedStyle): number | null {
+  const basis = style.flexBasis === AUTO ? style.width : style.flexBasis;
   return typeof basis === 'number' ? basis : null;
 }
 
@@ -5536,9 +5813,7 @@ function extraInNoRoom(box: Box): number {
  * in `flex.ts`).
  */
 function narrowestOf(child: Box, ctx: LayoutContext): number {
-  if (child.kind === 'replaced') {
-    return replacedMinimum(child, 0) ?? child.width;
-  }
+  if (child.kind === 'replaced') return replacedLeast(child, 0);
   if (child.intrinsicMinContent >= 0) return child.intrinsicMinContent;
   let width: number;
   if (flexItems(child) || laidInNoRoom(child)) {
@@ -5559,6 +5834,124 @@ function narrowestOf(child: Box, ctx: LayoutContext): number {
   return width;
 }
 
+/**
+ * What a flex item's content comes to at its widest, its border box's, for a
+ * walk of a max-content probe, which what the layout before it made of the
+ * item may not say: one with a basis of a length was laid out at that.
+ *
+ * Its flex box's layout at no width limit has most of them already, where
+ * it measured an item whose basis is its content (`MAX_CONTENT`). One that
+ * is a flex box itself is asked of its items, with no layout of it, but for
+ * a column that wraps, whose lines a layout says. Only the rest is laid out
+ * to find, and kept for the item's life, as its narrowest is.
+ */
+function widestOf(child: Box, ctx: LayoutContext): number {
+  if (child.kind === 'replaced') {
+    // not kept: its image, loading, may change it
+    layoutSubtree(child, ctx, Infinity);
+    forgetAround(child);
+    return child.width;
+  }
+  if (child.intrinsicMaxContent >= 0) return child.intrinsicMaxContent;
+  const measured = measuredMaxContent(child);
+  let width: number;
+  if (measured !== undefined) width = measured + extraInNoRoom(child);
+  else if (flexItems(child) && !wrapsDown(child.style)) {
+    width =
+      intrinsicWidth(child, undefined, undefined, ctx) + extraInNoRoom(child);
+  } else {
+    width = measureIntrinsicWidth(child, ctx, Infinity, true);
+    forgetAround(child);
+  }
+  child.intrinsicMaxContent = width;
+  return width;
+}
+
+/**
+ * What a box a walk at its widest reads comes to, its border box's: one in a
+ * flow, or an item down a column, laid out with no limit on its width. An
+ * item is as its column measured it, since what it holds was laid out at that
+ * less a percentage of it. And a box at its greatest width, or what a
+ * `calc-size()` made of none, may have wrapped, which what it drew does not say
+ * (`softWrapped`).
+ */
+function widestAsLaid(
+  child: Box,
+  /** Its width as a walk reads it (`Stand.boxWidth`). */
+  width: number,
+  stood: Stand | undefined,
+  seen: { cut: boolean } | undefined,
+  ctx: LayoutContext,
+  item: boolean,
+): number {
+  if (child.kind === 'replaced') {
+    return item ? widestOf(child, ctx) : child.width;
+  }
+  // a float shrank to fit its content at its widest, which what it holds was
+  // then laid out inside, a percentage of it and all
+  if (child.isFloat && Number.isFinite(width)) return width;
+  const measured = item ? measuredMaxContent(child) : undefined;
+  if (measured !== undefined) return measured + extraInNoRoom(child);
+  if (seen && stood?.cut) seen.cut = true;
+  const drew =
+    (stood?.inner ?? intrinsicWidth(child, seen, undefined, ctx)) +
+    extraInNoRoom(child);
+  const style = child.style;
+  const limited =
+    (style.maxWidth !== 'none' ||
+      style.maxWidthKeyword !== null ||
+      style.widthSize !== null) &&
+    Number.isFinite(width) &&
+    (!flexItems(child) || wrapsDown(style));
+  if (!limited || drew >= width) return drew;
+  // a block that stood is where the last layout put it, in other lines
+  const laid = stood === undefined || stood.serial === child.layoutSerial;
+  return laid && softWrapped(child) ? width : widestOf(child, ctx);
+}
+
+/**
+ * Whether a box laid out at a width wrapped a line, which says its content is
+ * wider than that, with no more layout of it: a long article at its
+ * `max-width` is that wide, however wide its text would come to. Its own lines
+ * of text that wraps where no break is forced, and those of a block in it as
+ * wide as it is.
+ */
+function softWrapped(box: Box): boolean {
+  if (box.kind !== 'block') return false;
+  const lines = box.lines;
+  if (lines && lines.length > 1) {
+    return box.style.whiteSpace === 'normal' && !forcesBreak(box);
+  }
+  for (const child of box.children) {
+    if (child.kind !== 'block' || child.outOfFlow || child.isFloat) continue;
+    if (child.style.width === AUTO && softWrapped(child)) return true;
+  }
+  return false;
+}
+
+/** Whether an inline formatting context holds a forced line break. */
+function forcesBreak(box: Box): boolean {
+  for (const child of box.children) {
+    if (child.kind === 'break') return true;
+    if (child.kind === 'inline' && forcesBreak(child)) return true;
+  }
+  return false;
+}
+
+/** What is replaced comes to at its least (`replacedMinimum`), with the
+ *  edges it is measured with, whatever room it was last laid out in. */
+function replacedLeast(child: Box, room: number): number {
+  const least = replacedMinimum(child, room);
+  return least === null
+    ? child.width
+    : least - child.horizontalExtra + extraInNoRoom(child);
+}
+
+/** Whether a flex box is a column that wraps. */
+function wrapsDown(style: ComputedStyle): boolean {
+  return !style.flexDirection.startsWith('row') && style.flexWrap !== 'nowrap';
+}
+
 /** Whether a box was laid out as narrow as it comes, and can be read as it
  *  stands: at no width, or a table with no room, which is as wide as its
  *  columns there. Laid out again, a table in a table's cell was laid out once
@@ -5577,11 +5970,14 @@ function laidInNoRoom(box: Box): boolean {
 }
 
 /** Whether a box's items say how wide it is: a flex box's, and not those of
- *  one its containment or its frame answers for instead. */
+ *  one its containment or its frame answers for instead, or of a grid, which
+ *  has that `display` and is as wide as its tracks: tracks are of the last
+ *  layout, and one a probe's block stood for was the probe's at no limit. */
 function flexItems(box: Box): boolean {
   const display = box.style.display;
   return (
     (display === 'flex' || display === 'inline-flex') &&
+    !box.style.grid &&
     !contained(box, CONTAIN_WIDTH) &&
     !(framed.any && FRAMES.has(box))
   );
@@ -5626,8 +6022,10 @@ function hasWidths(
   return (
     !none(style.width) ||
     style.widthKeyword !== null ||
+    style.widthSize !== null ||
     (style.minWidth !== 0 && style.minWidth !== AUTO) ||
     style.minWidthKeyword !== null ||
+    style.minWidthSize !== null ||
     style.maxWidth !== 'none' ||
     style.maxWidthKeyword !== null
   );
@@ -5719,9 +6117,17 @@ function plainInline(box: Box, whiteSpace: string): boolean {
  * it with that block's edges. A table, a flex
  * box and anything else not laid out as blocks and lines is as wide as the
  * probe made it, which is more than it has to be; a box that is itself one
- * has no bound.
+ * has no bound. `any` says it may have been laid out narrower than that, at
+ * a width of any layout, where such a box is no bound: a percentage of
+ * that width, or a flex box inside it, may be under what it holds at its
+ * narrowest, and none is what it answers for them.
  */
-function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
+function wordBound(
+  box: Box,
+  fonts: FontsLike,
+  measured: boolean,
+  any = false,
+): number {
   if (box.kind !== 'block') return Infinity;
   if (framed.any && FRAMES.has(box)) return Infinity;
   let widest = 0;
@@ -5749,6 +6155,7 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
       }
       for (const placed of line.atomics) {
         const b = placed.box;
+        if (any && typeof b.style.width === 'object') return Infinity;
         widest = Math.max(widest, b.width + b.marginLeft + b.marginRight);
       }
     }
@@ -5763,10 +6170,16 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
     )
       continue;
     const edges = child.marginLeft + child.marginRight;
-    const inner =
-      child.kind === 'block' && child.style.width === AUTO
-        ? wordBound(child, fonts, measured) + child.horizontalExtra
-        : child.width;
+    const style = child.style;
+    const flow =
+      child.kind === 'block' &&
+      (any
+        ? !hasWidths(style, (width) => width === AUTO)
+        : style.width === AUTO);
+    if (any && !flow && typeof style.width !== 'number') return Infinity;
+    const inner = flow
+      ? wordBound(child, fonts, measured, any) + child.horizontalExtra
+      : child.width;
     widest = Math.max(widest, inner + edges);
   }
   return widest;
@@ -5783,19 +6196,24 @@ function wordBound(box: Box, fonts: FontsLike, measured: boolean): number {
  *
  * `seen.cut` is set where a line it measured was cut short by
  * `text-overflow`, in a box with a width to cut it at: the line is wider
- * than it was drawn, and the answer is of what was drawn.
+ * than it was drawn, and the answer is of what was drawn. So it is for an
+ * item a flex box shrank that has no lines to overflow it.
  *
  * `narrowest` says the box was laid out by the min-content probe
  * (`MIN_CONTENT_PROBE`), and the answer is its min-content width: the
  * probe lays a box out at no width, but one with a least width of its own
  * at that, and nothing in the layout tells the two apart. It is the probe's
  * context, since not all of that can be read from what it laid out
- * (`narrowestOf`).
+ * (`narrowestOf`). `atWidest` says the box was laid out with no limit on its
+ * width, and is the context of that: an item of a flex box is as wide as
+ * what its own flex basis makes of its content, which the layout does not
+ * give it (`widestOf`).
  */
 export function intrinsicWidth(
   box: Box,
   seen?: { cut: boolean },
   narrowest?: LayoutContext,
+  atWidest?: LayoutContext,
 ): number {
   // under size containment, as though it held nothing: the size
   // `contain-intrinsic-size` gives it, or none (CSS Containment 2, 3.2)
@@ -5848,6 +6266,12 @@ export function intrinsicWidth(
     (display === 'flex' || display === 'inline-flex') &&
     box.style.flexDirection.startsWith('row');
   const wraps = row && narrowest && box.style.flexWrap !== 'nowrap';
+  const flexAtWidest =
+    atWidest !== undefined && (display === 'flex' || display === 'inline-flex');
+  // the lines of a column that wraps, each as wide as its widest item
+  const across =
+    flexAtWidest && wrapsDown(box.style) ? columnLines(box) : undefined;
+  const reached = across ? new Map<Box, number>() : null;
   let total = 0;
   let items = 0;
   const lines = box.lines;
@@ -5857,8 +6281,22 @@ export function intrinsicWidth(
     const fonts = narrowest?.fonts;
     const whole = box.style.whiteSpace === 'nowrap';
     for (const line of lines) {
-      const width =
-        (fonts ? uncutLine(line, fonts, whole) : null) ?? line.width;
+      let width = (fonts ? uncutLine(line, fonts, whole) : null) ?? line.width;
+      // what is on a line at a percentage gave up width to it with no
+      // overflow to show for it, and at its narrowest is no width at all, but
+      // its own narrowest, which the line has none of
+      for (const { box: atomic } of line.atomics) {
+        if (typeof atomic.style.width !== 'object') continue;
+        if (seen) seen.cut = true;
+        if (!narrowest) continue;
+        const least = itemAtNarrowest(atomic, false, narrowest, () =>
+          narrowestOf(atomic, narrowest),
+        )!;
+        const laid = atomic.width + atomic.marginLeft + atomic.marginRight;
+        width = whole
+          ? width + Math.max(0, least - laid)
+          : Math.max(width, least);
+      }
       widest = Math.max(widest, width + (line.floats ?? 0));
     }
     widest = Math.max(widest, box.floatRow);
@@ -5882,7 +6320,7 @@ export function intrinsicWidth(
   let right = 0;
   /** In a multicol container, the widest box that spans its columns. */
   const spanning = box.style.columns !== 0 && box.kind === 'block';
-  let across = 0;
+  let spanned = 0;
   for (const child of box.children) {
     if (child.kind === 'text' || child.kind === 'break') continue;
     if (child.outOfFlow) continue;
@@ -5908,14 +6346,25 @@ export function intrinsicWidth(
     let contribution: number;
     // At its narrowest it is what its own narrowest makes it, which no
     // width it was laid out at says.
-    if (
-      narrowest &&
-      style.aspectRatio === null &&
-      style.visibility !== 'collapse'
-    ) {
+    if (narrowest && style.visibility !== 'collapse') {
       contribution = itemAtNarrowest(child, row && !wraps, narrowest, () =>
         narrowestOf(child, narrowest),
       )!;
+    } else if (atWidest && style.visibility !== 'collapse') {
+      // down a column laid out with no limit on its width each is laid out
+      // at its widest, as a block in a flow is, and is read as that
+      contribution =
+        flexAtWidest && (row || !sideBySide)
+          ? itemAtWidest(child, row, atWidest)
+          : itemAt(
+              child,
+              false,
+              atWidest,
+              () =>
+                child.kind === 'table' ? width : narrowestOf(child, atWidest),
+              () =>
+                widestAsLaid(child, width, stood, seen, atWidest, flexAtWidest),
+            )!;
       // A width of its own is what a child contributes, whatever its content
       // does past it (CSS Sizing 3 5.1); a percentage one is cyclic here and
       // counts as `auto`, so its content decides.
@@ -5946,33 +6395,42 @@ export function intrinsicWidth(
         drew = stood.inner;
         if (seen && stood.cut) seen.cut = true;
       } else drew = intrinsicWidth(child, seen, narrowest);
-      let inner = drew + child.horizontalExtra;
+      // and a `calc-size()` of what it drew, a percentage in it of nothing
+      let inner = sizedWidth(child, drew + child.horizontalExtra, NaN);
       if (typeof style.maxWidth === 'number') {
         inner = Math.min(inner, style.maxWidth + contentExtra(child));
       }
       if (min > inner) inner = min;
+      if (style.minWidthKeyword && style.minWidthSize) {
+        inner = Math.max(
+          inner,
+          sizedBy(
+            style.minWidthSize,
+            drew + child.horizontalExtra,
+            child.horizontalExtra,
+            style.boxSizing,
+            NaN,
+          ),
+        );
+      }
       contribution = Math.max(inner + margins, own);
     }
-    // laid out with no limit on its width an item is as wide as its content,
-    // whatever its flex basis, and one that may not shrink is no narrower
-    // than a length of it: a flex box was narrower at its widest than at its
-    // narrowest, and an item with room for the first was never asked for
-    // the second
-    if (row && sideBySide && style.flexShrink === 0) {
-      const basis = lengthBasis(style.flexBasis);
-      if (basis !== null) {
-        const extra = contentExtra(child);
-        const most =
-          typeof style.maxWidth === 'number'
-            ? style.maxWidth + extra
-            : Infinity;
-        const base = Math.max(basis + extra, child.horizontalExtra);
-        contribution = Math.max(contribution, Math.min(base, most) + margins);
-      }
+    // and an item that gave up width to its flex box with no line to show
+    // for it, as what is replaced, a size of its content and a ratio do, may
+    // be wider than it was drawn too
+    if (
+      seen &&
+      (display === 'flex' || display === 'inline-flex') &&
+      (child.kind === 'replaced' ||
+        style.widthKeyword !== null ||
+        style.aspectRatio !== null)
+    ) {
+      seen.cut = true;
     }
+    reached?.set(child, contribution);
     if (spanning && spansColumns(child)) {
       // across the columns, and no part of what a column is as wide as
-      across = Math.max(across, contribution);
+      spanned = Math.max(spanned, contribution);
       continue;
     }
     if (row && !wraps) {
@@ -6000,6 +6458,18 @@ export function intrinsicWidth(
     const gap = gapOf(box.style.columnGap, NaN);
     widest = Math.max(widest, total + gap * (items - 1));
   }
+  if (flexAtWidest && row && box.style.flexWrap !== 'nowrap') {
+    widest = Math.max(widest, widestInALine(box, atWidest));
+  }
+  if (across && reached) {
+    let lined = gapOf(box.style.columnGap, NaN) * (across.length - 1);
+    for (const line of across) {
+      let most = 0;
+      for (const item of line) most = Math.max(most, reached.get(item) ?? 0);
+      lined += most;
+    }
+    widest = Math.max(widest, lined);
+  }
   // A multicol container is as wide as its columns side by side, each as
   // wide as its content or as `column-width` where that is wider, and the
   // gaps between them (as Blink measures one,
@@ -6011,7 +6481,34 @@ export function intrinsicWidth(
       : gapOf(box.style.columnGap, NaN);
     widest = Math.max(widest, box.style.columnWidth ?? 0);
     // and no narrower than a box that spans them
-    widest = Math.max(widest * count + gap * (count - 1), across);
+    widest = Math.max(widest * count + gap * (count - 1), spanned);
+  }
+  return widest;
+}
+
+/**
+ * How wide a row that wraps is at its narrowest, the least it is at its
+ * widest. Side by side its items may come to less than one comes to on a line
+ * of its own, where a basis has no say (`itemAtNarrowest`): beside a basis
+ * under its item, or a margin that takes room back. Only those can make it
+ * the widest, so nothing is asked of a box with neither.
+ */
+function widestInALine(box: Box, ctx: LayoutContext): number {
+  const short = box.children.some(
+    ({ style }) =>
+      (!style.flexGrow && typeof style.flexBasis === 'number') ||
+      edge(style.marginLeft, 0) < 0 ||
+      edge(style.marginRight, 0) < 0,
+  );
+  if (!short) return 0;
+  let widest = 0;
+  for (const child of box.children) {
+    if (child.kind === 'text' || child.kind === 'break') continue;
+    if (child.outOfFlow) continue;
+    const contribution = itemAtNarrowest(child, false, ctx, () =>
+      narrowestOf(child, ctx),
+    )!;
+    widest = Math.max(widest, contribution);
   }
   return widest;
 }
@@ -7561,10 +8058,21 @@ function positionedIn(
   }
   // what both offsets down and the margins leave of the containing block,
   // and NaN where it has no pair of them, or is aligned in what they leave
-  const fill =
+  const between =
     top !== null && bottom !== null && (!alignY || alignY.stretch)
       ? Math.max(0, cbHeight - top - bottom - box.marginTop - box.marginBottom)
       : NaN;
+  // and what a `calc-size()` of `auto` or `stretch` makes of that
+  const fill =
+    style.heightSize && style.height === AUTO && !Number.isNaN(between)
+      ? sizedBy(
+          style.heightSize,
+          between,
+          box.verticalExtra,
+          style.boxSizing,
+          cbHeight,
+        )
+      : between;
 
   // with neither offset on an axis, the box is where the flow would have
   // put it (CSS 2.1 10.3.7, 10.6.4): against its start edge, which is the
@@ -7618,7 +8126,12 @@ function positionedIn(
     const start = left ?? (right === null ? offset : 0);
     const room =
       cbWidth - start - (right ?? 0) - box.marginLeft - box.marginRight;
-    width = clampWidth(box, Math.max(0, room), cbWidth, ctx);
+    width = clampWidth(
+      box,
+      sizedWidth(box, Math.max(0, room), cbWidth),
+      cbWidth,
+      ctx,
+    );
   } else if (style.widthKeyword || ratioWidth(box) !== null) {
     // an intrinsic size, which both offsets do not stretch, or a height of
     // its own through its ratio
@@ -7651,7 +8164,12 @@ function positionedIn(
     // within its least and greatest width, which make it a width as one
     // set would, and the margins' rules run again with it (CSS 2.1 10.4) —
     // and those of its height, through a ratio (CSS Sizing 4, 5.1)
-    width = clampWidth(box, transferredWidth(box, stretched), cbWidth, ctx);
+    width = clampWidth(
+      box,
+      transferredWidth(box, sizedWidth(box, stretched, cbWidth)),
+      cbWidth,
+      ctx,
+    );
   } else {
     width = shrinkToFitWidth(box, ctx, cbWidth, offset);
   }
@@ -7740,6 +8258,7 @@ function positionedIn(
     right !== null &&
     (style.width !== AUTO ||
       style.widthKeyword !== null ||
+      style.widthSize !== null ||
       box.kind === 'replaced' ||
       width !== stretched)
   ) {
@@ -7844,6 +8363,14 @@ function positionedIn(
             : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+  if (containing.kind === 'inline') {
+    PLACED_IN_INLINE.set(box, {
+      top: box.y - box.marginTop - whole.y,
+      left: box.x - box.marginLeft - whole.x,
+      width: whole.width,
+      height: whole.height,
+    });
+  }
   // the rectangle its insets leave of its containing block, which it has
   // to fit in to be in no need of another position (CSS Anchor
   // Positioning 1, 6.5)
@@ -8227,8 +8754,9 @@ function paddingRectOf(
  * last. The box lays nothing out of its own — its fragments are on its
  * block's lines — so read as a box that does, it was a rectangle of no size
  * at the page's corner, and a tooltip under a positioned link came up
- * there. A box with no fragment at all stands where the box inside it
- * would have been in flow.
+ * there. A box with nothing of its own on a line stands where the box inside
+ * it would have been in flow: as high as a fragment there, with no width,
+ * and of no size at all where that is on no line.
  */
 function inlineContainingBlock(
   inline: Box,
@@ -8257,8 +8785,10 @@ function inlineContainingBlock(
     const at = box.staticPosition;
     const x = at ? at.from.x + at.x : 0;
     const y = at ? at.from.y + at.y : 0;
-    const height = face ? face.ascent + face.descent : 0;
-    return { x, y, width: 0, height };
+    const line = block?.lines?.find((l) => l.y <= y && y < l.y + l.height);
+    if (!line) return { x, y, width: 0, height: 0 };
+    const [top, bottom] = fragmentRow(line, inline, face, false);
+    return { x, y: top, width: 0, height: bottom - top };
   }
   const rtl = inline.style.direction === 'rtl';
   const start = rtl ? first.x + first.width : first.x;
@@ -8691,6 +9221,7 @@ export function translate(
   stays?: (box: Box) => boolean,
 ): void {
   if (!dx && !dy) return;
+  boxMoves += 1;
   box.x += dx;
   box.y += dy;
   // a list item's marker is placed in the same coordinates as its lines
@@ -9255,7 +9786,7 @@ export type ResolvedInset = number | 'auto' | null;
  * an `anchor()`, a `position-area` and a fallback included — but on an
  * axis both of whose insets are lengths, which may be over-constrained and
  * are then their computed values, a percentage resolved. Null for a box
- * that is not positioned, or is placed in an inline box.
+ * that is not positioned, or that no layout has placed.
  */
 export function resolvedInsets(
   box: Box,
@@ -9268,8 +9799,13 @@ export function resolvedInsets(
   const sides = [style.top, style.right, style.bottom, style.left];
   if (position === 'relative' || position === 'sticky') {
     const across = box.parent ? box.parent.contentWidth : 0;
+    // a percentage on an inline box stays as it was written, as Chrome
+    // answers it, and leaves the side opposite nothing to negate
+    const written = (len: Len) => box.kind === 'inline' && isPct(len);
     const set = sides.map((len, i) =>
-      resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
+      written(len)
+        ? null
+        : resolveOrNull(len, i % 2 ? across : box.percentHeightBase),
     );
     if (position === 'sticky') {
       return set.map((v, i) => (sides[i] === AUTO ? 'auto' : v));
@@ -9278,23 +9814,20 @@ export function resolvedInsets(
       if (v !== null) return v;
       // a percentage of an indefinite height is the computed value
       if (sides[i] !== AUTO) return null;
+      if (written(sides[(i + 2) % 4])) return 'auto';
       const opposite = set[(i + 2) % 4];
       return opposite === null ? 0 : -opposite;
     });
   }
   const containing = containingBlockFor(box);
-  if (!containing || containing.kind === 'inline') return null;
-  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
-  // where layout placed them, before a scroll moved either: a scroll
-  // moves a box back by its offset, which is added back
-  const [bx, by] = scrolledBy(box);
-  const [cx, cy] = containing.parent ? scrolledBy(containing) : [0, 0];
-  const top = box.y + by - box.marginTop - (cb.y + cy);
-  const left = box.x + bx - box.marginLeft - (cb.x + cx);
+  const placed =
+    containing && placedIn(box, containing, viewportWidth, viewportHeight);
+  if (!placed) return null;
+  const { top, left, width, height } = placed;
   const used = [
     top,
-    cb.width - left - box.marginLeft - box.width - box.marginRight,
-    cb.height - top - box.marginTop - box.height - box.marginBottom,
+    width - left - box.marginLeft - box.width - box.marginRight,
+    height - top - box.marginTop - box.height - box.marginBottom,
     left,
   ];
   const anchored = style.anchorInsets;
@@ -9306,11 +9839,92 @@ export function resolvedInsets(
   return used.map((v, i) => {
     const axis = i % 2;
     if (!lengths(axis)) return v;
-    return resolveOrNull(sides[i], axis ? cb.width : cb.height) ?? v;
+    return resolveOrNull(sides[i], axis ? width : height) ?? v;
   });
 }
 
+/** Where an absolute box's margin box is in its containing block, and how
+ *  large that is. */
+interface PlacedRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+/** What `positionedIn` placed a box against where that is an inline box: no
+ *  box keeps an inline box's rectangle, and its lines stay where they are as
+ *  an offset moves the box. What moves the two after this moves them
+ *  together. Only `placedIn` asks. */
+const PLACED_IN_INLINE = new WeakMap<Box, PlacedRect>();
+
+/** Where layout placed a box in its containing block, for
+ *  `resolvedInsets`. Undefined where no layout has placed it. */
+function placedIn(
+  box: Box,
+  containing: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): PlacedRect | undefined {
+  if (containing.kind === 'inline') return PLACED_IN_INLINE.get(box);
+  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
+  // where layout placed them, before a scroll moved either: a scroll
+  // moves a box back by its offset, which is added back
+  const [bx, by] = scrolledBy(box);
+  const [cx, cy] = containing.parent ? scrolledBy(containing) : [0, 0];
+  return {
+    top: box.y + by - box.marginTop - (cb.y + cy),
+    left: box.x + bx - box.marginLeft - (cb.x + cx),
+    width: cb.width,
+    height: cb.height,
+  };
+}
+
 const INSET_SIDES = ['top', 'right', 'bottom', 'left'] as const;
+
+/**
+ * The margins layout gave a box, top first, as `getComputedStyle` answers
+ * them: each resolved against what the box was laid out in, which is its
+ * containing block and not its parent, or a track of a grid (`resolveEdges`).
+ * The ones a box does not hold are worked out here: the `auto` margins of a
+ * block in the flow (`AUTO_ROOM`) and of a flex item (`FLEX_ROOM`), and a
+ * bottom margin something the box holds hangs from, which `marginBottom`
+ * carries for the next sibling to collapse with, and which only a block in a
+ * flow has.
+ */
+export function usedMargins(box: Box): [number, number, number, number] {
+  const style = box.style;
+  const bottom =
+    box.bottomStrut && box.parent
+      ? resolve(style.marginBottom, box.parent.contentWidth)
+      : box.marginBottom;
+  const flexed = FLEX_ROOM.get(box);
+  if (flexed) {
+    return [
+      style.marginTop === AUTO ? flexed[0] : box.marginTop,
+      style.marginRight === AUTO ? flexed[1] : box.marginRight,
+      style.marginBottom === AUTO ? flexed[2] : bottom,
+      style.marginLeft === AUTO ? flexed[3] : box.marginLeft,
+    ];
+  }
+  const room = AUTO_ROOM.get(box);
+  if (room === undefined) {
+    return [box.marginTop, box.marginRight, bottom, box.marginLeft];
+  }
+  const leftAuto = style.marginLeft === AUTO;
+  const rightAuto = style.marginRight === AUTO;
+  const rtl = box.parent?.style.direction === 'rtl';
+  // shared where there is room, and a box too wide overflows its end, which
+  // is the margin there to take up
+  const share = (end: boolean) =>
+    room >= 0 ? (leftAuto && rightAuto ? room / 2 : room) : end ? room : 0;
+  return [
+    box.marginTop,
+    rightAuto ? share(!rtl) : box.marginRight,
+    bottom,
+    leftAuto ? share(rtl) : box.marginLeft,
+  ];
+}
 
 /**
  * Where `position: sticky` puts a box at rest (CSS Positioned Layout 3,

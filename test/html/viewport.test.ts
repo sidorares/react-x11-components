@@ -21,7 +21,15 @@ import {
   treeOf,
   view,
 } from './harness.js';
-import { boxLayoutsMade } from '../../src/html/layout/block.js';
+import {
+  boxLayoutsMade,
+  boxesMoved,
+  moveTo,
+} from '../../src/html/layout/block.js';
+import type { Box } from '../../src/html/layout/boxes.js';
+import { resizeClock } from '../../src/html/node.js';
+import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
@@ -1461,11 +1469,7 @@ test('vw lengths taken in place at a new width lay out as a build does, over gen
   // item's max-content, a grid item's — has to be forgotten where it moves
   // (`forgetSizes`): each document is resized, and laid out again as a
   // build of all of it at the same width lays it out
-  let seed = 7;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(7);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
   const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
   let ids = 0;
@@ -1595,6 +1599,75 @@ test('a block a flex box around it asks about at one width is laid out once at i
   assert.ok(laid < 45, `${laid} boxes laid out, of 20 rows`);
 });
 
+test('what a layout keeps is not moved by the flex boxes around it', async () => {
+  // a box laid out at the origin moved what it keeps there and out again,
+  // one flex box inside another: a mail page's strip of senders, in some
+  // twenty of them, was walked some 60 times a step of a window's edge, to
+  // land where it was. Laid out where it stands, what stays moves nothing
+  const rows = Array.from(
+    { length: 100 },
+    (_, i) => `<div class="row" id="r${i}"><b>row</b> ${i}</div>`,
+  ).join('');
+  const nested = (held: string, depth: number): string =>
+    depth === 0
+      ? held
+      : `<div style="display:flex;flex-direction:column;padding:1px">${nested(held, depth - 1)}</div>`;
+  const page = (row: string) =>
+    `<style>body{margin:0}</style>${nested(`<div style="display:flex">${row}</div>`, 6)}`;
+  const side = `<div id="side" style="flex:none;width:120px">${rows}</div>`;
+  const pane = '<div id="pane" style="flex:1">the rest</div>';
+
+  const beside = await renderScrolled(page(side + pane), 300, 400);
+  const x = boxOf(beside.el, 'r30').x;
+  const moved = boxesMoved();
+  await beside.resize(300, 380);
+  const walked = boxesMoved() - moved;
+  assert.ok(
+    boxOf(beside.el, 'pane').width < 270,
+    'the pane took the new width',
+  );
+  assert.strictEqual(boxOf(beside.el, 'r30').x, x);
+  assert.ok(walked < 50, `${walked} boxes moved, of a column that stayed`);
+  await cleanup();
+
+  // and what does go elsewhere goes the once, at the box that moves it
+  const after = await renderScrolled(page(pane + side), 300, 400);
+  const from = boxOf(after.el, 'r30').x;
+  const count = boxesMoved();
+  await after.resize(300, 380);
+  assert.strictEqual(boxOf(after.el, 'r30').x, from - 20);
+  const once = boxesMoved() - count;
+  assert.ok(once < 350, `${once} boxes moved, of 100 rows of three boxes`);
+});
+
+test('a layout that stops says where from the box it lays out, wherever a probe left that box', async (t) => {
+  // a box stands where its last layout left it, and a probe of what is
+  // around it leaves it anywhere: at no width a column is a word to a line,
+  // and what is under it stands thousands of pixels down. A drag's layout
+  // stops a viewport past what can be seen, and read from there it would
+  // set aside all of what is seen
+  holdClock(t, resizeClock);
+  const rows = Array.from(
+    { length: 60 },
+    (_, i) => `<div class="row" id="r${i}">row ${i}</div>`,
+  ).join('');
+  const source =
+    '<style>body{margin:0}</style>' +
+    '<div style="display:flex;flex-direction:column"><p>a line</p>' +
+    `<div id="under">${rows}</div></div>`;
+  const { el, resize } = await renderScrolled(source, 200, 400);
+  await resize(200, 396);
+  assert.strictEqual(boxOf(el, 'r2').width, 396);
+  const under = boxOf(el, 'under') as Box;
+  moveTo(under, under.x, 5000);
+  await resize(200, 392);
+  assert.strictEqual(
+    boxOf(el, 'r2').width,
+    392,
+    'what can be seen is laid out',
+  );
+});
+
 test('fluid type in vw taken in place at a new width sets its text as a build does, over generated documents', async () => {
   // Bootstrap's headings are `calc(1.3rem + .6vw)`, and every step of a
   // drag built the boxes for them: a text's size, its lines' height and an
@@ -1602,11 +1675,7 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
   // in it that inherits the size, on a `::before` — and the layout that
   // follows sets the runs at them. Each document is resized, and held to a
   // build of all of it at the same width, box for box and line for line.
-  let seed = 11;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(11);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
   const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
   let ids = 0;
@@ -1661,16 +1730,102 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
           b.y,
           b.width,
           b.height,
-          linesOf(el, `e${i}`).map((l) => [l.x, l.y, l.width, l.height]),
+          ...linesOf(el, `e${i}`).flatMap((l) => [l.x, l.y, l.width, l.height]),
         ];
       });
     const resized = laid();
     (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
     el.layoutNow();
-    assert.deepStrictEqual(resized, laid(), `document ${doc}: ${source}`);
+    // to a millionth of a pixel, as a layout's own places are compared: a
+    // box is laid out where it stands, and sums come out in other last bits
+    const whole = laid();
+    assert.ok(
+      resized.every(
+        (box, i) =>
+          box.length === whole[i].length &&
+          box.every((v, j) => Math.abs(v - whole[i][j]) < 1e-6),
+      ),
+      `document ${doc}: ${source}`,
+    );
     await cleanup();
   }
   assert.ok(inPlace >= 8, `${inPlace} of 24 restyled in place`);
+});
+
+test('a rem taken in place at a new width is the root font size, and not that of the last element at the top of a fragment', async () => {
+  // Each top-level element of a fragment was taken for the root as it was
+  // styled, and a restyle in place starts where the last build ended: the
+  // last of them was what every rem measured from, here 3vw
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style><div id="base">text</div>' +
+      '<div><div id="t" style="font-size:calc(.8rem + .6vw)">lorem</div></div>' +
+      '<div style="font-size:3vw"></div>',
+    300,
+    400,
+  );
+  const px = (id: string) =>
+    parseFloat(
+      el.computedStyle(findById(el.document, id)!)?.['font-size'] ?? '',
+    );
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-3;
+  const initial = px('base');
+  assert.ok(near(px('t'), 0.8 * initial + 2.4), `${px('t')}`);
+  const tree = treeOf(el);
+  await resize(300, 352);
+  assert.ok(treeOf(el) === tree, 'in place');
+  assert.ok(near(px('t'), 0.8 * initial + 2.112), `${px('t')}`);
+});
+
+test('a grid in a box that shrinks to fit stays as narrow as its longest word when what is beside it moves in place', async () => {
+  // Chrome, Firefox and Safari set these two words on two lines at both
+  // widths. The box's narrowest is a probe, in which the grid stands for what
+  // it came to in the last, and a walk of it read the tracks of the last
+  // layout it had, which was the probe at no limit before it: one line
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style><div style="position:relative">' +
+      '<div style="position:absolute">' +
+      '<div id="b" style="position:absolute;left:20px">' +
+      '<div id="g" style="display:grid">consectetur ipsum</div>' +
+      '<div style="height:1vw"></div>' +
+      '</div></div></div>',
+    300,
+    400,
+  );
+  const width = boxOf(el, 'b').width;
+  assert.strictEqual(linesOf(el, 'g').length, 2);
+  const tree = treeOf(el);
+  await resize(300, 352);
+  assert.ok(treeOf(el) === tree, 'in place');
+  assert.strictEqual(boxOf(el, 'b').width, width);
+  assert.strictEqual(linesOf(el, 'g').length, 2);
+});
+
+test('a flex item comes to its automatic minimum of the lengths a new width gives what it holds, taken in place', async () => {
+  // A flex item's minimum is added up from the last layout of what it holds
+  // (`exactMinContent`), whose lines and edges were of the lengths before: at
+  // 352 the item was the word and the padding of 400. Chrome, Firefox and
+  // Safari have these items at the word and the padding of 352
+  const words = 'sit amet ipsum dolor lorem consectetur '.repeat(12);
+  for (const held of [
+    '<div style="padding:0 1vw">consectetur</div>',
+    '<div style="font-size:3vw">consectetur</div>',
+    '<div><span style="font-size:3vw">consectetur</span></div>',
+  ]) {
+    const { el, resize } = await renderScrolled(
+      '<style>body{margin:0}</style><div style="display:flex">' +
+        `${words}<div id="item" style="width:105px">${held}</div>${words}</div>`,
+      300,
+      400,
+    );
+    const tree = treeOf(el);
+    await resize(300, 352);
+    assert.ok(treeOf(el) === tree, 'in place');
+    const width = boxOf(el, 'item').width;
+    (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
+    el.layoutNow();
+    assert.strictEqual(width, boxOf(el, 'item').width, held);
+    await cleanup();
+  }
 });
 
 test('a root font size in vw moves every rem and rlh with it at a new width, under parents whose styles stay, in place', async () => {
