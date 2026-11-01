@@ -10704,14 +10704,13 @@ export class HtmlViewNode extends Node {
     return (keys[pseudo] ??= `html:${++this._spriteSeq}`);
   }
 
-  /** An element's `::before` or `::after` box: a child of the element's
-   *  first box, or of an anonymous box the fix-up made in it. */
+  /** An element's `::before` or `::after` box (`generatedIn`). */
   private _pseudoBoxOf(
     tree: BoxTree,
     el: Element,
     which: 'before' | 'after' | 'details-content',
   ): Box | null {
-    return generatedIn(this._firstBoxesOf(tree).get(el), el, which);
+    return generatedIn(this._firstBoxesOf(tree), el, which);
   }
 
   /** Whether a box is a lifted one, or inside one. */
@@ -11134,8 +11133,8 @@ export class HtmlViewNode extends Node {
       // inside a root, whose own change takes in what it holds
       if (apart.has(el)) continue;
       for (const [which] of GENERATED_BITS) {
-        const was = generatedIn(beforeBoxes.get(el), el, which);
-        const now = generatedIn(afterBoxes.get(el), el, which);
+        const was = generatedIn(beforeBoxes, el, which);
+        const now = generatedIn(afterBoxes, el, which);
         if (!was && !now) continue;
         if (!was || !now) return null;
         if (was.style === now.style || sameValue(was.style, now.style)) {
@@ -19098,14 +19097,22 @@ function brokenAround(box: Box): boolean {
   return box.kind === 'inline' && box.cut !== 0;
 }
 
-/** An element's `::before` or `::after` box, in its first box or the
- *  anonymous boxes in it. */
+/** An element's `::before` or `::after` box: a child of the element's first
+ *  box in `first`, or of an anonymous box the fix-up made in it — of the box
+ *  around it, for a `display: contents` element, which has none and hands
+ *  that box what it generates. */
 function generatedIn(
-  box: Box | undefined,
+  first: ReadonlyMap<Element, Box>,
   el: Element,
   which: 'before' | 'after' | 'details-content',
 ): Box | null {
-  if (!box || box.el !== el) return null;
+  let box = first.get(el);
+  if (!box && GENERATED_ON.has(el)) {
+    for (let at = flatParentOf(el); at && !box; at = flatParentOf(at)) {
+      box = first.get(at);
+    }
+  }
+  if (!box) return null;
   const stack = [...box.children];
   while (stack.length) {
     const at = stack.pop()!;

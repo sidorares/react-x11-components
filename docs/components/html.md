@@ -2821,8 +2821,8 @@ Blink lays one out, or where it clamps its lines vertically a block of its
 own formatting context), and
 `display: grid` as documents write it (below), and `display: contents`,
 which makes no box and hands its children, its `::before` and its
-`::after` to its parent's, in its style — a replaced element set so is not
-rendered. An
+`::after` to its parent's, in its style, each an item of a flex box or a
+grid around it — a replaced element set so is not rendered. An
 inline-block sits on its last line's baseline and an inline-table on its
 first row's, each on its bottom margin edge where it clips what overflows
 it; an inline flex box sits on its first item's, clipping or not, and a

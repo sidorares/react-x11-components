@@ -1171,6 +1171,8 @@ test('all sets every field a property does, and not direction, unicode-bidi or a
     'direction',
     // no property: the zooms from the root down, which `all` cannot undo
     'effectiveZoom',
+    // no property: worked out after the declarations, from the parent
+    'itemsThrough',
     'lineThrough',
     'lineThroughStyle',
     'lineThroughThickness',

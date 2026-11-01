@@ -87,6 +87,8 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .o { position: relative; top: 3px; left: 2px }
 .p { transform: translate(5px, 2px) }
 .q { overflow: hidden; height: 20px }
+.cx::before { content: "< " }
+.cx::after { content: " >" }
 .cr { counter-reset: fig }
 .cs { counter-increment: fig }
 .ct::before { content: counter(fig) ". " }
@@ -1647,6 +1649,125 @@ metric(
     // and most of them spliced where the document ends
     const ends = buildsAtEnd() - endsAtStart;
     assert.ok(ends > subtrees / 2, `${ends} of them at the document's end`);
+  },
+);
+
+metric(
+  'what changes around a display: contents element holds its ::before and ::after to a new document',
+  async () => {
+    // Each is an item of the flex or grid box around the element, which is
+    // what a change to the element builds, what a tail of that box holds,
+    // and what a change to its `display` has to take them out of: a style
+    // kept across that, here, says so where a build with every style kept
+    // would not.
+    const sheet =
+      '<style>body { margin: 0; font-size: 14px }' +
+      ' .flex { display: flex; gap: 4px } .grid { display: grid; gap: 4px }' +
+      ' .box { display: -webkit-box } .c { display: contents }' +
+      ' .b::before { content: "< " } .b::after { content: " >" }</style>';
+    for (const display of ['flex', 'grid', 'box']) {
+      const { node, result } = await render(
+        `<!doctype html><html><head>${sheet}</head><body><p>above</p>` +
+          `<div id="row" class="${display}"><p id="first">first</p>` +
+          '<div id="c" class="c b"><p>held</p></div><p id="z">last</p></div>' +
+          '<p>below</p></body></html>',
+        320,
+      );
+      const el = view(node);
+      await act();
+      const internals = el as unknown as Record<
+        string,
+        (...a: unknown[]) => unknown
+      > & { _tree: BoxTree };
+      const all = () => elementsUnder(el.document as unknown as Element);
+      const byId = (id: string): Element =>
+        all().find((e) => e.attribs.id === id)!;
+      const row = byId('row');
+      const c = byId('c');
+      const z = byId('z');
+      const subtreeBuild = internals._subtreeBuild;
+      let subtrees = 0;
+      const step = async (what: string, changes: HtmlChange[]) => {
+        let built: unknown;
+        internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+          built = subtreeBuild.apply(this, a);
+          return built;
+        };
+        el.touchDocument(changes);
+        await act();
+        delete internals._subtreeBuild;
+        if (built) subtrees += 1;
+        const kept = treeLines(internals._tree);
+        const body = all().find((e) => e.name === 'body')!;
+        const fresh = await render(
+          `<!doctype html><html><head>${sheet}</head>` +
+            `${DomUtils.getOuterHTML(body as never)}</html>`,
+          320,
+        );
+        await act();
+        const whole = treeLines(
+          (view(fresh.node) as unknown as { _tree: BoxTree })._tree,
+        );
+        fresh.result.unmount();
+        const at = kept.findIndex((line, i) => line !== whole[i]);
+        assert.ok(
+          at < 0 && kept.length === whole.length,
+          `${display}, ${what}: line ${at}\nkept  ${kept[at]}\nnew   ${whole[at]}`,
+        );
+      };
+      const classed = (target: Element, value: string): HtmlChange[] => {
+        const oldValue = target.attribs.class ?? null;
+        target.attribs.class = value;
+        return [
+          { type: 'attributes', target, attributeName: 'class', oldValue },
+        ];
+      };
+      await step('no generated boxes', classed(c, 'c'));
+      await step('generated boxes', classed(c, 'c b'));
+      await step('a box again', classed(c, 'b'));
+      await step('no box again', classed(c, 'c b'));
+      const put = createElement('p', {}, [createText('put')]);
+      appendChild(c, put);
+      await step('a child put in', [
+        {
+          type: 'childList',
+          target: c,
+          addedNodes: [put],
+          removedNodes: [],
+          previousSibling: c.children[0],
+          nextSibling: null,
+        },
+      ]);
+      removeNode(put as unknown as ChildNode);
+      await step('and taken out', [
+        {
+          type: 'childList',
+          target: c,
+          addedNodes: [],
+          removedNodes: [put],
+          previousSibling: c.children[0],
+          nextSibling: null,
+        },
+      ]);
+      const after = createElement('p', {}, [createText('after')]);
+      appendChild(row, after);
+      await step('a child at the end of the box', [
+        {
+          type: 'childList',
+          target: row,
+          addedNodes: [after],
+          removedNodes: [],
+          previousSibling: z,
+          nextSibling: null,
+        },
+      ]);
+      await step('the box a block', classed(row, ''));
+      await step('the box what it was', classed(row, display));
+      await step('the box the other kind', classed(row, 'grid'));
+      await step('and back', classed(row, display));
+      assert.ok(subtrees >= 3, `${display}: ${subtrees} built their subtrees`);
+      result.unmount();
+    }
   },
 );
 

@@ -1931,6 +1931,16 @@ shuts a control's picker goes through `pickerChanged`**, or the menu and
 box, which is how `holdsOpen` tells, so they go on the `<Select>` itself
 and never on a box around it.
 
+**A `display: contents` element's `::before` and `::after` are items of the
+flex or grid box around it**, as its children are. A pseudo-element is styled
+from no more than its element's style, whose `display` says `contents`, so the
+style says what is around it (`itemsThrough`, `holdsItems`), the shape Blink's
+has, and a `-webkit-box` hands nothing on, as it blockifies nothing in a
+browser. **Anything that looks for an element's generated box goes through
+`generatedIn`**, never down the element's own box, which such an element does
+not have: a read, `getAnimations()`, a lift and a frame's comparison each found
+none, and a frame that moved one repainted nothing.
+
 **A button's content is centred in whatever height the button comes to.**
 HTML's button layout (15.5.5) puts it in a box of its own, centred down the
 button, and `centreButton` (`layout/block.ts`) moves it there when the

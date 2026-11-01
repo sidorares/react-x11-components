@@ -113,6 +113,7 @@ import {
   animatedFields,
   applyDeclaration,
   blockify,
+  holdsItems,
   settleAlign,
   settleButton,
   settleContainer,
@@ -7276,8 +7277,9 @@ export class Cascade {
    * The style of an element's `::before` or `::after`, or null when it has
    * none: no rule reaches it, or the rules that do leave `content` at
    * `normal` or `none`, which make no box (CSS 2.1 12.2). It inherits from
-   * the element's own style, as a pseudo-element does, and a flex
-   * container's are flex items. Not shared: few elements have one, and where
+   * the element's own style, as a pseudo-element does, and a flex or a grid
+   * box's are items, as a `display: contents` element's in one are
+   * (`holdsItems`). Not shared: few elements have one, and where
    * a rule gives every element one — a clearfix — the style is the cost of
    * the box it makes.
    */
@@ -7370,7 +7372,7 @@ export class Cascade {
     const style = this._computeStyle(
       el,
       elementStyle,
-      elementStyle.display === 'flex' || elementStyle.display === 'inline-flex',
+      holdsItems(elementStyle),
       candidates,
       false,
       generated ? which : null,
@@ -8571,6 +8573,12 @@ export class Cascade {
       }
     }
     blockify(style, inFlexContainer);
+    // no box of its own, so what it holds is the items of the box around it
+    // (`holdsItems`), but in a `-webkit-box`, which blockifies nothing in a
+    // browser and is a flex box here alone
+    if (style.display === 'contents') {
+      style.itemsThrough = holdsItems(parentStyle) && !parentStyle.webkitBox;
+    }
     // a box in another writing mode than its parent's is no inline box: an
     // inline one is an inline-block, the root of a flow of its own (CSS
     // Writing Modes 4, 3.1)
