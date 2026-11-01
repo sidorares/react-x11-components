@@ -382,6 +382,7 @@ import {
   containingBlockOf,
   coverersAfter,
   drawnAtViewport,
+  scaleAround,
   drawnInkOf,
   drawsNothing,
   FIXED_BOXES,
@@ -740,7 +741,7 @@ export function registerHtmlView(): void {
   }
   if (!registeredPositions().includes(HELD_AT_VIEWPORT)) {
     registerPosition(HELD_AT_VIEWPORT, {
-      options: { element: { type: 'any' } },
+      options: { element: { type: 'any' }, drawn: { type: 'boolean' } },
       place: placeHeld,
     });
   }
@@ -803,8 +804,8 @@ function placeHeld(
   node: Node,
   context: PositionContext,
 ): { x: number; y: number } | null {
-  const element = context.options.element as Element;
-  return viewAround(node)?.heldShiftOf(element, node) ?? null;
+  const { element, drawn } = context.options;
+  return viewAround(node)?.heldShiftOf(element, node, drawn) ?? null;
 }
 
 /** The element a node mounted beside it belongs to: the one in the nearest
@@ -7903,10 +7904,14 @@ export class HtmlViewNode extends Node {
    * included: the boxes are placed here rather than at the paint, which
    * comes after the pass has put the widget where the frame shows it.
    */
-  heldShiftOf(element: Element, node: Node): { x: number; y: number } | null {
+  heldShiftOf(
+    element: Element,
+    node: Node,
+    drawn: boolean,
+  ): { x: number; y: number } | null {
     this._placeAgainstPane();
-    const shift = this._heldNow(element);
-    if (shift) this._heldPlaced.set(node, { element, shift });
+    const shift = this._heldNow(element, drawn);
+    if (shift) this._heldPlaced.set(node, { element, drawn, shift });
     else this._heldPlaced.delete(node);
     return shift;
   }
@@ -7914,13 +7919,16 @@ export class HtmlViewNode extends Node {
   /** Where `heldShiftOf` last had core put each box it was asked about. */
   private readonly _heldPlaced = new Map<
     Node,
-    { element: Element; shift: { x: number; y: number } }
+    { element: Element; drawn: boolean; shift: { x: number; y: number } }
   >();
 
-  private _heldNow(element: Element): { x: number; y: number } | null {
+  private _heldNow(
+    element: Element,
+    drawn: boolean,
+  ): { x: number; y: number } | null {
     const tree = this._tree;
     const box = tree && this._boxOf(tree, element);
-    return box ? heldShift(tree, box) : null;
+    return box ? heldShift(tree, box, drawn ? scaleAround : undefined) : null;
   }
 
   /**
@@ -7931,12 +7939,12 @@ export class HtmlViewNode extends Node {
    * this is asked in a paint as well.
    */
   private _followHeld(): void {
-    for (const [node, { element, shift }] of this._heldPlaced) {
+    for (const [node, { element, drawn, shift }] of this._heldPlaced) {
       if (node.destroyed) {
         this._heldPlaced.delete(node);
         continue;
       }
-      const now = this._heldNow(element);
+      const now = this._heldNow(element, drawn);
       if (
         !now ||
         (Math.round(now.x) === Math.round(shift.x) &&

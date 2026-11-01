@@ -794,6 +794,93 @@ test('what is mounted for an element in a sticky box stays with the box in every
   }
 });
 
+test('what is mounted in a sticky box under a scale moves as far as the box is drawn to, at 1x and 2x', async () => {
+  // A slide scaled to fit its stage, with a sticky box on it or around it.
+  // A sticky offset moves a box in the coordinates it is laid out in, so a
+  // scale around the sticky box draws the move at its factor, and one in
+  // it or of the box itself leaves it as it was
+  const page = (around: string, side: string, inner: string) =>
+    '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+    `<div style="height:800px;${around}">` +
+    '<div style="height:40px"></div><div style="height:700px">' +
+    `<div style="position:sticky;top:10px;height:60px;${side}">` +
+    `<div style="${inner}">` +
+    '<iframe id="f" width="120" height="20"></iframe></div>' +
+    '</div></div></div><div style="height:2000px"></div>';
+  const half = 'transform-origin:0 0;transform:scale(0.5)';
+  // where the box is laid out with the page scrolled to `y`: stickiness is
+  // measured as though no transform had it, 40px down at rest, and 10px
+  // from the viewport's top until the box around it ends, 680px down
+  const laidAt = (y: number) => Math.min(Math.max(40, y + 10), 680);
+  for (const scale of [1, 2]) {
+    for (const [name, source, at] of [
+      // the page at half size, so the box is drawn at half that
+      ['around the sticky box', page(half, '', ''), 0.5],
+      ['in the sticky box', page('', '', half), 1],
+      ['on the sticky box', page('', half, ''), 1],
+    ] as const) {
+      let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+      const asked: EmbeddedRect[] = [];
+      const result = await renderX11(
+        h(
+          'box',
+          {
+            ref: (node: typeof pane) => {
+              pane = node;
+            },
+            style: { width: 300, height: 200, overflow: 'scroll' },
+          },
+          h(Html, {
+            source,
+            partial: false,
+            'data-testname': 'doc',
+            renderEmbedded: (rect: EmbeddedRect) => {
+              asked.push(rect);
+              return h('box', {
+                'data-testname': 'in-f',
+                style: { flexGrow: 1 },
+              });
+            },
+          }),
+        ),
+        { width: 340, height: 240, scale, ...(FONTS && { fonts: FONTS }) },
+      );
+      await act();
+      const el = view(screen.getByTestName('doc') as DrawnNode);
+      const node = mounted('f')!;
+      const onScreen = () => (node.abs.y - pane!.abs.y) / scale;
+      assert.strictEqual(asked.at(-1)?.held, true, `${name}, ${scale}x`);
+      const paint = el.paint;
+      let expected = 0;
+      el.paint = function (this: HtmlViewNode, ctx) {
+        assert.strictEqual(
+          onScreen(),
+          expected,
+          `a paint sees it where it is drawn, ${name}, ${scale}x`,
+        );
+        return paint.call(this, ctx);
+      };
+      const before = asked.length;
+      for (const y of [20, 30, 60, 120, 300, 60]) {
+        expected = at * laidAt(y) - y;
+        await act(async () => pane!.scrollTo(y));
+        assert.strictEqual(
+          onScreen(),
+          expected,
+          `scrolled to ${y}, ${name}, ${scale}x`,
+        );
+      }
+      el.paint = paint;
+      assert.strictEqual(
+        asked.length,
+        before,
+        `a scroll asks nothing, ${name}, ${scale}x`,
+      );
+      await result.unmount();
+    }
+  }
+});
+
 test('what is mounted stays the node it was as a page makes its box sticky, fixed or neither', async () => {
   // A new node is a new document in an `<iframe>`, its scripts started
   // again, so the boxes a mount is kept in do not come and go with the

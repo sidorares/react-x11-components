@@ -90,6 +90,7 @@ import {
   paintedAfter,
   paintOrderOf,
   unzoomRect,
+  scaleAround,
   zoomBetween,
   zoomRect,
 } from './paint.js';
@@ -399,8 +400,7 @@ export interface EmbeddedRect {
   /**
    * Set on an element in a sticky box the viewport keeps: the rect and its
    * `clip` are where the flow has it, and what is mounted goes with the box
-   * (`ControlRect.held`). A scale around it keeps it off this, for a sticky
-   * offset is in the box's own coordinates, and is told as it is painted.
+   * (`ControlRect.held`), as far as the box is drawn to under a scale.
    */
   held?: true;
   /**
@@ -612,7 +612,7 @@ function placementOf(
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     opacity *= at.style.opacity;
   }
-  const heldBy = zoomed ? null : heldShift(tree, box);
+  const heldBy = heldShift(tree, box, scaleAround);
   return {
     element: el,
     ...picture,

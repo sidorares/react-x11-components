@@ -7613,6 +7613,14 @@ export function zoomBetween(from: Box, to: Box | null = null): Zoom | null {
   return z;
 }
 
+/** How large a move of `box` in the coordinates it is laid out in is drawn:
+ *  the scale of what is around it, and not its own, which is about a corner
+ *  that moves with it. A slide scaled to half has its sticky box drawn half
+ *  as far from where it rests. */
+export function scaleAround(box: Box): number {
+  return (box.parent && zoomBetween(box.parent)?.k) ?? 1;
+}
+
 /** The factor a matrix scales by, where it scales the same across as
  *  down, by more than nothing, and otherwise only moves: null for a turn,
  *  a skew, a scale of two factors, a flip and a projection. */

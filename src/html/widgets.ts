@@ -1356,7 +1356,7 @@ function keptWithBox(
   node: ReactElement,
 ): ReactElement {
   if (!rect?.held) return atViewport(rect?.atViewport === true, key, node);
-  return placed(heldPosition(rect.element), key, node);
+  return placed(heldPosition(rect.element, false), key, node);
 }
 
 /**
@@ -1374,22 +1374,25 @@ export function keptMount(
   ...nodes: ReactNode[]
 ): ReactElement {
   const position = rect.held
-    ? heldPosition(rect.element)
+    ? heldPosition(rect.element, true)
     : rect.atViewport
       ? (AT_VIEWPORT as Style['position'])
       : 'relative';
   return placed(position, key, ...nodes);
 }
 
-/** The position that keeps a mount with its sticky box. One object for an
- *  element, since a new one at each render of the document would be a new
- *  style for the box it is in. */
-function heldPosition(element: Element): Style['position'] {
+/** The position that keeps a mount with its sticky box. `drawn` says it is
+ *  placed where the document draws its element, which a scale around the
+ *  box moves, as a frame or a player is, where a widget goes where its box
+ *  was laid out. One object for an element, since a new one at each render
+ *  of the document would be a new style for the box it is in. */
+function heldPosition(element: Element, drawn: boolean): Style['position'] {
   let position = HELD_POSITIONS.get(element);
   if (!position) {
     position = {
       name: HELD_AT_VIEWPORT,
       element,
+      drawn,
     } as unknown as Style['position'];
     HELD_POSITIONS.set(element, position);
   }
