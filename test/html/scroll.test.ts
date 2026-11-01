@@ -1,7 +1,7 @@
 // <Html> — scroll containers inside a document (`layout/scroll.ts`): a box
 // whose `overflow` scrolls moves what it holds by its offset, under the
 // wheel and the handle, and everything that reads a box finds it there.
-import { afterEach, test } from 'node:test';
+import { afterEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   act,
@@ -23,9 +23,12 @@ import type { DrawnNode } from 'react-x11';
 
 import { Html } from '../../src/html/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
+import { Cascade } from '../../src/html/css/cascade.js';
+import { extentWalked } from '../../src/html/layout/scroll.js';
 import {
   FONTS,
   boxOf,
+  fillsOf,
   findById,
   h,
   metric,
@@ -1012,5 +1015,152 @@ metric(
       );
       await expectPixel(hid.ctx, 395, 30, '#ff0000', { message: rule });
     }
+  },
+);
+
+metric(
+  "a page's rule hides a bar on the axis it names, and the other shows",
+  async () => {
+    const shown = async (rule: string) => {
+      const { result } = await renderScrolled(
+        LIST.replace('</style>', `${rule}</style>`),
+        300,
+      );
+      return result.ctx;
+    };
+    await expectPixel(
+      await shown('#s::-webkit-scrollbar{width:0}'),
+      395,
+      30,
+      '#ff0000',
+      { message: 'width: 0 is the vertical one' },
+    );
+    await expectPixel(
+      await shown('#s::-webkit-scrollbar{height:0}'),
+      395,
+      30,
+      '#bf0000',
+      { message: 'and height: 0 is not' },
+    );
+  },
+);
+
+/** A list of `rows` rows 40px tall, its style `style`. */
+const COUNTED = (style: string, rows: number) =>
+  `<style>body{margin:0}#s{${style}}.row{height:40px}</style>` +
+  `<div id="s">${'<div class="row"></div>'.repeat(rows)}</div>`;
+
+/** What a layout at another width, and the paint after it, ask of a
+ *  document's scroll containers: the boxes measured for how far each
+ *  reaches, and the selectors a bar was asked about. */
+async function barWork(t: TestContext, style: string, rows = 200) {
+  let asked = 0;
+  const hidden = Cascade.prototype.scrollbarHidden;
+  Cascade.prototype.scrollbarHidden = function (el, computed) {
+    asked += 1;
+    return hidden.call(this, el, computed);
+  };
+  t.after(() => {
+    Cascade.prototype.scrollbarHidden = hidden;
+  });
+  const doc = await renderScrolled(COUNTED(style, rows), 300);
+  asked = 0;
+  const walked = extentWalked();
+  await doc.resize(300, 380);
+  return { doc, asked, walked: extentWalked() - walked };
+}
+
+metric(
+  'overflow: hidden draws no bar, so a paint neither measures what it holds nor asks what a rule hides, and a script still reads how far it reaches',
+  async (t) => {
+    const { doc, asked, walked } = await barWork(
+      t,
+      'height:100px;overflow:hidden',
+    );
+    assert.equal(walked, 0, 'what it holds was measured for no bar');
+    assert.equal(asked, 0, 'and a selector asked about no bar');
+    const before = extentWalked();
+    assert.equal(doc.el.scrollStateOf(el(doc.el, 's'))?.height, 200 * 40);
+    assert.ok(extentWalked() - before >= 200, 'measured for the one who asks');
+  },
+);
+
+metric(
+  'a scroll container with nothing to scroll is measured, as a bar needs, and asks no selector what it would hide',
+  async (t) => {
+    const { asked, walked } = await barWork(t, 'overflow:auto', 20);
+    assert.ok(walked >= 20, `measured ${walked} boxes`);
+    assert.equal(asked, 0);
+  },
+);
+
+metric(
+  'a scroll container that overflows is measured and asks what its rules hide, on either axis the wheel takes',
+  async (t) => {
+    for (const style of [
+      'height:100px;overflow:auto',
+      'height:100px;overflow-x:hidden;overflow-y:scroll',
+    ]) {
+      const { asked, walked } = await barWork(t, style);
+      assert.ok(walked >= 200, `${style} measured ${walked} boxes`);
+      assert.ok(asked > 0, style);
+    }
+  },
+);
+
+metric(
+  'a repaint asks nothing of a scroll container it reaches only by what the container holds past its edge, which a bar is never drawn over',
+  async () => {
+    const { el: node } = await renderScrolled(
+      COUNTED('height:100px;overflow:auto;margin-bottom:300px', 100),
+      300,
+    );
+    let asked = 0;
+    const scrollbarHidden = () => {
+      asked += 1;
+      return { x: false, y: false };
+    };
+    // its rows' ink reaches on down past its bottom edge, at 100px
+    await fillsOf(node, [], {
+      scrollbarHidden,
+      damage: { x: 0, y: 200, width: 400, height: 20 },
+    });
+    assert.equal(asked, 0, 'below it');
+    await fillsOf(node, [], {
+      scrollbarHidden,
+      damage: { x: 0, y: 40, width: 400, height: 20 },
+    });
+    assert.equal(asked, 1, 'and it, over it');
+  },
+);
+
+metric(
+  'a repaint finds a scroll container fixed to the viewport where the viewport has it, and not where it was laid out',
+  async () => {
+    const { el: node } = await renderScrolled(
+      COUNTED(
+        'position:fixed;top:0;left:0;width:100px;height:100px;overflow:auto',
+        100,
+      ).replace('</style>', 'body{height:2000px}</style>'),
+      300,
+    );
+    let asked = 0;
+    const scrollbarHidden = () => {
+      asked += 1;
+      return { x: false, y: false };
+    };
+    const viewport = { x: 0, y: 500, width: 400, height: 300 };
+    await fillsOf(node, [], {
+      scrollbarHidden,
+      viewport,
+      damage: { x: 0, y: 40, width: 400, height: 20 },
+    });
+    assert.equal(asked, 0, 'where it was laid out');
+    await fillsOf(node, [], {
+      scrollbarHidden,
+      viewport,
+      damage: { x: 0, y: 540, width: 400, height: 20 },
+    });
+    assert.equal(asked, 1, 'where it is drawn');
   },
 );

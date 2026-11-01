@@ -5972,7 +5972,13 @@ to the pane. And **the bars are a pass of their own at the end of
 context is painted in its context's flow passes, and nothing of its own
 paints after what it scrolls. A press on one is the node's
 (`defaultMouseDown`), and `<Html>`'s capture handlers keep it from the
-links and the page (`scrollBarAt`).
+links and the page (`scrollBarAt`). `isScroller` is true of a box that
+is `overflow: hidden`, which shows no bar, and `scrollStateOf` is a walk
+of all a container holds, once a layout: a webmail page keeps a strip of
+12,700 boxes in such a box, and measured it at every paint of a drag for
+no bar. So **anything new asked of a scroll container at every paint asks
+`wheelScrolls` before it asks `scrollStateOf`**, and leaves a selector
+(`scrollbarHidden`) for last, as `scrollBarsOf` does.
 
 **A scroll snaps by how it moved** (`layout/snap.ts`'s `SnapScroll`): an
 absolute one to the place nearest where it went, a relative one only ahead
