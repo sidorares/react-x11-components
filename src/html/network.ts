@@ -2280,6 +2280,24 @@ async function* bodyOf(
 }
 
 /**
+ * The clock a stall is timed on. One object, exported from this module
+ * though not from the package, so a test can hold it (`test/held-clock.ts`):
+ * a thread held up past the limit wakes with it due, whatever arrived in the
+ * meantime, and the limit runs before the socket is read.
+ */
+export const stallClock = {
+  arm(step: () => void, ms: number): unknown {
+    const handle = setTimeout(step, ms);
+    // as `AbortSignal.timeout`'s, it keeps no process alive
+    (handle as { unref?(): void }).unref?.();
+    return handle;
+  },
+  disarm(handle: unknown): void {
+    clearTimeout(handle);
+  },
+};
+
+/**
  * A signal that aborts once `ms` go by with nothing arriving: no answer
  * yet, or no chunk of its body since the last one (`progress`). A body that
  * keeps coming is never cut off, as a browser cuts none off: bounded whole,
@@ -2295,7 +2313,7 @@ function stallTimer(ms: number): {
   const controller = new AbortController();
   let timer: unknown = null;
   const arm = (): void => {
-    timer = setTimeout(
+    timer = stallClock.arm(
       () =>
         controller.abort(
           new DOMException(
@@ -2305,19 +2323,17 @@ function stallTimer(ms: number): {
         ),
       ms,
     );
-    // as `AbortSignal.timeout`'s, it keeps no process alive
-    (timer as { unref?(): void }).unref?.();
   };
   arm();
   return {
     signal: controller.signal,
     progress() {
       if (timer === null) return;
-      clearTimeout(timer as number);
+      stallClock.disarm(timer);
       arm();
     },
     stop() {
-      if (timer !== null) clearTimeout(timer as number);
+      if (timer !== null) stallClock.disarm(timer);
       timer = null;
     },
   };

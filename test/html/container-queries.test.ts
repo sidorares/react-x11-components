@@ -983,3 +983,253 @@ test('a container turned inline answers for nothing, its query the next one out'
   );
   assert.strictEqual(colorOf(el, 't'), BLUE);
 });
+
+/** An element's class set, and `refresh` told of it. */
+function setClassOf(el: HtmlViewNode, id: string, value: string): void {
+  const target = findById(el.document, id)!;
+  const oldValue = target.attribs.class ?? null;
+  target.attribs.class = value;
+  el.touchDocument([
+    { type: 'attributes', target, attributeName: 'class', oldValue },
+  ]);
+}
+
+test('a restyle in place that is the first to read a container reads the size the last layout left it', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size}' +
+      '@container (min-width: 150px) { .b { color: #123456 } }' +
+      '</style><body><div id="w" style="width:300px"><div class="l">' +
+      '<p id="p">p</p></div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const tree = treeOf(el);
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.ok(treeOf(el) === tree, 'a colour builds no boxes');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  // and its read is one a layout asks again, as a build's is
+  const w = findById(el.document, 'w')!;
+  w.attribs.style = 'width:100px';
+  el.touchDocument([
+    {
+      type: 'attributes',
+      target: w,
+      attributeName: 'style',
+      oldValue: 'width:300px',
+    },
+  ]);
+  await act();
+  await act();
+  assert.notStrictEqual(colorOf(el, 'p'), '#123456');
+  result.unmount();
+});
+
+test('a restyle in place reads the size the last layout left a container no style read through that layout', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size}' +
+      '@container (min-width: 150px) { .b { color: #123456 } }' +
+      '</style><body><div id="w" style="width:300px"><div class="l">' +
+      '<p id="p" class="b">p</p></div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  // nothing reads it now, and a build forgets who did
+  setClassOf(el, 'p', '');
+  await act();
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  await act();
+  const w = findById(el.document, 'w')!;
+  const was = w.attribs.style;
+  w.attribs.style = 'width:100px';
+  el.touchDocument([
+    { type: 'attributes', target: w, attributeName: 'style', oldValue: was },
+  ]);
+  await act();
+  await act();
+  const tree = treeOf(el);
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.ok(treeOf(el) === tree, 'a colour builds no boxes');
+  assert.notStrictEqual(colorOf(el, 'p'), '#123456');
+  result.unmount();
+});
+
+test('a container unit a restyle in place is the first to read is the container’s, not the viewport’s', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size;width:200px}' +
+      '.u{outline-style:solid;outline-width:10cqw}' +
+      '</style><body><div class="l"><p id="p">p</p></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const tree = treeOf(el);
+  setClassOf(el, 'p', 'u');
+  await act();
+  assert.ok(treeOf(el) === tree, 'an outline builds no boxes');
+  assert.strictEqual(
+    (boxOf(el, 'p') as unknown as { style: { outlineWidth: number } }).style
+      .outlineWidth,
+    20,
+  );
+  result.unmount();
+});
+
+test('a query’s container unit a restyle in place is the first to read is its outer container’s', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}' +
+      '.o{container-type:inline-size;width:300px}' +
+      '.i{container-type:inline-size;width:150px}' +
+      '@container (width = 50cqw) { .b { color: #123456 } }' +
+      '</style><body><div class="o"><div class="i"><p id="p">p</p></div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const tree = treeOf(el);
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.ok(treeOf(el) === tree, 'a colour builds no boxes');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  result.unmount();
+});
+
+test('a document with a container and no query reads no size and finds no containers, whatever is restyled', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size}' +
+      '.b{color:#123456}</style><body><div class="l"><p id="p">p</p></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  assert.ok(
+    (treeOf(el) as unknown as { containers?: unknown }).containers ===
+      undefined,
+    'a walk for what no read asks',
+  );
+  result.unmount();
+});
+
+test('a read after a layout that asked a question is of the last layout that did not', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size}' +
+      '@container (min-width: 150px) { .b { color: #123456 } }' +
+      '</style><body><div class="l"><p id="first" class="b">p</p>' +
+      '<p id="p">p</p></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  assert.strictEqual(colorOf(el, 'first'), '#123456');
+  // core's content floors, asking what the document needs in less room:
+  // the boxes hold that layout's sizes until the one it comes before
+  const asked = el as unknown as {
+    measureContent(c: { width: number }): unknown;
+  };
+  asked.measureContent({ width: 100 });
+  setClassOf(el, 'p', 'b');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  await act();
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  result.unmount();
+});
+
+test('a second build before a layout reads the size the last layout left, not the boxes of the build before it', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0} .l{container-type:inline-size}' +
+      '@container (min-width: 150px) { .b { color: #123456 } }' +
+      '</style><body><div class="l"><p id="p" class="b">p</p></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  const inner = el as unknown as {
+    _contentImagesArrived(tree: unknown): boolean;
+    _containersMoved(tree: unknown): Set<unknown> | null;
+    _invalidate(stale: number): void;
+  };
+  // what a build finds has arrived, which builds again at once
+  const arrived = inner._contentImagesArrived;
+  let again = 1;
+  inner._contentImagesArrived = function (this: unknown, tree: unknown) {
+    return arrived.call(this, tree) || again-- > 0;
+  };
+  const moved = inner._containersMoved;
+  let answered = 0;
+  inner._containersMoved = function (this: unknown, tree: unknown) {
+    const out = moved.call(this, tree);
+    if (out) answered += 1;
+    return out;
+  };
+  inner._invalidate(2);
+  await act();
+  assert.strictEqual(again, 0, 'the test builds twice');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  assert.strictEqual(answered, 0, 'a build for nothing a query moved');
+  result.unmount();
+});
+
+test('a restyle in place that is the first to read a scroll-state container reads where it stands', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}' +
+      '#list{height:100px;overflow:auto;container-type:scroll-state}' +
+      '.row{height:60px}' +
+      '@container scroll-state(scrollable: bottom) { .b { color: #123456 } }' +
+      '@container scroll-state(scrollable: top) { .t { color: #123456 } }' +
+      '</style><body><div id="list"><p id="p">p</p><p id="q">q</p>' +
+      '<div class="row"></div><div class="row"></div><div class="row"></div>' +
+      '</div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  const tree = treeOf(el);
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.ok(treeOf(el) === tree, 'a colour builds no boxes');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  // and a scroll no style's read has heard of yet is where it stands
+  setClassOf(el, 'p', '');
+  await act();
+  (el as unknown as { _invalidate(stale: number): void })._invalidate(2);
+  await act();
+  el.scrollElementTo(findById(el.document, 'list')!, { y: 30 });
+  await act();
+  setClassOf(el, 'q', 't');
+  await act();
+  assert.strictEqual(colorOf(el, 'q'), '#123456');
+  result.unmount();
+});
+
+test('a scroll asks a query that is a size’s too for the size a restyle in place read', async () => {
+  const { result, node } = await render(
+    '<style>body{margin:0}' +
+      '#list{height:100px;overflow:auto;width:300px;' +
+      'container-type:inline-size scroll-state}' +
+      '.row{height:60px}' +
+      '@container scroll-state(scrollable: bottom) and (min-width: 150px) ' +
+      '{ .b { color: #123456 } }' +
+      '</style><body><div id="list"><p id="p">p</p><div class="row"></div>' +
+      '<div class="row"></div><div class="row"></div></div></body>',
+    400,
+  );
+  const el = view(node);
+  await act();
+  setClassOf(el, 'p', 'b');
+  await act();
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  const tree = treeOf(el);
+  el.scrollElementTo(findById(el.document, 'list')!, { y: 10 });
+  await act();
+  assert.ok(treeOf(el) === tree, 'an answer no scroll moved');
+  assert.strictEqual(colorOf(el, 'p'), '#123456');
+  result.unmount();
+});

@@ -29,6 +29,7 @@ import { inkKept } from '../../src/html/paint.js';
 import { attachShadow, shadowRootOf } from '../../src/html/dom.js';
 import {
   boxOf,
+  fillsOf,
   FONTS,
   h,
   metric,
@@ -39,12 +40,16 @@ import {
   treeLines,
   view,
 } from './harness.js';
+import { parseColor } from '../../src/html/css/values.js';
 import { resizeClock } from '../../src/html/node.js';
 import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
+
+/** What a paint is asked to draw again (`fillsOf`). */
+type Damage = { x: number; y: number; width: number; height: number };
 
 /** mulberry32: the same document for the same seed. */
 function random(seed: number): () => number {
@@ -466,11 +471,8 @@ metric(
 );
 
 /** Images a document's rules name, which its boxes are built without
- *  until they are in: generated content and a list's marker. No containers:
- *  a restyle in place that is the first to read one answers with no size
- *  until the next layout, which is nothing an image does. */
+ *  until they are in: generated content and a list's marker. */
 const IMAGE_SHEET = `${SHEET}
-.l { container-type: normal }
 .r::before { content: url(before.png) }
 .s::after { content: url(after.png) }
 .t { display: list-item; list-style-image: url(marker.png) }`;
@@ -988,9 +990,11 @@ metric(
     // a kept block's lines went by whether its element came after the box:
     // an anonymous block has no element, so its lines stayed where they
     // were and its own text moved. An inline box's border is drawn from
-    // them, and it was found on no line.
+    // them, and it was found on no line: it had no ink at all, so a repaint
+    // of the strip its shadow falls in, past its line, did not reach it.
     const { result, node } = await render(
-      '<!doctype html><style>body { margin: 0 } b { padding: 4px; border: 1px solid }</style>' +
+      '<!doctype html><style>body { margin: 0 } b { padding: 4px; ' +
+        'border: 1px solid; box-shadow: 0 8px 0 #0d0d0d }</style>' +
         '<div id="empty"></div><b id="late">after</b>',
       320,
     );
@@ -1000,7 +1004,9 @@ metric(
     const empty = elementsUnder(el.document as unknown as Element).find(
       (e) => e.attribs.id === 'empty',
     )!;
-    const text = createText('new');
+    // longer than what comes after it: a line left behind by less is one
+    // the box is still found on, by the text of its own it holds
+    const text = createText('longer than what follows');
     appendChild(empty, text);
     el.touchDocument([
       {
@@ -1014,13 +1020,30 @@ metric(
     const late = boxOf(el, 'late') as unknown as Box;
     let block = late.parent!;
     while (block.kind === 'inline') block = block.parent!;
-    assert.strictEqual(internals._tree.text, 'newafter');
+    assert.strictEqual(internals._tree.text, 'longer than what followsafter');
     assert.strictEqual(
       block.lines?.[0].textStart,
-      3,
+      24,
       'its line, with its text',
     );
     assert.ok(Number.isFinite(late.boundsY), 'and its border found on it');
+    const shadows = async (damage?: Damage) =>
+      (await fillsOf(el, undefined, { damage })).filter(
+        (fill) => fill.style === parseColor('#0d0d0d'),
+      );
+    const [shadow] = await shadows();
+    assert.ok(shadow, 'its shadow, in a paint of all of it');
+    const strip = {
+      x: 0,
+      y: Math.floor(shadow.y + shadow.h) - 3,
+      width: 320,
+      height: 3,
+    };
+    assert.strictEqual(
+      (await shadows(strip)).length,
+      1,
+      'and in one of the strip it falls in',
+    );
     result.unmount();
   },
 );
@@ -2601,6 +2624,52 @@ metric(
 );
 
 metric(
+  'the last frame taken out leaves what no frame held as a whole build lays it out',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0 }' +
+        '.r { writing-mode: vertical-rl; height: 60px }' +
+        '.g { display: grid; width: 30px; writing-mode: vertical-lr }' +
+        '</style></head><body><section><p id="p" class="r">x</p>' +
+        '<div class="g">one two three</div></section></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _subtreeBuild(...a: unknown[]): BoxTree | null;
+      _invalidate(stale: number): void;
+    };
+    const frame = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 'p',
+    )!;
+    const section = frame.parent as unknown as Element;
+    removeNode(frame as unknown as ChildNode);
+    const build = internals._subtreeBuild;
+    let built: BoxTree | null = null;
+    internals._subtreeBuild = function (this: unknown, ...a: unknown[]) {
+      built = build.apply(this, a);
+      return built;
+    };
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: section,
+        addedNodes: [],
+        removedNodes: [frame],
+      },
+    ]);
+    await act();
+    assert.ok(built, 'the section was built apart');
+    const kept = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    assert.deepStrictEqual(kept, treeLines(internals._tree));
+  },
+);
+
+metric(
   'a script put in that a page then gives a display draws its text, where a build of all new boxes does',
   async () => {
     const { node } = await render(
@@ -2893,9 +2962,11 @@ function moving(next: () => number, depth: number): Element {
     else if (roll < 0.6) {
       appendChild(
         el,
-        createElement('span', { class: pick(['r', 'z', 'sh', '']) }, [
-          createText(pick(WORDS)),
-        ]),
+        createElement(
+          'span',
+          { class: pick(['r', 'z', 'sh', 'st', 'sb', '']) },
+          [createText(pick(WORDS))],
+        ),
       );
     } else appendChild(el, createText(pick(['one two', 'three four five'])));
   }

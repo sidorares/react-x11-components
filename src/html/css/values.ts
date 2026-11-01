@@ -383,8 +383,12 @@ export function splitValue(value: string): string[] {
   let start = 0;
   for (let i = 0; i < value.length; i += 1) {
     const c = value[i];
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
     if (quote) {
-      if (c === quote && value[i - 1] !== '\\') quote = '';
+      if (c === quote) quote = '';
       continue;
     }
     if (c === '"' || c === "'") {
@@ -417,20 +421,35 @@ export function splitCommas(value: string): string[] {
   let start = 0;
   for (let i = 0; i < value.length; i += 1) {
     const c = value[i];
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
     if (quote) {
-      if (c === quote && value[i - 1] !== '\\') quote = '';
+      if (c === quote) quote = '';
       continue;
     }
     if (c === '"' || c === "'") quote = c;
     else if (c === '(') depth += 1;
     else if (c === ')') depth = Math.max(0, depth - 1);
     else if (c === ',' && depth === 0) {
-      out.push(value.slice(start, i).trim());
+      out.push(trimValue(value.slice(start, i)));
       start = i + 1;
     }
   }
-  out.push(value.slice(start).trim());
+  out.push(trimValue(value.slice(start)));
   return out;
+}
+
+/** A value with the white space round it taken off, but for a space an
+ *  escape holds: `Foo\ ` ends in a space. */
+export function trimValue(value: string): string {
+  const out = value.trim();
+  if (out.charCodeAt(out.length - 1) !== 0x5c) return out;
+  let backslashes = 1;
+  while (out[out.length - 1 - backslashes] === '\\') backslashes += 1;
+  if (backslashes % 2 === 0) return out;
+  return value.slice(0, value.trimEnd().length + 1).trimStart();
 }
 
 /** The four sides a `margin`/`padding`/`border-width` shorthand expands to,

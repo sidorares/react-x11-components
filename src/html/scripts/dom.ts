@@ -7025,9 +7025,21 @@ export function installDom(
     }
   }
   Object.defineProperty(HTMLImageElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['alt', 'srcset', 'sizes', 'loading', 'decoding']) {
+  for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
     Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
   }
+  // limited to the keywords it has, which a page tests for support with
+  Object.defineProperty(HTMLImageElement.prototype, 'loading', {
+    get(this: Any) {
+      const value = this.getAttribute('loading');
+      return value?.toLowerCase() === 'lazy' ? 'lazy' : 'eager';
+    },
+    set(this: Any, value: Any) {
+      this.setAttribute('loading', value);
+    },
+    configurable: true,
+    enumerable: true,
+  });
 
   class HTMLScriptElement extends HTMLElement {
     get text(): string {

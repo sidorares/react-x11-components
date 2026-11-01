@@ -1714,28 +1714,37 @@ to be measured again, which costs a frame per resize and only for those.
 **A container query is the third exception, and it is answered after the
 layout.** A container's size is layout's, so the cascade answers an
 `@container` query, and a `cqw` or its kin, for the content box the last
-layout gave the container (`Cascade._containerSizes`), and notes for each
-element which container each read and what it came to
-(`_containerReads`). Every layout then hands the containers' boxes back
+layout gave the container (`Cascade._sizeOf`), and notes for each element
+which container each read and what it came to (`_containerReads`). Every
+layout then hands the containers' boxes back
 (`HtmlViewNode._containersMoved`), and the subtrees of the elements whose
 answers moved are built again and laid out again, at most
-`CONTAINER_PASSES` times. Three things are load-bearing. **A read is noted
+`CONTAINER_PASSES` times. Four things are load-bearing. **A read is noted
 only where the selector matched**, so a query is a cost of the elements it
 styles and not of its bucket. **An element a container rule reaches, or
 whose style holds a container unit, shares no style** (`UNSHAREABLE`'s
 buckets, `_containerUnitRead`): a sharing key is the element's ancestors'
 and attributes, and two elements alike in all of them can be in containers
-of other sizes. And **the containers are measured from boxes taken as the
-tree was built** (`BoxTree.containers`), since a dragged width sets boxes
-aside from the root's walk. Anything new that makes a style read a
-container's size goes through `_containerReads`, or a layout that moves the
-container leaves the style as it was. A query's container units are its
-container's — the nearest size container above it, since a query's lengths
-are the container's (`_queryUnit`) — noted for the element under a key per
-container and axis (`_queryUnitKey`), and a query asked again after a
-layout reads them at the sizes that layout gave (`_moving`): asked at the
-last ones, a container no style had read yet answered with the viewport's,
-and the query kept its answer. **One element reads one query twice where it
+of other sizes. **The containers are measured from boxes taken as the tree
+was built** (`BoxTree.containers`), or as a read first asks of a tree built
+before one did, down what a dragged width set aside from the root's walk
+(`asideOf`). And **a read asks the boxes, and keeps nothing**
+(`laidOutSize`, and `laidOutScroll` for a scroll state): a layout hears of
+a container only where a style has read it, and a restyle in place, which
+no layout follows, may be the first to, or the first since a build forgot
+who had. Read from what the last layout was told, a colour under a query
+came out as though the container had no size, or the size before the one
+it has, until something laid the document out. The boxes are the last
+layout's that asked no question (`_sizedTree`), since a build's are laid
+out by nothing yet and a question's are no container's, and nothing in
+this costs a document anything until a query or a unit is read. Anything
+new that makes a style read a container's size goes through `_sizeOf` and
+`_containerReads`, or a layout that moves the container leaves the style as
+it was. A query's container units are its container's — the nearest size
+container above it, since a query's lengths are the container's
+(`_queryUnit`) — noted for the element under a key per container and axis
+(`_queryUnitKey`), and a query asked again after a layout reads them at the
+sizes that layout gave, as every read does. **One element reads one query twice where it
 is a container**: its `::after` finds the element, and the element what is
 above it, so a pseudo-element's read is noted under a key of its own
 (`_readKey`), or the second read takes the first's place and no layout moves
@@ -2136,6 +2145,68 @@ says otherwise**: a decode that comes to another size, or fails, is told as
 from the header is told as `'sized'`**, which takes sizes in place and
 paints nothing; the pixels' arrival is the `'image'` it always was. A test
 holds the decode through `imageDecoder`, as it holds a clock.
+
+**A lazy image is asked for from the boxes, and by nothing else** (HTML
+2.5.7, `_waitsLazily`, `_askNear`). An `<img loading="lazy">` in a document
+whose scripts run is not asked for as the markup is read or as its source is
+chosen. Nothing is kept of which images wait: one waits for as long as the
+store has never heard of what it shows, so an image whose URL something else
+asked for shows it as it lands, and one with no box, under `display: none` or
+in no document, waits until it has one. A paint asks what has come near: from
+the boxes as they are laid out, within `LAZY_NEAR_PX` of what can be seen and
+of the scrollport of each box around that scrolls, clips and transforms
+counted (`_lazyAway`). With scripting off an image never waits, since a server
+could read a reader's way down a page from what it was asked for and when.
+The browsers were asked before any of this was written, and the docs page
+names where they differ. Seven things are load-bearing.
+
+- **Until `load` near is `LAZY_LOADING_PX`, since a document's first boxes are
+  a guess.** Its first layout comes before its head's scripts, and Wikipedia's
+  menus, open until one runs, stood the first image of an article 3,500
+  pixels down. At Chrome's distance what the viewport shows was done a fifth
+  to a third later than with every image asked for at once, on Wikipedia, BBC
+  and the Guardian, and at this one no later: a cold load in a real window
+  decoded 46 images where it had 130 on the Guardian, 29 for 74 on BBC and 20
+  for 77 on Wikipedia's article on the United States, and the Guardian's `load`
+  went from 2.9 s to 1.6.
+- **It is a paint's, and no layout.** `_askNear` reads boxes, and walks them
+  only once the pane has moved `LAZY_STEP_PX` or the boxes have (`_geometry`):
+  a wheel through a page of waiting images, with an `IntersectionObserver` on
+  it, lays out nothing and walks them a few times. The host is asked a
+  microtask later, never from inside the paint, as `request`'s `late` says.
+- **Asking is not `_owe`'s.** What is owed is brought up to date at a page's
+  read (`_settle`), and a read brings in no image: `complete`, `naturalWidth`
+  and `decode()` go on saying it has not come. So asking for a lazy image is no
+  work for a slice or a forced layout to run.
+- **Anything new that asks for an `<img>`'s image asks `_waitsLazily` first**,
+  and passes `'lazily'` where it says the image has waited (`_waited`): HTML
+  settles "delay load event" before an image waits, so one in view holds no
+  `load`, and it stays so if `loading` turns eager. Anything else that asks
+  for its URL holds `load` from then on (`request`), and repaints as any
+  image does. A background that gets to the URL first has to size the image
+  as it lands, which is what `expect` is for.
+- **What a page's script changes is asked for at the end of its task**
+  (`_askDue`, HTML's "await a stable state"). React sets attributes in the
+  order they are written, so a client-rendered `<img src loading>` is `src`
+  first, on an element in no document yet: asked for at once, no such image
+  would ever have waited. What the store has is still there as it is asked
+  for.
+- **A lazy image's arrival repaints what shows it** (`_lazyPainted`): it lands
+  off screen and in the middle of a scroll, where `_imagePainted` would make a
+  frame's blit a repaint of the whole pane and drop every kept surface.
+- **Its size waits where it can** (`_oweSize`): off screen, or a pixel from
+  what the box has, in view or not (`closeIntrinsic`). Wikipedia's images are
+  `height: auto`, half a pixel from their attributes by rounding, and each that
+  landed laid a long article out in the frames of a fling. Such a size does not
+  come in for being near, and waits for the scroll to end. What it cannot
+  escape is a read: a scroll-spy that reads `offsetTop` on a timer settles what
+  is owed, as any read does, which is what is left of the cost on the longest
+  articles at 4,000 pixels a second.
+
+A `<base>` changed after an image started to wait resolves it against the new
+one, where HTML has it resolved as it starts (WPT's
+`image-loading-lazy-base-url`), and `<iframe loading="lazy">` is not read:
+what a frame shows is the host's (`renderEmbedded`).
 
 **A cache kept by an element is dropped by what can make it stale.** A
 `refresh()` is an application saying it changed the tree — anything in it,
@@ -3900,6 +3971,21 @@ UA sheet names it for. And one is not Chrome's: on a Mac Chrome answers
 WebKit. **Anything new that sets `fontFamily` sets `fontFamilyText` too**, or
 a page reads the list before it.
 
+**A family's name is read in one place** (`readFamilyName`, `css/parse.ts`),
+whoever asks: a `font-family`, a `font`, a drawing's, a `@font-face`'s and
+`getComputedStyle`. What it takes and refuses is Chrome's, read back from that
+browser (`font-family takes what Chrome takes`), and its escapes are read, so a
+name is one string wherever two are compared: `Foo\ Bar` in a list finds the
+face `@font-face` calls `"Foo Bar"`, and the text engine never sees a
+backslash. Three things are load-bearing. **A list has no name with a comma in
+it**: every reader splits a list at its commas, the engines too, so
+`joinFamilies` leaves out `'Courier New, Arial'` and the list goes on to the
+next name, as Chrome's does. **Anything that splits or trims a value holds an
+escape's character**, as `splitCommas`, `splitValue` and `trimValue` do:
+`Foo\, Bar` is one name and `Foo\ ` ends in a space. And **`unescapeValue` keeps
+an escape that starts an identifier as no character could**, so `\31 996` is
+still a name when it gets here; written out it is a number.
+
 **`font` reads what the shorthand can say, and nothing where it cannot.**
 `fontText` (`computed.ts`) writes it from what `font-family` and `font-size`
 answer, and reads `''` where a longhand holds a value it has no way to say, as
@@ -5154,6 +5240,35 @@ is on the lines is faded where it is painted (`inlineFade`), and none of
 it may be text faded through the context's alpha, which ntk's glyphs do
 not take (`fadesGlyphs`).
 
+**An inline box an inset moves is a layer, and its lines are painted a box
+at a time.** A positioned box paints after the flow (CSS 2.1 Appendix E, step
+8), and an inline box has no paint of its own: what it shows is on its block's
+lines. A box with an inset has its text laid out apart from the text around
+it (`collect`), and a line paints a batch a layout, so that much can be
+lifted out: such a box is `layered`, on its context's list like any
+(`paintsApart`), `LINES_APART` says what of a block's lines is whose, the
+block's paint leaves that out through `LinePart.skip`, and the box paints it
+at its turn (`paintApart`). The hit test walks the same lines the same way
+(`walkLines`), so a word is under the pointer in the context of what paints
+it. A span held at the top of a list had the paragraphs under it drawn over
+it, and a label moved at all went under an absolute box before it. Four things
+are load-bearing. **Anything new a line draws goes through `paintLinePart` and
+honours `skip`**, and anything new on a line that is a box's goes in
+`noteLinesOf`, or it is drawn with the flow, or twice. **A layer is culled by
+its own ink**, and a box's text is on no walk of it, so `apartReach` says
+where it is drawn: anything new a layer draws on its lines joins it, or a
+repaint of that strip draws what is under it. **What a layer has on its lines
+is painted ahead of its own paint, not in it**: the fade is in the colours of
+its text (`inlineFade`), and a group would fade it twice. That is also why a
+box in a faded inline box is no layer. And **`LINES_APART` is made as the
+layers are gathered**, so anything new that turns a box into a layer or out of
+one in place goes through `stackLayers`, as an opacity's `diff.order` does.
+What the gate leaves out is deliberate: a box with every inset `auto` is in
+its paragraph's one layout, and joshwcomeau.com has hundreds of them, each
+holding an absolute box. Lifting those out takes laying them apart, a line at
+a time, for a box that moves nowhere, so one still goes under an absolute box
+before it, where all three engines draw it over.
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
@@ -5462,7 +5577,13 @@ them (`offsetInline`), its first piece moves all of a box broken around
 blocks (`CUT_PIECES`), and what keeps it in is never an anonymous block
 (`stickyContainer`). **Anything new that moves a sticky box goes through
 `moveSticky`**, or that text stays on its line, and a move of the box's
-lines moves its rect, as `translate` does. One the viewport keeps
+lines moves its rect, as `translate` does. Stickiness is measured from
+where no transform has the box (`movedByTransforms`, its own and those
+around it up to what scrolls it), and its transform is added to where it
+sticks, as all three engines have it, which is what lets a change of one in
+place move the box by the difference and leave `STUCK` as it is (`retranslate`):
+**anything new that measures a sticky box against something a transform does
+not move takes them off**, or stickiness takes the transform back. One the viewport keeps
 (`VIEWPORT_STICKY`) is the
 element's to place, since the pane's scroll lays nothing out
 (`_followViewport`, `restickToViewport`), for the offsets the pane has
@@ -5534,7 +5655,11 @@ block axis, which is the root's intrinsic width at its least and its most
   and in `paintLinePart` — asks it first, so a document in no vertical mode
   pays a boolean. Anything new that lays out or paints a tree from another
   entry sets it there; anything new that asks a box whether it is a frame's
-  asks it first.
+  asks it first. **It says there may be a frame, and nothing of a box**: it
+  stays true after a build of subtrees takes the last frame out, and a grid
+  or a flex box in a vertical writing mode makes none at all. So a box's
+  writing mode counts only where a frame holds the box (`inFrame`), or what
+  such a box is laid out as turns on a frame somewhere else on the page.
 - **The root is a formatting context of its own with no baseline across
   its line** (`establishesBFC`, `lastBaselineIn`, `firstBaselineIn`): an
   inline-block one sits on its bottom margin edge. Its words say nothing of

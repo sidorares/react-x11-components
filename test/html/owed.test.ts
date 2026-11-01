@@ -30,6 +30,7 @@ import {
   h,
   metric,
   renderScrolled,
+  solidPng,
   treeLines,
   view,
 } from './harness.js';
@@ -56,6 +57,9 @@ interface Owing {
 
 const owing = (el: HtmlViewNode): Owing => el as unknown as Owing;
 
+/** How wide the fuzz's image of a name is, and three pixels less than tall. */
+const imageSize = (name: string): number => 6 + (name.length % 5) * 7;
+
 /** Two faces of one family, unlike each other and the fallback, and each
  *  held until the test lets it come. */
 function heldFaces() {
@@ -66,8 +70,15 @@ function heldFaces() {
   const waiting = new Map<string, () => void>();
   return {
     onResource(request: { url: string; kind: string }) {
-      if (request.kind !== 'font') return null;
       const name = request.url.slice(request.url.lastIndexOf('/') + 1);
+      if (request.kind === 'image') {
+        const size = imageSize(name);
+        const bytes = solidPng(size, size + 3, [90, 40, 200]);
+        return new Promise<ResourceResult | null>((resolve) => {
+          waiting.set(name, () => resolve({ kind: 'image', bytes }));
+        });
+      }
+      if (request.kind !== 'font') return null;
       const bytes = files[name];
       if (!bytes) return null;
       return new Promise<ResourceResult | null>((resolve) => {
@@ -1056,6 +1067,8 @@ const FUZZ_WORDS = [
   '0123',
 ];
 
+let fuzzedImages = 0;
+
 function fuzzed(next: () => number, depth: number): Element {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
@@ -1081,6 +1094,28 @@ function fuzzed(next: () => number, depth: number): Element {
         createElement('tr', {}, [cell(), cell()]),
       ]),
     ]);
+  }
+  if (kind < 0.34) {
+    // a lazy image's size waits with the rest: none of its own, or one the
+    // image takes the place of, in a box or on a line
+    fuzzedImages += 1;
+    const src = `${'i'.repeat(1 + (fuzzedImages % 4))}${fuzzedImages}.png`;
+    const given = next();
+    // or a pixel from what it comes to, as rounding leaves an image's
+    // attributes, which waits for the scroll to end
+    const size = imageSize(src);
+    const sized: Record<string, string> | null =
+      given < 0.3
+        ? { width: '12', height: '9' }
+        : given < 0.6
+          ? { width: `${size}`, height: `${size + 4}`, style: 'height: auto' }
+          : null;
+    return createElement('img', {
+      loading: 'lazy',
+      src,
+      ...sized,
+      ...(next() < 0.5 && { class: 'plain' }),
+    });
   }
   const classes: string[] = [];
   for (let i = 0, n = Math.floor(next() * 3); i < n; i += 1) {
@@ -1121,7 +1156,7 @@ metric(
         `<!doctype html><html><head><style>${seed % 3 ? FUZZ_SHEET : FRAMED_FUZZ_SHEET}</style></head>${markup}</html>`,
         160,
         320,
-        { onResource: faces.onResource },
+        { onResource: faces.onResource, scripting: seed % 2 === 0 },
       );
       await act();
       const inner = owing(el);
@@ -1131,7 +1166,7 @@ metric(
         el.document.children as never,
         true,
       ) as unknown as Element;
-      for (let step = 0; step < 8; step += 1) {
+      for (let step = 0; step < 14; step += 1) {
         const roll = next();
         if (faces.held.length && roll < 0.4) {
           await faces.arrive(faces.held[0]);

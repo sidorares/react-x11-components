@@ -66,6 +66,7 @@ import {
 import {
   asciiLower,
   escapeEnd,
+  familyList,
   mediaMatches,
   parseMediaQuery,
   readIdent,
@@ -120,7 +121,6 @@ import {
   settleClamp,
   copyStyle,
   decorate,
-  familyList,
   inherit,
   zoomedBy,
   initialOne,
@@ -6394,24 +6394,38 @@ export class Cascade {
   // in the flat tree that can answer it — a size container of the axes its
   // size features read, of the name it gives — or for a pseudo-element its
   // element. A size is layout's, and layout comes after the styles, so a
-  // query is answered for the size the last layout left the container
-  // (`_containerSizes`) and each answer is noted (`_containerReads`); a
-  // layout then says which elements' answers it changed
-  // (`containersMoved`), and only those are styled again, as a browser
-  // styles a container's contents once it knows the container's size. A
-  // container no layout has sized yet — the first — answers no size query,
-  // so a document whose queries hold is laid out twice the first time.
+  // query is answered for the size the last layout left the container,
+  // which the renderer says as it is asked (`_sizeOf`), and each answer is
+  // noted (`_containerReads`); a layout then says which elements' answers
+  // it changed (`containersMoved`), and only those are styled again, as a
+  // browser styles a container's contents once it knows the container's
+  // size. A container no layout has sized yet — the first — answers no
+  // size query, so a document whose queries hold is laid out twice the
+  // first time.
 
   /** The styles of the elements styled so far, by element: a build's as it
    *  goes, which is the tree's once it is built (`BoxBuilder.run`), and a
    *  container's style is what a query finds it by — its type, its names,
    *  its font, its custom properties. */
   stylesOf: ((el: Element) => ComputedStyle | undefined) | null = null;
-  /** Each size container's content box as the last layout left it, in
-   *  device pixels, or null for one it gave no box. */
+  /** A size container's content box as the last layout left it, as
+   *  `containersMoved`'s `sizeOf` says it: asked of a read, since no layout
+   *  need have heard of a container before a restyle in place, which no
+   *  layout follows, is the first to read it. None on a cascade with no
+   *  boxes behind it, an SVG image's. */
+  laidOutSize: ((el: Element) => ContainerSize | null | undefined) | null =
+    null;
+  /** A scroll-state container's scroll states as they stand, as
+   *  `containersMoved`'s `scrollOf` says them, and asked as `laidOutSize` is:
+   *  undefined where the renderer cannot say. */
+  laidOutScroll: ((el: Element) => ScrollStates | undefined) | null = null;
+  /** Each size container's content box as a layout it was told of left it,
+   *  in device pixels, or null for one it gave no box: what stands for one
+   *  `laidOutSize` cannot say. */
   private _containerSizes = new Map<Element, ContainerSize | null>();
   /** Each scroll-state container's scroll states as the renderer last
-   *  told them (`containersMoved`), none where it has not. */
+   *  told them (`containersMoved`), none where it has not: what stands for
+   *  one `laidOutScroll` cannot say. */
   private _scrollStates = new Map<Element, ScrollStates>();
   private _scrollRead = false;
   /** What each element's style read of size containers: for each query,
@@ -6442,10 +6456,7 @@ export class Cascade {
     const query = axis === 'inline' ? CQ_INLINE : CQ_BLOCK;
     const found = this._containerFor(query, el, self);
     this._containerUnitRead = true;
-    const value = this._unitBasis(
-      query,
-      found ? (this._containerSizes.get(found[0]) ?? null) : null,
-    );
+    const value = this._unitBasis(query, found ? this._sizeOf(found[0]) : null);
     if (found) {
       let reads = this._containerReads.get(el);
       if (!reads) this._containerReads.set(el, (reads = new Map()));
@@ -6577,12 +6588,12 @@ export class Cascade {
     // no container is an unknown, and holds nowhere
     if (!found) return false;
     const [container, style] = found;
-    const size = query.axes
-      ? (this._containerSizes.get(container) ?? null)
-      : null;
+    const size = query.axes ? this._sizeOf(container) : null;
     const scroll =
       query.scroll || query.anchored
-        ? (this._scrollStates.get(container) ?? NO_SCROLL_STATES)
+        ? (this.laidOutScroll?.(container) ??
+          this._scrollStates.get(container) ??
+          NO_SCROLL_STATES)
         : null;
     // what it compares in a `rem` or an `rlh` is the root's, wherever the
     // element is (`rootReaders`)
@@ -6734,8 +6745,8 @@ export class Cascade {
    * Every size container's content box as a layout left it, whether or not
    * a style read it (`sizeOf` as `containersMoved` takes it): a custom
    * highlight's style is worked out as the document is painted, after the
-   * layout that `containersMoved` hears of, and its `@container` rules and
-   * container units read the containers no element's style did.
+   * layout that `containersMoved` hears of, and kept until a size it may
+   * have read moves, whether or not an element's style read that one.
    */
   sizeContainers(
     containers: Iterable<Element>,
@@ -6783,58 +6794,48 @@ export class Cascade {
     const sizes = new Map<Element, ContainerSize | null | undefined>();
     const scrolls = new Map<Element, ScrollStates | undefined>();
     const moved = new Set<Element>();
-    // a query asked again reads the containers its units are of at the
-    // sizes this layout gave them, which no style may have read yet
-    this._moving = (container) => {
-      if (!sizes.has(container)) sizes.set(container, sizeOf(container));
-      return sizes.get(container);
-    };
-    try {
-      for (const [el, reads] of this._containerReads) {
-        for (const [query, read] of reads) {
-          let size: ContainerSize | null | undefined;
-          if (query.axes) {
-            size = sizes.get(read.container);
-            if (!sizes.has(read.container)) {
-              size = sizeOf(read.container);
-              sizes.set(read.container, size);
-            }
-          } else size = this._containerSizes.get(read.container) ?? null;
-          let scroll: ScrollStates | undefined;
-          if (query.scroll || query.anchored) {
-            if (!scrolls.has(read.container)) {
-              scrolls.set(read.container, scrollOf?.(read.container));
-            }
-            scroll = scrolls.get(read.container);
+    for (const [el, reads] of this._containerReads) {
+      for (const [query, read] of reads) {
+        let size: ContainerSize | null | undefined;
+        if (query.axes) {
+          size = sizes.get(read.container);
+          if (!sizes.has(read.container)) {
+            size = sizeOf(read.container);
+            sizes.set(read.container, size);
           }
-          // nothing it reads is told otherwise
-          if (size === undefined && scroll === undefined) continue;
-          if (query.axes && size === undefined) {
-            size = this._containerSizes.get(read.container) ?? null;
+        } else size = this._containerSizes.get(read.container) ?? null;
+        let scroll: ScrollStates | undefined;
+        if (query.scroll || query.anchored) {
+          if (!scrolls.has(read.container)) {
+            scrolls.set(read.container, scrollOf?.(read.container));
           }
-          const style = this.stylesOf?.(read.container);
-          if (!style) continue;
-          const now = UNIT_AXIS.has(query)
-            ? this._unitBasis(query, size ?? null)
-            : this._ask(
-                query,
-                size ?? null,
-                style,
-                query.scroll || query.anchored
-                  ? (scroll ??
-                      this._scrollStates.get(read.container) ??
-                      NO_SCROLL_STATES)
-                  : null,
-                read.container,
-              );
-          if (now !== read.answer) {
-            moved.add(el);
-            break;
-          }
+          scroll = scrolls.get(read.container);
+        }
+        // nothing it reads is told otherwise
+        if (size === undefined && scroll === undefined) continue;
+        if (query.axes && size === undefined) {
+          size = this._sizeOf(read.container);
+        }
+        const style = this.stylesOf?.(read.container);
+        if (!style) continue;
+        const now = UNIT_AXIS.has(query)
+          ? this._unitBasis(query, size ?? null)
+          : this._ask(
+              query,
+              size ?? null,
+              style,
+              query.scroll || query.anchored
+                ? (scroll ??
+                    this._scrollStates.get(read.container) ??
+                    NO_SCROLL_STATES)
+                : null,
+              read.container,
+            );
+        if (now !== read.answer) {
+          moved.add(el);
+          break;
         }
       }
-    } finally {
-      this._moving = null;
     }
     for (const [container, size] of sizes) {
       if (size !== undefined) this._containerSizes.set(container, size);
@@ -6845,14 +6846,12 @@ export class Cascade {
     return moved.size ? moved : null;
   }
 
-  /** A layout's sizes, while `containersMoved` asks the queries again. */
-  private _moving:
-    ((container: Element) => ContainerSize | null | undefined) | null = null;
-
-  /** A size container's content box: as the layout being heard of left it
-   *  (`_moving`), or as the last one did. */
+  /** A size container's content box, as the last layout left it: the
+   *  boxes' (`laidOutSize`), or as one was last heard of where they do not
+   *  say. Every read of a size comes here, a query asked again by
+   *  `containersMoved` among them, for a query's container units. */
   private _sizeOf(container: Element): ContainerSize | null {
-    const now = this._moving?.(container);
+    const now = this.laidOutSize?.(container);
     return now !== undefined
       ? now
       : (this._containerSizes.get(container) ?? null);

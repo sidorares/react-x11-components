@@ -1108,7 +1108,12 @@ export function textFade(
 /** What the builder produced, plus the document-wide text it indexed. */
 /** The first box of each element that is a size container, in a tree as
  *  it was built. */
-export function containerBoxes(root: Box): Map<Element, Box> {
+export function containerBoxes(
+  root: Box,
+  /** What a drag's layout set aside, which is the tree's for as long as it
+   *  lives and in no walk down `children` (`asideOf`). */
+  aside: ReadonlyMap<Box, Box[]> | null = null,
+): Map<Element, Box> {
   const out = new Map<Element, Box>();
   const stack: Box[] = [root];
   while (stack.length) {
@@ -1123,8 +1128,9 @@ export function containerBoxes(root: Box): Map<Element, Box> {
     ) {
       out.set(box.el, box);
     }
-    for (let i = box.children.length - 1; i >= 0; i -= 1) {
-      stack.push(box.children[i]);
+    const children = aside?.get(box) ?? box.children;
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      stack.push(children[i]);
     }
   }
   return out;
@@ -1164,8 +1170,10 @@ export interface BoxTree {
   styles: Map<Element, { style: ComputedStyle; inFlex: boolean }>;
   /** Each size container's box (`container-type`), where some style read
    *  one's size: what a layout measures the containers by
-   *  (`HtmlViewNode._containersMoved`). Taken as the tree is built, since a
-   *  layout may set boxes aside from the root's walk. */
+   *  (`HtmlViewNode._containersMoved`), and a read between layouts
+   *  (`_laidOutSize`). Taken as the tree is built, or as a read first asks
+   *  of a tree built before one did, down what a layout set aside from the
+   *  root's walk. */
   containers?: Map<Element, Box>;
   /** Every replaced box that needs a real widget, in document order. */
   controls: Box[];

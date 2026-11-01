@@ -32,9 +32,13 @@ import {
   stretchKeyword,
 } from './css/values.js';
 import { colorFormText, rgbaOf } from './css/color.js';
-import { parseUrl } from './css/parse.js';
+import {
+  GENERIC_KEYWORDS,
+  NOT_A_NAME,
+  parseUrl,
+  readFamilyName,
+} from './css/parse.js';
 import { closingParen } from './css/vars.js';
-import { unescapeIdent } from './css/specified.js';
 
 /** What a layout made of an element's principal box, in device pixels:
  *  its border box's size, and its margins, borders and padding. */
@@ -522,22 +526,6 @@ function urlText(url: string): string {
   return `url("${escaped}")`;
 }
 
-/** The generic families Chrome has as keywords. A bare one is the keyword
- *  in any case, and a string keeps its quotes only in this case, since
- *  `'Serif'` read bare is a family of that name and `'serif'` is not. */
-const GENERIC_KEYWORDS = new Set([
-  'serif',
-  'sans-serif',
-  'cursive',
-  'fantasy',
-  'monospace',
-  'system-ui',
-  'math',
-]);
-
-/** What a family name would mean with no quotes, in any case. */
-const NOT_A_NAME = /^(?:inherit|initial|unset|revert|revert-layer|default)$/i;
-
 /** An identifier as Chrome tells one here: at most one hyphen, and no digit
  *  after it. `--foo` is one to CSS, and Chrome quotes it. */
 const IDENTIFIER = /^-?[a-z_\u0080-\u{10ffff}][-\w\u0080-\u{10ffff}]*$/iu;
@@ -557,25 +545,14 @@ function familyNameText(name: string): string {
         )}"`;
 }
 
-/** One name of a `font-family` as it was written: a string, or identifiers,
- *  which come to their words with one space between (CSS Fonts 4, 4.2). */
+/** One name of a `font-family` as it was written. A host's list is no
+ *  sheet's, and may hold what `readFamilyName` is not handed. */
 function writtenFamilyText(written: string): string {
-  if (written[0] === '"' || written[0] === "'") {
-    return familyNameText(
-      unescapeIdent(
-        written
-          .replace(/^['"]|['"]$/g, '')
-          // a string carried over a line break (CSS Syntax 3, 4.3.5)
-          .replace(/\\(?:\r\n|[\n\r\f])/g, ''),
-      ),
-    );
-  }
-  const name = written
-    .split(/[ \t\n\r\f]+/)
-    .map(unescapeIdent)
-    .join(' ');
-  const lower = name.toLowerCase();
-  return GENERIC_KEYWORDS.has(lower) ? lower : familyNameText(name);
+  const family = readFamilyName(written);
+  if (!family) return familyNameText(written.replace(/[ \t\n\r\f]+/g, ' '));
+  return !family.quoted && GENERIC_KEYWORDS.has(family.name)
+    ? family.name
+    : familyNameText(family.name);
 }
 
 /** The lists read so far, by what was written: a document has few, and an

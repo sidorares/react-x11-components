@@ -14,13 +14,14 @@
 // properties for the dozen a shape has, on a page of hundreds of icons.
 import type { Element } from 'domhandler';
 import { LIGHT_DARK, SYSTEM_COLOR, lightDark, systemColors } from './color.js';
+import { familyList } from './parse.js';
 import {
   inkColor,
   parseAlpha,
   parseColor,
   parseLength,
-  splitCommas,
   splitValue,
+  trimValue,
 } from './values.js';
 import type { UnitContext } from './values.js';
 
@@ -281,7 +282,7 @@ export function shapeValue(
   raw: string,
   ctx: ShapeContext,
 ): string | null {
-  let value = raw.trim();
+  let value = trimValue(raw);
   const wide = value.toLowerCase();
   if (wide === 'inherit') return PROPS[prop] ? 'inherit' : null;
   if (wide === 'initial') {
@@ -400,15 +401,8 @@ export function shapeValue(
       return px !== null && px >= 0 ? String(px) : null;
     }
     case 'font-family': {
-      const names = splitCommas(value);
-      if (!names.length || !names.every(isFamilyName)) return null;
-      const list = names
-        .map((name) =>
-          /^['"]/.test(name)
-            ? name.slice(1, -1)
-            : name.trim().replace(/\s+/g, ' '),
-        )
-        .join(', ');
+      const list = familyList(value);
+      if (list === null) return null;
       // the families the document loads itself, as the text engine knows
       // them (`fonts.ts`): a page's `Ahem` is no name the engine has
       return quotedFamilies(ctx.units.families?.(list) ?? list);
@@ -447,22 +441,6 @@ const FONT_SIZE_WORDS = new Set([
  *  it. */
 const INHERITED_SIZE = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?(?:em|ex|%)$/;
 
-/** A family name: quoted, or identifiers (CSS Fonts 4, 2.1). */
-function isFamilyName(name: string): boolean {
-  const n = name.trim();
-  if (/^(['"]).*\1$/s.test(n)) return n.length >= 2;
-  return (
-    n !== '' &&
-    n
-      .split(/\s+/)
-      .every((word) =>
-        /^-?(?:[_a-z\u00a0-\uffff]|\\.)(?:[-\w\u00a0-\uffff]|\\.)*$/i.test(
-          word,
-        ),
-      )
-  );
-}
-
 /**
  * The longhands a `font` shorthand gives a shape (CSS Fonts 4, 2.8), each
  * as `shapeValue` writes it: its style, its weight, its size and its
@@ -475,7 +453,7 @@ export function shapeFont(
   raw: string,
   ctx: ShapeContext,
 ): Record<string, string> | null {
-  const value = raw.trim();
+  const value = trimValue(raw);
   const wide = value.toLowerCase();
   if (
     wide === 'inherit' ||

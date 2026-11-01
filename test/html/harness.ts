@@ -1623,6 +1623,13 @@ export function pathOf(el: Element | null | undefined): string {
   return steps.reverse().join('.');
 }
 
+/** A number to a thousandth, off the grid's halves: a sum in a kept box's
+ *  place comes out a last bit from the same sum in a new one's, and on a
+ *  half that is two thousandths — 390.9775 and 390.97749999999996, seed 364
+ *  of the image sweep — where half thousandths are what line heights come
+ *  to. */
+const thousandths = (n: number): number => Math.round(n * 1000 + 0.2137) / 1000;
+
 /** What a box says of itself that two builds must agree on. */
 function boxLine(box: Box): string {
   const s = box.style;
@@ -1640,9 +1647,7 @@ function boxLine(box: Box): string {
       ? ''
       : // to a thousandth of a pixel: Yoga's sizes are float32, and one a
         // kept box's layout measured comes out a last bit or two apart
-        [box.x, box.y, box.width, box.height]
-          .map((n) => Math.round(n * 1000) / 1000)
-          .join(','),
+        [box.x, box.y, box.width, box.height].map(thousandths).join(','),
     s.display,
     s.position,
     s.float,
@@ -1661,7 +1666,7 @@ function boxLine(box: Box): string {
     box.kind === 'text' || box.kind === 'break'
       ? ''
       : [box.boundsX, box.boundsY, box.boundsWidth, box.boundsHeight]
-          .map((n) => Math.round(n * 1000) / 1000)
+          .map(thousandths)
           .join(','),
     box.lines?.length ?? '',
     // a list item's number
@@ -1678,7 +1683,7 @@ function boxLine(box: Box): string {
           line.baseline,
           ...line.texts.flatMap((t) => [t.drawX, t.drawY]),
         ]
-          .map((n) => Math.round(n * 1000) / 1000)
+          .map(thousandths)
           .join(','),
       )
       .join(';'),

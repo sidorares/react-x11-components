@@ -45,7 +45,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
 | `onParsed`           | `() => void`                                     | The parse has ended and core has laid the element out. Once a document.                                                                                                                                                                                                                             |
-| `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout. Once a document.                                                                                                                                                                                   |
+| `onLoaded`           | `() => void`                                     | Everything the document asked for has arrived or failed, counted from its first complete layout, but for a [lazy image](#lazy-images). Once a document.                                                                                                                                             |
 | `onLink`             | `(href, ev) => void`                             | A link was activated — clicked, or Enter on it — see [Focus and the keyboard](#focus-and-the-keyboard). Absent, nothing follows it: this never navigates by itself.                                                                                                                                 |
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
@@ -82,7 +82,7 @@ handle.refresh();
 | `refresh(changes?)`                                                                     | The DOM changed — its nodes, attributes or text: restyle, re-lay-out, repaint, every element read as it is now. Told what changed, shaped as `MutationObserver` records (`HtmlChange`), it restyles only what a selector that tests the change reaches — see [Telling it what changed](#telling-it-what-changed).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `elementAt(x, y)`                                                                       | The element under a point, in the window's logical coordinates — the ones a mouse event's `x`/`y` carry — in the document as it is now: one changed since the last paint is laid out first, as `elementRect` lays it out. In whichever tree it is: one in a shadow tree is that element, not its host. A point in the viewport past what the document lays out is the root element, which paints the canvas, as a browser has it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `hrefAt(x, y)`                                                                          | The link under a point, resolved as `onLink` is handed one — for a status bar, or a menu on a link.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. A box fixed to the viewport, and what is in it, is where the scroll draws it. Null for an element with no box.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `elementRect(element)`                                                                  | Where an element is, in logical pixels from the document's top left — the space a scrolling box's offset is in. A block's border box; an inline element's across its fragments, padding and border included, as `getBoundingClientRect` measures it, and as tall as its lines — and, where a block inside it broke it in pieces, across the lines of those blocks too, from where clearance moved a block down from, as a browser's is. An inline element with nothing in it is a rectangle of no width where it stands among what is on its lines, as tall as its font. A box fixed to the viewport, and what is in it, is where the scroll draws it. Null for an element with no box.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `indicatedPart()`                                                                       | Where `baseUrl`'s fragment points, laid out first, for the host to scroll there: `{ element, rect, block }` — the text its [text directives](#text-fragments) found, `element` null and `block` `'center'`, or the element it names, `block` `'start'` — with `rect` in `elementRect`'s coordinates. Null where it points at neither.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `offsetRect(element)`                                                                   | Where an element is as `offsetParent`, `offsetLeft`, `offsetTop`, `offsetWidth` and `offsetHeight` measure it, laid out first — `{ parent, x, y, width, height }`: its offset parent, which is the nearest positioned, transformed or contained element around it, or a `<td>`, a `<th>` or a `<table>` around one that is not positioned, or the `<body>`; and its border box from that one's padding edge, in logical pixels, where layout put it before a transform or a scroll moved it. As Chrome has them where it parts from CSSOM View's words: see [Offsets](#offsets). Null for an element with no box.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `scrollState(element)`                                                                  | Where a scroll container is scrolled to, how far it can be and its scrollport, in CSS pixels — `{ x, y, width, height, clientWidth, clientHeight, clientTop, clientLeft }`, what `scrollLeft`, `scrollTop`, `scrollWidth`, `scrollHeight` and their kin answer — laid out first. Null for an element that is no scroll container.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -460,8 +460,47 @@ and WebKit read it, and how HTML says. Chrome 154 takes `auto` after a
 space or after another entry, and `100vw` for the whole list in an image
 that is not lazy. An image that is
 `display: none` is not laid out, so `auto` is the width it last had, or is
-passed over. Unlike a browser, which lazily loads only what nears the
-viewport, `<Html>` asks for every image, a lazy one included.
+passed over.
+
+### Lazy images
+
+An `<img loading="lazy">` in a document whose scripts run is asked for
+through `onResource` once it comes near the viewport, as [HTML has
+it](https://html.spec.whatwg.org/multipage/urls-and-fetching.html#lazy-loading-attributes),
+and holds no `load`. Near is within 1,250 CSS pixels of what can be seen,
+across and down, and of what each scroll container around it shows, which
+is Chrome's figure on a fast connection, and within 4,000 until the
+document's `load`, while where a box will end up is a guess. HTML leaves the
+distance to the browser. Each case below was tried in Chrome, Firefox and
+WebKit, and `<Html>` does what all three do unless the line says otherwise.
+
+- **With scripts off, `loading` is ignored.** HTML says so: a server could
+  otherwise read a reader's way down a page from what it was asked for and
+  when. `<Html>` with no `scripts` and no `scripting` asks for every image
+  as it always has.
+- **A lazy image holds no `load`,** one in view included. `onLoaded` and the
+  window's `load` can come before it. Asked for by an eager image as well, a
+  URL holds `load` as any does.
+- **A page reads what has come to nothing yet:** `complete` is false,
+  `naturalWidth` is 0 and `currentSrc` is empty, as Chrome and Firefox have it
+  (WebKit answers the URL), and `decode()` waits, as Chrome and WebKit have it
+  (Firefox rejects). No read asks for the image, whatever it forces.
+- **An image with no `width` and `height` has no size until it arrives,** so
+  what is below it moves when it does. Off screen, or a pixel from the size
+  it had, that waits for the reader to come near, for the scroll to end or
+  for a read of the page's, which answers as though it had not waited.
+- **`display: none` has no box, so it waits.** So does an image in no
+  document at all, `new Image()` with `loading` set, and one clipped out of
+  sight by a box that does not scroll, like `overflow: clip`. `visibility:
+hidden` has a box, and is asked for.
+- **`loading` set to anything but `lazy`** asks at once for what waited.
+- **A URL the document has shows in a lazy image at any distance,** and the
+  image hears its `load`. It is one request.
+- **`loading` set after `src` in one task counts,** since an image is asked
+  for at the end of the task that set its source.
+
+`<iframe loading="lazy">` is not read: what a frame shows is the host's
+(`renderEmbedded`).
 
 ### Image sets
 
@@ -3385,7 +3424,16 @@ step 8), as Chrome, Firefox and Safari paint it: over the text of a block
 after it that a negative margin draws up under it, and over a relative
 box before it. An inline-block or an image is one as much as a block is,
 and so is one that is positioned: painted with the positioned boxes, over
-the text after it on its line and on the lines after that. An
+the text after it on its line and on the lines after that. So is an inline
+box an inset moves, `position: relative` or `sticky`, with all it holds: its
+text, its background and borders and what is on its lines are drawn and hit
+in its turn among the positioned boxes, so the text after it goes under it,
+and it goes over an absolute box before it, as all three engines have it. One
+with every inset `auto` is in its paragraph's one layout and stays on its
+line, so an absolute box before it, or a line a negative margin draws up over
+it, goes over it where a browser draws that under it. So does what is over
+one inside an inline box `opacity` fades, whose text has the fade in its
+colours. An
 absolute box with both offsets on an axis fills what they leave, or, with
 a width, shares it between its `auto` margins, which is how `margin: auto`
 centres one. The height two offsets leave is definite, as one the box
@@ -5458,7 +5506,9 @@ where a fixed box is, so its copy of a step does not drag the box with the
 text. What a sticky box holds goes with it but for a box fixed to the
 viewport, which stays where the viewport has it; a relative box's offset
 moves one only along an axis it has no inset on, where it is at its static
-position, as Chrome has both. A step of the pane's scroll that moves one
+position, as Chrome has both. A transform moves it from where it sticks, its own
+and one around it alike, and takes nothing from where it sticks, as Chrome,
+Firefox and WebKit have it: a stuck header `translateY(-100%)` hides is hidden. A step of the pane's scroll that moves one
 works out the ink of that box and what it holds, and grows the boxes around
 it only as far as it reaches past them, which its container, holding it,
 never needs: the whole document's was worked out again at every step, and
@@ -5470,9 +5520,9 @@ placed by the rectangle around its own fragments and moves as one, however
 many lines it is on and with whatever blocks it was broken around, while the
 lines stay where they are. What keeps it in is the block around it the markup
 wrote, not an anonymous one around its line, and the margins above and below
-it, which take no room on a line, count all the same. It is drawn with its line,
-as a relative inline box is, so what comes after it in the flow is drawn over
-it where a browser draws that under it.
+it, which take no room on a line, count all the same. It is painted with the
+positioned boxes, as a relative inline box with an inset is, so what scrolls
+under it goes under it.
 
 **The scroll keys scroll a container** — the arrows a line of 40 CSS
 pixels, Page Up, Page Down and Space seven eighths of the scrollport, Home
