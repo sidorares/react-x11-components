@@ -40,6 +40,7 @@ import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
 import { NO_MEDIA_DEVICES } from '../media-devices.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
+import type { HtmlWebGL } from '../webgl.js';
 import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
@@ -208,6 +209,14 @@ export interface HtmlScripts {
    * (docs/prd-webrtc.md).
    */
   mediaDevices?: HtmlMediaDevices;
+  /**
+   * What a page's WebGL contexts draw through. Default none: a context keeps
+   * the state a page sets and reads back, and draws nothing. `gpuWebGL()` is
+   * one, x11-dri's GL with no window behind it. It hands a page's shaders to
+   * the driver as they are written, with none of the validation a browser's
+   * WebGL has: see `src/html/webgl.ts`.
+   */
+  webgl?: HtmlWebGL;
   /**
    * Whether a page may register service workers (`navigator.serviceWorker`,
    * Service Workers 1), each a worker thread with its lifecycle and its
@@ -462,6 +471,7 @@ export function useScriptedHtml(
     webSocket: config.webSocket ?? NO_WEBSOCKET,
     webRTC: config.webRTC ?? NO_WEBRTC,
     mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,
+    webgl: config.webgl,
     cookies: config.cookies,
     storage: config.storage,
     drawsFrames: frames,
@@ -646,6 +656,7 @@ export function useScriptedHtml(
     onDomEvent,
     onElementScroll,
     canvasImage,
+    canvasOpaque: scripts.canvasOpaque,
     onLink,
     onSubmit,
     stylesheet,

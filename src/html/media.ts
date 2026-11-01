@@ -334,11 +334,13 @@ export function mediaRectsOf(
   /** Filled with what the document paints over each player (`coversOf`),
    *  by its element. */
   covers: Map<Element, Cover[]>,
+  /** Whether a canvas's picture lets nothing behind it show. */
+  opaque: (el: Element) => boolean = () => false,
 ): MediaRect[] {
   const out: MediaRect[] = [];
   for (const box of tree.media) {
     const over: Cover[] = [];
-    const placed = placementOf(tree, box, scale, over);
+    const placed = placementOf(tree, box, scale, over, false, opaque);
     if (!placed) continue;
     const el = placed.element;
     // asked last, and only of what can be mounted: a host is not asked for
@@ -522,6 +524,8 @@ function placementOf(
   /** Whether one in a box fixed to the viewport is placed, at the viewport
    *  (`atViewport`), rather than refused. */
   fixed = false,
+  /** Whether a canvas's picture lets nothing behind it show. */
+  opaque: ((el: Element) => boolean) | null = null,
 ): {
   element: Element;
   x: number;
@@ -536,6 +540,7 @@ function placementOf(
   atViewport?: true;
   held?: true;
   heldBy?: { x: number; y: number };
+  hidden?: true;
 } | null {
   const el = box.el;
   if (!el) return null;
@@ -568,6 +573,7 @@ function placementOf(
   const round = cut ? cut.radius : 0;
   const shows = clip ? shownBy(clip, picture) : picture;
   const reach = inset(shows, OVERLAP);
+  let hidden = false;
   if (reach.width > 0 && reach.height > 0) {
     // the sticky boxes the viewport holds are asked about where the scroll
     // has them, as the fixed ones are, for an embedded element: asked of
@@ -586,7 +592,12 @@ function placementOf(
       // nothing but its own ink and its ancestors' may be within reach.
       const found = coverersOver(box, reach);
       if (found) {
-        const over = coversOf(tree, found, shows, scale);
+        // nothing of it shows, so nothing need be painted over it again:
+        // at the end of Apple's scrubbed clip a WebGL canvas fills the
+        // screen over it, and painted again over the player that was twice
+        // the cost of the rest of a frame together
+        hidden = !!opaque && found.some((c) => hides(c, shows, opaque));
+        const over = hidden ? [] : coversOf(tree, found, shows, scale);
         if (!over) return null;
         drawnOver.push(...over);
       } else if (crowded(tree, box, reach)) return null;
@@ -629,7 +640,43 @@ function placementOf(
     }),
     ...(atViewport && { atViewport: true as const }),
     ...(heldBy && { held: true as const, heldBy }),
+    ...(hidden && { hidden: true as const }),
   };
+}
+
+/**
+ * Whether a box painted after a video, or something in it, is an opaque
+ * canvas over all of what the video `shows`, with nothing around it to let the
+ * video through: a fade, a mask, a turn. A canvas is drawn from its box, which
+ * is what asks no more than this of what the context drew.
+ */
+function hides(
+  cover: Box,
+  shows: Rect,
+  opaque: (el: Element) => boolean,
+): boolean {
+  const see = (box: Box): boolean => {
+    const style = box.style;
+    if (
+      style.opacity < 1 ||
+      style.filter !== null ||
+      style.clipPath ||
+      masked(style) ||
+      placedMatrix(box)
+    ) {
+      return false;
+    }
+    if (box.replaced === 'frame' && box.el && opaque(box.el)) {
+      return (
+        box.contentX <= shows.x &&
+        box.contentY <= shows.y &&
+        box.contentX + box.contentWidth >= shows.x + shows.width &&
+        box.contentY + box.contentHeight >= shows.y + shows.height
+      );
+    }
+    return box.children.some(see);
+  };
+  return see(cover);
 }
 
 /** A box the document paints after a video, which reaches its picture,

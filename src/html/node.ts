@@ -606,6 +606,7 @@ export interface HtmlViewProps {
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
   canvasImage?: (element: Element) => unknown | null;
+  canvasOpaque?: (element: Element) => boolean;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -5445,6 +5446,7 @@ export class HtmlViewNode extends Node {
           this._scale,
           (el) => this._sourceOf('video', el),
           this._covers,
+          (el) => this._props().canvasOpaque?.(el) ?? false,
         )
       : [];
     const mounted = new Set(this._mediaLaid.map((r) => r.element));
@@ -5624,6 +5626,14 @@ export class HtmlViewNode extends Node {
     source: K extends 'video' ? VideoSource : AudioSource;
     url: string;
   } | null {
+    const clip = kind === 'video' ? this._clips.get(el) : undefined;
+    if (clip) {
+      const source = { kind: 'video', src: clip } as const;
+      return {
+        source: source as K extends 'video' ? VideoSource : AudioSource,
+        url: clip,
+      };
+    }
     for (const { url, type } of this._videoChoice(el)) {
       if (this._resources.media(kind, url) === undefined) {
         this._resources.requestMedia(kind, url, type, el);
@@ -5653,6 +5663,22 @@ export class HtmlViewNode extends Node {
     );
     this._videoChoices.set(el, { signature, candidates });
     return candidates;
+  }
+
+  /** The files a page's `MediaSource`s came to, by their `<video>`s
+   *  (`showClip`). */
+  private readonly _clips = new WeakMap<Element, string>();
+
+  /**
+   * What a page's `MediaSource` came to, as a file (`scripts/clips.ts`): what
+   * the element's player plays from now on, whatever it was asked for
+   * before, or with null nothing any more. A `<video>` whose `src` is a
+   * `MediaSource` has no URL a host could answer for.
+   */
+  showClip(element: Element, file: string | null): void {
+    if (file) this._clips.set(element, file);
+    else this._clips.delete(element);
+    this._reportMedia();
   }
 
   /**

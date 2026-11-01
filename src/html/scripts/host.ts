@@ -145,7 +145,10 @@ import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import { removeClip, VideoClips, writeClip } from './clips.js';
+import { PageContexts } from './gl.js';
 import { PageSources } from './media-sources.js';
+import type { HtmlGLOptions, HtmlWebGL } from '../webgl.js';
 import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
@@ -484,6 +487,9 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** The file a page's `MediaSource` came to, for a `<video>`'s player to
+   *  play, or null for none any more (`clips.ts`). */
+  showClip(element: Element, file: string | null): void;
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
@@ -620,6 +626,9 @@ export interface HostSeams {
   /** The page's cameras, microphones and screens (`HtmlScripts`'
    *  `mediaDevices`). Absent, there are none. */
   mediaDevices?: HtmlMediaDevices;
+  /** What a page's WebGL contexts draw through (`HtmlScripts`' `webgl`).
+   *  Absent, they keep their state and draw nothing. */
+  webgl?: HtmlWebGL;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -1477,6 +1486,37 @@ export class DomHost {
   private _adoptedSheets = new Map<number, AdoptedSheet>();
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
+  /** What a page's `MediaSource`s were appended (`clips.ts`), and the files
+   *  the player is handed them in. */
+  private readonly _clips = new VideoClips({
+    plays: (type) => !!this._seams.canPlayType?.(type),
+    write: writeClip,
+    remove: removeClip,
+    show: (element, file) => this._seams.handle.showClip?.(element, file),
+  });
+  /** A page's WebGL contexts, where the host has a GL (`gl.ts`). */
+  private readonly _contexts = new PageContexts({
+    webgl: () => this._seams.webgl,
+    pixels: (element, width, height) => {
+      let pixels = this._s.canvases.get(element);
+      if (!pixels || pixels.width !== width || pixels.height !== height) {
+        pixels = {
+          width,
+          height,
+          data: new Uint8ClampedArray(width * height * 4),
+          version: 0,
+        };
+        this._s.canvases.set(element, pixels);
+      }
+      return pixels.data;
+    },
+    drawn: (element) => {
+      const pixels = this._s.canvases.get(element);
+      if (pixels) pixels.version += 1;
+      else this._contexts.settle(element);
+      for (const listener of [...this._s.canvasListeners]) listener(element);
+    },
+  });
   /** What each media element's source is being read for (`_mediaFetch`). */
   private _mediaFetches = new Map<
     Element,
@@ -1909,7 +1949,13 @@ export class DomHost {
 
   /** A `<canvas>`'s pixels, where a script drew any. */
   canvas(element: Element): CanvasPixels | null {
+    this._contexts.settle(element);
     return this._s.canvases.get(element) ?? null;
+  }
+
+  /** Whether a canvas's picture has nothing behind it show through. */
+  canvasOpaque(element: Element): boolean {
+    return this._contexts.opaque(element);
   }
 
   /** Be told when a canvas's pixels change; answers the way to stop. */
@@ -2150,6 +2196,8 @@ export class DomHost {
     this._fetches.clear();
     for (const fetch of this._mediaFetches.values()) fetch.abort();
     this._mediaFetches.clear();
+    this._clips.dispose();
+    this._contexts.dispose();
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
@@ -4669,6 +4717,37 @@ export class DomHost {
         return crypto.randomUUID();
       case 'fetch':
         this._fetch(Number(a), text(b));
+        return null;
+      // a page's WebGL contexts, where the host has a GL (`gl.ts`)
+      case 'glOpen':
+        return this._contexts.open(JSON.parse(text(a)) as HtmlGLOptions);
+      case 'glRun':
+        this._contexts.run(Number(a), text(b));
+        return null;
+      case 'glAsk':
+        return this._contexts.ask(Number(a), text(b));
+      case 'glResize':
+        this._contexts.resize(Number(a), Number(b), Number(c));
+        return null;
+      case 'glPresent':
+        this._contexts.present(Number(a), this._element(b));
+        return null;
+      // a page's `MediaSource` (`mse.ts`), its bytes kept here (`clips.ts`)
+      case 'mseOpen':
+        return this._clips.open(text(a), this._element(b));
+      case 'mseAppend':
+        return JSON.stringify(
+          this._clips.append(Number(a), Buffer.from(text(b), 'base64')),
+        );
+      case 'mseRemove':
+        return JSON.stringify(
+          this._clips.remove(Number(a), Number(b), Number(c)),
+        );
+      case 'mseEnd':
+        this._clips.end(Number(a));
+        return null;
+      case 'mseClose':
+        this._clips.close(Number(a));
         return null;
       case 'mediaFetch':
         this._mediaFetch(this._element(a), Number(b), text(c));

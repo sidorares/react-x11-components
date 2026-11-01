@@ -1,6 +1,8 @@
 // A `<canvas>`'s WebGL context, as a page's scripts see it: every
 // interface WebGL 1 and 2 define, of the page's own classes, over a context
-// that keeps the state a page sets and reads back and draws nothing.
+// that keeps the state a page sets and reads back, and draws nothing unless
+// the host handed in something that draws (`HtmlScripts.webgl`, the end of
+// this file).
 //
 // **This function is source text**, as `installDom` is (`dom.ts`): the
 // engine hands it to the context through `Function.prototype.toString()`,
@@ -26,9 +28,29 @@
 export interface WebGLInstall {
   classes: Record<string, unknown>;
   context(canvas: unknown, kind: 'webgl' | 'webgl2', options: unknown): unknown;
+  /** The canvas took a new size, which is its drawing buffer's. */
+  resized(context: unknown): void;
 }
 
-export function installWebGL(Event: unknown): WebGLInstall {
+// the page's, as `dom.ts`'s are: this runs in its context
+declare const queueMicrotask: (fn: () => void) => void;
+
+/** What a context asks of the realm around it. */
+export interface WebGLHost {
+  /** Asks the host (`gl…`, `gl.ts`): a primitive each way. */
+  call(op: string, a?: unknown, b?: unknown, c?: unknown): unknown;
+  base64(bytes: Uint8Array): string;
+  bytes(base64: string): Uint8Array;
+  /** The canvas as the host numbers it: null for one that is no element. */
+  id(canvas: unknown): number | null;
+  /** A source's pixels, for `texImage2D`: straight RGBA, or null where the
+   *  realm has none of it. */
+  pixelsOf(
+    source: unknown,
+  ): { width: number; height: number; data: Uint8Array } | null;
+}
+
+export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
   'use strict';
   type Any = any;
 
@@ -1147,6 +1169,233 @@ export function installWebGL(Event: unknown): WebGLInstall {
   }
   install(WebGL2RenderingContext, methods2);
 
+  // --- a context that draws -----------------------------------------------------
+  //
+  // Where the host has a GL (`HtmlScripts.webgl`) a context's calls go to it
+  // as well: the methods above go on keeping the state a page reads back,
+  // and what a driver has to answer is asked of it. Calls are queued as JSON
+  // and sent where something has to be answered and at the end of a task, so
+  // a frame of a few hundred calls is a few crossings, and the bytes a call
+  // carries are base64, since a string is what crosses. Nothing here is
+  // handed anything of the host's but numbers and strings. What a page reads
+  // of a context on the way through may be its own hand in `JSON` or `Array`:
+  // these are taken before any page code runs.
+  const stringify: Any = JSON.stringify;
+  const parse: Any = JSON.parse;
+  const isView: Any = ArrayBuffer.isView;
+  const classOf: Any = Object.prototype.toString;
+  const apply: Any = Reflect.apply;
+  const Uint8: Any = Uint8Array;
+  const tagOf: Any = Object.getOwnPropertyDescriptor(
+    Object.getPrototypeOf(Uint8Array.prototype),
+    Symbol.toStringTag,
+  )!.get;
+
+  /** What the driver answers, past what a context keeps. */
+  const ASKED = new Set([
+    'checkFramebufferStatus',
+    'getActiveAttrib',
+    'getActiveUniform',
+    'getAttribLocation',
+    'getError',
+    'getProgramInfoLog',
+    'getProgramParameter',
+    'getShaderInfoLog',
+    'getShaderParameter',
+    'getUniformLocation',
+    'readPixels',
+  ]);
+  /** What draws, and shows where the default framebuffer is bound. */
+  const DRAWS = new Set([
+    'blitFramebuffer',
+    'clear',
+    'drawArrays',
+    'drawArraysInstanced',
+    'drawElements',
+    'drawElementsInstanced',
+  ]);
+  /** A context's own answers, which change nothing a driver holds. */
+  const KEPT = /^(?:get|is[A-Z])/;
+
+  let objects = 0;
+  /** The contexts with something to send at the end of this task. */
+  const waiting = new Set<Any>();
+  let flushing = false;
+
+  /** A call's argument as `src/html/webgl.ts` reads it. */
+  const written = (arg: Any): Any => {
+    if (arg === null || arg === undefined) return null;
+    if (typeof arg !== 'object') return arg;
+    if (arg instanceof WebGLObject) return ['o', (arg as Any)._live ?? 0];
+    if (arg instanceof WebGLUniformLocation) return (arg as Any)._live;
+    if (isView(arg)) {
+      const bytes = new Uint8(arg.buffer, arg.byteOffset, arg.byteLength);
+      return ['b', apply(tagOf, arg, []), host.base64(bytes)];
+    }
+    if (apply(classOf, arg, []) === '[object ArrayBuffer]') {
+      return ['b', 'Uint8Array', host.base64(new Uint8(arg))];
+    }
+    if (Array.isArray(arg)) return ['a', ...arg];
+    return null;
+  };
+  const send = (s: Any): void => {
+    if (!s.queue.length) return;
+    const calls = stringify(s.queue);
+    s.queue = [];
+    host.call('glRun', s.live, calls);
+  };
+  const flushAll = (): void => {
+    flushing = false;
+    for (const s of waiting) {
+      send(s);
+      if (s.drew) {
+        s.drew = false;
+        host.call('glPresent', s.live, host.id(s.canvas));
+      }
+    }
+    waiting.clear();
+  };
+  const soon = (s: Any): void => {
+    waiting.add(s);
+    if (flushing) return;
+    flushing = true;
+    queueMicrotask(flushAll);
+  };
+  /** What the driver says, once what was queued has run. */
+  const ask = (s: Any, name: string, args: Any[]): Any => {
+    s.queue[s.queue.length] = [name, ...args.map(written)];
+    const calls = stringify(s.queue);
+    s.queue = [];
+    const answer = host.call('glAsk', s.live, calls);
+    return typeof answer === 'string' ? parse(answer) : null;
+  };
+  /** A source element or an `ImageData` as `texImage2D`'s long form: its
+   *  pixels, turned as `pixelStorei` said to take them. */
+  const sourced = (s: Any, args: Any[]): Any[] | null => {
+    const [target, level, internal, format, type, source] =
+      args.length === 6
+        ? args
+        : [...args.slice(0, 3), args[6], args[7], args[8]];
+    const pixels = host.pixelsOf(source);
+    if (!pixels) return null;
+    const { width, height } = pixels;
+    let { data } = pixels;
+    if (s.params.UNPACK_FLIP_Y_WEBGL) {
+      const stride = width * 4;
+      const turned = new Uint8(data.length);
+      for (let y = 0; y < height; y += 1) {
+        const from = y * stride;
+        turned.set(
+          data.subarray(from, from + stride),
+          (height - 1 - y) * stride,
+        );
+      }
+      data = turned;
+    }
+    return [target, level, internal, width, height, 0, format, type, data];
+  };
+  const SOURCE_FORM = (args: Any[]): boolean =>
+    args.length === 6 ||
+    (args.length === 9 &&
+      args[8] !== null &&
+      typeof args[8] === 'object' &&
+      !isView(args[8]));
+
+  const liveCall = (
+    gl: Any,
+    s: Any,
+    name: string,
+    fn: Any,
+    args: Any[],
+  ): Any => {
+    switch (name) {
+      case 'getSupportedExtensions':
+        return [...s.extensions];
+      case 'getExtension': {
+        const wanted = `${args[0]}`;
+        s.found ??= {};
+        if (!s.extensions.includes(wanted)) return null;
+        return (s.found[wanted] ??= {});
+      }
+      case 'bufferData':
+        args = args.slice(0, 3);
+        break;
+      case 'texImage2D':
+        if (SOURCE_FORM(args)) {
+          const long = sourced(s, args);
+          if (!long) return undefined;
+          args = long;
+        }
+        break;
+      case 'drawRangeElements':
+        name = 'drawElements';
+        args = [args[0], args[3], args[4], args[5]];
+        break;
+    }
+    if (ASKED.has(name)) {
+      if (name === 'readPixels') {
+        const [x, y, w, h, format, type, into, offset] = args;
+        const size = into
+          ? into.byteLength - (offset ?? 0) * into.BYTES_PER_ELEMENT
+          : 0;
+        const b64 = ask(s, name, [x, y, w, h, format, type, size]);
+        if (typeof b64 === 'string' && into) {
+          new Uint8(into.buffer, into.byteOffset, into.byteLength).set(
+            host.bytes(b64),
+            (offset ?? 0) * into.BYTES_PER_ELEMENT,
+          );
+        }
+        return undefined;
+      }
+      const answer = ask(s, name, args);
+      if (name === 'getUniformLocation') {
+        return answer === null
+          ? null
+          : make(WebGLUniformLocation, { _live: answer });
+      }
+      if (name === 'getActiveAttrib' || name === 'getActiveUniform') {
+        return answer && make(WebGLActiveInfo, answer);
+      }
+      return answer;
+    }
+    // a uniform a shader optimized away has a null location, and setting it
+    // does nothing: said to GL it would be location 0, someone else's
+    if (args[0] === null && name.startsWith('uniform')) return undefined;
+    const out = apply(fn, gl, args);
+    if (KEPT.test(name)) return out;
+    if (name.startsWith('create') && out) {
+      objects += 1;
+      Object.defineProperty(out, '_live', { value: objects });
+      s.queue[s.queue.length] = [name, objects, ...args.map(written)];
+    } else {
+      s.queue[s.queue.length] = [name, ...args.map(written)];
+    }
+    if (DRAWS.has(name) && s.params.FRAMEBUFFER_BINDING === null) s.drew = true;
+    soon(s);
+    return out;
+  };
+  for (const C of [WebGLRenderingContext, WebGL2RenderingContext]) {
+    for (const name of Object.getOwnPropertyNames(C.prototype)) {
+      const fn = Object.getOwnPropertyDescriptor(C.prototype, name)?.value;
+      if (typeof fn !== 'function' || name === 'constructor') continue;
+      const forward = {
+        [name](this: Any, ...args: Any[]) {
+          const s = own(this);
+          return s.live
+            ? liveCall(this, s, name, fn, args)
+            : apply(fn, this, args);
+        },
+      }[name];
+      Object.defineProperty(forward, 'length', { value: fn.length });
+      Object.defineProperty(C.prototype, name, {
+        value: forward,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  }
+
   const ATTRIBUTES = {
     alpha: true,
     antialias: true,
@@ -1207,6 +1456,27 @@ export function installWebGL(Event: unknown): WebGLInstall {
         STENCIL_TEST: false,
       };
       if (two) enabled.RASTERIZER_DISCARD = false;
+      // a GL of the host's, where it has one and this is an element's: the
+      // page can draw on no canvas nothing shows
+      const element = host.id(canvas);
+      const opened =
+        element === null
+          ? null
+          : parse(
+              host.call(
+                'glOpen',
+                stringify({
+                  version: two ? 2 : 1,
+                  width: canvas.width,
+                  height: canvas.height,
+                  alpha: attributes.alpha,
+                  depth: attributes.depth,
+                  stencil: attributes.stencil,
+                  antialias: attributes.antialias,
+                  premultipliedAlpha: attributes.premultipliedAlpha,
+                }),
+              ) as string,
+            );
       stateOf.set(gl, {
         canvas,
         two,
@@ -1216,8 +1486,22 @@ export function installWebGL(Event: unknown): WebGLInstall {
         params: initialState(canvas.width, canvas.height),
         drawingBufferColorSpace: 'srgb',
         unpackColorSpace: 'srgb',
+        live: opened?.id ?? 0,
+        extensions: opened?.extensions ?? [],
+        queue: [],
+        drew: false,
       });
       return gl;
+    },
+    resized(context: Any): void {
+      const s = own(context);
+      s.params.VIEWPORT = [0, 0, s.canvas.width, s.canvas.height];
+      s.params.SCISSOR_BOX = [0, 0, s.canvas.width, s.canvas.height];
+      if (!s.live) return;
+      send(s);
+      host.call('glResize', s.live, s.canvas.width, s.canvas.height);
+      s.drew = true;
+      soon(s);
     },
   };
 }

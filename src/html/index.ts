@@ -231,6 +231,13 @@ export type {
   MediaVideoFrame,
 } from './media-devices.js';
 export { fakeMediaDevices } from './fake-media.js';
+export { gpuWebGL } from './webgl.js';
+export type {
+  HtmlGLCommand,
+  HtmlGLContext,
+  HtmlGLOptions,
+  HtmlWebGL,
+} from './webgl.js';
 export type { FakeMediaDevices, FakeMediaOptions } from './fake-media.js';
 export { linkTarget, navigableFor } from './scripts/target.js';
 export type { Navigable } from './scripts/target.js';
@@ -582,6 +589,12 @@ export interface HtmlProps {
    * content](docs/components/html.md#embedded-content).
    */
   canvasImage?: (element: Element) => unknown | null;
+  /**
+   * Whether `canvasImage`'s picture lets nothing behind it show: a WebGL
+   * context with no alpha. A player under one that covers it is hidden, and
+   * nothing is painted over it again.
+   */
+  canvasOpaque?: (element: Element) => boolean;
   /**
    * What to show in an `<iframe>`, a `<canvas>` or an `<embed>`: called with
    * where the element's content box is, in this component's space, and what
@@ -1219,6 +1232,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onCssEvents: props._onCssEvents,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
+    canvasOpaque: props.canvasOpaque,
     domRevision,
     animate,
     reducedMotion,
@@ -1413,6 +1427,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.atViewport(element) ?? false,
       scrollMoves: (scroller: Element, element: Element) =>
         nodeRef.current?.scrollMoves(scroller, element) ?? false,
+      showClip: (element: Element, file: string | null) =>
+        nodeRef.current?.showClip(element, file),
       geometryKey: () => nodeRef.current?.geometryKey() ?? '',
       viewportHeld: (busy: number) =>
         nodeRef.current?.viewportHeld(busy) ?? false,

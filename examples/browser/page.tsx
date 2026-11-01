@@ -112,6 +112,7 @@ import {
   threadTransport,
   useHtmlHandle,
   videoSource,
+  gpuWebGL,
 } from '../../src/html/index.js';
 import type {
   Document,
@@ -149,6 +150,10 @@ import {
 
 /** The keys a scroll pane moves its offset down or up with (core's
  *  `Scrollable.defaultKeyDown`). */
+/** The GL a page's WebGL contexts draw through, where this machine has one:
+ *  none, and they draw nothing. */
+const GPU_WEBGL = (await gpuWebGL()) ?? undefined;
+
 const VERTICAL_SCROLL_KEYS = new Set<number>([
   XK_UP,
   XK_DOWN,
@@ -1265,6 +1270,8 @@ export default function Page(props: PageProps): ReactElement {
       },
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
+      // and its WebGL, on the GPU where x11-dri can reach one
+      webgl: GPU_WEBGL,
       onTimeout: () =>
         setNotice('A script on this page ran too long, and was stopped.'),
       // the browser's own chords stay the browser's, whatever a page's
