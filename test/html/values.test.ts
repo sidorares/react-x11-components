@@ -31,6 +31,7 @@ import {
 } from '../../src/html/css/specified.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
 import {
+  SHORTHAND_NAMES,
   comesFromBox,
   cssomColor,
   cssomStyle,
@@ -3018,6 +3019,137 @@ for (const [scale, rendered] of [
   );
 }
 
+/**
+ * Absolute boxes placed against an inline box, whose size is that of its
+ * fragments and which keeps no rectangle. No text, so that no row reads a
+ * font: its height is its padding, 10px, and its width what is in it. The
+ * rows are left, top, right, bottom, width, height, and the left and right
+ * margins, each what Chrome 156 answers for this document.
+ */
+const INLINE_CB_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 0/0 serif }' +
+  '.w { width: 200px }' +
+  '.r { position: relative; padding: 5px 0 }' +
+  '.f { display: inline-block; width: 40px; height: 10px }' +
+  '.t { position: absolute; left: 5px; top: 2px; width: 10px; height: 3px }' +
+  '#pct { left: 5px; top: 0; width: 25%; height: 50%; margin-left: 10% }' +
+  '#ends { left: auto; top: auto; right: 0; bottom: 0 }' +
+  '#both { right: 6px; bottom: 3px; width: auto; height: auto }' +
+  '#stat { left: auto; top: auto }' +
+  '#marg { margin: 3px 4px }' +
+  '#auto { left: 0; right: 0; margin: 0 auto }' +
+  '.pad { padding: 5px 7px; border: 1px solid }' +
+  '.moved { left: 7px; top: 3px }' +
+  '.thin { width: 50px }' +
+  '.rtl { direction: rtl }' +
+  '.big { zoom: 2 }' +
+  '.b::before { content: ""; position: absolute; left: 5px; top: 2px; width: 25%; height: 3px; margin-left: 10% }' +
+  '.bare { position: relative }' +
+  '.bare::before { content: ""; position: absolute; left: 5px; top: 0; width: 25%; height: 10px; margin-left: 10% }' +
+  '.bare-end::before { left: auto; top: auto; right: 0; bottom: 0; width: 30px; margin-left: 0 }' +
+  '.bare-pct::before { left: 0; top: 50%; width: 50%; height: 50%; margin-left: 0 }' +
+  '.text { font: 16px/20px serif }' +
+  '</style>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="filled"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="pct"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="ends"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="both"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="stat"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="marg"></i></span></div>' +
+  '<div class="w"><span class="r"><b class="f"></b><i class="t" id="auto"></i></span></div>' +
+  '<div class="w"><span class="r pad"><b class="f"></b><i class="t" id="padded"></i></span></div>' +
+  '<div class="w"><span class="r moved"><b class="f"></b><i class="t" id="shifted"></i></span></div>' +
+  '<div class="w thin"><span class="r"><b class="f"></b><b class="f"></b><i class="t" id="wrapped"></i></span></div>' +
+  '<div class="w thin"><span class="r"><i class="t" id="first"></i><b class="f"></b><b class="f"></b></span></div>' +
+  '<div class="w rtl"><span class="r"><b class="f"></b><i class="t" id="rtl"></i></span></div>' +
+  '<div class="w big"><span class="r"><b class="f"></b><i class="t" id="zoomed"></i></span></div>' +
+  '<div class="w"><span class="r b" id="before"><b class="f"></b></span></div>' +
+  '<div class="w"><span class="bare" id="empty"></span></div>' +
+  '<div class="w"><span class="bare bare-end" id="empty-end"></span></div>' +
+  '<div class="w"><span class="bare bare-pct" id="empty-pct"></span></div>' +
+  '<div class="w"><span class="bare" id="empty-space"> </span></div>' +
+  '<div class="w text"><span class="bare" id="empty-text"></span></div>';
+
+const INLINE_CB_ROWS: [string, 'before' | null, string][] = [
+  ['filled', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['pct', null, '5px 0px 21px 5px 10px 5px 4px 0px'],
+  ['ends', null, '30px 7px 0px 0px 10px 3px 0px 0px'],
+  ['both', null, '5px 2px 6px 3px 29px 5px 0px 0px'],
+  ['stat', null, '40px -5px -10px 12px 10px 3px 0px 0px'],
+  ['marg', null, '5px 2px 17px -1px 10px 3px 4px 4px'],
+  ['auto', null, '0px 2px 0px 5px 10px 3px 15px 15px'],
+  ['padded', null, '5px 2px 39px 5px 10px 3px 0px 0px'],
+  ['shifted', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['wrapped', null, '5px 2px 25px 15px 10px 3px 0px 0px'],
+  ['first', null, '5px 2px 25px 15px 10px 3px 0px 0px'],
+  ['rtl', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['zoomed', null, '5px 2px 25px 5px 10px 3px 0px 0px'],
+  ['before', 'before', '5px 2px 21px 5px 10px 3px 4px 0px'],
+  ['empty', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+  ['empty-end', 'before', '-30px -10px 0px 0px 30px 10px 0px 0px'],
+  ['empty-pct', 'before', '0px 0px 0px 0px 0px 0px 0px 0px'],
+  ['empty-space', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+  ['empty-text', 'before', '5px 0px -5px -10px 0px 10px 0px 0px'],
+];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `an absolute box placed against an inline box reads the insets it was placed by, at ${scale}`,
+    async () => {
+      const { node } = await rendered(INLINE_CB_PAGE, 400);
+      const el = view(node);
+      const read = [
+        'left',
+        'top',
+        'right',
+        'bottom',
+        'width',
+        'height',
+        'margin-left',
+        'margin-right',
+      ];
+      const wrong: string[] = [];
+      for (const [id, pseudo, want] of INLINE_CB_ROWS) {
+        const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+        const got = read.map((name) => style[name]).join(' ');
+        if (got !== want) wrong.push(`${id}: ${got}, Chrome ${want}`);
+      }
+      assert.deepStrictEqual(wrong, []);
+    },
+  );
+}
+
+metric(
+  'the insets read against an inline box stand once a scroll moves it',
+  async () => {
+    // what is placed in the inline box and the inline box scroll together, so
+    // what the one is to the other stays as it was
+    const { node } = await render(
+      '<!doctype html><style>' +
+        'body { margin: 0; font: 0/0 serif }' +
+        '#list { width: 200px; height: 20px; overflow: auto }' +
+        '#tall { height: 100px }' +
+        '.r { position: relative; padding: 5px 0 }' +
+        '.f { display: inline-block; width: 40px; height: 10px }' +
+        '#t { position: absolute; left: 5px; top: 2px; width: 10px; height: 3px }' +
+        '</style><div id="list"><div id="tall"><span class="r"><b class="f"></b>' +
+        '<i id="t"></i></span></div></div>',
+    );
+    const el = view(node);
+    const insets = () => {
+      const style = el.computedStyle(findById(el.document, 't')!)!;
+      return ['left', 'top', 'right', 'bottom'].map((side) => style[side]);
+    };
+    assert.deepStrictEqual(insets(), ['5px', '2px', '25px', '5px']);
+    el.scrollElementTo(findById(el.document, 'list')!, { y: 30 });
+    assert.deepStrictEqual(insets(), ['5px', '2px', '25px', '5px']);
+  },
+);
+
 test('the margins of the root box read as laid out', async () => {
   // Chrome 156, in a window 400 wide
   const { node } = await render(
@@ -3092,6 +3224,260 @@ test('the first frame of a ::before takes its computed width, where its style re
   assert.strictEqual(el.computedStyle(a, 'before')!.width, '100px');
 });
 
+/**
+ * The frame `getKeyframes()` makes up for a rule with none at 0, in every
+ * kind of box. Every value is what Chrome 156 answers for this document in
+ * a window 400 wide. `.p` animations are half way, so what is read off the
+ * box is a box an animation has moved.
+ */
+const FRAME_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '@keyframes k { to { width: 1px; height: 1px; min-width: 1px; line-height: 1px;' +
+  ' margin-top: 1px; margin-right: 1px; margin-bottom: 1px; margin-left: 1px;' +
+  ' padding-top: 1px; padding-right: 1px; padding-bottom: 1px; padding-left: 1px;' +
+  ' top: 1px; left: 1px; bottom: 1px; right: 1px; transform: translate(1px, 1px);' +
+  ' border-left-width: 1px } }' +
+  '@keyframes i { to { width: 1px; margin-left: 1px; padding-left: 1px } }' +
+  '@keyframes m { to { margin-left: 30px; padding-left: 30px; width: 80% } }' +
+  '@keyframes n { to { margin-left: 60%; padding-left: 40%; margin-top: 30px; padding-top: 30px } }' +
+  '.w { width: 200px; height: 100px; position: relative }' +
+  '.s, .a::before { animation: k 100s paused; width: 50%; height: 25%; min-width: 5%;' +
+  ' line-height: 1.5; margin: 5% auto 0 10%; padding: 1em 3px calc(1% + 1px) 5%;' +
+  ' top: 10px; left: 10%; transform: translate(10%, 5px); border-left: 2px solid }' +
+  '.a::before { content: ""; display: block }' +
+  '.ab, .ab-p::before { position: absolute; bottom: calc(5% + 2px) }' +
+  '.ab-p::before { content: "" }' +
+  '.pad { padding: 10px }' +
+  '.grid { display: grid; grid-template-columns: 50px 100px }' +
+  '.flex { display: flex }' +
+  '#fl { margin-right: 3px }' +
+  '.big { zoom: 2 }' +
+  '.lr { writing-mode: vertical-lr; height: 200px }' +
+  '.in { animation: i 100s paused; margin-left: 10%; padding-left: 5% }' +
+  '.p { animation-duration: 100s; animation-delay: -50s; animation-play-state: paused;' +
+  ' animation-timing-function: linear }' +
+  '.p1 { animation-name: m; margin-left: 10%; padding-left: 5%; width: 50% }' +
+  '.p2 { animation-name: n; margin-left: 10%; padding-left: 5%; margin-top: 10px; padding-top: 10px }' +
+  '.pb::before { content: ""; display: block; animation: m 100s -50s paused linear;' +
+  ' margin-left: 10%; padding-left: 5%; width: 50% }' +
+  '</style>' +
+  '<div class="w"><div id="el" class="s"></div></div>' +
+  '<div class="w"><div id="b" class="a"></div></div>' +
+  '<div class="w"><div id="ab" class="s ab"></div></div>' +
+  '<div class="w"><div id="ab-b" class="a ab-p"></div></div>' +
+  '<div class="w pad"><div id="padded" class="s"></div></div>' +
+  '<div class="w grid"><div></div><div id="item" class="s"></div></div>' +
+  '<div class="w flex"><div id="fl" class="s"></div></div>' +
+  '<div class="w big"><div id="zoomed" class="s"></div></div>' +
+  '<div class="w lr"><div id="vert" class="s"></div></div>' +
+  '<div class="w"><span id="inline" class="in"></span></div>' +
+  '<div class="w"><div id="p1" class="p p1"></div></div>' +
+  '<div class="w"><div id="p2" class="p p2"></div></div>' +
+  '<div class="w"><div id="pb" class="pb"></div></div>';
+
+const FRAME_PROPERTIES = [
+  'width',
+  'height',
+  'min-width',
+  'line-height',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'top',
+  'left',
+  'bottom',
+  'right',
+  'transform',
+  'border-left-width',
+];
+
+const FRAME_ROWS: [string, '' | 'before', string, string][] = [
+  [
+    'el',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'b',
+    'before',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'ab',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | calc(5% + 2px) | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'ab-b',
+    'before',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | calc(5% + 2px) | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'padded',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'item',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 5px | 0px | 0px | 10px | 16px | 3px | 2px | 5px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'fl',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 3px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'zoomed',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'vert',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  // an inline box has no rectangle to read a percentage of
+  [
+    'inline',
+    '',
+    'i',
+    'auto | - | - | - | - | - | - | 10% | - | - | - | 5% | - | - | - | - | - | -',
+  ],
+  // a length as it is under the animation, anything else off the box
+  [
+    'p1',
+    '',
+    'm',
+    '50% | - | - | - | - | - | - | 25px | - | - | - | 20px | - | - | - | - | - | -',
+  ],
+  [
+    'p2',
+    '',
+    'n',
+    '- | - | - | - | 10px | - | - | 70px | 10px | - | - | 45px | - | - | - | - | - | -',
+  ],
+];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `the frame getKeyframes() makes up reads margins and padding off the box, and the rest as computed, at ${scale}`,
+    async () => {
+      const { node } = await rendered(FRAME_PAGE, 400);
+      const el = view(node);
+      const wrong: string[] = [];
+      for (const [id, pseudo, name, want] of FRAME_ROWS) {
+        const element = findById(el.document, id)!;
+        const { values } = el.cssKeyframesOf(element, pseudo, name)![0];
+        const got = FRAME_PROPERTIES.map((p) => values[p] ?? '-').join(' | ');
+        if (got !== want) wrong.push(`${id}: ${got}\n  Chrome: ${want}`);
+      }
+      assert.deepStrictEqual(wrong, []);
+    },
+  );
+}
+
+metric(
+  'a ::before under an animation reads what is off its box in the frame getKeyframes() makes up, as its style does',
+  async () => {
+    const { node } = await render(FRAME_PAGE, 400);
+    const el = view(node);
+    const pb = findById(el.document, 'pb')!;
+    const { values } = el.cssKeyframesOf(pb, 'before', 'm')![0];
+    const style = el.computedStyle(pb, 'before')!;
+    // Chrome 156, both of them
+    assert.strictEqual(values['margin-left'], '25px');
+    assert.strictEqual(style['margin-left'], '25px');
+    assert.strictEqual(values['padding-left'], '20px');
+    assert.strictEqual(style['padding-left'], '20px');
+  },
+);
+
+/** Each read of a `transform`, and which of them Chrome 156 reads for this
+ *  document. */
+const TRANSFORM_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '.t { transform: translate(10px, 5px) rotate(10deg) }' +
+  '.b::before { transform: translate(10px, 5px) }' +
+  '#gone { display: none }' +
+  '#under { display: none }' +
+  '#contents { display: contents }' +
+  '#pct { display: none; transform: translateX(10%) }' +
+  '#none-before { display: none }' +
+  '#none-before::before { content: "x" }' +
+  '#under-before::before { content: "x" }' +
+  '#off::before { content: "x"; display: none }' +
+  '#drawn { width: 100px; height: 20px }' +
+  '#drawn-before::before { content: "x"; display: block; width: 100px }' +
+  '#contents-before::before { content: "x"; display: contents }' +
+  '#hidden-box { content-visibility: hidden }' +
+  '</style>' +
+  '<div id="gone" class="t"></div>' +
+  '<div id="pct"></div>' +
+  '<div id="under"><div id="kid" class="t"></div><div id="under-before" class="b"></div></div>' +
+  '<div id="contents" class="t"></div>' +
+  '<div id="no-content" class="b"></div>' +
+  '<div id="none-before" class="b"></div>' +
+  '<div id="off" class="b"></div>' +
+  '<div id="drawn" class="t"></div>' +
+  '<div id="drawn-before" class="b"></div>' +
+  '<div id="contents-before" class="b"></div>' +
+  '<svg width="20" height="20"><rect id="shape" class="t" width="5" height="5" /></svg>' +
+  '<div id="hidden-box"><div id="hid" class="t"></div></div>' +
+  '<canvas><div id="fallback" class="t"></div></canvas>';
+
+metric(
+  'a transform reads none where nothing renders the element, and its matrix where something does',
+  async () => {
+    const { node } = await render(TRANSFORM_PAGE, 400);
+    const el = view(node);
+    const read = (id: string, pseudo: 'before' | null = null) =>
+      el.computedStyle(findById(el.document, id)!, pseudo)!.transform;
+    for (const id of ['gone', 'pct', 'kid', 'contents']) {
+      assert.strictEqual(read(id), 'none', id);
+    }
+    for (const id of ['under-before', 'no-content', 'none-before', 'off']) {
+      assert.strictEqual(read(id, 'before'), 'none', `${id}::before`);
+    }
+    assert.strictEqual(
+      read('drawn'),
+      'matrix(0.984808, 0.173648, -0.173648, 0.984808, 10, 5)',
+    );
+    assert.strictEqual(
+      read('drawn-before', 'before'),
+      'matrix(1, 0, 0, 1, 10, 5)',
+    );
+    // each of these has a box in Chrome, which reads its matrix, and none
+    // here: the list it computes to, and never `none`
+    for (const id of ['shape', 'hid', 'fallback']) {
+      assert.strictEqual(read(id), 'translate(10px, 5px) rotate(10deg)', id);
+    }
+    assert.strictEqual(
+      read('contents-before', 'before'),
+      'translate(10px, 5px)',
+    );
+  },
+);
+
 test('what a computed style reads from a box says so, by name and in camel case', async () => {
   const { node } = await render(
     '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +
@@ -3104,7 +3490,8 @@ test('what a computed style reads from a box says so, by name and in camel case'
     width: 100 + at,
     height: 200 + at,
     margin: [1 + at, 2 + at, 3 + at, 4 + at],
-    border: [5 + at, 6 + at, 7 + at, 8 + at],
+    // the same all round, or `border` reads '' at either
+    border: [5 + at, 5 + at, 5 + at, 5 + at],
     padding: [9 + at, 10 + at, 11 + at, 12 + at],
     insets: [13 + at, 14 + at, 15 + at, 16 + at],
   });
@@ -3112,15 +3499,731 @@ test('what a computed style reads from a box says so, by name and in camel case'
     const { style } = boxOf(el, id) as unknown as { style: ComputedStyle };
     const one = cssomStyle(style, 1, box(0));
     const other = cssomStyle(style, 1, box(30));
-    const moved = Object.keys(one).filter((name) => one[name] !== other[name]);
-    for (const name of Object.keys(one)) {
+    const names = [...Object.keys(one), ...SHORTHAND_NAMES];
+    const moved = names.filter((name) => one[name] !== other[name]);
+    for (const name of names) {
       assert.strictEqual(comesFromBox(name), moved.includes(name), name);
     }
   }
   assert.ok(comesFromBox('marginInlineEnd'));
   assert.ok(comesFromBox('insetBlockStart'));
+  assert.ok(comesFromBox('margin'));
+  assert.ok(comesFromBox('borderBlockEnd'));
   assert.ok(!comesFromBox('--width'));
   assert.ok(!comesFromBox('display'));
+});
+
+/**
+ * Each shorthand as Chrome 156 reads it, by `getPropertyValue` and in camel
+ * case alike: the property, the `style` of an element in a box 400px by 300px
+ * with black text at 16px, and what it reads, '' where its longhands cannot be
+ * said in it. Written by asking Chrome, so change a row by asking it again.
+ */
+const SHORTHAND_ROWS: readonly (readonly [string, string, string])[] = [
+  ['margin', 'margin: 15px 80px', '15px 80px'],
+  ['margin', 'margin: 1px 2px 3px 4px', '1px 2px 3px 4px'],
+  ['margin', 'margin: 1px 2px 3px', '1px 2px 3px'],
+  ['margin', 'margin: 5px', '5px'],
+  ['margin', 'margin: 10%', '40px'],
+  ['margin', 'width: 100px; margin: 0 auto', '0px 150px'],
+  ['margin', 'margin: -5px', '-5px'],
+  ['margin', 'margin: 1.5px 2.25px', '1.5px 2.25px'],
+  ['margin', 'display: inline; margin: 1px 2px', '1px 2px'],
+  ['margin', 'display: none; margin: 10% auto 3px', '10% auto 3px'],
+  ['margin', 'zoom: 2; margin: 1px 2px', '1px 2px'],
+  ['padding', 'padding: 1px 2px', '1px 2px'],
+  ['padding', 'padding: 10%', '40px'],
+  ['padding', 'display: none; padding: 10% 3px', '10% 3px'],
+  ['inset', 'position: absolute; inset: 1px 2px 3px 4px', '1px 2px 3px 4px'],
+  [
+    'inset',
+    'position: absolute; top: 5px; left: 6px; width: 10px; height: 10px',
+    '5px 384px 285px 6px',
+  ],
+  ['inset', 'position: relative; top: 5px', '5px 0px -5px'],
+  ['inset', 'position: sticky; top: 1px', '1px auto auto'],
+  ['inset', 'inset: 3px', '3px'],
+  ['inset', 'display: none; position: absolute; inset: 10% 3px', '10% 3px'],
+  [
+    'border-width',
+    'border: 1px solid; border-left-width: 2px',
+    '1px 1px 1px 2px',
+  ],
+  ['border-width', 'border-style: solid; border-width: 1px 2px', '1px 2px'],
+  ['border-width', 'border-width: 5px', '0px'],
+  ['border-width', 'display: none; border-top: 2px solid', '2px 0px 0px'],
+  [
+    'border-style',
+    'border-top: 2px dashed; border-bottom: 3px dotted',
+    'dashed none dotted',
+  ],
+  ['border-style', 'border-style: solid', 'solid'],
+  [
+    'border-color',
+    'border-color: red green blue yellow',
+    'rgb(255, 0, 0) rgb(0, 128, 0) rgb(0, 0, 255) rgb(255, 255, 0)',
+  ],
+  ['border-color', 'border-color: red', 'rgb(255, 0, 0)'],
+  ['border-color', 'border-color: rgba(1, 2, 3, 0.5)', 'rgba(1, 2, 3, 0.5)'],
+  ['border-radius', 'border-radius: 1px 2px 3px 4px', '1px 2px 3px 4px'],
+  ['border-radius', 'border-radius: 10px / 20px', '10px / 20px'],
+  ['border-radius', 'border-radius: 10% 5px', '10% 5px'],
+  ['border-radius', 'border-radius: calc(10% + 2px)', 'calc(10% + 2px)'],
+  [
+    'border-radius',
+    'border-radius: 1px 2px 3px 4px / 5px 6px 7px 8px',
+    '1px 2px 3px 4px / 5px 6px 7px 8px',
+  ],
+  ['border-radius', 'border-radius: 5px / 5px', '5px'],
+  [
+    'border-radius',
+    'border-top-left-radius: 5px 7px',
+    '5px 0px 0px / 7px 0px 0px',
+  ],
+  ['corner-shape', 'corner-shape: squircle', 'superellipse(2)'],
+  [
+    'corner-shape',
+    'corner-shape: bevel notch',
+    'superellipse(0) superellipse(-infinity)',
+  ],
+  [
+    'corner-shape',
+    'corner-top-left-shape: scoop',
+    'superellipse(-1) superellipse(1) superellipse(1)',
+  ],
+  ['corner-shape', 'corner-shape: square', 'superellipse(infinity)'],
+  ['corner-shape', 'corner-shape: superellipse(3)', 'superellipse(3)'],
+  ['scroll-margin', 'scroll-margin: 1px 2px 3px 4px', '1px 2px 3px 4px'],
+  ['scroll-margin', 'scroll-margin: 5px', '5px'],
+  ['scroll-padding', 'scroll-padding: 1px 2px', '1px 2px'],
+  ['scroll-padding', 'scroll-padding: 10%', '10%'],
+  ['scroll-padding', 'scroll-padding: auto 5px', 'auto 5px'],
+  ['margin-block', 'margin: 15px 80px', '15px'],
+  ['margin-inline', 'margin: 15px 80px', '80px'],
+  ['margin-inline', 'width: 100px; margin: 0 auto', '150px'],
+  ['margin-block', 'margin-block: 1px 2px', '1px 2px'],
+  ['margin-inline', 'margin-inline: 3px 4px', '3px 4px'],
+  [
+    'margin-block',
+    'writing-mode: vertical-rl; margin: 1px 2px 3px 4px',
+    '2px 4px',
+  ],
+  [
+    'margin-inline',
+    'writing-mode: vertical-rl; margin: 1px 2px 3px 4px',
+    '1px 3px',
+  ],
+  ['margin-inline', 'direction: rtl; margin: 1px 2px 3px 4px', '2px 4px'],
+  ['padding-block', 'padding: 1px 2px 3px 4px', '1px 3px'],
+  ['padding-inline', 'padding: 1px 2px 3px 4px', '4px 2px'],
+  ['inset-block', 'position: absolute; inset: 1px 2px 3px 4px', '1px 3px'],
+  ['inset-inline', 'position: absolute; inset: 1px 2px 3px 4px', '4px 2px'],
+  ['inset-inline', 'position: absolute; inset-inline: 3px', '3px'],
+  ['inset-block', 'display: none', 'auto'],
+  ['scroll-margin-block', 'scroll-margin: 1px 2px 3px 4px', '1px 3px'],
+  ['scroll-margin-inline', 'scroll-margin: 1px 2px 3px 4px', '4px 2px'],
+  [
+    'scroll-margin-block',
+    'writing-mode: vertical-rl; scroll-margin: 1px 2px 3px 4px',
+    '2px 4px',
+  ],
+  ['scroll-padding-block', 'scroll-padding: 1px 2px', '1px'],
+  [
+    'scroll-padding-inline',
+    'direction: rtl; scroll-padding: 1px 2px 3px 4px',
+    '2px 4px',
+  ],
+  [
+    'border-block-width',
+    'border-style: solid; border-width: 1px 2px 3px 4px',
+    '1px 3px',
+  ],
+  [
+    'border-inline-width',
+    'border-style: solid; border-width: 1px 2px 3px 4px',
+    '4px 2px',
+  ],
+  [
+    'border-block-style',
+    'border-style: solid dashed dotted double',
+    'solid dotted',
+  ],
+  [
+    'border-inline-style',
+    'border-style: solid dashed dotted double',
+    'double dashed',
+  ],
+  [
+    'border-block-color',
+    'border-color: red green blue yellow',
+    'rgb(255, 0, 0) rgb(0, 0, 255)',
+  ],
+  [
+    'border-inline-color',
+    'border-color: red green blue yellow',
+    'rgb(255, 255, 0) rgb(0, 128, 0)',
+  ],
+  ['border-inline-color', 'border-color: red', 'rgb(255, 0, 0)'],
+  ['border', 'border: 1px solid red', '1px solid rgb(255, 0, 0)'],
+  ['border', 'border: medium solid', '3px solid rgb(0, 0, 0)'],
+  ['border', 'border: 1.5px solid red', '1px solid rgb(255, 0, 0)'],
+  ['border', 'border-style: none; border-width: 5px', '0px none rgb(0, 0, 0)'],
+  ['border', 'border: hidden 2px', '0px hidden rgb(0, 0, 0)'],
+  [
+    'border',
+    'display: none; border: 5px solid red',
+    '5px solid rgb(255, 0, 0)',
+  ],
+  [
+    'border',
+    'display: inline; border: 1px solid red',
+    '1px solid rgb(255, 0, 0)',
+  ],
+  ['border', 'color: red', '0px none rgb(255, 0, 0)'],
+  ['border', 'border-color: transparent', '0px none rgba(0, 0, 0, 0)'],
+  [
+    'border',
+    'border: 1px solid red; border-image: url(https://example.test/a.png) 1',
+    '1px solid rgb(255, 0, 0)',
+  ],
+  ['border', 'border: 1px solid red; border-left-width: 2px', ''],
+  ['border', 'border-top: 2px dashed blue', ''],
+  ['border', 'border: 1px solid; border-color: red green', ''],
+  ['border-top', 'border: 1px solid red', '1px solid rgb(255, 0, 0)'],
+  [
+    'border-right',
+    'border-right: 2px dashed blue',
+    '2px dashed rgb(0, 0, 255)',
+  ],
+  [
+    'border-bottom',
+    'border-bottom: 3px dotted lime',
+    '3px dotted rgb(0, 255, 0)',
+  ],
+  ['border-left', 'border-left: 4px double red', '4px double rgb(255, 0, 0)'],
+  ['border-top', 'display: none', '0px none rgb(0, 0, 0)'],
+  ['border-block', 'border-block: 1px solid red', '1px solid rgb(255, 0, 0)'],
+  ['border-block', 'border-block-start: 1px solid red', ''],
+  [
+    'border-inline',
+    'border-inline: 2px dashed blue',
+    '2px dashed rgb(0, 0, 255)',
+  ],
+  ['border-inline', 'border-inline-start: 2px dashed blue', ''],
+  [
+    'border-block',
+    'writing-mode: vertical-rl; border-left: 1px solid red; border-right: 1px solid red',
+    '1px solid rgb(255, 0, 0)',
+  ],
+  [
+    'border-block-start',
+    'border-top: 1px solid red',
+    '1px solid rgb(255, 0, 0)',
+  ],
+  [
+    'border-block-end',
+    'border-bottom: 2px dashed blue',
+    '2px dashed rgb(0, 0, 255)',
+  ],
+  [
+    'border-inline-start',
+    'border-left: 3px dotted lime',
+    '3px dotted rgb(0, 255, 0)',
+  ],
+  [
+    'border-inline-end',
+    'border-right: 4px double red',
+    '4px double rgb(255, 0, 0)',
+  ],
+  [
+    'border-inline-start',
+    'direction: rtl; border-right: 2px dashed blue',
+    '2px dashed rgb(0, 0, 255)',
+  ],
+  ['outline', 'outline: 2px solid red', 'rgb(255, 0, 0) solid 2px'],
+  ['outline', 'outline: 2px auto red', 'rgb(255, 0, 0) auto 2px'],
+  [
+    'outline',
+    'outline-style: none; outline-width: 5px',
+    'rgb(0, 0, 0) none 5px',
+  ],
+  ['outline', 'outline: thick double', 'rgb(0, 0, 0) double 5px'],
+  ['outline', 'outline: 0 solid', 'rgb(0, 0, 0) solid 0px'],
+  ['outline', 'color: red', 'rgb(255, 0, 0) none 3px'],
+  [
+    'outline',
+    'display: none; outline: 2px solid red',
+    'rgb(255, 0, 0) solid 2px',
+  ],
+  ['border-spacing', 'border-spacing: 1px 2px', '1px 2px'],
+  ['border-spacing', 'border-spacing: 3px', '3px'],
+  ['border-spacing', 'border-spacing: 0 2px', '0px 2px'],
+  ['gap', 'gap: 10px 20px', '10px 20px'],
+  ['gap', 'gap: 5px', '5px'],
+  ['gap', 'row-gap: 5px', '5px normal'],
+  ['gap', 'column-gap: 5px', 'normal 5px'],
+  ['gap', 'gap: 10% 5px', '10% 5px'],
+  ['gap', 'gap: 0', '0px'],
+  ['gap', 'gap: calc(1px + 10%)', 'calc(10% + 1px)'],
+  ['grid-gap', 'gap: 10px 20px', '10px 20px'],
+  ['flex', 'flex: 1', '1 1 0%'],
+  ['flex', 'flex: 2 3 40px', '2 3 40px'],
+  ['flex', 'flex: none', '0 0 auto'],
+  ['flex', 'flex: auto', '1 1 auto'],
+  ['flex', 'flex: 1 1 10%', '1 1 10%'],
+  ['flex', 'flex: 0 0 content', '0 0 content'],
+  ['flex', 'flex: 0', '0 1 0%'],
+  ['flex', 'flex: 1 0', '1 0 0%'],
+  ['flex', 'flex-basis: 0', '0 1 0px'],
+  ['flex', 'flex: 0 0 0', '0 0 0px'],
+  ['flex', 'flex-basis: calc(10% + 5px)', '0 1 calc(10% + 5px)'],
+  ['flex', 'flex-grow: 1.5', '1.5 1 auto'],
+  ['flex', 'flex-shrink: 0', '0 0 auto'],
+  ['flex', 'display: none; flex: 1', '1 1 0%'],
+  ['flex-flow', 'flex-flow: column wrap', 'column wrap'],
+  ['flex-flow', 'flex-direction: row-reverse', 'row-reverse nowrap'],
+  ['flex-flow', 'flex-wrap: wrap-reverse', 'row wrap-reverse'],
+  ['place-content', 'place-content: center', 'center'],
+  ['place-content', 'place-content: center flex-start', 'center flex-start'],
+  ['place-content', 'justify-content: flex-start', 'normal flex-start'],
+  ['place-content', 'align-content: flex-end', 'flex-end normal'],
+  [
+    'place-content',
+    'align-content: space-around; justify-content: space-evenly',
+    'space-around space-evenly',
+  ],
+  ['place-content', 'justify-content: left', 'normal left'],
+  ['place-items', 'place-items: center', 'center'],
+  ['place-items', 'place-items: center flex-start', 'center flex-start'],
+  ['place-items', 'justify-items: stretch', 'normal stretch'],
+  ['place-self', 'place-self: center', 'center'],
+  ['place-self', 'place-self: center flex-start', 'center flex-start'],
+  ['place-self', 'place-self: auto center', 'auto center'],
+  ['place-self', 'align-self: baseline', 'baseline auto'],
+  [
+    'place-self',
+    'align-self: flex-end; justify-self: flex-start',
+    'flex-end flex-start',
+  ],
+  ['grid-row', 'grid-row: 1 / 3', '1 / 3'],
+  ['grid-row', 'grid-row: span 2', 'span 2'],
+  ['grid-row', 'grid-row: foo', 'foo'],
+  ['grid-row', 'grid-row: 2 foo / span 3 bar', '2 foo / span 3 bar'],
+  ['grid-column', 'grid-column: span 2 / auto', 'span 2'],
+  ['grid-column', 'grid-column: span 2 / span 3', 'span 2 / span 3'],
+  ['grid-column', 'grid-column: foo 2', '2 foo'],
+  ['grid-column', 'grid-column: span foo', 'span foo'],
+  ['grid-column', 'grid-column: span 1 foo', 'span foo'],
+  ['grid-column', 'grid-column: 1 / foo', '1 / foo'],
+  ['grid-column', 'grid-column: -1', '-1'],
+  ['grid-column', 'grid-column: auto / 3', 'auto / 3'],
+  ['grid-column', 'grid-column: foo / foo', 'foo'],
+  ['grid-column', 'grid-column: foo / bar', 'foo / bar'],
+  ['grid-column', 'grid-column: 1 / 1', '1 / 1'],
+  ['grid-column', 'grid-column: span 1', 'span 1'],
+  ['grid-area', 'grid-area: 1 / 2 / 3 / 4', '1 / 2 / 3 / 4'],
+  ['grid-area', 'grid-area: foo', 'foo'],
+  [
+    'grid-area',
+    'grid-row: 1 / 3; grid-column: span 2 / auto',
+    '1 / span 2 / 3',
+  ],
+  ['grid-area', 'grid-area: 1 / 2', '1 / 2'],
+  ['grid-area', 'grid-row: foo', 'foo / auto'],
+  ['grid-area', 'grid-column: 2', 'auto / 2'],
+  ['grid-area', 'grid-area: a / a', 'a'],
+  ['grid-area', 'grid-area: a / a / b', 'a / a / b'],
+  ['grid-area', 'grid-area: 1 / a', '1 / a'],
+  ['grid-area', 'grid-area: auto / auto / 2', 'auto / auto / 2'],
+  ['grid-area', 'grid-area: auto / auto / auto / 2', 'auto / auto / auto / 2'],
+  [
+    'grid-area',
+    'grid-column: span 2 / span 3',
+    'auto / span 2 / auto / span 3',
+  ],
+  ['grid-area', 'grid-area: span 2', 'span 2'],
+  ['grid-area', 'display: none', 'auto'],
+  ['list-style', 'list-style: square inside', 'inside none square'],
+  ['list-style', 'list-style: none', 'outside none none'],
+  [
+    'list-style',
+    'list-style: lower-roman url(https://example.test/a.png)',
+    'outside url("https://example.test/a.png") lower-roman',
+  ],
+  ['list-style', 'list-style-type: "x"', 'outside none "x"'],
+  ['list-style', 'list-style-position: inside', 'inside none disc'],
+  ['list-style', 'display: none', 'outside none disc'],
+  ['list-style-type', 'list-style-type: "x"', '"x"'],
+  [
+    'background',
+    'display: none',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background: red',
+    'rgb(255, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background: url(https://example.test/a.png) no-repeat center / cover',
+    'rgba(0, 0, 0, 0) url("https://example.test/a.png") no-repeat scroll 50% 50% / cover padding-box border-box',
+  ],
+  [
+    'background',
+    'background: url(https://example.test/a.png), linear-gradient(red, blue) red',
+    'url("https://example.test/a.png") repeat scroll 0% 0% / auto padding-box border-box, rgb(255, 0, 0) linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255)) repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background: fixed content-box padding-box',
+    'rgba(0, 0, 0, 0) none repeat fixed 0% 0% / auto content-box padding-box',
+  ],
+  [
+    'background',
+    'background-image: url(https://example.test/a.png), url(https://example.test/b.png); background-repeat: no-repeat',
+    'url("https://example.test/a.png") no-repeat scroll 0% 0% / auto padding-box border-box, rgba(0, 0, 0, 0) url("https://example.test/b.png") no-repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-image: url(https://example.test/a.png), url(https://example.test/b.png), url(https://example.test/a.png); background-size: 10px, 20px',
+    'url("https://example.test/a.png") repeat scroll 0% 0% / 10px auto padding-box border-box, url("https://example.test/b.png") repeat scroll 0% 0% / 20px auto padding-box border-box, rgba(0, 0, 0, 0) url("https://example.test/a.png") repeat scroll 0% 0% / 10px auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-size: 10px 20px; background-position: right 10px top 5px',
+    'rgba(0, 0, 0, 0) none repeat scroll calc(100% - 10px) 5px / 10px 20px padding-box border-box',
+  ],
+  [
+    'background',
+    'background-repeat: repeat-x',
+    'rgba(0, 0, 0, 0) none repeat-x scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-repeat: repeat-y',
+    'rgba(0, 0, 0, 0) none repeat-y scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-repeat: space round',
+    'rgba(0, 0, 0, 0) none space round scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-repeat: no-repeat repeat',
+    'rgba(0, 0, 0, 0) none repeat-y scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-size: contain',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / contain padding-box border-box',
+  ],
+  [
+    'background',
+    'background-size: 50%',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / 50% auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-size: auto 10px',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto 10px padding-box border-box',
+  ],
+  [
+    'background',
+    'background-size: auto auto',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-attachment: local',
+    'rgba(0, 0, 0, 0) none repeat local 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-clip: text',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box text',
+  ],
+  [
+    'background',
+    'background-origin: content-box',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto content-box border-box',
+  ],
+  [
+    'background',
+    'background-position: 10px',
+    'rgba(0, 0, 0, 0) none repeat scroll 10px 50% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-position: bottom right',
+    'rgba(0, 0, 0, 0) none repeat scroll 100% 100% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-position: 0 0',
+    'rgba(0, 0, 0, 0) none repeat scroll 0px 0px / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-image: none; background-repeat: repeat, no-repeat',
+    'rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-color: rgba(1, 2, 3, 0.5)',
+    'rgba(1, 2, 3, 0.5) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background: currentcolor',
+    'rgb(0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background: linear-gradient(to right, red, blue)',
+    'rgba(0, 0, 0, 0) linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255)) repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-image: linear-gradient(red, blue), none',
+    'linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255)) repeat scroll 0% 0% / auto padding-box border-box, rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'background-position: 10px 20px, 30px 40px; background-image: url(https://example.test/a.png), url(https://example.test/b.png)',
+    'url("https://example.test/a.png") repeat scroll 10px 20px / auto padding-box border-box, rgba(0, 0, 0, 0) url("https://example.test/b.png") repeat scroll 30px 40px / auto padding-box border-box',
+  ],
+  [
+    'background',
+    'display: none; background: red 10% 20% / 50% no-repeat',
+    'rgb(255, 0, 0) none no-repeat scroll 10% 20% / 50% auto padding-box border-box',
+  ],
+  ['columns', 'columns: 3 100px', '100px 3'],
+  ['columns', 'columns: 3', '3'],
+  ['columns', 'column-width: 100px', '100px'],
+  ['columns', 'columns: auto', 'auto'],
+  ['columns', 'column-count: 2; column-width: 1em', '16px 2'],
+  ['column-rule', 'column-rule: 2px solid red', '2px solid rgb(255, 0, 0)'],
+  ['column-rule', 'column-rule: 2px dotted', '2px dotted rgb(0, 0, 0)'],
+  ['column-rule', 'column-rule: 0 none red', '0px rgb(255, 0, 0)'],
+  ['column-rule', 'column-rule-style: hidden', '3px hidden rgb(0, 0, 0)'],
+  ['column-rule', 'column-rule-color: red', '3px rgb(255, 0, 0)'],
+  ['column-rule', 'display: none', '3px rgb(0, 0, 0)'],
+  ['row-rule', 'row-rule: 2px solid red', '2px solid rgb(255, 0, 0)'],
+  ['row-rule', 'row-rule-width: 1px', '1px rgb(0, 0, 0)'],
+  ['rule', 'rule: 2px solid red', '2px solid rgb(255, 0, 0)'],
+  ['rule', 'display: none', '3px rgb(0, 0, 0)'],
+  ['rule', 'column-rule: 2px solid red', ''],
+  ['rule', 'row-rule: 2px solid red', ''],
+  [
+    'rule',
+    'rule: 1px solid red; column-rule-break: none',
+    '1px solid rgb(255, 0, 0)',
+  ],
+  ['transition', 'display: none', 'all'],
+  ['transition', 'transition: opacity 1s ease-in 2s', 'opacity 1s ease-in 2s'],
+  ['transition', 'transition: none', 'none'],
+  ['transition', 'transition: all 1s', '1s'],
+  ['transition', 'transition-property: none', 'none'],
+  ['transition', 'transition-delay: 1s', '0s 1s'],
+  ['transition', 'transition-timing-function: linear', 'linear'],
+  ['transition', 'transition-behavior: allow-discrete', 'allow-discrete'],
+  ['transition', 'transition: opacity 0s', 'opacity'],
+  ['transition', 'transition: opacity 1s ease 0s', 'opacity 1s'],
+  ['transition', 'transition: all 0s ease 0s normal', 'all'],
+  [
+    'transition',
+    'transition: width 1s cubic-bezier(.1, .2, .3, .4)',
+    'width 1s cubic-bezier(0.1, 0.2, 0.3, 0.4)',
+  ],
+  ['transition', 'transition: width 1s steps(2, end)', 'width 1s steps(2)'],
+  ['transition', 'transition: none 1s', 'none 1s'],
+  [
+    'transition',
+    'transition: opacity 1s, color 2s linear',
+    'opacity 1s, color 2s linear',
+  ],
+  [
+    'transition',
+    'transition-property: opacity, color; transition-duration: 1s',
+    'opacity 1s, color 1s',
+  ],
+  [
+    'transition',
+    'transition-property: a, b; transition-duration: 1s, 2s, 3s',
+    'a 1s, b 2s',
+  ],
+  [
+    'transition',
+    'transition-property: a, b, c; transition-duration: 1s, 2s',
+    'a 1s, b 2s, c 1s',
+  ],
+  ['transition', 'transition-duration: 0.5s, 1.25s', '0.5s'],
+  [
+    'transition',
+    'transition: opacity 1s allow-discrete',
+    'opacity 1s allow-discrete',
+  ],
+  [
+    'transition',
+    'transition: opacity 1s, color 2s; transition-delay: 1s',
+    'opacity 1s 1s, color 2s 1s',
+  ],
+  ['transition', 'transition-property: --x', '--x'],
+  ['animation', 'animation-name: a, b; animation-duration: 1s', '1s a, 1s b'],
+  [
+    'animation',
+    'animation-name: a, b, c; animation-duration: 1s, 2s',
+    '1s a, 2s b, 1s c',
+  ],
+  ['animation', 'animation-name: a; animation-duration: 1s, 2s', '1s a'],
+  ['animation', 'animation-duration: 1s, 2s', '1s'],
+  [
+    'animation',
+    'animation-name: a, b; animation-delay: 1s, 2s, 3s',
+    '0s 1s a, 0s 2s b',
+  ],
+  [
+    'animation',
+    'animation: a 1s, b 2s; animation-timing-function: linear',
+    '1s linear a, 2s linear b',
+  ],
+  ['container', 'display: none', 'none'],
+  ['container', 'container: foo / inline-size', 'foo / inline-size'],
+  ['container', 'container-name: foo', 'foo'],
+  ['container', 'container-type: size', 'none / size'],
+  ['container', 'container: foo bar / size', 'foo bar / size'],
+  ['container', 'container: foo / normal', 'foo'],
+  ['container', 'container-type: scroll-state', 'none / scroll-state'],
+  [
+    'container',
+    'container-type: inline-size scroll-state',
+    'none / inline-size scroll-state',
+  ],
+  ['text-wrap', 'display: none', 'wrap'],
+  ['text-wrap', 'text-wrap: balance', 'balance'],
+  ['text-wrap', 'text-wrap: nowrap', 'nowrap'],
+  ['text-wrap', 'text-wrap: pretty', 'pretty'],
+  ['text-wrap', 'text-wrap: nowrap balance', 'nowrap balance'],
+  [
+    'text-wrap',
+    'white-space: nowrap; text-wrap-style: balance',
+    'nowrap balance',
+  ],
+  ['text-wrap', 'white-space: pre-wrap; text-wrap-style: pretty', 'pretty'],
+  ['text-wrap', 'white-space: pre', 'nowrap'],
+  ['text-wrap', 'white-space: pre-line', 'wrap'],
+  ['text-decoration', 'display: none', 'none'],
+  ['text-decoration', 'text-decoration: underline', 'underline'],
+  [
+    'text-decoration',
+    'text-decoration: underline overline',
+    'underline overline',
+  ],
+  [
+    'text-decoration',
+    'text-decoration: underline dotted red',
+    'underline dotted rgb(255, 0, 0)',
+  ],
+  [
+    'text-decoration',
+    'text-decoration: line-through wavy',
+    'line-through wavy',
+  ],
+  ['text-decoration', 'text-decoration: underline 2px', 'underline 2px'],
+  [
+    'text-decoration',
+    'text-decoration: underline 2px dotted red',
+    'underline 2px dotted rgb(255, 0, 0)',
+  ],
+  [
+    'text-decoration',
+    'text-decoration: underline red',
+    'underline rgb(255, 0, 0)',
+  ],
+  [
+    'text-decoration',
+    'text-decoration: underline solid currentcolor auto',
+    'underline',
+  ],
+  ['text-decoration', 'text-decoration: none red', 'rgb(255, 0, 0)'],
+  ['text-decoration', 'text-decoration-style: dashed', 'dashed'],
+  ['text-decoration', 'text-decoration-color: red', 'rgb(255, 0, 0)'],
+  ['text-decoration', 'text-decoration-color: rgb(0, 0, 0)', 'rgb(0, 0, 0)'],
+  [
+    'text-decoration',
+    'color: red; text-decoration-line: underline',
+    'underline',
+  ],
+  ['font-variant', 'display: none', 'normal'],
+  ['font-variant', 'font-variant: none', 'none'],
+  ['font-variant', 'font-variant: small-caps', 'small-caps'],
+  ['font-variant', 'font-variant: all-small-caps', 'all-small-caps'],
+  ['font-variant', 'font-variant: petite-caps', 'petite-caps'],
+  ['font-variant', 'font-variant: oldstyle-nums', 'oldstyle-nums'],
+  ['font-variant', 'font-variant: common-ligatures', 'common-ligatures'],
+  ['font-variant', 'font-variant: no-common-ligatures', 'no-common-ligatures'],
+  ['font-variant', 'font-variant: super', 'super'],
+  [
+    'font-variant',
+    'font-variant: small-caps tabular-nums',
+    'small-caps tabular-nums',
+  ],
+  ['font-variant', 'font-variant-ligatures: none', 'none'],
+  [
+    'font-variant',
+    'font-variant-numeric: slashed-zero ordinal',
+    'ordinal slashed-zero',
+  ],
+  ['font-variant', 'font-variant-caps: titling-caps', 'titling-caps'],
+  ['font-variant', 'font-variant-position: sub', 'sub'],
+  [
+    'font-variant',
+    'font-variant-ligatures: none; font-variant-caps: small-caps',
+    '',
+  ],
+  [
+    'font-variant',
+    'font-variant: no-common-ligatures small-caps oldstyle-nums tabular-nums diagonal-fractions ordinal slashed-zero super',
+    'no-common-ligatures small-caps oldstyle-nums tabular-nums diagonal-fractions ordinal slashed-zero super',
+  ],
+  [
+    'font-variant',
+    'font-variant: contextual common-ligatures',
+    'common-ligatures contextual',
+  ],
+  [
+    'font-variant',
+    'font-variant: no-contextual no-historical-ligatures discretionary-ligatures no-common-ligatures',
+    'no-common-ligatures discretionary-ligatures no-historical-ligatures no-contextual',
+  ],
+  [
+    'font-variant',
+    'font-variant: stacked-fractions lining-nums proportional-nums',
+    'lining-nums proportional-nums stacked-fractions',
+  ],
+  ['font-variant', 'font-variant: sub all-petite-caps', 'all-petite-caps sub'],
+  ['font-variant', 'font-variant: unicase', 'unicase'],
+  ['font-variant', 'font-feature-settings: "tnum"', 'normal'],
+  ['font-variant', 'font-kerning: none', 'normal'],
+];
+
+test('a computed style reads each shorthand as Chrome does, from its longhands as they resolve', async () => {
+  const { node } = await render(
+    '<div style="position: relative; width: 400px; height: 300px; color: #000; font: 16px Times">' +
+      SHORTHAND_ROWS.map(
+        ([, style], i) => `<div id="r${i}" style='${style}'>x</div>`,
+      ).join('') +
+      '</div>',
+    1280,
+  );
+  const el = view(node);
+  const wrong = SHORTHAND_ROWS.flatMap(([name, style, want], i) => {
+    const got = el.computedStyle(findById(el.document, `r${i}`)!)?.[name];
+    return got === want ? [] : [`${name} of ${style}: ${got}, not ${want}`];
+  });
+  assert.deepStrictEqual(wrong, []);
 });
 
 /** Every kind of box, for what a `min-width: auto` reads on it. */

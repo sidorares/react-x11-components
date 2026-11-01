@@ -403,6 +403,7 @@ import {
   intersectionClips,
   apartFromLines,
   apartOf,
+  carryLayers,
   layered,
   layerOf,
   onLine,
@@ -7191,15 +7192,17 @@ export class HtmlViewNode extends Node {
       // none of its own (`contentsStyle`), and a box a drag set aside is a
       // width ago, where its rules are now
       const used =
-        generated &&
-        !computed &&
-        read.display !== 'contents' &&
-        !heldBack(tree, generated);
+        generated && read.display !== 'contents' && !heldBack(tree, generated);
       return cssomStyle(
         read,
         this._scale,
-        used ? this._usedBox(generated, read) : null,
+        !used
+          ? null
+          : computed
+            ? this._edgesOf(generated, read)
+            : this._usedBox(generated, read),
         computed || (!!generated && isItem(generated)),
+        !generated,
       );
     }
     const key = pseudo ? highlightKey(pseudo) : null;
@@ -7209,9 +7212,31 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo) return null;
     const box = this._ownBoxOf(tree, element);
-    if (!box) return cssomStyle(style, this._scale, null);
+    if (!box) {
+      return cssomStyle(
+        style,
+        this._scale,
+        null,
+        false,
+        !!style.transform && this._unrendered(element, style),
+      );
+    }
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+  }
+
+  /**
+   * Whether a `display` says nothing renders an element, its own or one
+   * around it. No box of ours is not the test: what an `<svg>` draws, what
+   * `content-visibility: hidden` holds and a canvas's fallback have none
+   * here, and a browser has one for each.
+   */
+  private _unrendered(element: Element, style: ComputedStyle): boolean {
+    if (style.display === 'none' || style.display === 'contents') return true;
+    for (let at = flatParentOf(element); at; at = flatParentOf(at)) {
+      if (this._styleOf(at)?.display === 'none') return true;
+    }
+    return false;
   }
 
   /** The style of the position option a box was placed by
@@ -7272,6 +7297,28 @@ export class HtmlViewNode extends Node {
     written.forEach((len, i) => {
       if (typeof len === 'number') used.margin[i] = len;
     });
+    return used;
+  }
+
+  /**
+   * What a frame `getKeyframes()` makes up reads of a box. Chrome takes the
+   * computed value there, but for margins and padding, which it reads as
+   * `getComputedStyle` does whichever it is asked for: a length as `style`
+   * has it, and anything else as the box is laid out now, under whatever
+   * animation is running on it.
+   */
+  private _edgesOf(box: Box, style: ComputedStyle): UsedBox {
+    const used = this._usedBox(box, style);
+    const written = [
+      style.paddingTop,
+      style.paddingRight,
+      style.paddingBottom,
+      style.paddingLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.padding[i] = len;
+    });
+    used.edgesOnly = true;
     return used;
   }
 
@@ -11830,6 +11877,7 @@ export class HtmlViewNode extends Node {
     }
     this._firstBoxes = { tree: built.tree, of: first };
     carryBlockers(tree, built.tree, built.replaced, built.added);
+    carryLayers(tree, built);
     return built.tree;
   }
 
@@ -12758,8 +12806,9 @@ export class HtmlViewNode extends Node {
     frames.sort((a, b) => a.offset - b.offset);
     // the values it runs from and to where the rule has no frame there:
     // the style under its animations
-    const record = this._underlyingRecord(element, pseudo) ?? {};
+    let record: Record<string, string> | undefined;
     const underlying = (): Record<string, string> => {
+      record ??= this._underlyingRecord(element, pseudo) ?? {};
       const out: Record<string, string> = {};
       for (const prop of animated) {
         if (record[prop] !== undefined) out[prop] = record[prop];
@@ -12792,6 +12841,7 @@ export class HtmlViewNode extends Node {
     element: Element,
     pseudo: string,
   ): Record<string, string> | null {
+    this._settle();
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
@@ -12822,7 +12872,13 @@ export class HtmlViewNode extends Node {
       parentStyle,
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex',
     );
-    return cssomStyle(style, this._scale, null, true);
+    const box = this._ownBoxOf(tree, element);
+    return cssomStyle(
+      style,
+      this._scale,
+      box && this._edgesOf(box, style),
+      true,
+    );
   }
 
   cssAnimationsOf(

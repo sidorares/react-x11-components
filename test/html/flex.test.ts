@@ -4182,3 +4182,23 @@ test('what the flex properties refuse and calculate lays out as in Chromium: ord
     `${boxOf(el, 'z1').width}: the earlier flex, whose grow is twice its neighbour's`,
   );
 });
+
+test('the one item that may flex in a box that wraps still has its flex base size', async () => {
+  // Yoga gives such an item none, where it would fill the box whatever it
+  // was, which on lines is where they break: Chrome's
+  const place = async (flex: string): Promise<number[]> => {
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="display:flex;flex-wrap:wrap;width:100px">' +
+        `<div id="a" style="flex:${flex};height:4px"></div>` +
+        '<div id="b" style="flex:none;width:30px;height:4px"></div></div>',
+      400,
+    );
+    const el = view(node);
+    const [a, b] = [boxOf(el, 'a'), boxOf(el, 'b')];
+    await cleanup();
+    return [a.width, b.x, b.y];
+  };
+  assert.deepStrictEqual(await place('1 1 300px'), [100, 0, 4]);
+  assert.deepStrictEqual(await place('1 1 90px'), [100, 0, 4]);
+  assert.deepStrictEqual(await place('1 1 60px'), [70, 70, 0]);
+});

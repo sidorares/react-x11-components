@@ -121,6 +121,7 @@ export function installDom(
     // it is handed
     if (
       op !== 'computed' &&
+      op !== 'computedShorthands' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
       op !== 'selection' &&
@@ -22613,24 +22614,8 @@ export function installDom(
     return out;
   };
   const computedNames = new Map<string, string>();
-  /** What a computed style answers by a name and lists no item of. */
-  const COMPUTED_SHORTHANDS = new Set([
-    'font',
-    'overflow',
-    'white-space',
-    'flex',
-    'flex-flow',
-    'gap',
-    'place-content',
-    'place-items',
-    'place-self',
-    'border-radius',
-    'animation',
-    'animation-range',
-    'scroll-timeline',
-    'view-timeline',
-    'position-try',
-  ]);
+  /** What is sent with a computed style's longhands and is no item of it. */
+  const COMPUTED_SHORTHANDS = new Set(['font', 'overflow', 'white-space']);
   /** A CSS identifier, its escapes in it. */
   const CSS_IDENT =
     /^(?:--|-?(?:[_a-zA-Z\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f]))(?:[-_a-zA-Z0-9\u0080-\uffff]|\\[0-9a-fA-F]{1,6}[ \t\n]?|\\[^\n\r\f])*$/;
@@ -22763,6 +22748,23 @@ export function installDom(
     return style;
   };
 
+  /** The shorthands a computed style answers, in either spelling: asked for
+   *  once, since a read of a name a style does not have asks here. */
+  let shorthandNames: Set<string> | null = null;
+  /** Those a walk of a style's keys finds, which are in camel case alone. */
+  const shorthandKeys: string[] = [];
+  const computedShorthandNames = (): Set<string> => {
+    if (!shorthandNames) {
+      shorthandNames = new Set();
+      for (const name of JSON.parse(call('computedShorthands'))) {
+        shorthandNames.add(name);
+        shorthandNames.add(camel(name));
+        shorthandKeys.push(camel(name));
+      }
+    }
+    return shorthandNames;
+  };
+
   /** The empty declaration `getComputedStyle` answers where its argument
    *  names no pseudo-element: no properties, and each one the element's
    *  style has reads as '' rather than as nothing. */
@@ -22785,7 +22787,8 @@ export function installDom(
         () => '',
         () => [],
       ),
-      (key) => (names().has(key) ? '' : undefined),
+      (key) =>
+        names().has(key) || computedShorthandNames().has(key) ? '' : undefined,
       () => {},
       () => [],
     );
@@ -22800,6 +22803,7 @@ export function installDom(
     const id = idOf(el, 'element');
     let json = '';
     let values: Record<string, string> = {};
+    let shorthands: Map<string, string> | null = null;
     let names: string[] | null = null;
     let readAt = -1;
     let readIn = -1;
@@ -22816,6 +22820,7 @@ export function installDom(
       if (boxesOwed) json = json.slice(1);
       values = json ? JSON.parse(json) : {};
       names = null;
+      shorthands = null;
     };
     /** Its items, made where a page asks for them: what it reads by a name
      *  it reads of `values`, on a path a page takes tens of thousands of
@@ -22824,10 +22829,10 @@ export function installDom(
       if (names) return names;
       names = [];
       for (const name in values) {
-        // a shorthand answers by its name and is no item of the list,
-        // which is of longhands: a page that copies a style item by item,
-        // as html2canvas does, would set it over them, or take them all
-        // off with a '' it reads
+        // what is sent with the longhands that is shorthand answers by its
+        // name and is no item of the list, which is of longhands: a page
+        // that copies a style item by item, as html2canvas does, would set
+        // it over them, or take them all off with a '' it reads
         if (!COMPUTED_SHORTHANDS.has(name)) names.push(name);
       }
       return names;
@@ -22846,11 +22851,27 @@ export function installDom(
       const r = call('computed', id, which, name);
       if (r) take(r);
     };
+    /** A shorthand, composed by the host where a page reads one: all of them
+     *  at once, since one that reads one may well read them all, and a walk
+     *  of the style's keys does. Undefined for a name that is none. */
+    const shorthand = (name: string): string | undefined => {
+      if (!computedShorthandNames().has(name)) return undefined;
+      if (!shorthands) {
+        shorthands = new Map();
+        const r = call('computed', id, which, undefined, true);
+        const composed = typeof r === 'string' && r ? JSON.parse(r) : {};
+        for (const short in composed) {
+          shorthands.set(short, composed[short]);
+          shorthands.set(camel(short), composed[short]);
+        }
+      }
+      return shorthands.get(name);
+    };
     read();
     const block = computedBlock(
       (n) => {
         readProperty(n);
-        if (!n.startsWith('--')) return values[n] ?? '';
+        if (!n.startsWith('--')) return values[n] ?? shorthand(n) ?? '';
         if (!json) return '';
         return String(call('customProperty', id, which, n) ?? '');
       },
@@ -22864,11 +22885,12 @@ export function installDom(
       (key) => {
         if (/^\d+$/.test(key)) return items()[Number(key)];
         readProperty(key);
-        return values[computedName(key)];
+        return values[computedName(key)] ?? shorthand(key);
       },
       read,
       () => {
-        const both = new Set<string>();
+        computedShorthandNames();
+        const both = new Set<string>(shorthandKeys);
         for (const name in values) both.add(name).add(camel(name));
         return [...items().map((_, i) => String(i)), ...both];
       },

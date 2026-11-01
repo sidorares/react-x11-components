@@ -863,6 +863,22 @@ export function animationItemText(parts: readonly string[]): string {
   return out.length ? out.join(' ') : 'none';
 }
 
+/** One item of a `transition` from its longhands' values: property,
+ *  duration, easing, delay and behaviour, each left out at its initial
+ *  value but for a duration before a delay, and `all` where that leaves
+ *  nothing, as Chrome reads it. */
+export function transitionItemText(parts: readonly string[]): string {
+  const [property, duration, easing, delay, behavior] = parts;
+  const delayed = delay !== '0s';
+  const out: string[] = [];
+  if (property !== 'all') out.push(property);
+  if (duration !== '0s' || delayed) out.push(duration);
+  if (easing !== 'ease') out.push(easing);
+  if (delayed) out.push(delay);
+  if (behavior !== 'normal') out.push(behavior);
+  return out.length ? out.join(' ') : 'all';
+}
+
 /** A time as CSSOM writes it, in seconds. */
 export function secondsText(ms: number): string {
   const r = Math.round(ms) / 1000;

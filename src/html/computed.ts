@@ -13,14 +13,23 @@
 import type { BasicShape } from './css/basic-shape.js';
 import type { Coord, ShapeFunction } from './css/shape-function.js';
 import { positionAreaComputed } from './css/anchor.js';
-import { animationItemText, easingText, secondsText } from './css/animation.js';
+import {
+  easingText,
+  secondsText,
+  transitionItemText,
+} from './css/animation.js';
 import type { Animations } from './css/animation.js';
 import { RANGE_END, RANGE_START } from './css/triggers.js';
 import type { RangeEdge } from './css/triggers.js';
+import { composeShorthand } from './css/specified.js';
+import { fontVariantText, urlOf } from './css/style.js';
 import type {
+  BackgroundRepeat,
   ClipPath,
   ComputedStyle,
   ContentSize,
+  GapRule,
+  GridLine,
   SizeOf,
   TimelineRef,
 } from './css/style.js';
@@ -62,6 +71,9 @@ export interface UsedBox {
    *  compute, a percentage as a percentage: what Chrome answers, having
    *  resolved them only for a box with a rectangle of its own. */
   inline?: boolean;
+  /** Whether only its margins and padding are to be read, by what otherwise
+   *  takes the computed value (`HtmlViewNode._edgesOf`). */
+  edgesOnly?: boolean;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -85,11 +97,6 @@ function float6(n: number): string {
   const sign = power < 0 ? '-' : '+';
   const size = String(Math.abs(power)).padStart(2, '0');
   return `${digits.replace(/\.?0+$/, '')}e${sign}${size}`;
-}
-
-/** Two values a shorthand or a corner has one of where they are the same. */
-function pairText(first: string, second: string): string {
-  return first === second ? first : `${first} ${second}`;
 }
 
 /** CSS pixels from device ones. */
@@ -165,34 +172,6 @@ function insetText(inset: readonly [Len, Len], scale: number): string | null {
   return a === b ? a : `${a} ${b}`;
 }
 
-/** `scroll-timeline` or `view-timeline` from its longhands: each name,
- *  with its axis and inset where they are not the initial ones. */
-function timelineShorthand(
-  names: string,
-  axes: string,
-  insets: readonly (readonly [Len, Len])[] | null,
-  scale: number,
-): string {
-  const axisList = axes.split(', ');
-  const nameList = names.split(', ');
-  // lists of other lengths make no shorthand (CSSOM 6.7.2)
-  if (
-    axisList.length !== nameList.length ||
-    (insets && insets.length !== nameList.length)
-  ) {
-    return '';
-  }
-  return nameList
-    .map((name, i) => {
-      const axis = axisList[i % axisList.length];
-      const inset = insets ? insetText(insets[i % insets.length], scale) : null;
-      return [name, axis === 'block' ? '' : axis, inset ?? '']
-        .filter(Boolean)
-        .join(' ');
-    })
-    .join(', ');
-}
-
 /** `position-visibility` as it computes: `always`, or its keywords. */
 function positionVisibilityText(bits: number): string {
   if (!bits) return 'always';
@@ -263,11 +242,8 @@ function animationRangeText(
   return `${a} ${b}`;
 }
 
-/** Each `animation-*` longhand as it is resolved, and the `animation`
- *  shorthand, '' where it cannot say what its longhands do — a timeline or
- *  a range that is not the initial one, or lists of other lengths (CSS
- *  Animations 2, 4). An `auto` duration reads `0s` where the timeline is
- *  the clock's, and `auto` where it may not be. */
+/** Each `animation-*` longhand as it is resolved. An `auto` duration reads
+ *  `0s` where the timeline is the clock's, and `auto` where it may not be. */
 function animationProperties(
   out: Record<string, string>,
   style: ComputedStyle,
@@ -287,28 +263,6 @@ function animationProperties(
   const names = a.names.map((n) => n ?? 'none');
   const starts = style.animationRangeStart;
   const ends = style.animationRangeEnd;
-  const lists = [
-    durations,
-    easings,
-    delays,
-    iterations,
-    a.directions,
-    a.fillModes,
-    a.playStates,
-    names,
-  ];
-  const shorthand =
-    onClock &&
-    starts.length === 1 &&
-    starts[0] === RANGE_START &&
-    ends.length === 1 &&
-    ends[0] === RANGE_END &&
-    lists.every((l) => l.length === names.length)
-      ? names
-          .map((_, i) => animationItemText(lists.map((l) => l[i])))
-          .join(', ')
-      : '';
-  out.animation = shorthand;
   out['animation-name'] = names.join(', ');
   out['animation-duration'] = durations.join(', ');
   out['animation-timing-function'] = easings.join(', ');
@@ -323,10 +277,6 @@ function animationProperties(
   out['animation-range-end'] = ends
     .map((e) => rangeEdgeText(e, true, scale))
     .join(', ');
-  out['animation-range'] =
-    starts.length === ends.length
-      ? starts.map((e, i) => animationRangeText(e, ends[i], scale)).join(', ')
-      : '';
 }
 
 /**
@@ -693,6 +643,14 @@ function fontText(
   return `${text} ${family}`;
 }
 
+/** A `list-style-type`, whose string a style holds with its opening quote
+ *  alone, to tell it from a counter style's name. */
+function listStyleTypeText(type: string): string {
+  return type.startsWith('"')
+    ? `"${type.slice(1).replace(/[\\"]/g, '\\$&')}"`
+    : type;
+}
+
 /** `display` as the author wrote it, where the box tree reads it as
  *  another: a grid and a `flow-root` are kept apart from what they lay
  *  out as. */
@@ -731,6 +689,11 @@ function shortest(parts: readonly string[]): string {
   if (r === l && t === b) return `${t} ${r}`;
   if (r === l) return `${t} ${r} ${b}`;
   return parts.join(' ');
+}
+
+/** A start and an end as a shorthand of the two writes them. */
+function pair(start: string, end: string): string {
+  return start === end ? start : `${start} ${end}`;
 }
 
 /**
@@ -834,9 +797,8 @@ function shapeText(fn: ShapeFunction, scale: number): string {
 /**
  * A property's computed value as a declaration reads it back, for
  * `inherit()` (CSS Values 5, 7.6): what `cssomStyle` answers, with no box
- * and so its computed sizes, and the shorthands of four sides, the border
- * radii and the gaps, as CSSOM serializes them. Undefined for a property
- * none of that serializes.
+ * and so its computed sizes, and its shorthands, as CSSOM serializes them.
+ * Undefined for a property none of that serializes.
  */
 export function computedText(
   style: ComputedStyle,
@@ -847,10 +809,7 @@ export function computedText(
   scale *= style.effectiveZoom;
   const prop = name.toLowerCase();
   // a computed value, which a `min-width: auto` is whatever box it is on
-  const all = cssomAt(style, scale, null, true);
-  if (Object.hasOwn(all, prop)) return all[prop];
-  const sides = FOUR_SIDES[prop];
-  return sides ? shortest(sides.map((side) => all[side])) : undefined;
+  return cssomAt(style, scale, null, true)[prop];
 }
 
 /** The sides a flow-relative property names (`logicalProperties`). */
@@ -860,6 +819,9 @@ const LOGICAL_SIDES = [
   'inline-start',
   'inline-end',
 ];
+
+/** The two axes a flow-relative shorthand names. */
+const FLOWS = ['block', 'inline'];
 
 /** `scroll-snap-type`: its strictness left out where it is the initial
  *  one. */
@@ -922,7 +884,7 @@ function ruleAndScrollProperties(
   out['rule-overlap'] = style.ruleOverlap;
   out['scrollbar-width'] = style.scrollbarWidth;
   out['scroll-snap-type'] = scrollSnapTypeText(style.scrollSnapType);
-  out['scroll-snap-align'] = pairText(...style.scrollSnapAlign);
+  out['scroll-snap-align'] = pair(...style.scrollSnapAlign);
   out['scroll-snap-stop'] = style.scrollSnapStop;
   out['scroll-margin-top'] = px(style.scrollMarginTop, scale);
   out['scroll-margin-right'] = px(style.scrollMarginRight, scale);
@@ -935,8 +897,9 @@ function ruleAndScrollProperties(
   out['outline-offset'] = px(style.outlineOffset, scale);
 }
 
-/** What `cssomAt` reads from a box rather than from a style, by name and in
- *  camel case, as a page reads it. */
+/** What `cssomAt` reads from a box rather than from a style, or a shorthand
+ *  composes from what it does, by name and in camel case, as a page reads
+ *  it. */
 const FROM_A_BOX: ReadonlySet<string> = new Set(
   [
     'width',
@@ -945,11 +908,24 @@ const FROM_A_BOX: ReadonlySet<string> = new Set(
     'block-size',
     'transform',
     ...SIDES,
+    'margin',
+    'padding',
+    'inset',
+    'border',
+    'border-width',
     ...LOGICAL_SIDES.map((side) => `inset-${side}`),
     ...[...SIDES, ...LOGICAL_SIDES].flatMap((side) => [
       `margin-${side}`,
       `padding-${side}`,
+      `border-${side}`,
       `border-${side}-width`,
+    ]),
+    ...FLOWS.flatMap((flow) => [
+      `margin-${flow}`,
+      `padding-${flow}`,
+      `inset-${flow}`,
+      `border-${flow}`,
+      `border-${flow}-width`,
     ]),
   ].flatMap((name) => [
     name,
@@ -974,22 +950,34 @@ export function comesFromBox(property: string): boolean {
  * `keepsAuto` has a `min-width: auto` read as itself: on a flex or a grid
  * item, which a `::before` is with no `box` handed in, and for what takes
  * the computed value, as `getKeyframes()` and `commitStyles()` do.
+ * `unrendered` says there is no box to be had, which a `box` of null does
+ * not: what takes the computed value hands in none either, and a `transform`
+ * goes on reading its list there.
  */
 export function cssomStyle(
   style: ComputedStyle,
   scale: number,
   box: UsedBox | null,
   keepsAuto = false,
+  unrendered = false,
 ): Record<string, string> {
-  return cssomAt(style, scale * style.effectiveZoom, box, keepsAuto);
+  return cssomAt(
+    style,
+    scale * style.effectiveZoom,
+    box,
+    keepsAuto,
+    unrendered,
+  );
 }
 
 function cssomAt(
   style: ComputedStyle,
   scale: number,
-  box: UsedBox | null,
+  given: UsedBox | null,
   keepsAuto: boolean,
+  unrendered = false,
 ): Record<string, string> {
+  const box = given?.edgesOnly ? null : given;
   const color = style.color;
   const flex = style.flexRead ?? style;
   // Under 128 keys, past which V8 makes a literal a dictionary, and as near
@@ -1032,18 +1020,6 @@ function cssomAt(
     'view-timeline-inset': style.viewTimelineInset
       .map((inset) => insetText(inset, scale) ?? 'auto')
       .join(', '),
-    'scroll-timeline': timelineShorthand(
-      style.scrollTimelineName,
-      style.scrollTimelineAxis,
-      null,
-      scale,
-    ),
-    'view-timeline': timelineShorthand(
-      style.viewTimelineName,
-      style.viewTimelineAxis,
-      style.viewTimelineInset,
-      scale,
-    ),
     'anchor-name': style.anchorNames ? style.anchorNames.join(', ') : 'none',
     'anchor-scope': style.anchorScope,
     'position-anchor': style.positionAnchorText,
@@ -1053,10 +1029,6 @@ function cssomAt(
     'position-try-order': style.positionTryOrder,
     'position-visibility': positionVisibilityText(style.positionVisibility),
     'position-try-fallbacks': tryFallbacksText(style.positionTryFallbacks),
-    'position-try':
-      style.positionTryOrder === 'normal'
-        ? tryFallbacksText(style.positionTryFallbacks)
-        : `${style.positionTryOrder} ${tryFallbacksText(style.positionTryFallbacks)}`,
     'justify-self': style.justifySelfText,
     'align-self': style.alignSelfText,
     'justify-items':
@@ -1144,6 +1116,7 @@ function cssomAt(
     'word-spacing': px(style.wordSpacing, scale),
     'text-align': style.textAlign,
     'text-transform': style.textTransform,
+    'font-variant': fontVariantText(style),
     'text-decoration-line': style.textDecorationLine || 'none',
     'text-decoration-color': cssomColor(
       style.textDecorationColor ?? 'currentColor',
@@ -1172,7 +1145,7 @@ function cssomAt(
     direction: style.direction,
     'writing-mode': style.writingMode,
     'text-orientation': style.textOrientation,
-    'list-style-type': style.listStyleType,
+    'list-style-type': listStyleTypeText(style.listStyleType),
     'min-width': minSizeText(
       style.minWidth,
       style.minWidthKeyword,
@@ -1229,29 +1202,21 @@ function cssomAt(
   transitionProperties(out, style);
   ruleAndScrollProperties(out, style, scale);
   out.font = fontText(style, out['font-size'], out['font-family'], scale);
-  out.flex = `${out['flex-grow']} ${out['flex-shrink']} ${out['flex-basis']}`;
-  out['flex-flow'] = `${out['flex-direction']} ${out['flex-wrap']}`;
-  out.gap = pairText(out['row-gap'], out['column-gap']);
-  out['place-content'] = pairText(out['align-content'], out['justify-content']);
-  out['place-items'] = pairText(out['align-items'], out['justify-items']);
-  out['place-self'] = pairText(out['align-self'], out['justify-self']);
+  out['text-decoration'] = textDecorationText(out, style);
   const xs = style.borderRadius;
   const ys = style.borderRadiusY ?? xs;
   CORNERS.forEach((corner, i) => {
-    out[corner] = pairText(len(xs[i], scale), len(ys[i], scale));
+    out[corner] = pair(len(xs[i], scale), len(ys[i], scale));
   });
-  const across = shortest(xs.map((r) => len(r, scale)));
-  out['border-radius'] = style.borderRadiusY
-    ? `${across} / ${shortest(ys.map((r) => len(r, scale)))}`
-    : across;
   // a transform resolves to the matrix its list comes to for the box
-  // (CSSOM 9, "resolved value"), and with no box is the list it computes
-  // to
-  out.transform = !style.transform
-    ? 'none'
-    : box
-      ? transformMatrixText(style.transform, box, scale)
-      : cssomTransform(style.transform, scale);
+  // (CSSOM 9, "resolved value"), with none to be had is `none`, and with
+  // none handed in is the list it computes to
+  out.transform =
+    !style.transform || unrendered
+      ? 'none'
+      : box
+        ? transformMatrixText(style.transform, box, scale)
+        : cssomTransform(style.transform, scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,
@@ -1288,7 +1253,7 @@ function cssomAt(
     style.paddingBottom,
     style.paddingLeft,
   ];
-  const edges = box?.inline ? null : box;
+  const edges = given?.inline ? null : given;
   SIDES.forEach((side, i) => {
     out[`border-${side}-style`] = styles[i];
     // a side with no style has no width (CSS Backgrounds 3, 4.3)
@@ -1342,20 +1307,12 @@ function cssomAt(
     );
   }
   logicalProperties(out, style);
-  return out;
+  (out as Longhands)[READ_FROM] = [style, scale];
+  return Object.setPrototypeOf(out, COMPOSED);
 }
 
-/**
- * The flow-relative properties, each its physical side's resolved value
- * (CSSOM 9, CSS Logical 1, 4), as the element's writing mode and
- * direction map them. Apple's galleries read
- * `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll
- * keyframe of the NaN that nothing answered.
- */
-function logicalProperties(
-  out: Record<string, string>,
-  style: ComputedStyle,
-): void {
+/** The physical sides a style's flow puts at `LOGICAL_SIDES`' four. */
+function flowSides(style: ComputedStyle): readonly string[] {
   const mode = style.writingMode;
   const vertical = mode !== 'horizontal-tb';
   const ltr = style.direction !== 'rtl';
@@ -1373,20 +1330,30 @@ function logicalProperties(
     : ltr !== (mode === 'sideways-lr')
       ? ['top', 'bottom']
       : ['bottom', 'top'];
-  const sides: [string, string][] = [
-    ['block-start', blockStart],
-    ['block-end', blockEnd],
-    ['inline-start', inlineStart],
-    ['inline-end', inlineEnd],
-  ];
-  for (const [logical, physical] of sides) {
-    out[`margin-${logical}`] = out[`margin-${physical}`];
-    out[`padding-${logical}`] = out[`padding-${physical}`];
-    out[`inset-${logical}`] = out[physical];
+  return [blockStart, blockEnd, inlineStart, inlineEnd];
+}
+
+/**
+ * The flow-relative properties, each its physical side's resolved value
+ * (CSSOM 9, CSS Logical 1, 4), as the element's writing mode and
+ * direction map them. Apple's galleries read
+ * `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll
+ * keyframe of the NaN that nothing answered.
+ */
+function logicalProperties(
+  out: Record<string, string>,
+  style: ComputedStyle,
+): void {
+  const physical = flowSides(style);
+  LOGICAL_SIDES.forEach((logical, i) => {
+    out[`margin-${logical}`] = out[`margin-${physical[i]}`];
+    out[`padding-${logical}`] = out[`padding-${physical[i]}`];
+    out[`inset-${logical}`] = out[physical[i]];
     for (const part of ['width', 'style', 'color']) {
-      out[`border-${logical}-${part}`] = out[`border-${physical}-${part}`];
+      out[`border-${logical}-${part}`] = out[`border-${physical[i]}-${part}`];
     }
-  }
+  });
+  const vertical = style.writingMode !== 'horizontal-tb';
   const [inline, block] = vertical ? ['height', 'width'] : ['width', 'height'];
   out['inline-size'] = out[inline];
   out['block-size'] = out[block];
@@ -1394,4 +1361,404 @@ function logicalProperties(
   out['min-block-size'] = out[`min-${block}`];
   out['max-inline-size'] = out[`max-${inline}`];
   out['max-block-size'] = out[`max-${block}`];
+}
+
+// --- shorthands ------------------------------------------------------------
+
+/** What a record of longhands was read from, and at what scale: a symbol, so
+ *  that a walk of its keys and `JSON.stringify` pass over it. */
+const READ_FROM = Symbol('read from');
+
+/** A record `cssomAt` makes, whose shorthands are composed as they are read. */
+type Longhands = Record<string, string> & {
+  [READ_FROM]: [ComputedStyle, number];
+};
+
+/** How a shorthand reads, from the longhands as a page reads them where the
+ *  record has them, and the style where it does not. */
+type Composer = (
+  all: Record<string, string>,
+  style: ComputedStyle,
+  scale: number,
+) => string;
+
+/** One side's border, as `border-top` and its kin write it. */
+function edgeText(all: Record<string, string>, side: string): string {
+  return `${all[`border-${side}-width`]} ${all[`border-${side}-style`]} ${all[`border-${side}-color`]}`;
+}
+
+/** `border`, `border-block` or `border-inline`, which say one edge for all
+ *  of `sides`, and so nothing where they differ. */
+function everyEdge(sides: readonly string[]): Composer {
+  return (all) => {
+    const [first, ...rest] = sides.map((side) => edgeText(all, side));
+    return rest.every((edge) => edge === first) ? first : '';
+  };
+}
+
+/** A flow's two of four sides' values, top first. */
+function flowPair(
+  values: readonly string[],
+  style: ComputedStyle,
+  flow: string,
+): string {
+  const at = LOGICAL_SIDES.indexOf(`${flow}-start`);
+  const physical = flowSides(style);
+  const sides: readonly string[] = SIDES;
+  return pair(
+    values[sides.indexOf(physical[at])],
+    values[sides.indexOf(physical[at + 1])],
+  );
+}
+
+function scrollMargins(style: ComputedStyle, scale: number): string[] {
+  return [
+    style.scrollMarginTop,
+    style.scrollMarginRight,
+    style.scrollMarginBottom,
+    style.scrollMarginLeft,
+  ].map((v) => px(v, scale));
+}
+
+function scrollPaddings(style: ComputedStyle, scale: number): string[] {
+  return [
+    style.scrollPaddingTop,
+    style.scrollPaddingRight,
+    style.scrollPaddingBottom,
+    style.scrollPaddingLeft,
+  ].map((v) => len(v, scale));
+}
+
+/** A gap's rule: its style left out where it is `none`, as Chrome reads it. */
+function ruleText(rule: GapRule, style: ComputedStyle, scale: number): string {
+  const kind = rule.style === 'none' ? '' : `${rule.style} `;
+  const color = cssomColor(rule.color, null, style.color, style.colorSource);
+  return `${px(rule.width, scale)} ${kind}${color}`;
+}
+
+/** A corner's shape as it computes, whichever keyword it was written as. */
+function cornerShapeText(k: number): string {
+  if (k === Infinity) return 'superellipse(infinity)';
+  if (k === -Infinity) return 'superellipse(-infinity)';
+  return `superellipse(${num(k)})`;
+}
+
+function gridLineText(line: GridLine): string {
+  if (line === null) return 'auto';
+  if ('span' in line) {
+    if (!line.name) return `span ${line.span}`;
+    return line.span === 1
+      ? `span ${line.name}`
+      : `span ${line.span} ${line.name}`;
+  }
+  if ('line' in line) {
+    return line.name ? `${line.line} ${line.name}` : String(line.line);
+  }
+  return line.name;
+}
+
+/** Whether a grid placement can leave `next` out after `first`: what it
+ *  would stand for then is `first` where that is a name and `auto` where
+ *  not (CSS Grid 2, 8.4). */
+function followsFrom(first: GridLine, next: GridLine): boolean {
+  const named = first !== null && !('span' in first) && !('line' in first);
+  return named ? gridLineText(next) === gridLineText(first) : next === null;
+}
+
+function gridAxisText(start: GridLine, end: GridLine): string {
+  return followsFrom(start, end)
+    ? gridLineText(start)
+    : `${gridLineText(start)} / ${gridLineText(end)}`;
+}
+
+/** `grid-area`, its last value left off where it can be, then the one
+ *  before it, and so on. */
+function gridAreaText(style: ComputedStyle): string {
+  const {
+    gridRowStart: rowStart,
+    gridColumnStart: columnStart,
+    gridRowEnd: rowEnd,
+    gridColumnEnd: columnEnd,
+  } = style;
+  const parts = [rowStart, columnStart, rowEnd, columnEnd].map(gridLineText);
+  let count = 4;
+  if (followsFrom(columnStart, columnEnd)) {
+    count = 3;
+    if (followsFrom(rowStart, rowEnd)) {
+      count = 2;
+      if (followsFrom(rowStart, columnStart)) count = 1;
+    }
+  }
+  return parts.slice(0, count).join(' / ');
+}
+
+function repeatText([x, y]: BackgroundRepeat): string {
+  if (x === y) return x;
+  if (x === 'repeat' && y === 'no-repeat') return 'repeat-x';
+  if (x === 'no-repeat' && y === 'repeat') return 'repeat-y';
+  return `${x} ${y}`;
+}
+
+function backgroundSizeText(
+  size: ComputedStyle['backgroundSize'],
+  scale: number,
+): string {
+  return typeof size === 'string'
+    ? size
+    : `${len(size[0], scale)} ${len(size[1], scale)}`;
+}
+
+/** `background`, a layer for each image, each list taken in turn and over
+ *  again as a layer's image does, and the colour in the last. */
+function backgroundText(
+  all: Record<string, string>,
+  style: ComputedStyle,
+  scale: number,
+): string {
+  const images = splitCommas(all['background-image']);
+  const nth = <T>(list: readonly T[] | null, one: T, i: number): T =>
+    list ? list[i % list.length] : one;
+  return images
+    .map((image, i) => {
+      const [x, y] = nth<readonly [Len, Len]>(
+        style.backgroundPositions,
+        [style.backgroundPositionX, style.backgroundPositionY],
+        i,
+      );
+      return [
+        i === images.length - 1 ? all['background-color'] : '',
+        image.trim(),
+        repeatText(nth(style.backgroundRepeats, style.backgroundRepeat, i)),
+        nth(style.backgroundAttachments, style.backgroundAttachment, i),
+        `${len(x, scale)} ${len(y, scale)} /`,
+        backgroundSizeText(
+          nth(style.backgroundSizes, style.backgroundSize, i),
+          scale,
+        ),
+        nth(style.backgroundOrigins, style.backgroundOrigin, i),
+        style.backgroundClipText
+          ? 'text'
+          : nth(style.backgroundClips, style.backgroundClip, i),
+      ]
+        .filter(Boolean)
+        .join(' ');
+    })
+    .join(', ');
+}
+
+/** `transition`, an item for each property, the other lists taken in turn
+ *  and over again as a transition does. */
+function transitionText(style: ComputedStyle): string {
+  const t = style.transitions;
+  const nth = <T>(list: readonly T[], i: number): T => list[i % list.length];
+  return (t.properties.length ? t.properties : ['none'])
+    .map((property, i) =>
+      transitionItemText([
+        property,
+        secondsText(nth(t.durations, i)),
+        easingText(nth(t.easings, i)),
+        secondsText(nth(t.delays, i)),
+        nth(t.behaviors, i),
+      ]),
+    )
+    .join(', ');
+}
+
+/** `text-decoration`, each part left out at its initial value. Its colour's
+ *  is `currentcolor`, which reads as the text's and is still left out. */
+function textDecorationText(
+  all: Record<string, string>,
+  style: ComputedStyle,
+): string {
+  const { textDecorationColor: color } = style;
+  const parts = [
+    all['text-decoration-line'] === 'none' ? '' : all['text-decoration-line'],
+    all['text-decoration-thickness'] === 'auto'
+      ? ''
+      : all['text-decoration-thickness'],
+    all['text-decoration-style'] === 'solid'
+      ? ''
+      : all['text-decoration-style'],
+    color === null || color === 'currentColor'
+      ? ''
+      : all['text-decoration-color'],
+  ];
+  return parts.filter(Boolean).join(' ') || 'none';
+}
+
+/**
+ * Every shorthand a page reads off a computed style, but for `font` and
+ * `overflow`, which `cssomAt` writes with the longhands, since a page reads
+ * them as it reads those: on the way to a text measure, and up a tree for what
+ * scrolls. Each is composed from its longhands as they resolve, so `margin`
+ * reads used values where `margin-top` does, and reads '' where those cannot
+ * be said in it (CSSOM 6.7.2).
+ *
+ * Not here, and so read as a browser with no such property reads them: `mask`
+ * and `border-image`, whose images a style keeps in no form a page can read,
+ * `grid` and `grid-template`, whose tracks resolve to what a layout came to,
+ * and what a style holds nothing of.
+ */
+const SHORTHANDS: Record<string, Composer> = {
+  ...Object.fromEntries(
+    Object.entries(FOUR_SIDES).map(([name, sides]): [string, Composer] => [
+      name,
+      (all) => shortest(sides.map((side) => all[side])),
+    ]),
+  ),
+  ...Object.fromEntries(
+    FLOWS.flatMap((flow): [string, Composer][] => [
+      ...['margin', 'padding', 'inset'].map((prop): [string, Composer] => [
+        `${prop}-${flow}`,
+        (all) => pair(all[`${prop}-${flow}-start`], all[`${prop}-${flow}-end`]),
+      ]),
+      ...['width', 'style', 'color'].map((part): [string, Composer] => [
+        `border-${flow}-${part}`,
+        (all) =>
+          pair(
+            all[`border-${flow}-start-${part}`],
+            all[`border-${flow}-end-${part}`],
+          ),
+      ]),
+      [`border-${flow}`, everyEdge([`${flow}-start`, `${flow}-end`])],
+      [
+        `scroll-margin-${flow}`,
+        (_, style, scale) => flowPair(scrollMargins(style, scale), style, flow),
+      ],
+      [
+        `scroll-padding-${flow}`,
+        (_, style, scale) =>
+          flowPair(scrollPaddings(style, scale), style, flow),
+      ],
+    ]),
+  ),
+  ...Object.fromEntries(
+    [...SIDES, ...LOGICAL_SIDES].map((side): [string, Composer] => [
+      `border-${side}`,
+      (all) => edgeText(all, side),
+    ]),
+  ),
+  // what `el.style` composes, from the same strings
+  ...Object.fromEntries(
+    ['position-try', 'scroll-timeline', 'view-timeline'].map(
+      (name): [string, Composer] => [
+        name,
+        (all) => composeShorthand(name, (part) => all[part] ?? null) ?? '',
+      ],
+    ),
+  ),
+  // and here each list is as long as the names, as an animation takes them
+  animation: (all) => {
+    const count = splitCommas(all['animation-name']).length;
+    return (
+      composeShorthand('animation', (part) => {
+        if (/^animation-(?:timeline|range)/.test(part)) return all[part];
+        const list = splitCommas(all[part]);
+        return Array.from(
+          { length: count },
+          (_, i) => list[i % list.length],
+        ).join(', ');
+      }) ?? ''
+    );
+  },
+  border: everyEdge(SIDES),
+  'border-radius': (_, style, scale) => {
+    const across = style.borderRadius.map((r) => len(r, scale));
+    if (!style.borderRadiusY) return shortest(across);
+    const down = style.borderRadiusY.map((r) => len(r, scale));
+    return `${shortest(across)} / ${shortest(down)}`;
+  },
+  'border-spacing': (_, style, scale) =>
+    pair(px(style.borderSpacing, scale), px(style.borderSpacingY, scale)),
+  'corner-shape': (_, style) =>
+    shortest(style.cornerShape.map(cornerShapeText)),
+  outline: (all) =>
+    `${all['outline-color']} ${all['outline-style']} ${all['outline-width']}`,
+  'scroll-margin': (_, style, scale) => shortest(scrollMargins(style, scale)),
+  'scroll-padding': (_, style, scale) => shortest(scrollPaddings(style, scale)),
+  background: backgroundText,
+  'list-style': (all, style) => {
+    const url = style.listStyleImage ? urlOf(style.listStyleImage) : null;
+    const image = url === null ? 'none' : urlText(url);
+    return `${style.listStylePosition} ${image} ${all['list-style-type']}`;
+  },
+  gap: (all) => pair(all['row-gap'], all['column-gap']),
+  'grid-gap': (all) => pair(all['row-gap'], all['column-gap']),
+  flex: (all) =>
+    `${all['flex-grow']} ${all['flex-shrink']} ${all['flex-basis']}`,
+  'flex-flow': (all) => `${all['flex-direction']} ${all['flex-wrap']}`,
+  'place-content': (all) => pair(all['align-content'], all['justify-content']),
+  'place-items': (all) => pair(all['align-items'], all['justify-items']),
+  'place-self': (all) => pair(all['align-self'], all['justify-self']),
+  'grid-row': (_, style) => gridAxisText(style.gridRowStart, style.gridRowEnd),
+  'grid-column': (_, style) =>
+    gridAxisText(style.gridColumnStart, style.gridColumnEnd),
+  'grid-area': (_, style) => gridAreaText(style),
+  columns: (_, style, scale) =>
+    [
+      style.columnWidth === null ? '' : px(style.columnWidth, scale),
+      style.columnCount === null ? '' : String(style.columnCount),
+    ]
+      .filter(Boolean)
+      .join(' ') || 'auto',
+  'column-rule': (_, style, scale) => ruleText(style.columnRule, style, scale),
+  'row-rule': (_, style, scale) => ruleText(style.rowRule, style, scale),
+  rule: (_, style, scale) => {
+    const column = ruleText(style.columnRule, style, scale);
+    return column === ruleText(style.rowRule, style, scale) ? column : '';
+  },
+  transition: (_, style) => transitionText(style),
+  'animation-range': (_, style, scale) => {
+    const starts = style.animationRangeStart;
+    const ends = style.animationRangeEnd;
+    return starts.length === ends.length
+      ? starts.map((e, i) => animationRangeText(e, ends[i], scale)).join(', ')
+      : '';
+  },
+  container: (all) =>
+    all['container-type'] === 'normal'
+      ? all['container-name']
+      : `${all['container-name']} / ${all['container-type']}`,
+  'text-wrap': (_, style) => {
+    const nowrap = style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre';
+    const kind = style.textWrapStyle;
+    if (kind === 'auto') return nowrap ? 'nowrap' : 'wrap';
+    return nowrap ? `nowrap ${kind}` : kind;
+  },
+};
+
+/**
+ * What a record of `cssomAt`'s inherits: each shorthand as a getter. A page
+ * that reads `display` pays for no shorthand, where a hundred more strings in
+ * every record would be half as much again on a read Apple's pages make tens
+ * of thousands of times a load. So `JSON.stringify` and `Object.keys` see the
+ * longhands, and a read by name sees the shorthands too.
+ */
+const COMPOSED: object = Object.create(
+  null,
+  Object.fromEntries(
+    Object.entries(SHORTHANDS).map(([name, compose]) => [
+      name,
+      {
+        get(this: Longhands): string {
+          const [style, scale] = this[READ_FROM];
+          return compose(this, style, scale);
+        },
+      },
+    ]),
+  ),
+);
+
+/** The shorthands a computed style answers by name, and that are no item of
+ *  its list, which is of longhands: a page that copies a style item by item,
+ *  as html2canvas does, would set them over those. */
+export const SHORTHAND_NAMES: readonly string[] = Object.keys(SHORTHANDS);
+
+/** A record's shorthands as they compose, all of them, for a page's realm. */
+export function cssomShorthands(
+  all: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of SHORTHAND_NAMES) out[name] = all[name];
+  return out;
 }

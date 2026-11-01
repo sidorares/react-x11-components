@@ -1849,8 +1849,9 @@ test('line-clamp and text-overflow are read', async () => {
   assert.strictEqual(style('k').lineClamp, null);
   assert.strictEqual(style('l').lineClamp, null, 'not a multicol container');
   assert.strictEqual(style('d').textOverflow, 'ellipsis');
-  // two values name the start and the end, and a line's end is cut
-  assert.strictEqual(style('e').textOverflow, 'ellipsis');
+  // the two values CSS Overflow 3 has are Firefox's alone: Chrome refuses
+  // them whole
+  assert.strictEqual(style('e').textOverflow, 'clip');
   assert.strictEqual(style('f').textOverflow, 'ellipsis');
 });
 

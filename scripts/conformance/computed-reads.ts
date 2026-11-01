@@ -595,6 +595,7 @@ bogus
   { name: 'content-visibility', values: 'visible\nauto\nhidden\nbogus\n' },
   {
     name: 'container-type',
+    reads: ['container-type', 'container'],
     values: `
 normal
 size
@@ -605,7 +606,12 @@ anchored
 bogus
 `,
   },
-  { name: 'container-name', values: 'none\na\na b\nbogus-1\nNONE\n' },
+  {
+    name: 'container-name',
+    before: 'container-type:size',
+    reads: ['container-name', 'container'],
+    values: 'none\na\na b\nbogus-1\nNONE\n',
+  },
   { name: 'empty-cells', values: 'show\nhide\nbogus\n' },
   {
     name: 'grid-auto-flow',

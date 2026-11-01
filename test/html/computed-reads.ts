@@ -926,11 +926,11 @@ export const COMPUTED_READS_DOCUMENT = `<style>html,body{font-size:16px;color:#0
 <div id="r920" style="container-type:size scroll-state"></div>
 <div id="r921" style="container-type:anchored"></div>
 <div id="r922" style="container-type:bogus"></div>
-<div id="r923" style="container-name:none"></div>
-<div id="r924" style="container-name:a"></div>
-<div id="r925" style="container-name:a b"></div>
-<div id="r926" style="container-name:bogus-1"></div>
-<div id="r927" style="container-name:NONE"></div>
+<div id="r923" style="container-type:size;container-name:none"></div>
+<div id="r924" style="container-type:size;container-name:a"></div>
+<div id="r925" style="container-type:size;container-name:a b"></div>
+<div id="r926" style="container-type:size;container-name:bogus-1"></div>
+<div id="r927" style="container-type:size;container-name:NONE"></div>
 <div id="r928" style="empty-cells:show"></div>
 <div id="r929" style="empty-cells:hide"></div>
 <div id="r930" style="empty-cells:bogus"></div>
@@ -2080,18 +2080,18 @@ export const COMPUTED_READS: readonly (readonly [
 ["content-visibility:auto",{"content-visibility":"auto"}],
 ["content-visibility:hidden",{"content-visibility":"hidden"}],
 ["content-visibility:bogus",{"content-visibility":"visible"}],
-["container-type:normal",{"container-type":"normal"}],
-["container-type:size",{"container-type":"size"}],
-["container-type:inline-size",{"container-type":"inline-size"}],
-["container-type:scroll-state",{"container-type":"scroll-state"}],
-["container-type:size scroll-state",{"container-type":"size scroll-state"}],
-["container-type:anchored",{"container-type":"anchored"}],
-["container-type:bogus",{"container-type":"normal"}],
-["container-name:none",{"container-name":"none"}],
-["container-name:a",{"container-name":"a"}],
-["container-name:a b",{"container-name":"a b"}],
-["container-name:bogus-1",{"container-name":"bogus-1"}],
-["container-name:NONE",{"container-name":"none"}],
+["container-type:normal",{"container-type":"normal","container":"none"}],
+["container-type:size",{"container-type":"size","container":"none / size"}],
+["container-type:inline-size",{"container-type":"inline-size","container":"none / inline-size"}],
+["container-type:scroll-state",{"container-type":"scroll-state","container":"none / scroll-state"}],
+["container-type:size scroll-state",{"container-type":"size scroll-state","container":"none / size scroll-state"}],
+["container-type:anchored",{"container-type":"anchored","container":"none / anchored"}],
+["container-type:bogus",{"container-type":"normal","container":"none"}],
+["container-type:size;container-name:none",{"container-name":"none","container":"none / size"}],
+["container-type:size;container-name:a",{"container-name":"a","container":"a / size"}],
+["container-type:size;container-name:a b",{"container-name":"a b","container":"a b / size"}],
+["container-type:size;container-name:bogus-1",{"container-name":"bogus-1","container":"bogus-1 / size"}],
+["container-type:size;container-name:NONE",{"container-name":"none","container":"none / size"}],
 ["empty-cells:show",{"empty-cells":"show"}],
 ["empty-cells:hide",{"empty-cells":"hide"}],
 ["empty-cells:bogus",{"empty-cells":"show"}],

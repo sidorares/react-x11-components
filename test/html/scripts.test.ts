@@ -4984,6 +4984,66 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test('a transform reads none from a page for as long as nothing renders its element', async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '#a { display: none; transform: translate(10px, 5px) }' +
+      '#b::before { transform: translate(10px, 5px) }' +
+      '#b.on::before { content: ""; display: block }' +
+      '</style></head><body><div id="a"></div><div id="b"></div><p id="out"></p><script>' +
+      'var a = document.getElementById("a");' +
+      'var b = document.getElementById("b");' +
+      'var s = getComputedStyle(a), p = getComputedStyle(b, "::before");' +
+      'var r = [s.transform, p.transform];' +
+      'a.style.display = "block"; b.className = "on";' +
+      'r.push(s.transform, p.transform);' +
+      'a.style.display = "none"; b.className = "";' +
+      'r.push(s.transform, p.transform);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'none|none|matrix(1, 0, 0, 1, 10, 5)|matrix(1, 0, 0, 1, 10, 5)|none|none',
+    doc.logs.join('\n'),
+  );
+});
+
+test('getKeyframes() makes up a first frame of margins and padding as laid out, and the rest as computed', async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '@keyframes k { to { width: 1px; margin-left: 1px; padding-left: 1px; top: 1px } }' +
+      '.w { width: 200px; position: relative }' +
+      '#a, #b::before { animation: k 100s paused; position: relative; width: 50%;' +
+      ' margin-left: 10%; padding-left: 5%; top: 10px }' +
+      '#b::before { content: ""; display: block }' +
+      '</style></head><body><div class="w"><div id="a"></div></div>' +
+      '<div class="w"><div id="b"></div></div><p id="out"></p><script>' +
+      'function frames() {' +
+      '  return document.getAnimations().map(function (animation) {' +
+      '    var first = animation.effect.getKeyframes()[0];' +
+      '    return [first.width, first.marginLeft, first.paddingLeft, first.top].join(" ");' +
+      '  });' +
+      '}' +
+      'var r = frames();' +
+      'var w = document.querySelectorAll(".w");' +
+      'w[0].style.width = w[1].style.width = "400px";' +
+      'document.body.offsetWidth;' +
+      'r = r.concat(frames());' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '50% 20px 10px 10px|50% 20px 10px 10px|50% 40px 20px 10px|50% 40px 20px 10px',
+    doc.logs.join('\n'),
+  );
+});
+
 test('getComputedStyle of a ::before reads its box once it has one, and its rules where it has none', async () => {
   const doc = await hosted(
     '<!doctype html><html><head><style>' +
@@ -5091,6 +5151,84 @@ test("getComputedStyle answers the flow-relative properties with their physical 
     '4px 2px 3px 1px 7px 9px solid 14px -13px 20px 30px 0px none',
     '0',
     '2px',
+  ]);
+});
+
+test('getComputedStyle answers a shorthand by its name, in either spelling, and lists it as no item', async () => {
+  // what Chrome 156 answers for each. The list is of longhands: a page that
+  // copies a style item by item, as html2canvas does, would set a shorthand
+  // over them, or take them all off with a '' it reads
+  const shorthands = [
+    'margin',
+    'padding',
+    'inset',
+    'border',
+    'border-top',
+    'gap',
+    'flex',
+    'background',
+    'transition',
+    'animation',
+    'animation-range',
+    'overflow',
+    'font',
+    'scroll-timeline',
+    'view-timeline',
+    'position-try',
+  ];
+  const doc = await hosted(
+    '<style>#x::before { content: "a"; margin: 2px 3px; display: block }</style>' +
+      '<p id="out"></p>' +
+      '<div id="x" style="margin: 15px 80px; padding: 1px 2px; border: 1px solid red; gap: 1px 2px; overflow: hidden scroll; font: 12px serif">a</div>' +
+      '<script>' +
+      'var x = document.getElementById("x"), cs = getComputedStyle(x), r = [];' +
+      'r.push(cs.margin, cs.getPropertyValue("margin"), cs.padding, cs.getPropertyValue("padding"));' +
+      'r.push(cs.border, cs.borderTop, cs.getPropertyValue("border-top"), cs.gap, cs.getPropertyValue("gap"));' +
+      'r.push("margin" in cs, "borderTop" in cs, "border-top" in cs, "nothing" in cs);' +
+      'r.push(cs.nothing === undefined, cs.getPropertyValue("nothing"));' +
+      'var list = Array.from(cs), keys = Object.keys(cs);' +
+      `r.push(${JSON.stringify(shorthands)}.filter(function (n) { return list.indexOf(n) >= 0 }).join());` +
+      'r.push(["margin-top", "border-top-width", "overflow-x", "font-size", "animation-name"].filter(function (n) { return list.indexOf(n) >= 0 }).join());' +
+      'r.push(keys.indexOf("margin") >= 0, keys.indexOf("borderTop") >= 0, keys.indexOf("border-top") >= 0);' +
+      // it is as live as a longhand, and as read only
+      'x.style.margin = "1px"; r.push(cs.margin);' +
+      'try { cs.margin = "2px"; r.push("no throw") } catch (e) { r.push(e.name) }' +
+      'var none = getComputedStyle(x, "::nonsense");' +
+      'r.push(none.margin, none.getPropertyValue("margin"), none.nothing === undefined);' +
+      'r.push(getComputedStyle(x, "::before").margin);' +
+      'x.style.display = "none"; r.push(cs.margin, cs.border);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.deepStrictEqual(doc.text('out').split('|'), [
+    '15px 80px',
+    '15px 80px',
+    '1px 2px',
+    '1px 2px',
+    '1px solid rgb(255, 0, 0)',
+    '1px solid rgb(255, 0, 0)',
+    '1px solid rgb(255, 0, 0)',
+    '1px 2px',
+    '1px 2px',
+    'true',
+    'true',
+    'true',
+    'false',
+    'true',
+    '',
+    '',
+    'margin-top,border-top-width,overflow-x,font-size,animation-name',
+    'true',
+    'true',
+    'false',
+    '1px',
+    'NoModificationAllowedError',
+    '',
+    '',
+    'true',
+    '2px 3px',
+    '1px',
+    '1px solid rgb(255, 0, 0)',
   ]);
 });
 

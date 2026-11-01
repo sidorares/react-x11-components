@@ -465,6 +465,36 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   assert.ok(!partial(el));
 });
 
+test('a ::before a drag set aside reads as its rules compute it, a transform and the frame getKeyframes() makes up with the rest', async (t) => {
+  holdClock(t, resizeClock);
+  const rows = Array.from(
+    { length: 40 },
+    () => '<div style="height:50px"></div>',
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}@keyframes k{to{margin-left:1px}}' +
+      '#end::before{content:"";display:block;height:5px;margin-left:10%;' +
+      'transform:translate(10px, 5px);animation:k 100s paused}</style>' +
+      `<body>${rows}<div id="end"></div></body>`,
+    300,
+    400,
+  );
+  await resize(300, 330);
+  await resize(300, 320);
+  assert.ok(partial(el), 'a step');
+  assert.ok(!reached(el, 'end'), 'set aside');
+  // its box is a width ago, and there is one, so its transform is no `none`
+  const end = findById(el.document, 'end')!;
+  assert.strictEqual(
+    el.computedStyle(end, 'before')!.transform,
+    'translate(10px, 5px)',
+  );
+  assert.strictEqual(
+    el.cssKeyframesOf(end, 'before', 'k')![0].values['margin-left'],
+    '10%',
+  );
+});
+
 test('a container a drag set aside is found when a read first asks for the containers, and read once it is back', async (t) => {
   const clock = holdClock(t, resizeClock);
   const rows = Array.from(
@@ -2038,6 +2068,50 @@ metric(
     } finally {
       delete (root._ctx as { scalesText?: boolean }).scalesText;
     }
+  },
+);
+
+metric(
+  'a dragged width keeps a raster of an inline drawing whose size holds, and makes none of one sized from it',
+  async (t) => {
+    // The icons of a page do not change as its window's edge moves, and a
+    // drawing sized from the width is another size at every step, as a
+    // background is
+    holdClock(t, resizeClock);
+    const doc = (width: number) =>
+      h(
+        'box',
+        { style: { width, height: 300, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}svg{display:block}#wide{width:50%}</style>' +
+            '<svg width="20" height="20"><rect width="9" height="20"/></svg>' +
+            '<svg id="wide" viewBox="0 0 10 2"><rect width="5" height="2"/>' +
+            '</svg>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      );
+    const result = await renderX11(doc(300), {
+      width: 400,
+      height: 400,
+      fonts: FONTS!,
+    });
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    for (const width of [296, 292, 288, 292, 296]) {
+      await act(() => result.rerender(doc(width)));
+      await act();
+    }
+    const kept = [
+      ...((
+        el as unknown as { _drawings: { kept: Map<string, unknown> } | null }
+      )._drawings?.kept.keys() ?? []),
+    ];
+    assert.deepStrictEqual(
+      kept.map((key) => key.split('|')[2]),
+      ['20x20'],
+    );
   },
 );
 
