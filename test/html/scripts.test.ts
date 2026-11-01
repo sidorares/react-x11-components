@@ -10997,6 +10997,38 @@ metric(
 );
 
 metric(
+  'a drawing a script changes while it is out of the document is drawn as it is when it comes back',
+  async () => {
+    // What happens to a node in no document is told to nobody, so all the
+    // `<Html>` hears is that it went and that it came back (`DomHost._tell`)
+    const doc = await hosted(
+      '<style>body { margin: 0 } svg { display: block }</style>' +
+        '<div id="a"><svg id="d" width="40" height="40" viewBox="0 0 40 40">' +
+        '<rect width="20" height="20" fill="#ff0000"/></svg></div>' +
+        '<p id="out"></p><script>' +
+        'var d = document.getElementById("d"), a = d.parentNode;' +
+        'setTimeout(function () {' +
+        '  a.removeChild(d);' +
+        '  setTimeout(function () {' +
+        '    d.setAttribute("viewBox", "0 0 20 20");' +
+        '    a.appendChild(d);' +
+        '    document.getElementById("out").textContent = "back";' +
+        '  }, 0);' +
+        '}, 0);' +
+        '</script>',
+    );
+    await settled(doc, 'out', (t) => t === 'back');
+    await settle(40);
+    const box = doc.view.elementRect(doc.byId('d'))!;
+    assert.equal(
+      await colourAt(doc, box.x + 30, box.y + 30),
+      '#ff0000',
+      'fitted to its viewBox as it is now',
+    );
+  },
+);
+
+metric(
   "a highlight a page registers in a frame's CSS.highlights is drawn in the frame, and only its ranges in the frame's document",
   async () => {
     const { result, text, logs } = await hostedFrames(

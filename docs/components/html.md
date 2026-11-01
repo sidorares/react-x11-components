@@ -6818,7 +6818,14 @@ The raster is kept by what the drawing says, and by everything it is drawn
 with: its colour, its `fill` and `stroke`, what the rules give its shapes,
 its font size and what it inherits. So a change to any of them is a raster
 of its own, a `refresh()` that leaves a drawing as it was keeps it, and the
-same icon on every row of a list is one raster. A drawing that sets text,
+same icon on every row of a list is one raster. A refresh [told what
+changed](#telling-it-what-changed) reads no drawing its records do not reach,
+in it or at its root, where one with no list reads each again to find its
+raster: 0.8 ms of a 40 ms paint on a webmail page of sixty icons, and all of
+what a drawing costs on a refresh where it is set from its paths. One that
+names an element outside itself, a sprite's symbol or a gradient, is read
+again at any refresh, since a change to that element need not mention it. A
+change to a drawing left off the list is drawn as it was. A drawing that sets text,
 holds a `<foreignObject>`, names an element the document does not have, is
 given a `url()` by a rule, or shows what is past its box (`overflow:
 visible`) is set from its paths as before. On a webmail page of sixty icons,

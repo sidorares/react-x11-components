@@ -463,7 +463,7 @@ import type {
 } from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges, SourceEnv } from './srcset.js';
-import { atDensity } from './svg.js';
+import { atDensity, forgetDrawings } from './svg.js';
 import {
   askMedia,
   cutByFixed,
@@ -11266,7 +11266,8 @@ export class HtmlViewNode extends Node {
    * Explicit rather than observed: see `HtmlHandle.refresh`.
    */
   touchDocument(changes: readonly HtmlChange[] | null = null): void {
-    this._source.touch();
+    this._source.touch(!!changes);
+    if (changes) forgetDrawings(changes);
     this._updateBase();
     this._sweep();
     // a preload of what is here already settles as it is asked for, which
@@ -12481,6 +12482,8 @@ export class HtmlViewNode extends Node {
     this._scripts.until = Infinity;
     // a cascade made again, which a sheet that reads as it did keeps
     this._sheetsRead = null;
+    // and what a change it cut was to, which no record has told
+    this._source.touch();
     this._invalidate(Stale.Style);
   }
 

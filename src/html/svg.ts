@@ -14,9 +14,16 @@
 // as `preserveAspectRatio` says, and clipped to it.
 import { parseDocument } from 'htmlparser2';
 import { Element, Text } from 'domhandler';
-import type { ChildNode, ParentNode } from 'domhandler';
+import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import * as ntk from 'react-x11/ntk';
-import { isSvgRoot, mutationGeneration, rawTextOf } from './dom.js';
+import {
+  isSvgRoot,
+  mutationGeneration,
+  rawTextOf,
+  shadowRootOf,
+  untoldGeneration,
+} from './dom.js';
+import type { HtmlChange } from './dom.js';
 import { Cascade, drawingVars } from './css/cascade.js';
 import { parseMediaQuery, parseStylesheet } from './css/parse.js';
 import type { Stylesheet } from './css/parse.js';
@@ -556,12 +563,20 @@ export class SvgDrawing {
 
   /** Where it last worked out what it paints reaches (`reach`): for what,
    *  and where the drawing ended then. */
-  private _reached: { key: string; end: End; edges: Edges | null } | null =
-    null;
+  private _reached: {
+    key: string;
+    end: End;
+    edges: Edges | null;
+    outside: boolean;
+  } | null = null;
 
   /** What it is drawn from (`drawnFrom`), and where that ended; undefined
    *  until it is first asked for (`keptAs`). */
   private _from: DrawnFrom | undefined = undefined;
+
+  /** Where `mutationGeneration` was when it was last asked for
+   *  (`inlineDrawing`). */
+  askedAt = -1;
 
   /** The element an SVG image's URL names by its fragment, its own
    *  `:target`: a sprite sheet shows the icon `image.svg#icon` names. */
@@ -798,11 +813,17 @@ export class SvgDrawing {
     let kept = this._reached;
     if (!kept || kept.key !== key || moved(kept.end)) {
       const lengths: Lengths = { em, rem: 16, vw: w / scale, vh: h / scale };
-      kept = {
-        key,
-        end: endOf(root),
-        edges: drawingReach(root, [vw, vh], lengths, shapes?.of ?? null),
-      };
+      let outside = false;
+      const edges = drawingReach(
+        root,
+        [vw, vh],
+        lengths,
+        shapes?.of ?? null,
+        () => {
+          outside = true;
+        },
+      );
+      kept = { key, end: endOf(root), edges, outside };
       this._reached = kept;
     }
     const e = kept.edges;
@@ -826,10 +847,10 @@ export class SvgDrawing {
    * What a raster of the drawing `w` by `h` device pixels is kept by
    * (`PaintOptions.drawingKept`), from the arguments `draw` is handed: all it
    * is set from, as text, or null where no raster can stand for it. By what
-   * the drawing says and not by the drawing, since a `refresh()` makes every
-   * drawing of a document again (`inlineDrawing`), and a page's scripts
-   * refresh at most of its frames; and so the same icon on every row of a
-   * list is one raster. **Anything new `draw` reads joins this key.** No text
+   * the drawing says and not by the drawing, since a `refresh()` that changes
+   * one makes it again (`inlineDrawing`), and one that says nothing makes
+   * them all; and so the same icon on every row of a list is one raster.
+   * **Anything new `draw` reads joins this key.** No text
    * is set in a drawing that has a key (`drawnFrom`), which leaves of its
    * font only the size an `em` in it is of.
    */
@@ -857,6 +878,23 @@ export class SvgDrawing {
       `|${em}|${inherited}|${shapes?.key ?? ''}`;
     if (from.units) key += `|${units?.rem}|${units?.vw}|${units?.vh}`;
     return key;
+  }
+
+  /**
+   * Whether anything it holds was read from outside its root, or is what
+   * could not be read: what it names by an id, or looked for and did not
+   * find, which a change to anything in the document can change and no
+   * record of it says (`inlineDrawing`). One that failed may have failed
+   * before it found out, and what it failed on may be out there.
+   */
+  get readsOutside(): boolean {
+    return (
+      this._failed ||
+      this._seenEnds.length > 1 ||
+      this._missingAt !== undefined ||
+      (this._from !== undefined && this._from.ends.length > 1) ||
+      this._reached?.outside === true
+    );
   }
 
   /**
@@ -1291,30 +1329,71 @@ let INLINE = new WeakMap<Element, SvgDrawing>();
 let inlineAt = -1;
 
 /**
- * The drawing of an inline `<svg>`. Kept until an application says it
- * changed the DOM (`mutationGeneration`), and made again then, at its
- * next paint. A drawing hands `SvgView` its tree again only where a
- * stream's chunk added to it (`_viewFor`), and `SvgView` reads what it is
- * handed as it is handed it — the root's `viewBox` and size, the ids a
- * `url(#…)` names, the paints it scans — where a shape's own attributes it
- * reads at each draw: a `viewBox` an application changed, and a
- * `refresh()`, was fitted to the box as the new one and drawn through as
- * the old, and a gradient given an id was no paint server, for good. A
- * `refresh()` is a restyle, a build and a layout of the whole document
- * already, and making each drawing again is the same order of work.
+ * The drawing of an inline `<svg>`. Kept until an application may have
+ * changed what it was read from, and made again then, at its next paint. A
+ * drawing hands `SvgView` its tree again only where a stream's chunk added
+ * to it (`_viewFor`), and `SvgView` reads what it is handed as it is handed
+ * it — the root's `viewBox` and size, the ids a `url(#…)` names, the paints
+ * it scans — where a shape's own attributes it reads at each draw: a
+ * `viewBox` an application changed, and a `refresh()`, was fitted to the box
+ * as the new one and drawn through as the old, and a gradient given an id
+ * was no paint server, for good.
+ *
+ * So a `refresh()` that does not say what changed makes every drawing again
+ * (`untoldGeneration`), which is the same order of work as the restyle, the
+ * build and the layout it is. One told what changed takes the drawings its
+ * records reach (`forgetDrawings`), and those that read outside their roots
+ * (`readsOutside`) at any refresh: taking a sprite's `<svg>` out is a change
+ * to `<body>`, which names no drawing. Every other drawing stands, its view
+ * with it: a webmail page refreshed at most of its frames, for one class on
+ * one `<div>`, and each paint read sixty icons again to find their rasters.
  */
 export function inlineDrawing(el: Element): SvgDrawing {
-  const at = mutationGeneration();
-  if (at !== inlineAt) {
+  const whole = untoldGeneration();
+  if (whole !== inlineAt) {
     INLINE = new WeakMap();
-    inlineAt = at;
+    inlineAt = whole;
   }
+  const at = mutationGeneration();
   let drawing = INLINE.get(el);
-  if (!drawing) {
+  if (!drawing || (drawing.askedAt !== at && drawing.readsOutside)) {
     drawing = new SvgDrawing(el, svgIntrinsics(el));
     INLINE.set(el, drawing);
   }
+  drawing.askedAt = at;
   return drawing;
+}
+
+/**
+ * What a refresh told of `changes` takes from the drawings kept: those its
+ * records are in or at, where one of them says what a drawing reads of
+ * itself — the root's own attributes among it, its `viewBox`. And every
+ * drawing in what was put in, whatever else was told of it: a change to a
+ * node in no document is told to nobody, and is told with all the node holds
+ * by the change that puts it in (`DomHost._tell`), so a drawing taken out,
+ * given another `viewBox` and put back says no more than that it came back.
+ */
+export function forgetDrawings(changes: readonly HtmlChange[]): void {
+  for (const change of changes) {
+    for (let at: AnyNode | null = change.target; at; at = at.parent) {
+      INLINE.delete(at as Element);
+    }
+    if (change.type !== 'childList') continue;
+    for (const node of change.addedNodes) forgetUnder(node);
+  }
+}
+
+/** The drawings at and under a node, in the shadow trees it holds too. */
+function forgetUnder(node: AnyNode): void {
+  const stack = [node];
+  for (let at = stack.pop(); at; at = stack.pop()) {
+    if (at.type !== 'tag') continue;
+    const el = at as Element;
+    INLINE.delete(el);
+    for (const child of el.children) stack.push(child);
+    const tree = shadowRootOf(el);
+    if (tree) for (const child of tree.children) stack.push(child);
+  }
 }
 
 /** The geometry a percentage of the viewport can give, and of which of its
@@ -2665,14 +2744,20 @@ function drawingReach(
   viewport: [number, number],
   lengths: Lengths,
   styles: ReadonlyMap<Element, ShapeStyle> | null,
+  /** Told where it looks for an element outside the root. */
+  outside: () => void,
 ): Edges | null {
   let ids: Map<string, Element> | null = null;
   const ctx: ReachContext = {
     viewport,
     lengths,
     styles,
-    find: (id) =>
-      (ids ??= idsUnder(root)).get(id) ?? elementById(documentOf(root), id),
+    find: (id) => {
+      const inside = (ids ??= idsUnder(root)).get(id);
+      if (inside) return inside;
+      outside();
+      return elementById(documentOf(root), id);
+    },
     walking: new Set([root]),
   };
   const stroke = propertyOf(root, 'stroke-width', styles);
