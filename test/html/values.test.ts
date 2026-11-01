@@ -44,6 +44,7 @@ import {
   metric,
   render,
   render2x,
+  renderScrolled,
   renderWithBytes,
   treeOf,
   view,
@@ -2976,6 +2977,42 @@ test("a rem is the root element's font size, and the initial one in the root's o
   assert.ok(
     near(boxOf(el, 's').width, 3 * root),
     `and 3rem three times it, however deep: ${boxOf(el, 's').width}`,
+  );
+});
+
+test('a rem is the size of the <html> a document does not write, whatever is at its top', async () => {
+  // A fragment's elements and a <body> written alone each have the document
+  // for their parent, and each was taken for the root, so a rem came to the
+  // size of the one styled before it. Chrome, Firefox and Safari have the
+  // <html>'s size in all of these, 16px there and the palette's here
+  const size = async (source: string): Promise<string | undefined> => {
+    const { el } = await renderScrolled(source, 300);
+    const found = el.computedStyle(findById(el.document, 't')!)?.['font-size'];
+    await cleanup();
+    return found;
+  };
+  const initial = await size('<p id="t">text</p>');
+  assert.strictEqual(
+    await size(
+      '<div style="font-size:30px"><p id="t" style="font-size:1rem">b</p></div>',
+    ),
+    initial,
+    'inside a large block',
+  );
+  assert.strictEqual(
+    await size(
+      '<body style="font-size:30px"><p id="t" style="font-size:1rem">b</p></body>',
+    ),
+    initial,
+    'under a body with a size of its own',
+  );
+  assert.strictEqual(
+    await size(
+      '<style>html{font-size:20px}</style><div style="font-size:30px">' +
+        '<p id="t" style="font-size:1rem">b</p></div>',
+    ),
+    '20px',
+    'of a rule on the <html> the document does not write',
   );
 });
 

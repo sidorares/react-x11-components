@@ -5262,17 +5262,35 @@ function forgetOne(at: Box): void {
 }
 
 /**
+ * `forgetSizes` of a box that took other lengths in place, and that no layout
+ * has reached it since, as none has one just built, nor the block its lines
+ * are on where it is inline: `exactMinContent` adds up a box's last layout, its
+ * lines and its edges, which are of the lengths it had. A flex item's automatic
+ * minimum came to the word and the padding of the width before.
+ */
+export function forgetLayout(box: Box): void {
+  forgetSizes(box);
+  for (let at: Box | null = box; at; at = at.parent) {
+    at.layoutSerial = 0;
+    if (at.kind !== 'inline') break;
+  }
+}
+
+/**
  * `forgetSizes` of all a box holds as well, and of the boxes around it up
  * to one a call before it reached, whose own way up was gone over then:
  * for a run of blocks set again, whose text may be in an inline-block's or
  * a table's cell (`HtmlViewNode._takeFaces`), where one call for each would
- * go over the document's root as many times.
+ * go over the document's root as many times. As in `forgetLayout`, no layout
+ * has reached what it holds since: its lines are in the face before.
  */
 export function forgetSizesIn(box: Box, up: Set<Box>): void {
+  box.layoutSerial = 0;
   const stack: Box[] = [...box.children];
   while (stack.length) {
     const at = stack.pop()!;
     forgetOne(at);
+    at.layoutSerial = 0;
     for (const child of at.children) stack.push(child);
   }
   for (let at: Box | null = box; at && !up.has(at); at = at.parent) {
@@ -5601,11 +5619,14 @@ function laidInNoRoom(box: Box): boolean {
 }
 
 /** Whether a box's items say how wide it is: a flex box's, and not those of
- *  one its containment or its frame answers for instead. */
+ *  one its containment or its frame answers for instead, or of a grid, which
+ *  has that `display` and is as wide as its tracks: tracks are of the last
+ *  layout, and one a probe's block stood for was the probe's at no limit. */
 function flexItems(box: Box): boolean {
   const display = box.style.display;
   return (
     (display === 'flex' || display === 'inline-flex') &&
+    !box.style.grid &&
     !contained(box, CONTAIN_WIDTH) &&
     !(framed.any && FRAMES.has(box))
   );

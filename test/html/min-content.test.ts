@@ -17,26 +17,13 @@ import {
   view,
 } from './harness.js';
 import { MIN_CONTENT_DOCUMENT, MIN_CONTENT_WIDTHS } from './min-contents.js';
+import { mulberry32 } from '../mulberry32.js';
 
 afterEach(cleanup);
 afterEach(() => answerMinContentExactly(true));
 
 const SEEDS = Number(process.env.MIN_CONTENT_SEEDS ?? 100);
 const FROM = Number(process.env.MIN_CONTENT_FROM ?? 1);
-
-// mulberry32: a multiplication too large for a double loses its low bits, and
-// a generator made of one comes back to where it was in some ten thousand
-// numbers, which at this size is under a hundred documents
-function random(seed: number): () => number {
-  let at = seed | 0;
-  return () => {
-    at = (at + 0x6d2b79f5) | 0;
-    let t = at;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /** A document of flex boxes and of all that can be in one, much of which
  *  `exactMinContent` turns down, in rooms narrow enough that what their
@@ -158,7 +145,7 @@ test('what is left to a probe is left to it, over generated documents', async ()
   // one rule: this is what the arithmetic must turn down, a percentage of a
   // room, a grid, a table, and what it must leave as a probe finds it
   for (let seed = FROM; seed < FROM + SEEDS; seed += 1) {
-    const { source, ids } = documentFor(random(seed * 7919));
+    const { source, ids } = documentFor(mulberry32(seed * 7919));
     answerMinContentExactly(true);
     const exact = await renderWithBytes(source, { 'red.png': RED_PNG }, 400);
     const answered = places(exact.el, ids);

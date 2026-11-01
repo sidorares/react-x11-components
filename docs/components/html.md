@@ -4821,7 +4821,10 @@ where it cannot say; an `lh` is the element's line height, `normal` as its
 font's own — in `line-height` itself its parent's, as an `em` in
 `font-size` is — and an `rlh` the root's. A `rem` is the root element's font
 size, so `html { font-size: 62.5% }` makes it ten pixels, and in the root's
-own `font-size` the initial size, as CSS has both; a root's size or line
+own `font-size` the initial size, as CSS has both. A source that writes no
+`<html>` has one all the same, as a browser's parser gives it, so a rule on
+`html` still sizes every `rem`, and no element at the top of a fragment does,
+nor a `<body>` written alone; a root's size or line
 height that moves — a script's, or fluid type in `vw` at a new width —
 moves every `rem` and `rlh` with it, wherever they are. A math function comes down to pixels and a percentage, which
 layout resolves as it does any percentage; `min(100%, 600px)`, a

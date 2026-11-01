@@ -114,6 +114,7 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  isRootElement,
   readsFace,
   highlightKey,
 } from './css/cascade.js';
@@ -243,6 +244,7 @@ import {
   carryBlockers,
   containmentApplies,
   containsOutOfFlow,
+  forgetLayout,
   forgetSizes,
   heldBack,
   heldShift,
@@ -8923,7 +8925,7 @@ export class HtmlViewNode extends Node {
     let snapTyped = false;
     // what was kept of the sizes of a box at other lengths, and of every
     // box it is in, which take it in
-    for (const box of resizedBoxes) forgetSizes(box);
+    for (const box of resizedBoxes) forgetLayout(box);
     this._resizedInPlace = resizedBoxes;
     for (const [box, style] of restyled) {
       const was = box.style;
@@ -14759,11 +14761,6 @@ function inForeignObject(
 function elementParent(el: Element): Element | null {
   const parent = el.parent;
   return parent && parent.type === 'tag' ? (parent as Element) : null;
-}
-
-/** Whether an element is its document's root: its parent the document. */
-function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */

@@ -154,7 +154,13 @@ finds out from a blank window has been failed by the page.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git
   ignores it, and nothing in the repo edits it by hand.
 - `test/` — `node --test` files run through `tsx`, one per component plus
-  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`).
+  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`). **What a test
+  makes up comes from `mulberry32`** (`test/mulberry32.ts`), whose numbers are
+  all good. `seed * 1103515245 + 12345` on a double loses its low bits and
+  comes round in 10,466 numbers, or 220 from some seeds, and the same on
+  integers has a low bit that takes turns, so `seed % 6` can leave half of a
+  test's cases unmade. Neither says so: `<Html>`'s `rem` was wrong in one
+  generated document in twelve for as long as its tests could not make one.
 - `test/html/` — `<Html>`'s tests, a file a subject (`floats.test.ts`,
   `tables.test.ts`, `media.test.ts`, …) over the `harness.ts` they share.
   They were one file of eighteen thousand lines that every change appended
@@ -2760,7 +2766,10 @@ page's body took 44,000 boxes to find, a strip of 2,499 senders among them,
 twice a load. It answers or it turns down, and null is the probe, as a grid, a
 table and an edge that is a percentage of the room are. Three things are
 load-bearing. **A box no layout has reached has no lines**, and reads as nothing
-(`layoutSerial` 0): a flex box asks about an item before its first layout.
+(`layoutSerial` 0): a flex box asks about an item before its first layout. So
+is a box a restyle gave other lengths in place (`forgetLayout`) or a block set
+again in a face that came (`forgetSizesIn`), whose last layout says the word
+and the padding of before.
 **What a layout that stops set aside is not in `children`** (`stopping`), and a
 size measured without it is kept for the box's life. And **what it answers is
 held to Chromium and not to the probe** (`test/html/min-contents.ts`, every width
@@ -2787,7 +2796,9 @@ anything inside a least width at that width, so a nested `flex: none` gave its
 widest, and a child `width: 100%` a percentage of a least width that was no width
 of its own. A flex box is asked of its items, with no layout of it, and a box
 laid out at no width is read as it was, so that a level of nesting does not
-lay out again all it holds. Only what has lines of its own and was laid out
+lay out again all it holds. A grid is no such box: it has a flex box's
+`display`, so ask `flexItems`, and it is as wide as its last layout's tracks.
+Only what has lines of its own and was laid out
 wider is asked of its words or laid out at no width. **What a walk lays out is forgotten around it**
 (`forgetAround`): the layout after the probe keeps what around it has not moved,
 by `Box.layoutSerial`, which would leave it at no width. **A flex box's
