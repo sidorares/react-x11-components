@@ -3751,7 +3751,10 @@ closes a way out a DOM binding opens by accident:
   its modules are in (`up`, `PageWorkers.end`): Node 26's CommonJS lexer is
   native, and a thread terminated in the middle of it aborts the process, so
   a page left as its worker started took every page in the process with it.
-  **Anything new that ends a thread goes through `end`.**
+  One ended before then goes on loading and counts against the workers a
+  page may have (`_ending`), or a page that starts and ends them in a loop
+  has threads without end. **Anything new that ends a thread goes through
+  `end`.**
 - **Another origin's frame is linked as another origin.** Its realm and
   the page's hand each other their globals, as same-origin frames do, and
   the facade keeps what either reaches to what crosses origins
