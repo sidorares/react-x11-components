@@ -309,6 +309,13 @@ import type {
 const BARS_SHOWN = { x: false, y: false };
 import { layoutShape, shapesEqual } from './layout/shape.js';
 import {
+  exactLayoutOf,
+  guessable,
+  guessing,
+  LayoutGuess,
+} from './layout/guess.js';
+import type { ExactLayout } from './layout/guess.js';
+import {
   drawnThrough,
   invert,
   mapPoint,
@@ -1184,6 +1191,22 @@ export class HtmlViewNode extends Node {
    * drawn cheaper, for the paint once the drag rests to draw as at rest.
    */
   private _cheap = false;
+  /**
+   * SPIKE: the last resort, for a drag still behind its edge once nothing
+   * else can help (`_cheapen`): from here the page is not told of the width
+   * (`heldViewport`), the two exact layouts after it give every box a slope
+   * (`LayoutGuess`), and a frame puts what they say of its width on the
+   * boxes for its paint and takes it off again. Whether one is wanted; the
+   * last exact layout noted, and the last at another width; the guess, once
+   * there are two; and the width the next paint draws by it.
+   */
+  private _guessWanted = false;
+  private _guessFrom: ExactLayout | null = null;
+  private _guessBefore: ExactLayout | null = null;
+  private _guess: LayoutGuess | null = null;
+  private _guessedAt: number | null = null;
+  /** What `geometryKey` answers while the page is held. */
+  private _heldKey: string | undefined;
   private _work = 0;
   private _timing = false;
   private _laidSincePaint = false;
@@ -4217,8 +4240,11 @@ export class HtmlViewNode extends Node {
       this._laidOutWidth === target &&
       !viewportMoved
     ) {
+      this._guessedAt = null;
       return;
     }
+    if (this._guessWidth(target, viewportMoved)) return;
+    this._guessedAt = null;
     this._geometry += 1;
     // Nothing but the viewport: the size core laid this element out at came
     // from a layout under the old one, and nothing else will tell it so.
@@ -4702,6 +4728,7 @@ export class HtmlViewNode extends Node {
           if (!this._cheap && this._behind()) this._cheapen();
         }
         this._widthLaid = target;
+        if (this._guessWanted && !question) this._noteExact(target);
         // The same boxes, somewhere else and another size — but for the
         // layout a restyle in place asks for where what it moved reached the
         // document's end, to learn its height: at the width and under the
@@ -5098,6 +5125,7 @@ export class HtmlViewNode extends Node {
   /** A drag drawn cheaper from now (`_behind`), until it rests. */
   private _cheapen(): void {
     this._cheap = true;
+    if (guessing.enabled) this._guessWanted = true;
     // the document's clock makes no frame while it is
     this._disarmFrame();
     this._armSettle();
@@ -5111,6 +5139,7 @@ export class HtmlViewNode extends Node {
    */
   private _drawAtRest(): void {
     this._cheap = false;
+    this._endGuess();
     if (this._drawnCheaper) {
       this._drawnCheaper = false;
       this._sprites?.clear();
@@ -5118,6 +5147,81 @@ export class HtmlViewNode extends Node {
       this.invalidate(false, this, 'content');
     }
     this._scheduleFrame();
+  }
+
+  /**
+   * SPIKE: a width drawn by the guess, where nothing but the width moved
+   * and a guess can answer for it. A breakpoint is the exact layout's: what
+   * it restyles is no slope any layout before it shows.
+   */
+  private _guessWidth(target: number, viewportMoved: boolean): boolean {
+    const guess = this._guess;
+    const tree = this._tree;
+    // and what a presenter runs on a layer of its own is where the layer
+    // is, which a guess on the boxes does not move (`_stopAt`)
+    if (
+      !guess ||
+      !tree ||
+      !this._guessWanted ||
+      viewportMoved ||
+      this._stale !== Stale.Nothing ||
+      target * 2 < this.abs.width ||
+      this._lifted.size > 0
+    ) {
+      return false;
+    }
+    // a `vw` is a straight line too, which the slopes hold; a breakpoint is
+    // where one ends
+    const cascade = this._cascade;
+    const viewport = this._viewportHeight();
+    if (
+      !cascade ||
+      cascade.queriesViewportWidth ||
+      cascade.mediaBand(target, viewport) !== this._mediaBand
+    ) {
+      return false;
+    }
+    this._guessedAt = target;
+    this._documentWidth = target;
+    this._widthMovedAt = resizeClock.now();
+    this._laidSincePaint = true;
+    return true;
+  }
+
+  /** SPIKE: an exact layout of the drag: what the guess goes on from, and
+   *  with the one before it at another width, every box's slope. */
+  private _noteExact(width: number): void {
+    const tree = this._tree;
+    if (!tree || !guessable(tree)) return;
+    const was = this._guessFrom;
+    const now = exactLayoutOf(tree, width, this._seenTop(), this._seenBottom());
+    this._guessFrom = now;
+    // Against the last layout at another width: what a page's own timer
+    // changes at this one leaves the slopes as they were, and asking for
+    // two new layouts after each kept a busy page from a guess at all
+    if (was && was.width !== width) this._guessBefore = was;
+    const before = this._guessBefore;
+    this._guess = before && !now.columns ? new LayoutGuess(before, now) : null;
+    this._guessedAt = null;
+  }
+
+  /** SPIKE: what a guess drew gives way to an exact layout. */
+  private _endGuess(): void {
+    if (!this._guessWanted) return;
+    this._guessWanted = false;
+    this._guess = null;
+    this._guessFrom = null;
+    this._guessBefore = null;
+    this._guessedAt = null;
+    this._heldKey = undefined;
+    this._invalidate(Stale.Layout);
+  }
+
+  /** SPIKE: whether the page is held at the width it was last told of
+   *  (`_guessWanted`). The width comes from wherever the host reads it, so
+   *  the seam that answers keeps it (`useScripts`'s `viewport`). */
+  heldViewport(): boolean {
+    return this._guessWanted;
   }
 
   /** Whether the window this is in is being resized live (`_armSettle`). */
@@ -12397,6 +12501,12 @@ export class HtmlViewNode extends Node {
    * page at rest cost.
    */
   geometryKey(): string {
+    if (this._guessWanted && this._heldKey !== undefined) return this._heldKey;
+    this._heldKey = this._geometryKeyNow();
+    return this._heldKey;
+  }
+
+  private _geometryKeyNow(): string {
     if (this._stale !== Stale.Nothing) return `owed ${++this._geometry}`;
     const at = this._scrolledOrigin();
     return `${this._geometry} ${at.x},${at.y} ${this.abs.width}x${this.abs.height} ${this._viewportHeight()}`;
@@ -13864,6 +13974,9 @@ export class HtmlViewNode extends Node {
     }
     const promised = this._promisedOpaque;
     this._promisedOpaque = false;
+    // a guess is on the boxes for this paint and for nothing else
+    const guess = this._guessedAt !== null ? this._guess : null;
+    if (guess) guess.apply(this._guessedAt!);
     try {
       this._paint(ctx, tree, range, damage);
       this._paintCaret(ctx);
@@ -13875,6 +13988,8 @@ export class HtmlViewNode extends Node {
         ctx.fillStyle = this._props().look.background;
         ctx.fillRect(this.abs.x, this.abs.y, this.abs.width, this.abs.height);
       }
+    } finally {
+      guess?.undo();
     }
     // the surfaces given up since the last paint that this one did not
     // draw on again
@@ -14661,10 +14776,15 @@ export class HtmlViewNode extends Node {
       selectionColor: this.selectionColor,
       highlights: this._litRanges(),
       litReplaced: this._litReplaced(),
-      scrollbarHidden: (box) =>
-        box.el && this._cascade
-          ? this._cascade.scrollbarHidden(box.el, box.style)
-          : BARS_SHOWN,
+      scrollbarHidden: (box) => {
+        const hidden =
+          box.el && this._cascade
+            ? this._cascade.scrollbarHidden(box.el, box.style)
+            : BARS_SHOWN;
+        // SPIKE: an extent is the last exact layout's, which a box a guess
+        // narrowed would take for overflow, and show a bar across it
+        return this._guessedAt !== null ? { ...hidden, x: true } : hidden;
+      },
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           return box.el && tagOf(box.el) === 'canvas'

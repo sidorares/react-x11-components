@@ -359,6 +359,8 @@ export interface HandleInternals {
    *  moves — a snap container re-snapped — done, for a page that reads
    *  where the viewport is scrolled (`HtmlViewNode.layoutNow`). */
   layoutNow(): void;
+  /** SPIKE: whether the page is held at the width it was told of. */
+  heldViewport?(): boolean;
   /** A page's script was stopped inside an op, and what the document was
    *  in the middle of is made again (`HtmlViewNode.interrupted`). */
   interrupted(): void;
