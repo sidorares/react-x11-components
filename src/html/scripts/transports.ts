@@ -10,7 +10,7 @@
 // its own `WebTransportError`s of.
 import { connectAllowed } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
-import { badPort, exportFrom } from '../transport.js';
+import { LEFT_FOR_CACHE, badPort, exportFrom } from '../transport.js';
 import type {
   HtmlWebTransport,
   WebTransportPriority,
@@ -107,15 +107,6 @@ export class PageTransports {
   private _disposed = false;
 
   constructor(private readonly _seams: TransportSeams) {}
-
-  /** Whether a session is open, or opening: what keeps a document out of
-   *  the back-forward cache, where its server would see it held. */
-  get open(): boolean {
-    for (const s of this._sessions.values()) {
-      if (s.state === 'connecting' || s.state === 'connected') return true;
-    }
-    return false;
-  }
 
   /** An op of the facade's whose name starts with `wt`. */
   op(op: string, a: Primitive, b: Primitive, c: Primitive): Primitive {
@@ -216,6 +207,29 @@ export class PageTransports {
     }
     this._sessions.clear();
     this._streams.clear();
+  }
+
+  /**
+   * The document is in the back-forward cache, its engine frozen (W3C
+   * WebTransport, "context cleanup steps"): every session open or opening is
+   * ended now, where no server sees it held, and the page is told by a task
+   * that waits for it to be shown again, as the steps queue a network task.
+   * `closed` rejects then, and `ready` where it had not settled, with a
+   * `WebTransportError` whose `source` is `"session"`. So a session keeps no
+   * document out, where a WebSocket does.
+   */
+  contextCleanup(): void {
+    for (const s of this._sessions.values()) {
+      if (s.state !== 'connecting' && s.state !== 'connected') continue;
+      s.state = 'failed';
+      this._wake(s);
+      // told first: a seam that resets its streams as it closes tells of
+      // them after the session, whose error is the one they end with
+      this._tell('__wtFailed', [s.id, LEFT_FOR_CACHE]);
+      try {
+        s.session?.close(0, '');
+      } catch {}
+    }
   }
 
   private _tell(entry: string, input: unknown): void {

@@ -462,18 +462,18 @@ test('a kept document runs nothing: its timers wait, and an interval owed while 
   assert.ok(after > left && after < left + 5, doc.logs.join('\n'));
 });
 
-test('a document with a WebTransport session open unloads, and a step back loads it again; once the session is closed it is kept', async () => {
+test('a document with a WebTransport session open is kept, the session ended as it goes, and hears that it failed once it is shown again', async () => {
   const transport = new FakeTransport((server) => server.accept());
-  const wt =
-    'window.wt = new WebTransport("https://wt.test/");' +
-    'wt.ready.then(function () { say("connected"); });';
   const doc = await tab(
     {
       'a.html': page(
         'a',
-        wt + 'addEventListener("unload", function () { say("unload"); });',
+        'window.wt = new WebTransport("https://wt.test/");' +
+          'wt.ready.then(function () { say("connected"); });' +
+          'wt.closed.then(function () { say("closed"); }, function (e) { say("failed " + e.name + " " + e.source); });' +
+          'addEventListener("unload", function () { say("unload"); });',
       ),
-      'b.html': page('b', wt),
+      'b.html': page('b'),
     },
     `${SITE}a.html`,
     3,
@@ -481,22 +481,119 @@ test('a document with a WebTransport session open unloads, and a step back loads
   );
   await until(doc, 'a connected');
   doc.run('location.href = "b.html";');
-  await until(doc, 'b connected');
-  // a session open keeps it out: it unloads, and is let go
-  assert.ok(doc.logs.includes('a pagehide false'), doc.logs.join('\n'));
-  assert.ok(doc.logs.includes('a unload'), doc.logs.join('\n'));
-  assert.deepEqual(doc.session.kept, []);
+  await until(doc, 'b pageshow false 1');
+  assert.ok(doc.logs.includes('a pagehide true'), doc.logs.join('\n'));
+  assert.ok(!doc.logs.includes('a unload'), doc.logs.join('\n'));
+  assert.deepEqual(doc.session.kept, [doc.session.entries[0].document]);
+  // its server sees it go now, and the page, stopped, hears nothing of it
+  assert.deepEqual(transport.servers[0].closedWith, {
+    closeCode: 0,
+    reason: '',
+  });
   await settle();
-  assert.deepEqual(doc.mounted(), [`${SITE}b.html`]);
-  // closed, it is kept
-  doc.run('wt.close(); wt.closed.then(function () { say("closed"); });');
-  await until(doc, 'b closed');
-  // a step back to one not kept loads it again
+  assert.ok(
+    !doc.logs.some((l) => l.startsWith('a failed')),
+    doc.logs.join('\n'),
+  );
   doc.run('history.back();');
-  await until(doc, 'a connected', 2);
-  assert.equal(doc.logs.filter((l) => l === 'a loaded').length, 2);
-  assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
-  assert.deepEqual(doc.session.kept, [doc.session.entries[1].document]);
+  const logs = await until(doc, 'a failed WebTransportError session');
+  assert.ok(
+    logs.indexOf('a pageshow true 1') <
+      logs.indexOf('a failed WebTransportError session'),
+    logs.join('\n'),
+  );
+  assert.equal(logs.filter((l) => l === 'a loaded').length, 1);
+  assert.equal(transport.servers.length, 1);
+});
+
+test('a session still opening as its document is kept is ended, its ready rejected once it is shown again', async () => {
+  // a server that never answers
+  const transport = new FakeTransport(() => {});
+  const doc = await tab(
+    {
+      'a.html': page(
+        'a',
+        'window.wt = new WebTransport("https://wt.test/");' +
+          'wt.ready.then(null, function (e) { say("not ready " + e.source); });',
+      ),
+      'b.html': page('b'),
+    },
+    `${SITE}a.html`,
+    3,
+    transport,
+  );
+  await until(doc, 'a pageshow false 1');
+  doc.run('location.href = "b.html";');
+  await until(doc, 'b pageshow false 1');
+  assert.ok(doc.logs.includes('a pagehide true'), doc.logs.join('\n'));
+  assert.deepEqual(transport.servers[0].closedWith, {
+    closeCode: 0,
+    reason: '',
+  });
+  doc.run('history.back();');
+  await until(doc, 'a not ready session');
+});
+
+test('a session the page closes as it is hidden closes as it asked, since the steps that end one come after pagehide', async () => {
+  const transport = new FakeTransport((server) => server.accept());
+  const doc = await tab(
+    {
+      'a.html': page(
+        'a',
+        'window.wt = new WebTransport("https://wt.test/");' +
+          'wt.ready.then(function () { say("connected"); });' +
+          'wt.closed.then(function (i) { say("closed " + i.closeCode + " " + i.reason); });' +
+          'addEventListener("pagehide", function () { wt.close({ closeCode: 7, reason: "bye" }); });',
+      ),
+      'b.html': page('b'),
+    },
+    `${SITE}a.html`,
+    3,
+    transport,
+  );
+  await until(doc, 'a connected');
+  doc.run('location.href = "b.html";');
+  await until(doc, 'b pageshow false 1');
+  assert.deepEqual(transport.servers[0].closedWith, {
+    closeCode: 7,
+    reason: 'bye',
+  });
+  assert.equal(doc.session.kept.length, 1);
+  await until(doc, 'a closed 7 bye');
+});
+
+test("a frame's session ends with the page the frame is in, which is kept", async () => {
+  const transport = new FakeTransport((server) => server.accept());
+  const net = network(
+    {
+      'f.html':
+        '<script>window.wt = new WebTransport("https://wt.test/");</script>',
+    },
+    '',
+  );
+  const doc = await tab(
+    {
+      'a.html': page('a') + '<iframe src="f.html"></iframe>',
+      'b.html': page('b'),
+    },
+    `${SITE}a.html`,
+    3,
+    transport,
+    undefined,
+    net.fetch,
+  );
+  await until(doc, 'a pageshow false 1');
+  const end = Date.now() + 3000;
+  while (!transport.servers.length && Date.now() < end) await settle(20);
+  assert.equal(transport.servers.length, 1);
+  doc.run('location.href = "b.html";');
+  await until(doc, 'b pageshow false 1');
+  assert.ok(doc.logs.includes('a pagehide true'), doc.logs.join('\n'));
+  assert.equal(doc.session.kept.length, 1);
+  assert.deepEqual(transport.servers[0].closedWith, {
+    closeCode: 0,
+    reason: '',
+  });
 });
 
 test(
@@ -685,55 +782,94 @@ test(
   },
 );
 
-for (const [what, opens] of [
-  ['a WebSocket', 'new WebSocket("wss://ws.test/w");'],
-  ['a WebTransport session', 'new WebTransport("https://wt.test/");'],
-] as const) {
-  test(
-    `${what} asked for by a task under way as its worker's document is kept lets the document go, and is never opened`,
-    { timeout: 120_000 },
-    async (t) => {
-      const sockets = new FakeSockets();
-      const transport = new FakeTransport((server) => server.accept());
-      const net = network(
-        { 'w.js': `importScripts("hold.js");${opens}` },
-        'hold.js',
-      );
-      const doc = await tab(
-        {
-          'a.html': page(
-            'a',
-            HEARS +
-              'addEventListener("unload", function () { say("unload"); });',
-          ),
-          'b.html': page('b'),
-        },
-        `${SITE}a.html`,
-        3,
-        transport,
-        sockets,
-        net.fetch,
-      );
-      await until(doc, 'a pageshow false 1');
-      // the task is in its `importScripts`, where no message reaches it
-      await net.asked;
-      doc.run('location.href = "b.html";');
-      await until(doc, 'b pageshow false 1');
-      assert.equal(doc.session.kept.length, 1);
-      net.answer();
-      const asked = () => sockets.connections.length + transport.servers.length;
-      await whenever(t, () => doc.session.kept.length === 0 || asked() > 0);
-      assert.equal(asked(), 0);
-      assert.deepEqual(doc.session.kept, []);
-      await settle();
-      assert.deepEqual(doc.mounted(), [`${SITE}b.html`]);
-      // let go as it was, told nothing
-      assert.ok(!doc.logs.includes('a unload'));
-      doc.run('history.back();');
-      await until(doc, 'a loaded', 2);
-    },
-  );
-}
+test(
+  "a WebSocket asked for by a task under way as its worker's document is kept lets the document go, and is never opened",
+  { timeout: 120_000 },
+  async (t) => {
+    const sockets = new FakeSockets();
+    const net = network(
+      { 'w.js': `importScripts("hold.js");${CONNECTS}` },
+      'hold.js',
+    );
+    const doc = await tab(
+      {
+        'a.html': page(
+          'a',
+          HEARS + 'addEventListener("unload", function () { say("unload"); });',
+        ),
+        'b.html': page('b'),
+      },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      sockets,
+      net.fetch,
+    );
+    await until(doc, 'a pageshow false 1');
+    // the task is in its `importScripts`, where no message reaches it
+    await net.asked;
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    assert.equal(doc.session.kept.length, 1);
+    net.answer();
+    await whenever(
+      t,
+      () => doc.session.kept.length === 0 || sockets.connections.length > 0,
+    );
+    assert.equal(sockets.connections.length, 0);
+    assert.deepEqual(doc.session.kept, []);
+    await settle();
+    assert.deepEqual(doc.mounted(), [`${SITE}b.html`]);
+    // let go as it was, told nothing
+    assert.ok(!doc.logs.includes('a unload'));
+    doc.run('history.back();');
+    await until(doc, 'a loaded', 2);
+  },
+);
+
+test(
+  "a WebTransport session asked for by a task under way as its worker's document is kept is never opened, and the worker hears that it failed once the document is shown again",
+  { timeout: 120_000 },
+  async (t) => {
+    const transport = new FakeTransport((server) => server.accept());
+    const net = network(
+      {
+        'w.js':
+          'importScripts("hold.js");' +
+          'var wt = new WebTransport("https://wt.test/");' +
+          'wt.ready.catch(function (e) { postMessage("failed " + e.source); });' +
+          // after the ask on the thread's one channel, and heard by the
+          // host, where a message to the page waits for it
+          'console.log("asked");',
+      },
+      'hold.js',
+    );
+    const doc = await tab(
+      { 'a.html': page('a', HEARS), 'b.html': page('b') },
+      `${SITE}a.html`,
+      3,
+      transport,
+      undefined,
+      net.fetch,
+    );
+    await until(doc, 'a pageshow false 1');
+    // the task is in its `importScripts`, where no message reaches it
+    await net.asked;
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    assert.equal(doc.session.kept.length, 1);
+    net.answer();
+    await whenever(t, () => doc.logs.some((l) => l.endsWith(' asked')));
+    await settle();
+    assert.equal(transport.servers.length, 0);
+    assert.equal(doc.session.kept.length, 1);
+    doc.run('history.back();');
+    await until(doc, 'a pageshow true 1');
+    await whenever(t, () => doc.logs.includes('a worker failed session'));
+    assert.equal(doc.logs.filter((l) => l === 'a loaded').length, 1);
+    assert.equal(transport.servers.length, 0);
+  },
+);
 
 test(
   "a worker's connection a frame's document asks for lets go of the page the frame is in, not the frame alone",
@@ -775,34 +911,21 @@ test(
 );
 
 test(
-  'a worker with a WebTransport session open keeps its document out as one of its own does; closed, or refused as it is asked for, it does not',
+  "a worker's WebTransport session ends as its document is kept, and the worker hears that it failed once the document is shown again",
   { timeout: 120_000 },
   async (t) => {
-    const transport = new FakeTransport((server) => {
-      if (server.request.url.endsWith('/no')) server.refuse('refused');
-      else server.accept();
-    });
-    const session = (url: string) =>
-      `var wt = new WebTransport("${url}");` +
-      'wt.ready.then(function () { postMessage("connected"); }, function () { postMessage("refused"); });' +
-      'wt.closed.then(function () { postMessage("closed"); }, function () {});' +
-      'onmessage = function () { wt.close(); };';
+    const transport = new FakeTransport((server) => server.accept());
     const net = network(
       {
-        'open.js': session('https://wt.test/'),
-        'no.js': session('https://wt.test/no'),
+        'w.js':
+          'var wt = new WebTransport("https://wt.test/");' +
+          'wt.ready.then(function () { postMessage("connected"); });' +
+          'wt.closed.catch(function (e) { postMessage("failed " + e.source); });',
       },
       '',
     );
-    const starts = (file: string) =>
-      `var w = new Worker("${file}"); w.onmessage = function (e) { say("worker " + e.data); };`;
     const doc = await tab(
-      {
-        'a.html': page('a', starts('open.js')),
-        'b.html': page('b', starts('open.js')),
-        'c.html': page('c', starts('no.js')),
-        'd.html': page('d'),
-      },
+      { 'a.html': page('a', HEARS), 'b.html': page('b') },
       `${SITE}a.html`,
       3,
       transport,
@@ -811,19 +934,19 @@ test(
     );
     await whenever(t, () => doc.logs.includes('a worker connected'));
     doc.run('location.href = "b.html";');
-    await whenever(t, () => doc.logs.includes('b worker connected'));
-    assert.ok(doc.logs.includes('a pagehide false'), doc.logs.join('\n'));
-    assert.deepEqual(doc.session.kept, []);
-    // closed, it is kept
-    doc.run('w.postMessage("close");');
-    await whenever(t, () => doc.logs.includes('b worker closed'));
-    doc.run('location.href = "c.html";');
-    await whenever(t, () => doc.logs.includes('c worker refused'));
-    assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
-    // and one the seam refused as it was asked was never open
-    doc.run('location.href = "d.html";');
-    await until(doc, 'd pageshow false 1');
-    assert.ok(doc.logs.includes('c pagehide true'), doc.logs.join('\n'));
+    await until(doc, 'b pageshow false 1');
+    assert.ok(doc.logs.includes('a pagehide true'), doc.logs.join('\n'));
+    assert.equal(doc.session.kept.length, 1);
+    assert.deepEqual(transport.servers[0].closedWith, {
+      closeCode: 0,
+      reason: '',
+    });
+    await whenever(t, () => stopped(doc, `${SITE}a.html`) === 1);
+    doc.run('history.back();');
+    await until(doc, 'a pageshow true 1');
+    await whenever(t, () => doc.logs.includes('a worker failed session'));
+    assert.equal(doc.logs.filter((l) => l === 'a loaded').length, 1);
+    assert.equal(transport.servers.length, 1);
   },
 );
 

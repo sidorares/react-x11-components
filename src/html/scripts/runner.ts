@@ -717,9 +717,10 @@ export class ScriptRunner {
    * Whether the document, and every frame's in a realm of its own, may go
    * into the host's back-forward cache rather than unload (HTML 7.4.2.4,
    * a document's "salvageable" state): it has loaded, and it has no
-   * connection open that a peer would see held — a WebTransport session, a
-   * WebSocket or a peer connection, its own or a worker's — as browsers
-   * keep such a page out of theirs.
+   * connection open that a peer would see held — a WebSocket or a peer
+   * connection, its own or a worker's — as browsers keep such a page out of
+   * theirs. A WebTransport session is no such connection: it ends as the
+   * document is frozen (`_freezeAll`).
    */
   salvageable(): boolean {
     if (this._disposed || this._ready !== 'complete') return false;
@@ -747,10 +748,12 @@ export class ScriptRunner {
   }
 
   /** This document's engine and its frames' frozen, the frames' first, and
-   *  their workers with them. */
+   *  their workers with them. Its WebTransport sessions end here, after
+   *  `pagehide`, where what they tell the page waits for it to be shown. */
   private _freezeAll(): void {
     for (const seat of this._seats.values()) seat.runner._freezeAll();
     this.engine.freeze();
+    this.host.contextCleanup();
     this._workers?.freeze();
   }
 

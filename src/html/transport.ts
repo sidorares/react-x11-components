@@ -231,6 +231,10 @@ export function exportFrom(
  * a browser with no network asks for — a page hears its `ready` reject a
  * task later, and nothing is sent anywhere.
  */
+/** What a session the back-forward cache closed fails with, on the page's
+ *  side and across a worker's thread. */
+export const LEFT_FOR_CACHE = 'The page entered the back-forward cache.';
+
 export const NO_WEBTRANSPORT: HtmlWebTransport = {
   connect(request, events) {
     setTimeout(
