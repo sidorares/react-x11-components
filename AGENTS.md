@@ -2750,22 +2750,53 @@ documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
 at the one that failed, and `MOVING_SEEDS` sweeps documents of sticky,
 relative, transformed and scrolled boxes in blocks a layout keeps.
 
-**A flex box's min-content width is added up where it can be**
-(`exactMinContent`, `exactItems`, `exactContribution`): along a row its
-items' side by side and the gaps between them, down a column the widest, from
-each item's words, widths and edges, with no layout of it. A probe at no width
-found the same by laying all of it out: a webmail page's body took 44,000 boxes
-to find, a strip of 2,499 senders among them, twice a load. It answers or it
-turns down, and null is the probe, as a grid, a wrapped row, a flex basis and an
-edge that is a percentage of the room are. Three things are load-bearing. **A
-box no layout has reached has no lines**, and reads as nothing (`layoutSerial`
-0): a flex box asks about an item before its first layout. **What a layout that
-stops set aside is not in `children`** (`stopping`), and a size measured
-without it is kept for the box's life. And **what it answers is held to Chromium
-and not to the probe** (`test/html/min-contents.ts`, every width Chromium's):
-a probe reads the boxes it laid out, and is the one that is wrong where the two
-differ. So **anything new it answers joins that document**, whose cases are
-sized boxes rather than text, and regenerated rather than written.
+**A flex box's min-content width is added up where it can be, and by one
+rule whichever way it is found** (`exactMinContent`, `exactItems`,
+`exactContribution`, `itemAtNarrowest`): along a line that does not wrap its
+items' side by side and the gaps between them, along one that does and down a
+column the widest, from each item's words, widths and edges, with no layout of
+it. A probe at no width found the same by laying all of it out: a webmail
+page's body took 44,000 boxes to find, a strip of 2,499 senders among them,
+twice a load. It answers or it turns down, and null is the probe, as a grid, a
+table and an edge that is a percentage of the room are. Three things are
+load-bearing. **A box no layout has reached has no lines**, and reads as nothing
+(`layoutSerial` 0): a flex box asks about an item before its first layout.
+**What a layout that stops set aside is not in `children`** (`stopping`), and a
+size measured without it is kept for the box's life. And **what it answers is
+held to Chromium and not to the probe** (`test/html/min-contents.ts`, every width
+Chromium's, written by `scripts/conformance/min-contents.ts`). So **anything new
+it answers joins that document**, whose cases are sized boxes rather than text,
+and regenerated rather than written.
+
+**What an item gives is Chromium's, and not quite what CSS Flexbox 9.9.1
+says** (`itemAtNarrowest`). Its width, or its content at its narrowest. A basis
+that is a length then has a say along a line that does not wrap: an item that
+may not grow is no wider than it, and one that may not shrink no narrower. Then
+its limits, its automatic minimum among them, which matters only there, since
+a basis is what can take it under its content. A basis its content sizes has
+no say, so `flex: none` gives what `flex: 1` does and not its widest; nor has a
+percentage, of any `calc()`; and along a line that wraps no basis has any, where
+9.9.1 has it cap and floor there too. Read each of those off Chromium, in a
+small document, before changing one: 1,261 of them agree.
+
+**A walk at the narrowest asks each box for its own narrowest**
+(`narrowestOf`), and reads no width a layout gave it. That was the fault in the
+probe, which laid a box out at no width and read what came of it: an item that
+may not shrink is laid out at its widest, one that grows at its share, and
+anything inside a least width at that width, so a nested `flex: none` gave its
+widest, and a child `width: 100%` a percentage of a least width that was no width
+of its own. A flex box is asked of its items, with no layout of it, and a box
+laid out at no width is read as it was, so that a level of nesting does not
+lay out again all it holds. Only what has lines of its own and was laid out
+wider is asked of its words or laid out at no width. **What a walk lays out is forgotten around it**
+(`forgetAround`): the layout after the probe keeps what around it has not moved,
+by `Box.layoutSerial`, which would leave it at no width. **A flex box's
+max-content width does not go by any of this**, and it is a gap: it is read from
+a layout with no limit on its width, each item at its content whatever its
+basis. All that keeps it honest is a floor, for an item that may not shrink, or
+a box with room for that width would never ask for the narrower one that is
+wider. Chromium caps and floors there as well, and `width: max-content`
+inside a flex box inherits the difference.
 
 **A probe takes a block it laid out before in the same room for what it
 came to then** (`Stand`, `STOOD`): how far down it reached, the margin it
@@ -2784,10 +2815,10 @@ and only a probe keeps one (`LAID_OWN`'s and a flex item's `Natural`'s
 `partial`), and a probe that keeps one counts it (`keptPartial`), which
 makes the layout around it partial too: **anything new that keeps a box's
 layout within a pass refuses a partial one outside a probe**, or a block
-is drawn where a probe found it. **A block where a row may wrap stands
-for nothing** (`wrapRows`): a walk at the narrowest reads it otherwise.
-Nor does a table, which the pass keeps at a width it laid it out at
-already (`kept`): standing, it left the layout around it partial, and a
+is drawn where a probe found it. **A walk at the narrowest reads nothing
+of what a block stood for** (`narrowestOf`), which is what a layout said.
+A table stands for nothing, which the pass keeps at a width it laid it out
+at already (`kept`): standing, it left the layout around it partial, and a
 table in a table's cell was laid out again at every level. And **the
 shrink-to-fit probe takes none** (`standsOff`): its caller reads the
 words of what it laid out (`wordBound`). `PROBE_SEEDS` sweeps more
