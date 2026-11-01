@@ -28484,13 +28484,12 @@ export function installDom(
     getter(at, () => 0);
   }
   define('visualViewport', visualOf(ownViewport));
+  // no check of its receiver: what a call on the global hands a getter is
+  // the runtime's to say, and on Bun it is nothing a check could tell
   Object.defineProperty(G, 'crypto', {
     get: Object.getOwnPropertyDescriptor(
       {
         get crypto(): Any {
-          if (this !== undefined && this !== null && this !== G) {
-            throw new TypeError('Illegal invocation');
-          }
           return crypto;
         },
       },

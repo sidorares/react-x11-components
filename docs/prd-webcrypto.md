@@ -162,3 +162,7 @@ Measured on the whole of `WebCryptoAPI/`, 334 tests, against Node 26.
   here at all, which is a limit of frames and not of this.
 - `WorkerGlobalScope interface: attribute crypto`: a worker's global has no
   `WorkerGlobalScope.prototype` to hang the accessor on.
+- `Window interface: attribute crypto` calls the getter on another object and
+  wants a `TypeError`. On Bun a call on the global hands a getter nothing it
+  could tell from that object, and a check of it left every page with no
+  `crypto`, so the getter asks nothing.
