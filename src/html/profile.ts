@@ -49,10 +49,11 @@ import type { ClearTimeout, SetTimeout } from './scripts/platform.js';
 
 declare const setInterval: SetTimeout;
 declare const clearInterval: ClearTimeout;
+declare const crypto: { getRandomValues(array: Uint8Array): Uint8Array };
 
 /** The schema this module writes and reads. A file of a later one is not
  *  opened; an earlier one is brought up to this. */
-export const PROFILE_VERSION = 1;
+export const PROFILE_VERSION = 2;
 
 /** The file in a profile's directory. */
 export const PROFILE_FILE = 'profile.sqlite';
@@ -151,6 +152,10 @@ CREATE TABLE IF NOT EXISTS storage_events (
   url TEXT NOT NULL,
   source TEXT NOT NULL,
   at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS key_secret (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  secret TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS idb_databases (
   origin TEXT NOT NULL,
@@ -811,6 +816,9 @@ class ProfileSessionArea implements HtmlStorageArea {
 // --- IndexedDB -------------------------------------------------------------------
 
 class ProfileIndexedDB implements HtmlIndexedDB {
+  private _secret: Uint8Array | null = null;
+  private _makeSecret: Statement;
+  private _readSecret: Statement;
   private _list: Statement;
   private _database: Statement;
   private _records: Statement;
@@ -851,6 +859,10 @@ class ProfileIndexedDB implements HtmlIndexedDB {
     this._put = db.prepare(
       'INSERT OR REPLACE INTO idb_records (origin, db, store, key, value) VALUES (?, ?, ?, ?, ?)',
     );
+    this._makeSecret = db.prepare(
+      'INSERT OR IGNORE INTO key_secret (id, secret) VALUES (1, ?)',
+    );
+    this._readSecret = db.prepare('SELECT secret FROM key_secret WHERE id = 1');
     this._delete = db.prepare(
       'DELETE FROM idb_records WHERE origin = ? AND db = ? AND store = ? AND key = ?',
     );
@@ -927,6 +939,24 @@ class ProfileIndexedDB implements HtmlIndexedDB {
     });
     this._remember(origin, name, stamp);
     return stamp;
+  }
+  /** The first process to ask makes it, and the rest read what that made:
+   *  a key is as safe here as a cookie is, as a browser's profile has it. */
+  keySecret(): Uint8Array {
+    if (this._secret) return this._secret;
+    let kept = this._readSecret.get()?.secret;
+    if (typeof kept !== 'string') {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      this._makeSecret.run(
+        [...bytes].map((b) => b.toString(16).padStart(2, '0')).join(''),
+      );
+      kept = this._readSecret.get()?.secret;
+    }
+    const hex = String(kept);
+    this._secret = Uint8Array.from({ length: hex.length / 2 }, (_, i) =>
+      parseInt(hex.slice(i * 2, i * 2 + 2), 16),
+    );
+    return this._secret;
   }
   delete(origin: string, name: string): void {
     this._profile.transaction(() => {

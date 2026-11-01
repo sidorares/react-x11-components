@@ -101,6 +101,15 @@ export interface HtmlIndexedDB {
   /** A transaction's changes: the stamp the database has after them. */
   commit(origin: string, name: string, commit: HtmlIdbCommit): number;
   delete(origin: string, name: string): void;
+  /**
+   * What a `CryptoKey` kept in a database is sealed with: 32 random bytes,
+   * made once and kept with the databases, and the same for every process
+   * that opens them. It is what opens such a key again, so one lost is every
+   * key kept lost. No page reads it, and a sealed key is no use without it.
+   * Absent, a key kept in a database opens only in the process that sealed
+   * it, and reads back as no record after that.
+   */
+  keySecret?(): Uint8Array;
 }
 
 /** A page's storage (`HtmlScripts.storage`). */

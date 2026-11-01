@@ -1049,6 +1049,26 @@ no `WebSocket`, and there every socket fails as with no network.
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
 
+**A page has the Web Cryptography API, and its keys are out of its reach**
+(`Crypto`, `SubtleCrypto`, `CryptoKey`). `crypto.subtle` is the runtime's own,
+behind this realm's conversions and errors, so what a page can use is what its
+runtime has: SHA-1 to SHA-512, HMAC, AES-CBC, CTR, GCM and KW, PBKDF2, HKDF,
+ECDSA, ECDH, the RSA schemes, Ed25519 and X25519. It needs no seam and no
+network, and a document with scripts off has none of it.
+
+`subtle`, `SubtleCrypto`, `CryptoKey` and `randomUUID` are a secure context's
+alone, and absent elsewhere: `https:`, `file:` and this machine are secure, and
+**a document with no `baseUrl`, which is `about:blank`, is not**, as in Chromium
+and Firefox, so one that wants `crypto.subtle` names an address.
+
+A `CryptoKey` crosses `postMessage`, `structuredClone`, `history.state` and
+IndexedDB, into frames and every kind of worker. A key's bytes stay on the
+host's side of the bridge: a page holds a sealed string it can neither read nor
+change. An `HtmlProfile` keeps what opens them, so a key kept in IndexedDB works
+after a restart. An `HtmlIndexedDB` of an application's own answers `keySecret()`
+to do the same; with none, a key in it lasts as long as the process.
+docs/prd-webcrypto.md has the design.
+
 **A page's WebTransport is the host's to carry** (W3C WebTransport). The
 page has the whole API — `WebTransport` with `ready`, `closed`, `draining`,
 `close({ closeCode, reason })`, `protocol`, `reliability`,

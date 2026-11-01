@@ -60,6 +60,7 @@ import { installRaster } from './raster.js';
 import { installStreams } from './streams.js';
 import { installWebRTC } from './webrtc.js';
 import { installRtcTransports } from './rtc-transports.js';
+import { installWebCrypto } from './webcrypto.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
@@ -278,11 +279,12 @@ const INSTALL = `(function () {
   const webaudio = (${installWebAudio.toString()});
   const mse = (${installMse.toString()});
   const geometry = (${installGeometry.toString()});
+  const webcrypto = (${installWebCrypto.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, named);
 })()`;
 
 /**

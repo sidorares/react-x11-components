@@ -134,6 +134,7 @@ import {
   validityError,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
+import { PageCrypto, keySecrets } from './subtle.js';
 import {
   LiveRange,
   NodeIterators,
@@ -255,6 +256,11 @@ export interface WorkerInit {
   name: string;
   source: string | null;
   origin: string;
+  /** Whether its owner is a secure context, which a worker is if that is
+   *  (HTML 8.1.3.5). */
+  secure: boolean;
+  /** What opens the keys its owner makes (`subtle.ts`). */
+  keySecrets: Uint8Array[];
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
@@ -580,6 +586,9 @@ export interface HighlightRanges {
  *  where it goes, and what it may fetch. */
 export interface HostSeams {
   handle: HtmlHandle & Partial<HandleInternals>;
+  /** Whether this is a secure context, where it is not for the document's
+   *  address to say: a worker's. */
+  secureContext?: boolean;
   /** The pane the document is shown in, in CSS pixels — its size and its
    *  scroll — with the page's zoom and the device's scale, and where its
    *  top left is in the window, in logical pixels. */
@@ -1230,6 +1239,27 @@ function shadowIncludingRoot(node: AnyNode): AnyNode {
     while (at.parent) at = at.parent;
     if (!(at instanceof ShadowRoot)) return at;
     at = at.host;
+  }
+}
+
+/**
+ * Whether a document at this URL is trustworthy (Secure Contexts, 3.1): an
+ * origin that is `https:`, `wss:`, `file:` or this machine, and a `blob:`
+ * URL's is the origin it names. A top-level `about:blank` and `data:` URL
+ * have an opaque origin and are not, as Chromium and Firefox have them, where
+ * 3.2 of the specification would have it otherwise.
+ */
+function trustworthy(url: string): boolean {
+  try {
+    const at = new URL(url);
+    if (at.protocol === 'blob:') return trustworthy(at.pathname);
+    if (/^(https|wss|file):$/.test(at.protocol)) return true;
+    if (at.protocol !== 'http:' && at.protocol !== 'ws:') return false;
+    return /^(127(\.\d+){3}|\[::1\]|localhost|.*\.localhost)$/i.test(
+      at.hostname,
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -3501,6 +3531,8 @@ export class DomHost {
           ...init,
           source: typeof b === 'string' ? b : null,
           origin: this._origin(),
+          secure: this._secureContext(),
+          keySecrets: keySecrets(this._keySecret()),
         });
       }
       case 'workerPost':
@@ -4744,6 +4776,17 @@ export class DomHost {
         );
       case 'uuid':
         return crypto.randomUUID();
+      case 'secureContext':
+        return this._secureContext();
+      // a page's `crypto.subtle` (`subtle.ts`): what it asks the runtime,
+      // whose errors are told, and what opens a key
+      case 'crypto':
+        try {
+          return this._subtle().op(text(a), b, c);
+        } catch (error) {
+          const e = error as Error;
+          throw new DomError(e.name, e.message);
+        }
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -6464,6 +6507,37 @@ export class DomHost {
    *  memory. */
   private _storageOf(): HtmlStorage {
     return this._seams.storage ?? defaultStorage();
+  }
+
+  /** Whether this is a secure context (HTML 8.1.3.5): by the document at
+   *  the top of its frames, and by its own where that came over a network
+   *  that is not one. A frame of no address of its own is its parent's. A
+   *  worker's is its owner's. */
+  private _secureContext(): boolean {
+    if (this._seams.secureContext !== undefined) {
+      return this._seams.secureContext;
+    }
+    return (
+      trustworthy(this._s.top ?? this.url) &&
+      (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
+    );
+  }
+
+  private _crypto: PageCrypto | null = null;
+  /** The host's half of `crypto.subtle`, made as it is first asked for: what
+   *  it tells is held with everything else of a frozen document's. */
+  private _subtle(): PageCrypto {
+    return (this._crypto ??= new PageCrypto(
+      this._keySecret(),
+      (id, ok, value) => {
+        if (!this._disposed) this.entries?.call('__crypto', [id, ok, value]);
+      },
+    ));
+  }
+  /** What this host's keys are sealed with: what the store a page's
+   *  databases are kept in has, so they open in the next process. */
+  private _keySecret(): Uint8Array | undefined {
+    return this._storageOf().indexedDB?.keySecret?.();
   }
 
   /**
