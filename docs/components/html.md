@@ -1641,6 +1641,18 @@ than going on a layer of the render server's, since a layer's frames are
 sampled ahead from a cycle that a page's script may seek, pause or cancel
 at any time.
 
+**A page's XML is read as XML.** `DOMParser` takes `text/xml`, `application/xml`,
+`application/xhtml+xml` and `image/svg+xml`; what is not well-formed is a
+document holding a `parsererror`. An element's attributes keep their case
+outside HTML, `getElementsByTagName` matches as it is written, an internal
+subset's entities and `<!ATTLIST>` defaults are read, and CDATA sections and
+processing instructions are nodes. `XMLSerializer` writes a node back, declaring
+what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
+`XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
+with the page's resolver asked for each prefix as the expression is compiled, not
+as it runs. `innerHTML` still reads and writes HTML in an XML document, and
+XSLT is not here.
+
 **The page's selection is the reader's** (Selection API 2). What the
 reader selects in the document — a press and a drag, a double click, Ctrl+A
 — is what `getSelection()` answers the next time the page reads it, as a
@@ -1946,17 +1958,14 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
-**A page's XML is read as XML.** `DOMParser` takes `text/xml`, `application/xml`,
-`application/xhtml+xml` and `image/svg+xml`; what is not well-formed is a
-document holding a `parsererror`. An element's attributes keep their case
-outside HTML, `getElementsByTagName` matches as it is written, an internal
-subset's entities and `<!ATTLIST>` defaults are read, and CDATA sections and
-processing instructions are nodes. `XMLSerializer` writes a node back, declaring
-what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
-`XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
-with the page's resolver asked for each prefix as the expression is compiled, not
-as it runs. `innerHTML` still reads and writes HTML in an XML document, and
-XSLT is not here.
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
 
 ### Cookies and storage
 

@@ -363,8 +363,10 @@ import {
   inlineDecoration,
   lineHeightOf,
   runFor,
+  fontOf,
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
+import type { SvgMeasure } from './scripts/svg-geometry.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -7142,6 +7144,59 @@ export class HtmlViewNode extends Node {
     return this._webFonts.load(keys);
   }
 
+  /** What `svg-geometry.ts` asks of the document: an element's text and
+   *  where a drawing was laid out, in CSS pixels. */
+  svgMeasure(): SvgMeasure {
+    this._prepare(this.abs.width || 1);
+    const size = (el: Element): number => {
+      for (let at: AnyNode | null = el; at; at = at.parent) {
+        if (!isElement(at)) break;
+        const own = at.attribs['font-size'];
+        if (own !== undefined) {
+          const px = parseFloat(own);
+          if (Number.isFinite(px)) return px;
+        }
+        if (at.name.toLowerCase() === 'svg') break;
+      }
+      const style = this._styleOf(el);
+      return style ? style.fontSize / (this._scale * style.effectiveZoom) : 16;
+    };
+    return {
+      fontSize: size,
+      box: (svg) => this.elementRect(svg),
+      hidden: (el) => {
+        for (let at: AnyNode | null = el; at; at = at.parent) {
+          if (!isElement(at)) break;
+          if (at.attribs.display === 'none') return true;
+          if (this._styleOf(at)?.display === 'none') return true;
+          if (at.name.toLowerCase() === 'svg') break;
+        }
+        return false;
+      },
+      text: (el, text) => {
+        const em = size(el);
+        const fonts = this._fonts();
+        const style = this._styleOf(el);
+        if (!fonts || !style) {
+          // an em's proportions, as a drawing's text has on no engine
+          return {
+            width: text.length * em * 0.5,
+            ascent: em * 0.8,
+            descent: em * 0.2,
+          };
+        }
+        const face = { ...fontOf(style), size: em * this._scale };
+        const layout = fonts.layout([{ text, ...face }], face, {});
+        const metrics = fonts.match(face.family ?? '', face).metrics(face.size);
+        return {
+          width: layout.width / this._scale,
+          ascent: metrics.ascent / this._scale,
+          descent: metrics.descent / this._scale,
+        };
+      },
+    };
+  }
+
   /** Settles once no face of the document's is on its way
    *  (`WebFonts.settled`). */
   fontsSettled(): Promise<void> {
@@ -11455,6 +11510,50 @@ export class HtmlViewNode extends Node {
     if (named) for (const el of this._source.facts().drawings) asks.add(el);
   }
 
+  /**
+   * What a change does to the cascade, into `scope`: a sheet's element, or
+   * what one holds, changed or put in or taken out, has the cascade made
+   * again before the build, which styles what the rules it adds can style
+   * besides what the change reaches (`_sheetsAdded`). False where it is a
+   * change to what every style reads, a `<meta>` or a `<base>`.
+   */
+  private _cascadeChanged(
+    change: Exclude<HtmlChange, { type: 'shadowRoot' }>,
+    scope: ChangeScope,
+  ): boolean {
+    if (change.type === 'attributes') {
+      const el = change.target;
+      const name = change.attributeName.toLowerCase();
+      if (!changesCascade(el, name, change.oldValue ?? null)) return true;
+      if (!SHEET_TAGS.has(tagOf(el))) return false;
+      if (!this._sheetsKept(el, scope)) scope.sheets = true;
+      return true;
+    }
+    const parent =
+      change.type === 'childList' ? change.target : change.target.parent;
+    if (parent && isElement(parent) && CASCADE_TAGS.has(tagOf(parent))) {
+      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
+      // rules into one as their components first render
+      if (tagOf(parent) !== 'style') return false;
+      if (!this._sheetsKept(parent, scope)) scope.sheets = true;
+    }
+    if (change.type !== 'childList') return true;
+    for (const nodes of [change.addedNodes, change.removedNodes]) {
+      for (const node of nodes) {
+        const held = cascadeHeld(node);
+        if (held & HELD_PRAGMA) return false;
+        if (held & HELD_SHEET && !this._sheetsKept(change.target, scope)) {
+          scope.sheets = true;
+        }
+        // a shadow tree that came with it is bound as the sheets are read
+        if (held & HELD_TREE && nodes === change.addedNodes) {
+          scope.sheets = true;
+        }
+      }
+    }
+    return true;
+  }
+
   /** One change into `scope` (`_changeScope`); false where it cannot be
    *  said what the change reaches. */
   private _scopeOf(
@@ -11496,6 +11595,9 @@ export class HtmlViewNode extends Node {
       addFlatSubtree(host, scope.always);
       return true;
     }
+    // asked before anything goes by where the change is: a `<style>` is a
+    // sheet wherever it stands, one exported in a drawing among them
+    if (!this._cascadeChanged(change, scope)) return false;
     if (drawing) {
       if (change.type === 'childList') {
         for (const node of change.addedNodes) {
@@ -11554,16 +11656,6 @@ export class HtmlViewNode extends Node {
       const name = change.attributeName.toLowerCase();
       // an attribute nothing has is no box's
       if (!name.startsWith('-rx-')) scope.altered?.add(el);
-      if (
-        changesCascade(el, name, change.oldValue ?? null) &&
-        !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
-      ) {
-        // a sheet's element: the cascade is made again before the build,
-        // which styles what the rules it adds can style besides what the
-        // change reaches (`_sheetsAdded`)
-        if (!SHEET_TAGS.has(tagOf(el))) return false;
-        scope.sheets = true;
-      }
       const reach = cascade.attributeChange(
         name,
         change.oldValue,
@@ -11626,31 +11718,11 @@ export class HtmlViewNode extends Node {
     const atTop = !!scope.tails && parent === this._source.document;
     if (!parent || (!root && !atTop && !isElement(parent))) return false;
     if (scope.tails && root) return false;
-    if (
-      !root &&
-      !atTop &&
-      CASCADE_TAGS.has(tagOf(parent as Element)) &&
-      !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
-    ) {
-      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
-      // rules into one as their components first render
-      if (tagOf(parent as Element) !== 'style') return false;
-      scope.sheets = true;
-    }
     let drawn = false;
     if (change.type === 'childList') {
       let counted = false;
       for (const nodes of [change.addedNodes, change.removedNodes]) {
         for (const node of nodes) {
-          const held = cascadeHeld(node);
-          if (held & HELD_PRAGMA) return false;
-          if (held & HELD_SHEET && !this._sheetsKept(parent, scope)) {
-            scope.sheets = true;
-          }
-          // a shadow tree that came with it is bound as the sheets are read
-          if (held & HELD_TREE && nodes === change.addedNodes) {
-            scope.sheets = true;
-          }
           if (node.type !== 'comment') counted = true;
           if (
             !drawn &&
