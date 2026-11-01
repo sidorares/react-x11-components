@@ -4401,6 +4401,26 @@ canvas none. `font` is no item of a computed style's list, which is of
 longhands, so a page that copies a style item by item, as html2canvas does,
 does not set it over them, or take them off with the `''` it reads.
 
+**A computed style's shorthands are composed as they are read**
+(`SHORTHANDS`, `COMPOSED`, `computed.ts`). `getComputedStyle` is read tens of
+thousands of times a load on some sites, and a hundred more names in every
+record were 60% more for a page that wants `display`, most of it in the JSON
+and the facade's maps. So a record holds the longhands, and inherits each
+shorthand as a getter: a read by name finds it, and `Object.keys` and
+`JSON.stringify` do not, which is what the bridge sends. A page's first read of
+a shorthand asks the host for all of them (`computed`'s `d`), kept until the
+next `take`. `font` and `overflow` stay in the record, read as they are on the
+way to a text measure and up a tree for what scrolls. Three things are
+load-bearing. **A shorthand reads its longhands as `cssomAt` resolved them**,
+where it has them, so a used margin stays used and `comesFromBox` holds: **one
+that reads a box joins `FROM_A_BOX`**, or it reads what the text still to be
+set again left it. **A record is read by name**: `{ ...record }` and
+`Object.hasOwn` see longhands alone. And **anything new that makes a list item
+of a name a browser does not list keeps it out of `take`'s `names`**: a page
+that copies a style item by item sets every item it finds. `SHORTHAND_ROWS` in
+`test/html/values.test.ts` is Chrome's answers, so a row is changed by asking
+Chrome again.
+
 **A face is asked for an instance before it is registered.** ntk sets a
 variable face at the weight and the size a style asks for by cutting an
 instance out of it inside `match`, and fontkit cut none out of a WOFF or a

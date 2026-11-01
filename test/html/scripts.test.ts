@@ -5154,6 +5154,84 @@ test("getComputedStyle answers the flow-relative properties with their physical 
   ]);
 });
 
+test('getComputedStyle answers a shorthand by its name, in either spelling, and lists it as no item', async () => {
+  // what Chrome 156 answers for each. The list is of longhands: a page that
+  // copies a style item by item, as html2canvas does, would set a shorthand
+  // over them, or take them all off with a '' it reads
+  const shorthands = [
+    'margin',
+    'padding',
+    'inset',
+    'border',
+    'border-top',
+    'gap',
+    'flex',
+    'background',
+    'transition',
+    'animation',
+    'animation-range',
+    'overflow',
+    'font',
+    'scroll-timeline',
+    'view-timeline',
+    'position-try',
+  ];
+  const doc = await hosted(
+    '<style>#x::before { content: "a"; margin: 2px 3px; display: block }</style>' +
+      '<p id="out"></p>' +
+      '<div id="x" style="margin: 15px 80px; padding: 1px 2px; border: 1px solid red; gap: 1px 2px; overflow: hidden scroll; font: 12px serif">a</div>' +
+      '<script>' +
+      'var x = document.getElementById("x"), cs = getComputedStyle(x), r = [];' +
+      'r.push(cs.margin, cs.getPropertyValue("margin"), cs.padding, cs.getPropertyValue("padding"));' +
+      'r.push(cs.border, cs.borderTop, cs.getPropertyValue("border-top"), cs.gap, cs.getPropertyValue("gap"));' +
+      'r.push("margin" in cs, "borderTop" in cs, "border-top" in cs, "nothing" in cs);' +
+      'r.push(cs.nothing === undefined, cs.getPropertyValue("nothing"));' +
+      'var list = Array.from(cs), keys = Object.keys(cs);' +
+      `r.push(${JSON.stringify(shorthands)}.filter(function (n) { return list.indexOf(n) >= 0 }).join());` +
+      'r.push(["margin-top", "border-top-width", "overflow-x", "font-size", "animation-name"].filter(function (n) { return list.indexOf(n) >= 0 }).join());' +
+      'r.push(keys.indexOf("margin") >= 0, keys.indexOf("borderTop") >= 0, keys.indexOf("border-top") >= 0);' +
+      // it is as live as a longhand, and as read only
+      'x.style.margin = "1px"; r.push(cs.margin);' +
+      'try { cs.margin = "2px"; r.push("no throw") } catch (e) { r.push(e.name) }' +
+      'var none = getComputedStyle(x, "::nonsense");' +
+      'r.push(none.margin, none.getPropertyValue("margin"), none.nothing === undefined);' +
+      'r.push(getComputedStyle(x, "::before").margin);' +
+      'x.style.display = "none"; r.push(cs.margin, cs.border);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.deepStrictEqual(doc.text('out').split('|'), [
+    '15px 80px',
+    '15px 80px',
+    '1px 2px',
+    '1px 2px',
+    '1px solid rgb(255, 0, 0)',
+    '1px solid rgb(255, 0, 0)',
+    '1px solid rgb(255, 0, 0)',
+    '1px 2px',
+    '1px 2px',
+    'true',
+    'true',
+    'true',
+    'false',
+    'true',
+    '',
+    '',
+    'margin-top,border-top-width,overflow-x,font-size,animation-name',
+    'true',
+    'true',
+    'false',
+    '1px',
+    'NoModificationAllowedError',
+    '',
+    '',
+    'true',
+    '2px 3px',
+    '1px',
+    '1px solid rgb(255, 0, 0)',
+  ]);
+});
+
 test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
   // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
   // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),

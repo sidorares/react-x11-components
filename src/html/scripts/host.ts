@@ -96,7 +96,12 @@ import {
 import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
-import { comesFromBox, cssomStyle } from '../computed.js';
+import {
+  SHORTHAND_NAMES,
+  comesFromBox,
+  cssomShorthands,
+  cssomStyle,
+} from '../computed.js';
 import { fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { DocumentFontFace, FontMatch } from '../fonts.js';
@@ -3935,18 +3940,22 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
+        // a page's realm asks for the shorthands (`d`) only where it reads
+        // one: they are no part of what a read of a longhand sends
+        const send = (style: Record<string, string> | null): string =>
+          style ? JSON.stringify(d ? cssomShorthands(style) : style) : '';
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
-          const style = this._seams.handle.computedStyle(
-            this._element(a),
-            b as `view-transition${string}`,
+          return send(
+            this._seams.handle.computedStyle(
+              this._element(a),
+              b as `view-transition${string}`,
+            ),
           );
-          return style ? JSON.stringify(style) : '';
         }
         // a frame's document's, which nothing draws
         if (!this._inDocument(this._element(a))) {
-          const style = this._frameStyle(this._element(a), pseudo);
-          return style ? JSON.stringify(style) : '';
+          return send(this._frameStyle(this._element(a), pseudo));
         }
         // a style can be read with text waiting to be set again, which only
         // moves its boxes: marked so with a `~`, and asked for again with
@@ -3955,14 +3964,13 @@ export class DomHost {
         if (typeof c === 'string') {
           if (!comesFromBox(c)) return '';
         } else if (handle.styleWhileOwed) {
-          const style = handle.styleWhileOwed(this._element(a), pseudo);
-          if (!style) return '';
-          const json = JSON.stringify(style);
-          return handle.layoutOwed?.() ? `~${json}` : json;
+          const json = send(handle.styleWhileOwed(this._element(a), pseudo));
+          return json && !d && handle.layoutOwed?.() ? `~${json}` : json;
         }
-        const style = handle.computedStyle(this._element(a), pseudo);
-        return style ? JSON.stringify(style) : '';
+        return send(handle.computedStyle(this._element(a), pseudo));
       }
+      case 'computedShorthands':
+        return JSON.stringify(SHORTHAND_NAMES);
       // one custom property's, by its name: a theme's hundreds are no part
       // of what `computed` sends
       case 'customProperty': {
