@@ -13797,6 +13797,13 @@ function drawingCut(style: ComputedStyle): DrawingCut {
 
 const CUT_BOTH: DrawingCut = { x: true, y: true };
 
+/** Whether an inline drawing shows what it paints past its box on an axis
+ *  (`drawingOverflow`). */
+export function drawingOverflows(style: ComputedStyle): boolean {
+  const cut = drawingCut(style);
+  return !cut.x || !cut.y;
+}
+
 /** Where an inline drawing whose `overflow` shows what is past its box
  *  paints, in document coordinates, on the axes it shows it on
  *  (`SvgDrawing.reach`): null where it is cut on both, or paints nothing
