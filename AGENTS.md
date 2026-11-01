@@ -2535,7 +2535,12 @@ cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
 `changesCascade` lists the attributes `DocumentSource.facts` reads of
-them: anything new read there joins it. Where the sheets do read
+them: anything new read there joins it. It is asked of a change before
+anything goes by where the change is (`_cascadeChanged`), since a `<style>`
+is a sheet wherever it stands: what a script wrote to one a drawing was
+exported with, and what a stream's chunk cut inside one, went by way of the
+drawing and waited for a refresh that said nothing. **Anything new `_scopeOf`
+answers by where a change is goes after it.** Where the sheets do read
 otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media

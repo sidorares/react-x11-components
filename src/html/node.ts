@@ -11448,6 +11448,50 @@ export class HtmlViewNode extends Node {
     if (named) for (const el of this._source.facts().drawings) asks.add(el);
   }
 
+  /**
+   * What a change does to the cascade, into `scope`: a sheet's element, or
+   * what one holds, changed or put in or taken out, has the cascade made
+   * again before the build, which styles what the rules it adds can style
+   * besides what the change reaches (`_sheetsAdded`). False where it is a
+   * change to what every style reads, a `<meta>` or a `<base>`.
+   */
+  private _cascadeChanged(
+    change: Exclude<HtmlChange, { type: 'shadowRoot' }>,
+    scope: ChangeScope,
+  ): boolean {
+    if (change.type === 'attributes') {
+      const el = change.target;
+      const name = change.attributeName.toLowerCase();
+      if (!changesCascade(el, name, change.oldValue ?? null)) return true;
+      if (!SHEET_TAGS.has(tagOf(el))) return false;
+      if (!this._sheetsKept(el, scope)) scope.sheets = true;
+      return true;
+    }
+    const parent =
+      change.type === 'childList' ? change.target : change.target.parent;
+    if (parent && isElement(parent) && CASCADE_TAGS.has(tagOf(parent))) {
+      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
+      // rules into one as their components first render
+      if (tagOf(parent) !== 'style') return false;
+      if (!this._sheetsKept(parent, scope)) scope.sheets = true;
+    }
+    if (change.type !== 'childList') return true;
+    for (const nodes of [change.addedNodes, change.removedNodes]) {
+      for (const node of nodes) {
+        const held = cascadeHeld(node);
+        if (held & HELD_PRAGMA) return false;
+        if (held & HELD_SHEET && !this._sheetsKept(change.target, scope)) {
+          scope.sheets = true;
+        }
+        // a shadow tree that came with it is bound as the sheets are read
+        if (held & HELD_TREE && nodes === change.addedNodes) {
+          scope.sheets = true;
+        }
+      }
+    }
+    return true;
+  }
+
   /** One change into `scope` (`_changeScope`); false where it cannot be
    *  said what the change reaches. */
   private _scopeOf(
@@ -11489,6 +11533,9 @@ export class HtmlViewNode extends Node {
       addFlatSubtree(host, scope.always);
       return true;
     }
+    // asked before anything goes by where the change is: a `<style>` is a
+    // sheet wherever it stands, one exported in a drawing among them
+    if (!this._cascadeChanged(change, scope)) return false;
     if (drawing) {
       if (change.type === 'childList') {
         for (const node of change.addedNodes) {
@@ -11547,16 +11594,6 @@ export class HtmlViewNode extends Node {
       const name = change.attributeName.toLowerCase();
       // an attribute nothing has is no box's
       if (!name.startsWith('-rx-')) scope.altered?.add(el);
-      if (
-        changesCascade(el, name, change.oldValue ?? null) &&
-        !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
-      ) {
-        // a sheet's element: the cascade is made again before the build,
-        // which styles what the rules it adds can style besides what the
-        // change reaches (`_sheetsAdded`)
-        if (!SHEET_TAGS.has(tagOf(el))) return false;
-        scope.sheets = true;
-      }
       const reach = cascade.attributeChange(
         name,
         change.oldValue,
@@ -11619,31 +11656,11 @@ export class HtmlViewNode extends Node {
     const atTop = !!scope.tails && parent === this._source.document;
     if (!parent || (!root && !atTop && !isElement(parent))) return false;
     if (scope.tails && root) return false;
-    if (
-      !root &&
-      !atTop &&
-      CASCADE_TAGS.has(tagOf(parent as Element)) &&
-      !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
-    ) {
-      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
-      // rules into one as their components first render
-      if (tagOf(parent as Element) !== 'style') return false;
-      scope.sheets = true;
-    }
     let drawn = false;
     if (change.type === 'childList') {
       let counted = false;
       for (const nodes of [change.addedNodes, change.removedNodes]) {
         for (const node of nodes) {
-          const held = cascadeHeld(node);
-          if (held & HELD_PRAGMA) return false;
-          if (held & HELD_SHEET && !this._sheetsKept(parent, scope)) {
-            scope.sheets = true;
-          }
-          // a shadow tree that came with it is bound as the sheets are read
-          if (held & HELD_TREE && nodes === change.addedNodes) {
-            scope.sheets = true;
-          }
           if (node.type !== 'comment') counted = true;
           if (
             !drawn &&

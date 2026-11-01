@@ -156,6 +156,10 @@ function walkOf(cascade: IndexesOf): unknown {
 const byId = (el: HtmlViewNode, id: string) =>
   findById(el.document, id) as unknown as Element;
 
+/** A drawing's size, and a shape that fills it, for what writes one out. */
+const SIZE = 'width="24" height="24"';
+const RECT = `<rect id="r" ${SIZE}/>`;
+
 /** A class set on an element, with the record a `MutationObserver` keeps. */
 function setClass(target: Element, value: string): HtmlChange {
   const oldValue = target.attribs.class ?? null;
@@ -1251,6 +1255,348 @@ test('a change inside a drawing restyles what a :has() asking it can answer othe
   await act();
   assert.equal(el.computedStyle(card)?.['font-weight'], '700');
 });
+
+/** A node put at the end of `target`, with its record. */
+function appended(target: Element, node: ChildNode): HtmlChange {
+  appendChild(target, node);
+  return {
+    type: 'childList',
+    target,
+    addedNodes: [node],
+    removedNodes: [],
+  };
+}
+
+/** A node taken out of the tree, with its record. */
+function takenOut(node: ChildNode): HtmlChange {
+  const target = node.parent as unknown as Element;
+  removeNode(node);
+  return {
+    type: 'childList',
+    target,
+    addedNodes: [],
+    removedNodes: [node],
+  };
+}
+
+metric(
+  'a sheet in a drawing, put in, taken out, written to or given a media, draws what a refresh of everything draws',
+  async () => {
+    // a drawing exported from an editor keeps its colours in a `<style>` of
+    // its own, and what a script wrote to one waited for a refresh that
+    // said nothing: the rect stayed black
+    const BLUE = 'rect{fill:#0000ff}';
+    const onResource = (r: ResourceRequest) =>
+      r.kind === 'stylesheet' && r.url === 'blue.css'
+        ? { kind: 'stylesheet' as const, text: BLUE }
+        : null;
+    const linked = (_: HtmlViewNode, holder: Element) =>
+      appended(
+        holder,
+        createElement('link', {
+          id: 's',
+          rel: 'stylesheet',
+          href: 'blue.css',
+        }),
+      );
+    const black = '#000000';
+    const blue = '#0000ff';
+    const cases: {
+      name: string;
+      holds: string;
+      /** What a script does first, told and drawn. */
+      before?: (el: HtmlViewNode, holder: Element) => HtmlChange;
+      change: (el: HtmlViewNode, holder: Element) => HtmlChange;
+      ink: string;
+      /** Whether all it did is add rules (`_sheetsAdded`). */
+      adds: boolean;
+    }[] = [
+      {
+        name: 'a text put in a <style>',
+        holds: '<style id="s"></style>',
+        change: (el) => appended(byId(el, 's'), createText(BLUE)),
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> written on to',
+        holds: '<style id="s">/* ink */</style>',
+        change: (el) => {
+          const text = byId(el, 's').children[0] as unknown as { data: string };
+          text.data += BLUE;
+          return { type: 'characterData', target: text as never };
+        },
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> put in',
+        holds: '',
+        change: (_, holder) =>
+          appended(holder, createElement('style', {}, [createText(BLUE)])),
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> taken out',
+        holds: `<style id="s">${BLUE}</style>`,
+        change: (el) => takenOut(byId(el, 's') as unknown as ChildNode),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <style> no longer holds under',
+        holds: `<style id="s">${BLUE}</style>`,
+        change: (el) => setAttr(byId(el, 's'), 'media', 'print'),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <style> holds under again',
+        holds: `<style id="s" media="print">${BLUE}</style>`,
+        change: (el) => setAttr(byId(el, 's'), 'media', null),
+        ink: blue,
+        adds: true,
+      },
+      // one a script puts in, which Chromium, Firefox and WebKit read as a
+      // sheet: the parser makes a `<link>` it meets in a drawing an SVG
+      // element, which they do not
+      {
+        name: 'a <link> put in',
+        holds: '',
+        change: linked,
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <link> taken out',
+        holds: '',
+        before: linked,
+        change: (el) => takenOut(byId(el, 's') as unknown as ChildNode),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <link> no longer holds under',
+        holds: '',
+        before: linked,
+        change: (el) => setAttr(byId(el, 's'), 'media', 'print'),
+        ink: black,
+        adds: false,
+      },
+    ];
+    // where it stands: in a group, and at the root of the drawing, which a
+    // change to what the root holds reaches by another way
+    const stands: [string, (holds: string) => string][] = [
+      [
+        'a group',
+        (holds) => `<svg ${SIZE}><g id="h">${holds}</g>${RECT}</svg>`,
+      ],
+      ['the root', (holds) => `<svg id="h" ${SIZE}>${holds}${RECT}</svg>`],
+    ];
+    for (const { name, holds, before, change, ink, adds } of cases) {
+      for (const [where, drawing] of stands) {
+        const message = `${name} in ${where}`;
+        const { result, node } = await render(
+          '<style>body{margin:0}svg{display:block}</style>' +
+            `${drawing(holds)}<svg ${SIZE}>${RECT}</svg>`,
+          200,
+          { onResource },
+        );
+        const el = view(node);
+        await snapshot(result, el);
+        if (before) {
+          el.touchDocument([before(el, byId(el, 'h'))]);
+          await snapshot(result, el);
+        }
+        const internals = el as unknown as Record<
+          string,
+          (...a: unknown[]) => unknown
+        >;
+        const sheetsAdded = internals._sheetsAdded;
+        let answer: unknown;
+        internals._sheetsAdded = function (this: unknown, ...a: unknown[]) {
+          answer = sheetsAdded.apply(this, a);
+          return answer;
+        };
+        el.touchDocument([change(el, byId(el, 'h'))]);
+        const told = await snapshot(result, el);
+        delete internals._sheetsAdded;
+        assert.notStrictEqual(answer, undefined, `${message}: not read`);
+        assert.strictEqual(answer instanceof Set, adds, `${message}: reach`);
+        // what a sheet says is the document's: the drawing beside it too
+        await expectPixel(result.ctx, 12, 12, ink, { message });
+        await expectPixel(result.ctx, 12, 36, ink, { message });
+        el.touchDocument();
+        assert.strictEqual(
+          bytesApart(told, await snapshot(result, el)),
+          0,
+          message,
+        );
+        result.unmount();
+        cleanup();
+      }
+    }
+  },
+);
+
+metric(
+  'a rule written to a sheet in a drawing styles what it names, and a change to a shape beside the sheet costs the drawing and no more',
+  async () => {
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_, i) => `<p id="p${i}">Paragraph ${i}</p>`,
+    ).join('');
+    const { result, node } = await render(
+      '<!doctype html><html><head><style>body{margin:0} p{margin:0}</style>' +
+        `</head><body><svg ${SIZE}><style id="s"></style><g id="g"></g>` +
+        `${RECT}</svg>${paragraphs}</body></html>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const box = (id: string) =>
+      (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+        ._firstBoxesOf(treeOf(el))
+        .get(byId(el, id));
+    const tree = treeOf(el);
+    const cascade = cascadeOf(el);
+    // a shape changed, and one put in: the drawing is drawn again, and the
+    // sheets are as they were read
+    const changes = [
+      setAttr(byId(el, 'r'), 'width', '12'),
+      appended(
+        byId(el, 'g'),
+        createElement('rect', { width: '4', height: '4' }),
+      ),
+    ];
+    for (const change of changes) {
+      assert.strictEqual(sheetsOf(el, [change]), false);
+      assert.equal(scopeOf(el, [change])?.size, 0);
+      const damage = await damageOf(el, () => el.touchDocument([change]));
+      await act();
+      assert.ok(treeOf(el) === tree, 'built again');
+      assert.ok(cascadeOf(el) === cascade, 'the cascade was made again');
+      assert.ok(damage.length > 0 && !damage.includes(el), 'all of it drawn');
+    }
+    // a rule: the paragraph it names, and no other box
+    const far = box('p30');
+    const internals = el as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    const sheetsAdded = internals._sheetsAdded;
+    let answer: unknown;
+    internals._sheetsAdded = function (this: unknown, ...a: unknown[]) {
+      answer = sheetsAdded.apply(this, a);
+      return answer;
+    };
+    el.touchDocument([
+      appended(byId(el, 's'), createText('#p7{color:#ff0000}')),
+    ]);
+    const told = await snapshot(result, el);
+    delete internals._sheetsAdded;
+    const reached = answer as Set<Element>;
+    assert.ok(reached instanceof Set, 'every element styled again');
+    assert.ok(reached.size === 1 && reached.has(byId(el, 'p7')));
+    assert.ok(box('p30') === far, 'what its rule does not style was built');
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'p7'))?.color,
+      'rgb(255, 0, 0)',
+    );
+    el.touchDocument();
+    assert.strictEqual(bytesApart(told, await snapshot(result, el)), 0);
+  },
+);
+
+metric(
+  'a <meta> or a <base> in a drawing is a change to every style, as one anywhere is, and a sheet in a shadow tree’s drawing is its tree’s',
+  async () => {
+    const block = `style="display:block" ${SIZE}`;
+    const { result, node } = await render(
+      `<style>body{margin:0}</style><svg ${block}><g id="g"></g>${RECT}</svg>` +
+        '<div id="host"><template shadowrootmode="open">' +
+        `<svg ${block}><style></style>${RECT}</svg></template></div>`,
+      200,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    // each asked with the last change laid out, before which a scope is
+    // not asked
+    const g = byId(el, 'g');
+    const pragmas: [string, Record<string, string>][] = [
+      ['meta', { name: 'color-scheme', content: 'dark' }],
+      ['base', { href: 'https://a.test/' }],
+    ];
+    for (const [tag, attribs] of pragmas) {
+      assert.ok(scopeOf(el, []), 'the refresh of everything is still due');
+      const change = appended(g, createElement(tag, attribs));
+      assert.strictEqual(
+        scopeOf(el, [change]),
+        null,
+        `a <${tag}> reached some`,
+      );
+      el.touchDocument([change]);
+      await act();
+    }
+    const root = shadowRootOf(byId(el, 'host'))!;
+    const drawing = root.children.find(
+      (n) => (n as Element).name === 'svg',
+    ) as Element;
+    const style = drawing.children.find(
+      (n) => (n as Element).name === 'style',
+    ) as Element;
+    const written = appended(style, createText('rect{fill:#0000ff}'));
+    assert.ok(sheetsOf(el, [written]), 'a tree’s sheet was no sheet');
+    el.touchDocument([written]);
+    await snapshot(result, el);
+    await expectPixel(result.ctx, 12, 12, '#000000');
+    await expectPixel(result.ctx, 12, 36, '#0000ff');
+  },
+);
+
+metric(
+  'a sheet in a drawing that comes in chunks is read as it comes',
+  async () => {
+    const head =
+      '<!doctype html><html><head><style>body{margin:0}svg{display:block}' +
+      '</style></head><body>';
+    const documents = [
+      // cut inside the sheet's text
+      [`<svg ${SIZE}><style>rect{fi`, `ll:#0000ff}</style>${RECT}</svg>`],
+      // a sheet in a chunk of its own, after what it styles
+      [
+        `<svg ${SIZE}>${RECT}<g>`,
+        '<style>rect{fill:#0000ff}</style></g></svg>',
+      ],
+    ];
+    for (const parts of documents) {
+      const doc = (source: string) =>
+        h(
+          'box',
+          { style: { width: 200, flexDirection: 'column' } },
+          h(Html, { source, partial: true, 'data-testname': 'doc' }),
+        );
+      let source = head + parts[0];
+      const { result, node } = await render(source, 200, { partial: true });
+      const el = view(node);
+      await snapshot(result, el);
+      for (const part of parts.slice(1)) {
+        source += part;
+        await act(() => result.rerender(doc(source)));
+        await act();
+      }
+      const told = await snapshot(result, el);
+      await expectPixel(result.ctx, 12, 12, '#0000ff', {
+        message: JSON.stringify(parts),
+      });
+      el.touchDocument();
+      assert.strictEqual(bytesApart(told, await snapshot(result, el)), 0);
+      result.unmount();
+      cleanup();
+    }
+  },
+);
 
 test('a child coming or going reaches what a test of where its siblings sit can answer otherwise for, and not all its holder holds', async () => {
   // A webmail page hides a split button's separator by where the button
@@ -4030,9 +4376,22 @@ function sheetChange(
     const ink = pick(['#aa0000', '#00aa00', '#0000aa', '#aaaa00']);
     return [
       ...rulesFor(next, true).split('\n').slice(0, 4),
+      ...drawingRulesFor(next).split('\n').slice(0, 2),
       `.a { outline-color: ${ink} }`,
       `.b::before { color: ${ink} }`,
     ].join('\n');
+  };
+  // at the end of the body, before an element at its top, or in a drawing,
+  // at its root or in a group, which is a sheet like any
+  const place = (sheet: Element): void => {
+    const drawn = elementsIn(body).filter(
+      (e) => e.name === 'g' || e.name === 'svg',
+    );
+    const kids = body.children.filter((n) => (n as Element).attribs);
+    const at = next();
+    if (drawn.length && at < 0.35) appendChild(pick(drawn), sheet);
+    else if (kids.length && at < 0.6) DomUtils.prepend(pick(kids), sheet);
+    else appendChild(body, sheet);
   };
   const kind = sheets.length ? Math.floor(next() * 8) : 0;
   if (kind === 6 || kind === 7) {
@@ -4057,9 +4416,7 @@ function sheetChange(
           : `@layer ${name} {\n${rules()}\n}`,
       ),
     ]);
-    const kids = body.children.filter((n) => (n as Element).attribs);
-    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), layered);
-    else appendChild(body, layered);
+    place(layered);
     sheets.push(layered);
     return [
       {
@@ -4072,9 +4429,7 @@ function sheetChange(
   }
   if (kind === 0) {
     const style = createElement('style', {}, [createText(rules())]);
-    const kids = body.children.filter((n) => (n as Element).attribs);
-    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), style);
-    else appendChild(body, style);
+    place(style);
     sheets.push(style);
     return [
       {
@@ -4143,7 +4498,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
       '.b::before { content: "*"; animation: k 1s paused -0.5s }';
     // a document whose markup writes its `<html>`, and one the cascade
     // supplies one for, which a rule for the root reaches otherwise
-    const markup = markupFor(next, false, false);
+    const markup = markupFor(next, false, false, true);
     const full = seed % 2 === 0;
     const source = full
       ? `<!doctype html><html><head><style>body{margin:0}\n${css}</style></head><body>${markup}</body></html>`
@@ -4154,6 +4509,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
     const bodyEl = elementsIn(el.document as unknown as Element).find(
       (e) => e.name === 'body',
     )!;
+    shapesOf(el, bodyEl);
     const sheets: Element[] = [];
     const internals = el as unknown as Record<
       string,
@@ -4183,9 +4539,16 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
       if (answer instanceof Set) added += 1;
       else if (answer === null) whole += 1;
       const scoped = stylesOf(el, bodyEl);
+      const shapes = shapesOf(el, bodyEl);
       el.touchDocument();
       await act();
       const styled = stylesOf(el, bodyEl);
+      assert.deepStrictEqual(
+        shapes,
+        shapesOf(el, bodyEl),
+        `seed ${seed}, step ${step}: what a shape is given\n` +
+          `sheets\n${sheets.map((st) => DomUtils.textContent(st)).join('\n---\n')}`,
+      );
       const at = firstApart(scoped, styled);
       assert.ok(
         at < 0 && scoped.length === styled.length,
