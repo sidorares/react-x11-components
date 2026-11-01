@@ -2807,9 +2807,11 @@ new a layout keeps on a box that names a place in the document's text moves
 with the text** (`shiftLines`, which moves a kept block's lines and their
 span maps): a build that lengthens the text before a block a layout keeps
 had left its lines pointing at the old text, and an inline box's fragments
-were found on no line. A float or a box out of the flow holds the space
-before it from its line's end only where it pushed text (`after`'s `held`),
-so **a root or a tail in one whose text comes to some, or to none, is
+were found on no line. A line with no text on it says 0, which is no place
+(`firstPlaced`), and stays 0; `treeLines` holds every line's place and what
+its span map answers to a whole build's. A float or a box out of the flow
+holds the space before it from its line's end only where it pushed text
+(`after`'s `held`), so **a root or a tail in one whose text comes to some, or to none, is
 refused where a line may have begun before the box** (`mayFollowSpace`):
 the space outside it is another. **A drawing kept from before is
 drawn again where a chunk brings an id or writes into a drawing**
@@ -5769,11 +5771,14 @@ block axis, which is the root's intrinsic width at its least and its most
   (`layoutSerial`).
 - **A frame is laid out with what holds it, or moved whole with it.** All a
   frame holds is a blocker (`noteBlockers`), so no block in one is kept
-  alone, its heights running across the page; what holds a frame is kept as
-  any block is, and the frame goes with it. A kept block's read of the
-  viewport's height is read again (`heightHolds`), since a frame fit to the
-  viewport reads it only as it is laid out, and a move of the height would
-  lay nothing out. A build apart stops at a frame (`buildSubtrees`, `_apart`):
+  alone: its heights run across the page, and in `vertical-lr` its lines are
+  in the order `reflectFrame` put them in, where what reads them reads them
+  as they were laid out, and an inline-block stood on the wrong one. What
+  holds a frame is kept as any block is, and the frame goes with it. A kept
+  block's read of the viewport's height is read again (`heightHolds`), since
+  a frame fit to the viewport reads it only as it is laid out, and a move of
+  the height would lay nothing out. A build apart stops at a frame
+  (`buildSubtrees`, `_apart`):
   a frame is made as a build of the whole ends and what is in one takes its
   sides from it, so a change in one builds the whole document. MDN's browser
   compatibility tables turn each browser's name in a `vertical-rl` label,

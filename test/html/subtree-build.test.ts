@@ -63,7 +63,7 @@ function random(seed: number): () => number {
   };
 }
 
-const CLASSES = 'abcdefghijklmnopqrs'.split('');
+const CLASSES = 'abcdefghijklmnopqrst'.split('');
 /** What counts and what reads it, kept apart so that most of a document does
  *  neither: a list item, a `counter()`, a `counters()`, a quote. */
 const COUNTERS = 'rstuvwxyz'.split('').map((c) => `c${c}`);
@@ -102,7 +102,8 @@ const SHEET = `body { margin: 0; font-size: 14px }
  *  subtrees built at every step leaves them out. */
 const FRAMED_SHEET = `${SHEET}
 .r { writing-mode: vertical-rl; height: 60px }
-.s { writing-mode: vertical-lr }`;
+.s { writing-mode: vertical-lr }
+.t { writing-mode: sideways-lr; max-height: 90px }`;
 
 const BLOCKS = ['div', 'p', 'section', 'h2'];
 const INLINES = ['span', 'b', 'a', 'q'];
@@ -3503,5 +3504,117 @@ metric(
         `#${id}: line ${line}\nkept  ${kept[line]}\nwhole ${whole[line]}`,
       );
     }
+  },
+);
+
+metric(
+  'a kept block whose first line is an image alone has its lines moved with the text around them',
+  async () => {
+    // A line with no text on it says 0 for where it is in the document's
+    // text, and a selection and a hit test read the lines after it by where
+    // theirs are: `treeLines` holds them to a whole build's
+    const sections = '<section><p>a section</p></section>'.repeat(12);
+    const { node, result } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        '</style></head><body><main><section id="a"><p>before</p></section>' +
+        '<div id="k"><img width="320" height="12">words after it</div>' +
+        `${sections}</main></body></html>`,
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _firstBoxesOf(tree: BoxTree): Map<Element, Box>;
+      _invalidate(stale: number): void;
+    };
+    const byId = (id: string): Element =>
+      elementsUnder(el.document as unknown as Element).find(
+        (e) => e.attribs.id === id,
+      )!;
+    const kept = internals._firstBoxesOf(internals._tree).get(byId('k'))!;
+    const lines = kept.lines!;
+    assert.strictEqual(lines[0].textEnd, 0, 'an image alone on its first line');
+    const was = lines[1].textStart;
+    const target = byId('a');
+    const child = createElement('p', {}, [createText('more')]);
+    appendChild(target, child);
+    el.touchDocument([
+      {
+        type: 'childList',
+        target,
+        addedNodes: [child],
+        removedNodes: [],
+        previousSibling: target.children[0],
+        nextSibling: null,
+      } as HtmlChange,
+    ]);
+    await act();
+    assert.strictEqual(
+      internals._firstBoxesOf(internals._tree).get(byId('k')),
+      kept,
+      'the block built again',
+    );
+    assert.strictEqual(lines[0].textEnd, 0, 'a line of no text moved');
+    assert.ok(lines[1].textStart > was, 'the line after it left where it was');
+    const moved = treeLines(internals._tree);
+    internals._invalidate(2);
+    await act();
+    const whole = treeLines(internals._tree);
+    const at = moved.findIndex((one, i) => one !== whole[i]);
+    assert.ok(
+      at < 0 && moved.length === whole.length,
+      `line ${at}\nkept  ${moved[at]}\nwhole ${whole[at]}`,
+    );
+    result.unmount();
+  },
+);
+
+metric(
+  'a block in a vertical-lr frame is laid out with the frame, since what reads its lines reads them as they were before they were put back',
+  async () => {
+    // Kept alone, a block is where it was left, its lines in the order
+    // `reflectFrame` put them in: an inline-block around it stands on the
+    // last of them, which is its first down the frame by then, and comes out
+    // somewhere a layout of all new boxes does not put it. What holds a
+    // root come to another width is the one way a frame is laid out and
+    // what it holds is as wide as it was
+    const sections = '<section><p>a section</p></section>'.repeat(12);
+    const { node, result } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 0 } .v { writing-mode: vertical-lr; height: 120px }' +
+        '.ib { display: inline-block; inline-size: 60px }</style></head><body>' +
+        '<section id="s"><div class="v" id="f">word <span class="ib"><p>one' +
+        ' two three four five six seven eight nine</p></span> more</div>' +
+        `</section>${sections}</body></html>`,
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const target = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 's',
+    )!;
+    for (const width of ['200px', '160px']) {
+      const was = target.attribs.style ?? null;
+      target.attribs.style = `width: ${width}`;
+      el.touchDocument([
+        { type: 'attributes', target, attributeName: 'style', oldValue: was },
+      ]);
+      await act();
+      const lines = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const at = lines.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        at < 0 && lines.length === whole.length,
+        `${width}: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+      );
+    }
+    result.unmount();
   },
 );

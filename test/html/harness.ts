@@ -1687,6 +1687,21 @@ function boxLine(box: Box): string {
           .join(','),
       )
       .join(';'),
+    // and which of the document's text is on them, which a build of what is
+    // before a kept block moves: what a selection and a hit test read
+    (box.lines ?? [])
+      .map((line) =>
+        [
+          line.textStart,
+          line.textEnd,
+          ...line.texts.flatMap((t) => [
+            t.textStart,
+            t.textEnd,
+            t.spans.documentAt(t.layoutStart),
+          ]),
+        ].join(','),
+      )
+      .join(';'),
   ].join('|');
 }
 

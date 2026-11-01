@@ -2002,10 +2002,10 @@ export function buildSubtrees(
     // and the lines a layout laid it out in, which one that keeps it keeps
     // with it: all of them before every root and tail, or after
     const lines = at.lines;
-    if (lines?.length && lines[0].textStart >= olds[0].start) {
-      const first = lines[0];
+    const first = lines && firstPlaced(lines);
+    if (first && first.textStart >= olds[0].start) {
       const by = movedFor(first.textStart, at, first.textEnd > first.textStart);
-      if (by) shiftLines(lines, by, pass);
+      if (by) shiftLines(lines!, by, pass);
     }
   };
   // How far a place in the text that a kept box has moves: past each root
@@ -2460,6 +2460,7 @@ export interface SubtreesBuilt {
  *  each once in the build of subtrees `pass` is (`SpanMap.shiftDocument`). */
 function shiftLines(lines: readonly LineBox[], by: number, pass: number): void {
   for (const line of lines) {
+    if (line.textEnd === 0) continue;
     line.textStart += by;
     line.textEnd += by;
     for (const text of line.texts) {
@@ -2468,6 +2469,15 @@ function shiftLines(lines: readonly LineBox[], by: number, pass: number): void {
       text.spans.shiftDocument?.(by, pass);
     }
   }
+}
+
+/** The first of a block's lines at a place in the document's text. A line
+ *  with no text on it, an image alone, says 0 for it, which is no place: read
+ *  as one, it took a paragraph that opens with an image for one before every
+ *  root, and the lines after it kept the places they had. */
+function firstPlaced(lines: readonly LineBox[]): LineBox | undefined {
+  for (const line of lines) if (line.textEnd > 0) return line;
+  return undefined;
 }
 
 /** Every build of subtrees counted, for `shiftLines`: a set of the span
