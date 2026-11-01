@@ -73,7 +73,8 @@ export function layoutTable(
   // a percentage of a width that is not known is `auto`: the table is as
   // wide as its columns where its content is measured (`cyclicWidth`)
   const own =
-    table.style.width === AUTO || cyclicWidth(table.style, contentWidth);
+    table.style.width === AUTO ||
+    cyclicWidth(table.style, table.parent?.width ?? contentWidth);
   // — and one a grid stretches across its area is as wide as that, as a
   // table with a width of its own is (`STRETCHED_ACROSS`)
   const auto = own && !STRETCHED_ACROSS.has(table);

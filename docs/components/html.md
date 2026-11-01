@@ -3018,9 +3018,20 @@ narrowest, within its limits. Along a line that does not wrap a
 that may not shrink, and `flex: none` gives an item's narrowest and not
 its widest. All of that is Chrome's: along a line that wraps no basis has
 a say, where CSS Flexbox 9.9.1 caps and floors by it there too. A flex
-box's widest width takes each item at its content, with such a basis only
-as a floor where Chrome also caps by it: `flex: 0 1 40px` around 50
-pixels of content that can break gives 50 here and 40 there. A percentage height,
+box's widest width goes by the same rule with each item at its content at
+its widest, and no narrower than its content at its narrowest where its
+automatic minimum holds it: `flex: 0 1 40px` around 50 pixels of content
+that can break gives 40, and `flex: 0 1 10px` around the same gives 30, the
+widest word. Its items are side by side there whether its lines wrap or not,
+a basis has its say along a row that wraps as well, and such a row is no
+narrower than its widest item on a line of its own. No flex fraction comes
+into it, whatever 9.9.1 says: `flex: 2 1 40px` beside `flex: 1 1 40px` is
+their contents side by side, as in Chrome. A column that wraps at a height
+of its own is as wide as the widest item of each of its lines, side by side,
+and the gaps between them. A size of its content, `width: max-content` or
+`min-width: min-content` on an item, is a width like any, an image's its
+natural one, and an item with a ratio is what that makes of a height of its
+own or of its limits. A percentage height,
 minimum, maximum or flex basis of an item down a column of a definite
 height is of that height; down one of no definite height, a percentage
 height is `auto` and a percentage flex basis is `content`, the content's

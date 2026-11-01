@@ -16,6 +16,7 @@ import {
   renderWithBytes,
   view,
 } from './harness.js';
+import { MAX_CONTENT_DOCUMENT, MAX_CONTENT_WIDTHS } from './max-contents.js';
 import { MIN_CONTENT_DOCUMENT, MIN_CONTENT_WIDTHS } from './min-contents.js';
 import { mulberry32 } from '../mulberry32.js';
 
@@ -185,6 +186,19 @@ test('a flex box at its narrowest comes to what Chromium has it come to, with no
   );
 });
 
+test('a flex box at its widest comes to what Chromium has it come to', async () => {
+  // the same boxes in a room wider than any of them can use, each item as
+  // wide as its content
+  const { node } = await render(MAX_CONTENT_DOCUMENT, 400);
+  const el = view(node);
+  MAX_CONTENT_WIDTHS.forEach((width, i) => {
+    assert.ok(
+      Math.abs(boxOf(el, `c${i}`).width - width) < 0.05,
+      `c${i}: ${boxOf(el, `c${i}`).width}, where Chromium has ${width}`,
+    );
+  });
+});
+
 test('a flex basis has a say along a line, and each item is as narrow as it comes', async () => {
   // every width is Chromium's
   const sized = (width: number) =>
@@ -199,7 +213,7 @@ test('a flex basis has a say along a line, and each item is as narrow as it come
     `<div style="display:flex;${css}">${held.join('')}</div>`;
   const beside = box('', 15);
   const canvas = (css: string) =>
-    `<canvas width="30" height="4" style="display:block;${css}"></canvas>`;
+    `<canvas width="30" height="30" style="display:block;${css}"></canvas>`;
   const table = (css: string) =>
     `<table style="border-spacing:0;${css}"><tr><td style="padding:0">${sized(30)}</td>` +
     `<td style="padding:0">${sized(20)}</td></tr></table>`;
@@ -241,6 +255,22 @@ test('a flex basis has a say along a line, and each item is as narrow as it come
     [row('', line('flex:0 0 40px;max-width:min-content'), beside), 45],
     // a basis wider than its content, in a room wider than that
     [box('flex:0 0 40px', 8), 40],
+    // a percentage squeezes what is replaced, and a basis holds it
+    [row('', canvas('flex:none;width:20px;max-width:100%'), beside), 35],
+    [row('', canvas('flex:0 0 25px;width:50%'), beside), 45],
+    [row('', canvas('flex:0 0 0;width:100%'), beside), 15],
+    [
+      row('', canvas('flex:1 0 25px;width:100%;min-width:min-content'), beside),
+      45,
+    ],
+    [row('', canvas('flex:0 0 40px;width:100%;min-width:0'), beside), 55],
+    [canvas('min-width:0'), 30],
+    [box('width:max-content', 30), 30],
+    [line('width:max-content'), 50],
+    [row('flex:0 1 30px', canvas('padding:0 5%;flex:2 1 40px')), 30],
+    [row('', canvas('width:100%;min-width:max-content'), beside), 15],
+    [row('', canvas('width:min-content;max-width:100%'), beside), 15],
+    [`<div style="min-width:8px">${canvas('padding:0 5%')}</div>`, 30],
     // laid out across a least width, which is no width of its own
     [
       `<div style="min-width:43px">${box('padding:0 2px;width:100%', 7)}</div>`,
@@ -260,6 +290,205 @@ test('a flex basis has a say along a line, and each item is as narrow as it come
     assert.strictEqual(boxOf(view(node), 'item').width, width, held);
     await cleanup();
   }
+});
+
+test('a flex box at its widest goes by the rule its narrowest goes by, with its items at theirs', async () => {
+  // every width is Chromium's
+  const sized = (width: number) =>
+    `<i style="display:block;width:${width}px;height:4px"></i>`;
+  const box = (css: string, width: number) =>
+    `<div style="${css}">${sized(width)}</div>`;
+  // two boxes a line may break between: 30 at its narrowest, 50 at its widest
+  const line = (css: string) =>
+    `<div style="${css}"><b style="display:inline-block;width:20px;height:4px"></b>` +
+    '<b style="display:inline-block;width:30px;height:4px"></b></div>';
+  const row = (css: string, ...held: string[]) =>
+    `<div style="display:flex;${css}">${held.join('')}</div>`;
+  const inline = (width: number) =>
+    `<b style="display:inline-block;width:${width}px;height:4px"></b>`;
+  const column = (css: string, ...held: string[]) =>
+    row(`flex-direction:column;flex-wrap:wrap;${css}`, ...held);
+  const beside = box('', 15);
+  const down = (css: string, width: number) => box(`height:4px;${css}`, width);
+  const canvas = (css: string) =>
+    `<canvas width="30" height="30" style="display:block;${css}"></canvas>`;
+  const table = (css: string) =>
+    `<table style="border-spacing:0;${css}"><tr><td style="padding:0">${sized(30)}</td>` +
+    `<td style="padding:0">${sized(20)}</td></tr></table>`;
+  const cases: [string, number][] = [
+    [row('', line('flex:0 1 40px')), 40],
+    [row('', line('flex:0 0 40px')), 40],
+    [row('', line('flex:0 1 10px')), 30],
+    [row('', line('flex:0 1 10px;min-width:0')), 10],
+    [row('', line('flex:0 1 10px;overflow:hidden')), 10],
+    [row('', line('flex:1 1 10px')), 50],
+    [row('', line('flex:1 1 80px')), 50],
+    [row('', box('flex:1 0 40px', 10)), 40],
+    [row('', box('flex:0 0 40px', 10)), 40],
+    [row('', box('flex:0 1 40px', 100)), 100],
+    [row('', box('flex:0 1 50%', 100)), 100],
+    [row('', line('flex:0 1 content')), 50],
+    [row('', box('flex:2 1 40px', 100), box('flex:1 1 40px', 50)), 150],
+    [row('', box('flex:0.5 1 10px', 100), box('flex:0.25 1 10px', 50)), 150],
+    [row('flex-wrap:wrap', line('flex:0 1 40px'), beside), 55],
+    [row('flex-wrap:wrap;gap:6px', line('flex:none'), beside), 71],
+    [row('flex-wrap:wrap', box('flex:0 0 40px;width:90px', 10), beside), 90],
+    [row('flex-wrap:wrap', box('margin:0 -9px', 5), beside), 15],
+    [row('flex-direction:column', box('flex:0 1 40px', 100), beside), 100],
+    [column('height:8px', down('', 30), down('', 20), down('', 25)), 55],
+    [column('height:4px;gap:6px', down('', 30), down('', 20)), 56],
+    [
+      column(
+        'height:4px;flex-direction:column-reverse',
+        down('', 30),
+        down('', 20),
+      ),
+      50,
+    ],
+    [column('max-height:4px', down('', 30), down('', 20)), 50],
+    [column('', down('', 30), down('', 20)), 30],
+    [
+      row('', column('height:4px;flex:0 0 auto', down('', 30), down('', 20))),
+      50,
+    ],
+    [
+      `<div>${column('height:4px;max-width:40px', down('', 30), down('', 20))}</div>`,
+      40,
+    ],
+    [
+      column(
+        'height:6px',
+        box('flex:2 1 40px', 6),
+        box('flex:none;margin:0 5px', 0),
+      ),
+      16,
+    ],
+    [row('', row('flex:0 1 40px', line('flex:none'))), 40],
+    [row('', row('', row('', line('flex:0 1 40px')))), 40],
+    [`<div>${row('', line('flex:0 1 40px'))}</div>`, 40],
+    [`<div style="max-width:40px">${line('')}</div>`, 40],
+    [`<div>${line('max-width:40px')}</div>`, 40],
+    [
+      column(
+        'height:8px;flex-direction:column-reverse',
+        down('', 20),
+        down('', 30),
+        down('', 25),
+      ),
+      55,
+    ],
+    [column('height:4px', line('height:4px'), down('margin:0 -9px', 5)), 50],
+    [row('', table('flex:0 1 10px;min-width:0')), 50],
+    [row('', box('width:17px;aspect-ratio:3/2;max-height:10px', 4)), 17],
+    [row('', box('aspect-ratio:2;flex:0 0 40px;height:30px', 70)), 70],
+    [row('flex-direction:column', canvas('flex:1 0 20px')), 30],
+    [
+      `<div><div style="float:left">${row('', line('flex:0 1 40px'))}</div></div>`,
+      40,
+    ],
+    [
+      row('', '<svg style="display:block;width:max-content;height:4px"></svg>'),
+      300,
+    ],
+    [row('', row('flex:0 1 20px', canvas('padding:0 5%;flex:2 1 40px'))), 30],
+    [
+      `<div><div style="float:left;display:flex">${line('flex:1 1 80px')}</div></div>`,
+      50,
+    ],
+    [row('flex-direction:column', canvas('flex:1 0 20px;overflow:hidden')), 30],
+    [`<div>${box('max-width:40px', 8)}</div>`, 8],
+    // a float is as wide as it shrank to, whatever a percentage in it makes of
+    // that, and a width at its limit says nothing there either
+    [
+      `<div><div style="float:left"><div style="max-width:6px"></div></div></div>`,
+      0,
+    ],
+    [`<div><div style="float:left">${box('padding:0 5%', 7)}</div></div>`, 7],
+    // at its limit a line that wrapped says its content is wider than that,
+    // and one that was broken does not
+    [
+      `<div><div style="max-width:60px">${inline(20)}<br>${inline(30)}</div></div>`,
+      30,
+    ],
+    [
+      `<div><div style="max-width:60px"><span>${inline(20)}<br>${inline(30)}</span></div></div>`,
+      30,
+    ],
+    [
+      `<div><div style="max-width:60px;white-space:pre">${inline(20)}\n${inline(30)}</div></div>`,
+      30,
+    ],
+    [
+      `<div><div style="max-width:40px">${inline(30)}${inline(30)}</div></div>`,
+      40,
+    ],
+    [
+      `<div><div style="max-width:40px"><div>${inline(30)}${inline(30)}</div></div></div>`,
+      40,
+    ],
+    [
+      `<div><div style="max-width:40px"><div style="width:20px">${inline(10)}${inline(15)}</div></div></div>`,
+      20,
+    ],
+    [`<div>${row('max-width:min-content', line(''))}</div>`, 30],
+    [row('', line('width:min-content')), 30],
+    [row('', line('width:fit-content')), 50],
+    [row('', line('width:max-content;flex:0 1 40px')), 40],
+    [row('', line('min-width:max-content;flex:0 1 40px')), 50],
+    [row('', line('max-width:min-content')), 30],
+    [
+      `<div style="width:max-content">${row('', line('flex:0 1 40px'))}</div>`,
+      40,
+    ],
+    [row('', canvas('width:100%')), 30],
+    [row('', canvas('width:max-content;max-width:100%')), 30],
+    [row('', canvas('width:40px;max-width:min-content')), 30],
+    [row('', canvas('flex:0 0 0;width:100%')), 30],
+    [row('', table('width:20px')), 50],
+    [row('', table('max-width:20px')), 50],
+    [row('', table('flex:0 1 10px')), 50],
+    [`<div>${table('width:50%;max-width:60px')}</div>`, 50],
+    [row('', box('aspect-ratio:2;height:30px', 8)), 60],
+    [row('', box('aspect-ratio:2;height:30px', 70)), 70],
+    [row('', box('aspect-ratio:2;height:30px;min-width:0', 70)), 60],
+    [row('', box('aspect-ratio:2;height:30px;width:100%', 8)), 60],
+    [row('', box('aspect-ratio:2;min-height:30px', 8)), 60],
+    [row('', box('aspect-ratio:2;max-height:10px', 70)), 20],
+    [row('', box('aspect-ratio:2;flex:0 0 40px;max-height:10px', 70)), 40],
+    [row('', box('aspect-ratio:2;flex:0 0 40px;height:30px', 8)), 60],
+  ];
+  for (const [held, width] of cases) {
+    const { node } = await render(
+      '<style>body{margin:0}</style><div style="display:flex;width:3000px">' +
+        `<div id="item" style="display:flex">${held}</div></div>`,
+      400,
+    );
+    assert.strictEqual(boxOf(view(node), 'item').width, width, held);
+    await cleanup();
+  }
+});
+
+test('an item with a basis of a length is measured at its widest once', async () => {
+  // what asks a row of a box its size shrink to fit lays each item out at its
+  // widest for its basis as it does for no basis at all, and no more often
+  const items = (flex: string) =>
+    Array.from(
+      { length: 40 },
+      (_, i) =>
+        '<div style="display:inline-flex"><div style="display:flex">' +
+        `<div style="flex:${flex}">a line of words ${i}</div>` +
+        '<div style="flex:none">more</div></div></div>',
+    ).join('');
+  const layouts = async (flex: string): Promise<number> => {
+    const before = boxLayoutsMade();
+    await render(`<style>body{margin:0}</style>${items(flex)}`, 400);
+    const made = boxLayoutsMade() - before;
+    await cleanup();
+    return made;
+  };
+  const free = await layouts('0 1 auto');
+  const based = await layouts('0 1 40px');
+  assert.ok(based <= free * 1.15, `${based} boxes laid out, and ${free}`);
 });
 
 test('what a walk lays out at no width is not left so by the layout after it', async () => {
