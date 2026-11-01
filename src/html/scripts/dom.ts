@@ -17440,10 +17440,13 @@ export function installDom(
         held[held.length] = bytes;
         if (wanted) hand();
       },
-      pulled(): void {
+      /** A read: what has come, and whether that was the last of it. */
+      pulled(): boolean {
         if (held.length) hand();
         else wanted = true;
-        if (closing && !held.length) controller.close();
+        if (!closing) return false;
+        controller.close();
+        return true;
       },
       /** The end of the body, and whether all of it has been handed over. */
       ended(): boolean {
@@ -29755,7 +29758,7 @@ export function installDom(
                 fetchBodies.set(id, fetchedBody(controller));
               },
               pull() {
-                fetchBodies.get(id)?.pulled();
+                if (fetchBodies.get(id)?.pulled()) fetchBodies.delete(id);
               },
               cancel() {
                 if (fetchBodies.delete(id)) call('abortFetch', id);

@@ -3626,25 +3626,32 @@ test('bytes that are no WebM fail what they were appended to, and end the stream
 test('a body a page is slow to read comes in one chunk of all that arrived, where each piece was a turn of its own', async () => {
   // the network's pieces are TLS records: Apple's clip of 8 MB is some 500
   // of them, and read a piece at a time on a busy thread it ran out a
-  // 10-second timer of the page's
+  // 10-second timer of the page's. The page holds its next read until every
+  // piece has come, so that nothing here turns on how long a task took
   const pieces = Array.from({ length: 6 }, (_, i) =>
     new Uint8Array(8).fill(i + 1),
   );
   let release = (): void => {};
+  let arrived = (): void => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
+  const allIn = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
   const doc = await hosted(
     '<p id="out"></p><script>' +
+      'var go;' +
       'fetch("/stream").then(async function (r) {' +
-      '  var reader = r.body.getReader(), sizes = [], bytes = 0;' +
+      '  var reader = r.body.getReader(), sizes = [], bytes = [];' +
       '  var first = await reader.read();' +
-      '  sizes.push(first.value.length); bytes += first.value.length;' +
-      '  await new Promise(function (go) { setTimeout(go, 80) });' +
+      '  sizes.push(first.value.length); bytes.push.apply(bytes, first.value);' +
+      '  document.getElementById("out").textContent = "first";' +
+      '  await new Promise(function (resume) { go = resume });' +
       '  for (;;) {' +
       '    var part = await reader.read();' +
       '    if (part.done) break;' +
-      '    sizes.push(part.value.length); bytes += part.value.length;' +
+      '    sizes.push(part.value.length); bytes.push.apply(bytes, part.value);' +
       '  }' +
       '  document.getElementById("out").textContent = JSON.stringify([sizes, bytes]);' +
       '});' +
@@ -3662,18 +3669,25 @@ test('a body a page is slow to read comes in one chunk of all that arrived, wher
             yield pieces[0];
             await held;
             for (const piece of pieces.slice(1)) yield piece;
+            arrived();
           },
         },
       }),
     },
   );
-  await settle(30);
+  assert.equal(await settled(doc, 'out', (t) => t === 'first'), 'first');
   release();
-  const text = await settled(doc, 'out', (t) => t !== '');
+  await allIn;
+  doc.run('go()');
+  const text = await settled(doc, 'out', (t) => t.startsWith('['));
   assert.ok(text, doc.logs.join('\n'));
-  const [sizes, bytes] = JSON.parse(text) as [number[], number];
-  assert.equal(bytes, 48, 'all of it, in order');
+  const [sizes, bytes] = JSON.parse(text) as [number[], number[]];
   assert.deepEqual(sizes, [8, 40], 'what came while it was busy is one read');
+  assert.deepEqual(
+    bytes,
+    pieces.flatMap((p) => [...p]),
+    'all of it, in order',
+  );
 });
 
 /** A GL that keeps what it was told and answers what a test says. */
