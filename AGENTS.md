@@ -2394,7 +2394,8 @@ decide, after the document's first layout, and the next layout laid out
 again every block, flex item and grid item the first had. So **anything
 new a layout reads of the viewport's height sets `readViewportHeight`**,
 as `containingRect` does, or a box kept under a new height is laid out as
-it was under the old one. A hover's or a focus's build is seeded with
+it was under the old one; and one in a box a layout keeps says so of the
+layouts that keep it, as a frame's does. A hover's or a focus's build is seeded with
 its reach, as a frame's is.
 `test/html/subtree-build.test.ts` holds a subtree build and the layout
 after it to a whole build, box, line, list and style, over generated
@@ -5251,7 +5252,7 @@ to its content within the room down the page — the containing block's
 height, or the viewport's, which marks the layout as reading it
 (`readsViewportHeight`) — and the root as wide as the frame came to down its
 block axis, which is the root's intrinsic width at its least and its most
-(`intrinsicWidth`). Six things are load-bearing.
+(`intrinsicWidth`). Seven things are load-bearing.
 
 - **A box in a frame has its style turned** (`framedStyle`): its physical
   sides, sizes, corners and shadow offsets handed to the frame's, so the
@@ -5264,9 +5265,10 @@ block axis, which is the root's intrinsic width at its least and its most
   (`pageSides`, as `getComputedStyle` does; a widget's rect through the
   frame's matrix, as `controlRectsOf` does).
 - **The gate is the tree's** (`BoxTree.vertical`, set by the builder):
-  `framed.any` is set from it as a layout, a paint or an anchor walk of a
-  tree begins (`layoutDocument`, `paintDocument`, `paintCapture`,
-  `paintLiftedBox`, `paintCover`, `anchorAt`), and every per-box question —
+  `framed.any` is set from it as a layout, a paint, an anchor walk or a build
+  of subtrees of a tree begins (`layoutDocument`, `paintDocument`,
+  `paintCapture`, `paintLiftedBox`, `paintCover`, `anchorAt`,
+  `buildSubtrees`), and every per-box question —
   `FRAMES.get`, `FRAME_ROOTS.has`, a box's writing mode in the inline layout
   and in `paintLinePart` — asks it first, so a document in no vertical mode
   pays a boolean. Anything new that lays out or paints a tree from another
@@ -5303,6 +5305,20 @@ block axis, which is the root's intrinsic width at its least and its most
   cascade order. In a document that declares none nothing is read twice,
   and the direction is as the cascade has it when a logical property is
   read, as before.
+- **A build apart stays out of a frame, and a layout keeps a frame whole.**
+  No root or tail is in a frame or holds one (`subtreeRoot`, `tailRoot`,
+  `oldBoxes`): what is in a frame has its style turned, which a build apart
+  would take for the page's, and a build apart makes no frame (`_apart`). So
+  a change there is a whole build, and `SubtreeRoots.wider` is no help,
+  since what is around a frame holds it. Everywhere else a frame is a box a
+  build leaves where it is, with its text's places moved as any kept
+  block's. A layout keeps the root as any block, its frame moved with it,
+  and keeps nothing in a frame (`noteBlockers`): a flow reads a block's
+  lines as it laid them out, and `reflectFrame` has put them back by then.
+  **A frame fit to the viewport reads its height in a box a layout keeps**,
+  so a layout of a tree with a frame that kept anything says it read the
+  height (`LaidUnder`), or a move of the height leaves the frame fit to the
+  old one.
 
 **An anchored box follows an anchor a scroll moves by being moved, not
 laid out** (CSS Anchor Positioning 1, 3.3; `layoutPositioned`,

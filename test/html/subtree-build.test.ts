@@ -404,8 +404,10 @@ function boxLine(box: Box): string {
       )
       .join(';'),
     // and which of the document's text is on them, which a build of what
-    // is before a kept block moves: what a selection and a hit test read
-    (box.lines ?? [])
+    // is before a kept block moves: what a selection and a hit test read.
+    // An element's: `movedFor` cannot tell an anonymous box from a root
+    // with no text that ends where its first line starts
+    (box.el ? (box.lines ?? []) : [])
       .map((line) =>
         [
           line.textStart,
