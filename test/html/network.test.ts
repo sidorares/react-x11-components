@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { createServer } from 'node:http';
+import type { ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 
@@ -9,9 +11,11 @@ import {
   HTML_USER_AGENT,
   readDataUrl,
   resourceResult,
+  stallClock,
 } from '../../src/html/network.js';
 import { CookieJar } from '../../src/html/cookies.js';
 import type { HtmlNetworkActivity } from '../../src/html/network.js';
+import { FRAME_MS, holdClock } from '../held-clock.js';
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
@@ -568,20 +572,33 @@ test("a frame's request carries the frame's Origin and Referer, and its own orig
 });
 
 test('a body that keeps arriving is read to its end however long it takes, and one that stops arriving is given up', async (t) => {
-  const server = createServer((req, res) => {
+  // The limit runs on a clock the test holds, and the time between two
+  // chunks is frames of it taken after the first arrived. The server is on
+  // this thread, so on the wall clock a thread running late spent the limit
+  // with the first chunk or the next still to come or still unread, and a
+  // body that was arriving was given up.
+  const limit = holdClock(t, stallClock);
+  const arrivals = new EventEmitter();
+  const serve = async (res: ServerResponse, stalls: boolean): Promise<void> => {
     res.writeHead(200, { 'content-type': 'text/css' });
-    // a chunk every 60 ms for half a second, past a bound of 200 ms in all;
-    // or a first chunk, and then nothing for 400 ms
-    const stalls = req.url === '/stalls.css';
-    let sent = 0;
-    const next = (): void => {
-      if (res.destroyed) return;
+    // a chunk every two frames, past a limit of three in all; or a first
+    // chunk, and then nothing for three
+    const gone = once(res, 'close');
+    for (let sent = 0; sent < (stalls ? 1 : 8) && !res.destroyed; sent += 1) {
+      const arrived = once(arrivals, 'chunk');
       res.write(`a${sent}{}`);
-      sent += 1;
-      if (sent === 8) res.end();
-      else setTimeout(next, stalls ? 400 : 60);
-    };
-    next();
+      await Promise.race([arrived, gone]);
+      for (let frame = 0; frame < (stalls ? 3 : 2); frame += 1) {
+        await limit.frame();
+      }
+    }
+    res.end();
+  };
+  // a stall ends inside a frame, and a frame is an `act`, which the next
+  // answer's frames may not overlap
+  let serving = Promise.resolve();
+  const server = createServer((req, res) => {
+    serving = serve(res, req.url === '/stalls.css');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => {
@@ -589,10 +606,18 @@ test('a body that keeps arriving is read to its end however long it takes, and o
     server.close();
   });
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const network = new HtmlNetwork({ connectTimeout: null, timeout: 200 });
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    timeout: 3 * FRAME_MS,
+  });
+  // told of a chunk only once it has been through the limit
+  network.observe((activity) => {
+    if (activity.type === 'data') arrivals.emit('chunk');
+  });
   const page = `${origin}/page`;
   const css = async (path: string) => {
     const loaded = await network.load(`${origin}${path}`, 'stylesheet', page);
+    await serving;
     return 'fetched' in loaded
       ? new TextDecoder().decode(loaded.fetched.bytes)
       : 'failed' in loaded
@@ -607,6 +632,7 @@ test('a body that keeps arriving is read to its end however long it takes, and o
   assert.equal(await readText(document.body), whole, 'a slow document');
   const stalled = await network.document(`${origin}/stalls.css`, signal);
   await assert.rejects(readText(stalled.body), 'a stalled document');
+  await serving;
 });
 
 test('a redirect followed by the network: a loop ends, and a POST’s 302 is a GET', async (t) => {
