@@ -799,10 +799,17 @@ with them once they are in; `check()` says whether they are, and `ready`
 waits for every face on its way. A loader such as FontFaceObserver polls
 `load()` until it hands a face over, and gives up at its timeout:
 facebook.com draws its login QR code only once Instagram Sans Condensed is
-in, and an answer of no faces left the code blank. A face a script makes
-with `new FontFace` is not among them, since nothing hands its data to the
-document's fonts yet: there is no `FontFace` to construct, and `add()` takes
-none.
+in, and an answer of no faces left the code blank.
+
+**`new FontFace(family, source, descriptors)` goes through the same path.**
+A `url()` source is asked for through `onResource`, a buffer is handed over,
+and either is opened by the engine, WOFF2 rebuilt where it has to be, before
+the face says it has loaded. `document.fonts.add` puts a face among the
+document's, which styles the document again, as an `@font-face` in a sheet
+would; `delete` and `clear` take it out, and only what a script put there. A
+family or a descriptor that cannot be read is the `SyntaxError` `loaded`
+rejects with, and a font the engine cannot read a `NetworkError`. A
+descriptor set after a face is made reads back and changes nothing of it.
 
 ## Scripts
 

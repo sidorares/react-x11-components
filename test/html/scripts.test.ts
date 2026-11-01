@@ -9654,6 +9654,99 @@ metric(
 );
 
 metric(
+  'new FontFace loads a font from a URL or from bytes, and sets text once document.fonts has it',
+  async () => {
+    // tldraw and Excalidraw make every face with `new FontFace`, and threw
+    // at the name
+    const sans = new Uint8Array(readFileSync(FONTS!.monospace));
+    const doc = await hosted(
+      `<p id=out></p><span id=probe style="font: 40px Fallback">MMMM</span>
+       <script>
+         const out = {};
+         const fonts = document.fonts;
+         const url = new FontFace('Brand', 'url(brand.ttf)', { weight: '400' });
+         out.url = [url.status, url.family, url.weight, url.style, url.unicodeRange];
+         out.members = [fonts.has(url), fonts.size];
+         out.notFont = (() => {
+           try { fonts.add({}); } catch (e) { return e.name; }
+         })();
+         const heard = [];
+         fonts.addEventListener('loading', () => heard.push('loading'));
+         fonts.addEventListener('loadingdone', (e) => heard.push('done:' + e.fontfaces.length));
+         window.go = async () => {
+           const bytes = await (await fetch('brand.bin')).arrayBuffer();
+           const made = new FontFace('Bytes', bytes);
+           out.bytes = made.status;
+           await made.loaded;
+           out.loaded = made.status;
+           const back = await url.load();
+           out.same = [back === url, url.status];
+           fonts.add(url);
+           fonts.add(url);
+           fonts.add(made);
+           out.added = [fonts.has(url), fonts.size, fonts.check('16px Brand'), fonts.check('16px Bytes')];
+           await fonts.load('16px Brand');
+           out.checked = fonts.check('16px Brand');
+           document.getElementById('probe').style.fontFamily = 'Brand';
+           out.heard = heard;
+           const bad = new FontFace('Bad', 'not a source');
+           out.bad = [bad.status, await bad.loaded.catch((e) => e.name)];
+           const worse = new FontFace('Worse', 'url(a.ttf)', { weight: 'heavy' });
+           out.worse = await worse.loaded.catch((e) => e.name);
+           const junk = new FontFace('Junk', new Uint8Array([1, 2, 3]));
+           out.junk = await junk.loaded.catch((e) => e.name);
+           fonts.delete(made);
+           out.deleted = [fonts.has(made), fonts.size, fonts.delete(made)];
+           document.getElementById('out').textContent = JSON.stringify(out);
+         };
+       </script>`,
+      {
+        fonts: { 'brand.ttf': sans },
+        answer: (request) =>
+          request.url.endsWith('brand.bin')
+            ? {
+                status: 200,
+                statusText: 'OK',
+                headers: [['content-type', 'font/ttf']],
+                url: request.url,
+                redirected: false,
+                body: '',
+                bytes: sans,
+              }
+            : null,
+      },
+    );
+    await settle();
+    const before = doc.view.elementRect(doc.byId('probe'))!.width;
+    doc.run('go()');
+    await waitFor(() => assert.notEqual(doc.text('out'), ''), {
+      timeout: 3000,
+    });
+    assert.deepEqual(JSON.parse(doc.text('out')), {
+      url: ['unloaded', 'Brand', '400', 'normal', 'U+0-10FFFF'],
+      members: [false, 0],
+      notFont: 'TypeError',
+      bytes: 'loading',
+      loaded: 'loaded',
+      same: [true, 'loaded'],
+      added: [true, 2, true, true],
+      checked: true,
+      heard: [],
+      bad: ['error', 'SyntaxError'],
+      worse: 'SyntaxError',
+      junk: 'NetworkError',
+      deleted: [false, 1, false],
+    });
+    await settle(40);
+    assert.notEqual(
+      doc.view.elementRect(doc.byId('probe'))!.width,
+      before,
+      'the text in it is set in it',
+    );
+  },
+);
+
+metric(
   "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
   async () => {
     // fontfaceobserver 2.x asks `load()` every 25 ms until it hands over a
