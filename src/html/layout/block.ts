@@ -8009,6 +8009,14 @@ function positionedIn(
             : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
+  if (containing.kind === 'inline') {
+    PLACED_IN_INLINE.set(box, {
+      top: box.y - box.marginTop - whole.y,
+      left: box.x - box.marginLeft - whole.x,
+      width: whole.width,
+      height: whole.height,
+    });
+  }
   // the rectangle its insets leave of its containing block, which it has
   // to fit in to be in no need of another position (CSS Anchor
   // Positioning 1, 6.5)
@@ -8392,8 +8400,9 @@ function paddingRectOf(
  * last. The box lays nothing out of its own — its fragments are on its
  * block's lines — so read as a box that does, it was a rectangle of no size
  * at the page's corner, and a tooltip under a positioned link came up
- * there. A box with no fragment at all stands where the box inside it
- * would have been in flow.
+ * there. A box with nothing of its own on a line stands where the box inside
+ * it would have been in flow: as high as a fragment there, with no width,
+ * and of no size at all where that is on no line.
  */
 function inlineContainingBlock(
   inline: Box,
@@ -8422,8 +8431,10 @@ function inlineContainingBlock(
     const at = box.staticPosition;
     const x = at ? at.from.x + at.x : 0;
     const y = at ? at.from.y + at.y : 0;
-    const height = face ? face.ascent + face.descent : 0;
-    return { x, y, width: 0, height };
+    const line = block?.lines?.find((l) => l.y <= y && y < l.y + l.height);
+    if (!line) return { x, y, width: 0, height: 0 };
+    const [top, bottom] = fragmentRow(line, inline, face, false);
+    return { x, y: top, width: 0, height: bottom - top };
   }
   const rtl = inline.style.direction === 'rtl';
   const start = rtl ? first.x + first.width : first.x;
@@ -9421,7 +9432,7 @@ export type ResolvedInset = number | 'auto' | null;
  * an `anchor()`, a `position-area` and a fallback included — but on an
  * axis both of whose insets are lengths, which may be over-constrained and
  * are then their computed values, a percentage resolved. Null for a box
- * that is not positioned, or is placed in an inline box.
+ * that is not positioned, or that no layout has placed.
  */
 export function resolvedInsets(
   box: Box,
@@ -9455,18 +9466,14 @@ export function resolvedInsets(
     });
   }
   const containing = containingBlockFor(box);
-  if (!containing || containing.kind === 'inline') return null;
-  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
-  // where layout placed them, before a scroll moved either: a scroll
-  // moves a box back by its offset, which is added back
-  const [bx, by] = scrolledBy(box);
-  const [cx, cy] = containing.parent ? scrolledBy(containing) : [0, 0];
-  const top = box.y + by - box.marginTop - (cb.y + cy);
-  const left = box.x + bx - box.marginLeft - (cb.x + cx);
+  const placed =
+    containing && placedIn(box, containing, viewportWidth, viewportHeight);
+  if (!placed) return null;
+  const { top, left, width, height } = placed;
   const used = [
     top,
-    cb.width - left - box.marginLeft - box.width - box.marginRight,
-    cb.height - top - box.marginTop - box.height - box.marginBottom,
+    width - left - box.marginLeft - box.width - box.marginRight,
+    height - top - box.marginTop - box.height - box.marginBottom,
     left,
   ];
   const anchored = style.anchorInsets;
@@ -9478,8 +9485,45 @@ export function resolvedInsets(
   return used.map((v, i) => {
     const axis = i % 2;
     if (!lengths(axis)) return v;
-    return resolveOrNull(sides[i], axis ? cb.width : cb.height) ?? v;
+    return resolveOrNull(sides[i], axis ? width : height) ?? v;
   });
+}
+
+/** Where an absolute box's margin box is in its containing block, and how
+ *  large that is. */
+interface PlacedRect {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+/** What `positionedIn` placed a box against where that is an inline box: no
+ *  box keeps an inline box's rectangle, and its lines stay where they are as
+ *  an offset moves the box. What moves the two after this moves them
+ *  together. Only `placedIn` asks. */
+const PLACED_IN_INLINE = new WeakMap<Box, PlacedRect>();
+
+/** Where layout placed a box in its containing block, for
+ *  `resolvedInsets`. Undefined where no layout has placed it. */
+function placedIn(
+  box: Box,
+  containing: Box,
+  viewportWidth: number,
+  viewportHeight: number,
+): PlacedRect | undefined {
+  if (containing.kind === 'inline') return PLACED_IN_INLINE.get(box);
+  const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
+  // where layout placed them, before a scroll moved either: a scroll
+  // moves a box back by its offset, which is added back
+  const [bx, by] = scrolledBy(box);
+  const [cx, cy] = containing.parent ? scrolledBy(containing) : [0, 0];
+  return {
+    top: box.y + by - box.marginTop - (cb.y + cy),
+    left: box.x + bx - box.marginLeft - (cb.x + cx),
+    width: cb.width,
+    height: cb.height,
+  };
 }
 
 const INSET_SIDES = ['top', 'right', 'bottom', 'left'] as const;

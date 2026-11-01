@@ -5119,9 +5119,12 @@ none — reads as its rules compute it. An inline box has no rectangle of its ow
 Chrome its percentage margins, padding and offsets stay percentages. The
 first frame `getKeyframes()` makes up takes the computed `width` and reads no
 box, and a `::before` a dragged width set aside reads as its rules compute
-it, its box being a width ago. Two reads are still not Chrome's. An `auto`
-margin of a flex item reads `0px`, Chrome the room it came to. And the
-opposite insets of an absolute box placed against an inline box stay `auto`.
+it, its box being a width ago. An absolute box placed against an inline box
+reads the insets it was placed by, in the padding box around that box's
+fragments; one with nothing in it is as high as a fragment and has no width
+where it is on a line, and is of no size where it is on none. One read is
+still not Chrome's: an `auto` margin of a flex item reads `0px`, Chrome the
+room it came to.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)

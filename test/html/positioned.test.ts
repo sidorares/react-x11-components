@@ -223,6 +223,36 @@ metric(
   },
 );
 
+metric(
+  'a positioned inline box with nothing in it is as high as a fragment on a line, and of no size on none',
+  async () => {
+    // Chrome 156 has each box here as high as the text beside it, whatever
+    // the line and the font, and one on no line 0 tall. It stood at the top
+    // of its line, as tall as its font, on a line or not.
+    const { node } = await render(
+      '<!doctype html><style>' +
+        'body { margin: 0; font: 16px/20px serif }' +
+        '.r { position: relative }' +
+        '.t { position: absolute; left: 0; top: 0; width: 10px; height: 100% }' +
+        '.big { font-size: 32px }' +
+        '</style>' +
+        '<div>text <span class="r"><i class="t" id="t1"></i></span><span id="e1">x</span></div>' +
+        '<div><span class="r"><i class="t" id="t2"></i></span><span id="e2">x</span></div>' +
+        '<div><span class="r big"><i class="t" id="t3"></i></span><span class="big" id="e3">x</span></div>' +
+        '<div>one<br /><span class="r"><i class="t" id="t4"></i></span><span id="e4">x</span></div>' +
+        '<div><span class="r"><i class="t" id="none"></i></span></div>',
+    );
+    const el = view(node);
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    for (const n of [1, 2, 3, 4]) {
+      const [t, text] = [rect(`t${n}`), rect(`e${n}`)];
+      assert.strictEqual(t.y, text.y, `${n}: the top of the fragment`);
+      assert.strictEqual(t.height, text.height, `${n}: its height`);
+    }
+    assert.strictEqual(rect('none').height, 0);
+  },
+);
+
 metric('a relative box after an absolute one is painted over it', async () => {
   // both are positioned, and CSS paints positioned boxes in document order
   // after the flow (CSS 2.1 Appendix E); the relative one was painted with

@@ -3152,7 +3152,10 @@ and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
 `marginBottom` carries what hangs from the box for the next sibling to
 collapse with (`bottomStrut`), so anything new that gives a margin room
 tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
-margin reads `0px`. **An inline box reads as it computes** (`UsedBox.inline`,
+margin reads `0px`. An inline box keeps no rectangle, and an offset moves what
+is placed in it and not the lines it could be worked out from again, so
+`positionedIn` notes where a box stands in one (`PLACED_IN_INLINE`).
+**An inline box reads as it computes** (`UsedBox.inline`,
 `resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
 with no rectangle of its own. And **what takes the computed value asks no
 box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`), a
