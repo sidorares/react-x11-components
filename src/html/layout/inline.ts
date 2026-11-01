@@ -255,6 +255,27 @@ export function widestWord(
   return widest;
 }
 
+const WIDEST_WORD_LINE = new WeakMap<TextLayoutLike, number>();
+
+/**
+ * How wide a layout's text comes to on a line of its own, whatever a width
+ * or `text-overflow` cut it to: what a line that does not wrap gives a
+ * min-content width. Infinity where the runs are no longer kept.
+ */
+export function uncutWidth(fonts: FontsLike, layout: TextLayoutLike): number {
+  let widest = WIDEST_WORD_LINE.get(layout);
+  if (widest !== undefined) return widest;
+  const held = LAYOUT_RUNS.get(layout);
+  if (!held || (held.length > 0 && typeof held[0] === 'number')) {
+    return Infinity;
+  }
+  const whole = fonts.layout(held as TextRun[], {}, { fit: PARAGRAPH_FIT });
+  widest = 0;
+  for (const line of whole.lines) widest = Math.max(widest, line.width);
+  WIDEST_WORD_LINE.set(layout, widest);
+  return widest;
+}
+
 const SPACE_BREAKS = new WeakMap<TextLayoutLike, boolean>();
 
 /**
