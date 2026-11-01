@@ -2387,6 +2387,27 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
   });
 });
 
+test('a click on an <a> in a drawing goes where it says, as one in the document does', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <svg><a id=a href="#there"></a></svg>
+     <script>
+       const a = document.getElementById('a');
+       navigation.onnavigate = (e) => {
+         e.preventDefault();
+         document.getElementById('out').textContent = [
+           new URL(e.destination.url).hash,
+           e.sourceElement === a,
+           a instanceof SVGAElement,
+         ].join();
+       };
+       a.dispatchEvent(new MouseEvent('click'));
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '#there,true,true');
+});
+
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
