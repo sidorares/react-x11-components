@@ -116,6 +116,9 @@ export function layoutFlex(
   const depth = ctx.flexDepth ?? 0;
   if (depth >= FLEX_DEPTH) return layoutAsBlockFallback(box, ctx, contentWidth);
 
+  const kept = keptRow(box, ctx);
+  if (kept !== null) return kept;
+
   const root = Y.Node.create(flexConfig());
   applyContainer(root, box.style);
   // the gaps, a percentage of the content box's size along them where it
@@ -186,6 +189,7 @@ export function layoutFlex(
   const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
   for (const child of flowing) {
     const node = Y.Node.create(flexConfig());
+    flexItemsLaid += 1;
     resolveEdges(child, contentWidth);
     const laid: Laid = {
       width: NaN,
@@ -571,7 +575,189 @@ export function layoutFlex(
   // time: a fifth of the calls into Yoga in a page of cards.
   root.free();
   for (const { node } of items) node.free();
-  return Math.max(contentHeight, bottom - box.contentY);
+  const content = Math.max(contentHeight, bottom - box.contentY);
+  noteRow(box, ctx, flowing, content);
+  return content;
+}
+
+/**
+ * The layout of a long row that comes to the same at any width: where each
+ * of its items stands in it, and what that was laid out from.
+ *
+ * A row of items that neither grow nor shrink, one after another from its
+ * start, puts them in the same places however wide it is: nothing it shares
+ * out is any of theirs, so its width is no input of its layout. A webmail
+ * page's strip of 2,499 senders is one, `overflow: hidden` around a few that
+ * show, and every step of a window's edge laid it out at the width it had
+ * come to: a Yoga node for each item, each asked what it already knew, to
+ * find where it already stood. 38 ms of a step's 96, for a row with nothing
+ * in it to lay out.
+ *
+ * Only from `ROW_FROM` items: what a short row costs is what checking it
+ * costs, and most rows are short.
+ */
+interface Row {
+  /** What a later layout keeps it by (`mayKeepLaid`). */
+  pass: number;
+  under: LaidUnder;
+  scale: number | undefined;
+  fonts: FontsLike | null;
+  /** The height its content box had to be laid out in: its own, and the
+   *  limits on it. */
+  definite: number;
+  least: number;
+  most: number;
+  /** Its items, each with the layout it had (`Box.layoutSerial`), which a
+   *  probe may since have made another. Anything else that changes one
+   *  forgets the row (`forgetSizes`). */
+  items: Box[];
+  serials: number[];
+  /** From its content box's corner where each stands, and how tall it is:
+   *  three numbers an item. */
+  places: Float64Array;
+  /** How tall its content came to. */
+  height: number;
+}
+
+const ROWS = new WeakMap<Box, Row>();
+
+/** How many items a row has before its layout is kept (`Row`). */
+const ROW_FROM = 64;
+
+/** How many items Yoga has been given, for a test to count what a layout
+ *  runs it over. */
+let flexItemsLaid = 0;
+export function flexItemsMade(): number {
+  return flexItemsLaid;
+}
+
+/** The limits on a box's content height, where it has none of its own. */
+function heightLimits(box: Box): [least: number, most: number] {
+  const extra = box.verticalExtra;
+  return [clampHeight(box, extra) - extra, clampHeight(box, Infinity) - extra];
+}
+
+/**
+ * Whether a flex box's items are placed from its start, whatever its width:
+ * along one line of a row running as the page reads. `center`, `flex-end`
+ * and `space-between` place them by how much room there is, and a row
+ * reversed or from the right by where it ends.
+ */
+function placesFromItsStart(style: ComputedStyle): boolean {
+  return (
+    style.flexDirection === 'row' &&
+    style.flexWrap === 'nowrap' &&
+    style.direction !== 'rtl' &&
+    (style.justifyContent === 'normal' ||
+      style.justifyContent === 'flex-start' ||
+      style.justifyContent === 'start') &&
+    typeof style.columnGap === 'number'
+  );
+}
+
+/**
+ * Whether an item comes to the same whatever the row's width: it neither
+ * grows nor shrinks, and nothing that sizes it is a percentage of the row,
+ * or the room in it — `auto` margins, a keyword like `fit-content`.
+ */
+function sizedApartFromItsRow(child: Box): boolean {
+  const style = child.style;
+  return (
+    (child.kind === 'block' || child.kind === 'flex') &&
+    !style.grid &&
+    style.flexGrow === 0 &&
+    style.flexShrink === 0 &&
+    (style.flexBasis === AUTO || typeof style.flexBasis === 'number') &&
+    (style.width === AUTO || typeof style.width === 'number') &&
+    (style.minWidth === AUTO || typeof style.minWidth === 'number') &&
+    (style.maxWidth === 'none' || typeof style.maxWidth === 'number') &&
+    style.widthKeyword === null &&
+    style.minWidthKeyword === null &&
+    style.maxWidthKeyword === null &&
+    typeof style.marginLeft === 'number' &&
+    typeof style.marginRight === 'number' &&
+    typeof style.paddingLeft === 'number' &&
+    typeof style.paddingRight === 'number'
+  );
+}
+
+/** Note a long row's layout, where it comes to the same at any width. */
+function noteRow(
+  box: Box,
+  ctx: LayoutContext,
+  items: readonly Box[],
+  height: number,
+): void {
+  // a probe says nothing of the row, and may leave what it had
+  if (ctx.probing) return;
+  ROWS.delete(box);
+  if (
+    items.length < ROW_FROM ||
+    ctx.reused === undefined ||
+    !placesFromItsStart(box.style) ||
+    box.children.some((child) => child.outOfFlow) ||
+    !items.every(sizedApartFromItsRow)
+  ) {
+    return;
+  }
+  const places = new Float64Array(items.length * 3);
+  items.forEach((item, i) => {
+    places[i * 3] = item.x - box.contentX;
+    places[i * 3 + 1] = item.y - box.contentY;
+    places[i * 3 + 2] = item.height;
+  });
+  const [least, most] = heightLimits(box);
+  ROWS.set(box, {
+    pass: ctx.reusePass!,
+    under: ctx.under,
+    scale: ctx.scale,
+    fonts: ctx.engine,
+    definite: percentBaseInside(box),
+    least,
+    most,
+    items: items.slice(),
+    serials: items.map((item) => item.layoutSerial),
+    places,
+    height,
+  });
+}
+
+/**
+ * Give a long row the layout it had, where that is the one it would come to
+ * (`Row`): each item kept and put where it stands in the row, and how tall
+ * its content came to, or null where it is to be laid out. No probe keeps
+ * one, since it asks what the row holds, nor a layout that keeps nothing.
+ */
+function keptRow(box: Box, ctx: LayoutContext): number | null {
+  const row = ROWS.get(box);
+  if (row === undefined || ctx.reused === undefined || ctx.probing) return null;
+  const earlier = row.pass !== ctx.reusePass;
+  if (earlier && !mayKeepLaid(box, ctx, row)) return null;
+  const [least, most] = heightLimits(box);
+  if (
+    !Object.is(row.definite, percentBaseInside(box)) ||
+    row.least !== least ||
+    row.most !== most
+  ) {
+    return null;
+  }
+  const { serials, items, places } = row;
+  const { blockers } = ctx.blockers!;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (item.layoutSerial !== serials[i] || (earlier && blockers.has(item))) {
+      return null;
+    }
+  }
+  const left = box.contentX;
+  const top = box.contentY;
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    if (earlier) keepLaid(item, ctx);
+    item.height = places[i * 3 + 2];
+    moveTo(item, left + places[i * 3], top + places[i * 3 + 1]);
+  }
+  return row.height;
 }
 
 /** Give each replaced item with a ratio that its line stretched the flex
@@ -1463,6 +1649,7 @@ const MAX_CONTENT = new WeakMap<Box, number>();
 export function forgetMaxContent(box: Box): void {
   MAX_CONTENT.delete(box);
   NATURAL.delete(box);
+  ROWS.delete(box);
 }
 
 /** The width and height of the layout an item was last given, its border
