@@ -3,6 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { cleanup, waitFor } from 'react-x11/test';
 import { parseColor } from '../../src/html/css/values.js';
+import { boxLayoutsMade } from '../../src/html/layout/block.js';
 import { sizeTracks } from '../../src/html/layout/tracks.js';
 import {
   RED_PNG,
@@ -12,6 +13,7 @@ import {
   linesOf,
   metric,
   render,
+  renderScrolled,
   renderWithBytes,
   rulesIn,
   svgBytes,
@@ -841,7 +843,7 @@ test('a grid item with a ratio is sized by it, and justify-items: normal starts 
       '<div id="ig" style="display:inline-grid;grid-template-rows:50px">' +
       '<div style="height:100%"><canvas width="20" height="10" ' +
       'style="height:100%;display:block"></canvas></div></div>' +
-      // but a scroll container's sizes are not its ratio's
+      // and so does a scroll container's, in all three engines
       '<div style="float:left"><div id="g" style="display:grid">' +
       '<div style="height:100px;aspect-ratio:2;overflow:auto"></div>' +
       '</div></div>',
@@ -857,7 +859,7 @@ test('a grid item with a ratio is sized by it, and justify-items: normal starts 
   assert.strictEqual(boxOf(el, 'fg').width, 40, 'its column too');
   assert.deepStrictEqual(size('h'), [80, 80]);
   assert.strictEqual(boxOf(el, 'ig').width, 100);
-  assert.strictEqual(boxOf(el, 'g').width, 0);
+  assert.strictEqual(boxOf(el, 'g').width, 200);
 });
 
 test("a grid's align-items: stretch stretches an image, and normal does not", async () => {
@@ -1551,4 +1553,601 @@ test("a subgrid's items size its parent's columns, and subgrids nest", async () 
   assert.deepStrictEqual(box('f2a'), [0, 139, 300, 25]);
   assert.deepStrictEqual(box('f2b'), [0, 164, 300, 35]);
   assert.deepStrictEqual(box('g'), [0, 229, 800, 10]);
+});
+
+/** Each of `cases` as the one item of a row, as wide as its content, and how
+ *  wide each comes. */
+async function widths(
+  cases: readonly string[],
+  room = 3000,
+): Promise<number[]> {
+  const { node } = await render(
+    `<style>body{margin:0;line-height:18px}.room{display:flex;width:${room}px}` +
+      '.item{display:flex}</style>' +
+      cases
+        .map(
+          (held, i) =>
+            `<div class="room"><div id="c${i}" class="item">${held}</div></div>`,
+        )
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  return cases.map((_, i) => boxOf(el, `c${i}`).width);
+}
+
+test("a grid's columns are sized again from its rows, which a ratio makes widths of", async () => {
+  // CSS Grid 1, 12.1, step 3: an item stretched down a row 30 tall that its
+  // neighbour makes, and every width is Chromium's. `aspect-ratio: 2` there
+  // is 60 wide, which the first sizing of the columns cannot know, down a
+  // flex box, a grid, or a percentage of the item's height, however deep
+  const canvas = (css = '') =>
+    `<canvas width="8" height="4" style="display:block;${css}"></canvas>`;
+  const ratio = (css = '') => `<div style="aspect-ratio:2;${css}"></div>`;
+  const row = (held: string, ...css: string[]) =>
+    `<div style="display:flex;${css.join(';')}">${held}</div>`;
+  const inner = (held: string) => `<div style="display:grid">${held}</div>`;
+  const wide = '<i style="display:block;width:100px"></i>';
+  const expected: [string, number][] = [
+    [ratio(), 65],
+    // what stretches it hands the height on
+    [row(ratio()), 65],
+    [row(canvas()), 65],
+    [row(ratio('height:100%')), 65],
+    [row(row(ratio())), 65],
+    [row(inner(ratio())), 65],
+    [inner(row(ratio())), 65],
+    [inner(ratio()), 65],
+    [inner(inner(ratio())), 65],
+    [`<div>${ratio('height:100%')}</div>`, 65],
+    [`<div>${canvas('height:100%')}</div>`, 65],
+    [`<div>${canvas('min-height:100%')}</div>`, 65],
+    // less what is around it, within what limits it
+    [row(ratio('margin:2px 0')), 57],
+    [row(ratio(), 'padding:3px 0'), 53],
+    [row(ratio('max-height:10px')), 25],
+    [ratio('max-height:10px'), 25],
+    [ratio('margin:3px 0'), 53],
+    [ratio('max-width:10px'), 15],
+    [ratio('min-width:90px'), 95],
+    // the ratio of its padding box or its border box as the box says
+    [ratio('padding:1px'), 63],
+    [ratio('padding:1px;box-sizing:border-box'), 65],
+    [
+      '<div style="aspect-ratio:auto 2;padding:1px;box-sizing:border-box"></div>',
+      63,
+    ],
+    // its content's sizes are what the ratio makes of that height
+    [ratio('width:max-content'), 65],
+    [ratio('width:min-content'), 65],
+    [ratio('width:fit-content'), 65],
+    [ratio('width:7px'), 12],
+    // no wider for it than its content, or narrower, scrolling or not
+    [`<div style="aspect-ratio:2">${wide}</div>`, 105],
+    [`<div style="aspect-ratio:2;overflow:hidden">${wide}</div>`, 105],
+    // and no height reaches what does not stretch
+    [canvas(), 13],
+    [canvas('align-self:stretch'), 65],
+    [inner(canvas()), 13],
+    [inner(canvas('align-self:stretch')), 65],
+    [ratio('margin:auto 0'), 5],
+    [row(ratio(), 'align-items:flex-start'), 5],
+    [row(ratio(), 'flex-wrap:wrap'), 5],
+    [row(ratio(), 'flex-direction:column'), 5],
+    [`<div>${ratio()}</div>`, 5],
+    ['<div><div style="height:100%"></div></div>', 5],
+  ];
+  const beside = '<div style="height:30px;width:5px"></div>';
+  const got = await widths(
+    expected.map(
+      ([item]) =>
+        `<div style="display:grid;grid-template-columns:auto auto">${item}${beside}</div>`,
+    ),
+  );
+  expected.forEach(([item, width], i) => {
+    assert.ok(
+      Math.abs(got[i] - width) < 0.05,
+      `${item}: ${got[i]}, not ${width}`,
+    );
+  });
+});
+
+test('a row of a height a grid has is as tall as what a ratio is stretched down', async () => {
+  // every width is Chromium's
+  const ratio = '<div style="aspect-ratio:2"></div>';
+  const got = await widths([
+    `<div style="display:grid;grid-template-rows:40px">${ratio}</div>`,
+    `<div style="display:grid;height:40px">${ratio}</div>`,
+    `<div style="display:grid;min-height:40px">${ratio}</div>`,
+    '<div style="display:grid;grid-template-rows:auto 20px">' +
+      '<div style="aspect-ratio:2;grid-row:1/3"></div></div>',
+    '<div style="display:grid"><div style="aspect-ratio:2;grid-area:1/1"></div>' +
+      '<div style="height:30px;grid-area:1/1"></div></div>',
+    // a percentage of its padding is of nothing for what it gives, and of the
+    // column for the height the rows take from it: 20 at first, 18 of it wide
+    // and 9 tall, and 18 again
+    '<div style="display:grid"><div style="padding:0 5%;aspect-ratio:2;overflow:hidden">' +
+      '<i style="display:block;width:20px"></i></div></div>',
+    // which it shows, where it is no narrower than what it holds
+    '<div style="display:grid"><div style="padding:0 5%;aspect-ratio:2">' +
+      '<i style="display:block;width:20px"></i></div></div>',
+  ]);
+  assert.deepStrictEqual(got, [80, 80, 80, 40, 60, 18, 20]);
+});
+
+test("a grid's rows are sized again after its columns, and it stays as tall as they first came", async () => {
+  // Chromium's, in which the second rows move the items and not the grid: the
+  // free space goes equally between two `auto` columns, and the row the first
+  // sizing made is what the second sizing's columns are found from
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="g" style="display:grid;grid-template-columns:auto auto;width:500px">' +
+      '<div id="a" style="aspect-ratio:2"></div>' +
+      '<div id="b" style="height:30px;width:5px"></div></div>' +
+      '<div id="h" style="display:grid;grid-template-columns:auto auto;width:300px">' +
+      '<div id="f" style="display:flex"><canvas id="c" width="8" height="4" style="display:block"></canvas></div>' +
+      '<div id="d" style="height:30px;width:5px"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const box = (id: string) => {
+    const { x, width, height } = boxOf(el, id);
+    return [x, width, height];
+  };
+  assert.deepStrictEqual(box('g'), [0, 500, 123.75]);
+  assert.deepStrictEqual(box('a'), [0, 371.25, 185.625]);
+  assert.deepStrictEqual(box('b'), [371.25, 5, 30]);
+  assert.deepStrictEqual(box('h'), [0, 300, 30]);
+  assert.deepStrictEqual(box('f'), [0, 177.5, 30]);
+  assert.deepStrictEqual(box('c'), [0, 60, 30]);
+  assert.deepStrictEqual(box('d'), [177.5, 5, 30]);
+});
+
+test('a ratio stretched down a row fills it only where nothing stretches it across', async () => {
+  // `normal` cannot stretch it both ways, and leaves it as a block is; every
+  // size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;grid-template-rows:40px;width:500px">' +
+      '<div id="a" style="aspect-ratio:2"></div>' +
+      '<div id="b" style="aspect-ratio:2;justify-self:start;grid-area:1/1"></div>' +
+      '<div id="c" style="aspect-ratio:2;justify-self:stretch;grid-area:1/1"></div>' +
+      '<div id="d" style="aspect-ratio:2;align-self:stretch;grid-area:1/1"></div>' +
+      '<div id="e" style="aspect-ratio:2;width:max-content;grid-area:1/1"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('a'), [500, 250]);
+  assert.deepStrictEqual(size('b'), [80, 40]);
+  assert.deepStrictEqual(size('c'), [500, 250]);
+  assert.deepStrictEqual(size('d'), [80, 40]);
+  assert.deepStrictEqual(size('e'), [80, 40]);
+});
+
+test('what an item gives a column at the least is no less than its edges', async () => {
+  // and `fit-content` is no size yet, as `auto` is; every width is Chromium's,
+  // of a grid in a room 10 wide
+  const got = await widths(
+    [
+      '<div style="padding:0 8px;overflow:hidden"></div>',
+      '<div style="border:1px solid;overflow:hidden"></div>',
+      '<div style="width:fit-content;overflow:hidden"><i style="display:block;width:32px;height:4px"></i></div>',
+      '<div style="width:fit-content;min-width:0;display:flex"><i style="width:17px;height:4px"></i></div>',
+    ].map((item) => `<div style="display:grid">${item}</div>`),
+    10,
+  );
+  assert.deepStrictEqual(got, [16, 2, 10, 10]);
+});
+
+test('an image that arrives takes the height of its row', async () => {
+  // what a height reaches is kept, and an image has no ratio until it is in
+  const { el } = await renderWithBytes(
+    '<style>body{margin:0}</style>' +
+      '<div id="g" style="display:inline-grid;grid-template-columns:auto auto">' +
+      '<div style="display:flex"><img id="i" src="r.png"></div>' +
+      '<div style="height:30px;width:5px"></div></div>',
+    { 'r.png': RED_PNG },
+  );
+  await waitFor(() => assert.strictEqual(boxOf(el, 'i').width, 30));
+  assert.strictEqual(boxOf(el, 'g').width, 35);
+});
+
+test('a height that moves nothing costs a grid no layout', async () => {
+  // Asking what a ratio makes of a row is arithmetic, and comes to the column
+  // it was laid out in: an item a second sizing leaves where it is lays out no
+  // more than one of a height of its own, at first or across a window's edge,
+  // and a layout that stops asks nothing of the rows it did not lay out
+  const layouts = async (item: string): Promise<[number, number]> => {
+    const start = boxLayoutsMade();
+    const { resize } = await renderScrolled(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">' +
+        item.repeat(60) +
+        '</div>',
+      300,
+      600,
+    );
+    const first = boxLayoutsMade() - start;
+    const at = boxLayoutsMade();
+    for (const width of [590, 580]) await resize(300, width);
+    const drag = boxLayoutsMade() - at;
+    await cleanup();
+    return [first, drag];
+  };
+  const [first, drag] = await layouts('<div style="aspect-ratio:4/3">a</div>');
+  const [plainFirst, plainDrag] = await layouts(
+    '<div style="height:144px">a</div>',
+  );
+  assert.ok(first <= plainFirst, `${first} boxes laid out, and ${plainFirst}`);
+  assert.ok(drag <= plainDrag, `${drag} boxes laid out, and ${plainDrag}`);
+});
+
+test('a flex box stretched as tall as it came is not laid out again for it', async () => {
+  // an item of it its ratio sizes, stretched to where it is already: an image
+  // in a row beside its label costs what a box of its size does
+  const layouts = async (item: string): Promise<number> => {
+    const start = boxLayoutsMade();
+    await render(
+      '<style>body{margin:0}</style>' +
+        `<div style="display:grid;grid-template-columns:auto 1fr"><div style="display:flex">${item}<span>a</span></div><div>b</div></div>`.repeat(
+          40,
+        ),
+      400,
+    );
+    const made = boxLayoutsMade() - start;
+    await cleanup();
+    return made;
+  };
+  const drawn = await layouts(
+    '<canvas width="32" height="32" style="display:block"></canvas>',
+  );
+  const plain = await layouts(
+    '<canvas width="32" height="32" style="display:block;height:32px;width:32px"></canvas>',
+  );
+  assert.ok(drawn <= plain, `${drawn} boxes laid out, and ${plain}`);
+});
+
+test('what a height reaches through grids is laid out a few times a level, and not twice a level', async () => {
+  // Each grid sizes its columns twice, and asks each item at both ends: left
+  // to multiply, a ratio twelve grids deep took 77,722 layouts. An item that
+  // comes to the same at both ends needs no asking, a height a layout has seen
+  // is kept, and a grid as tall as it was is not laid out to see what moves
+  const nest = (around: string, core: string, levels: number) =>
+    around.repeat(levels) + core + '</div>'.repeat(levels);
+  const layouts = async (held: string): Promise<number> => {
+    const start = boxLayoutsMade();
+    await render(
+      `<style>body{margin:0}</style><div style="float:left">${held}</div>`,
+      400,
+    );
+    const made = boxLayoutsMade() - start;
+    await cleanup();
+    return made;
+  };
+  const ratio =
+    '<div style="aspect-ratio:2"><i style="display:block;width:10px"></i></div>';
+  const plain = '<div><i style="display:block;width:10px"></i></div>';
+  const deep = await layouts(nest('<div style="display:grid">', ratio, 12));
+  const flat = await layouts(nest('<div style="display:grid">', plain, 12));
+  assert.ok(deep <= flat * 3, `${deep} boxes laid out, and ${flat}`);
+  // and the same down flex boxes between them, and in one another
+  const mixed = await layouts(
+    nest('<div style="display:flex"><div style="display:grid">', ratio, 8) +
+      '</div>'.repeat(8),
+  );
+  assert.ok(mixed <= flat * 3, `${mixed} boxes laid out, and ${flat}`);
+  const rows = await layouts(
+    `<div style="display:grid">${nest('<div style="display:flex">', ratio, 12)}</div>`,
+  );
+  const plainRows = await layouts(
+    `<div style="display:grid">${nest('<div style="display:flex">', plain, 12)}</div>`,
+  );
+  assert.ok(rows <= plainRows * 2, `${rows} boxes laid out, and ${plainRows}`);
+});
+
+test('a height a layout has reached moves what no column does', async () => {
+  // every size is Chromium's, of a column that comes to what it came to, so
+  // that only the rows say what these items come to
+  const ratio = 'aspect-ratio:2';
+  const beside = '<div style="height:30px;width:5px"></div>';
+  const { node } = await render(
+    '<style>body{margin:0;line-height:18px}</style>' +
+      // what is stretched down the second rows
+      '<div style="display:grid;grid-template-columns:auto auto;width:500px">' +
+      `<div style="${ratio}"></div><div id="a" style="width:5px">` +
+      '<div style="height:30px"></div></div></div>' +
+      // its own width, in a row another item makes
+      '<div style="display:grid;grid-template-columns:200px">' +
+      `<div id="b" style="${ratio};justify-self:start;grid-area:1/1"></div>` +
+      '<div style="grid-area:1/1;height:30px"></div></div>' +
+      // laid out to find what a height makes of it, and so again where it goes
+      `<div style="display:grid;grid-template-columns:100px auto"><div id="c">` +
+      '<canvas id="d" width="8" height="4" style="display:block;height:100%"></canvas>' +
+      `</div>${beside}</div>` +
+      // a flex box as tall as it came, which its height makes definite
+      '<div style="display:grid;width:88.35px"><div style="display:flex">' +
+      '<canvas id="e" width="43" height="40" style="display:block"></canvas>' +
+      '<div style="height:58px;width:26px"></div></div></div>' +
+      // what a walk of it lends an item goes back, where nothing follows it
+      '<div style="display:grid;grid-template-columns:100px 20px">' +
+      '<div style="display:flex"><div style="aspect-ratio:2;flex:none;height:30px"></div>' +
+      '<div id="k" style="padding:0 5%;aspect-ratio:1"><i id="f" style="display:block;width:4px;height:4px"></i></div>' +
+      '</div><div style="height:30px"></div></div>' +
+      // a grid laid out to find what a height makes of it, and again
+      '<div style="display:grid;grid-template-columns:100px auto">' +
+      '<div id="h" style="display:grid"><div style="aspect-ratio:2"></div></div>' +
+      `${beside}</div>` +
+      // a percentage kept for a layout that knows the row
+      '<div style="display:grid;grid-template-columns:100px 100px">' +
+      '<div id="i" style="height:100%;aspect-ratio:2;min-width:min-content;width:10px"></div>' +
+      '<div style="height:30px"></div></div>' +
+      // the flex box in a flex box, each as tall as it came
+      '<div style="display:grid;width:88.35px"><div style="display:flex">' +
+      '<div id="l" style="display:flex"><canvas id="j" width="43" height="40" style="display:block"></canvas></div>' +
+      '<div style="height:58px;width:26px"></div></div></div>' +
+      // and what it sizes to see, as a shrunk canvas beside a ratio
+      '<div style="display:grid;grid-template-columns:100px 20px">' +
+      '<div style="display:flex"><div style="aspect-ratio:1"></div>' +
+      '<canvas id="g" width="200" height="10" style="display:block;align-self:flex-start;min-width:0"></canvas>' +
+      '</div><div style="height:30px"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const near = (id: string, x: number, width: number, height: number) => {
+    const box = boxOf(el, id);
+    assert.ok(
+      Math.abs(box.x - x) < 0.05 &&
+        Math.abs(box.width - width) < 0.05 &&
+        Math.abs(box.height - height) < 0.05,
+      `#${id}: ${box.x}, ${box.width} by ${box.height}`,
+    );
+  };
+  near('a', 371.25, 5, 185.625);
+  near('b', 0, 60, 30);
+  near('c', 0, 100, 30);
+  near('d', 0, 60, 30);
+  near('e', 0, 62.34375, 58);
+  near('f', 65, 4, 4);
+  near('g', 30, 70, 3.5);
+  near('h', 0, 100, 50);
+  near('i', 0, 60, 30);
+  near('j', 0, 62.34375, 58);
+  near('l', 0, 62.34375, 58);
+  assert.strictEqual(boxOf(el, 'k').padLeft, 5);
+});
+
+test('what a grid comes to in a room of each size', async () => {
+  // every width is Chromium's
+  const ib = (width: number) =>
+    `<b style="display:inline-block;width:${width}px;height:4px"></b>`;
+  const canvas = (width: number, height: number, css: string) =>
+    `<canvas width="${width}" height="${height}" style="display:block;${css}"></canvas>`;
+  const grid = (css: string, held: string) =>
+    `<div style="display:grid;${css}">${held}</div>`;
+  const ratio = (css: string, held = '') =>
+    `<div style="aspect-ratio:2;${css}">${held}</div>`;
+  const row = (css: string, held: string) =>
+    `<div style="display:flex;${css}">${held}</div>`;
+  const wide = (width: number) =>
+    `<i style="display:block;width:${width}px;height:4px"></i>`;
+  const stretchedCanvas = row(
+    '',
+    canvas(18, 40, 'width:100%') + '<div style="aspect-ratio:3/2"></div>',
+  );
+  const atWidest: [string, number][] = [
+    // at its widest it is no narrower than at its narrowest, where these two
+    // boxes wrap, the row is 36 tall and the ratio 72 wide
+    [
+      grid(
+        'grid-template-columns:auto auto',
+        `${ratio('')}<div>${ib(24)}${ib(26)}</div>`,
+      ),
+      98,
+    ],
+    // and its tracks stretch to its least width, which there has a say
+    [grid('min-width:19px', stretchedCanvas), 82.3125],
+    [
+      grid(
+        'min-width:25px;box-sizing:border-box;padding:0 3px',
+        stretchedCanvas,
+      ),
+      88.3125,
+    ],
+    // a percentage in a margin is of nothing at the second sizing too
+    [
+      grid(
+        '',
+        '<div style="aspect-ratio:3/2"></div><div style="margin:0 3%;min-width:11px"></div>',
+      ),
+      11,
+    ],
+    // and in padding: 6 of a canvas 6.6 wide in the row
+    [grid('', row('', canvas(6, 40, 'padding:0 5%'))), 6],
+    // a height of its content's is none to stretch
+    [
+      grid(
+        'grid-template-columns:auto auto',
+        `${ratio('height:fit-content')}<div style="height:30px;width:5px"></div>`,
+      ),
+      5,
+    ],
+    // a width of its own takes what a limit asks of its content
+    [
+      grid(
+        '',
+        row(
+          '',
+          '<div style="height:25px;width:4px"></div>' +
+            '<div style="width:6px;min-width:max-content;aspect-ratio:3/2"></div>',
+        ),
+      ),
+      41.5,
+    ],
+    // a height it is given leaves its limits nothing to make of it
+    [grid('', row('', ratio('flex:0 0 0;max-height:10px', wide(67)))), 67],
+    // a least width of its content is read with its edges of nothing
+    [grid('', ratio('padding:0 5%;min-width:max-content', wide(53))), 53],
+    // a keyword asks its content at the height it has
+    [
+      grid(
+        '',
+        row(
+          'width:fit-content',
+          '<i style="height:4px"></i><div style="aspect-ratio:3/2"></div>',
+        ),
+      ),
+      6,
+    ],
+    // a stretch that comes to less than the natural size is the height's
+    [grid('grid-template-rows:10px', canvas(40, 40, 'align-self:stretch')), 10],
+    // and a ratio of the border box is of a height no less than its edges
+    [
+      '<div style="border:1px solid;box-sizing:border-box;aspect-ratio:2"></div>',
+      4,
+    ],
+    [
+      '<div style="padding:2px 0;box-sizing:border-box;aspect-ratio:2"></div>',
+      8,
+    ],
+    ['<div style="padding:2px 0;aspect-ratio:2"></div>', 0],
+    // and a grid at a limit is as wide as what is in it, whatever its tracks
+    // stretched to
+    ['<div><div style="max-width:8px;display:grid"></div></div>', 0],
+    // a height of `calc-size()` is what it says of the row
+    [
+      grid(
+        'grid-template-rows:40px',
+        ratio('align-self:stretch;height:calc-size(auto,size + 10px)'),
+      ),
+      100,
+    ],
+    [
+      grid(
+        'grid-template-rows:40px',
+        ratio('height:calc-size(stretch,size + 10px)'),
+      ),
+      100,
+    ],
+    [
+      '<div style="border:1px solid;box-sizing:border-box;aspect-ratio:auto 2"></div>',
+      2,
+    ],
+  ];
+  const got = await widths(atWidest.map(([held]) => held));
+  atWidest.forEach(([held, width], i) => {
+    assert.ok(
+      Math.abs(got[i] - width) < 0.05,
+      `${held}: ${got[i]}, not ${width}`,
+    );
+  });
+  await cleanup();
+  // at its narrowest a least width of its own stretches no track, and its
+  // tracks in a limit say nothing of what is in them
+  const narrow = await widths(
+    [
+      grid('min-width:9px', stretchedCanvas),
+      '<div><div style="max-width:8px;display:grid"></div></div>',
+    ],
+    10,
+  );
+  assert.deepStrictEqual(narrow, [10, 0]);
+  await cleanup();
+  // and a least width of `calc-size()` is what it says of its content
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:grid;grid-template-columns:auto auto;width:10px">' +
+      '<div id="a" style="min-width:calc-size(min-content,size + 5px)">' +
+      '<i style="display:block;width:30px;height:4px"></i></div><div id="b"></div></div>',
+    400,
+  );
+  assert.strictEqual(boxOf(view(node), 'a').width, 35);
+  assert.strictEqual(boxOf(view(node), 'b').x, 35);
+});
+
+test('a replaced item stretched in a flex box to less than its natural size is what that makes it', async () => {
+  // its automatic minimum goes with its natural size; every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;flex-direction:column;width:30px">' +
+      '<canvas id="a" width="47" height="40" style="display:block"></canvas></div>' +
+      '<div style="display:flex;flex-direction:column;width:47px">' +
+      '<canvas id="b" width="47" height="40" style="display:block;margin:0 2px"></canvas></div>' +
+      '<div style="display:flex;width:60px;height:50px">' +
+      '<canvas id="c" width="100" height="100" style="display:block"></canvas>' +
+      '<div style="flex:none;width:30px"></div></div>' +
+      '<div style="display:flex;width:60px;height:50px">' +
+      '<canvas id="d" width="100" height="100" style="display:block;flex:1 1 40px"></canvas>' +
+      '<div style="flex:none;width:30px"></div></div>',
+    400,
+  );
+  const el = view(node);
+  const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+  assert.deepStrictEqual(size('c'), [50, 50]);
+  assert.deepStrictEqual(size('d'), [50, 50]);
+  assert.ok(Math.abs(size('a')[1] - 25.53125) < 0.05, `${size('a')}`);
+  assert.strictEqual(size('a')[0], 30);
+  assert.ok(Math.abs(size('b')[1] - 36.59375) < 0.05, `${size('b')}`);
+  assert.strictEqual(size('b')[0], 43);
+});
+
+test('an image that arrives after a layout takes the height of its row', async () => {
+  // what a height reaches is kept, and an image has no ratio until it is in
+  let answer: (bytes: { kind: 'image'; bytes: Uint8Array }) => void = () => {};
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div id="g" style="display:inline-grid;grid-template-columns:auto auto">' +
+      '<div style="display:flex"><img id="i" src="r.png"></div>' +
+      '<div style="height:30px;width:5px"></div></div>',
+    400,
+    {
+      onResource: () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    },
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'g').width, 5);
+  answer({ kind: 'image', bytes: RED_PNG });
+  await waitFor(() => assert.strictEqual(boxOf(el, 'i').width, 30));
+  assert.strictEqual(boxOf(el, 'g').width, 35);
+});
+
+test('what a height keeps of an item goes with the lengths in it', async () => {
+  // a `vw` in an item of a row that stays as it is
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}</style>' +
+      '<div id="g" style="display:inline-grid;grid-template-rows:20px">' +
+      '<div style="display:grid"><div style="aspect-ratio:2">' +
+      '<i style="display:block;width:30vw;height:4px"></i></div></div></div>',
+    300,
+    600,
+  );
+  assert.ok(Math.abs(boxOf(el, 'g').width - 180) < 0.05);
+  await resize(300, 500);
+  assert.ok(Math.abs(boxOf(el, 'g').width - 150) < 0.05);
+});
+
+test('a row that stays as it is keeps what a height made of an item', async () => {
+  // measured at its height the once: a grid inside a row of a height, in a
+  // column of a length, is laid out as often across a window's edge as one
+  // with no ratio in it
+  const layouts = async (inner: string): Promise<number> => {
+    const { resize } = await renderScrolled(
+      '<style>body{margin:0}</style>' +
+        '<div style="display:grid;grid-template-columns:100px 1fr;grid-template-rows:50px">' +
+        `<div style="display:grid">${inner}</div><div>b</div></div>`.repeat(30),
+      300,
+      600,
+    );
+    const start = boxLayoutsMade();
+    for (const width of [590, 580, 570]) await resize(300, width);
+    const made = boxLayoutsMade() - start;
+    await cleanup();
+    return made;
+  };
+  const ratio = await layouts('<div style="aspect-ratio:2">a</div>');
+  const plain = await layouts('<div style="height:25px">a</div>');
+  assert.ok(ratio <= plain, `${ratio} boxes laid out, and ${plain}`);
 });

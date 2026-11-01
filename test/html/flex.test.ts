@@ -4202,3 +4202,53 @@ test('the one item that may flex in a box that wraps still has its flex base siz
   assert.deepStrictEqual(await place('1 1 90px'), [100, 0, 4]);
   assert.deepStrictEqual(await place('1 1 60px'), [70, 70, 0]);
 });
+
+test("an item's automatic minimum has the percentages in its padding in it", async () => {
+  // of its flex box, where they are of nothing as it is measured; every size
+  // is Chromium's, to the 64th of a pixel it rounds down to
+  const { node } = await render(
+    '<style>body{margin:0;line-height:18px}</style>' +
+      '<div style="display:flex;width:6px">' +
+      '<div id="a" style="padding:0 5%"><i style="display:block;width:6px;height:4px"></i></div></div>' +
+      '<div style="display:flex;width:6px">' +
+      '<canvas id="b" width="6" height="40" style="padding:0 5%"></canvas></div>' +
+      '<div style="display:flex;width:5px">' +
+      '<div id="c" style="padding:0 5%;box-sizing:border-box;aspect-ratio:1/2">' +
+      '<i style="display:block;width:5px"></i></div></div>' +
+      '<div style="display:flex;width:23px">' +
+      '<div id="d" style="padding:0 5%"><i style="display:block;width:8px"></i></div>' +
+      '<canvas id="e" width="15" height="40" style="min-width:0"></canvas></div>',
+    400,
+  );
+  const el = view(node);
+  const near = (id: string, width: number, height: number) => {
+    const box = boxOf(el, id);
+    assert.ok(
+      Math.abs(box.width - width) < 0.05 && Math.abs(box.height - height) < 0.1,
+      `#${id}: ${box.width} by ${box.height}, not ${width} by ${height}`,
+    );
+  };
+  near('a', 6.59375, 4);
+  near('b', 6.59375, 40);
+  near('c', 5.5, 11);
+  near('d', 10.28125, 33.90625);
+  near('e', 12.71875, 33.90625);
+});
+
+test('an item of a width of its content has an automatic minimum', async () => {
+  // `width: min-content` is a width its basis has the say over, and it is held
+  // at its content as any item is; every size is Chromium's
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="display:flex;width:15px">' +
+      '<div id="a" style="width:min-content;flex:0 0 15px;aspect-ratio:3/2">' +
+      '<i style="display:block;width:26px"></i></div></div>' +
+      '<div style="display:flex;width:15px">' +
+      '<div id="b" style="width:max-content;flex:0 0 15px;height:4px">' +
+      '<i style="display:block;width:26px;height:4px"></i></div></div>',
+    400,
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 26);
+  assert.strictEqual(boxOf(el, 'b').width, 26);
+});

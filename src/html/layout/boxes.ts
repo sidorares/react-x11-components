@@ -781,6 +781,9 @@ export interface GridTracks {
   colLines: GridLines;
   rowLines: GridLines;
   first: Box | null;
+  /** How wide a grid with no limit on its width is at its narrowest, where
+   *  that may be wider than these tracks (`layoutGrid`); else none. */
+  atNarrowest: number;
   /** The tracks that stay — `cols` and `rows` without those an `auto-fit`
    *  collapsed — and each item's area in them, as its first column, how
    *  many, its first row and how many: what a gap's rules are drawn along

@@ -2892,8 +2892,87 @@ keyword width or a table's cell, each of which asks in its own way. Both hold
 keyword sizes, ratios and wrapped columns of a height. A generated document that
 reads a box's size some way no case does is worth a run of the fuzz behind them
 before it is believed: a float around these cases was 561 of 1,500 wrong when
-the fixture had none. A grid's tracks are not held to this yet: some 3% of them
-differ, in its own limits and in ratios it stretches.
+the fixture had none.
+
+**A grid's tracks go by the same rule** (`trackContributions`), which is one
+function in Chromium: what an item gives a column is what it gives a flex box
+along a line that wraps, at its narrowest and at its widest, and its least width
+of its own is a minimum contribution, no less than its edges, `fit-content`
+being no size yet (`ownLeastWidth`). What is the grid's own is its rows. Where a
+height can reach an item, its columns are sized again once the rows are, and the
+rows after that (CSS Grid 1, 12.1, steps 3 and 4): `auto auto` around
+`aspect-ratio: 2` beside something 30 tall is 60 wider for it, which the first
+sizing cannot know. Chromium and WebKit do this and Firefox does not. Seven things
+are load-bearing.
+
+- **A height an item is given is as good as one of its own** (`heightGiven`), and
+  its ratio makes a width of it with nothing transferred from its limits (`transferred`):
+  a grid's rows, by `percentHeightBase` once they are sized, or the one line of a
+  flex box's row of a height it has or is given, through any number of them. A
+  column and a row that wraps give none. This holds outside a grid: `display:
+flex; height: 4px` around `aspect-ratio: 2` is 8 wide in a float. **Anything new
+  that stretches an item where its width is asked joins `heightGiven`**, and
+  anything new that turns a height into a width joins `takesHeight`, or the second
+  sizing never asks about it.
+- **Whether a height reaches a box is asked first, and kept** (`takesHeight`,
+  `handsHeightOn`, `TAKES_HEIGHT`): nothing is measured twice but what has a ratio
+  a height can reach, so an image of a height of its own, or one `align-items:
+center` leaves alone, costs a boolean. A box's own ratio asks nothing of what it
+  holds, which is the difference `handsHeightOn` makes: taken for its content's, a
+  page of `aspect-ratio` cards laid each out again in every layout of its grid.
+  What is measured at a height is kept by that height (`AT_HEIGHT`). Each level of a
+  nesting multiplies what is added here, so **hold anything new to a ratio a dozen
+  grids deep**, which a first cut laid out 77,722 times where master lays it out
+  208: a stretch that laid out a grid to see what moved was two layouts a level.
+- **`normal` stretches a ratio down its row for what it gives a column, and not
+  always as it is drawn** (`heightInArea`'s `normalStretches`, `stretchesDownOnly`):
+  it cannot stretch a box both ways, so one that fills its column takes its height
+  from its ratio and overflows its row, and one that does not is as wide as the row
+  makes it, which is why `justify-self: start` is 80 by 40 in a row 40 tall and
+  `normal` is 500 by 250. A row's height can only reach it the second time round.
+- **Only what moved is laid out again**: a second sizing that comes to the same
+  columns, with no item laid out to find it and none whose own width takes the rows
+  (`widthTakesRows`), leaves each item as it was, its `percentHeightBase` put back,
+  so `keptItem` keeps it at the next layout. And the row of a layout that stopped
+  stays out of it (`takingHeight`), since its height is of the width before: taken
+  in, a drag laid a screenful more of a card grid out at every step. A stretched
+  flex box is made definite the same way (`itemsTakeHeight`): laid out again only
+  where arithmetic says an item in it would land elsewhere, and a grid as tall as
+  it was not at all, having asked its rows already.
+- **A grid stays as tall as its first rows made it**, as in Chromium and WebKit:
+  the second rows stretch and place its items, which run past it. So `height` comes
+  from the first `placeRows` and never the second, and that is deliberate.
+- **At no limit a grid is no narrower than at its narrowest** (`atNarrowest`, in
+  `GRID_TRACKS`), which is Chromium's alone, Firefox and WebKit having no such
+  floor. Its columns at their narrowest make what wraps there taller, and a ratio
+  makes that wider than its columns at their widest do, all on one line: a ratio
+  beside two words 98 wide in a float, where its columns at their widest are 86.
+  Only a grid a height reaches, with an item that comes to less at its narrowest
+  (`wrapsNarrower`), pays for that second layout.
+- **A walk can be the end of a layout now**, where it was the middle of a probe: a
+  second sizing that moves nothing lays nothing out after it. So what a walk does to
+  a box it leaves as it found it, `lentEdges` for the edges a ratio is read with,
+  and the item's own edges put back after it. A probe of a grid is of its tracks,
+  and a least width of its own does not stretch them (`layoutSubtree`'s
+  `measuring`).
+
+Two more came out of it that are plain layout, and were wrong in any row. An item's
+automatic minimum has the percentages in its padding in it (`leastAcross`): they
+are of nothing as it is measured, and of its flex box as it is held, and a measure
+leaves them of nothing for `autoMinimums` to read. The minimum applies to an item
+of a keyword width as to any, and to a fraction of a pixel, where it was half a
+pixel short. And a replaced item stretched across a column narrower than it lets go
+of the height it was held at (`keepRatios`), its ratio having made another.
+
+The fixtures hold grids at both ends, around each case and among them, with
+`line-height` set: a line's height is a platform's fonts' where nothing sets it,
+and a ratio makes a width of a row. What is left came to 4 of 19,200 generated
+documents, each a ratio or an image in a row inside a row that wraps, or inside a
+column, whose heights the second sizing does not follow all the way down. And
+Yoga's, which is no grid's: a column that wraps breaks into lines by its items'
+bases, and at no limit on its width an item's automatic minimum comes too late
+for that, so a wrapped column with a percentage of nothing for a width and a basis
+under its content can have a line too few.
 
 **A probe takes a block it laid out before in the same room for what it
 came to then** (`Stand`, `STOOD`): how far down it reached, the margin it
