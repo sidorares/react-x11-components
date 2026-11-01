@@ -24,6 +24,11 @@
 // shorter than its content, which lays what is in it out by its height — a
 // flex or grid container, or a box holding a percentage of a height — is
 // laid out again at that height (`layoutItemAt`).
+//
+// What a call into Yoga costs, a box of one line does not pay: nearly every
+// flex box is one, and its nodes are `LineNode`s, which answer what Yoga
+// answers to the bit with no bridge to cross (`flex-line.ts`). So nothing below
+// knows which it has.
 import { Yoga, layoutLoaded } from 'react-x11/yoga';
 import type { Config as YogaConfig, Node as YogaNode } from 'react-x11/yoga';
 
@@ -65,9 +70,11 @@ import {
   partialsMade,
 } from './block.js';
 import { layoutGrid } from './css-grid.js';
+import { LineNode, onOneLine } from './flex-line.js';
 import { firstBaselineIn } from './inline.js';
 import { TABLE_CONTENT } from './table.js';
 import type { LaidUnder, LayoutContext } from './block.js';
+import type { FlexNode } from './flex-line.js';
 import type { FontsLike } from './inline.js';
 
 // `react-x11/yoga` re-exports yoga's own declarations, so the node shape and
@@ -75,6 +82,33 @@ import type { FontsLike } from './inline.js';
 // call, which is what this had to do while the engine was reached through
 // `react-x11/ntk` (a deliberately loose record).
 const Y = Yoga;
+
+/** Whether a box of one line is laid out on `LineNode`s, which a test turns
+ *  off to hold them to Yoga. */
+let lineNodes = true;
+export function lineNodesOn(on: boolean): void {
+  lineNodes = on;
+}
+
+/** How many nodes Yoga has made here, for a test to count them. */
+let yogaNodes = 0;
+export function yogaNodesMade(): number {
+  return yogaNodes;
+}
+
+/** A node of a flex box: of a line, or Yoga's. */
+function flexNode(inLine: boolean): FlexNode {
+  if (inLine) return new LineNode();
+  yogaNodes += 1;
+  return Y.Node.create(flexConfig());
+}
+
+/** An item of a flex box of more than one line (`onOneLine`). */
+interface YogaItem {
+  box: Box;
+  node: YogaNode;
+  laid: Laid;
+}
 
 /**
  * The config this engine's flex trees are made in: off the pixel grid, as
@@ -122,7 +156,8 @@ export function layoutFlex(
   const kept = keptRow(box, ctx);
   if (kept !== null) return kept;
 
-  const root = Y.Node.create(flexConfig());
+  const inLine = lineNodes && onOneLine(box.style);
+  const root = flexNode(inLine);
   applyContainer(root, box.style);
   // the gaps, a percentage of the content box's size along them where it
   // has one, and else of nothing (CSS Box Alignment 3, 8.3)
@@ -189,9 +224,9 @@ export function layoutFlex(
     box.style.flexDirection.startsWith('row') &&
     flowing.filter((child) => child.style.flexShrink > 0).length > 1;
 
-  const items: { box: Box; node: YogaNode; laid: Laid }[] = [];
+  const items: { box: Box; node: FlexNode; laid: Laid }[] = [];
   for (const child of flowing) {
-    const node = Y.Node.create(flexConfig());
+    const node = flexNode(inLine);
     flexItemsLaid += 1;
     resolveEdges(child, contentWidth);
     const laid: Laid = {
@@ -230,6 +265,11 @@ export function layoutFlex(
     root.insertChild(node, items.length);
     items.push({ box: child, node, laid });
   }
+
+  // A box of more than one line has Yoga's nodes (`onOneLine`), of which the
+  // steps only it takes ask more than a line's answer
+  const yogaRoot = root as YogaNode;
+  const yogaItems = items as YogaItem[];
 
   // Yoga gives the one item that may both grow and shrink, where no other
   // may do either, no flex base size in a box of a size, since it fills the
@@ -346,7 +386,8 @@ export function layoutFlex(
   // come out of its layout at another height than it sized them at, where
   // their side margins are not their top and bottom ones (`unstretch`):
   // laid out so that each has the height it was sized at
-  const restretched = row || hold.frozen ? [] : stretchedDown(root, items);
+  const restretched =
+    row || hold.frozen ? [] : stretchedDown(yogaRoot, yogaItems);
   const sized = bounded ? contentWidth : null;
   // and across a row that wraps, the items Yoga stretches across lines
   // `align-content` spaces out come out of its layout as tall as their
@@ -362,10 +403,15 @@ export function layoutFlex(
     spacesLines(box.style);
   const ask =
     restretched.length > 0
-      ? (): void => unstretch(items, restretched, sized, layout)
+      ? (): void => unstretch(yogaItems, restretched, sized, layout)
       : spaced
         ? (): void =>
-            unspace(root, items, box.style.flexWrap === 'wrap-reverse', layout)
+            unspace(
+              yogaRoot,
+              yogaItems,
+              box.style.flexWrap === 'wrap-reverse',
+              layout,
+            )
         : layout;
   // The one line of a box that does not wrap is shared out by CSS
   // Flexbox 9.7 where Yoga's answer for it may not be what that makes of
@@ -468,7 +514,7 @@ export function layoutFlex(
   }
 
   if (!bounded && !row && box.style.flexWrap !== 'nowrap') {
-    noteColumnLines(box, items);
+    noteColumnLines(box, yogaItems);
   }
 
   // The lines of a row that wraps are as tall as their tallest items, each
@@ -495,7 +541,7 @@ export function layoutFlex(
   ) {
     root.setHeightAuto();
     root.setMinHeight(height);
-    root.setMaxHeightPercent(100);
+    yogaRoot.setMaxHeightPercent(100);
     // and a percentage height resolved: Yoga takes one inside a box it
     // does not hold to a size for none, and measured `h-1/2` as tall as
     // its content
@@ -522,7 +568,7 @@ export function layoutFlex(
   // item is aligned by its baseline: here, never
   const lined = box.style.flexWrap !== 'nowrap';
   const across = crossed
-    ? crossLines(box.style, items, contentWidth, columnGap)
+    ? crossLines(box.style, yogaItems, contentWidth, columnGap)
     : undefined;
   let bottom = placeItems(
     box,
@@ -801,7 +847,7 @@ function keptRow(box: Box, ctx: LayoutContext): number | null {
  *  base size the ratio makes of the stretched size; whether any changed. */
 function keepRatios(
   container: Box,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
 ): boolean {
   let changed = false;
@@ -960,7 +1006,7 @@ function ratioHeightBasis(box: Box, containingWidth: number): number | null {
 function placeItems(
   box: Box,
   ctx: LayoutContext,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   /** Whether the flex box has a definite height. */
   own: boolean,
@@ -1158,11 +1204,11 @@ function layoutItemAt(
 // start, stretch, start (for its lines), no growing, no shrinking, `auto`
 // basis and size, and nothing on any edge.
 
-function applyContainer(node: YogaNode, style: ComputedStyle): void {
+function applyContainer(node: FlexNode, style: ComputedStyle): void {
   const direction = FLEX_DIRECTION[style.flexDirection] ?? Y.FLEX_DIRECTION_ROW;
   if (direction !== Y.FLEX_DIRECTION_COLUMN) node.setFlexDirection(direction);
   const wrap = WRAP[style.flexWrap] ?? Y.WRAP_NO_WRAP;
-  if (wrap !== Y.WRAP_NO_WRAP) node.setFlexWrap(wrap);
+  if (wrap !== Y.WRAP_NO_WRAP) (node as YogaNode).setFlexWrap(wrap);
   const justify = JUSTIFY[mainJustify(style)] ?? Y.JUSTIFY_FLEX_START;
   if (justify !== Y.JUSTIFY_FLEX_START) node.setJustifyContent(justify);
   const items = ALIGN[style.alignItems] ?? Y.ALIGN_STRETCH;
@@ -1172,7 +1218,7 @@ function applyContainer(node: YogaNode, style: ComputedStyle): void {
 }
 
 function applyItem(
-  node: YogaNode,
+  node: FlexNode,
   box: Box,
   ctx: LayoutContext,
   containingWidth: number,
@@ -1902,7 +1948,7 @@ function meant(width: number, ...intended: number[]): number {
 /** Set a length on the node; the points it set, or NaN where it set a
  *  percentage, which Yoga resolves, or nothing. */
 function setLength(
-  node: YogaNode,
+  node: FlexNode,
   across: boolean,
   len: ComputedStyle['width'],
   base: number,
@@ -2405,7 +2451,7 @@ function innerWidth(
  * was given a minimum and the row has to be laid out again.
  */
 function autoMinimums(
-  items: { box: Box; node: YogaNode; laid: Laid }[],
+  items: { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   ctx: LayoutContext,
   containingWidth: number,
@@ -2723,7 +2769,7 @@ interface Hold {
  * from its shrink factors is exactly what it added.
  */
 function holdAt(
-  node: YogaNode,
+  node: FlexNode,
   laid: Laid,
   row: boolean,
   least: number,
@@ -2742,7 +2788,7 @@ function holdAt(
 /** Freeze an item at a size along the main axis: inflexible, and that size
  *  its flex base size. */
 function freezeAt(
-  node: YogaNode,
+  node: FlexNode,
   laid: Laid,
   row: boolean,
   size: number,
@@ -2864,7 +2910,7 @@ function betweenOf(
  * rest are shared out around it.
  */
 function resolveLine(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   line: FlexLine,
   /** The size along the main axis Yoga laid the line out in. */
@@ -2896,7 +2942,7 @@ function resolveLine(
  *  one held at its automatic minimum whose flex base size is not known,
  *  which is frozen there already. */
 function freezeLine(
-  items: readonly { node: YogaNode; laid: Laid }[],
+  items: readonly { node: FlexNode; laid: Laid }[],
   row: boolean,
   sizes: readonly number[],
   hold: Hold,
@@ -2917,7 +2963,7 @@ const SHORT = 0.001;
  *  sizes, and freeze each item at its size: where one is since held at its
  *  content's size, the rest of the line is shared out around it. */
 function shareOut(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   line: FlexLine,
   hold: Hold,
@@ -3089,7 +3135,7 @@ function baseOf(box: Box, laid: Laid, row: boolean, probe: boolean): number {
  * each is that size. Their limits and flex factors are put back after.
  */
 function askBases(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   ask: () => void,
 ): void {
@@ -3293,7 +3339,7 @@ function leastOf(box: Box, laid: Laid, row: boolean): number {
  * as 2. A box that wraps with an item like that is left as Yoga had it.
  */
 function cappedLines(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   /** The flex box's size along the main axis. */
   room: number,
@@ -3524,7 +3570,7 @@ function contentBottom(box: Box): number {
  * puts its first baseline where the one reaching furthest below its own to
  * its bottom margin edge has it, which is on the line's bottom.
  */
-function baselineLines<T extends { box: Box; node: YogaNode }>(
+function baselineLines<T extends { box: Box; node: FlexNode }>(
   style: ComputedStyle,
   items: readonly T[],
 ): (T[] & { margins: number[] })[] | null {
@@ -3562,7 +3608,7 @@ function baselineLines<T extends { box: Box; node: YogaNode }>(
  * where an item with a margin before it was further along than one alone on
  * the line before.
  */
-function itemLines<T extends { node: YogaNode }>(
+function itemLines<T extends { node: FlexNode }>(
   style: ComputedStyle,
   items: readonly T[],
   row: boolean,
@@ -3628,7 +3674,7 @@ function byBaseline(
  */
 function baselineEdge(
   container: ComputedStyle,
-  items: readonly { box: Box; node: YogaNode }[],
+  items: readonly { box: Box; node: FlexNode }[],
 ): number {
   const rtl = container.direction === 'rtl';
   let edge = NaN;
@@ -3655,7 +3701,7 @@ function baselineEdge(
 function heldLine(
   container: Box,
   ctx: LayoutContext,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   /** The row's content height. */
   height: number,
   /** The row's content width, the items' containing block's. */
@@ -3758,7 +3804,7 @@ function autoAcross(
  */
 function noteAutoMargins(
   style: ComputedStyle,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly { box: Box; node: FlexNode; laid: Laid }[],
   row: boolean,
   /** The flex box's content box. */
   width: number,
@@ -3772,7 +3818,7 @@ function noteAutoMargins(
   // the one line of a box that does not wrap is as large as the box
   const sizes =
     row && style.flexWrap !== 'nowrap'
-      ? rowLineSizes(style, lines, height, rowGap)
+      ? rowLineSizes(style, lines as YogaItem[][], height, rowGap)
       : null;
   const gap = row ? columnGap : rowGap;
   lines.forEach((line, k) => {
@@ -3824,7 +3870,7 @@ function hasAutoMargin(style: ComputedStyle): boolean {
  */
 function rowLineSizes(
   style: ComputedStyle,
-  lines: readonly (readonly { box: Box; node: YogaNode; laid: Laid }[])[],
+  lines: readonly (readonly YogaItem[])[],
   /** The flex box's content height. */
   height: number,
   gap: number,
@@ -3883,7 +3929,7 @@ function rowLineSizes(
 function lineMarginFix(
   container: ComputedStyle,
   item: Box,
-  node: YogaNode,
+  node: FlexNode,
   row: boolean,
   /** Whether the flex box has a definite height. */
   own: boolean,
@@ -3957,10 +4003,7 @@ function itemBaseline(item: Box): number {
  * with two lines 6 short; where the two sums are the same, the pass gives
  * the height back unchanged.
  */
-function stretchedDown(
-  root: YogaNode,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
-): { box: Box; node: YogaNode; laid: Laid }[] {
+function stretchedDown(root: YogaNode, items: readonly YogaItem[]): YogaItem[] {
   const lines = root.getAlignItems();
   return items.filter(({ box, node }) => {
     const own = node.getAlignSelf();
@@ -3996,8 +4039,8 @@ function stretchedDown(
  * base moved too, and Yoga's height is kept, as it was.
  */
 function unstretch(
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
-  stretched: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly YogaItem[],
+  stretched: readonly YogaItem[],
   /** The column's content width, where Yoga is handed it as a size, and
    *  else null. */
   width: number | null,
@@ -4048,7 +4091,7 @@ function measuredAcross(box: Box, node: YogaNode, width: number): number {
 /** An item's border-box height, as Yoga sized it: the one it had before its
  *  line stretched it, where that laid it out at another (`unstretch`,
  *  `unspace`). */
-function heightOf(node: YogaNode, laid: Laid): number {
+function heightOf(node: FlexNode, laid: Laid): number {
   return Number.isNaN(laid.unstretched)
     ? node.getComputedHeight()
     : laid.unstretched;
@@ -4096,7 +4139,7 @@ function spacesLines(style: ComputedStyle): boolean {
  */
 function unspace(
   root: YogaNode,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly YogaItem[],
   /** Whether the lines run bottom to top. */
   reverse: boolean,
   layout: () => void,
@@ -4163,7 +4206,7 @@ function unspace(
  */
 function linesReach(
   root: YogaNode,
-  items: readonly { box: Box; node: YogaNode }[],
+  items: readonly YogaItem[],
   reverse: boolean,
 ): number {
   const height = root.getComputedHeight();
@@ -4282,7 +4325,7 @@ interface Across {
  */
 function crossLines(
   style: ComputedStyle,
-  items: readonly { box: Box; node: YogaNode; laid: Laid }[],
+  items: readonly YogaItem[],
   /** The flex box's content width. */
   width: number,
   /** The gap between two lines. */

@@ -1651,7 +1651,40 @@ keeps it cheap: **compare before asking.** A line's flex base sizes are
 nearly always known here — a length, or the content's size the measure
 function found — so 9.7 is sums of numbers, and Yoga is asked again only
 where its answer differs. A page of Tailwind rows, most of them
-`min-w-0`, makes the same calls into Yoga as before.
+`min-w-0`, lays out no line more often for it.
+
+**A box of one line makes no call into Yoga at all, and comes to what Yoga
+comes to, to the bit** (`LineNode`, `layout/flex-line.ts`). A flex box that
+does not wrap, running from the start of a row or down a column, is a root
+and leaves, and what Yoga did for it was arithmetic behind a bridge: a node
+for each item, each style a call, two or three layouts, each answer read
+back a number at a time. On a webmail page 99% of the flex boxes in a window
+drag were one, and Wikipedia's, GitHub's, Apple's and Tailwind's are 94 to
+100%, columns as much as rows, and probes as much as layouts. So
+`layoutFlex` hands such a box `LineNode`s, which take Yoga's calls and give
+Yoga's answers, and nothing else in `flex.ts` knows which it has. Four things
+are load-bearing.
+
+- **It is a port, and not CSS Flexbox.** `calculateLayoutImpl` cut down to a
+  line of leaves, in Yoga's order, with its two passes, its float32s and its
+  measurement cache, because every correction `layoutFlex` makes is to what
+  Yoga answers, and a sum of flex factors that rounds to nothing comes to
+  Yoga's digits or to none. Do not make it more correct: `resolveLine` is
+  where that goes, and both kinds of box have to get it.
+- **`test/html/flex-line.test.ts` holds it to Yoga with `Object.is`**: every
+  place and size of generated boxes, every question put to a measure
+  function, through the changes `layoutFlex` makes between layouts
+  (`LINE_SEEDS`, `LINE_FROM`), and whole documents with `lineNodesOn(false)`
+  (`DOCUMENT_SEEDS`, `DOCUMENT_FROM`). A release of core that moves Yoga
+  fails it where Yoga moved: port what changed.
+- **Anything new `layoutFlex` calls on a node of a box of one line joins
+  `FlexNode` and `LineNode`**, a setter marking the node dirty where Yoga
+  does: a value set where none was counts, even 0, since Yoga forgets what it
+  kept. What only a box that wraps asks stays on `yogaRoot` and `yogaItems`.
+- **Anything new told to Yoga that a line of leaves cannot be keeps its box
+  out of `onOneLine`**: an aspect ratio, an overflow, a limit that is a
+  percentage, a baseline it should see. `row-reverse`, `column-reverse`, `rtl`
+  and anything that wraps are Yoga's, and are rare enough to stay so.
 
 **Along such a line of a row, what Yoga is asked before the line settles
 is its widths** (`Laid.sizing`): the measure answers a height from what
