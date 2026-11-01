@@ -3020,7 +3020,12 @@ column — unless its own minimum or an `overflow` that scrolls lets it go,
 as Tailwind's `min-w-0` does; in a column that is the lesser of a height of
 its own and its content's, and an item with an `aspect-ratio` counts its
 width through the ratio as content, and along a row a definite height
-through it. A table is no smaller than it can be whatever its minimum or
+through it, a height the line stretches it to in a row of a definite height
+among them, its own or one a grid's row gives it. Its content in that minimum
+has the percentages in its padding in it, and an item `width: min-content`
+has a minimum as any has, which a flex basis under it does not take it below.
+An image stretched to less than its natural size has its minimum from what
+its ratio makes of that. A table is no smaller than it can be whatever its minimum or
 its size says: its columns at their narrowest along a row, and its rows
 and captions, the spacing round them in, down a column — the item after it
 starting where it ends, as in Chrome. An item its minimum stops is frozen at it, and the others on
@@ -3180,7 +3185,8 @@ stretched is as wide as its content fits. `normal`, which is what an unset
 `align-items` is, stretches an item but an
 image, which keeps its own size, and a box with an `aspect-ratio`, which is
 as wide as a height it has makes it, and as a block would be where it has
-none; `stretch`, the grid's or the item's own, stretches those too, and an
+none, or as its row makes it where `justify-self` does not stretch it across;
+`stretch`, the grid's or the item's own, stretches those too, and an
 item stretched down its area is as wide as its ratio makes that
 height. In a flex box `normal` is `stretch`. A table among the items is stretched across its area too, as Chrome
 stretches one, where in a block's flow it is as wide as its columns. An item's area is its containing block: a percentage in its
@@ -3192,7 +3198,16 @@ column is as wide as what is in its item, and the margins and the padding
 come out of that. A percentage `width` or `max-width` is `auto` and `none`
 then, but an image's, which is of nothing: an `auto`, `fr` or
 `min-content` column is at least as wide as its item's content, and the item
-`width: 100%` is as wide as the column that makes. An item's percentage height is of its area, and a stretched item's
+`width: 100%` is as wide as the column that makes. What an item gives a column
+is what it gives a flex box along a line that wraps, and with the rows sized the
+columns are sized again where a height reaches an item, once, and the rows after
+them: an item with a ratio stretched down a row is as wide as that height makes
+it, or a flex box or a grid hands its height on to one, as Chromium and WebKit
+have it, Firefox sizing them once. A grid stays as tall as the first rows made
+it, what the second ones add running past it, in those two as well. And a grid
+with no limit on its width is no narrower than at its narrowest, which is
+Chromium's alone: a ratio beside words makes the row taller where they wrap, and
+wider for it. An item's percentage height is of its area, and a stretched item's
 height is one what is in it takes percentages of — and one an item that is
 a flex box or a grid lays its own items out in, so a grid of cards, each a
 column ending in a `margin-top: auto` button, has every button at the

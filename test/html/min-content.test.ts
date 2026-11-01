@@ -199,6 +199,42 @@ test('a flex box at its widest comes to what Chromium has it come to', async () 
   });
 });
 
+test('a row of a flex box of a height stretches what its ratio makes wider', async () => {
+  // what a size of the row's own makes of an item is its size too (CSS Flexbox
+  // 9.8); every width is Chromium's, of a float around the row
+  const canvas = (css = '') =>
+    `<canvas width="8" height="4" style="display:block;${css}"></canvas>`;
+  const ratio = (css = '') => `<div style="aspect-ratio:2;${css}"></div>`;
+  const row = (css: string, held: string) =>
+    `<div style="display:flex;${css}">${held}</div>`;
+  const expected: [string, number][] = [
+    [row('height:4px', ratio()), 8],
+    [row('height:40px', canvas()), 80],
+    [row('height:4px;padding:1px 0', ratio()), 8],
+    [row('height:4px;padding:1px 0;box-sizing:border-box', ratio()), 4],
+    // and only that
+    [row('height:40px;align-items:flex-start', canvas()), 8],
+    [row('height:4px', ratio('align-self:flex-start')), 0],
+    [row('height:4px;flex-wrap:wrap', ratio()), 0],
+    [row('min-height:4px', ratio()), 0],
+    [row('height:4px;flex-direction:column', ratio()), 0],
+  ];
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      expected
+        .map(
+          ([held], i) =>
+            `<div><div id="c${i}" style="float:left">${held}</div></div><br>`,
+        )
+        .join(''),
+    400,
+  );
+  const el = view(node);
+  expected.forEach(([held, width], i) => {
+    assert.strictEqual(boxOf(el, `c${i}`).width, width, held);
+  });
+});
+
 test('a flex basis has a say along a line, and each item is as narrow as it comes', async () => {
   // every width is Chromium's
   const sized = (width: number) =>
