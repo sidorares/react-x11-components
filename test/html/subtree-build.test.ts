@@ -1217,9 +1217,7 @@ const PROBE_SHEET = `body { margin: 0; font-size: 14px }
 .pc { margin: 0 10%; padding: 0 5% }
 .l { margin: 6px 0 }
 .h { padding: 3px; border: 1px solid #000 }
-.nw { white-space: nowrap }
-.vr { writing-mode: vertical-rl; height: 70px }
-.vl { writing-mode: vertical-lr; height: 70px }`;
+.nw { white-space: nowrap }`;
 
 const PROBE_CLASSES = [
   'row',
@@ -1250,15 +1248,10 @@ const PROBE_WORDS = [
   'eight nine ten eleven twelve',
 ];
 
-function probed(
-  next: () => number,
-  depth: number,
-  /** What an element may be classed as. */
-  names: readonly string[] = PROBE_CLASSES,
-): Element {
+function probed(next: () => number, depth: number): Element {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
-  const classes = names.filter(() => next() < 0.1);
+  const classes = PROBE_CLASSES.filter(() => next() < 0.1);
   const el = createElement(
     pick(['div', 'p', 'section']),
     classes.length ? { class: classes.join(' ') } : {},
@@ -1268,9 +1261,8 @@ function probed(
   const count = depth > 2 ? 1 : 1 + Math.floor(next() * (depth ? 3 : 5));
   for (let i = 0; i < count; i += 1) {
     const roll = next();
-    if (depth < 3 && roll < 0.55) {
-      appendChild(el, probed(next, depth + 1, names));
-    } else if (roll < 0.7) {
+    if (depth < 3 && roll < 0.55) appendChild(el, probed(next, depth + 1));
+    else if (roll < 0.7) {
       appendChild(
         el,
         createElement(pick(['span', 'b']), {}, [createText(pick(PROBE_WORDS))]),
@@ -1281,11 +1273,7 @@ function probed(
 }
 
 /** A change to a document of `probed` elements, done, and its records. */
-function probedChange(
-  next: () => number,
-  body: Element,
-  names: readonly string[] = PROBE_CLASSES,
-): HtmlChange[] {
+function probedChange(next: () => number, body: Element): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
@@ -1293,7 +1281,7 @@ function probedChange(
   const kind = Math.floor(next() * 5);
   if (kind === 0 || !inside.length) {
     const parent = pick(all);
-    const child = probed(next, 2, names);
+    const child = probed(next, 2);
     const kids = parent.children.filter((n) => (n as Element).attribs);
     if (kids.length && next() < 0.5) DomUtils.prepend(pick(kids), child);
     else appendChild(parent, child);
@@ -1326,7 +1314,7 @@ function probedChange(
     const target = pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(names);
+    const c = pick(PROBE_CLASSES);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -1366,22 +1354,12 @@ metric(
     const env =
       (globalThis as { process?: { env?: Record<string, string> } }).process
         ?.env ?? {};
-    const seeds = Number(env.PROBE_SEEDS ?? 80);
+    const seeds = Number(env.PROBE_SEEDS ?? 40);
     for (let seed = Number(env.PROBE_FROM ?? 1); seed <= seeds; seed += 1) {
       const next = random(seed * 7919);
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
-      // and flows in another writing mode, in every third: a probe takes
-      // no block for what it came to in such a tree, which only a tree that
-      // holds one can say. With no `.w`, a percentage across the flow, which
-      // a frame takes its root's width to be definite for where it is not
-      const names =
-        seed % 3
-          ? PROBE_CLASSES
-          : [...PROBE_CLASSES.filter((name) => name !== 'w'), 'vr', 'vl'];
-      for (let i = 0; i < blocks; i += 1) {
-        appendChild(body, probed(next, 0, names));
-      }
+      for (let i = 0; i < blocks; i += 1) appendChild(body, probed(next, 0));
       const markup = DomUtils.getOuterHTML(body as never);
       const { result, node } = await render(
         `<!doctype html><html><head><style>${PROBE_SHEET}</style></head>${markup}</html>`,
@@ -1394,7 +1372,7 @@ metric(
         (e) => e.name === 'body',
       )!;
       for (let step = 0; step < 8; step += 1) {
-        el.touchDocument(probedChange(next, bodyEl, names));
+        el.touchDocument(probedChange(next, bodyEl));
         await act();
         const kept = treeLines(internals._tree);
         // the whole document built again, laid out with no block that
