@@ -124,9 +124,7 @@ import {
   decorate,
   inherit,
   zoomedBy,
-  initialOne,
   initialStyle,
-  isInherited,
   sameStyle,
 } from './style.js';
 import type { BoxShadow, ComputedStyle, RootLook } from './style.js';
@@ -8674,19 +8672,20 @@ export class Cascade {
       applyDeclaration(style, parentStyle, d.prop, d.value, ctx);
       return;
     }
-    // unset first: a value that does not parse once it is substituted is
-    // invalid at computed-value time, and does not leave the property what
-    // an earlier declaration gave it
-    if (isInherited(d.prop)) {
-      applyDeclaration(style, parentStyle, d.prop, 'inherit', ctx);
-    } else {
-      initialOne(style, this.initial, d.prop);
-    }
     let env = hasInherit(d.value)
       ? this._inheritEnv(parentStyle, d.prop)
       : this._ifEnv;
     if (ATTR_IN.test(d.value)) env = { ...env, attribute: this._attributeOf };
     const value = substituteIn(d.value, style.custom, env);
+    // unset first: a value that does not parse once it is substituted is
+    // invalid at computed-value time, and does not leave the property what
+    // an earlier declaration gave it. `applyDeclaration` is what reads a
+    // logical property or an `all` as the properties it stands for. A
+    // fallback that is `revert` is the one value that keeps what the
+    // cascade has reached, so there is nothing to go back from
+    if (value === null || !REVERT.test(value)) {
+      applyDeclaration(style, parentStyle, d.prop, 'unset', ctx);
+    }
     if (value !== null)
       applyDeclaration(style, parentStyle, d.prop, value, ctx);
   }
@@ -9922,6 +9921,7 @@ function usesVars(declarations: readonly Declaration[]): boolean {
 /** Whether any of the declarations has a length in `lh` or `rlh`. */
 /** An `attr()` in a value (`IfEnvironment.attribute`). */
 const ATTR_IN = /(?:^|[^\w-])attr\(/i;
+const REVERT = /^\s*revert\s*$/i;
 
 /**
  * An element's attribute of a name, for an `attr()`: HTML's names are its

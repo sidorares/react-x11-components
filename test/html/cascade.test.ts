@@ -291,6 +291,377 @@ test('a longhand that shares a field with its siblings takes only its own part o
   });
 });
 
+test('a logical property whose var() has no value goes back as though unset, in every flow', async () => {
+  // A declaration with a `var()` goes back before what it substitutes is
+  // read, and what took it back knew the physical names alone, so
+  // `margin-inline-start: 4px; margin-inline-start: var(--missing)` kept its
+  // 4px. Here is each of `LOGICAL`'s names in each flow, and what each case
+  // comes to is Chrome's `getComputedStyle`
+  const box = 'border:5px solid #ff0000;color:#0000ff';
+  const sides = ['top', 'right', 'bottom', 'left'];
+  const corners = [
+    ['top', 'left'],
+    ['top', 'right'],
+    ['bottom', 'right'],
+    ['bottom', 'left'],
+  ];
+  // a flow, and the sides its inline-start, inline-end, block-start and
+  // block-end are
+  const flows: [string, Record<string, string>][] = (
+    [
+      ['', 'left', 'right', 'top', 'bottom'],
+      ['direction:rtl', 'right', 'left', 'top', 'bottom'],
+      ['writing-mode:vertical-rl', 'top', 'bottom', 'right', 'left'],
+      ['writing-mode:vertical-lr', 'top', 'bottom', 'left', 'right'],
+      [
+        'writing-mode:vertical-rl;direction:rtl',
+        'bottom',
+        'top',
+        'right',
+        'left',
+      ],
+      ['writing-mode:sideways-lr', 'bottom', 'top', 'left', 'right'],
+    ] as const
+  ).map(([flow, start, end, before, after]) => [
+    flow,
+    {
+      'inline-start': start,
+      'inline-end': end,
+      'block-start': before,
+      'block-end': after,
+    },
+  ]);
+  // what sets all four sides, the family's logical name, a side's physical
+  // names, and what they read as set and as gone back
+  const families: [
+    string,
+    (part: string) => string,
+    (side: string) => string[],
+    string[],
+    string[],
+  ][] = [
+    [
+      'margin:4px',
+      (part) => `margin-${part}`,
+      (side) => [`margin-${side}`],
+      ['4px'],
+      ['0px'],
+    ],
+    [
+      'padding:4px',
+      (part) => `padding-${part}`,
+      (side) => [`padding-${side}`],
+      ['4px'],
+      ['0px'],
+    ],
+    [
+      'inset:4px',
+      (part) => `inset-${part}`,
+      (side) => [side],
+      ['4px'],
+      ['auto'],
+    ],
+    [
+      box,
+      (part) => `border-${part}-width`,
+      (side) => [`border-${side}-width`],
+      ['5px'],
+      ['3px'],
+    ],
+    [
+      box,
+      (part) => `border-${part}-style`,
+      (side) => [`border-${side}-style`],
+      ['solid'],
+      ['none'],
+    ],
+    [
+      box,
+      (part) => `border-${part}-color`,
+      (side) => [`border-${side}-color`],
+      ['rgb(255, 0, 0)'],
+      ['rgb(0, 0, 255)'],
+    ],
+    [
+      box,
+      (part) => `border-${part}`,
+      (side) => [
+        `border-${side}-width`,
+        `border-${side}-style`,
+        `border-${side}-color`,
+      ],
+      ['5px', 'solid', 'rgb(255, 0, 0)'],
+      ['0px', 'none', 'rgb(0, 0, 255)'],
+    ],
+  ];
+  // a size's name, its physical name across and down the page, what it goes
+  // back to, and what gets its computed value read: a box that shows answers
+  // with its used size, and one that is no flex item reads `min-width:
+  // auto` as 0
+  const sizes = [
+    ['inline-size', 'width', 'height', 'auto', 'display:none'],
+    ['block-size', 'height', 'width', 'auto', 'display:none'],
+    ['min-inline-size', 'min-width', 'min-height', 'auto', ''],
+    ['min-block-size', 'min-height', 'min-width', 'auto', ''],
+    ['max-inline-size', 'max-width', 'max-height', 'none', 'display:none'],
+    ['max-block-size', 'max-height', 'max-width', 'none', 'display:none'],
+  ];
+  const css = (...parts: string[]) => parts.filter(Boolean).join(';');
+  const computed: [string, string[], string[]][] = [
+    // what it goes back from need not have been a logical declaration
+    [
+      'margin-left:4px;margin-inline-start:var(--missing)',
+      ['margin-left'],
+      ['0px'],
+    ],
+    // nor need the var() have no value, where what it comes to is none
+    [
+      'margin-inline:4px;margin-inline:var(--color)',
+      ['margin-left', 'margin-right'],
+      ['0px', '0px'],
+    ],
+    [
+      'margin-inline:4px;margin-inline:1px var(--missing)',
+      ['margin-left', 'margin-right'],
+      ['0px', '0px'],
+    ],
+    [
+      'padding-inline:4px;padding-inline:var(--negative)',
+      ['padding-left', 'padding-right'],
+      ['0px', '0px'],
+    ],
+    [
+      'padding-block:4px;padding-block:var(--color) 1px',
+      ['padding-top', 'padding-bottom'],
+      ['0px', '0px'],
+    ],
+    [
+      'inset-block:4px;inset-block:var(--color)',
+      ['top', 'bottom'],
+      ['auto', 'auto'],
+    ],
+    [
+      'color:#0000ff;border-inline-color:#ff0000;border-inline-color:var(--r)',
+      ['border-left-color', 'border-right-color'],
+      ['rgb(0, 0, 255)', 'rgb(0, 0, 255)'],
+    ],
+    [
+      'border-block:5px solid #ff0000;border-block:var(--r) var(--color) 1px',
+      ['border-top-style', 'border-bottom-style'],
+      ['none', 'none'],
+    ],
+    // and under the names WebKit had them by, the cause is the same: the
+    // name was looked up as it was written
+    [
+      '-webkit-writing-mode:vertical-rl;-webkit-writing-mode:var(--missing)',
+      ['writing-mode'],
+      ['horizontal-tb'],
+    ],
+    [
+      '-webkit-text-orientation:upright;-webkit-text-orientation:var(--missing)',
+      ['text-orientation'],
+      ['mixed'],
+    ],
+    [
+      '-webkit-user-select:none;-webkit-user-select:var(--missing)',
+      ['user-select'],
+      ['auto'],
+    ],
+  ];
+  // what the record has no answer for is read from the style: a corner, and
+  // a size that is a keyword, which is kept beside its length
+  const drawn: [string, (s: ComputedStyle) => unknown, unknown][] = [
+    [
+      'inline-size:fit-content;inline-size:var(--missing)',
+      (s) => s.widthKeyword,
+      null,
+    ],
+    [
+      'min-inline-size:min-content;min-inline-size:var(--missing)',
+      (s) => s.minWidthKeyword,
+      null,
+    ],
+    [
+      'max-block-size:max-content;max-block-size:var(--missing)',
+      (s) => s.maxHeightKeyword,
+      null,
+    ],
+  ];
+  for (const [flow, of] of flows) {
+    for (const [set, name, names, kept, gone] of families) {
+      for (const part of ['inline', 'block']) {
+        for (const reach of [part, `${part}-start`, `${part}-end`]) {
+          const reached = Object.keys(of)
+            .filter((logical) => logical.startsWith(reach))
+            .map((logical) => of[logical]);
+          computed.push([
+            css(flow, set, `${name(reach)}:var(--missing)`),
+            sides.flatMap(names),
+            sides.flatMap((side) => (reached.includes(side) ? gone : kept)),
+          ]);
+        }
+      }
+    }
+    for (const [name, across, down, gone, shown] of sizes) {
+      const physical = flow.includes('writing-mode') ? down : across;
+      computed.push([
+        css(flow, shown, `${physical}:40px`, `${name}:var(--missing)`),
+        [physical],
+        [gone],
+      ]);
+    }
+    for (const block of ['start', 'end']) {
+      for (const inline of ['start', 'end']) {
+        const at = [of[`block-${block}`], of[`inline-${inline}`]];
+        const corner = corners.findIndex((c) => c.every((s) => at.includes(s)));
+        drawn.push(
+          [
+            css(
+              flow,
+              'border-radius:8px',
+              `border-${block}-${inline}-radius:var(--missing)`,
+            ),
+            (s) => s.borderRadius,
+            corners.map((_, i) => (i === corner ? 0 : 8)),
+          ],
+          [
+            css(
+              flow,
+              'corner-shape:bevel',
+              `corner-${block}-${inline}-shape:var(--missing)`,
+            ),
+            (s) => s.cornerShape,
+            corners.map((_, i) => (i === corner ? 1 : 0)),
+          ],
+        );
+      }
+    }
+  }
+  // each is a flex item, for its `min-width`
+  const page = (
+    [
+      ...computed.map(([style], i) => [`c${i}`, style]),
+      ...drawn.map(([style], i) => [`d${i}`, style]),
+    ] as const
+  )
+    .map(
+      ([id, style]) =>
+        `<div style="display:flex"><div id="${id}" style="${style}">x</div></div>`,
+    )
+    .join('');
+  const { node } = await render(
+    `<style>:root{--r:6px;--color:red;--negative:-3px}</style>${page}`,
+  );
+  const el = view(node);
+  computed.forEach(([style, names, expected], i) => {
+    const own = el.computedStyle(findById(el.document, `c${i}`)!)!;
+    assert.deepStrictEqual(
+      names.map((name) => own[name]),
+      expected,
+      style,
+    );
+  });
+  drawn.forEach(([style, read, expected], i) => {
+    const box = boxOf(el, `d${i}`) as unknown as { style: ComputedStyle };
+    assert.deepStrictEqual(read(box.style), expected, style);
+  });
+});
+
+test('all whose var() has no value goes back as though unset, and a var() that comes to revert leaves what the cascade reached', async () => {
+  // `all` was no name a table had either, so it went back nowhere. And a
+  // value that substitutes to `revert`, as a fallback can, is the one that
+  // has to find the UA sheet's declarations still there: only a fallback
+  // can, since `--x: revert` is about `--x`. What each case comes to is
+  // Chrome's `getComputedStyle`
+  const cases: [string, string, string[], string[]][] = [
+    [
+      'p',
+      'color:#ff0000;margin:4px;all:var(--missing)',
+      ['display', 'color', 'margin-top', 'margin-left', 'font-size'],
+      ['inline', 'rgb(0, 255, 0)', '0px', '0px', '20px'],
+    ],
+    [
+      'p',
+      'all:var(--missing);margin:4px',
+      ['display', 'color', 'margin-top', 'margin-left'],
+      ['inline', 'rgb(0, 255, 0)', '4px', '4px'],
+    ],
+    [
+      'ul',
+      'all:var(--missing)',
+      ['display', 'padding-left', 'margin-top', 'list-style-type'],
+      ['inline', '0px', '0px', 'disc'],
+    ],
+    // the size a later `em` reads is the one it went back to
+    [
+      'p',
+      'font-size:30px;all:var(--missing);padding-left:1em',
+      ['font-size', 'padding-left'],
+      ['20px', '20px'],
+    ],
+    // what `all` does not name stays: the direction, the custom properties
+    [
+      'p',
+      'direction:rtl;all:var(--missing)',
+      ['direction', 'display'],
+      ['rtl', 'inline'],
+    ],
+    [
+      'p',
+      '--own:7px;all:var(--missing);margin-left:var(--own)',
+      ['display', 'margin-left'],
+      ['inline', '7px'],
+    ],
+    ['p', 'margin-top:var(--missing, revert)', ['margin-top'], ['20px']],
+    [
+      'p',
+      'margin-block-start:var(--missing, revert)',
+      ['margin-top'],
+      ['20px'],
+    ],
+    [
+      'ul',
+      'padding-inline-start:var(--missing, revert)',
+      ['padding-left'],
+      ['40px'],
+    ],
+    [
+      'ul',
+      'padding-inline:var(--missing, revert)',
+      ['padding-left', 'padding-right'],
+      ['40px', '0px'],
+    ],
+    [
+      'p',
+      'all:var(--missing, revert)',
+      ['display', 'margin-top'],
+      ['block', '20px'],
+    ],
+    [
+      'ul',
+      'all:var(--missing, revert)',
+      ['display', 'padding-left', 'list-style-type'],
+      ['block', '40px', 'disc'],
+    ],
+  ];
+  const { node } = await render(
+    '<main style="color:#00ff00;font-size:20px">' +
+      cases
+        .map(([tag, css], i) => `<${tag} id="c${i}" style="${css}">x</${tag}>`)
+        .join('') +
+      '</main>',
+  );
+  const el = view(node);
+  cases.forEach(([, css, names, expected], i) => {
+    const own = el.computedStyle(findById(el.document, `c${i}`)!)!;
+    assert.deepStrictEqual(
+      names.map((name) => own[name]),
+      expected,
+      css,
+    );
+  });
+});
+
 test('a property @property registers has its initial value where nothing sets it, and one that does not inherit starts again under what sets it', async () => {
   // CSS Properties and Values 1, 2.4 and 3. A page draws the stops of a
   // gradient from `--blob-core`, registered at `0%` and set only on some

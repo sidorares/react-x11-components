@@ -8779,46 +8779,6 @@ export function isInherited(name: string): boolean {
   return INHERITED_NAMES.has(name);
 }
 
-/** `prop: inherit` — take the parent's computed value for whatever longhands
- *  the property names. Shorthands copy each of their longhands. */
-/** A property back to its initial value: what a declaration whose `var()`
- *  has no value comes to, where the property is not inherited. */
-export function initialOne(
-  style: ComputedStyle,
-  initial: ComputedStyle,
-  name: string,
-): void {
-  const list = MASK_LISTS[name];
-  if (list) {
-    style.mask = { ...style.mask, [list]: initial.mask[list] };
-    return;
-  }
-  const animation = ANIMATION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
-  if (animation) {
-    style.animations = {
-      ...style.animations,
-      [animation]: initial.animations[animation],
-    };
-    return;
-  }
-  const transition = TRANSITION_LONGHANDS[PREFIXED_ALIASES[name] ?? name];
-  if (transition) {
-    style.transitions = {
-      ...style.transitions,
-      [transition]: initial.transitions[transition],
-    };
-    return;
-  }
-  const part = FIELD_PARTS.get(PREFIXED_ALIASES[name] ?? name);
-  if (part) {
-    part(style, initial);
-    return;
-  }
-  const keys = INHERIT_TARGETS[name];
-  if (!keys) return;
-  copyFields(style, initial, keys);
-}
-
 /**
  * `all` (CSS Cascade 4, 3.2.1): every property but `direction` and
  * `unicode-bidi` at the CSS-wide keyword it is given, which is the only
@@ -8886,6 +8846,8 @@ function allConstructor(fields: string[]): AllCopier {
   return new Function('to', 'from', body.join('\n')) as AllCopier;
 }
 
+/** `prop: inherit` — take the parent's computed value for whatever longhands
+ *  the property names. Shorthands copy each of their longhands. */
 function inheritOne(
   style: ComputedStyle,
   parent: ComputedStyle,
@@ -9055,8 +9017,8 @@ function whiteSpacePart(
 /**
  * The longhands that share a field with their siblings, as the mask's do
  * (`MASK_LISTS`), and what `inherit`, `initial` and a `var()` take of it: a
- * declaration with a `var()` goes back to the initial value before it is
- * substituted (`Cascade._apply`), and taken whole, each undid the sibling
+ * declaration with a `var()` goes back as `unset` before what it substitutes
+ * is applied (`Cascade._apply`), and taken whole, each undid the sibling
  * before it. GitHub's search box rounds its left side with
  * `border-top-left-radius: var(--borderRadius-medium)` and the same at the
  * bottom left, and its top corner was square.
