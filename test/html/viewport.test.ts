@@ -21,6 +21,7 @@ import {
   treeOf,
   view,
 } from './harness.js';
+import { boxLayoutsMade } from '../../src/html/layout/block.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
@@ -1521,10 +1522,77 @@ test('vw lengths taken in place at a new width lay out as a build does, over gen
     const resized = laid();
     (el as unknown as { _invalidate(stale: number): void })._invalidate(3);
     el.layoutNow();
-    assert.deepStrictEqual(resized, laid(), `document ${doc}: ${source}`);
+    // a kept box comes to its place by being moved, a few bits off where
+    // laid out there it comes to: as `layoutShape` compares places
+    const whole = laid();
+    assert.ok(
+      resized.every(
+        (box, i) =>
+          box.length === whole[i].length &&
+          box.every((v, j) => Math.abs(v - whole[i][j]) < 1e-6),
+      ),
+      `document ${doc}: ${source}\n${JSON.stringify(resized)}\n${JSON.stringify(whole)}`,
+    );
     await cleanup();
   }
   assert.ok(inPlace >= 10, `${inPlace} of 30 restyled in place`);
+});
+
+test('a new width lays out what it reaches: a column as wide as it was stays as it was laid out', async () => {
+  // a viewport's width is no input of a box in a flow: a mail page's strip
+  // of 2,499 senders and its rows, at the widths they had, were laid out
+  // again at every step of a window's edge
+  const rows = Array.from(
+    { length: 60 },
+    (_, i) => `<div class="row" id="r${i}"><b>row</b> ${i}</div>`,
+  ).join('');
+  const source =
+    '<style>body{margin:0}</style>' +
+    '<div style="display:flex"><div id="pane" style="flex:1">the rest</div>' +
+    `<div id="side" style="flex:none;width:120px">${rows}</div></div>`;
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const row = boxOf(el, 'r30');
+  const y = row.y;
+  const made = boxLayoutsMade();
+  await resize(300, 380);
+  const laid = boxLayoutsMade() - made;
+  assert.ok(boxOf(el, 'pane').width < 280, 'the pane took the new width');
+  assert.ok(laid < 30, `${laid} boxes laid out, of a column of 60 rows`);
+  assert.strictEqual(boxOf(el, 'r30'), row, 'the boxes are the same boxes');
+  assert.strictEqual(boxOf(el, 'r30').y, y);
+  assert.strictEqual(
+    boxOf(el, 'r30').x,
+    boxOf(el, 'side').x,
+    'and moved with the column',
+  );
+});
+
+test('a block a flex box around it asks about at one width is laid out once at it', async () => {
+  // a flex box lays out what it holds at each size it asks about, one
+  // inside another: a mail page's list of messages was laid out ten times
+  // a layout at the width it had
+  const rows = Array.from(
+    { length: 20 },
+    (_, i) => `<div class="row" id="r${i}"><b>row</b> ${i}</div>`,
+  ).join('');
+  const scroller = `<div style="overflow:auto;height:100%"><div>${rows}</div></div>`;
+  const source =
+    '<style>body{margin:0}</style>' +
+    '<div style="display:flex;height:280px">' +
+    '<aside style="width:50px;flex:none">x</aside>' +
+    '<div style="width:calc(100% - 40px);flex-grow:1;display:flex;height:100%">' +
+    '<div style="flex:auto;display:flex;flex-direction:column">' +
+    '<div style="flex:auto;display:flex">' +
+    '<div style="flex:auto;display:flex;flex-direction:column;width:100%">' +
+    `${scroller}</div></div></div></div></div>`;
+  const { el, resize } = await renderScrolled(source, 300, 400);
+  const made = boxLayoutsMade();
+  await resize(300, 380);
+  const laid = boxLayoutsMade() - made;
+  assert.strictEqual(boxOf(el, 'r3').width, 330, 'the rows took the new width');
+  // its 20 rows once, and the boxes around them a few times over: 54 where
+  // each row was laid out twice
+  assert.ok(laid < 45, `${laid} boxes laid out, of 20 rows`);
 });
 
 test('fluid type in vw taken in place at a new width sets its text as a build does, over generated documents', async () => {

@@ -773,11 +773,11 @@ interface Laid {
   /** The layout it was laid out in (`LayoutContext.reusePass`). */
   pass: number;
   serial: number;
-  /** The room its flow had, its percentage height base, the viewport and
-   *  the scale and the fonts it was laid out at. */
+  /** The room its flow had, its percentage height base, the viewport's
+   *  height and the scale and the fonts it was laid out at. Not the
+   *  viewport's width, which is `mayKeepLaid`'s to say. */
   width: number;
   base: number;
-  viewportWidth: number;
   under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;
@@ -787,6 +787,10 @@ interface Laid {
   /** Its bottom margin with what came out through its bottom edge. */
   marginBottom: number;
   bottomStrut: MarginStrut | null;
+  /** The first box out of the flow it left waiting to be positioned, where
+   *  it left any, and where: a later layout in this one finds it there, or
+   *  a clamp took it back (`layoutClamped`). */
+  queued: { at: number; first: LayoutContext['positioned'][number] } | null;
 }
 
 const LAID = new WeakMap<Box, Laid>();
@@ -807,7 +811,6 @@ interface Stand {
   /** What it was laid out from, as a kept block's (`Laid`). */
   width: number;
   base: number;
-  viewportWidth: number;
   under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;
@@ -916,7 +919,6 @@ function standFor(child: Box, ctx: LayoutContext, width: number): Stand | null {
   if (
     stand === undefined ||
     !Object.is(stand.base, child.percentHeightBase) ||
-    stand.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(stand.under, ctx) ||
     stand.scale !== ctx.scale ||
     stand.fonts !== ctx.engine
@@ -948,7 +950,6 @@ function standAfter(
   noteStand(child, {
     width,
     base: child.percentHeightBase,
-    viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
     fonts: ctx.engine,
@@ -1005,6 +1006,8 @@ function noteLaid(
   contentLeft: number,
   y: number,
   width: number,
+  /** How many boxes waited to be positioned before it was laid out. */
+  waiting: number,
 ): void {
   if (ctx.blockers!.blockers.has(child)) {
     LAID.delete(child);
@@ -1015,7 +1018,6 @@ function noteLaid(
     serial: child.layoutSerial,
     width,
     base: child.percentHeightBase,
-    viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
     fonts: ctx.engine,
@@ -1023,6 +1025,10 @@ function noteLaid(
     dy: child.y - y,
     marginBottom: child.marginBottom,
     bottomStrut: child.bottomStrut,
+    queued:
+      ctx.positioned.length > waiting
+        ? { at: waiting, first: ctx.positioned[waiting] }
+        : null,
   });
 }
 
@@ -1032,8 +1038,15 @@ function noteLaid(
  * relative offset and those of the boxes it is in are put on again after
  * the flow, and the offsets inside it are still on, which those passes
  * leave (`LayoutContext.reused`). False where anything it was laid out from
- * is otherwise, or it was laid out since: a probe of what it is in, or a
- * layout earlier in this one.
+ * is otherwise, or it was laid out since: a probe of what it is in.
+ *
+ * Laid out earlier in this layout it is only moved: none of that is on it
+ * yet, what is in it is waiting to be positioned already, and its ink is no
+ * ink of before to keep. A flex box lays out what it holds at each size it
+ * asks about, one inside another: a mail page's list of messages was laid
+ * out ten times a layout at the one width, nine of them for nothing. But
+ * not in a layout that stops, which may have cut it short for being lower
+ * down than it is now.
  */
 function reuseLaid(
   child: Box,
@@ -1045,11 +1058,9 @@ function reuseLaid(
   const laid = LAID.get(child);
   if (
     laid === undefined ||
-    laid.pass === ctx.reusePass ||
     laid.serial !== child.layoutSerial ||
     laid.width !== width ||
     !Object.is(laid.base, child.percentHeightBase) ||
-    laid.viewportWidth !== ctx.viewportWidth ||
     !heightHolds(laid.under, ctx) ||
     laid.scale !== ctx.scale ||
     laid.fonts !== ctx.engine ||
@@ -1059,9 +1070,15 @@ function reuseLaid(
   ) {
     return false;
   }
+  if (laid.pass !== ctx.reusePass) keepLaid(child, ctx);
+  else if (
+    ctx.until !== undefined ||
+    (laid.queued && ctx.positioned[laid.queued.at] !== laid.queued.first)
+  ) {
+    return false;
+  }
   child.marginBottom = laid.marginBottom;
   child.bottomStrut = laid.bottomStrut;
-  keepLaid(child, ctx);
   moveTo(child, contentLeft + laid.dx, y + laid.dy);
   return true;
 }
@@ -1069,18 +1086,24 @@ function reuseLaid(
 /**
  * Whether a layout may keep a box an earlier layout laid out, as that one
  * left it (`reuseLaid`, and a flex item's `keptNatural`): where both keep
- * boxes (`LayoutContext.reusePass`), at the same viewport — or at another
- * height the earlier one read none of (`heightHolds`) — scale and fonts,
+ * boxes (`LayoutContext.reusePass`), at the same viewport height — or at
+ * another the earlier one read none of (`heightHolds`) — scale and fonts,
  * the box no blocker (`reuseBlockers`) and placed where it can be moved
  * from. What the box itself was laid out from is the caller's to
  * compare, and whether anything in it changed since is `forgetSizes`'.
+ *
+ * At any viewport width. Only a box placed against the initial containing
+ * block reads one (`containingRect`), and that box is a blocker, as all
+ * around it are; a `vw` is a style's, whose restyle forgets what it changes
+ * (`forgetSizes`). Compared, every step of a window's edge threw away
+ * every kept layout there was, and a mail page laid its 2,499 senders and
+ * its rows out again at the widths they already had: 13,000 boxes for 4px.
  */
 export function mayKeepLaid(
   box: Box,
   ctx: LayoutContext,
   was: {
     pass: number;
-    viewportWidth: number;
     under: LaidUnder;
     scale: number | undefined;
     fonts: FontsLike | null;
@@ -1094,7 +1117,6 @@ export function mayKeepLaid(
     (probes || !ctx.probing) &&
     !Number.isNaN(was.pass) &&
     was.pass !== ctx.reusePass &&
-    was.viewportWidth === ctx.viewportWidth &&
     heightHolds(was.under, ctx) &&
     was.scale === ctx.scale &&
     was.fonts === ctx.engine &&
@@ -2727,6 +2749,7 @@ function layoutChildren(
     if (keepable && reuseLaid(child, ctx, contentLeft, childY, contentWidth)) {
       // laid out where it was, and moved here
     } else {
+      const waiting = ctx.positioned.length;
       if (
         !floats.isEmpty &&
         (child.kind === 'replaced' || establishesBFC(child))
@@ -2745,7 +2768,7 @@ function layoutChildren(
       // what it was laid out from, for a later layout to keep it by, where
       // it put no float in this flow
       if (keepable && floats.count === floatMark) {
-        noteLaid(child, ctx, contentLeft, childY, contentWidth);
+        noteLaid(child, ctx, contentLeft, childY, contentWidth, waiting);
       } else LAID.delete(child);
       // and for a later probe, what it came to
       if (standable && floats.count === floatMark && !collapsesThrough(child)) {

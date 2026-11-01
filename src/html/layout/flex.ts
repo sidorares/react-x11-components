@@ -1710,7 +1710,6 @@ function layoutNaturally(
           (ctx.until === undefined &&
             ctx.keep === undefined &&
             ctx.reach === undefined),
-        viewportWidth: ctx.viewportWidth,
         under: ctx.under,
         scale: ctx.scale,
         fonts: ctx.engine,
@@ -1865,15 +1864,14 @@ function keepsNatural(box: Box, ctx: LayoutContext, kept: Natural): boolean {
 interface Natural {
   ctx: LayoutContext;
   /** What a later layout keeps it by (`keepsNatural`): the layout's
-   *  `reusePass`, NaN where it keeps none, and the viewport, scale and
-   *  fonts it was laid out at. */
+   *  `reusePass`, NaN where it keeps none, and the viewport height, scale
+   *  and fonts it was laid out at. */
   pass: number;
   /** Whether a probe made it, which only a probe keeps. */
   probe: boolean;
   /** Whether it is all of the item, which is what a probe keeps: one a
    *  layout that stops made may leave some of it set aside. */
   whole: boolean;
-  viewportWidth: number;
   under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;

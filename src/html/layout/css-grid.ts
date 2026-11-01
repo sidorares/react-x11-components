@@ -1462,7 +1462,6 @@ function layoutAcross(
     ctx,
     probe: ctx.probing === true,
     pass: ctx.probing ? NaN : (ctx.reusePass ?? NaN),
-    viewportWidth: ctx.viewportWidth,
     under: ctx.under,
     scale: ctx.scale,
     fonts: ctx.engine,
@@ -1508,7 +1507,6 @@ interface ItemLaid {
   ctx: LayoutContext;
   probe: boolean;
   pass: number;
-  viewportWidth: number;
   under: LaidUnder;
   scale: number | undefined;
   fonts: FontsLike | null;

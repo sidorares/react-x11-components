@@ -2682,8 +2682,19 @@ decide, after the document's first layout, and the next layout laid out
 again every block, flex item and grid item the first had. So **anything
 new a layout reads of the viewport's height sets `readViewportHeight`**,
 as `containingRect` does, or a box kept under a new height is laid out as
-it was under the old one. A hover's or a focus's build is seeded with
-its reach, as a frame's is.
+it was under the old one. A box is kept at any viewport width: only a box
+placed against the initial containing block reads one (`containingRect`),
+which is a blocker, as all around it are, and a `vw` is a style's, whose
+restyle forgets what it moves. Compared, every step of a window's edge threw
+away every kept layout there was, and a mail page laid out 13,000 boxes for
+4px, most of them at the widths they had. So **anything new a box's layout
+reads of the viewport's width makes it a blocker**. A block laid out earlier
+in the same layout is kept too, moved and no more (`reuseLaid`): nothing the
+passes after the flow put on is on it yet, and its ink is new, so it is in no
+`reused`. A flex box lays out what it holds at each size it asks about, one
+inside another, and that list was laid out ten times a layout at one width.
+A layout that stops keeps none, which may have cut it short lower down. A
+hover's or a focus's build is seeded with its reach, as a frame's is.
 `test/html/subtree-build.test.ts` holds a subtree build and the layout
 after it to a whole build, box, line, list and style, over generated
 documents; `SUBTREE_SEEDS` sweeps more of them, and `SUBTREE_FROM` starts
