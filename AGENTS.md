@@ -1660,6 +1660,22 @@ items' heights**: anything new that makes one so — a ratio handed to Yoga,
 a basis read from a height the measure found — turns sizing off for its
 row, or the widths come out of heights nobody measured.
 
+**A long row that comes to the same at any width keeps its layout** (`Row`,
+`keptRow`, from `ROW_FROM` items). Items that neither grow nor shrink, one
+after another from a row's start, stand in the same places however wide it is,
+so a new width gives Yoga nothing to work out: a webmail page's strip of 2,499
+senders, `overflow: hidden` around the few that show, was a Yoga node an item
+at every step of a window's edge, some 40% of a step's layout. Three things are
+load-bearing. **Anything new that makes where an item stands depend on the
+row's width joins `placesFromItsStart` or `sizedApartFromItsRow`**, and a case
+in `FLAWS` (`test/html/flex.test.ts`), each of which is a way to, in a row that
+has room to share out and in one that does not. **Anything new that changes an
+item in place forgets the row** (`forgetSizes`, through `forgetMaxContent`):
+that is all that says a length taken in place moved it, since it keeps its box
+and its serial. And **an item a probe laid out is not kept** (`Row.serials`): a
+box's narrowest is first asked for when it is squeezed, and lays out at no width
+an item it cannot answer for.
+
 **Three phases, three invalidation reasons, and the split is the component.**
 Boxes depend on the DOM and the stylesheets; layout depends on the width;
 paint depends on neither. So a resize skips the cascade and an expose skips

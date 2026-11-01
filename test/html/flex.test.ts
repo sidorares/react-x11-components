@@ -3918,7 +3918,8 @@ test('a long row is laid out as a whole layout has it at any width, over generat
       .join(';');
     const count = 66 + Math.floor(next() * 8);
     const place = Math.floor(next() * count);
-    const tiny = seed % 2 === 0;
+    // once in a row that fits its widths, and once in one that does not
+    const tiny = seed < FLAWS.length;
     const items = Array.from({ length: count }, (_, i) => {
       const own = tiny
         ? 'width:4px'
