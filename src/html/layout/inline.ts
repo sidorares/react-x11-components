@@ -30,9 +30,6 @@
 // (`TextLayoutCache`), so the element under a run is found from its text's
 // place in the document (`LineText.spans`) instead.
 
-import bidiModule from 'bidi-js';
-import type { Bidi } from 'bidi-js';
-
 import { codePointAtOffset, codeUnitOffsets } from '../../internal/text.js';
 import type { TextRun } from '../../richtext/index.js';
 import { fadeColor } from '../css/color.js';
@@ -43,6 +40,7 @@ import {
   scrolls,
 } from '../css/style.js';
 import { inkColor, isTransparent, resolve } from '../css/values.js';
+import { bidiJs } from '../direction.js';
 import { isInputButton, tagOf } from '../dom.js';
 import {
   BOX_RAISES,
@@ -3055,20 +3053,6 @@ interface LineLevels {
 }
 
 type TextPlaced = Extract<Placed, { kind: 'text' }>;
-
-let BIDI: Bidi | null = null;
-
-/** bidi-js, made the first time a paragraph needs it. Its declarations
- *  give a CommonJS module a default export, which NodeNext reads as the
- *  module object; Node and a bundler both hand over its factory. */
-function bidiJs(): Bidi {
-  if (!BIDI) {
-    const factory = bidiModule as unknown as
-      (() => Bidi) | { default: () => Bidi };
-    BIDI = (typeof factory === 'function' ? factory : factory.default)();
-  }
-  return BIDI;
-}
 
 /** A paragraph's levels, or null where nothing in it can be reordered:
  *  it reads left to right, and holds no right-to-left letter and no

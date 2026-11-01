@@ -71,6 +71,7 @@ import {
   setMediaFlag,
   setPaused,
   markCustomized,
+  setCustomStates,
   markParsedRegistry,
   parsedNullRegistries,
   parsedWithNullRegistry,
@@ -105,12 +106,26 @@ import {
   parseDeclarations,
   parseMediaQuery,
   parseStylesheet,
+  selectorList,
   supportsCondition,
 } from '../css/parse.js';
 import { closeBrackets, hasVar } from '../css/vars.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
-import { isDisabled, validationMessage } from '../form.js';
+import { CONTROL_PSEUDOS } from '../control-state.js';
+import {
+  checkedDefault,
+  controlChange,
+  controlsMoved,
+  indeterminateSet,
+  isDisabled,
+  markFormAssociated,
+  setCheckedDefault,
+  setCustomError,
+  setIndeterminate,
+  validated,
+  validityError,
+} from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
 import {
   LiveRange,
@@ -1343,6 +1358,17 @@ interface Observer {
  *  everything rather than what they reach. */
 const CHANGES_TOLD = 4000;
 
+/** The pseudo-classes that take one identifier. */
+const TAKES_AN_IDENT = /:(?:state|dir)\(/i;
+
+/** What a page's own selector can ask, beyond css-select: a function, or
+ *  a string for one of css-select's aliases to take over
+ *  (`CONTROL_PSEUDOS`). */
+type Pseudos = Record<
+  string,
+  string | ((el: Element, arg?: string | null) => boolean)
+>;
+
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
@@ -2272,11 +2298,25 @@ export class DomHost {
     }
   }
 
+  /** Whether a box's `checked` attribute holds its state and its default
+   *  is kept apart (HTML 4.10.5.4, "dirty checkedness"): a script set it, or
+   *  the user ticked it. */
+  private _isDirtyBox(el: Element): boolean {
+    if (this._checkedDefaults.has(el)) return true;
+    if (!/^(?:checkbox|radio)$/i.test(el.attribs.type ?? '')) return false;
+    const kept = checkedDefault(el);
+    if (kept === undefined) return false;
+    this._checkedDefaults.set(el, kept);
+    return true;
+  }
+
   /** A dirty box's `checked` attribute set or taken away: its default
    *  changed, its state not, and the page's observers told. */
   private _defaultChecked(el: Element, value: string | null): void {
     const oldValue = this._checkedDefaults.get(el) ?? null;
     this._checkedDefaults.set(el, value);
+    setCheckedDefault(el, value);
+    this._tell(el, controlChange(el));
     if (this._observers.size) {
       this._queue(el, {
         type: 'attributes',
@@ -2762,7 +2802,7 @@ export class DomHost {
       case 'attr': {
         const el = this._element(a);
         const name = text(b);
-        if (name === 'checked' && this._checkedDefaults.has(el)) {
+        if (name === 'checked' && this._isDirtyBox(el)) {
           return this._checkedDefaults.get(el)!;
         }
         return el.attribs[name] ?? null;
@@ -2770,7 +2810,7 @@ export class DomHost {
       case 'attrs': {
         const el = this._element(a);
         const names = Object.keys(el.attribs);
-        if (!this._checkedDefaults.has(el)) return names.join('\u0000');
+        if (!this._isDirtyBox(el)) return names.join('\u0000');
         // the default a dirty box's `checked` is, and not its state
         const listed = names.filter((n) => n !== 'checked');
         if (this._checkedDefaults.get(el) !== null) listed.push('checked');
@@ -2779,7 +2819,7 @@ export class DomHost {
       case 'setAttr': {
         const el = this._element(a);
         const name = text(b);
-        if (name === 'checked' && this._checkedDefaults.has(el)) {
+        if (name === 'checked' && this._isDirtyBox(el)) {
           this._defaultChecked(el, text(c));
           return null;
         }
@@ -2799,7 +2839,7 @@ export class DomHost {
       case 'delAttr': {
         const el = this._element(a);
         const name = text(b);
-        if (name === 'checked' && this._checkedDefaults.has(el)) {
+        if (name === 'checked' && this._isDirtyBox(el)) {
           this._defaultChecked(el, null);
           return null;
         }
@@ -3017,6 +3057,7 @@ export class DomHost {
       case 'ceDefined': {
         const el = this._element(a);
         markCustomized(el);
+        if (b === true) markFormAssociated(el);
         if (this._isDocument(shadowIncludingRoot(el))) {
           this._tell(el, {
             type: 'attributes',
@@ -4245,6 +4286,43 @@ export class DomHost {
           typeof b === 'boolean' ? b : text(b),
         );
       }
+      // what is wrong with a control, as `flag NUL message`, or '' for
+      // nothing; whether it is validated at all; and a script's own reason,
+      // from `setCustomValidity()`, '' taking it back
+      case 'validity': {
+        const wrong = validityError(this._element(a));
+        return wrong ? `${wrong.flag}\u0000${wrong.message}` : '';
+      }
+      case 'willValidate':
+        return validated(this._element(a));
+      case 'customValidity': {
+        const el = this._element(a);
+        if (setCustomError(el, text(b))) this._tell(el, controlChange(el));
+        return null;
+      }
+      // a box's `indeterminate`, which is in no attribute; given no `b`,
+      // what it is
+      case 'indeterminate': {
+        const el = this._element(a);
+        if (typeof b === 'boolean' && setIndeterminate(el, b)) {
+          this._tell(el, controlChange(el));
+        }
+        return indeterminateSet(el);
+      }
+      // a custom element's states, `:state()` from now, told as a change of
+      // an attribute nothing has, which only it reads
+      case 'customStates': {
+        const el = this._element(a);
+        const names = text(b).split('\u0000').filter(Boolean);
+        if (setCustomStates(el, names)) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-state',
+          });
+        }
+        return null;
+      }
       // a text field's selection, as `start end direction`, or '' for
       // what has none; and set, from offsets the page's realm clamped
       case 'selection': {
@@ -4335,6 +4413,7 @@ export class DomHost {
         return this._seams.handle.reportValidity(
           this._element(a),
           b ? this._element(b) : null,
+          c === true,
         );
       case 'reset': {
         const form = this._element(a);
@@ -4980,23 +5059,13 @@ export class DomHost {
     return rest.length ? rest.join(', ') : null;
   }
 
-  private _selectOptions(): {
-    pseudos: Record<string, (el: Element, arg?: string | null) => boolean>;
-  } {
+  private _selectOptions(): { pseudos: Pseudos } {
     if (this._pseudos) return this._pseudos;
     const handle = () => this._seams.handle;
     const focused = (el: Element): boolean => handle().activeElement === el;
     const nothing = (_el: Element): boolean => false;
-    const live = (el: Element): string | undefined => {
-      const value = handle().controlValue(el);
-      return typeof value === 'string' ? value : undefined;
-    };
-    const invalid = (el: Element): boolean =>
-      validationMessage(el, live) !== null;
-    const pseudos: Record<
-      string,
-      (el: Element, arg?: string | null) => boolean
-    > = {
+    const pseudos: Pseudos = {
+      ...CONTROL_PSEUDOS,
       defined: (el) => isDefinedElement(el),
       target: (el) => {
         let fragment = '';
@@ -5025,15 +5094,8 @@ export class DomHost {
         el.name === 'details' || el.name === 'dialog'
           ? el.attribs.open === undefined
           : isDropDown(el) && !isPickerOpen(el),
-      valid: (el) => !invalid(el),
-      invalid,
-      'placeholder-shown': (el) =>
-        (el.name === 'input' || el.name === 'textarea') &&
-        el.attribs.placeholder !== undefined &&
-        !(live(el) ?? el.attribs.value ?? ''),
       // one that takes an argument has a second parameter, as css-select
       // counts them
-      state: (_el, _name) => false,
       modal: (el) => isModal(el),
       'popover-open': (el) => isPopoverOpen(el),
       'active-view-transition': (el) => inActiveTransition(el),
@@ -5055,11 +5117,6 @@ export class DomHost {
       // a page cannot lock a volume, and nothing here does
       'volume-locked': nothing,
       fullscreen: (el) => isFullscreen(el),
-      autofill: nothing,
-      '-webkit-autofill': nothing,
-      'user-valid': nothing,
-      'user-invalid': nothing,
-      indeterminate: nothing,
       host: nothing,
     };
     return (this._pseudos = { pseudos });
@@ -5095,6 +5152,11 @@ export class DomHost {
     const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
     const kept = keeps ? this._queries.get(selector) : undefined;
     if (kept) return kept;
+    // an argument css-select takes as any text is the parser's to refuse, as
+    // a sheet's is
+    if (TAKES_AN_IDENT.test(selector) && !selectorList(selector)) {
+      throw new Error('a pseudo-class given what it does not take');
+    }
     const options = { ...this._queryOptions(), cacheResults: !keeps };
     const query = compileHoisted(
       selector,
@@ -5310,6 +5372,8 @@ export class DomHost {
   }
 
   private _tell(node: AnyNode, change: HtmlChange): void {
+    // a query after it asks of the tree as it is now, ahead of the flush
+    controlsMoved();
     // what can change a window's names; a text's change cannot
     if (
       change.type === 'childList' ||

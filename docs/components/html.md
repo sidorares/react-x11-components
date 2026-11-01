@@ -2147,6 +2147,21 @@ what was typed, and `onControlChange` is handed it. A checkbox, a radio and a
 `<select>` do keep what they hold in the DOM — `checked` and `selected` —
 because `:checked` is a selector documents really use.
 
+**A control's state is a selector's as much as a script's.** `:valid`,
+`:invalid`, `:in-range`, `:out-of-range` and `:placeholder-shown` follow what
+is typed, `:user-valid` and `:user-invalid` hold once the user left a field
+they edited, picked something, or tried to send its form, until a reset, and
+`:indeterminate`, `:default`, `:read-write` and `:read-only` answer as HTML
+has them, a `<form>` and a `<fieldset>` for what they hold included. A rule
+and a page's `matches()` get one answer, and it is the one `checkValidity()`
+and `setCustomValidity()` work with. They were checked against Chromium, and
+where Firefox and WebKit differ, this has Chromium's: an empty field with no
+limits is `:in-range`, an image button is not validated, and no SVG element
+is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
+and a checkbox's `indeterminate` shows in a selector and not on its widget,
+which has no dash to draw. A keystroke restyles only where it turned one of
+these answers, so typing in a document with no such rule costs nothing.
+
 ## Video
 
 ```jsx
@@ -5094,7 +5109,12 @@ has a box that takes it for it (see [Focus and the
 keyboard](#focus-and-the-keyboard)) — so Wikipedia's skip link, hidden with
 `:not(:focus)`, shows when Tab reaches it. `:target` is the
 element the fragment of the document's URL names — `baseUrl`'s, see [Base
-URLs](#base-urls) — and the one an SVG image's URL names by its.
+URLs](#base-urls) — and the one an SVG image's URL names by its. What a form
+control's state answers is in [Forms](#forms). `:dir()` reads the nearest
+`dir`, a `dir="auto"` or a `<bdi>` by its first strong letter, and `:state()`
+what a custom element's `ElementInternals.states` holds. `:blank` and
+`:local-link` are refused, and take their rule with them, as all three
+browsers refuse them.
 Specificity is Selectors 4's: `:where()` counts nothing, `:is()`, `:not()`
 and `:has()` count the most specific selector in their list, and
 `:nth-child(2n of .a)` a class and the most specific in its list, so a

@@ -27,7 +27,9 @@ import {
   elementsIn,
   isElement,
   tagOf,
+  treeGeneration,
 } from './dom.js';
+import type { HtmlChange } from './dom.js';
 import { resolveUrl } from './url.js';
 
 export type FormMethod = 'get' | 'post';
@@ -333,15 +335,14 @@ export function selectedOptions(select: Element): Element[] {
   return first ? [first] : [];
 }
 
-/** A `<textarea>`'s text as its markup has it — HTML drops one newline
- *  straight after the open tag, so a pretty-printed one does not start on
- *  a blank line. */
+/** A `<textarea>`'s text as its markup has it, which the parser took the
+ *  newline straight after its open tag off. */
 export function textareaDefault(el: Element): string {
   let text = '';
   for (const child of childrenOf(el)) {
     if (child.type === 'text') text += child.data;
   }
-  return text.replace(/^\r?\n/, '');
+  return text;
 }
 
 /** HTML's valid floating-point number (2.3.4.3): what a number field may
@@ -375,9 +376,147 @@ export function controlValue(
         .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
     case 'number':
       return FLOAT.test(raw) ? raw : '';
+    case 'date':
+    case 'month':
+    case 'week':
+    case 'time':
+    case 'datetime-local':
+      return fieldNumber(inputType(el), raw) === null ? '' : raw;
     default:
       return raw;
   }
+}
+
+/** The `<input>` types whose value is a place on a line, which `min`, `max`
+ *  and `step` apply to: the step each takes with none said, and how many of
+ *  the numbers `fieldNumber` reads make a unit of one (HTML 4.10.5.1). */
+const STEPS: Record<string, readonly [step: number, unit: number]> = {
+  number: [1, 1],
+  range: [1, 1],
+  date: [1, 86400000],
+  month: [1, 1],
+  week: [1, 604800000],
+  time: [60, 1000],
+  'datetime-local': [60, 1000],
+};
+
+/** What a week's step counts from with no `min` and no `value`: 1970-W01's
+ *  Monday, in milliseconds (HTML 4.10.5.1.10). */
+const WEEK_BASE = -259200000;
+
+/** A day as milliseconds since the epoch, or null for none the calendar
+ *  has. */
+function dayNumber(year: number, month: number, day: number): number | null {
+  if (year < 1 || month < 1 || month > 12 || day < 1) return null;
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  return date.getUTCMonth() === month - 1 ? date.getTime() : null;
+}
+
+/** A week's Monday as milliseconds since the epoch (ISO 8601), or null for
+ *  one its year does not have. */
+function weekNumber(year: number, week: number): number | null {
+  const monday = (y: number): number => {
+    const fourth = dayNumber(y, 1, 4)!;
+    return fourth - ((new Date(fourth).getUTCDay() + 6) % 7) * 86400000;
+  };
+  if (year < 1 || week < 1) return null;
+  const first = monday(year);
+  if (week > Math.round((monday(year + 1) - first) / 604800000)) return null;
+  return first + (week - 1) * 604800000;
+}
+
+/** A time of day as milliseconds, or null for none. */
+function timeNumber(text: string): number | null {
+  const m = /^(\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,3}))?)?$/.exec(text);
+  if (!m) return null;
+  const [hour, minute, second] = [m[1], m[2], m[3] ?? '0'].map(Number);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const ms = Number((m[4] ?? '').padEnd(3, '0'));
+  return (hour * 3600 + minute * 60 + second) * 1000 + ms;
+}
+
+/**
+ * What a field of a type in `STEPS` holds as a number to compare and step
+ * by, or null where the text is no valid value of the type (HTML 2.3.5):
+ * milliseconds for a date, a week and a time, months for a month.
+ */
+function fieldNumber(type: string, text: string): number | null {
+  if (type === 'number' || type === 'range') {
+    const n = FLOAT.test(text) ? Number(text) : NaN;
+    return Number.isFinite(n) ? n : null;
+  }
+  if (type === 'time') return timeNumber(text);
+  if (type === 'datetime-local') {
+    const m = /^(\d{4,})-(\d\d)-(\d\d)[T ](.+)$/.exec(text);
+    const day = m && dayNumber(Number(m[1]), Number(m[2]), Number(m[3]));
+    const time = m && timeNumber(m[4]);
+    return day === null || time === null ? null : day + time;
+  }
+  if (type === 'date') {
+    const m = /^(\d{4,})-(\d\d)-(\d\d)$/.exec(text);
+    return m && dayNumber(Number(m[1]), Number(m[2]), Number(m[3]));
+  }
+  if (type === 'month') {
+    const m = /^(\d{4,})-(\d\d)$/.exec(text);
+    const month = m ? Number(m[2]) : 0;
+    if (!m || Number(m[1]) < 1 || month < 1 || month > 12) return null;
+    return (Number(m[1]) - 1970) * 12 + month - 1;
+  }
+  if (type === 'week') {
+    const m = /^(\d{4,})-W(\d\d)$/.exec(text);
+    return m && weekNumber(Number(m[1]), Number(m[2]));
+  }
+  return null;
+}
+
+/** A limit or a base of a field, as `fieldNumber` reads it. */
+function attributeNumber(
+  el: Element,
+  name: string,
+  type: string,
+): number | null {
+  const text = attr(el, name);
+  return text === undefined ? null : fieldNumber(type, text.trim());
+}
+
+/** Where a field's value stands against its `min` and its `max`: below
+ *  them, above them or between, and null with neither. A `time` whose `min`
+ *  is later than its `max` runs past midnight (HTML 4.10.5.1.10). */
+function rangePlace(
+  el: Element,
+  type: string,
+  value: number,
+): 'under' | 'over' | 'inside' | null {
+  const min = attributeNumber(el, 'min', type);
+  const max = attributeNumber(el, 'max', type);
+  if (min === null && max === null) return null;
+  if (type === 'time' && min !== null && max !== null && min > max) {
+    return value >= min || value <= max ? 'inside' : 'over';
+  }
+  if (min !== null && value < min) return 'under';
+  if (max !== null && value > max) return 'over';
+  return 'inside';
+}
+
+/** Whether a field's value is off its steps (HTML 4.10.5.1.13), each step
+ *  counted from its `min`, or its `value` attribute, or the type's base,
+ *  with Blink's room for a double's error. */
+function offStep(el: Element, type: string, value: number): boolean {
+  const written = attr(el, 'step')?.trim();
+  if (written?.toLowerCase() === 'any') return false;
+  const [step, unit] = STEPS[type];
+  const asked = written && FLOAT.test(written) ? Number(written) : 0;
+  const size = (asked > 0 ? asked : step) * unit;
+  const base =
+    attributeNumber(el, 'min', type) ??
+    attributeNumber(el, 'value', type) ??
+    (type === 'week' ? WEEK_BASE : 0);
+  const off = Math.abs(value - base);
+  if (off > 1e15) return false;
+  const rest = Math.abs(off - size * Math.round(off / size));
+  const room = size / 2 ** 24;
+  return room < rest && rest < size - room;
 }
 
 // --- the entry list --------------------------------------------------------------
@@ -725,36 +864,73 @@ function patternOf(source: string): RegExp | null {
 }
 
 /** Whether a control's value is checked at all (HTML 4.10.21.2, "barred
- *  from constraint validation"). */
-function validated(el: Element): boolean {
-  if (isDisabled(el) || inert(el)) return false;
+ *  from constraint validation"), which `willValidate` reads. As Blink has
+ *  it: an image button is not, where HTML's table says it is, and a
+ *  `readonly` bars every `<input>`, which a type it does not apply to the
+ *  rest of HTML ignores. */
+export function validated(el: Element): boolean {
   const tag = tagOf(el);
   if (tag === 'input') {
     const type = inputType(el);
-    if (type === 'hidden' || type === 'reset' || type === 'button') {
+    if (
+      type === 'hidden' ||
+      type === 'reset' ||
+      type === 'button' ||
+      type === 'image' ||
+      attr(el, 'readonly') !== undefined
+    ) {
       return false;
     }
-    if (buttonType(el) === 'submit') return false;
-    return attr(el, 'readonly') === undefined;
-  }
-  if (tag === 'textarea') return attr(el, 'readonly') === undefined;
-  return tag === 'select';
+  } else if (tag === 'textarea') {
+    if (attr(el, 'readonly') !== undefined) return false;
+  } else if (tag === 'button') {
+    if (buttonType(el) !== 'submit') return false;
+  } else if (tag !== 'select' && !FORM_ASSOCIATED.has(el)) return false;
+  return !isDisabled(el) && !inert(el);
+}
+
+/** The ways a control can be wrong: `ValidityState`'s members. */
+export type ValidityFlag =
+  | 'valueMissing'
+  | 'typeMismatch'
+  | 'patternMismatch'
+  | 'tooLong'
+  | 'tooShort'
+  | 'rangeUnderflow'
+  | 'rangeOverflow'
+  | 'stepMismatch'
+  | 'badInput'
+  | 'customError';
+
+/** What is wrong with a control, and how a browser says it. */
+export interface ValidityError {
+  flag: ValidityFlag;
+  message: string;
 }
 
 /**
- * What is wrong with a control's value, in the words a browser uses, or
- * null where nothing is: the constraints a static document can state —
- * `required`, `minlength` and `maxlength`, `pattern`, `min` and `max`, and
- * an email, a URL or a number that is not one (HTML 4.10.20). A length is
- * checked only once the value has been typed, as HTML checks it; a
- * document's own value is the author's to get right.
+ * What is wrong with a control's value, or null where nothing is: a
+ * script's own words (`setCustomValidity()`) and then the constraints a
+ * document can state — `required`, `minlength` and `maxlength`, `pattern`,
+ * `min`, `max` and `step`, and an email, a URL or a number that is not one
+ * (HTML 4.10.20). A length is checked only of what the user typed, as HTML
+ * checks it: a document's own value and a script's are the author's to get
+ * right. `live` is what a text control holds where its markup does not say,
+ * as `FormState` has it.
  */
-export function validationMessage(
+export function validityError(
   el: Element,
-  live?: (el: Element) => string | undefined,
-): string | null {
+  live: (el: Element) => string | undefined = typedText,
+): ValidityError | null {
   if (!validated(el)) return null;
+  const custom = CUSTOM_ERRORS.get(el);
+  if (custom) return { flag: 'customError', message: custom };
   const tag = tagOf(el);
+  if (tag !== 'input' && tag !== 'textarea' && tag !== 'select') return null;
+  const wrong = (flag: ValidityFlag, message: string): ValidityError => ({
+    flag,
+    message,
+  });
   const required = attr(el, 'required') !== undefined;
   if (tag === 'select') {
     if (!required) return null;
@@ -766,13 +942,13 @@ export function validationMessage(
       selected[0].parent === el &&
       optionValue(selected[0]) === '';
     return !selected.length || placeholder
-      ? 'Please select an item in the list.'
+      ? wrong('valueMissing', 'Please select an item in the list.')
       : null;
   }
   const type = tag === 'input' ? inputType(el) : 'textarea';
   if (type === 'checkbox') {
     return required && attr(el, 'checked') === undefined
-      ? 'Please check this box if you want to proceed.'
+      ? wrong('valueMissing', 'Please check this box if you want to proceed.')
       : null;
   }
   if (type === 'radio') {
@@ -780,27 +956,43 @@ export function validationMessage(
     if (!group.some((r) => attr(r, 'required') !== undefined)) return null;
     return group.some((r) => attr(r, 'checked') !== undefined)
       ? null
-      : 'Please select one of these options.';
+      : wrong('valueMissing', 'Please select one of these options.');
   }
-  if (type === 'file') return required ? 'Please select a file.' : null;
-  if (type === 'range' || type === 'color') return null;
+  if (type === 'file') {
+    return required ? wrong('valueMissing', 'Please select a file.') : null;
+  }
+  if (type === 'range' || type === 'color' || type === 'submit') return null;
 
-  const typed = live?.(el);
+  const typed = live(el);
   const value = controlValue(el, live);
   if (type === 'number' && typed !== undefined && typed.trim() && !value) {
-    return 'Please enter a number.';
+    return wrong('badInput', 'Please enter a number.');
   }
-  if (!value) return required ? 'Please fill out this field.' : null;
+  if (!value) {
+    return required
+      ? wrong('valueMissing', 'Please fill out this field.')
+      : null;
+  }
 
-  if (typed !== undefined && (type === 'textarea' || TEXTUAL.has(type))) {
+  if (
+    typed !== undefined &&
+    !SET_BY_SCRIPT.has(el) &&
+    (type === 'textarea' || TEXTUAL.has(type))
+  ) {
     const length = value.length;
     const min = Number(attr(el, 'minlength'));
     if (min > 0 && length < min) {
-      return `Please lengthen this text to ${min} characters or more (you are currently using ${length} characters).`;
+      return wrong(
+        'tooShort',
+        `Please lengthen this text to ${min} characters or more (you are currently using ${length} characters).`,
+      );
     }
     const max = attr(el, 'maxlength');
     if (max !== undefined && /^\d+$/.test(max.trim()) && length > Number(max)) {
-      return `Please shorten this text to ${Number(max)} characters or less (you are currently using ${length} characters).`;
+      return wrong(
+        'tooLong',
+        `Please shorten this text to ${Number(max)} characters or less (you are currently using ${length} characters).`,
+      );
     }
   }
   if (type === 'email') {
@@ -809,10 +1001,12 @@ export function validationMessage(
         ? value.split(',').map((a) => a.trim())
         : [value];
     if (!addresses.every((a) => EMAIL.test(a))) {
-      return 'Please enter an email address.';
+      return wrong('typeMismatch', 'Please enter an email address.');
     }
   }
-  if (type === 'url' && !absoluteUrl(value)) return 'Please enter a URL.';
+  if (type === 'url' && !absoluteUrl(value)) {
+    return wrong('typeMismatch', 'Please enter a URL.');
+  }
   const pattern = attr(el, 'pattern');
   if (pattern !== undefined && TEXTUAL.has(type)) {
     const re = patternOf(pattern);
@@ -822,23 +1016,47 @@ export function validationMessage(
         : [value];
     if (re && !values.every((v) => re.test(v))) {
       const title = attr(el, 'title');
-      return title
-        ? `Please match the requested format:\n${title}`
-        : 'Please match the requested format.';
+      return wrong(
+        'patternMismatch',
+        title
+          ? `Please match the requested format:\n${title}`
+          : 'Please match the requested format.',
+      );
     }
   }
-  if (type === 'number') {
-    const n = Number(value);
-    const min = attr(el, 'min');
-    if (min !== undefined && FLOAT.test(min.trim()) && n < Number(min)) {
-      return `Value must be greater than or equal to ${min.trim()}.`;
-    }
-    const max = attr(el, 'max');
-    if (max !== undefined && FLOAT.test(max.trim()) && n > Number(max)) {
-      return `Value must be less than or equal to ${max.trim()}.`;
-    }
+  const stepped = STEPS[type] ? fieldNumber(type, value) : null;
+  if (stepped === null) return null;
+  const place = rangePlace(el, type, stepped);
+  const number = type === 'number';
+  if (place === 'under') {
+    const min = attr(el, 'min')?.trim();
+    return wrong(
+      'rangeUnderflow',
+      number
+        ? `Value must be greater than or equal to ${min}.`
+        : `Value must be ${min} or later.`,
+    );
   }
-  return null;
+  if (place === 'over') {
+    const max = attr(el, 'max')?.trim();
+    return wrong(
+      'rangeOverflow',
+      number
+        ? `Value must be less than or equal to ${max}.`
+        : `Value must be ${max} or earlier.`,
+    );
+  }
+  return offStep(el, type, stepped)
+    ? wrong('stepMismatch', 'Please enter a valid value.')
+    : null;
+}
+
+/** `validityError`'s words alone. */
+export function validationMessage(
+  el: Element,
+  live?: (el: Element) => string | undefined,
+): string | null {
+  return validityError(el, live)?.message ?? null;
 }
 
 /**
@@ -883,10 +1101,92 @@ interface Snapshot {
   selected?: Element[];
 }
 
+/** What each control holds that its markup does not, and what its markup
+ *  said before: by element and no `<Html>`'s, since the cascade and a page's
+ *  query read them too, through a selector, and have no `FormState`. */
+const TYPED = new WeakMap<Element, string>();
+const MARKUP = new WeakMap<Element, Snapshot>();
+
+/** The fields a script's `value` set last, which a length is not held to
+ *  (HTML 4.10.5.1.3, "last changed by a user edit"). */
+const SET_BY_SCRIPT = new WeakSet<Element>();
+
+/** What `setCustomValidity()` set, or `ElementInternals.setValidity()`. */
+const CUSTOM_ERRORS = new WeakMap<Element, string>();
+
+/** Custom elements that take part in forms, which validation reads as it
+ *  does a control. */
+const FORM_ASSOCIATED = new WeakSet<Element>();
+
+/** The boxes a script set `indeterminate` on. */
+const INDETERMINATE = new WeakSet<Element>();
+
+/** The controls whose validity the user is to see (HTML 4.10.18.5, "user
+ *  validity"): `:user-valid` and `:user-invalid` read it. */
+const USER_VALIDITY = new WeakSet<Element>();
+
+/** What a text control holds where its markup does not say. */
+export function typedText(el: Element): string | undefined {
+  return TYPED.get(el);
+}
+
+/** A script's reason a control is wrong, '' for none: whether it changed. */
+export function setCustomError(el: Element, message: string): boolean {
+  if ((CUSTOM_ERRORS.get(el) ?? '') === message) return false;
+  if (message) CUSTOM_ERRORS.set(el, message);
+  else CUSTOM_ERRORS.delete(el);
+  return true;
+}
+
+/** A custom element a definition says takes part in forms. */
+export function markFormAssociated(el: Element): void {
+  FORM_ASSOCIATED.add(el);
+}
+
+/** A control's `indeterminate` IDL attribute: whether it changed. */
+export function setIndeterminate(el: Element, on: boolean): boolean {
+  if (INDETERMINATE.has(el) === on) return false;
+  if (on) INDETERMINATE.add(el);
+  else INDETERMINATE.delete(el);
+  return true;
+}
+
+/** What a script last set a control's `indeterminate` to. */
+export function indeterminateSet(el: Element): boolean {
+  return INDETERMINATE.has(el);
+}
+
+/** A control's user validity: whether it changed. */
+export function setUserValidity(el: Element, on: boolean): boolean {
+  if (USER_VALIDITY.has(el) === on) return false;
+  if (on) USER_VALIDITY.add(el);
+  else USER_VALIDITY.delete(el);
+  return true;
+}
+
+/** Whether a control's validity is the user's to see. */
+export function hasUserValidity(el: Element): boolean {
+  return USER_VALIDITY.has(el);
+}
+
+/** What a checkbox's or a radio's markup says of `checked` once its
+ *  attribute holds what it is now (`FormState`): null for nothing, and
+ *  undefined for one nothing has ticked. */
+export function checkedDefault(el: Element): string | null | undefined {
+  const kept = MARKUP.get(el);
+  return kept && (kept.attribs.checked ?? null);
+}
+
+/** That default, as a script set it. */
+export function setCheckedDefault(el: Element, value: string | null): void {
+  const kept = MARKUP.get(el);
+  if (kept) kept.attribs.checked = value ?? undefined;
+}
+
 /**
  * What a document's controls hold that its markup does not, and what their
- * markup said before. One per `<Html>`, keyed by element, so a re-parse —
- * new elements — starts clean.
+ * markup said before: one per `<Html>`, over state keyed by element, so a
+ * re-parse — new elements — starts clean.
  *
  * Typed text lives here rather than in the DOM because HTML's `value`
  * attribute is the field's *default*: it is what a reset puts back, and
@@ -897,23 +1197,35 @@ interface Snapshot {
  * attributes, from before the first change, for a reset.
  */
 export class FormState {
-  private _typed = new WeakMap<Element, string>();
-  private _markup = new WeakMap<Element, Snapshot>();
   private _selections = new WeakMap<Element, FieldSelection>();
+  /** The fields the user typed in since they took the focus, which their
+   *  leaving it shows the validity of. */
+  private _edited = new WeakSet<Element>();
 
   /** Typed text, where the field has any — the `live` a submission reads. */
   typed(el: Element): string | undefined {
-    return this._typed.get(el);
+    return TYPED.get(el);
   }
 
   /** What a text control holds now: typed, or its markup's. */
   value(el: Element): string {
-    return controlValue(el, (e) => this._typed.get(e));
+    return controlValue(el, typedText);
   }
 
-  setTyped(el: Element, text: string): void {
+  /** What a text field holds now, the user's unless a script set it. */
+  setTyped(el: Element, text: string, script = false): void {
     this.remember(el);
-    this._typed.set(el, text);
+    TYPED.set(el, text);
+    if (script) SET_BY_SCRIPT.add(el);
+    else {
+      SET_BY_SCRIPT.delete(el);
+      this._edited.add(el);
+    }
+  }
+
+  /** Whether the user typed in a field since this was last asked. */
+  takeEdited(el: Element): boolean {
+    return this._edited.delete(el);
   }
 
   /**
@@ -943,7 +1255,7 @@ export class FormState {
 
   /** Keep what `el`'s markup says, before a change to its attributes. */
   remember(el: Element): void {
-    if (this._markup.has(el)) return;
+    if (MARKUP.has(el)) return;
     const tag = tagOf(el);
     const snapshot: Snapshot = {
       attribs: {
@@ -956,7 +1268,7 @@ export class FormState {
         (o) => attr(o, 'selected') !== undefined,
       );
     }
-    this._markup.set(el, snapshot);
+    MARKUP.set(el, snapshot);
   }
 
   /**
@@ -968,10 +1280,13 @@ export class FormState {
   reset(form: Element): boolean {
     let changed = false;
     for (const el of controlsOf(form)) {
-      changed = this._typed.delete(el) || changed;
-      const snapshot = this._markup.get(el);
+      changed = TYPED.delete(el) || changed;
+      changed = setUserValidity(el, false) || changed;
+      SET_BY_SCRIPT.delete(el);
+      this._edited.delete(el);
+      const snapshot = MARKUP.get(el);
       if (!snapshot) continue;
-      this._markup.delete(el);
+      MARKUP.delete(el);
       changed = true;
       for (const [name, value] of Object.entries(snapshot.attribs)) {
         if (value === undefined) delete el.attribs[name];
@@ -1012,4 +1327,369 @@ export function radioGroup(radio: Element): Element[] {
     }
   }
   return out;
+}
+
+// --- what a selector asks of a control --------------------------------------------
+
+/** The `<input>` types with a placeholder to show, and those a `readonly`
+ *  applies to (HTML 4.10.5, the table of what applies to which). */
+const TAKES_PLACEHOLDER = new Set([
+  'text',
+  'search',
+  'url',
+  'tel',
+  'email',
+  'password',
+  'number',
+]);
+const TAKES_READONLY = new Set([
+  ...TAKES_PLACEHOLDER,
+  'date',
+  'month',
+  'week',
+  'time',
+  'datetime-local',
+]);
+
+/** The elements in a tree that own or are owned, for what one control's
+ *  answer reads of the others. */
+interface ControlIndex {
+  generation: number;
+  told: number;
+  /** Each form's controls, and those of no form under null, in tree order. */
+  owned: Map<Element | null, Element[]>;
+  forms: Element[];
+}
+const CONTROL_INDEXES = new WeakMap<AnyNode, ControlIndex>();
+
+/** Bumped by a change `treeGeneration` hears of only at the next flush: a
+ *  page's script reads a selector straight after it changed the tree. */
+let controlsTold = 0;
+
+/** A page's script changed a tree. */
+export function controlsMoved(): void {
+  controlsTold += 1;
+}
+
+/** The controls in a tree by their form, walked once a tree: a page with a
+ *  rule on `:indeterminate` asks of every radio, and each asking `controlsOf`
+ *  walks the document. */
+function controlIndex(root: AnyNode): ControlIndex {
+  const generation = treeGeneration();
+  const kept = CONTROL_INDEXES.get(root);
+  if (kept?.generation === generation && kept.told === controlsTold) {
+    return kept;
+  }
+  const owned = new Map<Element | null, Element[]>();
+  const forms: Element[] = [];
+  const index = { generation, told: controlsTold, owned, forms };
+  let byId: Map<string, Element> | null = null;
+  for (const el of elementsIn(root, NON_RENDERED)) {
+    if (tagOf(el) === 'form') forms.push(el);
+    if (!SUBMITTABLE.has(tagOf(el)) && !FORM_ASSOCIATED.has(el)) continue;
+    if (inert(el)) continue;
+    if (attr(el, 'form') !== undefined && !byId) {
+      byId = new Map();
+      for (const any of elementsIn(root, NON_RENDERED)) {
+        const id = attr(any, 'id');
+        if (id !== undefined && !byId.has(id)) byId.set(id, any);
+      }
+    }
+    const owner = ownerOf(el, root, byId);
+    const list = owned.get(owner);
+    if (list) list.push(el);
+    else owned.set(owner, [el]);
+  }
+  CONTROL_INDEXES.set(root, index);
+  return index;
+}
+
+/** Whether a form or a fieldset holds a control that is wrong: a form by
+ *  what it owns, wherever that is, and a fieldset by what is in it, a
+ *  disabled one's first legend's included, and `novalidate` changes neither
+ *  (HTML 4.16.3, `:valid`, `:invalid`). */
+function holdsInvalid(el: Element): boolean {
+  if (tagOf(el) === 'form') {
+    const owned = controlIndex(rootOf(el)).owned.get(el);
+    return !!owned?.some((control) => validityError(control));
+  }
+  for (const inside of elementsIn(el, NON_RENDERED)) {
+    if (validityError(inside)) return true;
+  }
+  return false;
+}
+
+/** What `:valid` answers, and `:invalid` the opposite: null where neither
+ *  matches, an element no form reads. */
+function validityAnswer(el: Element): boolean | null {
+  const tag = tagOf(el);
+  if (tag === 'form' || tag === 'fieldset') return !holdsInvalid(el);
+  return validated(el) ? validityError(el) === null : null;
+}
+
+export function isValid(el: Element): boolean {
+  return validityAnswer(el) === true;
+}
+
+export function isInvalid(el: Element): boolean {
+  return validityAnswer(el) === false;
+}
+
+/** `:user-valid` and `:user-invalid`: validity once the user is to see it. */
+export function isUserValid(el: Element): boolean {
+  return USER_VALIDITY.has(el) && validated(el) && !validityError(el);
+}
+
+export function isUserInvalid(el: Element): boolean {
+  return USER_VALIDITY.has(el) && !!validityError(el);
+}
+
+/**
+ * What `:in-range` answers and `:out-of-range` the opposite, null where
+ * neither matches. Blink's: an empty field of a type with a place on a line
+ * is in range whether or not it has limits, where Selectors 4 asks for
+ * limits and Gecko and WebKit have them, and a slider, whose value its
+ * sanitization keeps between them, is in range whatever they say.
+ */
+function rangeAnswer(el: Element): boolean | null {
+  if (tagOf(el) !== 'input') return null;
+  const type = inputType(el);
+  if (!STEPS[type] || !validated(el)) return null;
+  if (type === 'range') return true;
+  const value = fieldNumber(type, controlValue(el, typedText));
+  if (value === null) return true;
+  const place = rangePlace(el, type, value);
+  return place === null ? null : place === 'inside';
+}
+
+export function isInRange(el: Element): boolean {
+  return rangeAnswer(el) === true;
+}
+
+export function isOutOfRange(el: Element): boolean {
+  return rangeAnswer(el) === false;
+}
+
+/** `:placeholder-shown`: a field that takes a `placeholder`, with one,
+ *  however empty, and nothing in it. A number field holding what is no
+ *  number shows it as typed. */
+export function placeholderShown(el: Element): boolean {
+  const tag = tagOf(el);
+  if (tag !== 'textarea') {
+    if (tag !== 'input' || !TAKES_PLACEHOLDER.has(inputType(el))) return false;
+  }
+  if (attr(el, 'placeholder') === undefined) return false;
+  return !(TYPED.get(el) ?? controlValue(el));
+}
+
+/** Whether an element is an editing host or inside one: the nearest
+ *  `contenteditable` that says. */
+function editable(el: Element): boolean {
+  for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
+    const value = attr(at, 'contenteditable')?.toLowerCase();
+    if (value === '' || value === 'true' || value === 'plaintext-only') {
+      return true;
+    }
+    if (value === 'false') return false;
+  }
+  return false;
+}
+
+/** `:read-write`: a field a user can type in, or what is editable. A
+ *  control is its own affair inside an editing host. */
+export function isReadWrite(el: Element): boolean {
+  const tag = tagOf(el);
+  if (
+    tag === 'textarea' ||
+    (tag === 'input' && TAKES_READONLY.has(inputType(el)))
+  ) {
+    return attr(el, 'readonly') === undefined && !isDisabled(el);
+  }
+  return tag !== 'input' && editable(el);
+}
+
+/** `:read-only`: every other HTML element, and as Blink has it no SVG's,
+ *  which Gecko and WebKit match. */
+export function isReadOnly(el: Element): boolean {
+  if (isReadWrite(el)) return false;
+  for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
+    const tag = tagOf(at);
+    if (tag === 'svg') return false;
+    if (tag === 'foreignobject') break;
+  }
+  return true;
+}
+
+/** Whether another radio of `radio`'s group is checked, or it is: its form's
+ *  of the name, or of no form the tree's. One with no name is alone. */
+function groupChecked(radio: Element): boolean {
+  if (attr(radio, 'checked') !== undefined) return true;
+  const name = attr(radio, 'name');
+  if (!name) return false;
+  const root = rootOf(radio);
+  const list = controlIndex(root).owned.get(formOwner(radio, root));
+  return !!list?.some(
+    (el) =>
+      tagOf(el) === 'input' &&
+      inputType(el) === 'radio' &&
+      attr(el, 'name') === name &&
+      attr(el, 'checked') !== undefined,
+  );
+}
+
+/** `:indeterminate`: a box a script said is, a radio with nothing checked in
+ *  its group, and a `<progress>` with no `value`, whatever that says. */
+export function isIndeterminate(el: Element): boolean {
+  const tag = tagOf(el);
+  if (tag === 'progress') return attr(el, 'value') === undefined;
+  if (tag !== 'input') return false;
+  const type = inputType(el);
+  if (type === 'checkbox') return INDETERMINATE.has(el);
+  return type === 'radio' && !groupChecked(el);
+}
+
+/**
+ * `:default`: a box or a radio its markup checks, whatever it is now; an
+ * option its markup selects; and a form's first submit button, disabled or
+ * not (HTML 4.16.3).
+ */
+export function isDefault(el: Element): boolean {
+  const tag = tagOf(el);
+  if (tag === 'option') {
+    let select: AnyNode | null = el.parent;
+    if (select && isElement(select) && tagOf(select) === 'optgroup') {
+      select = select.parent;
+    }
+    const kept =
+      select && isElement(select) ? MARKUP.get(select)?.selected : undefined;
+    return kept ? kept.includes(el) : attr(el, 'selected') !== undefined;
+  }
+  if (tag === 'input') {
+    const type = inputType(el);
+    if (type === 'checkbox' || type === 'radio') {
+      const kept = MARKUP.get(el);
+      const checked = kept ? kept.attribs.checked : attr(el, 'checked');
+      return checked !== undefined;
+    }
+  }
+  if (buttonType(el) !== 'submit') return false;
+  const root = rootOf(el);
+  const form = formOwner(el, root);
+  if (!form) return false;
+  const owned = controlIndex(root).owned.get(form);
+  return owned?.find((c) => buttonType(c) === 'submit') === el;
+}
+
+// --- what a change to a control reaches -------------------------------------------
+
+/** The change a control's state is told as, which is in no attribute it
+ *  has: what the cascade reads of it (`PSEUDO_READS`). */
+export function controlChange(target: Element): HtmlChange {
+  return { type: 'attributes', target, attributeName: '-rx-form' };
+}
+
+/** The attributes an answer above reads of the element it is about. */
+const CONTROL_ATTRIBUTE =
+  /^(?:-rx-form|type|value|required|readonly|disabled|min|max|step|pattern|minlength|maxlength|multiple|placeholder|checked|selected|name|form)$/;
+
+/** The elements a change to what a form owns can hold it through. */
+const HOLDS_CONTROLS = new Set(['form', 'fieldset', 'select', 'optgroup']);
+
+/** What holds a control's state besides the control: the elements a selector
+ *  answers for from what is in them. */
+function holdersOf(el: Element, into: Set<Element>): void {
+  for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
+    if (at === el || HOLDS_CONTROLS.has(tagOf(at))) into.add(at);
+  }
+  const owner = formOwner(el);
+  if (owner) into.add(owner);
+}
+
+/** The elements an answer reads others for: every form, radio and submit
+ *  button in a tree. Taken whole for a change that moves a control between
+ *  forms or groups: which one it left no longer says. */
+function togetherIn(root: AnyNode, into: Set<Element>): void {
+  const { owned, forms } = controlIndex(root);
+  for (const form of forms) into.add(form);
+  for (const controls of owned.values()) {
+    for (const el of controls) {
+      if (
+        buttonType(el) === 'submit' ||
+        (tagOf(el) === 'input' && inputType(el) === 'radio')
+      ) {
+        into.add(el);
+      }
+    }
+  }
+}
+
+/** Whether what came or went is, or holds, what a form reads. */
+function holdsControl(node: AnyNode): boolean {
+  if (!isElement(node)) return false;
+  const reads = (el: Element): boolean =>
+    SUBMITTABLE.has(tagOf(el)) ||
+    HOLDS_CONTROLS.has(tagOf(el)) ||
+    tagOf(el) === 'option' ||
+    FORM_ASSOCIATED.has(el);
+  if (reads(node)) return true;
+  for (const el of elementsIn(node, NON_RENDERED)) if (reads(el)) return true;
+  return false;
+}
+
+/**
+ * The elements whose answer to one of the selectors above a change can
+ * move and no key says, into `into`: a form's and a fieldset's are read from
+ * what is in them, a radio's from its group and a submit button's from the
+ * buttons before it, and a key reaches the element it changed alone. Told as
+ * a change of `-rx-form`, an attribute nothing has, which they all read.
+ */
+export function controlsReached(change: HtmlChange, into: Set<Element>): void {
+  if (change.type === 'attributes') {
+    const el = change.target;
+    const name = change.attributeName;
+    if (name === 'id') {
+      if (tagOf(el) === 'form') togetherIn(rootOf(el), into);
+      return;
+    }
+    if (!CONTROL_ATTRIBUTE.test(name)) return;
+    holdersOf(el, into);
+    const tag = tagOf(el);
+    if (
+      name === 'type' ||
+      name === 'form' ||
+      ((name === 'name' || name === 'checked') &&
+        tag === 'input' &&
+        inputType(el) === 'radio')
+    ) {
+      togetherIn(rootOf(el), into);
+    }
+    return;
+  }
+  if (change.type === 'characterData') {
+    const parent = change.target.parent;
+    if (!parent || !isElement(parent)) return;
+    const tag = tagOf(parent);
+    if (tag === 'textarea' || tag === 'option') holdersOf(parent, into);
+    return;
+  }
+  if (change.type !== 'childList') return;
+  const target = change.target;
+  const held =
+    change.addedNodes.some(holdsControl) ||
+    change.removedNodes.some(holdsControl);
+  if (!held) {
+    if (isElement(target) && /^(?:textarea|option)$/.test(tagOf(target))) {
+      holdersOf(target, into);
+    }
+    return;
+  }
+  if (isElement(target)) holdersOf(target, into);
+  togetherIn(rootOf(target), into);
+  for (const node of change.addedNodes) {
+    if (!isElement(node)) continue;
+    if (SUBMITTABLE.has(tagOf(node))) into.add(node);
+    for (const el of elementsIn(node, NON_RENDERED)) {
+      if (SUBMITTABLE.has(tagOf(el))) into.add(el);
+    }
+  }
 }

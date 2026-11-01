@@ -7525,26 +7525,45 @@ export function installDom(
       return list(out);
     }
     get willValidate(): boolean {
-      return !isDisabled(this);
+      return call('willValidate', this._id) === true;
     }
     get validationMessage(): string {
-      return '';
+      return validityOf(this)[1] ?? '';
     }
     get validity(): Any {
-      return { valid: this.checkValidity() };
+      const [flag] = validityOf(this);
+      const out: Any = {};
+      for (const name of VALIDITY_FLAGS) out[name] = name === flag;
+      out.valid = !flag;
+      return out;
     }
     checkValidity(): boolean {
-      return !(
-        this.hasAttribute('required') &&
-        (this as Any).value === '' &&
-        !isDisabled(this)
-      );
+      return !validityOf(this)[0];
     }
     reportValidity(): boolean {
       return this.checkValidity();
     }
-    setCustomValidity(): void {}
+    setCustomValidity(message: Any): void {
+      call('customValidity', this._id, str(message));
+    }
   }
+  /** What the host says is wrong with a control: its `ValidityState`
+   *  member and its words, or nothing where nothing is. The same answer
+   *  `:invalid` has. */
+  const validityOf = (el: Any): string[] =>
+    str(call('validity', el._id) ?? '').split('\u0000');
+  const VALIDITY_FLAGS = [
+    'valueMissing',
+    'typeMismatch',
+    'patternMismatch',
+    'tooLong',
+    'tooShort',
+    'rangeUnderflow',
+    'rangeOverflow',
+    'stepMismatch',
+    'badInput',
+    'customError',
+  ];
   for (const name of ['name', 'autocomplete']) {
     Object.defineProperty(FormControl.prototype, name, reflect(name));
   }
@@ -7810,9 +7829,11 @@ export function installDom(
       this.toggleAttribute('checked', !!v);
     }
     get indeterminate(): boolean {
-      return false;
+      return call('indeterminate', this._id) === true;
     }
-    set indeterminate(_v: Any) {}
+    set indeterminate(v: Any) {
+      call('indeterminate', this._id, !!v);
+    }
     get files(): Any {
       return list([]);
     }
@@ -8744,7 +8765,7 @@ export function installDom(
     }
     requestSubmit(submitter?: Any): void {
       const id = submitter ? idOf(submitter) : 0;
-      if (!call('validate', this._id, id)) return;
+      if (!call('validate', this._id, id, true)) return;
       const ev = new SubmitEvent('submit', {
         bubbles: true,
         cancelable: true,
@@ -12214,7 +12235,25 @@ export function installDom(
   class HTMLLegendElement extends HTMLElement {}
   class HTMLOptGroupElement extends HTMLElement {}
   class HTMLDataListElement extends HTMLElement {}
-  class HTMLProgressElement extends HTMLElement {}
+  class HTMLProgressElement extends HTMLElement {
+    get value(): number {
+      const n = parseFloat(this.getAttribute('value') ?? '');
+      return Number.isFinite(n) && n > 0 ? Math.min(n, this.max) : 0;
+    }
+    set value(v: Any) {
+      this.setAttribute('value', String(Number(v)));
+    }
+    get max(): number {
+      const n = parseFloat(this.getAttribute('max') ?? '');
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+    set max(v: Any) {
+      this.setAttribute('max', String(Number(v)));
+    }
+    get position(): number {
+      return this.hasAttribute('value') ? this.value / this.max : -1;
+    }
+  }
   class HTMLMeterElement extends HTMLElement {}
   class HTMLOutputElement extends HTMLElement {}
   class HTMLObjectElement extends HTMLElement {
@@ -13841,6 +13880,9 @@ export function installDom(
       (input.type === 'checkbox' || input.type === 'radio') &&
       !isDisabled(input);
     const was = checkable ? input.checked : false;
+    // a box's click settles it, and a cancelled one leaves it as it was
+    // (HTML 4.10.5.1.15)
+    const mixed = checkable && input.type === 'checkbox' && input.indeterminate;
     const radioWas: Any[] =
       checkable && input.type === 'radio' && input.name
         ? (Array.from(
@@ -13850,13 +13892,16 @@ export function installDom(
           ).filter((r: Any) => r.checked && r.form === input.form) as Any[])
         : [];
     if (checkable) {
-      if (input.type === 'checkbox') input.checked = !was;
-      else input.checked = true;
+      if (input.type === 'checkbox') {
+        input.indeterminate = false;
+        input.checked = !was;
+      } else input.checked = true;
     }
     const go = dispatch(target, event);
     if (checkable) {
       if (!go) {
         input.checked = was;
+        if (mixed) input.indeterminate = true;
         for (const r of radioWas) r.checked = true;
       } else if (input.type === 'checkbox' || !was) {
         const ev = new InputEvent('input', { bubbles: true, composed: true });
@@ -26098,7 +26143,7 @@ export function installDom(
       def.stack.pop();
     }
     custom.state = 'custom';
-    call('ceDefined', el._id);
+    call('ceDefined', el._id, !!def.formAssociated);
   };
 
   /** A custom element's `super()` (HTML 3.2.3, `[HTMLConstructor]`): the
@@ -26124,7 +26169,7 @@ export function installDom(
       Object.setPrototypeOf(el, target.prototype);
       pinRegistry(el, registry);
       customOf.set(el, { state: 'custom', def, queue: [], internals: null });
-      call('ceDefined', el._id);
+      call('ceDefined', el._id, !!def.formAssociated);
       return el;
     }
     const el = stack[stack.length - 1];
@@ -26491,11 +26536,27 @@ export function installDom(
   // the window's own is no registry a page made
   registriesMatter = false;
 
-  /** A custom element's states, which `:state()` would read: a set of
-   *  strings. */
+  /** A custom element's states: a set of strings the host is told of as
+   *  they change, which `:state()` reads. */
   class CustomStateSet extends Set<string> {
+    _el: Any = null;
+    _told(): void {
+      if (this._el)
+        call('customStates', this._el._id, [...this].join('\u0000'));
+    }
     override add(value: Any): this {
-      return super.add(str(value));
+      super.add(str(value));
+      this._told();
+      return this;
+    }
+    override delete(value: Any): boolean {
+      const had = super.delete(str(value));
+      this._told();
+      return had;
+    }
+    override clear(): void {
+      super.clear();
+      this._told();
     }
   }
   /** What a custom element is given to say what a built-in says of itself
@@ -26540,6 +26601,12 @@ export function installDom(
     setValidity(flags?: Any, message?: Any): void {
       this._valid = !flags || !Object.values(flags).some(Boolean);
       this._message = this._valid ? '' : str(message ?? '');
+      // what `:invalid` reads: a reason, however a script put it
+      call(
+        'customValidity',
+        this._el._id,
+        this._valid ? '' : this._message || 'Invalid value.',
+      );
     }
     checkValidity(): boolean {
       return this._valid;
@@ -26573,9 +26640,11 @@ export function installDom(
       );
     }
     const internals = Object.create(ElementInternals.prototype);
+    const states = new CustomStateSet();
+    states._el = el;
     Object.assign(internals, {
       _el: el,
-      _states: new CustomStateSet(),
+      _states: states,
       _value: null,
       _valid: true,
       _message: '',

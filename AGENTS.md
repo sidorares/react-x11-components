@@ -1797,6 +1797,51 @@ selection goes through `Forms.setSelection`.** It keeps the selection for a
 widget not mounted yet, and it notes it as `seen`, so the user's next key
 is not told as `select` for the script's selection.
 
+**A control's state has one answer, which a rule and a page both ask for**
+(`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,
+`:user-valid`, `:user-invalid`, `:in-range`, `:out-of-range`,
+`:placeholder-shown`, `:indeterminate`, `:default`, `:read-write`,
+`:read-only`, `:dir()` and `:state()` were refused by css-select, which
+dropped the rule with no error: Tailwind's `invalid:` was nothing. What they
+read is by element at `form.ts`'s module scope, typed text included: a cascade
+has no `FormState`. `test/html/control-states.ts` is Chromium's own answers
+over a document of 225 elements, which the cascade and a page's `matches()`
+are each held to; regenerate it, do not write it by hand, and settle what a
+new case answers in Chromium, since Gecko and WebKit differ in several, and
+those are decisions (`docs/components/html.md`). `:blank` and `:local-link`
+stay out: all three browsers refuse them, so a rule naming one is dropped
+there too. Six things are load-bearing.
+
+- **css-select takes its alias before a function of the same name**, so a
+  pseudo-class it has one for is taken over by a string naming a function of
+  ours, as `:read-only` and `:read-write` are.
+- **What no key says goes through `controlsReached`.** A form's and a
+  fieldset's answers are read from what they hold, a radio's from its group
+  and a submit button's from the buttons before it, and a key reaches the
+  element it changed alone. So each change is widened, in `_changeScope`, to
+  a change of `-rx-form` on the elements it can reach, only where a rule reads
+  one (`readsControls`). **Anything new one of these reads of another element
+  joins `controlsReached`**; `in a document of form controls` in
+  `test/html/refresh.test.ts` finds what is missed, and `CONTROL_SEEDS` and
+  `CONTROL_FROM` sweep more of it.
+- **A keystroke tells only what it turned** (`controlAnswers`,
+  `answersMoved`): a refresh per keystroke would run the cascade and lay the
+  document out for nothing. **Anything new a rule reads of what a field holds
+  joins `controlAnswers`**, or typing leaves it as it was.
+- **Anything new that sets a control's state tells `controlChange`**, as
+  `setCustomValidity()` and `indeterminate` do, or a `:has()` keeps what it
+  answered.
+- **`UNSHAREABLE` names every one of them**: two forms alike in every
+  attribute, a field in one typed in, come to different answers no sharing
+  key says. A field does not show it, since the UA sheet's rules keep an
+  `<input>` to its own style. Anything new that reads what is in no attribute
+  joins it.
+- **A page's script is ahead of `treeGeneration`**, which moves at the flush,
+  and `matches()` runs before it. So what is worked out of a tree's controls
+  once (`controlIndex`) is kept by `controlsMoved` as well, which `_tell`
+  moves. Anything new that keeps what it read of a tree for a page's query
+  does the same.
+
 **A widget is cut by what the document paints over its control.** A menu
 opened over a form is painted over its fields, and a widget drawn whole
 came out over the menu. `controlRectsOf` asks the layers painted after the
@@ -2229,8 +2274,9 @@ passes either way.
 **What a selector reads that is in no tree moves `treeGeneration` as
 well**, or a `:has()` keeps what it answered of it. The states a page's
 script or a widget sets — `:modal`, `:popover-open`, `:fullscreen`,
-`:defined`, a `<select>`'s `:open`, the media pseudo-classes — are told as
-a change of an attribute nothing has, and that refresh moves the clock. A
+`:defined`, a `<select>`'s `:open`, the media pseudo-classes, a control's
+state — are told as a change of an attribute nothing has, and that refresh
+moves the clock. A
 fragment refreshes nothing, so `Cascade.setTarget` moves it itself, and
 `div:has(:target)` had answered what it first did through every fragment
 after it. The pointer and the focus are the two that do not: a selector

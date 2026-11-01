@@ -86,6 +86,8 @@ import {
   treeGeneration,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
+import { directionHolder } from './direction.js';
+import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
 import {
   alphaOf,
@@ -719,7 +721,11 @@ export interface DocumentInteraction {
   activeElement(): Element | null;
   activate(el: Element): boolean;
   submit(form: Element, submitter: Element | null): void;
-  reportValidity(form: Element, submitter: Element | null): boolean;
+  reportValidity(
+    form: Element,
+    submitter: Element | null,
+    attempt?: boolean,
+  ): boolean;
   reset(form: Element): void;
 }
 
@@ -11042,6 +11048,12 @@ export class HtmlViewNode extends Node {
     this._restyleChanged(scope);
   }
 
+  /** Whether a rule reads a control's state (`useForms`): one that none
+   *  does has nothing to tell a keystroke to. */
+  get readsControls(): boolean {
+    return this._cascade?.readsControls ?? false;
+  }
+
   /** A rule a change turns on or off for a custom highlight restyles no
    *  element of its own, and its text is painted again in the new look. */
   private _highlightsChanged(): void {
@@ -11124,6 +11136,9 @@ export class HtmlViewNode extends Node {
     }
     for (const change of changes) {
       if (unchanged?.has(change)) continue;
+      if (!this._scopeOf(change, cascade, tree, scope)) return null;
+    }
+    for (const change of derivedChanges(changes, unchanged, cascade)) {
       if (!this._scopeOf(change, cascade, tree, scope)) return null;
     }
     // what holds an element whose own boxes can differ is no tail's
@@ -11225,8 +11240,9 @@ export class HtmlViewNode extends Node {
     }
     if (change.type === 'attributes') {
       const el = change.target;
-      scope.altered?.add(el);
       const name = change.attributeName.toLowerCase();
+      // an attribute nothing has is no box's
+      if (!name.startsWith('-rx-')) scope.altered?.add(el);
       if (
         changesCascade(el, name, change.oldValue ?? null) &&
         !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
@@ -17073,9 +17089,60 @@ function isSheetLink(el: Element): boolean {
  *  which only `:modal` reads — and the style it gives, which the boxes
  *  follow — nor `-rx-picker-open`, a `<select>`'s menu dropping or going,
  *  which only `:open` and `:closed` read; nor what a player tells of itself
- *  (`mediaSync`). */
+ *  (`mediaSync`), nor a control's state, a custom element's or a direction
+ *  a text turned (`controlsReached`). */
 const STYLE_ONLY_ATTRIBUTE =
-  /^(?:class|id|style|role|hidden|aria-(?!label$)[^]*|data-[^]*|on[a-z]+|-rx-(?:defined|modal|picker-open|paused|muted|seeking|buffering|stalled))$/;
+  /^(?:class|id|style|role|hidden|aria-(?!label$)[^]*|data-[^]*|on[a-z]+|-rx-(?:defined|modal|picker-open|paused|muted|seeking|buffering|stalled|form|state|dir))$/;
+
+/** The node a change to an element's text starts from, for what its text
+ *  decides: where a text was written or what holds what came or went, and
+ *  around an element that took a `dir`, which a walk of its text passes
+ *  over. */
+function textChangedAt(change: HtmlChange): AnyNode | null {
+  if (change.type === 'characterData') return change.target.parent;
+  if (change.type === 'childList') return change.target;
+  if (change.type === 'attributes' && change.attributeName === 'dir') {
+    return change.target.parent;
+  }
+  return null;
+}
+
+/**
+ * What a list of changes changed that no record says, as records of the
+ * attributes nothing has that `:valid` and its kin and `:dir()` read: an
+ * answer read from other elements than the one a change was made to
+ * (`controlsReached`, `directionHolder`). None where no rule reads either,
+ * so that a document with none pays nothing for it.
+ */
+function derivedChanges(
+  changes: readonly HtmlChange[],
+  unchanged: ReadonlySet<HtmlChange> | null,
+  cascade: Cascade,
+): HtmlChange[] {
+  const controls = cascade.readsControls;
+  const direction = cascade.readsDirection;
+  if (!controls && !direction) return [];
+  const reached = new Set<Element>();
+  const turned = new Set<Element>();
+  for (const change of changes) {
+    if (unchanged?.has(change)) continue;
+    if (controls) controlsReached(change, reached);
+    if (direction) {
+      const holder = textChangedAt(change);
+      const around = holder && directionHolder(holder);
+      if (around) turned.add(around);
+    }
+  }
+  const told = (target: Element, attributeName: string): HtmlChange => ({
+    type: 'attributes',
+    target,
+    attributeName,
+  });
+  return [
+    ...[...reached].map((el) => told(el, '-rx-form')),
+    ...[...turned].map((el) => told(el, '-rx-dir')),
+  ];
+}
 
 /**
  * The attribute changes in a list that changed nothing: an attribute set to

@@ -1032,6 +1032,29 @@ export function isDefinedElement(el: Element): boolean {
 }
 const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
+/** Each custom element's states, as its `ElementInternals.states` has them
+ *  in the page's realm: what `:state()` reads. */
+const CUSTOM_STATES = new WeakMap<Element, ReadonlySet<string>>();
+
+/** A custom element's states now: whether they changed. */
+export function setCustomStates(
+  el: Element,
+  names: readonly string[],
+): boolean {
+  const was = CUSTOM_STATES.get(el);
+  if (was?.size === names.length && names.every((name) => was.has(name))) {
+    return false;
+  }
+  if (!was && !names.length) return false;
+  CUSTOM_STATES.set(el, new Set(names));
+  return true;
+}
+
+/** Whether `:state(name)` matches an element. */
+export function hasCustomState(el: Element, name: string): boolean {
+  return CUSTOM_STATES.get(el)?.has(name) ?? false;
+}
+
 /**
  * Attach a shadow root to `host` (DOM 4.9, `attachShadow()`), for an
  * application building one itself: fill it with `appendChild` and call

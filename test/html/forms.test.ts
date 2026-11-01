@@ -15,7 +15,10 @@ import {
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
-import { XK_ESCAPE } from 'react-x11/keysyms';
+import { XK_BACKSPACE, XK_ESCAPE } from 'react-x11/keysyms';
+import { appendChild, removeElement } from 'domutils';
+import type { Element } from 'domhandler';
+import { elementsIn } from '../../src/html/dom.js';
 import { Html, useHtmlHandle } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
@@ -36,6 +39,11 @@ import {
   view,
 } from './harness.js';
 import type { LaidBox } from './harness.js';
+import {
+  CHROME_CONTROL_STATES,
+  CONTROL_STATE_PSEUDOS,
+  CONTROL_STATE_SOURCE,
+} from './control-states.js';
 
 afterEach(cleanup);
 
@@ -2948,4 +2956,440 @@ test('a control the page set in its own font draws in it', async () => {
     'each widget draws in the face and at the size its box was measured in',
   );
   assert.deepStrictEqual(await fonts(2), [boxes, widgets], 'the same at 2x');
+});
+
+test("a stylesheet's pseudo-classes of a control's state answer as Chromium's do", async () => {
+  const { node } = await render(CONTROL_STATE_SOURCE, 800);
+  await act();
+  const el = view(node);
+  const matchers = CONTROL_STATE_PSEUDOS.map((pseudo) => ({
+    pseudo,
+    match: (
+      el as unknown as {
+        _cascade: {
+          _compile(selector: string): ((el: unknown) => boolean) | null;
+        };
+      }
+    )._cascade._compile(pseudo),
+  }));
+  for (const { pseudo, match } of matchers) {
+    assert.ok(match, `${pseudo} is refused`);
+  }
+  const differ: string[] = [];
+  for (const [id, want] of Object.entries(CHROME_CONTROL_STATES)) {
+    const element = findById(el.document, id);
+    assert.ok(element, id);
+    const got = matchers
+      .filter(({ match }) => match!(element))
+      .map(({ pseudo }) => pseudo)
+      .join(' ');
+    if (got !== want) differ.push(`${id}: ${got}, where Chromium has ${want}`);
+  }
+  assert.deepStrictEqual(differ, []);
+});
+
+/** A rule's ink on an element: which of a test's rules is in force. */
+const inkOf = (el: HtmlViewNode, id: string): string | undefined =>
+  el.computedStyle(findById(el.document, id)!)?.color;
+
+const RED = 'rgb(255, 0, 0)';
+const GREEN = 'rgb(0, 128, 0)';
+const BLACK = 'rgb(0, 0, 0)';
+
+/** A document that is black where no test's rule says otherwise. */
+const renderInk = (
+  source: string,
+  ...rest: [number?, Record<string, unknown>?]
+) =>
+  render(`<style>html, input, button{color:#000000}</style>${source}`, ...rest);
+
+test('what a user types turns the rules on its state, and a :has() around them, as it types', async () => {
+  // Typed text is in no attribute, and a rule on `:invalid` had to follow it
+  // from `FormState`, and `:has(:invalid)` to keep none of what it answered
+  const { node } = await renderInk(
+    '<style>body{margin:0}' +
+      'input:invalid{color:#ff0000} input:valid{color:#008000}' +
+      '#n:out-of-range{color:#ff0000} #n:in-range{color:#008000}' +
+      '#p:placeholder-shown{color:#ff0000}' +
+      '.w:has(input:invalid) b{color:#ff0000}' +
+      '.x:has(#n:out-of-range) b{color:#ff0000}' +
+      '.y:has(:placeholder-shown) b{color:#ff0000}' +
+      'form:invalid i{color:#ff0000}</style>' +
+      '<form><div class="w"><input id="r" required placeholder="r">' +
+      '<b id="rb">b</b></div>' +
+      '<div class="x"><input id="n" type="number" min="5" placeholder="n">' +
+      '<b id="nb">b</b></div>' +
+      '<div class="y"><input id="p" placeholder="p"><b id="pb">b</b></div>' +
+      '<i id="f">f</i></form>',
+  );
+  await act();
+  const el = view(node);
+  const field = (hint: string) => screen.getByPlaceholder(hint) as DrawnNode;
+
+  assert.strictEqual(inkOf(el, 'r'), RED);
+  assert.strictEqual(inkOf(el, 'rb'), RED);
+  assert.strictEqual(inkOf(el, 'f'), RED);
+  await userEvent.type(field('r'), 'x');
+  await act();
+  assert.strictEqual(inkOf(el, 'r'), GREEN);
+  assert.strictEqual(inkOf(el, 'rb'), BLACK, 'the :has() came off');
+  assert.strictEqual(inkOf(el, 'f'), BLACK, 'and so did the form');
+  await userEvent.key(XK_BACKSPACE);
+  await act();
+  assert.strictEqual(inkOf(el, 'r'), RED);
+  assert.strictEqual(inkOf(el, 'rb'), RED, 'and went on again');
+  assert.strictEqual(inkOf(el, 'f'), RED);
+
+  assert.strictEqual(inkOf(el, 'n'), GREEN, 'an empty field is in range');
+  await userEvent.type(field('n'), '1');
+  await act();
+  assert.strictEqual(inkOf(el, 'n'), RED);
+  assert.strictEqual(inkOf(el, 'nb'), RED);
+  await userEvent.type(field('n'), '0', { skipClick: true });
+  await act();
+  assert.strictEqual(inkOf(el, 'n'), GREEN);
+  assert.strictEqual(inkOf(el, 'nb'), BLACK);
+
+  assert.strictEqual(inkOf(el, 'p'), RED);
+  assert.strictEqual(inkOf(el, 'pb'), RED);
+  await userEvent.type(field('p'), 'x');
+  await act();
+  assert.notStrictEqual(inkOf(el, 'p'), RED);
+  // the other two fields still show theirs: the first is empty again
+  await userEvent.key(XK_BACKSPACE);
+  await act();
+  assert.strictEqual(inkOf(el, 'p'), RED);
+});
+
+test('a keystroke that moves no answer is told to no rule, and a document with none hears nothing', async () => {
+  // A restyle per keystroke would run the cascade and lay the document out
+  // for each: `typed` compares what a rule can read of the field
+  const count = async (rules: string) => {
+    const { node, result } = await renderInk(
+      `<style>${rules}</style><input placeholder="a">`,
+    );
+    await act();
+    const el = view(node);
+    const touchDocument = el.touchDocument;
+    let told = 0;
+    el.touchDocument = function (this: HtmlViewNode, ...a) {
+      told += 1;
+      touchDocument.apply(this, a);
+    };
+    await userEvent.type(screen.getByPlaceholder('a') as DrawnNode, 'abc');
+    await act();
+    result.unmount();
+    return told;
+  };
+  assert.strictEqual(await count('p{color:#ff0000}'), 0);
+  assert.strictEqual(
+    await count('input:placeholder-shown{color:#ff0000}'),
+    1,
+    'the first letter takes the placeholder away, and the rest move nothing',
+  );
+});
+
+test('two forms alike but for what is typed in them take the rules on their state apart', async () => {
+  // Alike in every attribute, down to no `id`, they are a style shared,
+  // which only `UNSHAREABLE` keeps apart, however the rule is spelt. A field
+  // would not show it: the UA sheet's rules keep an `<input>` to its own.
+  const { node } = await renderInk(
+    '<style>FORM:INVALID{color:#ff0000}</style>' +
+      '<form><input required placeholder="a"></form>' +
+      '<form><input required placeholder="a"></form>',
+  );
+  await act();
+  const el = view(node);
+  const [one, other] = [...elementsIn(el.document)].filter(
+    (e) => e.name === 'form',
+  );
+  const ink = (e: Element) => el.computedStyle(e)?.color;
+  assert.strictEqual(ink(one), RED);
+  assert.strictEqual(ink(other), RED);
+  await userEvent.type(
+    screen.all((n) => n.kind === 'textinput')[0] as DrawnNode,
+    'x',
+  );
+  await act();
+  assert.strictEqual(ink(one), BLACK);
+  assert.strictEqual(ink(other), RED);
+  el.touchDocument();
+  await act();
+  assert.strictEqual(ink(one), BLACK, 'and a whole restyle agrees');
+  assert.strictEqual(ink(other), RED);
+});
+
+test('a field shows the user its validity once they leave it, a form once they try to send it, and a reset takes both back', async () => {
+  // Chromium's order: nothing while they type, and an edit that came back
+  // to where it began counts all the same
+  const { node } = await renderInk(
+    '<style>input:user-invalid{color:#ff0000} input:user-valid{color:#008000}' +
+      '.w:has(:user-invalid) b{color:#ff0000}</style>' +
+      '<form id="f"><div class="w"><input id="a" required placeholder="a">' +
+      '<b id="ab">b</b></div>' +
+      '<input id="b" required placeholder="b">' +
+      '<input id="c" placeholder="c"><button id="go">go</button>' +
+      '<button id="again" type="reset">again</button></form>',
+    400,
+    { onSubmit: () => {} },
+  );
+  await act();
+  const el = view(node);
+  const field = (hint: string) => screen.getByPlaceholder(hint) as DrawnNode;
+
+  assert.strictEqual(inkOf(el, 'a'), BLACK);
+  await userEvent.type(field('a'), 'x');
+  await act();
+  assert.strictEqual(inkOf(el, 'a'), BLACK, 'not as they type');
+  await userEvent.key(XK_BACKSPACE);
+  await act();
+  await act(async () => field('a').blur());
+  await act();
+  assert.strictEqual(inkOf(el, 'a'), RED, 'an edit, undone, is one');
+  assert.strictEqual(inkOf(el, 'ab'), RED, 'and a :has() hears of it');
+  await act(async () => field('b').focus());
+  await act(async () => field('b').blur());
+  await act();
+  assert.strictEqual(inkOf(el, 'b'), BLACK, 'passing through is no edit');
+  assert.strictEqual(inkOf(el, 'c'), BLACK);
+
+  // a press on the form's button, which is refused and shows all of it
+  const go = el.elementRect(findById(el.document, 'go')!)!;
+  const target = el as unknown as DrawnNode;
+  await act(async () => {
+    const at = {
+      dx: go.x + go.width / 2 - target.abs.width / 2,
+      dy: go.y + go.height / 2 - target.abs.height / 2,
+    };
+    fireEvent.mouseDown(target, at);
+    fireEvent.mouseUp(target, at);
+  });
+  await act();
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  assert.strictEqual(inkOf(el, 'c'), GREEN);
+
+  await act(async () => el.interactive!.reset(findById(el.document, 'f')!));
+  await act();
+  assert.strictEqual(inkOf(el, 'a'), BLACK);
+  assert.strictEqual(inkOf(el, 'ab'), BLACK);
+  assert.strictEqual(inkOf(el, 'b'), BLACK);
+  assert.strictEqual(inkOf(el, 'c'), BLACK);
+});
+
+test('an attempt to send a form from a script shows what is wrong, and asking what is wrong does not', async () => {
+  const { node } = await renderInk(
+    '<style>input:user-invalid{color:#ff0000}</style>' +
+      '<form id="f"><input id="a" required></form>',
+  );
+  await act();
+  const el = view(node);
+  const form = findById(el.document, 'f')!;
+  assert.strictEqual(el.interactive!.reportValidity(form, null), false);
+  await act();
+  assert.strictEqual(inkOf(el, 'a'), BLACK, '`reportValidity()` asks');
+  assert.strictEqual(el.interactive!.reportValidity(form, null, true), false);
+  await act();
+  assert.strictEqual(inkOf(el, 'a'), RED, '`requestSubmit()` tries');
+});
+
+test('a radio ticked takes :indeterminate off the rest of its group, and a :has() around one it was not', async () => {
+  const { node } = await renderInk(
+    '<style>input:indeterminate{outline-color:#ff0000}' +
+      '.w:has(:indeterminate) b{color:#ff0000}</style>' +
+      '<div class="w"><input type="radio" name="g" id="a"><b id="ab">b</b></div>' +
+      '<div class="w"><input type="radio" name="g" id="c"><b id="cb">b</b></div>',
+  );
+  await act();
+  const el = view(node);
+  assert.strictEqual(inkOf(el, 'ab'), RED);
+  assert.strictEqual(inkOf(el, 'cb'), RED);
+  await act(async () => {
+    el.interactive!.setControlValue(findById(el.document, 'a')!, true);
+  });
+  await act();
+  assert.strictEqual(inkOf(el, 'ab'), BLACK);
+  assert.strictEqual(inkOf(el, 'cb'), BLACK, 'the one not ticked went too');
+});
+
+test('a box the user unticks is still :default, and a form’s first button follows the buttons', async () => {
+  const { node } = await renderInk(
+    '<style>:default{color:#ff0000}form:has(button:default) > b{color:#ff0000}</style>' +
+      '<input id="c" type="checkbox" checked>' +
+      '<form id="f"><button id="a">a</button><button id="z">z</button>' +
+      '<b id="b">b</b></form>',
+  );
+  await act();
+  const el = view(node);
+  const byId = (id: string) => findById(el.document, id)!;
+  assert.strictEqual(inkOf(el, 'c'), RED);
+  await act(async () => {
+    el.interactive!.setControlValue(byId('c'), false);
+  });
+  await act();
+  assert.strictEqual(inkOf(el, 'c'), RED);
+  assert.strictEqual(inkOf(el, 'a'), RED);
+  assert.strictEqual(inkOf(el, 'z'), BLACK);
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  const form = byId('f');
+  const take = async (button: Element) => {
+    removeElement(button);
+    await act(async () => {
+      el.touchDocument([
+        {
+          type: 'childList',
+          target: form,
+          addedNodes: [],
+          removedNodes: [button],
+        },
+      ]);
+    });
+    await act();
+  };
+  const last = byId('z');
+  await take(byId('a'));
+  assert.strictEqual(inkOf(el, 'z'), RED, 'what was second is first now');
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  await take(last);
+  assert.strictEqual(inkOf(el, 'b'), BLACK, 'and with none the :has() is off');
+  appendChild(form, last);
+  await act(async () => {
+    el.touchDocument([
+      {
+        type: 'childList',
+        target: form,
+        addedNodes: [last],
+        removedNodes: [],
+      },
+    ]);
+  });
+  await act();
+  assert.strictEqual(inkOf(el, 'b'), RED, 'and on again');
+});
+
+test('a fieldset and a form answer for what they hold, and a script that changes one control reaches them', async () => {
+  const { node } = await renderInk(
+    '<style>fieldset:invalid > b, form:invalid > b{color:#ff0000}' +
+      '.w:has(fieldset:invalid) > i{color:#ff0000}</style>' +
+      '<form id="f"><div class="w"><fieldset id="s">' +
+      '<div><input id="a"></div><b id="fb">b</b></fieldset><i id="wi">i</i></div>' +
+      '<b id="b">b</b></form><input id="out" form="f">',
+  );
+  await act();
+  const el = view(node);
+  const byId = (id: string) => findById(el.document, id)!;
+  const required = async (id: string, on: boolean) => {
+    const target = byId(id);
+    if (on) target.attribs.required = '';
+    else delete target.attribs.required;
+    await act(async () => {
+      el.touchDocument([
+        {
+          type: 'attributes',
+          target,
+          attributeName: 'required',
+          oldValue: on ? null : '',
+        },
+      ]);
+    });
+    await act();
+  };
+  assert.strictEqual(inkOf(el, 'fb'), BLACK);
+  await required('a', true);
+  assert.strictEqual(inkOf(el, 'fb'), RED);
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  assert.strictEqual(inkOf(el, 'wi'), RED);
+  await required('a', false);
+  assert.strictEqual(inkOf(el, 'fb'), BLACK);
+  assert.strictEqual(inkOf(el, 'b'), BLACK);
+  assert.strictEqual(inkOf(el, 'wi'), BLACK);
+  // what a form owns by its `form` attribute, from outside it
+  await required('out', true);
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  assert.strictEqual(inkOf(el, 'fb'), BLACK, 'and no fieldset holds it');
+});
+
+test(':read-write and :read-only are every field and element, and a contenteditable’s', async () => {
+  // css-select's aliases asked for a `type` written out, and of a text
+  // field alone: a bare `<input>` was neither
+  const { node } = await renderInk(
+    '<style>:read-write{color:#008000} p:read-only, i:read-only{color:#ff0000}</style>' +
+      '<input id="i"><i id="n">n</i>' +
+      '<div contenteditable><p id="e">e</p></div><p id="o">o</p>',
+  );
+  await act();
+  const el = view(node);
+  assert.strictEqual(inkOf(el, 'i'), GREEN);
+  assert.strictEqual(inkOf(el, 'n'), RED);
+  assert.strictEqual(inkOf(el, 'e'), GREEN);
+  assert.strictEqual(inkOf(el, 'o'), RED);
+});
+
+test('a :has() of :read-write or :read-only follows the attributes they read', async () => {
+  const { node } = await renderInk(
+    '<style>.w:has(input:read-write) > b{color:#008000}' +
+      '.w:has(input:read-only) > b{color:#ff0000}</style>' +
+      '<div class="w"><input id="i"><b id="b">b</b></div>',
+  );
+  await act();
+  const el = view(node);
+  const target = findById(el.document, 'i')!;
+  assert.strictEqual(inkOf(el, 'b'), GREEN);
+  const readonly = async (on: boolean) => {
+    const oldValue = on ? null : '';
+    if (on) target.attribs.readonly = '';
+    else delete target.attribs.readonly;
+    await act(async () => {
+      el.touchDocument([
+        { type: 'attributes', target, attributeName: 'readonly', oldValue },
+      ]);
+    });
+    await act();
+  };
+  await readonly(true);
+  assert.strictEqual(inkOf(el, 'b'), RED);
+  await readonly(false);
+  assert.strictEqual(inkOf(el, 'b'), GREEN);
+});
+
+test(':dir() is the nearest dir’s, or the first strong letter’s, and a text that turns reaches what it holds', async () => {
+  const { node } = await renderInk(
+    '<style>:dir(rtl) > b{color:#ff0000}.w:has(p:dir(rtl)) > i{color:#ff0000}</style>' +
+      '<div dir="rtl"><section><b id="in">b</b></section></div>' +
+      '<div dir="auto" id="auto"><span id="s">hello</span><b id="t">b</b></div>' +
+      '<div class="w"><p dir="auto" id="w">hello</p><i id="wi">i</i></div>',
+  );
+  await act();
+  const el = view(node);
+  assert.strictEqual(inkOf(el, 'in'), RED);
+  assert.strictEqual(inkOf(el, 't'), BLACK);
+  assert.strictEqual(inkOf(el, 'wi'), BLACK);
+  const write = async (holder: Element, words = 'مرحبا') => {
+    const text = holder.children[0] as unknown as { data: string };
+    text.data = words;
+    await act(async () => {
+      el.touchDocument([{ type: 'characterData', target: text as never }]);
+    });
+    await act();
+  };
+  await write(findById(el.document, 's')!);
+  assert.strictEqual(inkOf(el, 't'), RED, 'all it holds turns with it');
+  await write(findById(el.document, 'w')!);
+  assert.strictEqual(inkOf(el, 'wi'), RED, 'and a :has() around it hears');
+  await write(findById(el.document, 'w')!, 'hello');
+  assert.strictEqual(inkOf(el, 'wi'), BLACK, 'and turns off with it');
+  // what took its text out of the first letter's way
+  const s = findById(el.document, 's')!;
+  s.attribs.dir = 'ltr';
+  await act(async () => {
+    el.touchDocument([
+      {
+        type: 'attributes',
+        target: s,
+        attributeName: 'dir',
+        oldValue: null,
+      },
+    ]);
+  });
+  await act();
+  assert.strictEqual(inkOf(el, 't'), BLACK, 'a `dir` in it is passed over');
 });

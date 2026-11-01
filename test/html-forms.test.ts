@@ -4,6 +4,7 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { existsSync } from 'node:fs';
+import { appendChild, removeElement } from 'domutils';
 import React from 'react';
 
 import {
@@ -23,13 +24,19 @@ import { HtmlSource } from '../src/html/dom.js';
 import type { Element } from '../src/html/dom.js';
 import {
   FormState,
+  controlValue,
   firstInvalid,
   formOwner,
   formSubmission,
   implicitSubmission,
+  isInRange,
+  isInvalid,
+  isOutOfRange,
   labeledControl,
   radioGroup,
+  validated,
   validationMessage,
+  validityError,
 } from '../src/html/form.js';
 
 const h = React.createElement;
@@ -532,6 +539,76 @@ test("the constraints a document states, in a browser's words", () => {
   byId('r2').attribs.checked = '';
   assert.strictEqual(message('r1'), null, 'one of the group is checked');
   assert.strictEqual(firstInvalid(byId('f'), null, live)?.element, byId('sel'));
+});
+
+test('a date, a month, a week and a time are held to their limits and their steps', () => {
+  // Chromium's answers: `:in-range` is `rangeAnswer`'s, and the words are
+  // those of a `<input type=number>` where they can be
+  const byId = parse(
+    '<input id="low" type="date" min="2020-01-01" value="2019-12-31">' +
+      '<input id="high" type="date" max="2020-01-01" value="2020-01-02">' +
+      '<input id="ok" type="date" min="2020-01-01" value="2020-01-01">' +
+      '<input id="bad" type="date" required value="2020-02-30">' +
+      '<input id="month" type="month" min="2020-02" value="2020-01">' +
+      '<input id="week" type="week" min="2020-W10" value="2020-W09">' +
+      '<input id="no-week" type="week" value="2021-W53">' +
+      '<input id="time" type="time" min="10:00" value="09:59">' +
+      '<input id="night" type="time" min="22:00" max="02:00" value="23:00">' +
+      '<input id="day" type="time" min="22:00" max="02:00" value="12:00">' +
+      '<input id="local" type="datetime-local" min="2020-01-01T10:00" value="2020-01-01T09:00">' +
+      '<input id="step" type="number" min="1" step="2" value="4">' +
+      '<input id="tenth" type="number" step="0.1" value="0.3">' +
+      '<input id="any" type="number" step="any" value="1.5">' +
+      '<input id="base" type="number" step="2" value="3">' +
+      '<input id="days" type="date" min="2020-01-01" step="2" value="2020-01-02">',
+  );
+  const flag = (id: string) => validityError(byId(id))?.flag ?? null;
+  assert.strictEqual(flag('low'), 'rangeUnderflow');
+  assert.strictEqual(flag('high'), 'rangeOverflow');
+  assert.strictEqual(flag('ok'), null);
+  assert.strictEqual(controlValue(byId('bad')), '', 'no such day');
+  assert.strictEqual(flag('bad'), 'valueMissing');
+  assert.strictEqual(flag('month'), 'rangeUnderflow');
+  assert.strictEqual(flag('week'), 'rangeUnderflow');
+  assert.strictEqual(controlValue(byId('no-week')), '', 'a year of 52 weeks');
+  assert.strictEqual(flag('time'), 'rangeUnderflow');
+  assert.strictEqual(flag('night'), null, 'past midnight is between them');
+  assert.strictEqual(flag('day'), 'rangeOverflow');
+  assert.strictEqual(flag('local'), 'rangeUnderflow');
+  assert.strictEqual(flag('step'), 'stepMismatch');
+  assert.strictEqual(flag('tenth'), null, 'a double’s error is no mismatch');
+  assert.strictEqual(flag('any'), null);
+  assert.strictEqual(flag('base'), null, 'its own value is where steps start');
+  assert.strictEqual(flag('days'), 'stepMismatch');
+  assert.strictEqual(isOutOfRange(byId('low')), true);
+  assert.strictEqual(isInRange(byId('ok')), true);
+  assert.strictEqual(isInRange(byId('night')), true);
+  assert.strictEqual(isOutOfRange(byId('day')), true);
+});
+
+test('what a <datalist> holds is not validated, and a length is held to what the user typed', () => {
+  // made here, since htmlparser2 closes a `<datalist>` at an `<input>`
+  const byId = parse(
+    '<datalist id="d"></datalist><input id="in" required>' +
+      '<input id="m" minlength="4"><textarea id="t"></textarea>',
+  );
+  const field = byId('in');
+  removeElement(field);
+  appendChild(byId('d'), field);
+  assert.strictEqual(validated(field), false);
+  assert.strictEqual(isInvalid(field), false);
+
+  const forms = new FormState();
+  forms.setTyped(byId('m'), 'ab');
+  assert.strictEqual(validityError(byId('m'))?.flag, 'tooShort');
+  forms.setTyped(byId('m'), 'ab', true);
+  assert.strictEqual(validityError(byId('m')), null, 'a script’s is its own');
+  forms.setTyped(byId('m'), 'a');
+  assert.strictEqual(validityError(byId('m'))?.flag, 'tooShort');
+
+  // and a second newline is the text's: the parser took the first
+  const area = parse('<textarea id="a">\n\nb</textarea>')('a');
+  assert.strictEqual(controlValue(area), '\nb');
 });
 
 test('novalidate and formnovalidate let an invalid form go', () => {
