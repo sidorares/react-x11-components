@@ -720,6 +720,10 @@ export interface Part {
    *  toast or a banner fixed to it is: its layer stays there as the pane
    *  scrolls the document under it, from the viewport's corner. */
   atViewport: boolean;
+  /** Whether its layer is in another part's, which goes where that part's
+   *  animation takes it: `extent` is in that part's space, then, and says
+   *  nothing of where it is in the document. */
+  nested: boolean;
   /** Its frames as sampled, kept by what they are sampled from. */
   sampled: Sampled;
   /** Where nothing painted after it may reach, in the document's
@@ -1014,6 +1018,7 @@ export function partOf(
     // goes where the other does
     fixed: parent ? NO_BOXES : (FIXED_BOXES.get(tree) ?? NO_BOXES),
     atViewport,
+    nested: parent !== null,
     sampled,
     over,
     fixedOver: atViewport ? showsHere : null,

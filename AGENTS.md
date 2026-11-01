@@ -2771,8 +2771,17 @@ lays the box out again leaves it where the flow put it. **Anything new
 that moves boxes or changes their ink outside a layout walks the tree's
 ink whole** (`computePaintBounds` with no `KeptInk`), which makes every
 record stale, or a later walk keeps ink of where the boxes were: a sticky
-box the pane's scroll places is the one walk of part of it
-(`boundsAfterMove`), and why no ink under one is kept. And **a text or a
+box the pane's scroll places is one walk of part of it
+(`boundsAfterMove`), and why no ink under one is kept, and a box a
+transform moved in place is the other (`inkAfterMove`), whose walk makes the
+records stale as a whole one does. A restyle in place that only moved boxes
+walks those and the boxes around them as far as they have to grow, and
+gathers no layers, since `movable` lets through no change of a stacking
+context: a spinner turning at the foot of a mail page's list walked all
+13,000 of its elements at every frame. What is around it stays as large as
+it grew, which a culled paint takes as more to draw, never less; a box on
+a line goes from its block, whose lines say how far it reaches past them
+(`LINE_INK`). And **a text or a
 break carries its element's style and is no box of its own**: no pass
 moves it, and no scroll places it (`stickyBlock`). Taken for a sticky
 box, a sticky element's text was held where its rect had drifted to, and
@@ -5151,7 +5160,9 @@ things are load-bearing.
   sampled its cycle again at each.
 - **A point is hit where the layer has the element.** A lifted element's
   style stops at the lift, so every hit test first restyles the lifted
-  elements whose animation moves them to now (`_followLifted`). That
+  elements whose animation moves them to now (`_followLifted`), but for
+  those the point is outside everywhere they can be (`Part.extent`): a
+  wheel asks twice a notch, and a spinner is under few of them. That
   restyle repaints nothing, makes no part again and lays nothing out: their
   pixels are their layers'. **Anything new that hit-tests the document
   follows them first**, as `elementAtPoint`, `cursorAt` and `textIndexAt`
