@@ -53,6 +53,7 @@ import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
 import {
   AT_VIEWPORT,
+  HELD_AT_VIEWPORT,
   between,
   buttonLabel,
   optionsOf,
@@ -1312,7 +1313,7 @@ function renderControl(
         : widget,
     ),
   );
-  return atViewport(rect.atViewport === true, key, mounted);
+  return keptWithBox(rect, key, mounted);
 }
 
 /**
@@ -1337,6 +1338,52 @@ export function atViewport(
   node: ReactElement,
 ): ReactElement {
   if (!fixed) return node;
+  return placed(AT_VIEWPORT as Style['position'], key, node);
+}
+
+/**
+ * What is mounted for a control, kept with the box it is drawn in: at the
+ * viewport (`atViewport`), or, in a sticky box the viewport keeps
+ * (`ControlRect.held`), as far from where the flow has it as the box is
+ * held. Mounted at its rect beside the element and told again as it was
+ * painted, MDN's filter over its sticky sidebar was drawn a step of the
+ * scroll up from the box around it at every frame of one, and put back at
+ * the next.
+ */
+function keptWithBox(
+  rect: ControlRect | undefined,
+  key: string,
+  node: ReactElement,
+): ReactElement {
+  if (!rect?.held) return atViewport(rect?.atViewport === true, key, node);
+  return placed(heldPosition(rect.element), key, node);
+}
+
+/** The position that keeps a control with its sticky box. One object for
+ *  an element, since a new one at each render of the document would be a
+ *  new style for the box it is in. */
+function heldPosition(element: Element): Style['position'] {
+  let position = HELD_POSITIONS.get(element);
+  if (!position) {
+    position = {
+      name: HELD_AT_VIEWPORT,
+      element,
+    } as unknown as Style['position'];
+    HELD_POSITIONS.set(element, position);
+  }
+  return position;
+}
+
+const HELD_POSITIONS = new WeakMap<Element, Style['position']>();
+
+/** A box of no size at the element's corner, in a position core does not
+ *  name, registered by `registerHtmlView`; `Style` takes one only where an
+ *  app's declarations add it. */
+function placed(
+  position: Style['position'],
+  key: string,
+  node: ReactElement,
+): ReactElement {
   return hx(
     'box',
     { key, selectable: false, style: CORNER },
@@ -1344,13 +1391,7 @@ export function atViewport(
       'box',
       {
         selectable: false,
-        style: {
-          // a position core does not name, registered by `registerHtmlView`;
-          // `Style` takes one only where an app's declarations add it
-          position: AT_VIEWPORT as Style['position'],
-          width: 0,
-          height: 0,
-        },
+        style: { position, width: 0, height: 0 },
       },
       node,
     ),
@@ -1532,8 +1573,8 @@ function renderMessage(
       invalid.message,
     ),
   );
-  // under a field in a fixed header, where the header is drawn
-  return atViewport(control?.atViewport === true, 'form-message', message);
+  // under a field in a fixed or a sticky header, where the header is drawn
+  return keptWithBox(control, 'form-message', message);
 }
 
 /**

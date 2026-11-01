@@ -244,6 +244,7 @@ import {
   containsOutOfFlow,
   forgetSizes,
   heldBack,
+  heldShift,
   laidWhole,
   layoutAsks,
   layoutDocument,
@@ -425,6 +426,7 @@ import type {
 } from './paint.js';
 import {
   AT_VIEWPORT,
+  HELD_AT_VIEWPORT,
   controlRectsOf,
   measureControl,
   shownBy,
@@ -733,6 +735,12 @@ export function registerHtmlView(): void {
   if (!registeredPositions().includes(AT_VIEWPORT)) {
     registerPosition(AT_VIEWPORT, { place: placeAtViewport });
   }
+  if (!registeredPositions().includes(HELD_AT_VIEWPORT)) {
+    registerPosition(HELD_AT_VIEWPORT, {
+      options: { element: { type: 'any' } },
+      place: placeHeld,
+    });
+  }
   if (registeredElements().includes(ELEMENT)) return;
   registerElement(ELEMENT, {
     create: (props, app) => new HtmlViewNode(props, app),
@@ -770,18 +778,39 @@ export function registerHtmlView(): void {
  * to the viewport from (`viewportOrigin`) — the element in the nearest box
  * around it that holds one. Asked by core after every layout pass, the
  * pass a scroll runs included, so a widget in a fixed header lands with
- * the header in the frame that scrolled. The element is found by its kind,
- * not its class, which a hot reload makes another.
+ * the header in the frame that scrolled.
  */
 function placeAtViewport(
   node: Node,
   context: PositionContext,
 ): { x: number; y: number } | null {
+  const origin = viewAround(node)?.viewportOrigin();
+  if (!origin) return null;
+  return { x: origin.x - context.laidOut.x, y: origin.y - context.laidOut.y };
+}
+
+/**
+ * How far to move a box in the `HELD_AT_VIEWPORT` position from where
+ * layout put it: as far as the sticky boxes the viewport keeps hold the
+ * control it is mounted for from where the flow has it. Asked as
+ * `placeAtViewport` is, so a widget in a sticky sidebar lands with the
+ * sidebar in the frame that scrolled.
+ */
+function placeHeld(
+  node: Node,
+  context: PositionContext,
+): { x: number; y: number } | null {
+  const element = context.options.element as Element;
+  return viewAround(node)?.heldShiftOf(element, node) ?? null;
+}
+
+/** The element a node mounted beside it belongs to: the one in the nearest
+ *  box around the node that holds one, found by its kind, not its class,
+ *  which a hot reload makes another. */
+function viewAround(node: Node): HtmlViewNode | null {
   for (let at = node.parent; at; at = at.parent) {
     const view = at.children.find((child) => child.kind === ELEMENT);
-    if (!view) continue;
-    const origin = (view as HtmlViewNode).viewportOrigin();
-    return { x: origin.x - context.laidOut.x, y: origin.y - context.laidOut.y };
+    if (view) return view as HtmlViewNode;
   }
   return null;
 }
@@ -3693,7 +3722,6 @@ export class HtmlViewNode extends Node {
    * what they draw and repair is where that pass put it.
    */
   private _followViewport(): void {
-    const tree = this._tree;
     // a pane's scroll, which `scroll-state()` asks the root's and its
     // sticky boxes' of: asked again once what is drawn now is drawn
     if (this._cascade?.readsScrollState && this._noteRootScroll()) {
@@ -3706,6 +3734,14 @@ export class HtmlViewNode extends Node {
     // and an animation that runs on a scroll's timeline, which a layout
     // moves as much as a scroll
     void Promise.resolve().then(() => this._restyleScrolled());
+    this._placeAgainstPane();
+  }
+
+  /** The boxes `_followViewport` places, without what it tells of the
+   *  scroll: all core's pass over what is mounted beside the document needs
+   *  (`heldShiftOf`), which asks once a widget. */
+  private _placeAgainstPane(): void {
+    const tree = this._tree;
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     // and what is anchored across the pane's scroll: fixed to the viewport
     // and anchored in the document, or the other way round
@@ -5270,6 +5306,7 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const report = this._props().onControls;
     if (!tree || !report) return;
+    this._followHeld();
     // The boxes are device pixels; each rect becomes the style of a widget
     // mounted beside this element, and a style is logical.
     const s = this._scale;
@@ -7846,6 +7883,61 @@ export class HtmlViewNode extends Node {
   viewportOrigin(): { x: number; y: number } {
     const at = this._viewport() ?? this.abs;
     return { x: at.x, y: at.y };
+  }
+
+  /**
+   * How far the sticky boxes the viewport keeps hold an element from where
+   * the flow has it, with the pane where it is now, in device pixels
+   * (`heldShift`). What core moves the box `node`, mounted for a control in
+   * one, by (`HELD_AT_VIEWPORT`), in every pass, the pass a scroll runs
+   * included: the boxes are placed here rather than at the paint, which
+   * comes after the pass has put the widget where the frame shows it.
+   */
+  heldShiftOf(element: Element, node: Node): { x: number; y: number } | null {
+    this._placeAgainstPane();
+    const shift = this._heldNow(element);
+    if (shift) this._heldPlaced.set(node, { element, shift });
+    else this._heldPlaced.delete(node);
+    return shift;
+  }
+
+  /** Where `heldShiftOf` last had core put each box it was asked about. */
+  private readonly _heldPlaced = new Map<
+    Node,
+    { element: Element; shift: { x: number; y: number } }
+  >();
+
+  private _heldNow(element: Element): { x: number; y: number } | null {
+    const tree = this._tree;
+    const box = tree && this._boxOf(tree, element);
+    return box ? heldShift(tree, box) : null;
+  }
+
+  /**
+   * Ask for a pass over the widgets a sticky box moved from since core
+   * last placed them: no scroll moved it but a layout of the document's
+   * own (`_layoutOwed`), which core runs no pass for, and a report says
+   * nothing where the flow has them where it was. A microtask later, as
+   * this is asked in a paint as well.
+   */
+  private _followHeld(): void {
+    for (const [node, { element, shift }] of this._heldPlaced) {
+      if (node.destroyed) {
+        this._heldPlaced.delete(node);
+        continue;
+      }
+      const now = this._heldNow(element);
+      if (
+        !now ||
+        (Math.round(now.x) === Math.round(shift.x) &&
+          Math.round(now.y) === Math.round(shift.y))
+      ) {
+        continue;
+      }
+      void Promise.resolve().then(() =>
+        node.invalidate(true, node, 'position'),
+      );
+    }
   }
 
   /** What of the document the pane around it shows, in the document's
@@ -15759,6 +15851,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
       p.atViewport !== q.atViewport ||
+      p.held !== q.held ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {

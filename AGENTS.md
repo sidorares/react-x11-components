@@ -5473,6 +5473,24 @@ past its end to the widget. An embedded element in a box fixed to the
 viewport is mounted in the same box (`EmbeddedRect.atViewport`), and the
 fixed boxes the scroll moves the others under do not cut it.
 
+**A widget in a sticky box the viewport keeps goes with the box the same
+way** (`HELD_AT_VIEWPORT`, `ControlRect.held`). The pane's scroll holds such
+a box while the text goes, and lays nothing out, so a widget at the box's
+rect left it by a step of the scroll at every frame and was put back as
+that frame was painted: MDN's filter, whose border the document draws, had
+its text jump out of its frame and back. Its rect is where the flow has it,
+which no scroll moves, and core moves the box it is kept in by what
+`heldShiftOf` answers, in the pass a scroll runs. Three things are
+load-bearing. **A held rect, with its `bare` and its `clip`, is in no
+document's coordinates**, so anything new mounted for a control goes through
+`keptWithBox`, as the validation message does. **The boxes are placed before
+the answer** (`_placeAgainstPane`), since the paint that would place them
+comes after the pass. And **core runs no pass for a layout of the
+document's own** (`_layoutOwed`), where the box can move while the flow
+leaves the control where it was, so a report says nothing: `_followHeld`
+asks for one. An embedded element and a player in such a box are told at
+the paint still, and are a frame late.
+
 **A sticky box the viewport holds cuts a mount as a fixed box does, and
 refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's
 scroll moves it over the document without a layout, so `placementOf` passes
