@@ -5675,11 +5675,14 @@ block axis, which is the root's intrinsic width at its least and its most
   (`layoutSerial`).
 - **A frame is laid out with what holds it, or moved whole with it.** All a
   frame holds is a blocker (`noteBlockers`), so no block in one is kept
-  alone, its heights running across the page; what holds a frame is kept as
-  any block is, and the frame goes with it. A kept block's read of the
-  viewport's height is read again (`heightHolds`), since a frame fit to the
-  viewport reads it only as it is laid out, and a move of the height would
-  lay nothing out. A build apart stops at a frame (`buildSubtrees`, `_apart`):
+  alone: its heights run across the page, and in `vertical-lr` its lines are
+  in the order `reflectFrame` put them in, where what reads them reads them
+  as they were laid out, and an inline-block stood on the wrong one. What
+  holds a frame is kept as any block is, and the frame goes with it. A kept
+  block's read of the viewport's height is read again (`heightHolds`), since
+  a frame fit to the viewport reads it only as it is laid out, and a move of
+  the height would lay nothing out. A build apart stops at a frame
+  (`buildSubtrees`, `_apart`):
   a frame is made as a build of the whole ends and what is in one takes its
   sides from it, so a change in one builds the whole document. MDN's browser
   compatibility tables turn each browser's name in a `vertical-rl` label,

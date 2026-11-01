@@ -1372,9 +1372,13 @@ metric(
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
       // and flows in another writing mode, in every third: a probe takes
-      // no block for what it came to in such a tree, which only a tree
-      // that holds one can say
-      const names = seed % 3 ? PROBE_CLASSES : [...PROBE_CLASSES, 'vr', 'vl'];
+      // no block for what it came to in such a tree, which only a tree that
+      // holds one can say. With no `.w`, a percentage across the flow, which
+      // a frame takes its root's width to be definite for where it is not
+      const names =
+        seed % 3
+          ? PROBE_CLASSES
+          : [...PROBE_CLASSES.filter((name) => name !== 'w'), 'vr', 'vl'];
       for (let i = 0; i < blocks; i += 1) {
         appendChild(body, probed(next, 0, names));
       }
