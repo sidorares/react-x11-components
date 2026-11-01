@@ -1602,8 +1602,8 @@ attr(data-token)` would have asked for the attribute's value. And
 `substituteIn`**, not `substitute`, whose result is not checked.
 
 **A longhand goes back alone, whatever it shares a field with.** A
-declaration with a `var()` is set back to its initial value before it is
-substituted (`Cascade._apply`), in case what it substitutes is no value, and
+declaration with a `var()` goes back as `unset` before what it substitutes is
+applied (`Cascade._apply`), in case that is no value, and
 `inherit`, `initial`, `unset` and `revert` copy the property from another
 style. So a longhand that keeps part of a field takes that part alone:
 `MASK_LISTS`, `ANIMATION_LONGHANDS` and `TRANSITION_LONGHANDS` for their
@@ -1613,6 +1613,18 @@ before it, so GitHub's search box had a square corner, and `column-count:
 var(--missing)` left a box with a `column-width` no multicol container.
 **Anything new that keeps two longhands in one field joins `FIELD_PARTS`**,
 and `INHERIT_TARGETS` goes on naming the whole field, for what animates it.
+
+**It goes back by the name it was declared under, through
+`applyDeclaration`**, which reads a logical property and `all` as what they
+stand for, and a name WebKit had as the one it has now. A lookup of its own in
+tables of physical names reset none of them, so `margin-inline-start: 4px;
+margin-inline-start: var(--missing)` kept its 4px. **Anything new that takes a
+declaration back goes through `applyDeclaration` too.** The one value that
+does not go back is `revert` (`REVERT`), which only a fallback can come to,
+since `--x: revert` is about `--x`, and which has to find what the cascade
+reached still there. Chrome hands the `var()` in an `all` to each longhand, so
+`all: var(--x)` with `--x: 4px` sets every margin to 4px there; Firefox and
+WebKit have it `unset`, as the value is no `all`'s, and so does this.
 
 **And one step of it is written out, because Yoga's is silently wrong.**
 Yoga 3.2.1 shares a line out in two passes where CSS Flexbox 9.7 goes round

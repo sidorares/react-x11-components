@@ -4910,8 +4910,11 @@ positioning and view transitions.
 write their colours and spacing. A custom property is inherited, and a
 `var()` is replaced before the declaration it is in is read, so it works
 in shorthands and inside `calc()` and colour functions. One that names
-nothing and has no fallback leaves its property `unset`, and a cycle has
-no value. `:root` is the `<html>` element, the one a browser implies
+nothing and has no fallback leaves its property `unset`, a logical property
+and `all` among them, and a cycle has no value. An `all` whose `var()` comes
+to anything but a CSS-wide keyword is `unset` too, as in Firefox and WebKit,
+where Chrome tries the value on each longhand: with `--x: 4px`, `all:
+var(--x)` has margins of 4px there. `:root` is the `<html>` element, the one a browser implies
 around a fragment too, so a fragment's `:root { --brand: … }` reaches all
 of it. `@property` registers one (CSS Properties and Values 1): where
 nothing sets it, it is its `initial-value`, which `initial` gives it too;
