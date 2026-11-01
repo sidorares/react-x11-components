@@ -4,7 +4,7 @@
 // design; these run it against an `<Html>` in the in-process X server, with
 // a network and a pane that are stand-ins.
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterEach, test as nodeTest } from 'node:test';
 import type { TestContext } from 'node:test';
 import { Worker } from 'node:worker_threads';
@@ -56,6 +56,8 @@ import {
 import { DomHost } from '../../src/html/scripts/host.js';
 import { PageWorkers } from '../../src/html/scripts/workers.js';
 import { HtmlSource } from '../../src/html/dom.js';
+import { webmStream } from '../webm-fixture.js';
+import type { HtmlGLCommand, HtmlWebGL } from '../../src/html/webgl.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
 import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
 import { FrameHolder, embeddedMounts } from '../../src/html/scripts/frames.js';
@@ -148,6 +150,8 @@ async function hosted(
     held?: HeldSheets;
     videos?: boolean;
     canPlayType?: (type: string) => '' | 'maybe' | 'probably';
+    /** What a page's WebGL contexts draw through. */
+    webgl?: HtmlWebGL;
     /** Whether `fetch` is a network, which a media element loads from. */
     network?: boolean;
     /** Whether the page may register service workers. */
@@ -212,6 +216,7 @@ async function hosted(
     },
     timeout: options.timeout,
     canPlayType: options.canPlayType,
+    webgl: options.webgl,
     network: options.network,
     serviceWorkers: options.serviceWorkers,
     promptToUnload: options.prompt,
@@ -3488,7 +3493,351 @@ for (const network of [true, false]) {
   });
 }
 
-test("a MediaSource's members answer as Chrome's do, and SourceBuffer is an interface with no instances", async () => {
+/** A page's clip, as Apple's product pages fetch and append one: `bytes` a
+ *  chunk at a time, each after the last's `updateend`, and the stream ended
+ *  in a `finally`. `r` is what it heard. */
+const APPENDS =
+  'var r = [], v = document.getElementById("v"), ms = new MediaSource();' +
+  '["durationchange", "loadedmetadata", "loadeddata", "canplay", "canplaythrough", "error"].forEach(function (t) {' +
+  '  v.addEventListener(t, function () { r.push(t + ":" + v.duration + ":" + v.readyState) }) });' +
+  'ms.addEventListener("sourceended", function () { r.push("sourceended:" + ms.readyState) });' +
+  'ms.addEventListener("sourceopen", async function () {' +
+  '  var sb;' +
+  '  try {' +
+  '    sb = ms.addSourceBuffer(\'video/webm;codecs="vp9"\');' +
+  '    r.push(ms.sourceBuffers.length, ms.sourceBuffers[0] === sb, ms.activeSourceBuffers.length);' +
+  '    for (var i = 0; i < CHUNKS.length; i++) {' +
+  '      await new Promise(function (done) {' +
+  '        sb.appendBuffer(Uint8Array.from(CHUNKS[i]));' +
+  '        r.push("updating:" + sb.updating);' +
+  '        sb.onupdateend = done;' +
+  '      });' +
+  '    }' +
+  '    r.push("buffered:" + sb.buffered.length);' +
+  '  } catch (e) { r.push(e.name + ": " + e.message) }' +
+  '  finally { if (ms.readyState === "open") ms.endOfStream() }' +
+  '  setTimeout(function () { document.getElementById("out").textContent = JSON.stringify(r) }, 20);' +
+  '});' +
+  'v.src = URL.createObjectURL(ms);';
+
+const clipPage = (chunks: Uint8Array[]): string =>
+  '<video id="v" style="display:block;width:60px;height:30px"></video>' +
+  `<p id="out"></p><script>var CHUNKS = ${JSON.stringify(chunks.map((c) => [...c]))};${APPENDS}</script>`;
+
+const VP9_MP4_PLAYS = (type: string): '' | 'maybe' =>
+  type.startsWith('video/mp4') ? 'maybe' : '';
+
+test("a page's appended VP9 is a clip for the player where it plays that, and isTypeSupported still says no", async () => {
+  const { bytes } = webmStream({ count: 12 });
+  const half = bytes.length >> 1;
+  const doc = await hosted(
+    clipPage([bytes.subarray(0, half), bytes.subarray(half)]),
+    { network: true, canPlayType: VP9_MP4_PLAYS },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  const heard = JSON.parse(text) as (string | number | boolean)[];
+  assert.deepEqual(heard.slice(0, 4), [1, true, 1, 'updating:true']);
+  assert.ok(heard.includes('buffered:1'), heard.join(' '));
+  assert.ok(heard.includes('loadedmetadata:0.4:1'), heard.join(' '));
+  assert.ok(heard.includes('sourceended:ended'), heard.join(' '));
+  assert.ok(!heard.some((h) => String(h).startsWith('error')), heard.join(' '));
+  // the stream says how long it is, then how long what it holds comes to
+  const lengths = heard.filter((h) => String(h).startsWith('durationchange'));
+  assert.equal(lengths.length, 2, heard.join(' '));
+  doc.run(
+    'document.getElementById("out").textContent = JSON.stringify([' +
+      '  MediaSource.isTypeSupported(\'video/webm;codecs="vp9"\'),' +
+      '  v.videoWidth, v.videoHeight, v.buffered.length, v.buffered.start(0), v.networkState])',
+  );
+  const asked = await settled(doc, 'out', (t) => t.startsWith('[false'));
+  assert.deepEqual(JSON.parse(asked!), [false, 320, 180, 1, 0, 2]);
+});
+
+/** Until `ok`, or three seconds. */
+async function holds(ok: () => boolean): Promise<void> {
+  for (let i = 0; i < 150 && !ok(); i += 1) await settle(20);
+}
+
+/** What the element's player was handed, and the seek it was last told. */
+function clipOf(doc: Hosted): { file?: string; seek?: { time: number } } {
+  const view = doc.view as unknown as {
+    _clips: WeakMap<object, string>;
+    _mediaAsked: WeakMap<object, { seek?: { time: number } }>;
+  };
+  const el = doc.byId('v');
+  return { file: view._clips.get(el), seek: view._mediaAsked.get(el)?.seek };
+}
+
+test("the clip's end hands the player a file, a seek reaches it, and the file goes with the source", async () => {
+  const { bytes } = webmStream({ count: 12 });
+  const doc = await hosted(clipPage([bytes]), {
+    network: true,
+    canPlayType: VP9_MP4_PLAYS,
+  });
+  await settled(doc, 'out', (t) => t !== '');
+  await holds(() => !!clipOf(doc).file);
+  const file = clipOf(doc).file ?? '';
+  assert.ok(file.endsWith('.mp4'), doc.logs.join('\n'));
+  const held = readFileSync(file);
+  assert.equal(held.subarray(4, 8).toString('latin1'), 'ftyp');
+  assert.ok(held.includes('vp09'), 'its sample entry says what it holds');
+
+  doc.run('v.currentTime = 0.2');
+  await holds(() => clipOf(doc).seek?.time === 0.2);
+  assert.equal(clipOf(doc).seek?.time, 0.2);
+
+  doc.run('v.removeAttribute("src"); v.load();');
+  await holds(() => !clipOf(doc).file && !existsSync(file));
+  assert.equal(clipOf(doc).file, undefined, 'no player is left playing it');
+  assert.equal(existsSync(file), false, 'nor is it left on the disk');
+});
+
+test("a type the player has no way to, and a display with no player, are the page's own path", async () => {
+  const { bytes } = webmStream({ count: 4 });
+  const doc = await hosted(clipPage([bytes]), {
+    network: true,
+    canPlayType: () => '',
+  });
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.deepEqual(
+    (JSON.parse(text!) as string[]).filter((h) => h.startsWith('NotSupported')),
+    [
+      "NotSupportedError: Failed to execute 'addSourceBuffer' on 'MediaSource': The type provided ('video/webm;codecs=\"vp9\"') is unsupported.",
+    ],
+  );
+});
+
+test('bytes that are no WebM fail what they were appended to, and end the stream', async () => {
+  const doc = await hosted(clipPage([new Uint8Array(32).fill(7)]), {
+    network: true,
+    canPlayType: VP9_MP4_PLAYS,
+  });
+  const text = await settled(doc, 'out', (t) => t !== '');
+  const heard = JSON.parse(text!) as string[];
+  assert.ok(heard.includes('sourceended:ended'), heard.join(' '));
+  assert.ok(
+    heard.some((h) => String(h).startsWith('error')),
+    heard.join(' '),
+  );
+  assert.equal(clipOf(doc).file, undefined);
+});
+
+test('a body a page is slow to read comes in one chunk of all that arrived, where each piece was a turn of its own', async () => {
+  // the network's pieces are TLS records: Apple's clip of 8 MB is some 500
+  // of them, and read a piece at a time on a busy thread it ran out a
+  // 10-second timer of the page's
+  const pieces = Array.from({ length: 6 }, (_, i) =>
+    new Uint8Array(8).fill(i + 1),
+  );
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'fetch("/stream").then(async function (r) {' +
+      '  var reader = r.body.getReader(), sizes = [], bytes = 0;' +
+      '  var first = await reader.read();' +
+      '  sizes.push(first.value.length); bytes += first.value.length;' +
+      '  await new Promise(function (go) { setTimeout(go, 80) });' +
+      '  for (;;) {' +
+      '    var part = await reader.read();' +
+      '    if (part.done) break;' +
+      '    sizes.push(part.value.length); bytes += part.value.length;' +
+      '  }' +
+      '  document.getElementById("out").textContent = JSON.stringify([sizes, bytes]);' +
+      '});' +
+      '</script>',
+    {
+      answer: () => ({
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        url: `${PAGE}stream`,
+        body: '',
+        chunks: {
+          async *[Symbol.asyncIterator]() {
+            yield pieces[0];
+            await held;
+            for (const piece of pieces.slice(1)) yield piece;
+          },
+        },
+      }),
+    },
+  );
+  await settle(30);
+  release();
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  const [sizes, bytes] = JSON.parse(text) as [number[], number];
+  assert.equal(bytes, 48, 'all of it, in order');
+  assert.deepEqual(sizes, [8, 40], 'what came while it was busy is one read');
+});
+
+/** A GL that keeps what it was told and answers what a test says. */
+function fakeGL(answers: Record<string, unknown> = {}) {
+  const calls: HtmlGLCommand[] = [];
+  const presented: number[] = [];
+  const opened: unknown[] = [];
+  const webgl: HtmlWebGL = {
+    open(options) {
+      opened.push(options);
+      return {
+        extensions: ['EXT_color_buffer_float'],
+        run(commands) {
+          calls.push(...commands);
+          return answers[commands[commands.length - 1][0]];
+        },
+        resize: (w, h) => void calls.push(['resize', w, h]),
+        present(into) {
+          presented.push(into.length);
+          into.fill(200);
+        },
+        dispose() {},
+      };
+    },
+  };
+  return { webgl, calls, opened, presented };
+}
+
+test("a context's calls reach the host's GL as a page made them, at the end of the task", async () => {
+  const gl = fakeGL({ getError: 0 });
+  const doc = await hosted(
+    '<canvas id="c" width="20" height="10"></canvas><p id="out"></p><script>' +
+      'var c = document.getElementById("c");' +
+      'var gl = c.getContext("webgl2", { alpha: false, antialias: true });' +
+      'var b = gl.createBuffer();' +
+      'gl.bindBuffer(gl.ARRAY_BUFFER, b);' +
+      'gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([1, 2]), gl.STATIC_DRAW);' +
+      'gl.bufferData(gl.ARRAY_BUFFER, 64, gl.STATIC_DRAW);' +
+      'gl.bindBuffer(gl.ARRAY_BUFFER, null);' +
+      'gl.uniform1f(null, 3);' +
+      'document.getElementById("out").textContent = JSON.stringify([' +
+      '  gl.getParameter(gl.ARRAY_BUFFER_BINDING) === null, gl.getError(),' +
+      '  gl.getSupportedExtensions(), !!gl.getExtension("EXT_color_buffer_float"),' +
+      '  gl.getExtension("WEBGL_debug_shaders")]);' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.deepEqual(JSON.parse(text!), [
+    true,
+    0,
+    ['EXT_color_buffer_float'],
+    true,
+    null,
+  ]);
+  assert.deepEqual(gl.opened, [
+    {
+      version: 2,
+      width: 20,
+      height: 10,
+      alpha: false,
+      depth: true,
+      stencil: false,
+      antialias: true,
+      premultipliedAlpha: true,
+    },
+  ]);
+  const names = gl.calls.map(([name]) => name);
+  assert.deepEqual(names.slice(0, 5), [
+    'createBuffer',
+    'bindBuffer',
+    'bufferData',
+    'bufferData',
+    'bindBuffer',
+  ]);
+  // the page numbers what it makes, and bytes cross as base64
+  const [, id] = gl.calls[0];
+  assert.deepEqual(gl.calls[1], ['bindBuffer', 0x8892, ['o', id]]);
+  const bytes = gl.calls[2][2] as [string, string, string];
+  assert.deepEqual(bytes.slice(0, 2), ['b', 'Float32Array']);
+  assert.deepEqual(
+    [
+      ...new Float32Array(
+        Uint8Array.from(Buffer.from(bytes[2], 'base64')).buffer,
+      ),
+    ],
+    [1, 2],
+  );
+  assert.equal(gl.calls[3][2], 64, 'a size is a size');
+  // WebGL has a uniform with no location do nothing: told to GL it is
+  // location 0, a uniform of someone else's
+  assert.ok(!names.includes('uniform1f'), names.join(' '));
+});
+
+test("a uniform location is the driver's, and none is null", async () => {
+  const gl = fakeGL({ getUniformLocation: 7 });
+  const doc = await hosted(
+    '<canvas id="c"></canvas><p id="out"></p><script>' +
+      'var gl = document.getElementById("c").getContext("webgl2");' +
+      'var p = gl.createProgram();' +
+      'var l = gl.getUniformLocation(p, "u");' +
+      'gl.uniform2fv(l, [1, 2]);' +
+      'document.getElementById("out").textContent = [l instanceof WebGLUniformLocation].join();' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), 'true');
+  await settle(20);
+  assert.deepEqual(
+    gl.calls.find(([name]) => name === 'uniform2fv'),
+    ['uniform2fv', 7, ['a', 1, 2]],
+  );
+});
+
+test('a canvas takes a new size, and its frame is read only as it is painted, not as it is drawn', async () => {
+  const gl = fakeGL();
+  const doc = await hosted(
+    '<div style="height:2000px"></div>' +
+      '<canvas id="far" width="4" height="4"></canvas>' +
+      '<p id="out"></p><script>' +
+      'var c = document.getElementById("far");' +
+      'var gl = c.getContext("webgl2");' +
+      'c.width = 8; c.height = 2;' +
+      'gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);' +
+      'document.getElementById("out").textContent = "drawn";' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  await settled(doc, 'out', (t) => t === 'drawn');
+  await settle(40);
+  assert.ok(
+    gl.calls.some(([name, w, h]) => name === 'resize' && w === 8 && h === 2),
+    JSON.stringify(gl.calls),
+  );
+  assert.deepEqual(gl.presented, [], 'nothing has painted it: it is far below');
+  // what a paint asks for reads the frame that is owed
+  const pixels = doc.runner()?.host.canvas(doc.byId('far'));
+  assert.deepEqual(gl.presented, [8 * 2 * 4]);
+  assert.equal(pixels?.data[0], 200);
+  doc.runner()?.host.canvas(doc.byId('far'));
+  assert.equal(gl.presented.length, 1, 'and read once, whoever asks again');
+});
+
+test('a context with no alpha says its canvas lets nothing through', async () => {
+  const gl = fakeGL();
+  const doc = await hosted(
+    '<canvas id="a"></canvas><canvas id="b"></canvas><p id="out"></p><script>' +
+      'function drawn(id, options) {' +
+      '  var x = document.getElementById(id).getContext("webgl2", options);' +
+      '  x.clear(x.COLOR_BUFFER_BIT);' +
+      '}' +
+      'drawn("a", { alpha: false }); drawn("b", { alpha: true });' +
+      'document.getElementById("out").textContent = "drawn";' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  await settled(doc, 'out', (t) => t === 'drawn');
+  await settle(20);
+  const host = doc.runner()?.host;
+  assert.equal(host?.canvasOpaque(doc.byId('a')), true);
+  assert.equal(host?.canvasOpaque(doc.byId('b')), false);
+});
+
+test("a MediaSource's members answer as Chrome's do, and SourceBuffer takes only what a clip is", async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
       'function t(f) { try { return "ok:" + f() } catch (e) { return e.name + ": " + e.message } }' +

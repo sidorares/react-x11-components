@@ -964,6 +964,7 @@ since this component navigates nowhere by itself:
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
+| `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
 | `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
 | `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
@@ -1177,13 +1178,32 @@ as WPT's tests make them, and to another peer the host can reach.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
-- **`MediaSource` is there, and supports no type**
-  (`src/html/scripts/mse.ts`): a media element opens one through its object
-  URL, and `isTypeSupported` answers false and `addSourceBuffer` throws
-  `NotSupportedError` for every type, since nothing can hand a page's
-  appended bytes to the player. So a stream player that asks, as hls.js
-  does, sets its playlist as the `src` where `canPlayType` says the host's
-  player reads it, and a page that does not ask takes the path it has for a
+- **WebGL draws where the host hands it a GL**, `scripts.webgl`, an
+  `HtmlWebGL`. With none a context keeps the state a page sets and reads
+  back and draws nothing, so a page written for a context still runs.
+  `await gpuWebGL()` is one, x11-dri's GL with no window behind it, and null
+  where x11-dri is not installed. Each context has a GL context of its own in
+  the page's process, and what it drew is read into the canvas's pixels as
+  the document paints the canvas, so it is drawn in its place in the paint
+  order, under what is painted after it, and a canvas nobody can see costs
+  no read. **It hands a page's shaders to the driver as they are written**:
+  a browser's WebGL goes through ANGLE, which validates every call and
+  rewrites every shader, and nothing here does, so hand it in for pages you
+  would run a native program from. WebGL 2's GLSL ES 3.00 reaches a Mac as
+  GLSL 4.10, which most of it is; uniform blocks, samplers and transform
+  feedback are not forwarded, and a texture takes an `ImageData` or a canvas
+  but not yet an `<img>`.
+- **`MediaSource` holds a clip of VP9, and says it supports nothing**
+  (`src/html/scripts/mse.ts`, `clips.ts`): a media element opens one through
+  its object URL, and `isTypeSupported` answers false for every type, since
+  nothing can hand the player bytes as they arrive. So a stream player that
+  asks, as hls.js does, sets its playlist as the `src` where `canPlayType`
+  says the host's player reads it. `addSourceBuffer` takes one thing, VP9 in
+  WebM, where the host's player plays VP9 (`canPlayType` of
+  `video/mp4; codecs="vp09…"`): a page that does not ask and fetches a clip
+  whole, as Apple's product pages do to scrub one with the scroll. When the
+  stream ends the player is handed a file of it, so nothing shows until then.
+  Every other type throws `NotSupportedError`, the path such a page has for a
   type it cannot decode. A window's alone: a worker has none, and
   `canConstructInDedicatedWorker` is false.
 
@@ -2214,8 +2234,8 @@ it gives — and the answer is one of
 | `null`                      | Nothing: the next `<source>` is asked for, and with none left the video is its poster.                                                                                                                                                |
 
 A page that scripts its player asks first, with `canPlayType`, which is
-the host's to answer too (`scripts.canPlayType`): an HLS player with no
-`MediaSource` to feed — there is none in a page's realm — sets the
+the host's to answer too (`scripts.canPlayType`): an HLS player whose types
+`MediaSource` turns down sets the
 playlist as the `src` only where the answer for
 `application/vnd.apple.mpegurl` is not `''`, as on Safari, and AVFoundation
 plays a playlist from its URL. `canPlayMedia` answers for the platform's
@@ -2268,6 +2288,18 @@ things about it are decisions:
   host-side and never reach the page's realm, since another origin's are
   not the page's to read. It is still not the player's state: a player
   that falls behind is not heard.
+- **A clip a page appended goes to the same player, as a file.** AVFoundation
+  does not open WebM, and it does play the same VP9 in an MP4, on the
+  system's decoder. So what a page appends to a `MediaSource` is read as far
+  as its packets (`scripts/webm.ts`) and written around them as an MP4
+  (`scripts/mp4.ts`): nothing is decoded or encoded, a clip takes a
+  millisecond or so, and the player seeks it to the frame in some 10 ms,
+  which is what a scroll-scrubbed video asks of it. The file is in a private
+  temporary directory, and goes with the `MediaSource`. On a display with no
+  player — X11 and Wayland — `addSourceBuffer` refuses the type, and the page
+  takes the path it has for one it cannot decode. The VP9 decoder is one
+  macOS hands out only to a process that asks, which `@windowkit/appkit` does
+  from 0.30.2; before that a `vp09` track opens and shows nothing.
 - **A press on a video with `controls` is kept the same way**, so a script
   that pauses a video the press played changes what the player was told,
   and pauses it.

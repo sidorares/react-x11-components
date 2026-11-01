@@ -9510,7 +9510,23 @@ export function installDom(
   }
 
   /** WebGL's interfaces and a canvas's context of it (`webgl.ts`). */
-  const WEBGL = webgl(Event);
+  const WEBGL = webgl(Event, {
+    call,
+    base64: base64OfBytes,
+    bytes: (text: string) => bytesOfBase64(text),
+    id: (canvas: Any) =>
+      canvas instanceof HTMLCanvasElement ? idOf(canvas) : null,
+    pixelsOf(source: Any) {
+      if (source instanceof ImageData) {
+        const { width, height, data } = source;
+        return { width, height, data: new Uint8Array(data.buffer) };
+      }
+      const state = source instanceof HTMLCanvasElement && canvases.get(source);
+      if (!state || !state.data) return null;
+      const { width, height, data } = state;
+      return { width, height, data: new Uint8Array(data.buffer) };
+    },
+  });
 
   /**
    * What a 2d canvas holds: its bitmap, straight RGBA, in this realm, so
@@ -10644,7 +10660,7 @@ export function installDom(
 
   /** A canvas's context of a kind, the same each time, and none of another
    *  kind once the canvas has one (HTML 4.12.5): a 2d context, a
-   *  `bitmaprenderer` one, or a WebGL one that draws nothing (`webgl.ts`). */
+   *  `bitmaprenderer` one, or a WebGL one (`webgl.ts`). */
   const contextFor = (canvas: Any, kind: string, options: Any): Any => {
     const state = canvasState(canvas);
     if (state.context) return state.kind === kind ? state.context : null;
@@ -11205,6 +11221,9 @@ export function installDom(
     canvas.setAttribute(side, String(Number(v) >>> 0));
     const state = canvases.get(canvas);
     if (state) resetCanvas(canvas, state, canvas.width, canvas.height);
+    if (state?.kind === 'webgl' || state?.kind === 'webgl2') {
+      WEBGL.resized(state.context);
+    }
   };
 
   class HTMLCanvasElement extends HTMLElement {
@@ -11222,8 +11241,7 @@ export function installDom(
     }
     /** A context of a kind, the same each time, and none of another kind
      *  once the canvas has one (HTML 4.12.5): a 2d context, a
-     *  `bitmaprenderer` one, or a WebGL one that draws nothing
-     *  (`webgl.ts`). */
+     *  `bitmaprenderer` one, or a WebGL one (`webgl.ts`). */
     getContext(type: Any, options?: Any): Any {
       notPlaceholder(
         this,
@@ -11719,12 +11737,16 @@ export function installDom(
     mediaWatch(el);
     call('mediaFetch', el._id, ask.load, url);
   };
+  /** How much of a stream ahead of the clock is enough to play, in seconds:
+   *  what a page's appends have to get ahead by for `canplaythrough`. */
+  const MEDIA_ENOUGH = 2;
   /** MSE 3.15.1: its source is the page's, so nothing is fetched and
    *  nothing stalls, and it stays loading until the stream ends. */
   const mediaAttach = (el: Any, source: Any): void => {
     const ask = askOf(el);
     const load = ask.load;
     const attached = MSE.attach(source, {
+      id: el._id,
       durationChanged(duration: number): void {
         ask.duration = duration;
         mediaTask(() => {
@@ -11732,6 +11754,24 @@ export function installDom(
         });
       },
       failed: () => mediaFailed(el, load),
+      metadata(duration: number, width: number, height: number): void {
+        ask.duration = duration;
+        ask.width = width;
+        ask.height = height;
+        mediaReady(el, 1);
+      },
+      // HTML 4.8.11.7, as MSE 3.5.11's coded frame processing has it: what
+      // is buffered at the clock, and a little on from it, is enough to go on
+      buffered(): void {
+        const ahead = MSE.ahead(source, ask.time);
+        if (ahead < 0 || ask.ready < 1) return;
+        mediaReady(el, ahead >= MEDIA_ENOUGH ? 4 : 3);
+      },
+      // all of it is in, so enough of it; and it stays loading, as Chrome's
+      // does, since a page may append again
+      ended(): void {
+        if (ask.load === load) mediaReady(el, 4);
+      },
     });
     if (attached) ask.source = source;
     else mediaFailed(el, load);
@@ -12032,7 +12072,8 @@ export function installDom(
       return askOf(this).error;
     }
     get buffered(): Any {
-      return noTimeRanges;
+      const { source } = askOf(this);
+      return source ? MSE.buffered(source) : noTimeRanges;
     }
     get played(): Any {
       return noTimeRanges;
@@ -17365,6 +17406,58 @@ export function installDom(
    *  each response reads (`__fetchChunk`, `__fetchEnd`). */
   const fetchBodies = new Map<number, Any>();
   /**
+   * A body as it arrives, held here until a reader asks, and handed over as
+   * one chunk of all that came by then. The network's pieces are TLS records,
+   * 16 KB each, and queued as they came a page that is busy takes a task or
+   * three over each: Apple's product pages append a clip of 8 MB as it reads,
+   * some 500 of them, which ran out a 10-second timer of the page's and
+   * dropped it to its static section. So a slow reader takes larger bites,
+   * where it would fall further behind, and a quick one is no worse off.
+   */
+  const fetchedBody = (controller: Any): Any => {
+    let held: Uint8Array[] = [];
+    let wanted = false;
+    let closing = false;
+    const hand = (): void => {
+      wanted = false;
+      if (held.length === 1) controller.enqueue(held[0]);
+      else {
+        let size = 0;
+        for (const piece of held) size += piece.length;
+        const whole = new Uint8Array(size);
+        let at = 0;
+        for (const piece of held) {
+          whole.set(piece, at);
+          at += piece.length;
+        }
+        controller.enqueue(whole);
+      }
+      held = [];
+    };
+    return {
+      arrived(bytes: Uint8Array): void {
+        held[held.length] = bytes;
+        if (wanted) hand();
+      },
+      pulled(): void {
+        if (held.length) hand();
+        else wanted = true;
+        if (closing && !held.length) controller.close();
+      },
+      /** The end of the body, and whether all of it has been handed over. */
+      ended(): boolean {
+        closing = true;
+        if (held.length) return false;
+        controller.close();
+        return true;
+      },
+      failed(error: Any): void {
+        held = [];
+        controller.error(error);
+      },
+    };
+  };
+  /**
    * A `Range` header's one range of bytes (Fetch, "parse a single range
    * header value", white space allowed): its start and its end, either
    * null where it is left out, or null for a value that is no such range —
@@ -17588,7 +17681,7 @@ export function installDom(
         if (body) {
           fetchBodies.delete(id);
           call('abortFetch', id);
-          body.error(aborted());
+          body.failed(aborted());
           return;
         }
         if (!fetches.delete(id)) return;
@@ -28440,7 +28533,8 @@ export function installDom(
 
   // --- Media Source Extensions ---------------------------------------------------
   //
-  // `mse.ts`: a `MediaSource` a media element opens, supporting no type.
+  // `mse.ts`: a `MediaSource` a media element opens, which holds a clip of
+  // VP9 for the host's player (`clips.ts`) and refuses every other type.
   // A window's: a worker's global loses them (`WINDOW_ONLY`).
   const MSE = mse({
     DOMException,
@@ -28452,6 +28546,8 @@ export function installDom(
       dispatch(target, event);
     },
     task: mediaTask,
+    host: call,
+    base64: base64OfBytes,
   });
   for (const name of Object.getOwnPropertyNames(MSE.interfaces)) {
     define(name, MSE.interfaces[name]);
@@ -29585,14 +29681,22 @@ export function installDom(
       // network's bytes otherwise, which cross as base64: a string is all
       // that crosses, and one of raw bytes is mostly escapes once it is JSON
       const body = answer.streaming
-        ? new ReadableStream({
-            start(controller: Any) {
-              fetchBodies.set(id, controller);
+        ? new ReadableStream(
+            {
+              start(controller: Any) {
+                fetchBodies.set(id, fetchedBody(controller));
+              },
+              pull() {
+                fetchBodies.get(id)?.pulled();
+              },
+              cancel() {
+                if (fetchBodies.delete(id)) call('abortFetch', id);
+              },
             },
-            cancel() {
-              if (fetchBodies.delete(id)) call('abortFetch', id);
-            },
-          })
+            // a reader's read is what asks for bytes, so what has come by
+            // then is one chunk (`fetchedBody`)
+            { highWaterMark: 0 },
+          )
         : typeof answer.base64 === 'string'
           ? ''
           : answer.body;
@@ -29617,16 +29721,17 @@ export function installDom(
     const [id, base64] = input();
     const body = fetchBodies.get(id);
     if (!body) return false;
-    body.enqueue(bytesOfBase64(base64));
+    body.arrived(bytesOfBase64(base64));
     return true;
   });
   entry('__fetchEnd', () => {
     const [id, failed] = input();
     const body = fetchBodies.get(id);
     if (!body) return false;
-    fetchBodies.delete(id);
-    if (failed) body.error(new TypeError(failed));
-    else body.close();
+    if (failed) {
+      fetchBodies.delete(id);
+      body.failed(new TypeError(failed));
+    } else if (body.ended()) fetchBodies.delete(id);
     return true;
   });
 

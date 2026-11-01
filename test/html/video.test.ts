@@ -24,6 +24,12 @@ import { FONTS, boxOf, findById, h, view } from './harness.js';
 
 afterEach(cleanup);
 
+/** A player's rect, as far as these read it. */
+interface MediaRectLike {
+  hidden?: boolean;
+  over?: unknown;
+}
+
 type Answer = (
   request: ResourceRequest,
   app: NtkApp,
@@ -40,12 +46,14 @@ async function renderVideo(
     scale,
     asked = [],
     wrap = (doc) => doc,
+    canvasOpaque,
   }: {
     width?: number;
     height?: number;
     scale?: number;
     asked?: ResourceRequest[];
     wrap?: (doc: ReturnType<typeof h>) => ReturnType<typeof h>;
+    canvasOpaque?: () => boolean;
   } = {},
 ) {
   function Host() {
@@ -54,6 +62,7 @@ async function renderVideo(
       source,
       partial: false,
       'data-testname': 'doc',
+      canvasOpaque,
       onResource: (request: ResourceRequest) => {
         if (request.kind !== 'video') return null;
         asked.push(request);
@@ -775,6 +784,44 @@ test('a sticky box the viewport holds over a video is painted over its player wh
   await expectPixel(result.ctx, 40, 180, '#ff0000', {
     message: 'the dock, held there as the video scrolled under it',
   });
+});
+
+test('a video wholly under an opaque canvas is hidden, and nothing is painted over it again', async () => {
+  const source = (canvasStyle: string) =>
+    '<div style="position:relative;width:200px;height:100px">' +
+    '<video src="v.mp4" style="display:block;width:200px;height:100px"></video>' +
+    `<canvas id="c" style="position:absolute;left:0;top:0;width:200px;height:100px;${canvasStyle}"></canvas>` +
+    '</div>';
+  const mediaOf = async (
+    style: string,
+    opaque: boolean,
+  ): Promise<MediaRectLike> => {
+    const { el } = await renderVideo(
+      source(style),
+      (_request, app) => ({
+        kind: 'video',
+        frames: solid(app, 40, 20, [10, 20, 30]),
+      }),
+      { canvasOpaque: () => opaque },
+    );
+    await waitFor(() => assert.equal(videos().length, 1));
+    const [rect] = (el as unknown as { _media: MediaRectLike[] })._media;
+    cleanup();
+    return rect;
+  };
+  const covered = await mediaOf('', true);
+  assert.equal(covered.hidden, true);
+  assert.equal(covered.over, undefined, 'and nothing is painted over it');
+  // a canvas a page's context says has alpha may show what is under it
+  const clear = await mediaOf('', false);
+  assert.equal(clear.hidden, undefined);
+  assert.ok(clear.over, 'so it goes on being painted over the player');
+  // and an opaque canvas shows what is under it where it is faded, or only
+  // reaches part of the video
+  const faded = await mediaOf('opacity:0.5', true);
+  assert.equal(faded.hidden, undefined);
+  const part = await mediaOf('width:100px', true);
+  assert.equal(part.hidden, undefined);
 });
 
 test('a video under a box it cannot be painted again over keeps its poster', async () => {

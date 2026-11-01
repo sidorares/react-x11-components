@@ -3756,15 +3756,35 @@ closes a way out a DOM binding opens by accident:
   must never reach the host over the frames of the canvas it gave its
   control to. A bitmap as a file is a PNG the host makes (`encodeImage`,
   `png.ts`, over node's zlib), whatever type was asked for.
-- **A WebGL context answers and draws nothing** (`webgl.ts`, source text
-  handed to `installDom`). Chrome has WebGL wherever it has a canvas, in
-  software where there is no GPU, so a null context is a page that
-  crashes — up.com.au's react-three-fiber scene took React's whole tree
-  down with it — where a context that keeps state and draws nothing is a
-  page with an empty box. What a context answers is Chrome's: its
-  constants and limits, its version strings, a value read back as the
-  typed array Chrome hands back; an answer that a real context could not
-  give sends a page down a path no browser takes.
+- **A WebGL context answers whatever is asked, and draws what the host
+  draws for it** (`webgl.ts`, source text handed to `installDom`). Chrome
+  has WebGL wherever it has a canvas, in software where there is no GPU, so a
+  null context is a page that crashes — up.com.au's react-three-fiber scene
+  took React's whole tree down with it — where a context that keeps state
+  and draws nothing is a page with an empty box. What a context answers is
+  Chrome's: its constants and limits, its version strings, a value read back
+  as the typed array Chrome hands back; an answer that a real context could
+  not give sends a page down a path no browser takes. **With `scripts.webgl`
+  it draws** (`src/html/webgl.ts`, `gl.ts`): the same methods keep the same
+  state, each call also goes to the host as a queued JSON command, and what
+  only a driver knows is asked of it. Apple's pixel grid is a WebGL 2 fluid
+  simulation of a dozen programs. It runs on `gpuWebGL`, a windowless
+  x11-dri context per canvas, and it costs a read of the GPU's pixels, so
+  **a frame is read as the document paints it** (`PageContexts.settle`, from
+  `DomHost.canvas`) rather than as it is drawn: read at each frame, a glow in
+  a canvas scrolled out of view starved the page's downloads, and a clip's
+  10-second load timer dropped the whole section to its fallback, one load
+  in three. **The ways desktop GL is not WebGL fail with nothing drawn and no
+  error a page reads**, each found so: a core profile has no default vertex
+  array, so every attribute and draw with none bound is an error, and
+  `bindVertexArray(null)` binds the context's own stand-in; a context with no
+  window starts with a viewport of nothing; a uniform with a null location is
+  no call, where told to GL it is location 0, someone else's; and a
+  multisampled buffer resolves only into its own format. **Anything new that
+  differs goes in `GpuContext._command`, with a test in
+  `test/html/webgl-gpu.test.ts` that reads it from pixels.** A page's GL
+  reaches the driver with none of ANGLE's validation, which `src/html/webgl.ts`
+  says at its top, and is why this is the host's to hand in.
 - **A worker is a thread, and a string is all that reaches it.** Each
   `Worker` is a `worker_threads` thread with an engine, a host over an
   empty document and the facade made a worker's global
@@ -4033,21 +4053,37 @@ closes a way out a DOM binding opens by accident:
   its track is silent with nothing failing. A node is kept by what it is
   connected to (`inputs`), never by its context, since a page makes one a
   note.
-- **`MediaSource` is the API with no type behind it** (`mse.ts`). What
-  plays a page's media is a player that opens a URL, and nothing hands it
-  bytes a page appended, so `isTypeSupported` says no to every type: hls.js
-  asks it first, and goes on to `canPlayType` and the playlist as the
-  `src`, which the player plays. **Anything that makes it say yes feeds a
-  player first**, or every HLS stream goes from a player that plays it to a
-  buffer nothing reads. The API still has to be there, since Apple's
-  product pages make a `MediaSource` in every browser but Safari without
-  asking: it opens on its element, `addSourceBuffer` throws
-  `NotSupportedError`, and the stream's end fails the element, which is
-  the path such a page has for a type it cannot decode. A `MediaSource`'s
-  URLs are kept apart from the blobs' (`mediaSourceUrls`), since a `fetch`
-  finds nothing behind one, and an element goes through the load algorithm
-  for one with no network, or a page waits for a `sourceopen` that never
-  comes.
+- **`MediaSource` holds a clip for the platform's player, and says it
+  supports nothing** (`mse.ts`, `clips.ts`). What plays a page's media is a
+  player that opens a URL, and nothing hands it bytes as they arrive, so
+  `isTypeSupported` says no to every type: hls.js asks it first, and goes on
+  to `canPlayType` and the playlist as the `src`, which the player plays.
+  **Anything that makes it say yes feeds a player as the bytes arrive**, or
+  every HLS stream goes from a player that plays it to a buffer nothing
+  reads. Apple's product pages do not ask: they make a `MediaSource` in every
+  browser but Safari, fetch a few seconds of VP9 in WebM and move
+  `currentTime` with the scroll. So `addSourceBuffer` takes that one type
+  where `canPlayType` says the player reads `vp09` in an MP4, the packets are
+  kept on the host's side, and `endOfStream` writes them around as an MP4
+  (`webm.ts`, `mp4.ts`) and hands the file to the mounted player
+  (`HtmlViewNode.showClip`). A page's own reads pace all this: an appended
+  clip is hundreds of a network's 16 KB records, each a turn of a busy thread
+  and three in a `<Frame>` pane, so **a streamed body is handed to a reader
+  whole as it asks** (`fetchedBody`), all that came since its last read in
+  one chunk, or the clip runs out the page's 10-second timer and takes the
+  section to its fallback. Nothing is decoded, and the player is the
+  `<video src>` of any other format, at some 10 ms a seek on hardware VP9,
+  where a software path of ffmpeg over a pipe was 70. **It takes the whole
+  clip**: a stream that never ends shows nothing, which is why the type stays
+  out of `isTypeSupported`. **The VP9 decoder is one macOS hands out only to
+  a process that asks** (`VTRegisterSupplementalVideoDecoderIfAvailable`, in
+  @windowkit/appkit's `createPlayer`); without it a `vp09` track comes ready
+  with a picture of no size and no error, so read a player's size before
+  believing a format plays. Every other type throws `NotSupportedError`, the
+  path such a page has for what it cannot decode. A `MediaSource`'s URLs are
+  kept apart from the blobs' (`mediaSourceUrls`), since a `fetch` finds
+  nothing behind one, and an element goes through the load algorithm for one
+  with no network, or a page waits for a `sourceopen` that never comes.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells
@@ -5599,7 +5635,13 @@ it — is under what is painted after the box it is painted with
 (`flowLayerOf`), and under what that box's flow paints over it, in any pass
 (`flowMeets`), which keeps its poster. **Anything new the paint draws a
 layer through goes through `paintCover` as well**, or a cover over a
-player is drawn without it. A video under anything else keeps its poster,
+player is drawn without it. Nothing of a player wholly under an opaque
+canvas shows, so it is hidden and nothing is painted over it (`hides`): at the
+end of Apple's scrubbed clip a WebGL canvas fills the window over it, and
+paint over the player was twice the cost of the rest of the frame. **A box
+that hides what is under it as a canvas does joins `hides`**, and
+`canvasOpaque` says what of a canvas lets nothing through.
+A video under anything else keeps its poster,
 by design. **The walk asks what a later layer draws over the picture, not
 how far it reaches** (`inkMeets`, the rule the next paragraph states):
 taking a layer at its ink bounds, GitHub's empty box over its hero's video
