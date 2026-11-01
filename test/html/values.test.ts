@@ -3216,6 +3216,260 @@ test('the first frame of a ::before takes its computed width, where its style re
   assert.strictEqual(el.computedStyle(a, 'before')!.width, '100px');
 });
 
+/**
+ * The frame `getKeyframes()` makes up for a rule with none at 0, in every
+ * kind of box. Every value is what Chrome 156 answers for this document in
+ * a window 400 wide. `.p` animations are half way, so what is read off the
+ * box is a box an animation has moved.
+ */
+const FRAME_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '@keyframes k { to { width: 1px; height: 1px; min-width: 1px; line-height: 1px;' +
+  ' margin-top: 1px; margin-right: 1px; margin-bottom: 1px; margin-left: 1px;' +
+  ' padding-top: 1px; padding-right: 1px; padding-bottom: 1px; padding-left: 1px;' +
+  ' top: 1px; left: 1px; bottom: 1px; right: 1px; transform: translate(1px, 1px);' +
+  ' border-left-width: 1px } }' +
+  '@keyframes i { to { width: 1px; margin-left: 1px; padding-left: 1px } }' +
+  '@keyframes m { to { margin-left: 30px; padding-left: 30px; width: 80% } }' +
+  '@keyframes n { to { margin-left: 60%; padding-left: 40%; margin-top: 30px; padding-top: 30px } }' +
+  '.w { width: 200px; height: 100px; position: relative }' +
+  '.s, .a::before { animation: k 100s paused; width: 50%; height: 25%; min-width: 5%;' +
+  ' line-height: 1.5; margin: 5% auto 0 10%; padding: 1em 3px calc(1% + 1px) 5%;' +
+  ' top: 10px; left: 10%; transform: translate(10%, 5px); border-left: 2px solid }' +
+  '.a::before { content: ""; display: block }' +
+  '.ab, .ab-p::before { position: absolute; bottom: calc(5% + 2px) }' +
+  '.ab-p::before { content: "" }' +
+  '.pad { padding: 10px }' +
+  '.grid { display: grid; grid-template-columns: 50px 100px }' +
+  '.flex { display: flex }' +
+  '#fl { margin-right: 3px }' +
+  '.big { zoom: 2 }' +
+  '.lr { writing-mode: vertical-lr; height: 200px }' +
+  '.in { animation: i 100s paused; margin-left: 10%; padding-left: 5% }' +
+  '.p { animation-duration: 100s; animation-delay: -50s; animation-play-state: paused;' +
+  ' animation-timing-function: linear }' +
+  '.p1 { animation-name: m; margin-left: 10%; padding-left: 5%; width: 50% }' +
+  '.p2 { animation-name: n; margin-left: 10%; padding-left: 5%; margin-top: 10px; padding-top: 10px }' +
+  '.pb::before { content: ""; display: block; animation: m 100s -50s paused linear;' +
+  ' margin-left: 10%; padding-left: 5%; width: 50% }' +
+  '</style>' +
+  '<div class="w"><div id="el" class="s"></div></div>' +
+  '<div class="w"><div id="b" class="a"></div></div>' +
+  '<div class="w"><div id="ab" class="s ab"></div></div>' +
+  '<div class="w"><div id="ab-b" class="a ab-p"></div></div>' +
+  '<div class="w pad"><div id="padded" class="s"></div></div>' +
+  '<div class="w grid"><div></div><div id="item" class="s"></div></div>' +
+  '<div class="w flex"><div id="fl" class="s"></div></div>' +
+  '<div class="w big"><div id="zoomed" class="s"></div></div>' +
+  '<div class="w lr"><div id="vert" class="s"></div></div>' +
+  '<div class="w"><span id="inline" class="in"></span></div>' +
+  '<div class="w"><div id="p1" class="p p1"></div></div>' +
+  '<div class="w"><div id="p2" class="p p2"></div></div>' +
+  '<div class="w"><div id="pb" class="pb"></div></div>';
+
+const FRAME_PROPERTIES = [
+  'width',
+  'height',
+  'min-width',
+  'line-height',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'top',
+  'left',
+  'bottom',
+  'right',
+  'transform',
+  'border-left-width',
+];
+
+const FRAME_ROWS: [string, '' | 'before', string, string][] = [
+  [
+    'el',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'b',
+    'before',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'ab',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | calc(5% + 2px) | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'ab-b',
+    'before',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | calc(5% + 2px) | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'padded',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'item',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 5px | 0px | 0px | 10px | 16px | 3px | 2px | 5px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'fl',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 3px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'zoomed',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 65px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  [
+    'vert',
+    '',
+    'k',
+    '50% | 25% | 5% | 1.5 | 10px | 0px | 0px | 20px | 16px | 3px | 3px | 10px | 10px | 10% | auto | auto | translate(10%, 5px) | 2px',
+  ],
+  // an inline box has no rectangle to read a percentage of
+  [
+    'inline',
+    '',
+    'i',
+    'auto | - | - | - | - | - | - | 10% | - | - | - | 5% | - | - | - | - | - | -',
+  ],
+  // a length as it is under the animation, anything else off the box
+  [
+    'p1',
+    '',
+    'm',
+    '50% | - | - | - | - | - | - | 25px | - | - | - | 20px | - | - | - | - | - | -',
+  ],
+  [
+    'p2',
+    '',
+    'n',
+    '- | - | - | - | 10px | - | - | 70px | 10px | - | - | 45px | - | - | - | - | - | -',
+  ],
+];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `the frame getKeyframes() makes up reads margins and padding off the box, and the rest as computed, at ${scale}`,
+    async () => {
+      const { node } = await rendered(FRAME_PAGE, 400);
+      const el = view(node);
+      const wrong: string[] = [];
+      for (const [id, pseudo, name, want] of FRAME_ROWS) {
+        const element = findById(el.document, id)!;
+        const { values } = el.cssKeyframesOf(element, pseudo, name)![0];
+        const got = FRAME_PROPERTIES.map((p) => values[p] ?? '-').join(' | ');
+        if (got !== want) wrong.push(`${id}: ${got}\n  Chrome: ${want}`);
+      }
+      assert.deepStrictEqual(wrong, []);
+    },
+  );
+}
+
+metric(
+  'a ::before under an animation reads what is off its box in the frame getKeyframes() makes up, as its style does',
+  async () => {
+    const { node } = await render(FRAME_PAGE, 400);
+    const el = view(node);
+    const pb = findById(el.document, 'pb')!;
+    const { values } = el.cssKeyframesOf(pb, 'before', 'm')![0];
+    const style = el.computedStyle(pb, 'before')!;
+    // Chrome 156, both of them
+    assert.strictEqual(values['margin-left'], '25px');
+    assert.strictEqual(style['margin-left'], '25px');
+    assert.strictEqual(values['padding-left'], '20px');
+    assert.strictEqual(style['padding-left'], '20px');
+  },
+);
+
+/** Each read of a `transform`, and which of them Chrome 156 reads for this
+ *  document. */
+const TRANSFORM_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '.t { transform: translate(10px, 5px) rotate(10deg) }' +
+  '.b::before { transform: translate(10px, 5px) }' +
+  '#gone { display: none }' +
+  '#under { display: none }' +
+  '#contents { display: contents }' +
+  '#pct { display: none; transform: translateX(10%) }' +
+  '#none-before { display: none }' +
+  '#none-before::before { content: "x" }' +
+  '#under-before::before { content: "x" }' +
+  '#off::before { content: "x"; display: none }' +
+  '#drawn { width: 100px; height: 20px }' +
+  '#drawn-before::before { content: "x"; display: block; width: 100px }' +
+  '#contents-before::before { content: "x"; display: contents }' +
+  '#hidden-box { content-visibility: hidden }' +
+  '</style>' +
+  '<div id="gone" class="t"></div>' +
+  '<div id="pct"></div>' +
+  '<div id="under"><div id="kid" class="t"></div><div id="under-before" class="b"></div></div>' +
+  '<div id="contents" class="t"></div>' +
+  '<div id="no-content" class="b"></div>' +
+  '<div id="none-before" class="b"></div>' +
+  '<div id="off" class="b"></div>' +
+  '<div id="drawn" class="t"></div>' +
+  '<div id="drawn-before" class="b"></div>' +
+  '<div id="contents-before" class="b"></div>' +
+  '<svg width="20" height="20"><rect id="shape" class="t" width="5" height="5" /></svg>' +
+  '<div id="hidden-box"><div id="hid" class="t"></div></div>' +
+  '<canvas><div id="fallback" class="t"></div></canvas>';
+
+metric(
+  'a transform reads none where nothing renders the element, and its matrix where something does',
+  async () => {
+    const { node } = await render(TRANSFORM_PAGE, 400);
+    const el = view(node);
+    const read = (id: string, pseudo: 'before' | null = null) =>
+      el.computedStyle(findById(el.document, id)!, pseudo)!.transform;
+    for (const id of ['gone', 'pct', 'kid', 'contents']) {
+      assert.strictEqual(read(id), 'none', id);
+    }
+    for (const id of ['under-before', 'no-content', 'none-before', 'off']) {
+      assert.strictEqual(read(id, 'before'), 'none', `${id}::before`);
+    }
+    assert.strictEqual(
+      read('drawn'),
+      'matrix(0.984808, 0.173648, -0.173648, 0.984808, 10, 5)',
+    );
+    assert.strictEqual(
+      read('drawn-before', 'before'),
+      'matrix(1, 0, 0, 1, 10, 5)',
+    );
+    // each of these has a box in Chrome, which reads its matrix, and none
+    // here: the list it computes to, and never `none`
+    for (const id of ['shape', 'hid', 'fallback']) {
+      assert.strictEqual(read(id), 'translate(10px, 5px) rotate(10deg)', id);
+    }
+    assert.strictEqual(
+      read('contents-before', 'before'),
+      'translate(10px, 5px)',
+    );
+  },
+);
+
 test('what a computed style reads from a box says so, by name and in camel case', async () => {
   const { node } = await render(
     '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +

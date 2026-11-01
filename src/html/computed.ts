@@ -62,6 +62,9 @@ export interface UsedBox {
    *  compute, a percentage as a percentage: what Chrome answers, having
    *  resolved them only for a box with a rectangle of its own. */
   inline?: boolean;
+  /** Whether only its margins and padding are to be read, by what otherwise
+   *  takes the computed value (`HtmlViewNode._edgesOf`). */
+  edgesOnly?: boolean;
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -912,22 +915,34 @@ export function comesFromBox(property: string): boolean {
  * `keepsAuto` has a `min-width: auto` read as itself: on a flex or a grid
  * item, which a `::before` is with no `box` handed in, and for what takes
  * the computed value, as `getKeyframes()` and `commitStyles()` do.
+ * `unrendered` says there is no box to be had, which a `box` of null does
+ * not: what takes the computed value hands in none either, and a `transform`
+ * goes on reading its list there.
  */
 export function cssomStyle(
   style: ComputedStyle,
   scale: number,
   box: UsedBox | null,
   keepsAuto = false,
+  unrendered = false,
 ): Record<string, string> {
-  return cssomAt(style, scale * style.effectiveZoom, box, keepsAuto);
+  return cssomAt(
+    style,
+    scale * style.effectiveZoom,
+    box,
+    keepsAuto,
+    unrendered,
+  );
 }
 
 function cssomAt(
   style: ComputedStyle,
   scale: number,
-  box: UsedBox | null,
+  given: UsedBox | null,
   keepsAuto: boolean,
+  unrendered = false,
 ): Record<string, string> {
+  const box = given?.edgesOnly ? null : given;
   const color = style.color;
   const out: Record<string, string> = {
     display: display(style),
@@ -1103,13 +1118,14 @@ function cssomAt(
   };
   out.font = fontText(style, out['font-size'], out['font-family'], scale);
   // a transform resolves to the matrix its list comes to for the box
-  // (CSSOM 9, "resolved value"), and with no box is the list it computes
-  // to
-  out.transform = !style.transform
-    ? 'none'
-    : box
-      ? transformMatrixText(style.transform, box, scale)
-      : cssomTransform(style.transform, scale);
+  // (CSSOM 9, "resolved value"), with none to be had is `none`, and with
+  // none handed in is the list it computes to
+  out.transform =
+    !style.transform || unrendered
+      ? 'none'
+      : box
+        ? transformMatrixText(style.transform, box, scale)
+        : cssomTransform(style.transform, scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,
@@ -1146,7 +1162,7 @@ function cssomAt(
     style.paddingBottom,
     style.paddingLeft,
   ];
-  const edges = box?.inline ? null : box;
+  const edges = given?.inline ? null : given;
   SIDES.forEach((side, i) => {
     out[`border-${side}-style`] = styles[i];
     // a side with no style has no width (CSS Backgrounds 3, 4.3)

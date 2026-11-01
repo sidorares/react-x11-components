@@ -465,6 +465,36 @@ test('a dragged width lays out what can be seen, and the rest once it rests', as
   assert.ok(!partial(el));
 });
 
+test('a ::before a drag set aside reads as its rules compute it, a transform and the frame getKeyframes() makes up with the rest', async (t) => {
+  holdClock(t, resizeClock);
+  const rows = Array.from(
+    { length: 40 },
+    () => '<div style="height:50px"></div>',
+  ).join('');
+  const { el, resize } = await renderScrolled(
+    '<style>body{margin:0}@keyframes k{to{margin-left:1px}}' +
+      '#end::before{content:"";display:block;height:5px;margin-left:10%;' +
+      'transform:translate(10px, 5px);animation:k 100s paused}</style>' +
+      `<body>${rows}<div id="end"></div></body>`,
+    300,
+    400,
+  );
+  await resize(300, 330);
+  await resize(300, 320);
+  assert.ok(partial(el), 'a step');
+  assert.ok(!reached(el, 'end'), 'set aside');
+  // its box is a width ago, and there is one, so its transform is no `none`
+  const end = findById(el.document, 'end')!;
+  assert.strictEqual(
+    el.computedStyle(end, 'before')!.transform,
+    'translate(10px, 5px)',
+  );
+  assert.strictEqual(
+    el.cssKeyframesOf(end, 'before', 'k')![0].values['margin-left'],
+    '10%',
+  );
+});
+
 test('a container a drag set aside is found when a read first asks for the containers, and read once it is back', async (t) => {
   const clock = holdClock(t, resizeClock);
   const rows = Array.from(

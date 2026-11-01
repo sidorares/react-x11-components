@@ -5128,10 +5128,12 @@ an `auto` margin of a block in the flow or of a flex item as the room it came
 to: a flex item's its share of what its line leaves free along the line, and
 what it leaves of its line across it, and none where there is none. One with
 no box — `display: none` or `contents`, no `content`, under an element that has
-none — reads as its rules compute it. An inline box has no rectangle of its own,
-so as in
+none — reads as its rules compute it, and but for `display: contents` its
+`transform` reads `none`. An inline box has no rectangle of its own, so as in
 Chrome its percentage margins, padding and offsets stay percentages. The
-first frame `getKeyframes()` makes up takes the computed `width` and reads no
+first frame `getKeyframes()` makes up reads margins and padding as Chrome
+does, a length as written and a percentage off the box as an animation has
+moved it, and takes everything else as computed, as though it had no
 box, and a `::before` a dragged width set aside reads as its rules compute
 it, its box being a width ago. An absolute box placed against an inline box
 reads the insets it was placed by, in the padding box around that box's
@@ -5139,6 +5141,16 @@ fragments; one with nothing in it is as high as a fragment and has no width
 where it is on a line, and is of no size where it is on none. One read is
 still not Chrome's: Chrome reads a length in sixty-fourths of a pixel, so the
 third of a line it shares out reads `23.3281px` there and `23.333px` here.
+
+A few reads around a box are still not Chrome's. What an `<svg>` draws, what
+`content-visibility: hidden` holds, a canvas's fallback and a `::before` of
+`display: contents` have a box in Chrome and none to read here, so their
+`transform` reads the list it computes to where Chrome reads a matrix.
+`transform-origin` and `perspective-origin` read nothing, and
+are left out of the frame `getKeyframes()` makes up. `commitStyles()` writes
+margins and padding as they compute, where Chrome writes what `getKeyframes()`
+reads. And a `::before`'s frame reads the style an animation has moved, so a
+length under it reads the animated value, where an element's reads its own.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)
