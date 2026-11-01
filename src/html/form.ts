@@ -1596,10 +1596,12 @@ const CONTROL_ATTRIBUTE =
 const HOLDS_CONTROLS = new Set(['form', 'fieldset', 'select', 'optgroup']);
 
 /** What holds a control's state besides the control: the elements a selector
- *  answers for from what is in them. */
-function holdersOf(el: Element, into: Set<Element>): void {
+ *  answers for from what is in them, and `el` itself but where it is only
+ *  what a control was put in or taken out of (`itself`): no selector answers
+ *  for a `<div>` from what it holds. */
+function holdersOf(el: Element, into: Set<Element>, itself = true): void {
   for (let at: AnyNode | null = el; at && isElement(at); at = at.parent) {
-    if (at === el || HOLDS_CONTROLS.has(tagOf(at))) into.add(at);
+    if ((itself && at === el) || HOLDS_CONTROLS.has(tagOf(at))) into.add(at);
   }
   const owner = formOwner(el);
   if (owner) into.add(owner);
@@ -1683,7 +1685,7 @@ export function controlsReached(change: HtmlChange, into: Set<Element>): void {
     }
     return;
   }
-  if (isElement(target)) holdersOf(target, into);
+  if (isElement(target)) holdersOf(target, into, false);
   togetherIn(rootOf(target), into);
   for (const node of change.addedNodes) {
     if (!isElement(node)) continue;

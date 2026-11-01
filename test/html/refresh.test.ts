@@ -4142,6 +4142,105 @@ function controlChangeFor(
   return [{ type: 'characterData', target: text as unknown as ChildNode }];
 }
 
+test('a row with a control in it, put in a list, restyles the row and no row before it, however many there are', async () => {
+  // a rule that reads a control's state, one that reads a direction above
+  // what it styles, and a list of rows with a checkbox each: a mail page's,
+  // whose every page of rows restyled all the rows there were
+  const rows = Array.from(
+    { length: 40 },
+    (_, i) => `<div class="row" id="r${i}"><input type="checkbox"></div>`,
+  ).join('');
+  const { node } = await render(
+    '<style>.field:not(:placeholder-shown) { color: #ff0000 }' +
+      '.item:dir(rtl) .mark { color: #00ff00 }</style>' +
+      `<div id="list">${rows}</div>`,
+    320,
+  );
+  const el = view(node);
+  await act();
+  const list = byId(el, 'list');
+  const row = createElement('div', { class: 'row', id: 'new' });
+  appendChild(row, createElement('input', { type: 'checkbox' }));
+  appendChild(list, row);
+  const own = scopeOf(el, [
+    {
+      type: 'childList',
+      target: list,
+      addedNodes: [row],
+      removedNodes: [],
+      previousSibling: byId(el, 'r39'),
+      nextSibling: null,
+    },
+  ]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(own.has(row), 'what came is not styled');
+  assert.ok(!own.has(byId(el, 'r0')), 'a row that was there is restyled');
+  assert.ok(own.size <= 4, `${own.size} restyled`);
+});
+
+test('a control put in what holds no form tells nothing of what is there, whatever a rule below a form names', async () => {
+  // what a form answers for from what is in it reaches what is in the
+  // form: a `<div>` no selector answers for from what it holds is no form
+  const { node } = await render(
+    '<style>form:invalid * { color: #ff0000 }</style>' +
+      '<form></form><div id="list"><b id="old">x</b></div>',
+    320,
+  );
+  const el = view(node);
+  await act();
+  const list = byId(el, 'list');
+  const input = createElement('input', {});
+  appendChild(list, input);
+  const own = scopeOf(el, [
+    { type: 'childList', target: list, addedNodes: [input], removedNodes: [] },
+  ]);
+  assert.ok(own?.has(input), 'what came is not styled');
+  assert.ok(!own?.has(byId(el, 'old')), 'what was there is restyled');
+});
+
+test('a direction or a language reaches what its rules can style of what is below it, and all of that', async () => {
+  // told of a form's controls, of a turn of a text, and of a `lang`: each
+  // reaches `.mark`, under the `.item` or as the rule's own subject, and
+  // not what no rule styles
+  const { node } = await render(
+    '<style>.item:dir(rtl) .mark { color: #00ff00 }' +
+      '.own:dir(rtl) { color: #0000ff }</style>' +
+      '<form id="f"><div class="item"><b class="mark" id="m">x</b>' +
+      '<i id="other">y</i></div><u class="own" id="o">z</u></form>',
+    320,
+  );
+  const el = view(node);
+  await act();
+  const form = byId(el, 'f');
+  const input = createElement('input', {});
+  appendChild(form, input);
+  const own = scopeOf(el, [
+    { type: 'childList', target: form, addedNodes: [input], removedNodes: [] },
+  ]);
+  assert.ok(own?.has(byId(el, 'm')), 'the subject below is not reached');
+  assert.ok(own?.has(byId(el, 'o')), 'a rule’s own subject is not reached');
+  assert.ok(!own?.has(byId(el, 'other')), 'what no rule styles is reached');
+});
+
+test('a text that turns a direction restyles what reads it, above its rule’s subject and at it', async () => {
+  const { node } = await render(
+    '<style>.item:dir(rtl) .mark { color: #00ff00 }' +
+      '.own:dir(rtl) { color: #0000ff }</style>' +
+      '<div dir="auto" id="d"><span id="t">latin</span>' +
+      '<div class="item"><b class="mark" id="m">x</b></div>' +
+      '<u class="own" id="o">z</u></div>',
+    320,
+  );
+  const el = view(node);
+  await act();
+  const text = byId(el, 't').children[0] as unknown as { data: string };
+  text.data = 'אבג';
+  el.touchDocument([{ type: 'characterData', target: text as never }]);
+  await act();
+  assert.strictEqual(el.computedStyle(byId(el, 'm'))?.color, 'rgb(0, 255, 0)');
+  assert.strictEqual(el.computedStyle(byId(el, 'o'))?.color, 'rgb(0, 0, 255)');
+});
+
 test('in a document of form controls, a refresh told what changed comes to the styles of a refresh of everything', async () => {
   // A control's state reads what is around it, a radio's group and a
   // form's controls among it, and no key says so: `controlsReached` does.
