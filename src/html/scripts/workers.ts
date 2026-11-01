@@ -88,6 +88,8 @@ export interface WorkerThreadData {
 
 /** What the thread tells this side. */
 export type FromWorker =
+  /** Its modules are in, and it can be terminated (`PageWorkers.end`). */
+  | { kind: 'up' }
   | { kind: 'message'; data: string }
   | {
       kind: 'error';
@@ -160,6 +162,8 @@ function threadSource(): UrlLike | string {
 
 interface Running {
   thread: WorkerLike;
+  /** Whether its modules are in, as it said (`end`). */
+  up: boolean;
   url: string;
   sync: MessagePort;
   fetches: Map<number, AbortController>;
@@ -223,6 +227,7 @@ export class PageWorkers implements PageWorkersLike {
     });
     const running: Running = {
       thread,
+      up: false,
       url: init.url,
       sync: port1,
       fetches: new Map(),
@@ -260,6 +265,12 @@ export class PageWorkers implements PageWorkersLike {
     this._running.get(id)?.thread.postMessage(message);
   }
 
+  /**
+   * A worker goes. Its thread is terminated once its modules are in (`up`)
+   * and no sooner: Node 26's CommonJS lexer is native, and a thread terminated
+   * in the middle of it fails a `ToLocalChecked`, which aborts the process, so
+   * a page left as its worker started took every page in the process with it.
+   */
   end(id: number): void {
     const running = this._running.get(id);
     if (!running) return;
@@ -267,7 +278,7 @@ export class PageWorkers implements PageWorkersLike {
     for (const controller of running.fetches.values()) controller.abort();
     running.transports?.dispose();
     running.sockets?.dispose();
-    void running.thread.terminate();
+    if (running.up) void running.thread.terminate();
   }
 
   dispose(): void {
@@ -386,6 +397,10 @@ export class PageWorkers implements PageWorkersLike {
 
   private _heard(id: number, running: Running, m: FromWorker): void {
     switch (m.kind) {
+      case 'up':
+        running.up = true;
+        if (this._running.get(id) !== running) void running.thread.terminate();
+        return;
       case 'message':
         this._seams.message(id, m.data);
         return;

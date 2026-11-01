@@ -6,6 +6,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { afterEach, test as nodeTest } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import assert from 'node:assert/strict';
 import {
   act,
@@ -52,6 +53,7 @@ import {
   namedAccessWorks,
 } from '../../src/html/scripts/engine.js';
 import { DomHost } from '../../src/html/scripts/host.js';
+import { PageWorkers } from '../../src/html/scripts/workers.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
 import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
@@ -1569,6 +1571,50 @@ test('a worker runs in a thread of its own, started from a blob URL as Parcel st
     doc.logs.join('\n'),
   );
 });
+
+test(
+  'a worker ended as its thread starts is terminated once its modules are in, and one that is up at once',
+  { timeout: 120_000 },
+  async (t) => {
+    // Node 26 aborts the process for a thread terminated in the middle of its
+    // CommonJS lexer, which is a moment no test can aim at, so this holds the
+    // order instead: nothing is terminated until the thread has said it is up
+    const terminate = t.mock.method(Worker.prototype, 'terminate');
+    let heard = false;
+    const workers = new PageWorkers({
+      fetch: async () => {
+        throw new Error('no network');
+      },
+      log: () => {},
+      error: () => {},
+      letGo: () => {},
+      message: () => {
+        heard = true;
+      },
+      userAgent: 'test',
+      language: 'en-US',
+    });
+    const init = {
+      url: new URL('w.js', PAGE).href,
+      type: 'classic',
+      name: '',
+      origin: new URL(PAGE).origin,
+    } as const;
+    const until = async (done: () => boolean) => {
+      while (!done()) {
+        t.signal.throwIfAborted();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
+    workers.end(workers.start({ ...init, source: '' }));
+    assert.equal(terminate.mock.callCount(), 0);
+    await until(() => terminate.mock.callCount() === 1);
+    const id = workers.start({ ...init, source: 'postMessage("up");' });
+    await until(() => heard);
+    workers.end(id);
+    assert.equal(terminate.mock.callCount(), 2);
+  },
+);
 
 test('a shared worker is one thread for a script and a name, which each SharedWorker connects to through a port of its own', async () => {
   const doc = await hosted(

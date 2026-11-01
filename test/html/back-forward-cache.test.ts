@@ -32,7 +32,16 @@ import { FakeTransport } from '../fake-transport.js';
 import { FakeSockets } from '../fake-socket.js';
 import { FONTS, h } from './harness.js';
 
-afterEach(cleanup);
+/** The wait a test is in (`whenever`). A test's timeout ends it in the middle
+ *  of an `act`, and the next test's `act` begun over that one leaves React's
+ *  act scope open for good: nothing rendered after it commits, and every test
+ *  left fails of that. So a test's end waits for its wait, which ends with it. */
+let waiting: Promise<void> = Promise.resolve();
+
+afterEach(async () => {
+  await waiting.catch(() => {});
+  await cleanup();
+});
 
 await preloadHtmlScripts();
 
@@ -289,11 +298,14 @@ async function until(
  *  test's `timeout` is what ends it if it never comes. It ends with the test
  *  (`t.signal`): a loop that outlived its test held the file's process open
  *  for good, so a regression here hung the run where it should fail it. */
-async function whenever(t: TestContext, done: () => boolean): Promise<void> {
-  while (!done()) {
-    t.signal.throwIfAborted();
-    await settle(20);
-  }
+function whenever(t: TestContext, done: () => boolean): Promise<void> {
+  waiting = (async () => {
+    while (!done()) {
+      t.signal.throwIfAborted();
+      await settle(20);
+    }
+  })();
+  return waiting;
 }
 
 /**
@@ -303,18 +315,15 @@ async function whenever(t: TestContext, done: () => boolean): Promise<void> {
  * the `importScripts` of one that is.
  */
 function network(files: Record<string, string>, held: string) {
-  let heard = () => {};
+  let heard = false;
   let answer = () => {};
-  const asked = new Promise<void>((resolve) => {
-    heard = resolve;
-  });
   const answered = new Promise<void>((resolve) => {
     answer = resolve;
   });
   const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
     const file = new URL(request.url).pathname.slice(1);
     if (file === held) {
-      heard();
+      heard = true;
       await answered;
     }
     return {
@@ -326,7 +335,7 @@ function network(files: Record<string, string>, held: string) {
       body: files[file] ?? '',
     };
   };
-  return { fetch, asked, answer };
+  return { fetch, asked: () => heard, answer };
 }
 
 /** How many of the workers of the document at an address have stopped. */
@@ -600,12 +609,9 @@ test(
   'a document with a WebSocket open, or a worker of its with one, unloads; once the socket is closed it is kept',
   { timeout: 120_000 },
   async (t) => {
-    let workerAsked = () => {};
-    const asked = new Promise<void>((resolve) => {
-      workerAsked = resolve;
-    });
+    let workerAsked = false;
     const sockets = new FakeSockets((c) => {
-      if (c.request.url === 'wss://ws.test/w') workerAsked();
+      if (c.request.url === 'wss://ws.test/w') workerAsked = true;
       setTimeout(() => c.open(), 0);
     });
     const ws =
@@ -650,7 +656,7 @@ test(
     // however long the machine takes over that, so this waits for what the
     // worker asks of the seam and not for a time; the test's `timeout` is
     // only what ends it if the worker never asks
-    await asked;
+    await whenever(t, () => workerAsked);
     await until(doc, 'c worker connected');
     assert.ok(doc.logs.includes('b pagehide true'), doc.logs.join('\n'));
     // a worker's socket keeps its page out as one of its own does
@@ -676,7 +682,7 @@ test(
     );
     await until(doc, 'a pageshow false 1');
     // its thread is up as far as its script, and the page leaves
-    await net.asked;
+    await whenever(t, net.asked);
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
     assert.equal(doc.session.kept.length, 1);
@@ -721,7 +727,7 @@ test(
       net.fetch,
     );
     await until(doc, 'a pageshow false 1');
-    await net.asked;
+    await whenever(t, net.asked);
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
     net.answer();
@@ -745,19 +751,12 @@ test(
           'onmessage = function () { setTimeout(function () {' +
           CONNECTS +
           SAYS_CONNECTED +
-          '}, 0); };',
+          '}, 0); importScripts("hold.js"); };',
       },
-      '',
+      'hold.js',
     );
     const doc = await tab(
-      {
-        'a.html': page(
-          'a',
-          HEARS +
-            'addEventListener("pagehide", function () { w.postMessage("soon"); });',
-        ),
-        'b.html': page('b'),
-      },
+      { 'a.html': page('a', HEARS), 'b.html': page('b') },
       `${SITE}a.html`,
       3,
       undefined,
@@ -765,13 +764,28 @@ test(
       net.fetch,
     );
     await whenever(t, () => doc.logs.includes('a worker up'));
+    // The timer has to be armed before the freeze and come due after it, and
+    // a thread runs what is due until it hears, so the thread is held in the
+    // task that arms it until the page has gone. The thread then reads the
+    // message that says so straight after that task, in the same turn of its
+    // event loop, before any timer. Armed by a message `pagehide` posted, the
+    // timer raced the rest of the freeze: where it won, its socket reached a
+    // frozen document, which is let go, and nothing here was left to come.
+    doc.run('w.postMessage("soon");');
+    await whenever(t, net.asked);
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
+    assert.equal(doc.session.kept.length, 1);
+    net.answer();
     await whenever(
       t,
       () =>
-        stopped(doc, `${SITE}a.html`) === 1 || sockets.connections.length > 0,
+        stopped(doc, `${SITE}a.html`) === 1 ||
+        sockets.connections.length > 0 ||
+        doc.session.kept.length === 0,
     );
+    // a timer that did not wait would be heard from by now
+    await settle();
     assert.equal(sockets.connections.length, 0);
     assert.equal(doc.session.kept.length, 1);
     doc.run('history.back();');
@@ -807,7 +821,7 @@ test(
     );
     await until(doc, 'a pageshow false 1');
     // the task is in its `importScripts`, where no message reaches it
-    await net.asked;
+    await whenever(t, net.asked);
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
     assert.equal(doc.session.kept.length, 1);
@@ -854,7 +868,7 @@ test(
     );
     await until(doc, 'a pageshow false 1');
     // the task is in its `importScripts`, where no message reaches it
-    await net.asked;
+    await whenever(t, net.asked);
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
     assert.equal(doc.session.kept.length, 1);
@@ -894,7 +908,7 @@ test(
       sockets,
       net.fetch,
     );
-    await net.asked;
+    await whenever(t, net.asked);
     await until(doc, 'a pageshow false 1');
     doc.run('location.href = "b.html";');
     await until(doc, 'b pageshow false 1');
