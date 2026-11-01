@@ -6085,7 +6085,12 @@ product pages read `getComputedStyle` and `offsetTop` tens of thousands of
 times a load, of their closed dialogs' contents a property at a time, and
 the walk and the styling were a third of what their script took.
 **Anything new that changes the style of what nothing draws without moving
-one of those drops `_unboxed`.**
+one of those drops `_unboxed`.** And `_styleOf` asks the tree before it works
+anything out, so a style a build would have dropped reads as though it still
+held: **anything new that takes an element out of what a build styles takes
+its style with it, and those of its shadow trees** (`forgetStyles`). A host
+moved into a `<g>` kept the style of everything in its tree, and what a slot
+took there inherited from it.
 
 **A video is core's `<video>`, mounted over the box, and never drawn
 here** (`media.ts`, `videos.ts`; core's `docs/architecture/video.md`, 8.2).

@@ -17845,10 +17845,15 @@ function undrawn(el: Element, tree: BoxTree): boolean {
   return true;
 }
 
-/** An element's style and those of everything in it, out of `styles`. */
+/** An element's style and those of everything in it, its shadow trees
+ *  included, out of `styles`: a build styles what is in a tree, and what
+ *  stays goes on being read, and inherited from through a slot. */
 function forgetStyles(el: Element, styles: Map<Element, unknown>): void {
   if (!styles.delete(el)) return;
   for (const child of el.children) {
+    if (isElement(child)) forgetStyles(child, styles);
+  }
+  for (const child of shadowRootOf(el)?.children ?? []) {
     if (isElement(child)) forgetStyles(child, styles);
   }
 }
