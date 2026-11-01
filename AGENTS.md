@@ -2274,7 +2274,7 @@ of the scrollport of each box around that scrolls, clips and transforms
 counted (`_lazyAway`). With scripting off an image never waits, since a server
 could read a reader's way down a page from what it was asked for and when.
 The browsers were asked before any of this was written, and the docs page
-names where they differ. Seven things are load-bearing.
+names where they differ. Eight things are load-bearing.
 
 - **Until `load` near is `LAZY_LOADING_PX`, since a document's first boxes are
   a guess.** Its first layout comes before its head's scripts, and Wikipedia's
@@ -2794,7 +2794,7 @@ it answers joins that document**, whose cases are sized boxes rather than text,
 and regenerated rather than written.
 
 **What an item gives is Chromium's, and not quite what CSS Flexbox 9.9.1
-says** (`itemAtNarrowest`). Its width, or its content at its narrowest. A basis
+says** (`itemAt`, by way of `itemAtNarrowest`). Its width, or its content at its narrowest. A basis
 that is a length then has a say along a line that does not wrap: an item that
 may not grow is no wider than it, and one that may not shrink no narrower. Then
 its limits, its automatic minimum among them, which matters only there, since
@@ -2817,13 +2817,83 @@ lay out again all it holds. A grid is no such box: it has a flex box's
 Only what has lines of its own and was laid out
 wider is asked of its words or laid out at no width. **What a walk lays out is forgotten around it**
 (`forgetAround`): the layout after the probe keeps what around it has not moved,
-by `Box.layoutSerial`, which would leave it at no width. **A flex box's
-max-content width does not go by any of this**, and it is a gap: it is read from
-a layout with no limit on its width, each item at its content whatever its
-basis. All that keeps it honest is a floor, for an item that may not shrink, or
-a box with room for that width would never ask for the narrower one that is
-wider. Chromium caps and floors there as well, and `width: max-content`
-inside a flex box inherits the difference.
+by `Box.layoutSerial`, which would leave it at no width.
+
+**A flex box's max-content width goes by the same rule** (`itemAtWidest`, in
+`intrinsicWidth`'s `atWidest` walk), with an item's content at its widest for
+its size and at its narrowest for its automatic minimum. It is Chromium's, read
+off some 180,000 small documents, and again not quite 9.9.1's: there is no flex
+fraction in it, so `flex: 2 1 40px` beside `flex: 1 1 40px` is their contents
+side by side. A basis has its say along a row that wraps as well as one that
+does not, all its items being on one line at its widest, and such a row is no
+narrower than its narrowest (`widestInALine`), which only a basis under its
+item or a margin that takes room back can reach. A column that wraps is as wide
+as each line's widest side by side (`COLUMN_LINES`), which a layout has to say.
+The size an item starts its line at is what a basis says, its automatic minimum
+in it (`start`), so a basis under what a percentage squeezed away raises an
+image to its natural width and a basis of nothing does not. A basis of `auto`
+is a width of its own, which shows only there. And an item with a ratio takes
+what it makes of its height for a width, its limits through the ratio before
+its basis has its say, and is no narrower than its content unless it may be,
+where its content is its size and no basis has taken it under that.
+Eight things are load-bearing.
+
+- **A layout with no limit on its width says an item's widest only where it
+  laid the item out there.** One with a basis of a length it laid out at that.
+  So `widestOf` reads what the flex box's own layout measured (`MAX_CONTENT`),
+  asks a nested flex box of its items, and lays out only the rest, once in the
+  item's life; an item down a column laid out with no limit is read as the
+  column measured it, or as it was laid out. An item's automatic minimum is
+  asked only where a basis took it under its content, and not where its lines
+  say it is no wider than the basis at its narrowest (`narrowerThan`, over
+  `wordBound`'s strict form, which refuses a percentage and what is not a
+  flow). So no leaf is laid out twice for it, and box layouts come to what they
+  did: measure that again before making the walk ask more, on sized boxes as
+  well as text, since a line of words answers `exactMinContent` with no layout
+  and a line of inline blocks does not. Sent through `widestOf`, every item down
+  a column cost half as much again of every layout of a nested page; laid out at
+  no width for its minimum, a row of inline blocks in a basis made half as many
+  layouts again, which pages of text never showed.
+- **A block at its `max-width` may have wrapped**, as one a `calc-size()` of
+  `auto` held to a width may, which what it drew does not say, and its width
+  says nothing of its content: `max-width: 7px` around nothing
+  is no width. A line that wrapped says the content is wider than the limit, with
+  no layout of it (`softWrapped`), so a long article in a flex row is not set
+  again at no width; only one that drew less and did not wrap is asked
+  (`widestOf`). A forced break says nothing of the kind.
+- **A float is as wide as it shrank to**, which a walk reads rather than what it
+  holds (`widestAsLaid`): that was laid out inside the width, a percentage of it
+  and all, so `padding: 0 5%` in one came back a tenth wider each level out.
+- **A percentage squeezes what is replaced at its narrowest and nowhere else**
+  (`compressed`): its content has no size at all there, which a keyword asks
+  for as much as anything, and only a least width of a length holds it. At its
+  widest, and for its automatic minimum, a percentage is `auto` and it is its
+  natural width.
+- **What is replaced has one size of its content**, whatever width it has of its
+  own, which `contentSizedWidth` reads from the element: laid out to find it,
+  `width: 40px; max-width: min-content` was as wide as its width.
+- **An item a flex box shrank with no line to show for it may be wider than it
+  was drawn** (`seen.cut`): what is replaced, or a width that is a size of its
+  content. Taken for what it drew, a box around one read as fitting the width it
+  was given, and gave up its own minimum.
+- **A wrapped box's lines are Chromium's only past Yoga's `singleFlexChild`**
+  (`NO_GROWTH`). Yoga gives the one item that may both grow and shrink, where no
+  other may do either, no flex base size, as it fills the box whatever it was,
+  and on lines that is where they break: `flex: 1 1 300px` beside `flex: none`
+  in a row of 100 stayed on one line.
+- **A table's percentage width is `auto` where its containing block has no width
+  at all** (`cyclicWidth` of the parent's), and not only where its own came out
+  unlimited: under a `max-width` it filled the limit.
+
+`test/html/max-contents.ts` is to this what `min-contents.ts` is to the
+narrowest, written by the same script with `--widest`, in a room wider than any
+case can use, and some of its cases are around a float, an `inline-flex`, a
+keyword width or a table's cell, each of which asks in its own way. Both hold
+keyword sizes, ratios and wrapped columns of a height. A generated document that
+reads a box's size some way no case does is worth a run of the fuzz behind them
+before it is believed: a float around these cases was 561 of 1,500 wrong when
+the fixture had none. A grid's tracks are not held to this yet: some 3% of them
+differ, in its own limits and in ratios it stretches.
 
 **A probe takes a block it laid out before in the same room for what it
 came to then** (`Stand`, `STOOD`): how far down it reached, the margin it

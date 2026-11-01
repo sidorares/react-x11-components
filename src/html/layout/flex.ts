@@ -231,6 +231,23 @@ export function layoutFlex(
     items.push({ box: child, node, laid });
   }
 
+  // Yoga gives the one item that may both grow and shrink, where no other
+  // may do either, no flex base size in a box of a size, since it fills the
+  // box whatever its base is: CalculateLayout.cpp's `singleFlexChild`. On
+  // lines of a box that wraps it fills its line, and what breaks the line is
+  // its base: `flex: 1 1 300px` beside `flex: none` in a row of 100 kept them
+  // on one line, where it breaks. A second item that may grow by nothing
+  // anyone can see is what stops it.
+  if (box.style.flexWrap !== 'nowrap' && items.length > 1) {
+    const flexible = items.filter(
+      ({ box: { style } }) => style.flexGrow || style.flexShrink,
+    );
+    if (flexible.length === 1) {
+      const other = items.find((item) => item !== flexible[0])!;
+      other.node.setFlexGrow(NO_GROWTH);
+    }
+  }
+
   // A column that wraps is as wide as its content box, but each of its
   // lines is as wide as its widest item, every item `fit-content` across
   // (CSS Flexbox 9.4, steps 7 and 8), and so is placed across here and not
@@ -448,6 +465,10 @@ export function layoutFlex(
     }
   } finally {
     ctx.flexDepth = depth;
+  }
+
+  if (!bounded && !row && box.style.flexWrap !== 'nowrap') {
+    noteColumnLines(box, items);
   }
 
   // The lines of a row that wraps are as tall as their tallest items, each
@@ -1722,6 +1743,49 @@ function applyItem(
  *  width, measured the once (`applyItem`). Keyed by the box, whose lifetime
  *  is the cache's: any change to what is in it rebuilds it. */
 const MAX_CONTENT = new WeakMap<Box, number>();
+
+/** A flex grow factor that is not none, and comes to nothing in a float32. */
+const NO_GROWTH = 1e-9;
+
+/** The items of each line of a column that wraps, as its last layout with no
+ *  limit on its width broke them: it is as wide as they are side by side, as
+ *  Blink has it (`ComputeMinMaxSizeOfMultilineColumnContainer`), and only a
+ *  layout says which item a height puts on which line. */
+const COLUMN_LINES = new WeakMap<Box, Box[][]>();
+
+export function columnLines(box: Box): Box[][] | undefined {
+  return COLUMN_LINES.get(box);
+}
+
+/** Note where a column's lines break: at an item that goes back up the
+ *  column from the last, or down it where the column runs up it, and at one
+ *  level with the last in a line of its own, where the last had no height. */
+function noteColumnLines(
+  box: Box,
+  items: readonly { box: Box; node: YogaNode }[],
+): void {
+  const up = box.style.flexDirection === 'column-reverse';
+  const lines: Box[][] = [];
+  let top = 0;
+  let start = 0;
+  for (const { box: child, node } of items) {
+    const y = node.getComputedTop();
+    const from = node.getComputedLeft() - child.marginLeft;
+    const back = up ? y > top : y < top;
+    if (!lines.length || back || (y === top && Math.abs(from - start) > 0.5)) {
+      lines.push([]);
+    }
+    lines[lines.length - 1].push(child);
+    top = y;
+    start = from;
+  }
+  COLUMN_LINES.set(box, lines);
+}
+
+/** An item's max-content width where its flex box's layout measured it. */
+export function measuredMaxContent(box: Box): number | undefined {
+  return MAX_CONTENT.get(box);
+}
 
 /** Forget an item's max-content width, kept for its life, and the layout
  *  a later one would keep (`keptNatural`): its lengths, or those of
