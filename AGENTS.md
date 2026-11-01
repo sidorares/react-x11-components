@@ -154,7 +154,13 @@ finds out from a blank window has been failed by the page.
 - `dist/` — **the build output, and what ships.** `tsc` writes it, git
   ignores it, and nothing in the repo edits it by hand.
 - `test/` — `node --test` files run through `tsx`, one per component plus
-  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`).
+  the repo-wide guards (`treeshake.test.ts`, `package.test.ts`). **What a test
+  makes up comes from `mulberry32`** (`test/mulberry32.ts`), whose numbers are
+  all good. `seed * 1103515245 + 12345` on a double loses its low bits and
+  comes round in 10,466 numbers, or 220 from some seeds, and the same on
+  integers has a low bit that takes turns, so `seed % 6` can leave half of a
+  test's cases unmade. Neither says so: `<Html>`'s `rem` was wrong in one
+  generated document in twelve for as long as its tests could not make one.
 - `test/html/` — `<Html>`'s tests, a file a subject (`floats.test.ts`,
   `tables.test.ts`, `media.test.ts`, …) over the `harness.ts` they share.
   They were one file of eighteen thousand lines that every change appended

@@ -20,6 +20,7 @@ import {
 } from '../../src/html/layout/block.js';
 import type { BoxTree } from '../../src/html/layout/boxes.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import {
   boxOf,
   bytesApart,
@@ -1017,11 +1018,7 @@ test('a dragged width draws the rows of a grid it keeps as the whole layout at r
   // columns and rows, aligned and stretched, with a grid inside some, and
   // what can be seen at a step held to what the layout at rest draws there
   const clock = holdClock(t, resizeClock);
-  let seed = 11;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(11);
   const pick = <T>(list: T[]): T => list[Math.floor(random() * list.length)];
   for (let doc = 0; doc < 24; doc += 1) {
     const rows = pick(['auto', 'minmax(40px,auto)', '60px', 'min-content']);
@@ -1145,12 +1142,8 @@ test('a dragged width draws the rows of a table it keeps as the whole layout at 
   // separated borders, a table in a cell, captions, and what can be seen
   // at a step held to what the layout at rest draws there
   const clock = holdClock(t, resizeClock);
-  let seed = 23;
   let stops = 0;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(23);
   const pick = <T>(list: T[]): T => list[Math.floor(random() * list.length)];
   for (let doc = 0; doc < 20; doc += 1) {
     const columns = 2 + Math.floor(random() * 3);

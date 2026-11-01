@@ -25,6 +25,7 @@ import { frameClock, owedClock, resizeClock } from '../../src/html/node.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import type { ResourceResult } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import {
   FONTS,
   h,
@@ -1026,17 +1027,6 @@ function paneOf(node: unknown): {
   return at as unknown as ReturnType<typeof paneOf>;
 }
 
-/** mulberry32: the same document for the same seed. */
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 const FUZZ_SHEET = `${FACES}
 p { margin: 3px 0 } h2 { margin: 2px 0; font-size: 18px }
 .b { font-weight: 700 } .i { font-style: italic }
@@ -1170,7 +1160,7 @@ metric(
     const seeds = Number(env.OWED_SEEDS ?? 30);
     const from = Number(env.OWED_FROM ?? 1);
     for (let seed = from; seed <= seeds; seed += 1) {
-      const next = random(seed * 7907);
+      const next = mulberry32(seed * 7907);
       const body = createElement('body', {});
       const blocks = 12 + Math.floor(next() * 16);
       for (let i = 0; i < blocks; i += 1) appendChild(body, fuzzed(next, 0));

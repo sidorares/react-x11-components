@@ -22,6 +22,7 @@ import {
   view,
 } from './harness.js';
 import { boxLayoutsMade } from '../../src/html/layout/block.js';
+import { mulberry32 } from '../mulberry32.js';
 import type { Fill, LaidBox, PaintOp } from './harness.js';
 
 afterEach(cleanup);
@@ -1461,11 +1462,7 @@ test('vw lengths taken in place at a new width lay out as a build does, over gen
   // item's max-content, a grid item's — has to be forgotten where it moves
   // (`forgetSizes`): each document is resized, and laid out again as a
   // build of all of it at the same width lays it out
-  let seed = 7;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(7);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
   const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
   let ids = 0;
@@ -1602,11 +1599,7 @@ test('fluid type in vw taken in place at a new width sets its text as a build do
   // in it that inherits the size, on a `::before` — and the layout that
   // follows sets the runs at them. Each document is resized, and held to a
   // build of all of it at the same width, box for box and line for line.
-  let seed = 11;
-  const random = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
-  };
+  const random = mulberry32(11);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)];
   const words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur'];
   let ids = 0;

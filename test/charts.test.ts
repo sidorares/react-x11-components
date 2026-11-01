@@ -78,6 +78,7 @@ import type {
 import type { SeriesSpec } from '../src/charts/spec.js';
 import type { ChartPlotNode } from '../src/charts/node.js';
 import { composites } from '../src/charts/node.js';
+import { mulberry32 } from './mulberry32.js';
 
 const h = React.createElement;
 
@@ -126,9 +127,7 @@ function bruteMinMax(
 test('pyramid min/max agrees with brute force over arbitrary ranges', () => {
   const n = 10_000;
   const values = new Float64Array(n);
-  let seed = 42;
-  const rand = () =>
-    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rand = mulberry32(42);
   for (let i = 0; i < n; i++) values[i] = Math.sin(i / 50) * 100 + rand() * 10;
   // a hole, to exercise the NaN skipping
   for (let i = 5000; i < 5100; i++) values[i] = NaN;
@@ -810,9 +809,7 @@ test('dense scatter reduces to alpha-bucketed cells, bounded by the grid', () =>
   const n = 200_000;
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
-  let seed = 7;
-  const rand = () =>
-    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rand = mulberry32(7);
   for (let i = 0; i < n; i++) {
     xs[i] = rand() * 100;
     ys[i] = rand() * 100;
@@ -845,9 +842,7 @@ test('a pass that reaches a strip of the plot draws the marks in it, and no othe
   const n = 50_000;
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
-  let seed = 11;
-  const rand = () =>
-    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rand = mulberry32(11);
   for (let i = 0; i < n; i++) {
     xs[i] = rand() * 100;
     ys[i] = rand() * 100;
@@ -903,9 +898,7 @@ test('a scatter laid out billions of pixels tall bins only what the window shows
   const n = 20_000;
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
-  let seed = 5;
-  const rand = () =>
-    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rand = mulberry32(5);
   for (let i = 0; i < n; i++) {
     xs[i] = rand() * 100;
     ys[i] = rand() * 100;
@@ -1678,12 +1671,8 @@ test('scatter buckets follow the plot across a scroll', async () => {
   const N = 4000;
   const xs = new Float64Array(N);
   const ys = new Float64Array(N);
-  let seed = 7;
-  const rand = () => {
-    // deterministic points, so both mounts see identical data
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
+  // deterministic points, so both mounts see identical data
+  const rand = mulberry32(7);
   for (let i = 0; i < N; i++) {
     xs[i] = rand() * 100;
     ys[i] = rand() * 100;
@@ -1817,9 +1806,7 @@ function scaledReport(
 function scatterCloud(n: number) {
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
-  let seed = 3;
-  const rand = () =>
-    (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const rand = mulberry32(3);
   for (let i = 0; i < n; i++) {
     xs[i] = rand() * 100;
     ys[i] = rand() * 100;

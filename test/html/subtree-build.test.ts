@@ -44,24 +44,13 @@ import { parseColor } from '../../src/html/css/values.js';
 import { resizeClock } from '../../src/html/node.js';
 import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import { Html } from '../../src/index.js';
 
 afterEach(cleanup);
 
 /** What a paint is asked to draw again (`fillsOf`). */
 type Damage = { x: number; y: number; width: number; height: number };
-
-/** mulberry32: the same document for the same seed. */
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const CLASSES = 'abcdefghijklmnopqrst'.split('');
 /** What counts and what reads it, kept apart so that most of a document does
@@ -406,7 +395,7 @@ metric(
         ?.env ?? {};
     const seeds = Number(env.SUBTREE_SEEDS ?? 60);
     for (let seed = Number(env.SUBTREE_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 104729);
+      const next = mulberry32(seed * 104729);
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
       for (let i = 0; i < blocks; i += 1) appendChild(body, element(next, 0));
@@ -585,7 +574,7 @@ metric(
         ?.env ?? {};
     const seeds = Number(env.IMAGE_SEEDS ?? 40);
     for (let seed = Number(env.IMAGE_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 15485863);
+      const next = mulberry32(seed * 15485863);
       const pick = <T>(list: readonly T[]): T =>
         list[Math.floor(next() * list.length)];
       const body = createElement('body', {});
@@ -1098,7 +1087,7 @@ metric(
     let stepped = 0;
     const seeds = Number(env.DRAG_SEEDS ?? 24);
     for (let seed = Number(env.DRAG_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 15485863);
+      const next = mulberry32(seed * 15485863);
       const pick = <T>(list: readonly T[]): T =>
         list[Math.floor(next() * list.length)];
       const body = createElement('body', {});
@@ -1361,7 +1350,7 @@ metric(
         ?.env ?? {};
     const seeds = Number(env.PROBE_SEEDS ?? 40);
     for (let seed = Number(env.PROBE_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 7919);
+      const next = mulberry32(seed * 7919);
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
       for (let i = 0; i < blocks; i += 1) appendChild(body, probed(next, 0));
@@ -1544,7 +1533,7 @@ metric(
         ?.env ?? {};
     const seeds = Number(env.STREAM_SEEDS ?? 40);
     for (let seed = Number(env.STREAM_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 7919);
+      const next = mulberry32(seed * 7919);
       const holder = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 6);
       for (let i = 0; i < blocks; i += 1) {
@@ -3171,7 +3160,7 @@ metric(
         ?.env ?? {};
     const seeds = Number(env.MOVING_SEEDS ?? 30);
     for (let seed = Number(env.MOVING_FROM ?? 1); seed <= seeds; seed += 1) {
-      const next = random(seed * 6151);
+      const next = mulberry32(seed * 6151);
       const pick = <T>(list: readonly T[]): T =>
         list[Math.floor(next() * list.length)];
       const body = createElement('body', {});
