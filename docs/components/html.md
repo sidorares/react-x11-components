@@ -1938,6 +1938,17 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**A list is live, as the DOM has it.** `childNodes`, `children`,
+`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
+form's `elements`, a select's `options` and `selectedOptions`, a table's
+`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
+the tree holds when they are read, and an attribute hands out the same list
+each time. `querySelectorAll` holds what it found. None of them is an array:
+`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
+a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
+`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
+properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+
 ### Cookies and storage
 
 ```js

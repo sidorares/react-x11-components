@@ -133,6 +133,12 @@ export function installDom(
     ) {
       opEpoch += 1;
     }
+    if (!mutatesHas.call(KEEPS_LISTS, op)) {
+      if (op !== 'setAttr' && op !== 'delAttr') {
+        treeEpoch += 1;
+        attrEpoch += 1;
+      } else if (mutatesHas.call(LIST_ATTRIBUTES, b)) attrEpoch += 1;
+    }
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
@@ -163,6 +169,121 @@ export function installDom(
    *  `getComputedStyle` calls, so each read moved the count, and the next
    *  read of the style read all of it again — 17.7 million ops in a load. */
   let opEpoch = 0;
+  /** What a live list checks before it answers from what it read last
+   *  (`itemsOf`), since a read of the host at every index would be a trip a
+   *  page's `for` loop pays for each element: `treeEpoch` moves at any op
+   *  that is not a read and at each task, and `attrEpoch` with it, and at
+   *  an attribute some list reads as well. A change only reaches the tree
+   *  through an op or between two tasks. */
+  let treeEpoch = 0;
+  let attrEpoch = 0;
+  /** The ops that change nothing a list holds. Anything else, an op added
+   *  later among them, reads the lists again, which costs a read and is
+   *  never wrong. Setting a style is here because a page's loop over a list
+   *  sets one on each element, and no list reads that attribute. */
+  const KEEPS_LISTS = new Set([
+    'info',
+    'parent',
+    'owner',
+    'doctype',
+    'kids',
+    'first',
+    'last',
+    'next',
+    'prev',
+    'connected',
+    'contains',
+    'equal',
+    'position',
+    'text',
+    'attr',
+    'attrs',
+    'style',
+    'stylePriority',
+    'styleNames',
+    'styleText',
+    'setStyle',
+    'blockValue',
+    'blockPriority',
+    'blockNames',
+    'blockText',
+    'shadowRoot',
+    'shadowHost',
+    'shadowFlags',
+    'assignedSlot',
+    'assignedNodes',
+    'shadowMode',
+    'shadowDelegates',
+    'html',
+    'getHTML',
+    'content',
+    'query',
+    'matches',
+    'closest',
+    'named',
+    'byId',
+    'byTag',
+    'byClass',
+    'color',
+    'supports',
+    'rect',
+    'atViewport',
+    'scrollMoves',
+    'geometry',
+    'offset',
+    'computed',
+    'computedShorthands',
+    'customProperty',
+    'at',
+    'viewport',
+    'scrollState',
+    'clientBox',
+    'visible',
+    'value',
+    'validity',
+    'willValidate',
+    'selection',
+    'active',
+    'log',
+    'now',
+    'navigator',
+    'hasNetwork',
+    'image',
+    'canPlayType',
+    'base',
+    'location',
+    'resolve',
+    'url',
+    'random',
+    'uuid',
+    'timer',
+    'clearTimer',
+    'observe',
+    'disconnect',
+    'observed',
+    'takeRecords',
+    'rendering',
+    'intersections',
+    'fontFaces',
+    'fontMatch',
+    'sheets',
+  ]);
+  /** The attributes some list goes by (`readsAttributes` in `liveList`). */
+  const LIST_ATTRIBUTES = new Set([
+    'class',
+    'id',
+    'name',
+    'href',
+    'for',
+    'form',
+    'type',
+    'selected',
+    'multiple',
+    'size',
+    'disabled',
+    'rel',
+    'media',
+  ]);
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
@@ -4836,33 +4957,319 @@ export function installDom(
     return node._id;
   };
 
-  /** A list a page indexes and iterates, as a `NodeList` or an
-   *  `HTMLCollection` is — not live: a copy as it was asked for. */
-  class NodeList extends Array {}
-  class HTMLCollection extends Array {}
-  const list = (items: Any[]): Any => {
-    const out: Any = Object.setPrototypeOf(items.slice(), NodeList.prototype);
-    out.item = (i: number) => out[i] ?? null;
-    out.namedItem = (name: string) =>
-      items.find(
-        (n) =>
-          n.getAttribute?.('id') === name || n.getAttribute?.('name') === name,
-      ) ?? null;
-    return out;
+  /** Where a list keeps what it holds, on the object its proxy stands
+   *  over. No page reaches it: `ownKeys` leaves it out. */
+  const LIST = Symbol('list');
+
+  /** A property's name as an array index (Web IDL 2.5.6), or -1. */
+  const listIndex = (key: string): number => {
+    const first = key.charCodeAt(0);
+    if (!(first >= 48 && first <= 57)) return -1;
+    const n = +key;
+    return n >>> 0 === n && n !== 4294967295 && `${n}` === key ? n : -1;
   };
 
-  /** An `HTMLCollection` (DOM 4.2.10.2): a list whose members are also
-   *  its properties by id and by name, as `document.forms.form` and
-   *  `form.elements.first` read them. Not live: a copy as it was asked
-   *  for. */
-  const collection = (items: Any[]): Any => {
-    const out = list(items);
+  /** What a list holds now: what it read last, until something could have
+   *  changed that (`treeEpoch`, `attrEpoch`). */
+  const itemsOf = (state: Any): Any[] => {
+    if (
+      state.read &&
+      state.at !== (state.readsAttributes ? attrEpoch : treeEpoch)
+    ) {
+      state.items = state.read();
+      state.at = state.readsAttributes ? attrEpoch : treeEpoch;
+    }
+    return state.items;
+  };
+
+  /** A list's supported property names (DOM 4.2.10.2), each the first
+   *  element in tree order that goes by it. */
+  const namesOf = (state: Any): Map<string, Any> => {
+    const items = itemsOf(state);
+    if (state.names && state.namesAt === attrEpoch) return state.names;
+    const names = new Map<string, Any>();
     for (const el of items) {
-      for (const key of [el.getAttribute?.('id'), el.getAttribute?.('name')]) {
-        if (key && !(key in out)) out[key] = el;
+      const id = call('attr', el._id, 'id');
+      if (typeof id === 'string' && id && !names.has(id)) names.set(id, el);
+      if (el.namespaceURI !== HTML_NS) continue;
+      const name = call('attr', el._id, 'name');
+      if (typeof name === 'string' && name && !names.has(name)) {
+        names.set(name, el);
       }
     }
-    return out;
+    state.names = names;
+    state.namesAt = attrEpoch;
+    return names;
+  };
+  /** A list's named property (Web IDL 3.9.1, "named property visibility"):
+   *  none that its own expandos or its prototypes have a property of. */
+  const visibleName = (target: Any, key: string): Any => {
+    const state = target[LIST];
+    if (!state.named || Reflect.has(target, key)) return undefined;
+    return state.named(state, key) ?? undefined;
+  };
+  const NAMED = (state: Any, key: string): Any => namesOf(state).get(key);
+
+  /**
+   * A `NodeList` or an `HTMLCollection` is a legacy platform object (Web
+   * IDL 3.9), whose indices and names are its own properties read from what
+   * it holds now, none of which a page can set. Only a proxy does that, so
+   * every list is one, over a plain object that keeps a page's expandos,
+   * with this one handler. An `Array` subclass was the shape before, and
+   * `Array.prototype.slice.call(list)` made another list of it, on which
+   * StackEdit's `cl_each`, which goes through `slice`, called itself without
+   * end. A read is some 100 ns, less than the op a page does with what it
+   * read.
+   */
+  const LIST_PROXY: Any = {
+    get(target: Any, key: Any, receiver: Any): Any {
+      if (key === LIST) return target[LIST];
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          if (item !== undefined) return item;
+        } else {
+          const named = visibleName(target, key);
+          if (named !== undefined) return named;
+        }
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    has(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          if (index < itemsOf(target[LIST]).length) return true;
+        } else if (visibleName(target, key) !== undefined) return true;
+      }
+      return key !== LIST && Reflect.has(target, key);
+    },
+    getOwnPropertyDescriptor(target: Any, key: Any): Any {
+      if (key === LIST) return undefined;
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          return item === undefined
+            ? undefined
+            : {
+                value: item,
+                writable: false,
+                enumerable: true,
+                configurable: true,
+              };
+        }
+        const named = visibleName(target, key);
+        if (named !== undefined) {
+          return {
+            value: named,
+            writable: false,
+            enumerable: false,
+            configurable: true,
+          };
+        }
+      }
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    defineProperty(target: Any, key: Any, desc: Any): boolean {
+      if (typeof key === 'string') {
+        if (listIndex(key) >= 0) return false;
+        const state = target[LIST];
+        if (
+          state.named &&
+          !Object.prototype.hasOwnProperty.call(target, key) &&
+          state.named(state, key)
+        ) {
+          return false;
+        }
+      }
+      return Reflect.defineProperty(target, key, desc);
+    },
+    set(target: Any, key: Any, value: Any, receiver: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const state = target[LIST];
+          if (state.setItem && receiver === state.self) {
+            state.setItem(index, value);
+            return true;
+          }
+          if (index < itemsOf(state).length) return false;
+        }
+      }
+      return Reflect.set(target, key, value, receiver);
+    },
+    deleteProperty(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) return index >= itemsOf(target[LIST]).length;
+        if (visibleName(target, key) !== undefined) return false;
+      }
+      return Reflect.deleteProperty(target, key);
+    },
+    preventExtensions(): boolean {
+      return false;
+    },
+    ownKeys(target: Any): Any[] {
+      const state = target[LIST];
+      const keys: Any[] = [];
+      const items = itemsOf(state);
+      for (let i = 0; i < items.length; i += 1) keys[keys.length] = `${i}`;
+      if (state.named) {
+        for (const name of namesOf(state).keys()) {
+          if (visibleName(target, name) !== undefined) {
+            keys[keys.length] = name;
+          }
+        }
+      }
+      for (const key of Reflect.ownKeys(target)) {
+        if (key !== LIST) keys[keys.length] = key;
+      }
+      return keys;
+    },
+  };
+
+  /** A list of `Proto`'s, holding `items`, or what `read` answers. */
+  const listMade = (
+    Proto: Any,
+    items: Any[],
+    read: (() => Any[]) | null,
+    readsAttributes: boolean,
+    named: ((state: Any, key: string) => Any) | null,
+  ): Any => {
+    const target = Object.create(Proto.prototype);
+    const self = new Proxy(target, LIST_PROXY);
+    target[LIST] = {
+      self,
+      items,
+      read,
+      readsAttributes,
+      // what no count ever is, so a live list reads at its first use
+      at: -1,
+      named,
+      names: null,
+      namesAt: -1,
+      setItem: null,
+    };
+    return self;
+  };
+  /** A list's state, for a method of its interface: `Object.create(list)`
+   *  has one on its prototype and is no list. */
+  const listState = (list: Any): Any => {
+    const state = list?.[LIST];
+    if (state?.self !== list) throw new TypeError('Illegal invocation');
+    return state;
+  };
+
+  class NodeList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+  }
+  class HTMLCollection {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+    namedItem(name: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return state.named(state, str(name)) ?? null;
+    }
+  }
+  /** `getClientRects()`'s (CSSOM View 7), which only a rectangle goes in. */
+  class DOMRectList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  /** An `<input type=file>`'s `files` (File API 5). */
+  class FileList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  // what an indexed getter and a `length` have, and `iterable<Node>` adds to
+  // (Web IDL 3.7.10): the array's own functions, not copies of them, each a
+  // page tells from `Array.prototype`'s by nothing
+  for (const Kind of [NodeList, HTMLCollection, DOMRectList, FileList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const name of ['entries', 'forEach', 'keys', 'values']) {
+    Object.defineProperty(NodeList.prototype, name, {
+      value: (Array.prototype as Any)[name],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  /** A `NodeList` that holds what it was made with (`querySelectorAll`). */
+  const list = (items: Any[]): Any =>
+    listMade(NodeList, items, null, false, null);
+  /** A `NodeList` that holds what `read` answers now (`childNodes`).
+   *  `readsAttributes` says that an attribute decides what is in it, and
+   *  each one that can is in `LIST_ATTRIBUTES`. */
+  const liveList = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = NodeList,
+  ): Any => listMade(Proto, [], read, readsAttributes, null);
+  /** An `HTMLCollection` that holds what it was made with. */
+  const collection = (items: Any[]): Any =>
+    listMade(HTMLCollection, items, null, false, NAMED);
+  /** An `HTMLCollection` that holds what `read` answers now. */
+  const liveCollection = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = HTMLCollection,
+    named: (state: Any, key: string) => Any = NAMED,
+  ): Any => listMade(Proto, [], read, readsAttributes, named);
+  /** A list an attribute of a node hands out, the same one each time
+   *  (`[SameObject]`, Web IDL 3.3.21). */
+  const heldList = (node: Any, key: string, make: () => Any): Any => {
+    const held = (node._lists ??= new Map());
+    let made = held.get(key);
+    if (!made) held.set(key, (made = make()));
+    return made;
   };
 
   /** A string a node is given: what a page passes, converted here. */
@@ -4920,7 +5327,9 @@ export function installDom(
       return p instanceof Element ? p : null;
     }
     get childNodes(): Any {
-      return list(wrapAll(call('kids', this._id)));
+      return heldList(this, 'childNodes', () =>
+        liveList(() => wrapAll(call('kids', this._id))),
+      );
     }
     get firstChild(): Any {
       return wrap(call('first', this._id));
@@ -5068,7 +5477,9 @@ export function installDom(
    *  have of their children. */
   class ParentNode extends Node {
     get children(): Any {
-      return list(wrapAll(call('kids', this._id, 'elements')));
+      return heldList(this, 'children', () =>
+        liveCollection(() => wrapAll(call('kids', this._id, 'elements'))),
+      );
     }
     get childElementCount(): number {
       return idList(call('kids', this._id, 'elements')).length;
@@ -5101,10 +5512,15 @@ export function installDom(
       return list(wrapAll(call('query', this._id, str(selector), true)));
     }
     getElementsByTagName(tag: Any): Any {
-      return list(wrapAll(call('byTag', this._id, str(tag))));
+      const name = str(tag);
+      return liveCollection(() => wrapAll(call('byTag', this._id, name)));
     }
     getElementsByClassName(names: Any): Any {
-      return list(wrapAll(call('byClass', this._id, str(names))));
+      const classes = str(names);
+      return liveCollection(
+        () => wrapAll(call('byClass', this._id, classes)),
+        true,
+      );
     }
   }
 
@@ -6167,7 +6583,13 @@ export function installDom(
     }
     getClientRects(): Any {
       const r = docRect(this);
-      return list(r ? [this.getBoundingClientRect()] : []);
+      return listMade(
+        DOMRectList,
+        r ? [this.getBoundingClientRect()] : [],
+        null,
+        false,
+        null,
+      );
     }
     // CSSOM View 6.1: whether it has a box, in no `content-visibility:
     // hidden`, and, where the options ask, is faded to nothing nowhere up
@@ -7517,13 +7939,24 @@ export function installDom(
       return formOf(this);
     }
     get labels(): Any {
-      const id = this.id;
-      const out: Any[] = id
-        ? Array.from(document.querySelectorAll(`label[for="${cssEscape(id)}"]`))
-        : [];
-      const around = this.closest('label');
-      if (around && !out.includes(around)) out.push(around);
-      return list(out);
+      return heldList(this, 'labels', () =>
+        liveList(() => {
+          const id = this.id;
+          const out: Any[] = id
+            ? wrapAll(
+                call(
+                  'query',
+                  document._id,
+                  `label[for="${cssEscape(id)}"]`,
+                  true,
+                ),
+              )
+            : [];
+          const around = this.closest('label');
+          if (around && !out.includes(around)) out.push(around);
+          return out;
+        }, true),
+      );
     }
     get willValidate(): boolean {
       return call('willValidate', this._id) === true;
@@ -7836,7 +8269,9 @@ export function installDom(
       call('indeterminate', this._id, !!v);
     }
     get files(): Any {
-      return list([]);
+      return heldList(this, 'files', () =>
+        listMade(FileList, [], null, false, null),
+      );
     }
     select(): void {
       if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
@@ -8028,7 +8463,7 @@ export function installDom(
     get selected(): boolean {
       const select = this.closest('select');
       return select
-        ? select.selectedOptions.includes(this)
+        ? chosenOptions(select).includes(this)
         : this.hasAttribute('selected');
     }
     set selected(v: Any) {
@@ -8056,61 +8491,164 @@ export function installDom(
     flag('disabled'),
   );
 
+  /** A `<select>`'s options (HTML 4.10.7): those among its children, and
+   *  those among its groups' children, in tree order. */
+  const optionsIn = (select: Any): Any[] => {
+    const options: Any[] = [];
+    const inHtml = (el: Any, tag: string): boolean =>
+      el.localName === tag && el.namespaceURI === HTML_NS;
+    for (const kid of wrapAll(call('kids', select._id, 'elements'))) {
+      if (inHtml(kid, 'option')) options.push(kid);
+      else if (inHtml(kid, 'optgroup')) {
+        for (const inner of wrapAll(call('kids', kid._id, 'elements'))) {
+          if (inHtml(inner, 'option')) options.push(inner);
+        }
+      }
+    }
+    return options;
+  };
+  /** The options chosen: those `selected`, as `<Html>` keeps them, and in a
+   *  list of one the last of those, or else the first that can be (HTML
+   *  4.10.7, "selectedness setting algorithm"). */
+  const chosenOptions = (select: Any): Any[] => {
+    const options = optionsIn(select);
+    const marked = options.filter((o) => o.hasAttribute('selected'));
+    if (select.multiple) return marked;
+    const chosen =
+      marked[marked.length - 1] ??
+      (Number(select.getAttribute('size')) > 1
+        ? null
+        : options.find((o) => !o.disabled));
+    return chosen ? [chosen] : [];
+  };
+
+  /** A `<select>`'s `options` (HTML 2.6.2.3), which unlike any other
+   *  collection takes an option at an index, and a length. */
+  class HTMLOptionsCollection extends HTMLCollection {
+    override get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    override set length(v: Any) {
+      const { select } = listState(this);
+      const wanted = Number(v) >>> 0;
+      if (wanted > 100000) return;
+      const options = optionsIn(select);
+      for (let i = options.length; i < wanted; i += 1) {
+        select.appendChild(select.ownerDocument.createElement('option'));
+      }
+      for (let i = options.length - 1; i >= wanted; i -= 1) options[i].remove();
+    }
+    add(element: Any, before: Any = null): void {
+      const { select } = listState(this);
+      if (
+        !(element instanceof HTMLOptionElement) &&
+        !(element instanceof HTMLOptGroupElement)
+      ) {
+        throw new TypeError(
+          "The element to add is neither an 'option' nor an 'optgroup'.",
+        );
+      }
+      if (element.contains(select)) {
+        throw new DOMException(
+          'The element to add is an ancestor of the select.',
+          'HierarchyRequestError',
+        );
+      }
+      if (typeof before === 'object' && before && !select.contains(before)) {
+        throw new DOMException(
+          'The element to add before is not in the select.',
+          'NotFoundError',
+        );
+      }
+      if (element === before) return;
+      const reference =
+        typeof before === 'object'
+          ? before
+          : (optionsIn(select)[Number(before) | 0] ?? null);
+      (reference ? reference.parentNode : select).insertBefore(
+        element,
+        reference,
+      );
+    }
+    remove(index: Any): void {
+      optionsIn(listState(this).select)[Number(index) | 0]?.remove();
+    }
+    get selectedIndex(): number {
+      return listState(this).select.selectedIndex;
+    }
+    set selectedIndex(v: Any) {
+      listState(this).select.selectedIndex = v;
+    }
+  }
+
   class HTMLSelectElement extends FormControl {
     declare multiple: boolean;
     get type(): string {
       return this.hasAttribute('multiple') ? 'select-multiple' : 'select-one';
     }
     get options(): Any {
-      const options = Array.from(this.querySelectorAll('option'));
-      const out: Any = list(options);
-      out.selectedIndex = this.selectedIndex;
-      out.add = (option: Any, before?: Any) =>
-        this.insertBefore(option, before ?? null);
-      out.remove = (i: number) => (options[i] as Any)?.remove();
-      return out;
+      return heldList(this, 'options', () => {
+        const made = liveCollection(
+          () => optionsIn(this),
+          false,
+          HTMLOptionsCollection,
+        );
+        const state = made[LIST];
+        state.select = this;
+        state.setItem = (index: number, option: Any) => {
+          if (option === null) {
+            made.remove(index);
+            return;
+          }
+          const options = optionsIn(this);
+          for (let i = options.length; i < index; i += 1) {
+            this.appendChild(this.ownerDocument.createElement('option'));
+          }
+          if (index < options.length) {
+            options[index].parentNode.replaceChild(option, options[index]);
+          } else this.appendChild(option);
+        };
+        return made;
+      });
     }
     get length(): number {
       return this.options.length;
     }
+    set length(v: Any) {
+      this.options.length = v;
+    }
     get value(): string {
-      return this.selectedOptions[0]?.value ?? '';
+      return chosenOptions(this)[0]?.value ?? '';
     }
     set value(v: Any) {
       call('setValue', this._id, str(v));
     }
-    /** The options chosen: those `selected`, as `<Html>` keeps them, and
-     *  in a list of one the last of those, or else the first that can be
-     *  (HTML 4.10.7, "selectedness setting algorithm"). */
     get selectedOptions(): Any {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      const marked = options.filter((o) => o.hasAttribute('selected'));
-      if (this.multiple) return list(marked);
-      const chosen =
-        marked[marked.length - 1] ??
-        (Number(this.getAttribute('size')) > 1
-          ? null
-          : options.find((o) => !o.disabled));
-      return list(chosen ? [chosen] : []);
+      return heldList(this, 'selectedOptions', () =>
+        liveCollection(() => chosenOptions(this), true),
+      );
     }
     get selectedIndex(): number {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      return options.indexOf(this.selectedOptions[0]);
+      return optionsIn(this).indexOf(chosenOptions(this)[0]);
     }
     set selectedIndex(i: number) {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
+      const options = optionsIn(this);
       const option = options[i];
       if (option) this.value = option.value;
       else for (const o of options) o.removeAttribute('selected');
     }
     item(i: number): Any {
-      return this.options[i] ?? null;
+      return this.options.item(i);
+    }
+    namedItem(name: Any): Any {
+      return this.options.namedItem(name);
     }
     add(option: Any, before?: Any): void {
-      this.insertBefore(
-        option,
-        typeof before === 'number' ? this.options[before] : (before ?? null),
-      );
+      this.options.add(option, before ?? null);
+    }
+    override remove(index?: Any): void {
+      if (arguments.length) this.options.remove(index);
+      else super.remove();
     }
     showPicker(): void {
       showPicker(this, 'HTMLSelectElement');
@@ -8721,9 +9259,51 @@ export function installDom(
 
   class HTMLFieldSetElement extends FormControl {
     get elements(): Any {
-      return list(Array.from(this.querySelectorAll(CONTROLS)));
+      return heldList(this, 'elements', () =>
+        liveCollection(() => wrapAll(call('query', this._id, CONTROLS, true))),
+      );
     }
   }
+
+  /** What a form's `elements` answers for a name more than one control goes
+   *  by (HTML 2.6.2.2): a radio group, and its one chosen value. */
+  class RadioNodeList extends NodeList {
+    get value(): string {
+      for (const el of itemsOf(listState(this))) {
+        if (el.localName === 'input' && el.type === 'radio' && el.checked) {
+          return el.value;
+        }
+      }
+      return '';
+    }
+    set value(v: Any) {
+      const value = str(v);
+      for (const el of itemsOf(listState(this))) {
+        if (
+          el.localName === 'input' &&
+          el.type === 'radio' &&
+          el.value === value
+        ) {
+          el.checked = true;
+          return;
+        }
+      }
+    }
+  }
+  class HTMLFormControlsCollection extends HTMLCollection {}
+  /** The control a name reaches, or the controls where it reaches several. */
+  const CONTROL_NAMED = (state: Any, key: string): Any => {
+    if (!key) return null;
+    const going = (): Any[] =>
+      itemsOf(state).filter(
+        (el) =>
+          call('attr', el._id, 'id') === key ||
+          call('attr', el._id, 'name') === key,
+      );
+    const found = going();
+    if (found.length < 2) return found[0] ?? null;
+    return liveList(going, true, RadioNodeList);
+  };
 
   const CONTROLS = 'button,fieldset,input,object,output,select,textarea';
 
@@ -8732,16 +9312,23 @@ export function installDom(
      *  that name it by its `form` attribute, in tree order — an image
      *  button not among them (HTML 4.10.18.1). */
     get elements(): Any {
-      const root = this.getRootNode();
-      const scope = root.querySelectorAll ? root : this;
-      const own = (
-        Array.from(scope.querySelectorAll(CONTROLS)) as Any[]
-      ).filter(
-        (el) =>
-          el.form === this &&
-          !(el.localName === 'input' && el.type === 'image'),
+      return heldList(this, 'elements', () =>
+        liveCollection(
+          () => {
+            const root = this.getRootNode();
+            const scope = root.querySelectorAll ? root : this;
+            const controls = wrapAll(call('query', scope._id, CONTROLS, true));
+            return controls.filter(
+              (el) =>
+                el.form === this &&
+                !(el.localName === 'input' && el.type === 'image'),
+            );
+          },
+          true,
+          HTMLFormControlsCollection,
+          CONTROL_NAMED,
+        ),
       );
-      return collection(own);
     }
     get length(): number {
       return this.elements.length;
@@ -8781,7 +9368,9 @@ export function installDom(
       if (dispatch(this, ev)) call('reset', this._id);
     }
     checkValidity(): boolean {
-      return this.elements.every((el: Any) => el.checkValidity?.() ?? true);
+      return Array.from(this.elements as Any[]).every(
+        (el) => el.checkValidity?.() ?? true,
+      );
     }
     reportValidity(): boolean {
       return !!call('validate', this._id, 0);
@@ -12373,7 +12962,7 @@ export function installDom(
 
   /** An element's HTML children of the names given. */
   const childrenNamed = (el: Any, names: string[]): Any[] =>
-    Array.from(el.children as Any[]).filter(
+    wrapAll(call('kids', el._id, 'elements')).filter(
       (k) => k.namespaceURI === HTML_NS && names.includes(k.localName),
     );
   const indexError = (index: number): DOMException =>
@@ -12482,7 +13071,9 @@ export function installDom(
       this.tFoot?.remove();
     }
     get tBodies(): Any {
-      return collection(childrenNamed(this, ['tbody']));
+      return heldList(this, 'tBodies', () =>
+        liveCollection(() => childrenNamed(this, ['tbody'])),
+      );
     }
     createTBody(): Any {
       const bodies = childrenNamed(this, ['tbody']);
@@ -12495,21 +13086,25 @@ export function installDom(
     /** The rows of the head, then the body's and the table's own, then
      *  the foot's, each in tree order. */
     get rows(): Any {
-      const kids = Array.from(this.children) as Any[];
-      const out: Any[] = [];
-      for (const k of kids) {
-        if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
-      }
-      for (const k of kids) {
-        if (k.localName === 'tr') out.push(k);
-        else if (k.localName === 'tbody') {
-          out.push(...childrenNamed(k, ['tr']));
-        }
-      }
-      for (const k of kids) {
-        if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
-      }
-      return collection(out);
+      return heldList(this, 'rows', () =>
+        liveCollection(() => {
+          const kids = wrapAll(call('kids', this._id, 'elements'));
+          const out: Any[] = [];
+          for (const k of kids) {
+            if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
+          }
+          for (const k of kids) {
+            if (k.localName === 'tr') out.push(k);
+            else if (k.localName === 'tbody') {
+              out.push(...childrenNamed(k, ['tr']));
+            }
+          }
+          for (const k of kids) {
+            if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
+          }
+          return out;
+        }),
+      );
     }
     insertRow(index?: Any): Any {
       const at = long(index, -1);
@@ -12535,7 +13130,9 @@ export function installDom(
   }
   class HTMLTableSectionElement extends HTMLElement {
     get rows(): Any {
-      return collection(childrenNamed(this, ['tr']));
+      return heldList(this, 'rows', () =>
+        liveCollection(() => childrenNamed(this, ['tr'])),
+      );
     }
     insertRow(index?: Any): Any {
       return insertAt(this, this.rows, long(index, -1), 'tr');
@@ -12562,10 +13159,12 @@ export function installDom(
       )) {
         return -1;
       }
-      return Array.from(parent.rows).indexOf(this);
+      return Array.prototype.indexOf.call(parent.rows, this);
     }
     get cells(): Any {
-      return collection(childrenNamed(this, ['td', 'th']));
+      return heldList(this, 'cells', () =>
+        liveCollection(() => childrenNamed(this, ['td', 'th'])),
+      );
     }
     insertCell(index?: Any): Any {
       return insertAt(this, this.cells, long(index, -1), 'td');
@@ -12612,15 +13211,34 @@ export function installDom(
   // not; a sheet a page constructs draws nothing, since nothing here
   // adopts one.
 
-  class CSSRuleList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class CSSRuleList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
   }
-  class StyleSheetList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class StyleSheetList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
     }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  for (const Kind of [CSSRuleList, StyleSheetList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
   }
 
   /** Where a rule's block opens: its first `{` that no backslash
@@ -13382,11 +14000,11 @@ export function installDom(
     return rule;
   };
   const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
-    const list = new CSSRuleList();
+    const rules: Any[] = [];
     for (const text of texts) {
-      if (!droppedRule(text)) list.push(ruleOf(text, sheet, parent));
+      if (!droppedRule(text)) rules.push(ruleOf(text, sheet, parent));
     }
-    return list;
+    return listMade(CSSRuleList, rules, null, false, null);
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
@@ -14428,12 +15046,15 @@ export function installDom(
       setAdopted(adoptedSheets, sheets, 'Document', adopt);
     }
     get styleSheets(): Any {
-      const list = new StyleSheetList();
-      const ids = String(call('sheets', this._id));
-      for (const id of ids ? ids.split(',') : []) {
-        list.push(sheetOf(wrap(Number(id))));
-      }
-      return list;
+      return heldList(this, 'styleSheets', () =>
+        listMade(
+          StyleSheetList,
+          [],
+          () => wrapAll(call('sheets', this._id)).map(sheetOf),
+          true,
+          null,
+        ),
+      );
     }
     get currentScript(): Any {
       return this._current;
@@ -14521,18 +15142,27 @@ export function installDom(
       return this.documentElement;
     }
     get forms(): Any {
-      return collection(Array.from(this.getElementsByTagName('form')));
+      return heldList(this, 'forms', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'form'))),
+      );
     }
     get images(): Any {
-      return collection(Array.from(this.getElementsByTagName('img')));
+      return heldList(this, 'images', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'img'))),
+      );
     }
     get links(): Any {
-      return collection(
-        Array.from(this.querySelectorAll('a[href],area[href]')),
+      return heldList(this, 'links', () =>
+        liveCollection(
+          () => wrapAll(call('query', this._id, 'a[href],area[href]', true)),
+          true,
+        ),
       );
     }
     get scripts(): Any {
-      return this.getElementsByTagName('script');
+      return heldList(this, 'scripts', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'script'))),
+      );
     }
     get doctype(): Any {
       for (const kid of this.childNodes) if (kid.nodeType === 10) return kid;
@@ -14552,7 +15182,11 @@ export function installDom(
       return wrap(Number(call('byId', str(id), this._id)));
     }
     getElementsByName(name: Any): Any {
-      return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
+      const selector = `[name="${cssEscape(str(name))}"]`;
+      return liveList(
+        () => wrapAll(call('query', this._id, selector, true)),
+        true,
+      );
     }
     createElement(tag: Any, options?: Any): Any {
       // an XML document keeps the name's case, and makes it in no
@@ -14979,7 +15613,9 @@ export function installDom(
      *  document draws, the box of the element it is in. */
     getClientRects(): Any {
       const flat = String(call('rangeRects', this._id));
-      if (!flat) return list([this._elementRect()]);
+      if (!flat) {
+        return listMade(DOMRectList, [this._elementRect()], null, false, null);
+      }
       const n = flat.split(',').map(Number);
       const v = viewport();
       const out: Any[] = [];
@@ -14993,7 +15629,7 @@ export function installDom(
           ),
         );
       }
-      return list(out);
+      return listMade(DOMRectList, out, null, false, null);
     }
     getBoundingClientRect(): Any {
       const rects = Array.from(this.getClientRects() as Iterable<Any>);
@@ -20904,19 +21540,27 @@ export function installDom(
   const inRange = (range: Any, key: Any): boolean =>
     !range || range.includes(key);
 
-  class DOMStringList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class DOMStringList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
     contains(name: Any): boolean {
-      return this.includes(str(name));
+      return itemsOf(listState(this)).includes(str(name));
     }
   }
-  const stringList = (names: Iterable<string>): Any => {
-    const list = new DOMStringList();
-    for (const name of [...names].sort()) list.push(name);
-    return list;
-  };
+  Object.defineProperty(DOMStringList.prototype, Symbol.iterator, {
+    value: Array.prototype.values,
+    writable: true,
+    configurable: true,
+  });
+  const stringList = (names: Iterable<string>): Any =>
+    listMade(DOMStringList, [...names].sort(), null, false, null);
 
   class IDBVersionChangeEvent extends Event {
     readonly oldVersion: number;
@@ -27766,7 +28410,12 @@ export function installDom(
     DOMStringMap,
     ...GEOMETRY.classes,
     NodeList,
+    RadioNodeList,
     HTMLCollection,
+    HTMLOptionsCollection,
+    HTMLFormControlsCollection,
+    DOMRectList,
+    FileList,
     URL,
     URLSearchParams,
     Headers,
@@ -28751,6 +29400,8 @@ export function installDom(
     Object.defineProperty(G, name, {
       value: () => {
         taskEpoch += 1;
+        treeEpoch += 1;
+        attrEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();
@@ -28789,6 +29440,8 @@ export function installDom(
     document._current = outerScripts.length ? outerScripts.pop() : null;
     return true;
   });
+  // a module is about to run, which a task is: it enters through nothing else
+  entry('__task', () => true);
   // the parser put nodes in the document since a script ran — the host
   // has noted them for the page's observers (`parserInserted`), and the
   // entry has run what its custom elements owe. A `<body>` among them set

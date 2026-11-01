@@ -770,6 +770,7 @@ export class ScriptEngine {
     // a top-level `await` is in.
     if (!evaluated && module.status !== 'linked') return module.namespace;
     if (!evaluated) {
+      this.call('__task', null);
       const mark = this._enter();
       try {
         evaluated = module.evaluate({ timeout: this._ceiling });
@@ -861,6 +862,7 @@ export class ScriptEngine {
   private _evaluate(module: PageModule): boolean {
     // one an `import()` has evaluated already ran then
     if (this._evaluated.has(module)) return true;
+    this.call('__task', null);
     const mark = this._enter();
     let done: Promise<void>;
     try {
