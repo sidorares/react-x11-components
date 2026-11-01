@@ -5514,6 +5514,26 @@ reach that half. **What a pseudo-element runs and starts reads
 `generatedStyle`**, never `box.style`, which has less than it does: its
 animations, and what a transition starts from.
 
+**A `calc-size()` reads as it was written and is laid out from numbers**
+(`css/calc-size.ts`). A style keeps each size's keyword and length as it
+would for any size, and beside them a `SizeOf` (`widthSize`, `minWidthSize`,
+`flexBasisSize` and their kin): `size` scaled and `plus` added, or the
+calculation itself where a function has `size` in it (`sizeAt`), and always
+its text, since a page reads the tree it wrote, which no two numbers say. A
+form that needs no box has its length in the size's field, and the `SizeOf`
+says only how it reads, so **anything that works a size out from a `SizeOf`
+asks that the field is `auto`** (`sizedWidth`, `finishHeight`), and
+**anything new that takes a size from a keyword does what `sizedBy` makes of
+it**, or `min-width: calc-size(fit-content, size + 7px)` comes out as the
+keyword alone. A check that a box's width is simple asks for the `SizeOf` as
+well as the keyword (`hasWidths`, `exactContribution`, `readsPercentBase`):
+`auto` beside a `SizeOf` is no `auto`. `test/html/calc-sizes.ts` is
+Chromium's answers over one document; regenerate it, do not write it by
+hand, and leave out of it a box that comes out right whatever the code
+does. A height's limit of a keyword is the content's, which only
+`finishHeight` has, so `clampHeight` is handed it there and answers without
+that limit everywhere else.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run

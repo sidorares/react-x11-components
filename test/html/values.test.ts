@@ -38,6 +38,11 @@ import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
 import {
+  CALC_SIZE_BOXES,
+  CALC_SIZE_DOCUMENT,
+  CALC_SIZE_READS,
+} from './calc-sizes.js';
+import {
   boxOf,
   drawnText,
   findById,
@@ -3194,4 +3199,45 @@ test('two custom property sets are the same where every link of them is, however
     assert.strictEqual(sameValue(d, e), false);
     assert.strictEqual(sameValue({ custom: a }, { custom: b }), true);
   }
+});
+
+test('calc-size() reads as Chromium reads it, and is taken where it takes it', async () => {
+  const { node } = await render(CALC_SIZE_DOCUMENT, 800);
+  const el = view(node);
+  const wrong: string[] = [];
+  CALC_SIZE_READS.forEach(([size, value, kept, computed], i) => {
+    const read = el.computedStyle(findById(el.document, `r${i}`)!)!;
+    if (read[size] !== computed) {
+      wrong.push(`${size}: ${value} reads ${read[size]}, not ${computed}`);
+    }
+    // a declaration the size does not take leaves `el.style` as it was
+    const specified = specifiedValue(size, value);
+    if (specified !== (kept === '' ? null : kept)) {
+      wrong.push(`${size}: ${value} is kept as ${specified}, not ${kept}`);
+    }
+  });
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('calc-size() sizes every kind of box as Chromium does', async () => {
+  const { node } = await render(CALC_SIZE_DOCUMENT, 800);
+  const el = view(node);
+  const size = (id: string): string => {
+    const element = findById(el.document, id);
+    const rect = element && el.elementRect(element);
+    return rect ? `${rect.width}×${rect.height}` : 'none';
+  };
+  const wrong: string[] = [];
+  CALC_SIZE_BOXES.forEach(([kind, style, box, around], i) => {
+    const want = (of: readonly [number, number]) => `${of[0]}×${of[1]}`;
+    if (size(`b${i}`) !== want(box)) {
+      wrong.push(`${kind} ${style}: ${size(`b${i}`)}, not ${want(box)}`);
+    }
+    if (around && size(`o${i}`) !== want(around)) {
+      wrong.push(
+        `${kind} ${style}: around it ${size(`o${i}`)}, not ${want(around)}`,
+      );
+    }
+  });
+  assert.deepStrictEqual(wrong, []);
 });

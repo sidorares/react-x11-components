@@ -33,6 +33,7 @@ import type { Len } from '../css/values.js';
 import type {
   ComputedStyle,
   ContentSize,
+  SizeOf,
   GridTemplate,
   GridTrack,
   SubgridNames,
@@ -46,6 +47,8 @@ import {
   USED_HEIGHT,
   centreButton,
   clampHeight,
+  sizedBy as sizeFrom,
+  sizedWidth,
   clampWidth,
   contained,
   exactMinContent,
@@ -226,6 +229,9 @@ export function layoutGrid(
     // a width of its content's is that at its narrowest and its widest
     if (style.widthKeyword === 'min-content') widest = narrowest;
     else if (style.widthKeyword === 'max-content') narrowest = widest;
+    // and a `calc-size()` of that, a percentage in it of nothing
+    widest = sizedWidth(box, widest, NaN);
+    narrowest = sizedWidth(box, narrowest, NaN);
     // within its own least and greatest widths
     const [least, most] = ownWidths(box, narrowest, widest);
     item.max = Math.min(most, Math.max(least, widest)) + margins;
@@ -463,9 +469,21 @@ export function layoutGrid(
       // nor a ratio, and is stretched by `stretch`, the grid's or its own
       // (6.2, and CSS Box Alignment 3, 6.1).
       const stretched = tall - child.marginTop - child.marginBottom;
+      const inArea = Math.max(stretched, child.verticalExtra);
+      const sized = child.style.heightSize;
+      // and a `calc-size()` of `auto` is of that height, which it may run
+      // past as it may anything
       const height = clampHeight(
         child,
-        Math.max(stretched, child.verticalExtra),
+        sized
+          ? sizeFrom(
+              sized,
+              inArea,
+              child.verticalExtra,
+              child.style.boxSizing,
+              tall,
+            )
+          : inArea,
       );
       // and one with a ratio that is not stretched across is as wide as
       // that height makes it (CSS Sizing 4, 5.1)
@@ -1411,6 +1429,9 @@ function layoutItem(
     const [narrowest, widest] = content();
     width = Math.min(widest, Math.max(narrowest, room));
   }
+  if (style.width === AUTO && through === null) {
+    width = sizedWidth(child, width, area);
+  }
   if (child.kind !== 'replaced') {
     // a table stretched across is as wide as its area, which in a block's
     // flow it would shrink from to its columns (`STRETCHED_ACROSS`)
@@ -1740,7 +1761,14 @@ function heightBeforeRows(box: Box, rows: number): number | null {
     !autoMargins(box, 'y').some(Boolean)
   ) {
     const room = rows - box.marginTop - box.marginBottom;
-    return clampHeight(box, Math.max(room, box.verticalExtra));
+    const height = Math.max(room, box.verticalExtra);
+    const sized = style.heightSize;
+    return clampHeight(
+      box,
+      sized
+        ? sizeFrom(sized, height, box.verticalExtra, style.boxSizing, rows)
+        : height,
+    );
   }
   return null;
 }
@@ -1781,13 +1809,20 @@ function ownWidths(
 ): [number, number] {
   const style = box.style;
   const extra = style.boxSizing === 'border-box' ? 0 : box.horizontalExtra;
-  const keyword = (k: ContentSize | null): number | null =>
-    k === 'min-content' ? narrowest : k === 'max-content' ? widest : null;
+  const keyword = (
+    k: ContentSize | null,
+    sized: SizeOf | null,
+  ): number | null => {
+    const width =
+      k === 'min-content' ? narrowest : k === 'max-content' ? widest : null;
+    if (width === null || !sized) return width;
+    return sizeFrom(sized, width, box.horizontalExtra, style.boxSizing, NaN);
+  };
   const least =
-    keyword(style.minWidthKeyword) ??
+    keyword(style.minWidthKeyword, style.minWidthSize) ??
     (typeof style.minWidth === 'number' ? style.minWidth + extra : 0);
   const most =
-    keyword(style.maxWidthKeyword) ??
+    keyword(style.maxWidthKeyword, style.maxWidthSize) ??
     (typeof style.maxWidth === 'number' ? style.maxWidth + extra : Infinity);
   return [least, Math.max(least, most)];
 }

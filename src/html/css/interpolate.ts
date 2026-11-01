@@ -26,6 +26,7 @@ import type {
   ClipPath,
   ComputedStyle,
   CornerShapes,
+  SizeOf,
 } from './style.js';
 import type { ShapeFunction } from './shape-function.js';
 import { halfCorner, shapeAtHalfCorner } from './corner-shape.js';
@@ -80,6 +81,14 @@ export function interpolateField(
       return typeof a === 'number' && typeof b === 'number'
         ? clamp(a + (b - a) * q, 0, 1)
         : undefined;
+    case 'widthSize':
+    case 'heightSize':
+    case 'minWidthSize':
+    case 'maxWidthSize':
+    case 'minHeightSize':
+    case 'maxHeightSize':
+    case 'flexBasisSize':
+      return mixSizes(a as SizeOf | null, b as SizeOf | null, q);
     case 'filter':
       return interpolateFilters(
         a as FilterFunction[] | null,
@@ -191,6 +200,19 @@ function interpolateShadows(
     });
   }
   return out;
+}
+
+/** Two `calc-size()`s `q` of the way between, as the sums they are: a
+ *  calculation no sum says goes over at the half-way point. */
+function mixSizes(
+  a: SizeOf | null,
+  b: SizeOf | null,
+  q: number,
+): SizeOf | undefined {
+  if (!a || !b || a.calc || b.calc) return undefined;
+  const plus = mix(a.plus, b.plus, q);
+  if (plus === undefined) return undefined;
+  return { size: a.size + (b.size - a.size) * q, plus: plus as Len };
 }
 
 /**

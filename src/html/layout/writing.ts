@@ -163,6 +163,10 @@ export function framedStyle(
   out.maxHeightKeyword = style.maxWidthKeyword;
   out.widthSize = style.heightSize;
   out.heightSize = style.widthSize;
+  out.minWidthSize = style.minHeightSize;
+  out.minHeightSize = style.minWidthSize;
+  out.maxWidthSize = style.maxHeightSize;
+  out.maxHeightSize = style.maxWidthSize;
   out.containIntrinsicWidth = style.containIntrinsicHeight;
   out.containIntrinsicHeight = style.containIntrinsicWidth;
   out.overflowX = style.overflowY;
