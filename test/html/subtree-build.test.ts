@@ -1217,7 +1217,9 @@ const PROBE_SHEET = `body { margin: 0; font-size: 14px }
 .pc { margin: 0 10%; padding: 0 5% }
 .l { margin: 6px 0 }
 .h { padding: 3px; border: 1px solid #000 }
-.nw { white-space: nowrap }`;
+.nw { white-space: nowrap }
+.vr { writing-mode: vertical-rl; height: 70px }
+.vl { writing-mode: vertical-lr; height: 70px }`;
 
 const PROBE_CLASSES = [
   'row',
@@ -1248,10 +1250,15 @@ const PROBE_WORDS = [
   'eight nine ten eleven twelve',
 ];
 
-function probed(next: () => number, depth: number): Element {
+function probed(
+  next: () => number,
+  depth: number,
+  /** What an element may be classed as. */
+  names: readonly string[] = PROBE_CLASSES,
+): Element {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
-  const classes = PROBE_CLASSES.filter(() => next() < 0.1);
+  const classes = names.filter(() => next() < 0.1);
   const el = createElement(
     pick(['div', 'p', 'section']),
     classes.length ? { class: classes.join(' ') } : {},
@@ -1261,8 +1268,9 @@ function probed(next: () => number, depth: number): Element {
   const count = depth > 2 ? 1 : 1 + Math.floor(next() * (depth ? 3 : 5));
   for (let i = 0; i < count; i += 1) {
     const roll = next();
-    if (depth < 3 && roll < 0.55) appendChild(el, probed(next, depth + 1));
-    else if (roll < 0.7) {
+    if (depth < 3 && roll < 0.55) {
+      appendChild(el, probed(next, depth + 1, names));
+    } else if (roll < 0.7) {
       appendChild(
         el,
         createElement(pick(['span', 'b']), {}, [createText(pick(PROBE_WORDS))]),
@@ -1273,7 +1281,11 @@ function probed(next: () => number, depth: number): Element {
 }
 
 /** A change to a document of `probed` elements, done, and its records. */
-function probedChange(next: () => number, body: Element): HtmlChange[] {
+function probedChange(
+  next: () => number,
+  body: Element,
+  names: readonly string[] = PROBE_CLASSES,
+): HtmlChange[] {
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const all = [body, ...elementsUnder(body)];
@@ -1281,7 +1293,7 @@ function probedChange(next: () => number, body: Element): HtmlChange[] {
   const kind = Math.floor(next() * 5);
   if (kind === 0 || !inside.length) {
     const parent = pick(all);
-    const child = probed(next, 2);
+    const child = probed(next, 2, names);
     const kids = parent.children.filter((n) => (n as Element).attribs);
     if (kids.length && next() < 0.5) DomUtils.prepend(pick(kids), child);
     else appendChild(parent, child);
@@ -1314,7 +1326,7 @@ function probedChange(next: () => number, body: Element): HtmlChange[] {
     const target = pick(all);
     const was = target.attribs.class ?? null;
     const has = new Set((was ?? '').split(' ').filter(Boolean));
-    const c = pick(PROBE_CLASSES);
+    const c = pick(names);
     if (has.has(c)) has.delete(c);
     else has.add(c);
     target.attribs.class = [...has].join(' ');
@@ -1359,7 +1371,13 @@ metric(
       const next = random(seed * 7919);
       const body = createElement('body', {});
       const blocks = 3 + Math.floor(next() * 4);
-      for (let i = 0; i < blocks; i += 1) appendChild(body, probed(next, 0));
+      // and flows in another writing mode, in every third: a probe takes
+      // no block for what it came to in such a tree, which only a tree
+      // that holds one can say
+      const names = seed % 3 ? PROBE_CLASSES : [...PROBE_CLASSES, 'vr', 'vl'];
+      for (let i = 0; i < blocks; i += 1) {
+        appendChild(body, probed(next, 0, names));
+      }
       const markup = DomUtils.getOuterHTML(body as never);
       const { result, node } = await render(
         `<!doctype html><html><head><style>${PROBE_SHEET}</style></head>${markup}</html>`,
@@ -1372,7 +1390,7 @@ metric(
         (e) => e.name === 'body',
       )!;
       for (let step = 0; step < 8; step += 1) {
-        el.touchDocument(probedChange(next, bodyEl));
+        el.touchDocument(probedChange(next, bodyEl, names));
         await act();
         const kept = treeLines(internals._tree);
         // the whole document built again, laid out with no block that
@@ -3566,6 +3584,55 @@ metric(
       at < 0 && moved.length === whole.length,
       `line ${at}\nkept  ${moved[at]}\nwhole ${whole[at]}`,
     );
+    result.unmount();
+  },
+);
+
+metric(
+  'a block in a vertical-lr frame is laid out with the frame, since what reads its lines reads them as they were before they were put back',
+  async () => {
+    // Kept alone, a block is where it was left, its lines in the order
+    // `reflectFrame` put them in: an inline-block around it stands on the
+    // last of them, which is its first down the frame by then, and comes out
+    // somewhere a layout of all new boxes does not put it. What holds a
+    // root come to another width is the one way a frame is laid out and
+    // what it holds is as wide as it was
+    const sections = '<section><p>a section</p></section>'.repeat(12);
+    const { node, result } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        'p { margin: 0 } .v { writing-mode: vertical-lr; height: 120px }' +
+        '.ib { display: inline-block; inline-size: 60px }</style></head><body>' +
+        '<section id="s"><div class="v" id="f">word <span class="ib"><p>one' +
+        ' two three four five six seven eight nine</p></span> more</div>' +
+        `</section>${sections}</body></html>`,
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const target = elementsUnder(el.document as unknown as Element).find(
+      (e) => e.attribs.id === 's',
+    )!;
+    for (const width of ['200px', '160px']) {
+      const was = target.attribs.style ?? null;
+      target.attribs.style = `width: ${width}`;
+      el.touchDocument([
+        { type: 'attributes', target, attributeName: 'style', oldValue: was },
+      ]);
+      await act();
+      const lines = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      const whole = treeLines(internals._tree);
+      const at = lines.findIndex((one, i) => one !== whole[i]);
+      assert.ok(
+        at < 0 && lines.length === whole.length,
+        `${width}: line ${at}\nkept  ${lines[at]}\nwhole ${whole[at]}`,
+      );
+    }
     result.unmount();
   },
 );

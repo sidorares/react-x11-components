@@ -2761,9 +2761,11 @@ new a layout keeps on a box that names a place in the document's text moves
 with the text** (`shiftLines`, which moves a kept block's lines and their
 span maps): a build that lengthens the text before a block a layout keeps
 had left its lines pointing at the old text, and an inline box's fragments
-were found on no line. A float or a box out of the flow holds the space
-before it from its line's end only where it pushed text (`after`'s `held`),
-so **a root or a tail in one whose text comes to some, or to none, is
+were found on no line. A line with no text on it says 0, which is no place
+(`firstPlaced`), and stays 0; `treeLines` holds every line's place and what
+its span map answers to a whole build's. A float or a box out of the flow
+holds the space before it from its line's end only where it pushed text
+(`after`'s `held`), so **a root or a tail in one whose text comes to some, or to none, is
 refused where a line may have begun before the box** (`mayFollowSpace`):
 the space outside it is another. **A drawing kept from before is
 drawn again where a chunk brings an id or writes into a drawing**
