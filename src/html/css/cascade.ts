@@ -66,6 +66,7 @@ import {
 import {
   asciiLower,
   escapeEnd,
+  familyList,
   mediaMatches,
   parseMediaQuery,
   readIdent,
@@ -120,7 +121,6 @@ import {
   settleClamp,
   copyStyle,
   decorate,
-  familyList,
   inherit,
   zoomedBy,
   initialOne,
