@@ -5451,6 +5451,23 @@ it (the UA's look is a paired default, CSS Pseudo 4, 3.3.1): the two are
 asked different questions, and one built on the other came out with
 `::target-text`'s `Mark` on every element under the root.
 
+**A `::before` or an `::after` of `display: contents` is an inline box
+nobody can see** (`contentsStyle`): the inherited half of its style and its
+`content`, which is what Blink and WebKit make of one. It is not nothing, for
+three reasons, each found by a probe of all three engines. An empty one is an
+item of a flex box and takes a cell of a grid, where text handed to the box
+around it would be no item. A line is as tall as the inline box's font and
+line height say: text handed on is what a `display: contents` _element's_ is,
+and its `line-height: 50px` comes to 20 here where it is 50 in Chrome. And
+everything that finds generated content finds it by its box (`GENERATED_FROM`,
+`COUNTER_READS`). What the inherited half leaves out is what such a
+pseudo-element has no box for: `position`, `float`, padding, a transform, its
+opacity and, since a box is what counts (CSS Lists 3, 4.5), its counters.
+`decorate` does nothing for `display: contents`, or its own decorations would
+reach that half. **What a pseudo-element runs and starts reads
+`generatedStyle`**, never `box.style`, which has less than it does: its
+animations, and what a transition starts from.
+
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
 text is one batch of glyphs, so the fade of the inline boxes around a run

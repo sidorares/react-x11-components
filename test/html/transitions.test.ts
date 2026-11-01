@@ -969,3 +969,54 @@ const LOOK = {
   controlBorder: 1,
   controlRadius: 4,
 };
+
+metric(
+  'a ::before of display: contents runs its transitions and its animations from its own style',
+  async (t) => {
+    // what its text is set in is less than its style, and a transition is
+    // from its style: from the box's, the opacity it has no box to fade would
+    // start from 1 at every build
+    const doc = await holding(
+      t,
+      '<style>@keyframes f { from { color: #000000 } to { color: #0000ff } }' +
+        '#a::before { content: "x"; display: contents; color: #000000;' +
+        ' opacity: .5; transition: color 100ms linear, opacity 100ms linear }' +
+        '#a.on::before { color: #ff0000 }' +
+        '#b::before { content: "y"; display: contents;' +
+        ' animation: f 100ms linear infinite }</style>' +
+        '<p id="a">a</p><p id="b">b</p>',
+    );
+    const generated = (id: string) => {
+      type Generated = { pseudo: string | null; children: Generated[] };
+      const box = boxOf(doc.el, id) as unknown as Generated;
+      return box.children.find((c) => c.pseudo === 'before') as unknown as {
+        style: ComputedStyle;
+      };
+    };
+    const running = () =>
+      doc.el
+        .cssAnimationsOf(null, true)
+        .map((a) => [a.pseudo, a.name, a.duration, a.iterations]);
+    assert.deepStrictEqual(running(), [['::before', 'f', 100, Infinity]]);
+    await doc.at(50);
+    // somewhere between its ends, a frame's worth from half way
+    const part = (color: string, at: number) =>
+      Number.parseInt(color.slice(at, at + 2), 16);
+    const halfWay = (value: number) => value > 96 && value < 160;
+    assert.ok(halfWay(part(generated('b').style.color, 5)));
+    const a = findById(doc.el.document, 'a')!;
+    a.attribs.class = 'on';
+    doc.el.touchDocument();
+    await doc.at(100);
+    assert.ok(halfWay(part(generated('a').style.color, 1)));
+    // from the box's style it would be fading from 1, at every build
+    const timeline = (doc.el as unknown as { _timeline: AnimationTimeline })
+      ._timeline;
+    assert.deepStrictEqual(
+      [...timeline.transitsOf(a, 'before')!.keys()],
+      ['color'],
+    );
+    await doc.at(300);
+    assert.strictEqual(generated('a').style.color, '#ff0000');
+  },
+);

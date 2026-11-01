@@ -909,6 +909,18 @@ export const GENERATED_FROM = new WeakMap<Box, Element>();
  *  with no box of its element's to be found under. */
 export const GENERATED_ON = new WeakSet<Element>();
 
+/** A `::before`'s or an `::after`'s own style where it is `display:
+ *  contents`, by the box its content is in (`contentsStyle`), whose own
+ *  style is the inherited half of this one. */
+const UNBOXED = new WeakMap<Box, ComputedStyle>();
+
+/** The style of the pseudo-element a box was generated for, which is what
+ *  runs its animations and starts its transitions: the box's own, but where
+ *  that is less than the pseudo-element's (`UNBOXED`). */
+export function generatedStyle(box: Box | null): ComputedStyle | null {
+  return box && (UNBOXED.get(box) ?? box.style);
+}
+
 /** What came before a block among its parent's children (`ranBefore`). */
 const RAN_INLINE = 1;
 const RAN_OUT = 2;
@@ -4792,8 +4804,12 @@ class Builder {
     elementStyle: ComputedStyle,
     into: Box,
   ): void {
-    const style = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
-    if (!style || style.display === 'none') return;
+    const own = this._options.cascade.pseudoStyleFor(el, which, elementStyle);
+    if (!own || own.display === 'none') return;
+    const style =
+      own.display === 'contents'
+        ? contentsStyle(own, this._options.cascade.initial)
+        : own;
     if (isRelative(style)) {
       this._relative = true;
       if (style.display === 'inline' && isOffset(style)) {
@@ -4828,6 +4844,7 @@ class Builder {
     this._counterChanges(style, null);
     const box = new Box(boxKindFor(style.display), null, style);
     box.pseudo = which;
+    if (style !== own) UNBOXED.set(box, own);
     into.append(box);
     // its images are its element's to ask for: a `::after` with no content
     // but a background, which designs hang a picture on, drew nothing
@@ -5018,7 +5035,15 @@ class Builder {
       st: ComputedStyle,
     ): void => {
       const own = cascade.pseudoStyleFor(el, which, st);
-      if (own && own.display !== 'none' && !resets(own)) note(own);
+      // one of `display: contents` has no box to count with (`contentsStyle`)
+      if (
+        own &&
+        own.display !== 'none' &&
+        own.display !== 'contents' &&
+        !resets(own)
+      ) {
+        note(own);
+      }
     };
     /** The elements from `from` on of a parent, and what is in them: a
      *  reset of the counter in one is a counter of its own, and a later
@@ -6224,6 +6249,29 @@ function wrappersAround(
     return 1;
   }
   return kind === 'table-row' ? 2 : kind === 'table-cell' ? 3 : 0;
+}
+
+/**
+ * What a `::before` or an `::after` of `display: contents` sets its content
+ * in: an inline box of the inherited half of its style. Such a pseudo-element
+ * has no box of its own (CSS Display 3, 2.5), and nothing of this one can be
+ * seen, which is what Blink and WebKit make of one. What is not inherited is
+ * what it has no box for: its padding, background, `float` and `position`,
+ * and its counters, since an element with no box cannot count (CSS Lists 3,
+ * 4.5). What is inherited is what its text is set in, its line height among
+ * it. It is a box, and not text handed to what is around it, because it is
+ * an item of a flex box or a grid even with no content at all, in all three
+ * engines, and because everything that finds generated content finds it by
+ * its box (`GENERATED_FROM`, `COUNTER_READS`).
+ */
+function contentsStyle(
+  style: ComputedStyle,
+  initial: ComputedStyle,
+): ComputedStyle {
+  const box = inherit(style, initial);
+  box.display = 'inline';
+  box.content = style.content;
+  return box;
 }
 
 function boxKindFor(display: ComputedStyle['display']): BoxKind {

@@ -9581,9 +9581,12 @@ function decorationLength(
  * colour. A float, an absolutely positioned box and an atomic inline box —
  * an inline block, table or flex box — take none from above, and `none`
  * takes none away. After `blockify`, whose `float` and `position` it reads.
+ * `display: contents` has no box to decorate, nor to stop what comes from
+ * above: what it holds takes that as it comes, and none of its own.
  */
 export function decorate(style: ComputedStyle): void {
   const display = style.display;
+  if (display === 'contents') return;
   if (
     style.float !== 'none' ||
     style.position === 'absolute' ||

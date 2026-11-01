@@ -3776,9 +3776,12 @@ metric(
     const { node } = await render(
       '<style id="own">body{margin:0}.runs{animation:late 1s paused -0.5s}' +
         '.after::before{content:"*";animation:late 1s paused -0.5s}' +
+        '.none::before{content:"*";display:contents;' +
+        'animation:late 1s paused -0.5s}' +
         '.later{animation:later 1s paused -0.5s}</style>' +
         `<body><div id="runs" class="runs">r</div>` +
         `<div id="after" class="after">a</div>` +
+        `<div id="none" class="none">n</div>` +
         `<div id="later" class="later">l</div>${paragraphs}</body>`,
       300,
     );
@@ -3786,14 +3789,15 @@ metric(
     await act();
     const inked = (box: unknown): string =>
       (box as { style: { color: string } }).style.color;
-    const before = (): unknown =>
+    const before = (id = 'after'): unknown =>
       (
-        boxOf(el, 'after') as unknown as {
+        boxOf(el, id) as unknown as {
           children: { pseudo?: string | null }[];
         }
       ).children.find((kid) => kid.pseudo === 'before');
     const black = inked(boxOf(el, 'runs'));
     assert.strictEqual(inked(before()), black);
+    assert.strictEqual(inked(before('none')), black);
     const body = byId(el, 'runs').parent as Element;
     const sheet = createElement('style', {}, [
       createText(
@@ -3817,6 +3821,8 @@ metric(
     assert.ok(styled < 30, `${styled} styles for one animation`);
     assert.notStrictEqual(inked(boxOf(el, 'runs')), black, 'it does not run');
     assert.notStrictEqual(inked(before()), black, 'its ::before does not');
+    // a `display: contents` one's box has less of its style than it does
+    assert.notStrictEqual(inked(before('none')), black, 'nor one with no box');
     assert.strictEqual(inked(boxOf(el, 'later')), black, 'nor should this');
     // and one written at the end of a sheet, as a CSS-in-JS library writes
     const text = byId(el, 'own').children[0] as unknown as { data: string };
