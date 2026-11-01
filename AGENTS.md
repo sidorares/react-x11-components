@@ -4854,6 +4854,18 @@ type=image>` in a drawing are still asked for, and a `<style>` and a `<script>`
   parses markup for an element hands the element over.** What breaks out of the
   context is HTML's until it closes, and the context is there again after it.
 
+**A script asks a drawing where things are, and the attributes answer.**
+Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
+`getScreenCTM`, `getBoundingClientRect` and a shape's lengths are worked out by
+`src/html/scripts/svg-geometry.ts` over the DOM, with `SvgMeasure` the only
+thing asked of `<Html>`: a run of text, an `<svg>`'s box and whether a style
+hides an element. It reads `transform` and never a CSS transform, and each
+curve is cut a fixed number of times, so a box is a fraction of a pixel from
+the drawing's. mermaid measures every label with `getBBox`. **Anything new a
+drawing is asked goes through `svgAnswer`**, whose answer is numbers, as a
+bridge's has to be. `SvgView`'s private `_bbox` is not reached for, as nothing
+of it is here.
+
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
 `<path>` and no `ComputedStyle` is made for one — a style for each would

@@ -364,8 +364,10 @@ import {
   inlineDecoration,
   lineHeightOf,
   runFor,
+  fontOf,
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
+import type { SvgMeasure } from './scripts/svg-geometry.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -7141,6 +7143,59 @@ export class HtmlViewNode extends Node {
   /** Load faces by key, as `FontFace.load()` does (`WebFonts.load`). */
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
+  }
+
+  /** What `svg-geometry.ts` asks of the document: an element's text and
+   *  where a drawing was laid out, in CSS pixels. */
+  svgMeasure(): SvgMeasure {
+    this._prepare(this.abs.width || 1);
+    const size = (el: Element): number => {
+      for (let at: AnyNode | null = el; at; at = at.parent) {
+        if (!isElement(at)) break;
+        const own = at.attribs['font-size'];
+        if (own !== undefined) {
+          const px = parseFloat(own);
+          if (Number.isFinite(px)) return px;
+        }
+        if (at.name.toLowerCase() === 'svg') break;
+      }
+      const style = this._styleOf(el);
+      return style ? style.fontSize / (this._scale * style.effectiveZoom) : 16;
+    };
+    return {
+      fontSize: size,
+      box: (svg) => this.elementRect(svg),
+      hidden: (el) => {
+        for (let at: AnyNode | null = el; at; at = at.parent) {
+          if (!isElement(at)) break;
+          if (at.attribs.display === 'none') return true;
+          if (this._styleOf(at)?.display === 'none') return true;
+          if (at.name.toLowerCase() === 'svg') break;
+        }
+        return false;
+      },
+      text: (el, text) => {
+        const em = size(el);
+        const fonts = this._fonts();
+        const style = this._styleOf(el);
+        if (!fonts || !style) {
+          // an em's proportions, as a drawing's text has on no engine
+          return {
+            width: text.length * em * 0.5,
+            ascent: em * 0.8,
+            descent: em * 0.2,
+          };
+        }
+        const face = { ...fontOf(style), size: em * this._scale };
+        const layout = fonts.layout([{ text, ...face }], face, {});
+        const metrics = fonts.match(face.family ?? '', face).metrics(face.size);
+        return {
+          width: layout.width / this._scale,
+          ascent: metrics.ascent / this._scale,
+          descent: metrics.descent / this._scale,
+        };
+      },
+    };
   }
 
   /** Settles once no face of the document's is on its way
