@@ -3371,6 +3371,13 @@ export function boxLayoutsMade(): number {
   return layoutSerial;
 }
 
+/** How many boxes have been moved, for a test to count what moving what a
+ *  layout keeps walks. */
+let boxMoves = 0;
+export function boxesMoved(): number {
+  return boxMoves;
+}
+
 /**
  * Whether a box's layout is one this pass made at `width`, with the same
  * edges and the same height to take percentages of, and nothing has laid
@@ -3596,10 +3603,21 @@ export function measureIntrinsicWidth(
 }
 
 /**
- * Lay a box and everything under it out at a width, at the origin — what
+ * Lay a box and everything under it out at a width, where it stands — what
  * `LayoutContext.layoutSubtree` hands to `flex.ts` and `css-grid.ts`, and
  * what the shrink-to-fit probe and a table's cells use. A replaced box is
  * sized rather than laid out, because there is nothing inside it to lay out.
+ *
+ * Where it stands, and not at the origin, since its caller moves it to its
+ * place after and a move walks all it holds. At the origin, what a layout
+ * keeps in a box was moved there and then out again by each box around it
+ * that is laid out so: a webmail page's rows and its strip of senders, in
+ * some twenty flex boxes one inside another, were walked some 60 times a
+ * step of a window's edge, to land where they were. Standing, a box its layout leaves where it was
+ * moves nothing, and one that goes elsewhere moves once. So nothing a
+ * subtree's layout reads may be a position: what is in it is read from its
+ * corner, and what stops a layout (`until`) is said from it here, where it
+ * is said from the origin.
  */
 export function layoutSubtree(
   box: Box,
@@ -3640,7 +3658,13 @@ export function layoutSubtree(
     } else if (containing !== undefined) borderBox = width;
     else borderBox = clampWidth(box, width, NaN);
   }
-  layoutInternals(box, ctx, borderBox, 0, 0);
+  // an unbounded probe leaves a box that goes nowhere as it was (`moveTo`),
+  // and an infinite corner would be every position under it
+  const x = Number.isFinite(box.x) ? box.x : 0;
+  const y = Number.isFinite(box.y) ? box.y : 0;
+  if (y !== 0 && ctx.until !== undefined) ctx.until += y;
+  layoutInternals(box, ctx, borderBox, x, y);
+  if (y !== 0 && ctx.until !== undefined) ctx.until -= y;
 }
 
 /**
@@ -8712,6 +8736,7 @@ export function translate(
   stays?: (box: Box) => boolean,
 ): void {
   if (!dx && !dy) return;
+  boxMoves += 1;
   box.x += dx;
   box.y += dy;
   // a list item's marker is placed in the same coordinates as its lines
