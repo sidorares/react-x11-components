@@ -70,12 +70,15 @@ export function parseMath(
  *  length in it in an absolute unit is one over another such
  *  (`calc(22px / 192px)`); a relative one has nothing here to resolve it
  *  against, and makes the value none. */
-export function parseMathNumber(value: string): number | null {
+export function parseMathNumber(
+  value: string,
+  largest = LARGEST,
+): number | null {
   const term = parseTerm(value, absoluteLength);
   if (!term || term.kind !== 'linear' || term.length || term.angle) {
     return null;
   }
-  return censor(term.px);
+  return censor(term.px, largest);
 }
 
 /**
@@ -181,10 +184,10 @@ const CONSTANTS: Record<string, number> = {
  * 10.9): NaN is 0, and an infinity the largest length there is — which,
  * as in a browser, is still a length: a radius of it is a pill.
  */
-function censor(n: number): number {
+function censor(n: number, largest = LARGEST): number {
   if (Number.isNaN(n)) return 0;
-  if (n === Infinity) return LARGEST;
-  if (n === -Infinity) return -LARGEST;
+  if (n === Infinity) return largest;
+  if (n === -Infinity) return -largest;
   return n;
 }
 

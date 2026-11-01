@@ -11315,6 +11315,26 @@ test('a computed style is a list of its property names, by index and in a for-of
   );
 });
 
+test('a computed style answers the flex and alignment properties by either name, and a shorthand by its name and in no item of its list', async () => {
+  const doc = await hosted(
+    '<p id="out" style="flex:2 3 4px;flex-flow:column wrap;order:5;' +
+      'align-items:safe center;place-self:start"></p><script>' +
+      'var cs = getComputedStyle(document.getElementById("out")), list = Array.from(cs);' +
+      'var shorthands = ["flex", "flex-flow", "gap", "place-items", "place-content",' +
+      ' "place-self", "border-radius", "overflow", "white-space", "animation",' +
+      ' "animation-range", "scroll-timeline", "view-timeline", "position-try", "font"];' +
+      'document.getElementById("out").textContent = [cs.flexGrow, cs.getPropertyValue("flex-shrink"),' +
+      ' cs.flexBasis, cs.flexDirection, cs.flexWrap, cs.order, cs.alignItems, cs.justifySelf,' +
+      ' cs.flex, cs.flexFlow, cs.placeSelf, list.indexOf("flex-grow") >= 0,' +
+      ' shorthands.filter(function (name) { return list.indexOf(name) >= 0; }).length].join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '2|3|4px|column|wrap|5|safe center|start|2 3 4px|column wrap|start|true|0',
+  );
+});
+
 test('focus() brings the element into view through the scroll containers around it, at a snap position where one snaps, unless preventScroll', async () => {
   const doc = await hosted(
     '<p id="out"></p><style>.s { height: 100px; overflow-y: scroll; width: 200px }' +
