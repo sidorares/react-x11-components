@@ -74,11 +74,13 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .d { float: left; width: 30px; height: 12px }
 .e { position: absolute; top: 4px; left: 4px; width: 20px }
 .f::before { content: "* " }
+.f::after { content: ""; display: contents }
 .g { display: none }
 .h { padding: 4px; border: 1px solid #000 }
 .h::first-letter { font-size: 20px; color: #00aa00 }
 .i { white-space: pre }
 .j { text-transform: uppercase }
+.j::after { content: " ~"; display: contents; padding: 3px; color: #0000aa }
 .k { user-select: none }
 .l { margin: 10px 0; container-type: inline-size }
 @container (min-width: 150px) { .b { color: #123456 } .k::after { content: " q" } }
@@ -98,6 +100,7 @@ const SHEET = `body { margin: 0; font-size: 14px }
 .cw::after { content: close-quote }
 .cx { display: contents; counter-increment: fig 2 }
 .cy { contain: style }
+.cy::after { content: counter(fig) " "; display: contents; counter-increment: fig 3 }
 .cz::marker { content: counter(list-item) ") " }`;
 /** And flows in another writing mode, which a build of subtrees stops at:
  *  a change in one builds the whole document, so a sheet that means to see
@@ -2440,6 +2443,29 @@ const COUNTED: Counted[] = [
     apart: false,
   },
   {
+    what: 'a number read by a `display: contents` `::before`, which counts none',
+    sheet:
+      'body { counter-reset: n } .tick { counter-increment: n }' +
+      ' .x::before { content: counter(n) " "; display: contents;' +
+      ' counter-increment: n 5 } .read::before { content: counter(n) " " }',
+    body:
+      '<p class="tick">a</p><section><p id="b" class="x">b</p></section>' +
+      '<p class="read">two</p>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
+    what: 'a quote a `display: contents` `::before` opens, which moves the depth',
+    sheet:
+      '.x::before { content: open-quote; display: contents }' +
+      ' .read::before { content: open-quote }',
+    body: '<section><p id="b" class="x">a</p></section><p class="read">two</p>',
+    change: (el) => textOf(el('b')),
+    tries: 1,
+    apart: true,
+  },
+  {
     what: 'what no box says, a `display: contents` element that counts',
     sheet:
       'body { counter-reset: n } .tick { counter-increment: n }' +
@@ -2742,6 +2768,44 @@ metric(
       assert.deepStrictEqual(kept, treeLines(internals._tree), test.what);
       rendered.unmount();
     }
+  },
+);
+
+metric(
+  'a display: contents ::before in a flex box built apart is the item a whole build makes',
+  async () => {
+    const { node } = await render(
+      '<!doctype html><html><head><style>body { margin: 0; font-size: 14px }' +
+        ' .f { display: flex; gap: 4px }' +
+        ' .b::before { content: "x"; display: contents }' +
+        ' .a::after { content: "y"; display: contents }' +
+        ' .e::after { content: ""; display: contents }</style></head>' +
+        '<body><section><div id="f" class="f b a"><i id="t">t</i></div>' +
+        '</section><section><div id="g" class="f"><p id="p">p</p></div>' +
+        '</section><p>after</p></body></html>',
+      320,
+    );
+    const el = view(node);
+    await act();
+    const internals = el as unknown as {
+      _tree: BoxTree;
+      _invalidate(stale: number): void;
+    };
+    const all = elementsUnder(el.document as unknown as Element);
+    const byId = (id: string): Element => all.find((e) => e.attribs.id === id)!;
+    const same = async (what: string, changes: HtmlChange[]) => {
+      el.touchDocument(changes);
+      await act();
+      const kept = treeLines(internals._tree);
+      internals._invalidate(2);
+      await act();
+      assert.deepStrictEqual(kept, treeLines(internals._tree), what);
+    };
+    await same('the text beside it', textOf(byId('t')));
+    await same('its content goes', classed(byId('f'), 'f b'));
+    await same('an empty item comes', classed(byId('g'), 'f e'));
+    await same('a block in its place', classed(byId('p'), 'b'));
+    await same('and it goes again', classed(byId('g'), 'f'));
   },
 );
 

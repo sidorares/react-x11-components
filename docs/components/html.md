@@ -2822,7 +2822,12 @@ own formatting context), and
 `display: grid` as documents write it (below), and `display: contents`,
 which makes no box and hands its children, its `::before` and its
 `::after` to its parent's, in its style, each an item of a flex box or a
-grid around it — a replaced element set so is not rendered. An
+grid around it — a replaced element set so is not rendered. A `::before` or
+an `::after` that is `display: contents` itself hands on its content the
+same way: what it says of a box, its decorations and its counters do
+nothing, where its font and its line height are its text's and its quotes
+count, and it is an item of a flex box or a grid even with no content, as
+in Blink and WebKit. An
 inline-block sits on its last line's baseline and an inline-table on its
 first row's, each on its bottom margin edge where it clips what overflows
 it; an inline flex box sits on its first item's, clipping or not, and a

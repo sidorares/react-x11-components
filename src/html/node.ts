@@ -207,6 +207,7 @@ import {
   CUT_BLOCKS,
   GENERATED_FROM,
   GENERATED_ON,
+  generatedStyle,
   INLINE_OFFSETS,
   LINE_BOX_RAISES,
   PAINT_ORDER,
@@ -1055,7 +1056,7 @@ export class HtmlViewNode extends Node {
     ) {
       return null;
     }
-    return this._pseudoBoxOf(tree, el, pseudo)?.style ?? null;
+    return generatedStyle(this._pseudoBoxOf(tree, el, pseudo));
   };
   /** What a presenter has on layers of their own, by sprite key, as it
    *  said last (`spritesLifted`): an element or a pseudo-element of one
@@ -12904,7 +12905,7 @@ export class HtmlViewNode extends Node {
         a.pseudo === ''
           ? tree.styles.get(el)?.style
           : a.pseudo === 'before' || a.pseudo === 'after'
-            ? this._pseudoBoxOf(tree, el, a.pseudo)?.style
+            ? generatedStyle(this._pseudoBoxOf(tree, el, a.pseudo))
             : transitionBoxes.get(a.pseudo)?.style;
       if (!style) continue;
       const lists = style.animations;
@@ -15023,7 +15024,7 @@ function runningAny(
   const stack: Box[] = [tree.root];
   while (stack.length) {
     const box = stack.pop()!;
-    if (box.pseudo && runs(box.style)) {
+    if (box.pseudo && runs(generatedStyle(box)!)) {
       const from = GENERATED_FROM.get(box);
       if (from) into.add(from);
     }

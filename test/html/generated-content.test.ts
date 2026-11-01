@@ -29,17 +29,22 @@ import type { ComputedStyle } from '../../src/html/css/style.js';
 import {
   SVG_NS,
   boxOf,
+  bytesApart,
   documentText,
   drawnText,
+  fillsOf,
   findById,
   h,
   linesOf,
   metric,
   pixelsIn,
+  pointIn,
+  rebuilt,
   render,
   renderAsking,
   renderWithBytes,
   renderWithImages,
+  snapshot,
   solidPng,
   svgBytes,
   treeOf,
@@ -1481,3 +1486,326 @@ test('an image generated content names, arriving after the build, builds the box
   ).length;
   assert.strictEqual(kept, before.size, 'every element kept its style');
 });
+
+/**
+ * A page of `::before`s and `::after`s of `display: contents` in a face of one
+ * width, and what its boxes came to. Chrome's answers are read through the
+ * bench's Chrome, where a letter of this face is 9.63 across and here it need
+ * not be, so a test says them in letters: its 58.17 is `5 * ch + 10`.
+ */
+const CONTENTS_SHEET =
+  'body{margin:0;font:16px/20px monospace}.c{display:contents}' +
+  '.dc::before{content:"x";display:contents}' +
+  '.dc::after{content:"yyyy";display:contents}' +
+  '.flex{display:flex;gap:10px}' +
+  '.grid{display:grid;grid-template-columns:50px 50px 50px;gap:10px}';
+
+async function contentsPage(body: string, sheet = '') {
+  const { result, node } = await render(
+    `<style>${CONTENTS_SHEET}${sheet}</style>` +
+      `<span id="ruler">xxxxxxxxxx</span>${body}`,
+    600,
+  );
+  const el = view(node);
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  const ch = rect('ruler').width / 10;
+  const near = (got: number, want: number, what: string) =>
+    assert.ok(Math.abs(got - want) < 0.1, `${what}: ${got}, and not ${want}`);
+  return { result, el, rect, ch, near };
+}
+
+/** The `::before` or `::after` of the element with `id`, as it was built. */
+function generatedOf(
+  el: HtmlViewNode,
+  id: string,
+  which: 'before' | 'after',
+): LaidBox & { kind: string; style: ComputedStyle } {
+  type Generated = LaidBox & {
+    kind: string;
+    pseudo: string | null;
+    style: ComputedStyle;
+  };
+  const stack = [...boxOf(el, id).children] as Generated[];
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.pseudo === which) return box;
+    stack.push(...(box.children as Generated[]));
+  }
+  throw new Error(`#${id} has no ::${which}`);
+}
+
+metric(
+  'a ::before and an ::after of display: contents are text in what is around them',
+  async () => {
+    const { rect, ch, near } = await contentsPage(
+      '<div class="flex"><div class="c dc"></div><b id="a">z</b></div>' +
+        '<div class="flex dc"><b id="b">z</b></div>' +
+        '<div class="flex"><div class="c dc"><i id="c">mid</i></div>' +
+        '<b id="d">z</b></div>' +
+        '<div class="flex dc">txt<i id="e">mid</i><b id="f">z</b></div>' +
+        '<div class="grid"><div class="c dc"></div><b id="g">z</b></div>' +
+        '<div class="grid dc"><b id="h">z</b></div>' +
+        '<div id="block" class="dc">abc<b id="i">z</b></div>' +
+        '<div><span class="dc">abc</span><b id="j">z</b></div>',
+    );
+    // one anonymous item, the two side by side in it, and then the gap, where
+    // each was a block and the gap fell between them
+    near(rect('a').x, 5 * ch + 10, 'through an element');
+    near(rect('b').x, ch + 10, 'of the flex box');
+    // an element between them ends the item
+    near(rect('c').x, ch + 10, 'an element after it');
+    near(rect('d').x, 8 * ch + 30, 'the item after that');
+    // and the flex box's own text is in the same item
+    near(rect('e').x, 4 * ch + 10, 'beside text');
+    near(rect('f').x, 7 * ch + 20, 'and past the next');
+    // a grid's cells take the same items
+    near(rect('g').x, 60, 'the next of a grid');
+    near(rect('h').x, 60, 'the next of a grid, of the grid');
+    // a block's line and an inline box's run straight through them
+    near(rect('i').x, 4 * ch, 'on the line of a block');
+    near(rect('block').height, 20, 'one line');
+    near(rect('j').x, 8 * ch, 'on the line of an inline box');
+  },
+);
+
+metric(
+  'a ::before of display: contents is an item of a flex box or a grid with nothing in it',
+  async () => {
+    // Blink and WebKit keep an inline box for one that no one sees, and it is
+    // that box, with no text to wrap, that is the item. Firefox reads it as an
+    // inline box outright, and comes to the same: all three take the gap
+    const { rect, ch, near } = await contentsPage(
+      '<div class="flex"><b id="a">a</b><div class="c empty"></div>' +
+        '<b id="b">b</b></div>' +
+        '<div class="flex empty"><b id="c">b</b></div>' +
+        '<div class="flex space"><b id="d">b</b></div>' +
+        '<div class="flex quote"><b id="e">b</b></div>' +
+        '<div class="grid empty"><b id="f">b</b></div>' +
+        '<div id="g" class="empty"></div><p id="h">after</p>',
+      '.empty::before{content:"";display:contents}' +
+        '.space::before{content:" ";display:contents}' +
+        '.quote::before{content:no-open-quote;display:contents}' +
+        'p{margin:0}',
+    );
+    near(rect('b').x, ch + 20, 'a gap either side of nothing');
+    near(rect('c').x, 10, 'empty');
+    near(rect('d').x, 10, 'white space');
+    near(rect('e').x, 10, 'a quote that writes nothing');
+    near(rect('f').x, 60, "a cell of a grid's");
+    // and in a block, as an inline box with nothing in it does, no line
+    near(rect('g').height, 0, 'no line');
+    near(rect('h').y, rect('g').y, 'nothing above what follows');
+  },
+);
+
+metric(
+  'a table takes a ::before of display: contents as it takes text',
+  async () => {
+    const { rect, ch, near } = await contentsPage(
+      '<table id="t" class="dc"><tr><td id="a">cell</td></tr></table>' +
+        '<table><tr class="dc"><td id="b">cell</td></tr></table>' +
+        '<table><tr><td id="c" class="dc">cell</td></tr></table>',
+    );
+    // a row around each, with no cell's padding, spaced 2px apart: 70 tall
+    near(rect('t').height, 70, 'three rows');
+    near(rect('a').y - rect('t').y, 24, 'the row after the ::before');
+    // a cell around each, either side of the row's own
+    near(rect('b').x, ch + 4, 'the cell after the ::before');
+    // and a cell's line
+    near(rect('c').width, 9 * ch + 2, "on a cell's line");
+  },
+);
+
+metric(
+  'what a ::before of display: contents says of a box does nothing, and what it says of text does',
+  async () => {
+    const { el, rect, ch, near } = await contentsPage(
+      '<div id="a" class="box">abc<b id="az">z</b></div>' +
+        '<div id="b" class="out">abc<b id="bz">z</b></div>' +
+        '<div id="c" class="moved">abc<b id="cz">z</b></div>' +
+        '<div id="d" class="tall">a<b id="dz">z</b></div>' +
+        '<div id="e" class="spaced">a<b id="ez">z</b></div>' +
+        '<div id="f" class="hidden">a<b id="fz">z</b></div>' +
+        '<div id="g" class="big">a<b id="gz">z</b></div>' +
+        '<div id="h" class="bigger">a<b id="hz">z</b></div>',
+      '.box::before{content:"x";display:contents;padding:7px;margin:9px;' +
+        'border:3px solid;background:#00ff00;box-shadow:0 0 0 4px #00ff00;' +
+        'outline:4px solid #00ff00;width:100px;height:100px}' +
+        '.out::before{content:"x";display:contents;position:absolute;left:300px}' +
+        '.moved::before{content:"x";display:contents;position:relative;' +
+        'left:30px;float:left;transform:translateX(50px);opacity:.1}' +
+        '.tall::before{content:"x";display:contents;line-height:50px}' +
+        '.spaced::before{content:"ab";display:contents;letter-spacing:5px}' +
+        '.hidden::before{content:"xxxx";display:contents;visibility:hidden}' +
+        '.big::before{content:"x";display:contents;font-size:32px}' +
+        '.bigger::before{content:"x";font-size:32px}',
+    );
+    near(rect('az').x, 4 * ch, 'its padding and its size');
+    near(rect('a').height, 20, 'its height');
+    near(rect('bz').x, 4 * ch, 'its position');
+    near(rect('cz').x, 4 * ch, 'its float and its offsets');
+    assert.deepStrictEqual(
+      (await fillsOf(el)).filter((f) => f.style === parseColor('#00ff00')),
+      [],
+      'it draws no box',
+    );
+    assert.strictEqual(generatedOf(el, 'c', 'before').style.opacity, 1);
+    // a line is as tall as the text on it asks, as an inline box's is
+    near(rect('d').height, 50, 'its line height');
+    near(rect('dz').x, 2 * ch, 'on one line');
+    near(rect('ez').x, 3 * ch + 10, 'its letter spacing');
+    near(rect('fz').x, 5 * ch, 'hidden, it holds its room');
+    near(rect('g').height, rect('h').height, 'its font size');
+    near(rect('gz').x, rect('hz').x, 'its letters');
+  },
+);
+
+test("a ::before of display: contents draws its element's decorations and none of its own", async () => {
+  const { node } = await render(
+    '<style>.u{text-decoration:underline #0000ff}' +
+      '.o::before{content:"x";display:contents;' +
+      'text-decoration:underline #ff0000}' +
+      '.d{display:contents;text-decoration:underline #ff0000}</style>' +
+      '<p id="a" class="u o">a</p><p id="b" class="o">b</p>' +
+      '<p id="c" class="u"><span class="d"><b id="e">c</b></span></p>' +
+      '<p class="d"><b id="f">d</b></p>',
+  );
+  const el = view(node);
+  assert.strictEqual(
+    generatedOf(el, 'a', 'before').style.underline,
+    parseColor('#0000ff'),
+    'from above',
+  );
+  assert.strictEqual(generatedOf(el, 'b', 'before').style.underline, null);
+  // no box to decorate, and it stops nothing, as a display: contents element
+  // does neither
+  const style = (id: string) =>
+    (boxOf(el, id) as unknown as { style: ComputedStyle }).style;
+  assert.strictEqual(style('e').underline, parseColor('#0000ff'));
+  assert.strictEqual(style('f').underline, null);
+});
+
+test('a ::before of display: contents reads counters and changes none', async () => {
+  // no box, no count (CSS Lists 3, 4.5): Chrome and WebKit have each of these
+  // 1, and a counter they do not touch is 1 past them
+  assert.strictEqual(
+    await documentText(
+      '<style>div{counter-reset:n 1}' +
+        '.i::before{counter-increment:n 3;content:counter(n);display:contents}' +
+        '.r::before{counter-reset:n 7;content:counter(n);display:contents}' +
+        '.s::before{counter-set:n 5;content:counter(n);display:contents}' +
+        '.read::before{content:" " counter(n)}</style>' +
+        '<div><span class="i"></span><span class="read"></span></div>' +
+        '<div><span class="r"></span><span class="read"></span></div>' +
+        '<div><span class="s"></span><span class="read"></span></div>',
+    ),
+    '1 11 11 1',
+  );
+  // nor does the walk that adds up a reversed counter count one, or it would
+  // start 5 a ::before too high. Only Firefox has `reversed()`, and it reads
+  // these as inline boxes, so no browser has an answer: it starts where the
+  // boxes that count take it to 1
+  assert.strictEqual(
+    await documentText(
+      '<style>ol{counter-reset:reversed(n);list-style:none}' +
+        'li{counter-increment:n -1}li::after{content:counter(n)}' +
+        'li::before{content:"";display:contents;counter-increment:n -5}' +
+        '</style><ol><li></li><li></li><li></li></ol>',
+    ),
+    '321',
+  );
+});
+
+test('a ::before of display: contents moves the depth of the quotes around it', async () => {
+  assert.strictEqual(
+    await documentText(
+      '<style>p{quotes:"[" "]" "<" ">"}' +
+        '.o::before{content:open-quote;display:contents}' +
+        '.n::before{content:no-open-quote;display:contents}' +
+        '.c::after{content:close-quote;display:contents}' +
+        '.r::before{content:open-quote}.e::after{content:close-quote}</style>' +
+        '<p><span class="o"></span><span class="r"></span>' +
+        '<span class="e"></span><span class="c"></span></p>' +
+        '<p><span class="n"></span><span class="r"></span>' +
+        '<span class="e"></span><span class="c"></span></p>',
+    ),
+    '[<>]<>]',
+  );
+});
+
+test('a ::before of display: contents reads as it was written', async () => {
+  const { node } = await render(
+    '<style>.flex{display:flex}' +
+      '.f::before{content:"x";display:contents}' +
+      '.b::before{content:"x";display:contents;width:100px;color:#ff0000}' +
+      '.p::before{content:"x";display:contents;position:relative;float:left}' +
+      '.c{display:contents}</style><div id="a" class="flex f"></div>' +
+      '<div class="flex"><div id="d" class="c f"></div></div>' +
+      '<div id="b" class="b"></div><div id="c" class="p"></div>',
+  );
+  const el = view(node);
+  const read = (id: string) =>
+    el.computedStyle(findById(el.document, id)!, 'before')!;
+  // no box, so no item of the flex box, whose item is the box around it
+  assert.strictEqual(read('a').display, 'contents');
+  assert.strictEqual(read('a')['min-width'], '0px');
+  assert.strictEqual(read('a').width, 'auto');
+  // nor through a `display: contents` element, whose box this is found by
+  assert.strictEqual(read('d').display, 'contents');
+  assert.strictEqual(read('d')['min-width'], '0px');
+  assert.strictEqual(read('b').display, 'contents');
+  assert.strictEqual(read('b').width, '100px');
+  assert.strictEqual(read('b').color, 'rgb(255, 0, 0)');
+  assert.strictEqual(read('c').position, 'relative');
+  assert.strictEqual(read('c').float, 'left');
+});
+
+metric(
+  'an image a ::before of display: contents names is an item, or on the line',
+  async () => {
+    const { el } = await renderWithBytes(
+      '<style>body{margin:0;font:16px/20px monospace}' +
+        '.flex{display:flex;gap:10px}' +
+        '.i::before{content:url(i.png);display:contents}</style>' +
+        '<div class="flex i"><b id="a">b</b></div>' +
+        '<div class="i">a<b id="b">b</b></div>',
+      { 'i.png': solidPng(20, 8, [255, 0, 0]) },
+    );
+    const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    // Chrome's 20px image, then its gap
+    assert.strictEqual(rect('a').x, 30);
+    assert.ok(Math.abs(rect('b').x - 20 - rect('a').width) < 0.1);
+  },
+);
+
+metric(
+  '::first-letter and ::first-line find a ::before of display: contents',
+  async () => {
+    const { rect, near } = await contentsPage(
+      '<div id="a" class="letter contents">abc</div>' +
+        '<div id="b" class="letter inline">abc</div>',
+      '.letter::first-letter{font-size:40px}' +
+        '.contents::before{content:"qrs";display:contents}' +
+        '.inline::before{content:"qrs"}',
+    );
+    // Chrome's 29, whichever it is
+    near(rect('a').height, 29, 'its first letter is large');
+    near(rect('a').height, rect('b').height, 'as an inline one');
+  },
+);
+
+metric(
+  'a ::before of display: contents takes a hover as a build draws it',
+  async () => {
+    const { result, el } = await contentsPage(
+      '<p id="a" class="h">abc</p><p id="b">away</p>',
+      '.h::before{content:"xxxx";display:contents;color:#888888}' +
+        '.h:hover::before{color:#00aa00}',
+    );
+    const quiet = await snapshot(result, el);
+    el.setHover(...pointIn(el, 'a'));
+    const drawn = await snapshot(result, el);
+    assert.ok(bytesApart(drawn, quiet) > 0, 'the text drew nothing new');
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
