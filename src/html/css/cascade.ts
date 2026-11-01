@@ -4381,6 +4381,8 @@ export class Cascade {
    *  the initial values. Set as the root's style is computed, which a build
    *  does ahead of every element under it. */
   private _root: ComputedStyle | null = null;
+  /** The constructor's `documentElement`, which is the root in its turn. */
+  private readonly _documentElement: Element | null;
   private _mapFamilies: ((list: string) => string) | undefined;
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
@@ -4488,6 +4490,7 @@ export class Cascade {
       ? (list: string) => families.map(list)
       : undefined;
     this.look = look;
+    this._documentElement = documentElement;
     this._codeFamily = familyList(look.monoFamily);
     this._systemColors = systemColorTable(documentElement ? null : look);
     this.initial = initialStyle(look, scale);
@@ -8035,11 +8038,16 @@ export class Cascade {
     // where the root's font moved in a build that keeps styles, every one
     // that reads it is computed again, wherever it is: its parent's can
     // come out as it was (`sharedStyleFor`)
-    if (own && this._rootRead && this._kept && isRootElement(el)) {
+    if (own && this._rootRead && this._kept && this._isRoot(el)) {
       const was = this._kept.styles.get(el)?.style;
       if (was && this.rootMetricsMoved(was, style)) this._rootMoved = true;
     }
     return style;
+  }
+
+  /** Whether an element is the root a `rem` and an `rlh` are of. */
+  private _isRoot(el: Element): boolean {
+    return el === this._documentElement || isRootElement(el);
   }
 
   private _computeStyleOf(
@@ -8339,7 +8347,7 @@ export class Cascade {
     // size, so a `font-size: 1.2em` in the cascade resolves against the
     // right em, and again after the font size is settled so every *other*
     // em-relative length in the same rule resolves against this element's.
-    const root = isRootElement(el);
+    const root = this._isRoot(el);
     const rootStyle = root ? this.initial : (this._root ?? this.initial);
     // whose declaration is being applied: the UA sheet's families are the
     // host's own faces, and its lists end where they end
@@ -10737,14 +10745,20 @@ function closestTable(el: Element): Element | null {
   return null;
 }
 
-/** Whether an element is the document's root: its parent the document, or
- *  none, as the `<html>` the cascade supplies where the markup has none —
- *  and not a shadow tree, whose top is under its host. Taken for the root,
- *  the top of every tree was what a `rem` styled after it measured from,
- *  and GitHub's, sized in `rem`s, measured each build from the last. */
-function isRootElement(el: Element): boolean {
+/** Whether an element is the document's root, as `:root` has it: an `<html>`
+ *  whose parent is the document, or which has none, as the one the cascade
+ *  supplies where the markup has none — and not a shadow tree's, whose top is
+ *  under its host. Taken for the root, the top of every tree was what a `rem`
+ *  styled after it measured from, and GitHub's, sized in `rem`s, measured each
+ *  build from the last. So were a fragment's elements and a `<body>` written
+ *  alone, each of them the document's child: a `rem` came to the font size of
+ *  the one styled before it, and in a restyle in place of the last there is. */
+export function isRootElement(el: Element): boolean {
   const parent = el.parent;
-  return !parent || (parent.type === 'root' && !(parent instanceof ShadowRoot));
+  return (
+    el.name === 'html' &&
+    (!parent || (parent.type === 'root' && !(parent instanceof ShadowRoot)))
+  );
 }
 
 /**

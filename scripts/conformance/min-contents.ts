@@ -1,25 +1,33 @@
-// Writes `test/html/min-contents.ts`: boxes of known widths nested as a page
-// nests them, and what Chromium has each come to at its narrowest. Its cases
-// are kept and asked about again, and any added here go after them:
+// Writes `test/html/min-contents.ts`, and with `--widest`
+// `test/html/max-contents.ts`: boxes of known widths nested as a page nests
+// them, and what Chromium has each come to at its narrowest, or at its widest.
+// Its cases are kept and asked about again, and any added here go after them:
 //
 //   CHROME=<chromium> node --import tsx scripts/conformance/min-contents.ts \
-//     [--add <count>] [--seed <seed>]
+//     [--widest] [--add <count>] [--seed <seed>]
 //
 // Nothing in a case is text, which a platform's fonts would have another
 // width for, and a case is a line of the document, so a diff of the fixture
-// is a diff of its cases. A new case that comes to no more than its room
+// is a diff of its cases. A new case that comes to no more than a narrow room
 // says nothing of how narrow it can be, and is left out: it was its widest.
+// And one that fills a wide room says nothing of how wide it comes, which no
+// case should: the room is wider than anything in them adds up to.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Chrome } from '../zengarden/chrome.js';
 
-const FIXTURE = new URL('../../test/html/min-contents.ts', import.meta.url);
-/** How wide `.room` is in the document. */
-const ROOM = 10;
-
 const args = process.argv.slice(2);
+const widest = args.includes('--widest');
+const FIXTURE = new URL(
+  `../../test/html/${widest ? 'max' : 'min'}-contents.ts`,
+  import.meta.url,
+);
+/** How wide `.room` is in the document. */
+const ROOM = widest ? 3000 : 10;
+const NAME = widest ? 'MAX_CONTENT' : 'MIN_CONTENT';
+
 const option = (name: string, otherwise: number): number => {
   const at = args.indexOf(name);
   return at < 0 ? otherwise : Number(args[at + 1]);
@@ -39,7 +47,17 @@ const pick = <T>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)];
 const int = (from: number, to: number): number =>
   from + Math.floor(next() * (to - from + 1));
 
-const WIDTHS = ['100%', '50%', 'calc(100% - 7px)', 'calc(50% + 4px)'];
+const WIDTHS = [
+  '100%',
+  '50%',
+  'calc(100% - 7px)',
+  'calc(50% + 4px)',
+  // a size of its content, which is a width like any
+  'min-content',
+  'max-content',
+  'fit-content',
+];
+const KEYWORDS = ['min-content', 'max-content'];
 const FLEX = [
   'none',
   '1',
@@ -58,6 +76,11 @@ const FLEX = [
   // and a percentage of a room that is not known
   '0 0 50%',
   '0 1 25%',
+  // and no flex fraction: what grows by more or by less than one is as wide
+  // as what grows by one
+  '2 1 40px',
+  '0.5 1 10px',
+  '0 1 content',
 ];
 
 function edges(): string[] {
@@ -74,8 +97,13 @@ function edges(): string[] {
 function sizes(): string[] {
   const css: string[] = [];
   if (next() < 0.25) css.push(`width:${pick([...WIDTHS, `${int(12, 56)}px`])}`);
-  if (next() < 0.2) css.push(`min-width:${pick(['0', `${int(20, 89)}px`])}`);
-  if (next() < 0.2) css.push(`max-width:${int(20, 68)}px`);
+  if (next() < 0.2) {
+    css.push(`min-width:${pick(['0', ...KEYWORDS, `${int(20, 89)}px`])}`);
+  }
+  if (next() < 0.2) {
+    const limit = `${int(20, 68)}px`;
+    css.push(`max-width:${pick([...KEYWORDS, limit, limit, limit])}`);
+  }
   return css;
 }
 
@@ -91,12 +119,24 @@ function leaf(css: string[]): string {
   const style = css.join(';');
   // what is replaced, and what has columns, which no line says
   if (kind < 0.06) {
-    return `<canvas width="${int(5, 60)}" height="4" style="display:block;${style}"></canvas>`;
+    // as tall as it is wide, near enough: Chromium takes a limit through the
+    // ratio and back in steps of a 64th of a pixel, which a ratio of 15 makes
+    // a tenth of one
+    return `<canvas width="${int(5, 60)}" height="40" style="display:block;${style}"></canvas>`;
   }
   if (kind < 0.12) {
     const cell = (): string =>
       `<td style="padding:0"><i style="display:block;width:${int(5, 40)}px;height:4px"></i></td>`;
     return `<table style="border-spacing:0;${style}"><tr>${cell()}${cell()}</tr></table>`;
+  }
+  // a size through a ratio, of a height or of its limits, or none, which
+  // leaves the size of its content
+  if (kind < 0.2) {
+    const ratio = [`aspect-ratio:${pick(['2', '1/2', '3/2'])}`];
+    if (next() < 0.5) {
+      ratio.push(pick(['height:30px', 'min-height:20px', 'max-height:10px']));
+    }
+    return `<div style="${[...css, ...ratio].join(';')}"><i style="display:block;width:${int(5, 69)}px;height:4px"></i></div>`;
   }
   // a line that does not wrap is one width; one that does has two, its
   // widest box and all of them, with no text to give it them
@@ -121,6 +161,20 @@ function box(depth: number): string {
     const style = css.length ? ` style="${css.join(';')}"` : '';
     return `<div${style}>${held()}</div>`;
   }
+  // a column of a height, which breaks into lines side by side; its items
+  // are of known heights, where a line of boxes is as tall as a font says
+  if (next() < 0.1) {
+    const item = (): string => {
+      const own = [...edges(), ...sizes()];
+      if (next() < 0.5) own.push(`flex:${pick(FLEX)}`);
+      return `<div style="${[...own, 'height:4px'].join(';')}"><i style="display:block;width:${int(5, 69)}px;height:4px"></i></div>`;
+    };
+    css.push('display:flex;flex-direction:column;flex-wrap:wrap');
+    css.push(`height:${pick([4, 8, 12, 20])}px`);
+    if (next() < 0.4) css.push(`gap:${int(1, 11)}px`);
+    const items = Array.from({ length: int(2, 5) }, item).join('');
+    return `<div style="${css.join(';')}">${items}</div>`;
+  }
   css.push('display:flex');
   const shape = next();
   if (shape < 0.28) css.push('flex-direction:column');
@@ -133,18 +187,32 @@ function box(depth: number): string {
 }
 
 const [, style, kept] = readFileSync(FIXTURE, 'utf8').match(
-  /MIN_CONTENT_DOCUMENT = `(<style>[^\n]*\n)([^`]*)`/,
+  new RegExp(`${NAME}_DOCUMENT = \`(<style>[^\\n]*\\n)([^\`]*)\``),
 )!;
 const cases = kept.split('\n').filter(Boolean);
 const before = cases.length;
+// the other ways a box is asked how wide it comes: what shrinks to fit, what
+// a size of its content sizes, a table's cell
+const AROUND = [
+  '$',
+  '$',
+  '$',
+  '<div><div style="float:left">$</div></div>',
+  '<div style="display:inline-block">$</div>',
+  '<div style="display:inline-flex">$</div>',
+  '<div style="width:max-content">$</div>',
+  '<div style="width:fit-content">$</div>',
+  '<table style="border-spacing:0"><tr><td style="padding:0">$</td></tr></table>',
+];
 for (let i = 0; i < count; i += 1) {
-  const items = Array.from({ length: int(1, 3) }, () => box(0)).join('');
+  const held = Array.from({ length: int(1, 3) }, () => box(0)).join('');
+  const items = widest ? pick(AROUND).replace('$', held) : held;
   cases.push(
     `<div class="room"><div id="c${cases.length}" class="item">${items}</div></div>`,
   );
 }
 
-const page = join(tmpdir(), `min-contents-${process.pid}.html`);
+const page = join(tmpdir(), `contents-${process.pid}.html`);
 writeFileSync(page, `<!doctype html>${style}${cases.join('\n')}\n`);
 const chrome = await Chrome.launch();
 try {
@@ -176,8 +244,13 @@ try {
   const measured = JSON.parse(result.value) as number[];
   if (measured.length !== cases.length) throw new Error('a case has no box');
   const held = cases.flatMap((line, i) =>
-    i < before || measured[i] > ROOM ? [{ line, width: measured[i] }] : [],
+    i < before || widest || measured[i] > ROOM
+      ? [{ line, width: measured[i] }]
+      : [],
   );
+  if (widest && measured.some((width) => width >= ROOM)) {
+    throw new Error('a case fills its room');
+  }
   const document =
     style +
     held
@@ -194,18 +267,26 @@ try {
     if (lines[lines.length - 1].length + entry.length > 81) lines.push('  ');
     lines[lines.length - 1] += entry;
   }
-  writeFileSync(
-    FIXTURE,
-    `// What a flex box comes to at its narrowest, as Chromium ${version} has it: each
+  const intro = widest
+    ? `// What a flex box comes to at its widest, as Chromium ${version} has it: each
+// \`.item\` below is an item of a row with more room than it can use, as wide
+// as its content, and every width is that item's in Chromium over this
+// document, none of them written by hand: \`scripts/conformance/min-contents.ts\`
+// writes this file. Nothing in it is text, which a platform's fonts would
+// have another width for.`
+    : `// What a flex box comes to at its narrowest, as Chromium ${version} has it: each
 // \`.item\` below is an item of a row with no room for it, held to its
 // automatic minimum, and every width is that item's in Chromium over this
 // document, none of them written by hand: \`scripts/conformance/min-contents.ts\`
 // writes this file. Nothing in it is text, which a platform's fonts would
-// have another width for.
+// have another width for.`;
+  writeFileSync(
+    FIXTURE,
+    `${intro}
 
-export const MIN_CONTENT_DOCUMENT = \`${document}\`;
+export const ${NAME}_DOCUMENT = \`${document}\`;
 
-export const MIN_CONTENT_WIDTHS: readonly number[] = [
+export const ${NAME}_WIDTHS: readonly number[] = [
 ${lines.map((line) => line.trimEnd()).join('\n')}
 ];
 `,

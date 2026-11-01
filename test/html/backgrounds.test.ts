@@ -343,7 +343,7 @@ metric(
     // a gradient is drawn as nothing, over the colour beside it
     assert.strictEqual(style('f').backgroundColor, '#333');
     // and the shorthand resets what it does not name
-    assert.strictEqual(style('g').backgroundPositionX, 0);
+    assert.deepStrictEqual(style('g').backgroundPositionX, { pct: 0 });
   },
 );
 
@@ -1710,7 +1710,7 @@ test('background layers are read, top first, from the shorthand and the longhand
     ['no-repeat', 'no-repeat'],
   ]);
   assert.deepStrictEqual(a.backgroundPositions, [
-    [0, 0],
+    [{ pct: 0 }, { pct: 0 }],
     [{ pct: 50 }, { pct: 50 }],
   ]);
   assert.strictEqual(

@@ -55,8 +55,8 @@ test('calc-size() sizes a box from the size its keyword would give it', async ()
       // half the content's height, and the content's less 10px
       '<div id="a" style="height:calc-size(auto, size * 0.5)"><div class="c"></div></div>' +
       '<div id="b" style="height:calc-size(auto, size - 10px)"><div class="c"></div></div>' +
-      // `size` alone where there is no calculation; a fit-content's
-      '<div id="c" style="height:calc-size(fit-content)"><div class="c"></div></div>' +
+      // a fit-content's, which is all of it
+      '<div id="c" style="height:calc-size(fit-content, size)"><div class="c"></div></div>' +
       // a width: what the room comes to, and a content keyword's
       '<div id="d" style="width:calc-size(auto, size - 40px)"></div>' +
       '<div id="e" style="width:calc-size(auto, size * 0.5 + 10%)"></div>' +
@@ -67,9 +67,10 @@ test('calc-size() sizes a box from the size its keyword would give it', async ()
       // the box it measures under border-box sizing is the border box
       '<div id="h" style="box-sizing:border-box;padding:10px;' +
       'height:calc-size(auto, size * 0.5)"><div class="c"></div></div>' +
-      // where it is not read, the declaration before it stands
+      // where it is not read, the declaration before it stands: a size
+      // has no square, and a greatest size no `auto`
       '<div id="i" style="height:30px;height:calc-size(auto, size * size)"></div>' +
-      '<div id="j" style="min-height:30px;min-height:calc-size(auto, size)"></div>',
+      '<div id="j" style="height:30px;max-height:20px;max-height:calc-size(auto, size)"></div>',
     400,
   );
   const el = view(node);
@@ -83,7 +84,7 @@ test('calc-size() sizes a box from the size its keyword would give it', async ()
   // (100 + 20) / 2, the padding inside it
   assert.strictEqual(boxOf(el, 'h').height, 60);
   assert.strictEqual(boxOf(el, 'i').height, 30);
-  assert.strictEqual(boxOf(el, 'j').height, 30);
+  assert.strictEqual(boxOf(el, 'j').height, 20);
 });
 
 test('margins of both signs collapse to the largest and the most negative of all', async () => {

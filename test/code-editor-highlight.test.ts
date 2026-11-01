@@ -29,6 +29,7 @@ import type {
   Tokenizer,
 } from '../src/index.js';
 import { holdClock } from './held-clock.js';
+import { mulberry32 } from './mulberry32.js';
 
 const h = React.createElement;
 
@@ -36,18 +37,6 @@ afterEach(() => cleanup());
 
 /** How many random sequences each case runs; raise it to search harder. */
 const SEEDS = Number(process.env.CODE_EDITOR_SEEDS ?? 40);
-
-/** A seeded generator (mulberry32): the same sequence of edits every run. */
-function rng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const JS = `/** A module. */
 import { a, b } from './x.js';
@@ -358,7 +347,7 @@ function assertTokens(
 for (const c of CASES) {
   test(`${c.name}: tokens after random edits are a fresh tokenizer's`, async () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
-      const r = rng(seed * 7919);
+      const r = mulberry32(seed * 7919);
       const language = c.language();
       const lines = c.doc.split('\n');
       const tok = language.createTokenizer({ invalidate: () => {} });
@@ -382,7 +371,7 @@ test('javascript: a long document, far jumps and edits: the tokens are a fresh t
   // Past a thousand lines from the frontier a line is a guess, walked to in
   // the background: once the walk is done, nothing of the guesses is left.
   for (let seed = 1; seed <= 6; seed++) {
-    const r = rng(seed * 104729);
+    const r = mulberry32(seed * 104729);
     const language = javascript({ typescript: true });
     const base = `${TS}\n${JS}`.split('\n');
     const lines = Array.from({ length: 4000 }, (_, i) => base[i % base.length]);
@@ -653,7 +642,7 @@ for (const { name: docName, doc, snippets, share } of ORACLE_DOCS)
         seed <= (only || Math.max(2, Math.round(SEEDS / share)));
         seed++
       ) {
-        const r = rng(seed * 31337 + scale);
+        const r = mulberry32(seed * 31337 + scale);
         const { ctx } = await renderX11(
           h(
             CodeEditor,

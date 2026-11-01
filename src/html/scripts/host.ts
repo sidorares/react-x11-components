@@ -96,7 +96,12 @@ import {
 import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
-import { comesFromBox, cssomStyle } from '../computed.js';
+import {
+  SHORTHAND_NAMES,
+  comesFromBox,
+  cssomShorthands,
+  cssomStyle,
+} from '../computed.js';
 import { fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { DocumentFontFace, FontMatch } from '../fonts.js';
@@ -140,7 +145,10 @@ import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import { removeClip, VideoClips, writeClip } from './clips.js';
+import { PageContexts } from './gl.js';
 import { PageSources } from './media-sources.js';
+import type { HtmlGLOptions, HtmlWebGL } from '../webgl.js';
 import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
@@ -481,9 +489,15 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** The file a page's `MediaSource` came to, for a `<video>`'s player to
+   *  play, or null for none any more (`clips.ts`). */
+  showClip(element: Element, file: string | null): void;
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
+  /** Whether the page waits to hear of its viewport, given how long its
+   *  tasks have taken so far (`HtmlViewNode.viewportHeld`). */
+  viewportHeld(busy: number): boolean;
   /** What an `IntersectionObserver` measures of its targets against its
    *  root, the viewport for null (`HtmlViewNode.intersectionsOf`). */
   intersectionsOf(
@@ -614,6 +628,9 @@ export interface HostSeams {
   /** The page's cameras, microphones and screens (`HtmlScripts`'
    *  `mediaDevices`). Absent, there are none. */
   mediaDevices?: HtmlMediaDevices;
+  /** What a page's WebGL contexts draw through (`HtmlScripts`' `webgl`).
+   *  Absent, they keep their state and draw nothing. */
+  webgl?: HtmlWebGL;
   /** The sheets the document adopted (`document.adoptedStyleSheets`),
    *  each its text, for `<Html>` to apply after the document's own. */
   adopt?(sheets: string[]): void;
@@ -1376,6 +1393,8 @@ type Pseudos = Record<
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** How long the page's tasks have taken, in ms (`ScriptEngine.busy`). */
+  readonly busy?: number;
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
    *  host repairs the tree then, as termination can leave it half-moved. */
   timedOutSince?(): boolean;
@@ -1469,6 +1488,37 @@ export class DomHost {
   private _adoptedSheets = new Map<number, AdoptedSheet>();
   private _timers = new Map<number, ReturnType<typeof setTimeout>>();
   private _fetches = new Map<number, InstanceType<AbortControllerClass>>();
+  /** What a page's `MediaSource`s were appended (`clips.ts`), and the files
+   *  the player is handed them in. */
+  private readonly _clips = new VideoClips({
+    plays: (type) => !!this._seams.canPlayType?.(type),
+    write: writeClip,
+    remove: removeClip,
+    show: (element, file) => this._seams.handle.showClip?.(element, file),
+  });
+  /** A page's WebGL contexts, where the host has a GL (`gl.ts`). */
+  private readonly _contexts = new PageContexts({
+    webgl: () => this._seams.webgl,
+    pixels: (element, width, height) => {
+      let pixels = this._s.canvases.get(element);
+      if (!pixels || pixels.width !== width || pixels.height !== height) {
+        pixels = {
+          width,
+          height,
+          data: new Uint8ClampedArray(width * height * 4),
+          version: 0,
+        };
+        this._s.canvases.set(element, pixels);
+      }
+      return pixels.data;
+    },
+    drawn: (element) => {
+      const pixels = this._s.canvases.get(element);
+      if (pixels) pixels.version += 1;
+      else this._contexts.settle(element);
+      for (const listener of [...this._s.canvasListeners]) listener(element);
+    },
+  });
   /** What each media element's source is being read for (`_mediaFetch`). */
   private _mediaFetches = new Map<
     Element,
@@ -1901,7 +1951,13 @@ export class DomHost {
 
   /** A `<canvas>`'s pixels, where a script drew any. */
   canvas(element: Element): CanvasPixels | null {
+    this._contexts.settle(element);
     return this._s.canvases.get(element) ?? null;
+  }
+
+  /** Whether a canvas's picture has nothing behind it show through. */
+  canvasOpaque(element: Element): boolean {
+    return this._contexts.opaque(element);
   }
 
   /** Be told when a canvas's pixels change; answers the way to stop. */
@@ -2014,6 +2070,15 @@ export class DomHost {
         return [found.root ? rect(found.root) : '', ...parts].join(';');
       })
       .join('\n');
+  }
+
+  /** Whether what the page hears of its viewport waits: its `resize`, its
+   *  media query lists' `change` and its `ResizeObserver`s, each of which
+   *  finds what it last found (`HtmlViewNode.viewportHeld`). The frame
+   *  still comes, for what its intersection observers measure against, and
+   *  what the page reads stays what is there. */
+  private _viewportHeld(): boolean {
+    return this._seams.handle.viewportHeld?.(this.entries?.busy ?? 0) ?? false;
   }
 
   /** What a document's viewport is now, as `rendering` answers it: its
@@ -2133,6 +2198,8 @@ export class DomHost {
     this._fetches.clear();
     for (const fetch of this._mediaFetches.values()) fetch.abort();
     this._mediaFetches.clear();
+    this._clips.dispose();
+    this._contexts.dispose();
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
@@ -2401,6 +2468,8 @@ export class DomHost {
     return added;
   }
 
+  /** What the page's last look at its observers was answered (`geometry`). */
+  private _looked = '';
   /** How many looks a handle with no `geometryKey` was asked for. */
   private _looks = 0;
 
@@ -3729,7 +3798,10 @@ export class DomHost {
       case 'rendering': {
         this.flush();
         const ids = text(a).split(' ').map(Number).filter(Boolean);
-        const keys = ids.map((id) => this._viewportKey(id));
+        const held = this._viewportHeld();
+        const keys = ids.map(
+          (id) => (held && this._viewports.get(id)) || this._viewportKey(id),
+        );
         this._viewports = new Map(ids.map((id, i) => [id, keys[i]]));
         this._viewportsWoken = false;
         return keys.join('\n');
@@ -3886,8 +3958,11 @@ export class DomHost {
       // observers that finds the same skips what it would find again, and
       // one with no such key asks for it each time
       case 'geometry': {
+        if (this._looked && this._viewportHeld()) return this._looked;
         this.flush();
-        return this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
+        this._looked =
+          this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
+        return this._looked;
       }
       case 'rect': {
         this.flush();
@@ -3937,18 +4012,22 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
+        // a page's realm asks for the shorthands (`d`) only where it reads
+        // one: they are no part of what a read of a longhand sends
+        const send = (style: Record<string, string> | null): string =>
+          style ? JSON.stringify(d ? cssomShorthands(style) : style) : '';
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
-          const style = this._seams.handle.computedStyle(
-            this._element(a),
-            b as `view-transition${string}`,
+          return send(
+            this._seams.handle.computedStyle(
+              this._element(a),
+              b as `view-transition${string}`,
+            ),
           );
-          return style ? JSON.stringify(style) : '';
         }
         // a frame's document's, which nothing draws
         if (!this._inDocument(this._element(a))) {
-          const style = this._frameStyle(this._element(a), pseudo);
-          return style ? JSON.stringify(style) : '';
+          return send(this._frameStyle(this._element(a), pseudo));
         }
         // a style can be read with text waiting to be set again, which only
         // moves its boxes: marked so with a `~`, and asked for again with
@@ -3957,14 +4036,13 @@ export class DomHost {
         if (typeof c === 'string') {
           if (!comesFromBox(c)) return '';
         } else if (handle.styleWhileOwed) {
-          const style = handle.styleWhileOwed(this._element(a), pseudo);
-          if (!style) return '';
-          const json = JSON.stringify(style);
-          return handle.layoutOwed?.() ? `~${json}` : json;
+          const json = send(handle.styleWhileOwed(this._element(a), pseudo));
+          return json && !d && handle.layoutOwed?.() ? `~${json}` : json;
         }
-        const style = handle.computedStyle(this._element(a), pseudo);
-        return style ? JSON.stringify(style) : '';
+        return send(handle.computedStyle(this._element(a), pseudo));
       }
+      case 'computedShorthands':
+        return JSON.stringify(SHORTHAND_NAMES);
       // one custom property's, by its name: a theme's hundreds are no part
       // of what `computed` sends
       case 'customProperty': {
@@ -4641,6 +4719,37 @@ export class DomHost {
         return crypto.randomUUID();
       case 'fetch':
         this._fetch(Number(a), text(b));
+        return null;
+      // a page's WebGL contexts, where the host has a GL (`gl.ts`)
+      case 'glOpen':
+        return this._contexts.open(JSON.parse(text(a)) as HtmlGLOptions);
+      case 'glRun':
+        this._contexts.run(Number(a), text(b));
+        return null;
+      case 'glAsk':
+        return this._contexts.ask(Number(a), text(b));
+      case 'glResize':
+        this._contexts.resize(Number(a), Number(b), Number(c));
+        return null;
+      case 'glPresent':
+        this._contexts.present(Number(a), this._element(b));
+        return null;
+      // a page's `MediaSource` (`mse.ts`), its bytes kept here (`clips.ts`)
+      case 'mseOpen':
+        return this._clips.open(text(a), this._element(b));
+      case 'mseAppend':
+        return JSON.stringify(
+          this._clips.append(Number(a), Buffer.from(text(b), 'base64')),
+        );
+      case 'mseRemove':
+        return JSON.stringify(
+          this._clips.remove(Number(a), Number(b), Number(c)),
+        );
+      case 'mseEnd':
+        this._clips.end(Number(a));
+        return null;
+      case 'mseClose':
+        this._clips.close(Number(a));
         return null;
       case 'mediaFetch':
         this._mediaFetch(this._element(a), Number(b), text(c));

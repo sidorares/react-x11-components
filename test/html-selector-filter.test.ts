@@ -16,6 +16,7 @@ import { Cascade } from '../src/html/css/cascade.js';
 import { parseStylesheet } from '../src/html/css/parse.js';
 import type { RootLook } from '../src/html/css/style.js';
 import { HtmlSource } from '../src/html/dom.js';
+import { mulberry32 } from './mulberry32.js';
 
 const LOOK: RootLook = {
   color: '#000000',
@@ -32,17 +33,6 @@ const LOOK: RootLook = {
   controlBorder: 1,
   controlRadius: 4,
 };
-
-function rng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const TAGS = ['div', 'p', 'span', 'section', 'ul', 'li', 'em', 'a'];
 const CLASSES = ['a', 'b', 'c', 'd', 'e', 'md:x'];
@@ -127,7 +117,7 @@ function selectorOf(next: () => number): string {
 
 test('the rules an element matches are the ones the matcher matches, with the fast paths answering most of them', () => {
   for (let seed = 1; seed <= 12; seed += 1) {
-    const next = rng(seed);
+    const next = mulberry32(seed);
     const selectors = Array.from({ length: 160 }, () => selectorOf(next));
     // the plain cases a framework writes most: a class alone, an id alone
     selectors.push('.a', '.md\\:x', '#y', '.b .c', '#x .e', 'section .a');
@@ -286,7 +276,7 @@ test("the nth pseudo-classes answer from where an element is kept as css-select'
     'span + :nth-last-of-type(-n+2)',
   );
   for (let seed = 1; seed <= 6; seed += 1) {
-    const next = rng(seed);
+    const next = mulberry32(seed);
     const source = new HtmlSource();
     source.setSource(documentOf(next), true);
     // text and comments between the elements, which are not counted

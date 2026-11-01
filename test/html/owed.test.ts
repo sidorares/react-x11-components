@@ -25,6 +25,7 @@ import { frameClock, owedClock, resizeClock } from '../../src/html/node.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import type { ResourceResult } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import {
   FONTS,
   h,
@@ -990,6 +991,30 @@ metric(
   },
 );
 
+metric(
+  'a flex item comes to its automatic minimum in the face that arrived',
+  async (t) => {
+    // The minimum is added up from the last layout of what the item holds
+    // (`exactMinContent`), whose lines were in the face before: the item
+    // stayed as wide as the word was, and the word stood out of it
+    holdClock(t, owedClock);
+    const faces = heldFaces();
+    const words = 'sit amet ipsum dolor lorem consectetur '.repeat(12);
+    const { el } = await renderScrolled(
+      `<!doctype html><html><head><style>${FACES}</style></head><body>
+      <div style="display:flex">${words}<div style="width:105px">
+      <div>consectetur</div></div>${words}</div></body></html>`,
+      200,
+      352,
+      { onResource: faces.onResource },
+    );
+    await act();
+    await faces.arrive('regular.ttf');
+    await runOwed(el);
+    await assertWhole(el, 'the word in its item');
+  },
+);
+
 /** The pane a document scrolls in. */
 function paneOf(node: unknown): {
   scrollY: number;
@@ -1000,17 +1025,6 @@ function paneOf(node: unknown): {
   while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
   assert.ok(at, 'a pane');
   return at as unknown as ReturnType<typeof paneOf>;
-}
-
-/** mulberry32: the same document for the same seed. */
-function random(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 const FUZZ_SHEET = `${FACES}
@@ -1146,7 +1160,7 @@ metric(
     const seeds = Number(env.OWED_SEEDS ?? 30);
     const from = Number(env.OWED_FROM ?? 1);
     for (let seed = from; seed <= seeds; seed += 1) {
-      const next = random(seed * 7907);
+      const next = mulberry32(seed * 7907);
       const body = createElement('body', {});
       const blocks = 12 + Math.floor(next() * 16);
       for (let i = 0; i < blocks; i += 1) appendChild(body, fuzzed(next, 0));

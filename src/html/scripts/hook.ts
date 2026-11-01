@@ -115,6 +115,8 @@ export interface ScriptProps {
   mediaEvent?: MediaEventHandler;
   /** `<Html>`'s `canvasImage`: what a page's script drew on a canvas. */
   canvasImage?: (element: Element) => unknown | null;
+  /** Whether that picture lets nothing behind it show. */
+  canvasOpaque?: (element: Element) => boolean;
   /** The document's runner, where its scripts run: what a frame in it is
    *  run as a frame of (`FrameLink`). Not a prop. */
   runner?: () => ScriptRunner | null;
@@ -219,6 +221,9 @@ export function useScripts(
     get mediaDevices() {
       return latest.current.mediaDevices;
     },
+    get webgl() {
+      return latest.current.webgl;
+    },
     get cookies() {
       return latest.current.cookies;
     },
@@ -258,6 +263,10 @@ export function useScripts(
     pictures.current.set(element, { version: pixels.version, image });
     return image;
   }, []);
+  const canvasOpaque = useCallback(
+    (element: Element) => runner.current?.host.canvasOpaque(element) ?? false,
+    [],
+  );
   const unwatch = useRef<(() => void) | null>(null);
 
   /** The document's runner goes: with `swap`, the document shown in its
@@ -460,6 +469,7 @@ export function useScripts(
     imageSettled,
     mediaEvent,
     canvasImage,
+    canvasOpaque,
     runner: getRunner,
     runtime: engine,
     ...(adopted.length ? { stylesheet: adopted } : {}),

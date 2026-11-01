@@ -12,12 +12,18 @@ import {
 } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import * as ntk from 'react-x11/ntk';
-import type { Element } from 'domhandler';
+import type { ChildNode, Document, Element, ParentNode } from 'domhandler';
+import { appendChild, removeElement } from 'domutils';
 import { parseDocument } from 'htmlparser2';
 import { Html } from '../../src/index.js';
-import type { HtmlViewNode } from '../../src/html/index.js';
+import type { HtmlChange, HtmlViewNode } from '../../src/html/index.js';
 import { decodesImageType } from '../../src/html/image-types.js';
-import { drawsForeignObjects, inlineDrawing } from '../../src/html/svg.js';
+import {
+  drawsForeignObjects,
+  forgetDrawings,
+  inlineDrawing,
+} from '../../src/html/svg.js';
+import { HtmlSource, shadowRootOf } from '../../src/html/dom.js';
 import {
   allowsAutoSizes,
   normalize,
@@ -52,6 +58,7 @@ import type { LaidBox, PaintOp, ReplacedBox } from './harness.js';
 import { animationClock } from '../../src/html/node.js';
 import { imageDecoder } from '../../src/html/resources.js';
 import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import { gifBytes } from '../gif-fixture.js';
 
 afterEach(cleanup);
@@ -3511,3 +3518,944 @@ metric(
     }
   },
 );
+
+/** `SvgView`, off ntk's exports as `SvgDrawing` reaches it. */
+const SvgView = (
+  ntk as unknown as {
+    SvgView: {
+      prototype: {
+        draw(...args: unknown[]): unknown;
+        setSvgDom(...args: unknown[]): unknown;
+      };
+    };
+  }
+).SvgView;
+
+/**
+ * Whole repaints of a document, with how many drawings were set from their
+ * paths (`drawn`) and how many trees `SvgView` was handed (`read`); and what
+ * a paint with no rasters kept comes to, which is what each has to be.
+ */
+function repaints(
+  t: { mock: typeof import('node:test').mock },
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+) {
+  const draw = t.mock.method(SvgView.prototype, 'draw');
+  const read = t.mock.method(SvgView.prototype, 'setSvgDom');
+  const node = el as unknown as {
+    invalidate(all: boolean, by: unknown, why: string): void;
+    _drawingKept?: unknown;
+    _drawings: { kept: Map<string, unknown>; destroy(): void } | null;
+    _drawnOnce: Set<string>;
+  };
+  const repaint = async () => {
+    draw.mock.resetCalls();
+    read.mock.resetCalls();
+    node.invalidate(false, el, 'layout');
+    const pixels = await snapshot(result, el);
+    return {
+      pixels,
+      drawn: draw.mock.callCount(),
+      read: read.mock.callCount(),
+    };
+  };
+  return {
+    repaint,
+    /** How many were set since the last repaint began. */
+    drawnYet: () => draw.mock.callCount(),
+    /** How many trees it was handed since then. */
+    readYet: () => read.mock.callCount(),
+    kept: () => [...(node._drawings?.kept.keys() ?? [])],
+    /** No raster kept, and no drawing noted. */
+    forget: () => {
+      node._drawings?.destroy();
+      node._drawings = null;
+      node._drawnOnce.clear();
+    },
+    /** The document with every drawing set from its paths. */
+    direct: async () => {
+      node._drawingKept = () => null;
+      try {
+        return (await repaint()).pixels;
+      } finally {
+        delete node._drawingKept;
+      }
+    },
+  };
+}
+
+/** The most two snapshots differ by in any byte. */
+function levelsApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  assert.strictEqual(a.length, b.length);
+  let most = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    most = Math.max(most, Math.abs(a[i] - b[i]));
+  }
+  return most;
+}
+
+/** A change to an attribute, as a refresh is told of it. */
+function setAttribute(target: Element, name: string, value: string) {
+  const oldValue = target.attribs[name] ?? null;
+  target.attribs[name] = value;
+  return {
+    type: 'attributes' as const,
+    target,
+    attributeName: name,
+    oldValue,
+  };
+}
+
+/** What is put into an element that holds it already, as it is told once it
+ *  has been out and come back: all a change said of it while it was out was
+ *  told to nobody (`DomHost._tell`). */
+function cameBack(target: ParentNode, node: ChildNode): HtmlChange {
+  return {
+    type: 'childList',
+    target,
+    addedNodes: [node],
+    removedNodes: [],
+  };
+}
+
+metric(
+  'an inline drawing drawn again at its size is copied from a raster of it, the pixels its paths set',
+  async (t) => {
+    // Sixty icons were parsed and set from their paths at every paint that
+    // reached them, which was a seventh of each frame of a window's edge
+    // on a webmail page. Its second drawing keeps a raster, and every
+    // drawing after copies it: none of it is parsed or set again.
+    const icon =
+      '<svg class="i" width="24" height="24" viewBox="0 0 24 24">' +
+      '<defs><linearGradient id="g"><stop offset="0" stop-color="#0000ff"/>' +
+      '<stop offset="1" stop-color="#ff00ff"/></linearGradient></defs>' +
+      '<rect width="24" height="24" rx="5" fill="url(#g)"/>' +
+      '<path d="M3 12 Q 12 1 21 12 T 3 12" fill="currentColor"' +
+      ' stroke="#ffffff" stroke-width="1.3" fill-opacity=".6"/></svg>';
+    for (const scale of [1, 2]) {
+      const over = scale === 1 ? render : render2x;
+      const { result, node } = await over(
+        '<style>body{margin:0;background:#20406a;color:#ffcc00}' +
+          'svg{display:block;margin:3.3px}.b{color:#00ff99}</style>' +
+          icon +
+          icon +
+          `<div class="b">${icon}</div>`,
+        300,
+      );
+      const el = view(node);
+      const { repaint, direct, kept, forget } = repaints(t, result, el);
+      forget();
+      // two alike, of which the second makes the raster, and one in another
+      // colour, whose raster waits for its second paint
+      const first = await repaint();
+      assert.strictEqual(first.drawn, 3, `${scale}x: from their paths`);
+      const second = await repaint();
+      assert.strictEqual(second.drawn, 1, `${scale}x: the other raster`);
+      const third = await repaint();
+      assert.strictEqual(third.drawn, 0, `${scale}x: and nothing is set`);
+      assert.strictEqual(third.read, 0, `${scale}x: or read`);
+      assert.strictEqual(kept().length, 2, `${scale}x: the first two are one`);
+      const set = await direct();
+      assert.ok(levelsApart(set, second.pixels) <= 1, `${scale}x: second`);
+      assert.ok(levelsApart(set, third.pixels) <= 1, `${scale}x: third`);
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a refresh that leaves an inline drawing as it was copies its raster, and draws nothing anew',
+  async (t) => {
+    // A refresh makes every drawing of a document again (`inlineDrawing`),
+    // and the page this was measured on refreshed at most frames, so a
+    // raster of a drawing object would hardly ever have been asked for
+    // twice. It is kept by what the drawing says.
+    const { result, node } = await render(
+      '<style>body{margin:0}.on{color:#ff0000}</style>' +
+        '<p id="p">Some text</p>' +
+        '<svg width="30" height="30"><circle cx="15" cy="15" r="9"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    assert.strictEqual((await repaint()).drawn, 0);
+    const p = findById(el.document, 'p')!;
+    el.touchDocument([setAttribute(p, 'class', 'on')]);
+    await act();
+    let after = await repaint();
+    assert.deepStrictEqual([after.drawn, after.read], [0, 0], 'told');
+    el.touchDocument();
+    await act();
+    after = await repaint();
+    assert.deepStrictEqual([after.drawn, after.read], [0, 0], 'not told');
+  },
+);
+
+metric(
+  'a refresh told of a change elsewhere reads no inline drawing again',
+  async (t) => {
+    // Each drawing was made again at every refresh, and was read for what
+    // it says to find its raster: a webmail page refreshed at most of its
+    // frames, and the reading was up to half of what was left of drawing
+    // sixty icons. And what no raster stands for was handed to `SvgView`
+    // again, for a change on the far side of the page.
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block}.on{color:#ff0000}</style>' +
+        '<p id="p">Some text</p>' +
+        '<svg id="copied" width="30" height="30"><circle cx="15" cy="15"' +
+        ' r="9"/></svg>' +
+        '<svg id="set" width="60" height="24"><text y="16">A</text></svg>' +
+        '<svg style="display:none"><symbol id="s"><rect width="9"' +
+        ' height="9"/></symbol></svg>' +
+        '<svg id="used" width="30" height="30"><use href="#s"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint, readYet } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const by = (id: string) => findById(el.document, id)!;
+    const drawings = () =>
+      ['copied', 'set', 'used'].map((id) => inlineDrawing(by(id)));
+    const [copied, set, used] = drawings();
+    // what reaches outside itself holds while nothing changes
+    await repaint();
+    assert.ok(inlineDrawing(by('used')) === used, 'a repaint keeps every one');
+    el.touchDocument([setAttribute(by('p'), 'class', 'on')]);
+    await act();
+    const read = readYet();
+    await repaint();
+    const [nowCopied, nowSet, nowUsed] = drawings();
+    assert.ok(nowCopied === copied, 'what a raster stands for');
+    assert.ok(nowSet === set, 'and what it does not');
+    assert.ok(nowUsed !== used, 'but what it names may be what changed');
+    assert.strictEqual(read + readYet(), 0, 'and no tree is handed over');
+    el.touchDocument();
+    await act();
+    const [wholeCopied, wholeSet] = drawings();
+    assert.ok(wholeCopied !== copied, 'told nothing, it may be anything');
+    assert.ok(wholeSet !== set, 'and that is every drawing');
+  },
+);
+
+metric(
+  'a drawing that failed is tried again at a refresh told of a change elsewhere',
+  async (t) => {
+    // What it failed on is not known, and may be outside it
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block}</style><p id="p">Text</p>' +
+        '<svg id="d" width="60" height="24"><text y="16">A</text>' +
+        '<rect width="60" height="24" fill="#00aa00"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const handOver = SvgView.prototype.setSvgDom;
+    let failing = true;
+    t.mock.method(
+      SvgView.prototype,
+      'setSvgDom',
+      function (this: unknown, tree: unknown) {
+        if (failing) throw new Error('no such tree');
+        return handOver.call(this, tree);
+      },
+    );
+    const { repaint } = repaints(t, result, el);
+    el.touchDocument();
+    await act();
+    const failed = (await repaint()).pixels;
+    failing = false;
+    const p = findById(el.document, 'p')!;
+    el.touchDocument([setAttribute(p, 'class', 'on')]);
+    await act();
+    const after = await repaint();
+    assert.ok(bytesApart(after.pixels, failed) > 0, 'it is drawn now');
+  },
+);
+
+metric(
+  'a drawing is drawn as a whole refresh draws it after a told change to what it reads',
+  async (t) => {
+    // Everything a drawing was read from has to say so, as each record
+    // told is all that drops one now: its elements, its root, what it names
+    // outside itself, what it named and did not find, and what no record
+    // could tell of. Each case stands on one way of saying so.
+    const box = 'width="60" height="24"';
+    const sprite =
+      '<svg style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+      '<rect id="in-sprite" width="5" height="10"/></symbol></svg>';
+    const icon = `<svg ${box}><use href="#s"/></svg>`;
+    const cases: {
+      name: string;
+      html: string;
+      style?: string;
+      change: (by: (id: string) => Element) => HtmlChange[];
+    }[] = [
+      {
+        name: 'a shape in it',
+        html: `<svg ${box}><path id="x" d="M0 0h9v9z"/></svg>`,
+        change: (by) => [setAttribute(by('x'), 'd', 'M9 9h9v9z')],
+      },
+      {
+        name: 'an id what it paints with names, which no raster stands for',
+        html:
+          `<svg ${box}><linearGradient id="a"><stop stop-color="#00aa00"/>` +
+          `</linearGradient><rect ${box} fill="url(#b)"/>` +
+          '<text y="16">A</text></svg>',
+        change: (by) => [setAttribute(by('a'), 'id', 'b')],
+      },
+      {
+        name: 'a child put in it',
+        html: `<svg id="d" ${box}><g id="g"></g></svg>`,
+        change: (by) => {
+          const made = parseDocument(
+            '<rect width="30" height="24" fill="#ff0000"/>',
+          ).children[0] as Element;
+          const g = by('g');
+          made.parent = g;
+          g.children.push(made);
+          return [cameBack(g, made)];
+        },
+      },
+      {
+        name: 'its root, as a raster has it',
+        html:
+          `<svg id="d" ${box} viewBox="0 0 60 24"><rect width="30"` +
+          ' height="24"/></svg>',
+        change: (by) => [setAttribute(by('d'), 'viewBox', '0 0 30 12')],
+      },
+      {
+        name: 'its root, where no raster stands for it',
+        html:
+          `<svg id="d" ${box} viewBox="0 0 60 24"><rect width="30"` +
+          ' height="24"/><text y="16">A</text></svg>',
+        change: (by) => [setAttribute(by('d'), 'viewBox', '0 0 30 12')],
+      },
+      {
+        // the third is copied from the raster the second made, and is
+        // nothing but a key
+        name: "a sprite's symbol",
+        html: sprite + icon + icon + icon,
+        change: (by) => [setAttribute(by('in-sprite'), 'fill', '#00aa00')],
+      },
+      {
+        name: 'a gradient only a rule names',
+        html:
+          '<svg style="display:none"><linearGradient id="far"><stop id="stop"' +
+          ` stop-color="#ff0000"/></linearGradient></svg>` +
+          `<svg id="by-rule" ${box}><rect ${box}/></svg>`,
+        style: '#by-rule rect{fill:url(#far)}',
+        change: (by) => [setAttribute(by('stop'), 'stop-color', '#00aa00')],
+      },
+      {
+        // put in before the drawing, so the document's last node stays as
+        // it was, and drawn through a matrix, so no key has looked for it
+        name: 'what it named and did not find',
+        html:
+          '<div id="holder"></div><div style="transform:rotate(180deg)">' +
+          `<svg ${box}><use href="#later"/></svg></div>`,
+        change: (by) => {
+          const made = parseDocument(
+            '<svg style="display:none"><rect id="later" width="30"' +
+              ' height="24" fill="#ff0000"/></svg>',
+          ).children[0] as Element;
+          const holder = by('holder');
+          made.parent = holder;
+          holder.children.push(made);
+          return [cameBack(holder, made)];
+        },
+      },
+      {
+        name: 'a drawing that went out and came back',
+        html:
+          `<div id="holder"><svg id="d" ${box} viewBox="0 0 60 24">` +
+          '<rect width="30" height="24"/></svg></div>',
+        change: (by) => {
+          by('d').attribs.viewBox = '0 0 30 12';
+          return [cameBack(by('holder'), by('d'))];
+        },
+      },
+      {
+        name: 'a drawing in what went out and came back',
+        html:
+          `<div id="holder"><div id="in"><svg id="d" ${box}` +
+          ' viewBox="0 0 60 24"><rect width="30" height="24"/></svg></div>' +
+          '</div>',
+        change: (by) => {
+          by('d').attribs.viewBox = '0 0 30 12';
+          return [cameBack(by('holder'), by('in'))];
+        },
+      },
+      {
+        name: 'a drawing in the shadow tree of what went out and came back',
+        html:
+          '<div id="holder"><div id="host"><template shadowrootmode="open">' +
+          `<svg id="d" ${box} viewBox="0 0 60 24"><rect width="30"` +
+          ' height="24"/></svg></template></div></div>',
+        change: (by) => {
+          const host = by('host');
+          const tree = shadowRootOf(host)!;
+          const d = tree.children.find((n) => n.type === 'tag') as Element;
+          d.attribs.viewBox = '0 0 30 12';
+          return [cameBack(by('holder'), host)];
+        },
+      },
+    ];
+    for (const { name, html, style, change } of cases) {
+      const { result, node } = await render(
+        `<style>body{margin:0}svg{display:block}${style ?? ''}</style>${html}`,
+        300,
+      );
+      const el = view(node);
+      const { repaint } = repaints(t, result, el);
+      await repaint();
+      await repaint();
+      const was = (await repaint()).pixels;
+      const by = (id: string) => findById(el.document, id)!;
+      el.touchDocument(change(by));
+      await act();
+      const told = (await repaint()).pixels;
+      assert.ok(bytesApart(told, was) > 0, `${name}: drawn as it was`);
+      el.touchDocument();
+      await act();
+      const whole = (await repaint()).pixels;
+      assert.ok(levelsApart(told, whole) <= 1, `${name}: what it reads now`);
+      cleanup();
+    }
+  },
+);
+
+test('what an inline drawing reaches past its box follows what it names', () => {
+  // Asked of a drawing no paint has reached: the ink of one off screen
+  const doc = parseDocument(
+    '<svg><defs><marker id="m" markerWidth="10" markerHeight="10" ' +
+      'markerUnits="userSpaceOnUse"><path d="M0,0H10V10H0Z"/></marker>' +
+      '</defs></svg>' +
+      '<svg id="d" width="20" height="20"><g marker-end="url(#m)">' +
+      '<path d="M0,0 V200" stroke-width="4"/></g></svg>',
+  );
+  const root = findById(doc, 'd')!;
+  const reach = () => inlineDrawing(root).reach(0, 0, 20, 20, 1, null, 16)!;
+  const before = reach();
+  const changed = setAttribute(findById(doc, 'm')!, 'markerwidth', '90');
+  new HtmlSource().touch(true);
+  forgetDrawings([changed]);
+  const after = reach();
+  assert.ok(
+    after.x + after.width > before.x + before.width + 50,
+    `as far as the marker reaches now: ${JSON.stringify(after)}`,
+  );
+});
+
+metric('a document taken over is read as it stands', async () => {
+  // What changed while nothing drew it was told to nobody
+  const doc = parseDocument(
+    '<svg id="d" width="60" height="24" viewBox="0 0 60 24"><rect width="30"' +
+      ' height="24"/></svg>',
+  ) as unknown as Document;
+  const page = (shown: boolean) =>
+    h(
+      'box',
+      { style: { width: 300, flexDirection: 'column' } },
+      shown && h(Html, { source: '', document: doc, 'data-testname': 'doc' }),
+    );
+  const result = await renderX11(page(true), {
+    width: 340,
+    height: 100,
+    fonts: FONTS!,
+  });
+  await act();
+  const before = await snapshot(
+    result,
+    view(screen.getByTestName('doc') as DrawnNode),
+  );
+  const root = findById(doc, 'd')!;
+  await act(() => result.rerender(page(false)));
+  root.attribs.viewBox = '0 0 30 12';
+  await act(() => result.rerender(page(true)));
+  await act();
+  const after = await snapshot(
+    result,
+    view(screen.getByTestName('doc') as DrawnNode),
+  );
+  assert.ok(bytesApart(after, before) > 0, 'drawn as it was');
+});
+
+metric(
+  'a script stopped in the middle of what it asked leaves no drawing as it was',
+  async (t) => {
+    // What it was cut in the middle of told nobody what it changed
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block}</style>' +
+        '<svg id="d" width="60" height="24" viewBox="0 0 60 24"><rect' +
+        ' width="30" height="24"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const was = (await repaint()).pixels;
+    findById(el.document, 'd')!.attribs.viewBox = '0 0 30 12';
+    el.interrupted();
+    await act();
+    const after = await repaint();
+    assert.ok(bytesApart(after.pixels, was) > 0, 'drawn as it was');
+  },
+);
+
+metric(
+  'told what changed, generated drawings are drawn as a whole refresh draws them',
+  async () => {
+    // Drawings that hold shapes, name a sprite and a gradient outside them,
+    // name what is not there yet, set text or are drawn through a matrix,
+    // and changes to each of those, a few at a time before a whole refresh
+    // says what they should have come to. DRAWING_SEEDS sweeps more of
+    // them, and DRAWING_FROM starts at one.
+    const { env } = process;
+    const seeds = Number(env.DRAWING_SEEDS ?? 24);
+    const from = Number(env.DRAWING_FROM ?? 0);
+    const colours = ['#ff0000', '#00aa00', '#0000ff', '#ff00ff', '#00aaaa'];
+    for (let seed = from; seed < from + seeds; seed += 1) {
+      const next = mulberry32(seed * 7001 + 1);
+      const below = (n: number) => Math.floor(next() * n);
+      const colour = () => colours[below(colours.length)];
+      const count = 3 + below(4);
+      const parts = [
+        `<rect id="r-@" width="20" height="20" fill="${colour()}"/>`,
+        '<use href="#s"/>',
+        `<rect id="g-@" y="20" width="40" height="20" fill="url(#g)"/>`,
+        '<use href="#late-@" x="20"/>',
+        '<text y="30">A</text>',
+        `<linearGradient id="own-@"><stop id="stop-@" stop-color="${colour()}"/></linearGradient>` +
+          '<rect x="20" width="20" height="20" fill="url(#own-@)"/>',
+      ];
+      let html =
+        '<style>body{margin:0}svg{display:block}</style>' +
+        '<div id="head"></div>' +
+        '<svg id="sprite" style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+        `<rect id="in-s" width="5" height="10" fill="${colour()}"/></symbol>` +
+        `<linearGradient id="g"><stop id="stop" stop-color="${colour()}"/>` +
+        '</linearGradient></svg>';
+      for (let i = 0; i < count; i += 1) {
+        // no text in a box that turns, which is drawn on a surface kept for
+        // the box, and a told change to what it names leaves that as it was
+        const turns = next() < 0.25;
+        const own = parts
+          .filter((part) => next() < 0.5 && !(turns && part.includes('<text')))
+          .join('')
+          .replaceAll('@', String(i));
+        const svg =
+          `<svg id="d${i}" width="40" height="40" viewBox="0 0 40 40">` +
+          `<rect id="x${i}" width="9" height="9"/>${own}</svg>`;
+        const style = turns ? ' style="transform:rotate(180deg)"' : '';
+        html += `<div id="h${i}"${style}>${svg}</div>`;
+      }
+      const { result, node } = await render(html, 300);
+      const el = view(node);
+      const repaint = async () => {
+        (
+          el as unknown as {
+            invalidate(all: boolean, by: unknown, why: string): void;
+          }
+        ).invalidate(false, el, 'layout');
+        return snapshot(result, el);
+      };
+      await repaint();
+      await repaint();
+      const by = (id: string) => findById(el.document, id);
+      const made = (text: string) => {
+        const node = parseDocument(text).children[0] as Element;
+        delete (node as { parent?: unknown }).parent;
+        return node;
+      };
+      const steps: (() => HtmlChange[])[] = [
+        () => [setAttribute(by(`x${below(count)}`)!, 'fill', colour())],
+        () => [setAttribute(by(`d${below(count)}`)!, 'viewBox', '0 0 20 20')],
+        () => {
+          const shape = by('in-s');
+          return shape ? [setAttribute(shape, 'fill', colour())] : [];
+        },
+        () => {
+          const stop = by('stop');
+          return stop ? [setAttribute(stop, 'stop-color', colour())] : [];
+        },
+        () => {
+          const added = made(
+            `<svg style="display:none"><rect id="late-${below(count)}"` +
+              ` width="20" height="20" fill="${colour()}"/></svg>`,
+          );
+          const head = by('head')!;
+          appendChild(head, added);
+          return [cameBack(head, added)];
+        },
+        () => {
+          const added = made(
+            `<rect width="9" height="9" y="30" fill="${colour()}"/>`,
+          );
+          const d = by(`d${below(count)}`)!;
+          appendChild(d, added);
+          return [cameBack(d, added)];
+        },
+        () => {
+          const sprite = by('sprite');
+          if (!sprite) return [];
+          const target = sprite.parent!;
+          removeElement(sprite);
+          return [
+            {
+              type: 'childList',
+              target,
+              addedNodes: [],
+              removedNodes: [sprite],
+            },
+          ];
+        },
+        () => {
+          const g = by('g');
+          return g ? [setAttribute(g, 'id', 'not-g')] : [];
+        },
+        () => {
+          const i = below(count);
+          const d = by(`d${i}`)!;
+          const holder = by(`h${i}`)!;
+          // out and back, changed on the way, which is all that is told
+          removeElement(d);
+          d.attribs.viewbox = '0 0 30 30';
+          appendChild(holder, d);
+          return [
+            {
+              type: 'childList',
+              target: holder,
+              addedNodes: [],
+              removedNodes: [d],
+            },
+            cameBack(holder, d),
+          ];
+        },
+      ];
+      for (let step = 0; step < 8; step += 1) {
+        el.touchDocument(steps[below(steps.length)]());
+        await act();
+        const told = await repaint();
+        if (next() < 0.5) continue;
+        el.touchDocument();
+        await act();
+        const whole = await repaint();
+        assert.ok(
+          levelsApart(told, whole) <= 1,
+          `seed ${seed}, step ${step}: drawn otherwise than a whole refresh`,
+        );
+      }
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a raster of an inline drawing is held to everything the drawing is set from',
+  async (t) => {
+    // Each drawing reads one thing, and each step changes that thing and
+    // nothing else, so a key that leaves it out draws the raster it kept.
+    const { result, node } = await render(
+      '<html><style>html{font-size:10px}html.big{font-size:20px}' +
+        'body{margin:0;color:#000000}' +
+        'svg{display:block;margin:2px}' +
+        '.color{color:#00aa00}.fill #fill{fill:#ff0000}' +
+        '.stroke #stroke{stroke:#ff0000}.shape #shape rect{fill:#0000ff}' +
+        '.width{stroke-width:7}.em{font-size:40px}.size #size{width:34px}' +
+        '.zoom #zoom{zoom:2;width:12px;height:12px}#prop{--c:#ff0000}.prop #prop{--c:#00aa00}#rem{font-size:13px}' +
+        '</style>' +
+        '<div id="top"><svg style="display:none">' +
+        '<symbol id="sprite" viewBox="0 0 10 10"><rect id="in-sprite"' +
+        ' width="5" height="10"/></symbol><linearGradient id="far">' +
+        '<stop id="far-stop" stop-color="#ff0000"/></linearGradient></svg>' +
+        '<svg id="color" width="24" height="24"><rect width="24" height="24"' +
+        ' fill="currentColor"/></svg>' +
+        '<svg id="fill" width="24" height="24"><rect width="24" height="24"/>' +
+        '</svg>' +
+        '<svg id="stroke" width="24" height="24"><line x1="2" y1="12" x2="22"' +
+        ' y2="12" stroke-width="4"/></svg>' +
+        '<svg id="shape" width="24" height="24"><rect width="24" height="24"/>' +
+        '</svg>' +
+        '<svg id="width" width="24" height="24" stroke="#000000"><line x1="2"' +
+        ' y1="12" x2="22" y2="12"/></svg>' +
+        '<svg id="em" width="60" height="24"><rect width="1em" height="24"/>' +
+        '</svg>' +
+        '<svg id="rem" width="60" height="24"><rect width="2rem" height="24"/>' +
+        '</svg>' +
+        '<svg id="size" width="24" height="24" viewBox="0 0 24 24"><rect' +
+        ' width="12" height="24"/></svg>' +
+        '<svg id="zoom" width="24" height="24"><rect width="12" height="12"/>' +
+        '</svg>' +
+        '<svg id="prop" width="24" height="24"><rect width="24" height="24"' +
+        ' fill="var(--c)"/></svg>' +
+        '<svg id="used" width="24" height="24"><use href="#sprite"/></svg>' +
+        '<svg id="far-fill" width="24" height="24"><rect width="24" height="24"' +
+        ' fill="url(#far)"/></svg>' +
+        '<svg id="d" width="24" height="24"><path id="d-path" d="M0 0h9v9z"/>' +
+        '</svg>' +
+        '<svg id="box" width="24" height="24" viewBox="0 0 24 24"><rect' +
+        ' id="in-box" width="24" height="12"/></svg>' +
+        // alike but for the name of an element, and alike but for what a
+        // group holds
+        '<svg width="24" height="24"><rect width="24" height="24" r="4"' +
+        ' cx="12" cy="12"/></svg>' +
+        '<svg width="24" height="24"><circle width="24" height="24" r="4"' +
+        ' cx="12" cy="12"/></svg>' +
+        '<svg width="24" height="24"><g fill="#ff0000"><rect width="24"' +
+        ' height="24"/></g></svg>' +
+        '<svg width="24" height="24"><g fill="#ff0000"></g><rect width="24"' +
+        ' height="24"/></svg></div>',
+      300,
+    );
+    const el = view(node);
+    const { repaint, direct, drawnYet } = repaints(t, result, el);
+    const by = (id: string) => findById(el.document, id)!;
+    const top = by('top');
+    const root = el.document.children.find(
+      (n): n is Element => n.type === 'tag',
+    )!;
+    const addClass = (name: string) => () => [
+      setAttribute(top, 'class', `${top.attribs.class ?? ''} ${name}`.trim()),
+    ];
+    const steps: [string, () => readonly HtmlChange[] | null][] = [
+      ['its currentColor', addClass('color')],
+      ['its fill', addClass('fill')],
+      ['its stroke', addClass('stroke')],
+      [
+        'what a rule gives a shape',
+        () => {
+          addClass('shape')();
+          return null;
+        },
+      ],
+      ['what it inherits', addClass('width')],
+      ['its font size', addClass('em')],
+      ['the root font size', () => [setAttribute(root, 'class', 'big')]],
+      ['its size', addClass('size')],
+      ['its zoom', addClass('zoom')],
+      ['a custom property', addClass('prop')],
+      [
+        "a sprite's symbol",
+        () => [setAttribute(by('in-sprite'), 'fill', '#00aa00')],
+      ],
+      [
+        'a gradient outside it',
+        () => [setAttribute(by('far-stop'), 'stop-color', '#00aa00')],
+      ],
+      ['a shape, told', () => [setAttribute(by('d-path'), 'd', 'M9 9h9v9z')]],
+      [
+        'a shape, not told',
+        () => {
+          by('d-path').attribs.d = 'M0 9h9v9z';
+          return null;
+        },
+      ],
+      ['its viewBox', () => [setAttribute(by('box'), 'viewBox', '0 0 12 12')]],
+    ];
+    await repaint();
+    await repaint();
+    let was = (await repaint()).pixels;
+    for (const [name, change] of steps) {
+      el.touchDocument(change());
+      await act();
+      // the paint the change asked for, and maybe more than one
+      const set = drawnYet();
+      const first = await repaint();
+      assert.ok(bytesApart(first.pixels, was) > 0, `${name}: drawn the same`);
+      assert.ok(set + first.drawn > 0, `${name}: nothing set anew`);
+      await repaint();
+      const copied = await repaint();
+      assert.strictEqual(copied.drawn, 0, `${name}: kept in the end`);
+      was = copied.pixels;
+      assert.strictEqual(
+        levelsApart(await direct(), was),
+        0,
+        `${name}: the raster`,
+      );
+    }
+  },
+);
+
+metric(
+  'a raster of an inline drawing follows a stream through it and through what it names',
+  async (t) => {
+    // A chunk adds to what a drawing holds, and to a sprite's symbol, and
+    // says so to nothing: no `refresh`, and no new drawing
+    const head = '<style>body{margin:0}</style>';
+    const parts = [
+      '<svg width="40" height="40"><rect width="10" height="40" fill="#f00"/>',
+      '<rect x="10" width="10" height="40" fill="#0f0"/></svg>' +
+        '<svg width="40" height="40"><use href="#s"/></svg>',
+      '<svg style="display:none"><symbol id="s"><rect width="10" height="10"' +
+        ' fill="#00f"/>',
+      '<rect x="10" width="10" height="10" fill="#f0f"/></symbol></svg>',
+    ];
+    let source = head + parts[0];
+    const doc = (text: string) =>
+      h(
+        'box',
+        { style: { width: 300, flexDirection: 'column' } },
+        h(Html, { source: text, partial: true, 'data-testname': 'doc' }),
+      );
+    const result = await renderX11(doc(source), {
+      width: 340,
+      height: 300,
+      fonts: FONTS!,
+    });
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const { repaint, direct } = repaints(t, result, el);
+    const settled = async (when: string) => {
+      for (let i = 0; i < 3; i += 1) await repaint();
+      const copied = await repaint();
+      assert.strictEqual(levelsApart(await direct(), copied.pixels), 0, when);
+      return copied;
+    };
+    for (const part of parts.slice(1)) {
+      await settled(`before ${JSON.stringify(part.slice(0, 40))}`);
+      source += part;
+      await act(() => result.rerender(doc(source)));
+      await act();
+    }
+    // and all of it is kept, the drawing that named what had not come too
+    assert.strictEqual((await settled('at the end')).drawn, 0);
+  },
+);
+
+metric(
+  'no raster stands for an inline drawing that sets text, holds HTML, shows what is past its box or names what no key holds',
+  async (t) => {
+    withForeignObjects(t);
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block;margin:2px}' +
+        '#by-rule rect{fill:url(#far)}</style>' +
+        '<svg style="display:none"><linearGradient id="far"><stop' +
+        ' stop-color="#ff0000"/></linearGradient><text id="label" y="16">A' +
+        '</text></svg>' +
+        '<svg width="60" height="24"><text y="16">A</text></svg>' +
+        '<svg width="60" height="24"><use href="#label"/></svg>' +
+        '<svg width="60" height="24"><foreignObject width="60" height="24">' +
+        '<p xmlns="http://www.w3.org/1999/xhtml">A</p></foreignObject></svg>' +
+        '<svg width="24" height="24" style="overflow:visible"><circle cx="12"' +
+        ' cy="12" r="20"/></svg>' +
+        '<svg id="by-rule" width="24" height="24"><rect width="24"' +
+        ' height="24"/></svg>' +
+        '<svg width="24" height="24"><use href="#nothing"/><rect width="24"' +
+        ' height="24"/></svg>' +
+        '<svg width="24" height="24"><rect width="24" height="24"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint, kept } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const last = await repaint();
+    // the one that is none of them
+    assert.strictEqual(kept().length, 1, kept().join('\n'));
+    assert.strictEqual(last.drawn, 6);
+  },
+);
+
+metric(
+  'an inline drawing drawn through a matrix is set from its paths',
+  async (t) => {
+    // on a context that draws through it, as macOS's does: a raster of it
+    // is the drawing resampled, where the context would set it anew
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block;margin:40px;' +
+        'transform:rotate(30deg)}</style>' +
+        '<svg width="40" height="40"><rect width="40" height="20"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint, kept } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    await repaint();
+    assert.ok(
+      kept().every((key) => !key.startsWith('inline|')),
+      kept().join('\n'),
+    );
+  },
+);
+
+/** A drawing that reads as much of what `SvgView` draws as a raster has to
+ *  stand for: shapes over one another, in colours, strokes and fractions of
+ *  a pixel; a gradient, a clip, a mask, a transform and an opacity. */
+function drawingFrom(next: () => number, id: number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const at = () => (next() * 40).toFixed(2);
+  const colour = () =>
+    pick(['#ff0000', '#00aa00', '#0000ff', '#ffcc00', 'currentColor', 'none']);
+  const shape = (): string => {
+    const paint =
+      ` fill="${pick([colour(), colour(), `url(#g${id})`])}"` +
+      ` stroke="${colour()}" stroke-width="${(next() * 4).toFixed(1)}"` +
+      ` opacity="${pick(['1', '1', '.5'])}"` +
+      pick(['', '', ` transform="rotate(${at()} 20 20)"`]) +
+      pick(['', '', ` clip-path="url(#c${id})"`, ` mask="url(#m${id})"`]);
+    switch (Math.floor(next() * 4)) {
+      case 0:
+        return `<rect x="${at()}" y="${at()}" width="${at()}" height="${at()}" rx="3"${paint}/>`;
+      case 1:
+        return `<circle cx="${at()}" cy="${at()}" r="${at()}"${paint}/>`;
+      case 2:
+        return `<path d="M${at()} ${at()}Q${at()} ${at()} ${at()} ${at()}T${at()} ${at()}z"${paint}/>`;
+      default:
+        return `<polyline points="${at()},${at()} ${at()},${at()} ${at()},${at()}"${paint}/>`;
+    }
+  };
+  const box = 20 + Math.floor(next() * 40);
+  return (
+    `<svg width="${box}" height="${box}"` +
+    pick(['', ' viewBox="0 0 40 40"', ' viewBox="5 5 20 30"']) +
+    ` style="display:block;margin:${(next() * 4).toFixed(2)}px;` +
+    `color:${pick(['#123456', '#fedcba', '#00aa00'])}"><defs>` +
+    `<linearGradient id="g${id}"><stop stop-color="${pick(['#ff0000', '#00ff00'])}"/>` +
+    '<stop offset="1" stop-color="#0000ff" stop-opacity=".5"/></linearGradient>' +
+    `<clipPath id="c${id}"><circle cx="20" cy="20" r="${at()}"/></clipPath>` +
+    `<mask id="m${id}"><rect width="40" height="40" fill="#808080"/></mask>` +
+    `</defs>${Array.from({ length: 1 + Math.floor(next() * 4) }, shape).join('')}` +
+    '</svg>'
+  );
+}
+
+const DRAWING_FROM = Number(process.env.DRAWING_FROM ?? 1);
+const DRAWING_SEEDS = Number(process.env.DRAWING_SEEDS ?? 6);
+
+for (const scale of [1, 2]) {
+  metric(
+    `a raster of an inline drawing is the drawing, in generated drawings at ${scale}x`,
+    async (t) => {
+      for (let i = 0; i < DRAWING_SEEDS; i += 1) {
+        const seed = DRAWING_FROM + i;
+        const next = mulberry32(seed * 7001);
+        const drawings = Array.from({ length: 8 }, (_, id) =>
+          drawingFrom(next, id),
+        ).join('');
+        const over = scale === 1 ? render : render2x;
+        const { result, node } = await over(
+          '<style>body{margin:0;background:#c0d0e0}</style>' +
+            `<div style="columns:3">${drawings}</div>`,
+          300,
+        );
+        const el = view(node);
+        const { repaint, direct } = repaints(t, result, el);
+        await repaint();
+        await repaint();
+        const copied = await repaint();
+        assert.strictEqual(copied.drawn, 0, `seed ${seed}`);
+        const apart = levelsApart(await direct(), copied.pixels);
+        // a translucent edge rounded on the surface and again over the page
+        assert.ok(apart <= 3, `seed ${seed}: ${apart} levels apart`);
+        t.mock.restoreAll();
+        cleanup();
+      }
+    },
+  );
+}

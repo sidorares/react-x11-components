@@ -435,9 +435,20 @@ let mutations = 0;
 
 /** Where `touch` has got to: what was worked out from an element's
  *  attributes, or from what is under it, holds while this does — the
- *  `var()`s in a shape's presentation attributes, an inline drawing. */
+ *  `var()`s in a shape's presentation attributes, and an inline drawing
+ *  that read outside its root (`inlineDrawing`). */
 export function mutationGeneration(): number {
   return mutations;
+}
+
+/** Bumped where nothing says what changed: a `touch` with no list of it. A
+ *  cache a list can speak for is dropped by the list (`forgetDrawings`), and
+ *  by this at any other touch. */
+let untold = 0;
+
+/** Where the changes nothing tells of have got to. */
+export function untoldGeneration(): number {
+  return untold;
 }
 
 /**
@@ -1647,7 +1658,7 @@ export class HtmlSource {
    * that runs the page holds and changes, telling of each change as a
    * script's is told (`touch`). Complete as it is handed over, since
    * nothing is written to it here. True where it is another tree than the
-   * one drawn.
+   * one drawn: what changed while nothing drew it was told to nobody.
    */
   adopt(document: Document): boolean {
     if (this._adopted && this.document === document) return false;
@@ -1659,9 +1670,7 @@ export class HtmlSource {
     this._written = '';
     this._unhold();
     this.complete = true;
-    this.revision += 1;
-    this._facts = freshFacts();
-    treesChanged();
+    this.touch();
     return true;
   }
 
@@ -1697,14 +1706,16 @@ export class HtmlSource {
   }
 
   /** The DOM changed under us — an app mutated it, or a stylesheet arrived
-   *  and was spliced in. Anything cached on the old revision is stale. */
-  touch(): void {
+   *  and was spliced in. Anything cached on the old revision is stale.
+   *  `told` where a list of what changed goes with it. */
+  touch(told = false): void {
     this._record = null;
     this._taken = null;
     this.revision += 1;
     this._facts = freshFacts();
     treesChanged();
     mutations += 1;
+    if (!told) untold += 1;
   }
 
   /** Run scripts or not: what the scan finds changes with it. True when

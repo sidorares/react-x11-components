@@ -23,6 +23,7 @@ import { mapPoint } from '../../src/html/css/transform.js';
 import { placedMatrix } from '../../src/html/layout/block.js';
 import { drawsForeignObjects } from '../../src/html/svg.js';
 import { GENERATED_FROM } from '../../src/html/layout/boxes.js';
+import { stackingOf, topLayerBoxes } from '../../src/html/paint.js';
 import type { Box, BoxTree } from '../../src/html/layout/boxes.js';
 import type { Element } from '../../src/html/index.js';
 
@@ -608,6 +609,8 @@ export async function fillsOf(
       ratio: number;
     } | null;
     scale?: number;
+    /** Which of a scroll container's bars a page's rules hide. */
+    scrollbarHidden?: () => { x: boolean; y: boolean };
     /** A context whose radial gradients are one colour. */
     flatRadial?: boolean;
     /** A context that draws text through its matrix: react-x11's macOS and
@@ -1720,11 +1723,26 @@ const UNDRAWN = [
 /** A tree as two builds of one document must have it alike. */
 export function treeLines(tree: BoxTree): string[] {
   const out: string[] = [];
+  const order = new Map<Box, number>();
   const walk = (box: Box, depth: number) => {
+    order.set(box, order.size);
     out.push(`${' '.repeat(depth)}${boxLine(box)}`);
     for (const child of box.children) walk(child, depth + 1);
   };
   walk(tree.root, 0);
+  // the order the document paints its layers in, which nothing above reads:
+  // each box by its place in the tree, so that two builds' boxes compare
+  const places = (list: readonly Box[]): string =>
+    list.map((b) => order.get(b) ?? 'gone').join(',');
+  for (const [box, at] of order) {
+    const { above, below, clips, lines } = stackingOf(box);
+    if (!above.length && !below.length && !clips.length && !lines) continue;
+    out.push(
+      `layers of ${at}: ${places(above)} below ${places(below)}` +
+        ` clips ${places(clips)} lines ${lines}`,
+    );
+  }
+  out.push(`top layer: ${places(topLayerBoxes(tree.root))}`);
   const boxes = (name: string, list: readonly Box[]) =>
     out.push(
       `${name}: ${list.map((b) => boxLine(b).split('|').slice(0, 3).join('|')).join(' ')}`,

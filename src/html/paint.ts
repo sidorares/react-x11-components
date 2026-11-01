@@ -146,6 +146,7 @@ import {
 import type {
   AtomicPlacement,
   BoxTree,
+  SubtreesBuilt,
   ColumnPiece,
   EdgePlacement,
   ForeignObject,
@@ -667,8 +668,10 @@ export interface KeptInk {
  * and nothing has worked ink out since but the walks that keep it
  * (`INK_EPOCHS`). Nothing a layout keeps moves in the block, and nothing
  * else moves anything in it without a walk of the whole tree, which marks
- * the record stale. A bare layout of joshwcomeau.com's article walked its
- * 3,380 boxes for ink that came out as it was.
+ * the record stale, or of what moved (`boundsAfterMove`), around which no
+ * record is read and in which one goes by itself as the block moves. A bare
+ * layout of joshwcomeau.com's article walked its 3,380 boxes for ink that
+ * came out as it was.
  */
 interface KeptBlockInk {
   x: number;
@@ -1113,10 +1116,12 @@ export function boundsAfterMove(box: Box, moved = false): boolean {
     if (style.filter !== null || style.clipPath) return false;
     if (hasRect(at) && placedMatrix(at)) return false;
   }
-  // no ink a walk keeps from before is under a sticky box (`frontierBounds`),
-  // and what else moves keeps none
-  if (box.style.position === 'sticky') boundsOf(box, moved, null, false, false);
-  else computePaintBounds(box, moved);
+  // A record of a block in it says where the block stood, which goes by
+  // itself as the block moves (`frontierBounds`), and the boxes around it
+  // are in `KeptInk.moves`, whose records no walk reads. Every other record
+  // is of ink nothing moved: stale at each frame of a mail page's spinner,
+  // all of them sent the layout after down its 12,000 boxes.
+  boundsOf(box, moved, null, false, false);
   let child = box;
   for (let at = box.parent; at; child = at, at = at.parent) {
     buildChildIndexes(at);
@@ -4722,6 +4727,12 @@ function paintScrollBars(
   }
   const scale = options.scale ?? 1;
   const damage = options.damage;
+  const inDamage = (x: number, y: number, width: number, height: number) =>
+    !damage ||
+    (x < damage.x + damage.width &&
+      damage.x < x + width &&
+      y < damage.y + damage.height &&
+      damage.y < y + height);
   const stack: [Box, number, number, boolean][] = [
     [top ?? tree.root, options.originX, options.originY, false],
   ];
@@ -4736,17 +4747,21 @@ function paintScrollBars(
     }
     if (box.boundsY === Infinity) continue;
     if (
-      damage &&
-      !(
-        box.boundsX + ox < damage.x + damage.width &&
-        damage.x < box.boundsX + ox + box.boundsWidth &&
-        box.boundsY + oy < damage.y + damage.height &&
-        damage.y < box.boundsY + oy + box.boundsHeight
+      !inDamage(
+        box.boundsX + ox,
+        box.boundsY + oy,
+        box.boundsWidth,
+        box.boundsHeight,
       )
     ) {
       continue;
     }
-    if (isScroller(box) && box.style.visibility === 'visible') {
+    // a box's ink is all it holds, clipped or not, and its bars are inside it
+    if (
+      isScroller(box) &&
+      box.style.visibility === 'visible' &&
+      inDamage(box.x + ox, box.y + oy, box.width, box.height)
+    ) {
       paintBarsOf(ctx, box, ox, oy, scale, options);
     }
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
@@ -4769,11 +4784,7 @@ function paintBarsOf(
   scale: number,
   options: PaintOptions,
 ): void {
-  const bars = scrollBarsOf(
-    box,
-    scale,
-    options.scrollbarHidden?.(box) ?? { x: false, y: false },
-  );
+  const bars = scrollBarsOf(box, scale, options.scrollbarHidden);
   if (!bars.length) return;
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     if (placedMatrix(at)) return;
@@ -8825,20 +8836,38 @@ interface LinesApart {
 
 /** By the array a block's lines are, where any of them hold such a box:
  *  made as the layers are gathered, so that a box that stops being a layer
- *  in place leaves its lines to the block (`stackLayers`). */
+ *  in place leaves its lines to the block (`stackLayers`), and again after a
+ *  layout, which makes a block's lines new (`stackAfterLayout`). */
 const LINES_APART = new WeakMap<readonly LineBox[], LinesApart>();
 
-/** Per tree, by its root box, the lines in `LINES_APART`. */
-const APART_LINES = new WeakMap<Box, Set<readonly LineBox[]>>();
+/** Per tree, by its root box, what `gatherLayers` found to be inline among
+ *  the layers, and the lines in `LINES_APART`. */
+const APART_LINES = new WeakMap<
+  Box,
+  { boxes: readonly Box[]; lines: Set<readonly LineBox[]> }
+>();
 
-/** The lines the gather has noted (`LINES_APART`). */
-let gatheringLines: Set<readonly LineBox[]> | null = null;
+/** The inline boxes the gather has found among the layers, where it is
+ *  gathering a whole tree's. */
+let gatheringInline: Box[] | null = null;
 
-/** Note the lines of an inline box the gather finds among the layers. */
-function noteLinesOf(box: Box): void {
-  const lines = linesAround(box);
-  if (!lines || gatheringLines?.has(lines) || !paintsApart(box)) return;
-  gatheringLines?.add(lines);
+/** Note the lines of the inline boxes a tree has among its layers. */
+function noteApartLines(root: Box, boxes: readonly Box[]): void {
+  const was = APART_LINES.get(root);
+  if (was) for (const lines of was.lines) LINES_APART.delete(lines);
+  const noted = new Set<readonly LineBox[]>();
+  for (const box of boxes) {
+    const lines = linesAround(box);
+    if (!lines || noted.has(lines) || !paintsApart(box)) continue;
+    noted.add(lines);
+    LINES_APART.set(lines, linesApart(lines));
+  }
+  if (boxes.length) APART_LINES.set(root, { boxes, lines: noted });
+  else if (was) APART_LINES.delete(root);
+}
+
+/** What the inline boxes that are layers have on a block's lines. */
+function linesApart(lines: readonly LineBox[]): LinesApart {
   const around = new Map<LineText | AtomicPlacement, Box>();
   const boxes = new Map<Box, ApartBox>();
   const on = (owner: Box, line: LineBox): void => {
@@ -8872,7 +8901,7 @@ function noteLinesOf(box: Box): void {
       });
     }
   }
-  LINES_APART.set(lines, { skip: new Set(around.keys()), boxes });
+  return { skip: new Set(around.keys()), boxes };
 }
 
 /** What of a block's lines the hit test leaves to the inline boxes that are
@@ -8963,26 +8992,25 @@ export function topLayerBoxes(root: Box): readonly Box[] {
 /** The boxes in the top layer the gather is finding, in the tree's order. */
 let gatheringTop: Box[] | null = null;
 
-/** Gather each stacking context's positioned boxes (`STACKED`); once per
- *  layout, after `hoistNegative`, whose boxes it leaves where they are.
- *  And the boxes in the top layer, which are in no context's but their
- *  own (`TOP_LAYER`). */
+/**
+ * Gather each stacking context's positioned boxes (`STACKED`), after
+ * `hoistNegative`, whose boxes it leaves where they are. And the boxes in
+ * the top layer, which are in no context's but their own (`TOP_LAYER`).
+ * What a layout asks for it asks through `stackAfterLayout`.
+ */
 export function stackLayers(root: Box): void {
   const list: Box[] = [];
   const top: Box[] = [];
-  const noted = new Set<readonly LineBox[]>();
-  const was = APART_LINES.get(root);
-  if (was) for (const lines of was) LINES_APART.delete(lines);
+  const inline: Box[] = [];
   gatheringTop = top;
-  gatheringLines = noted;
+  gatheringInline = inline;
   try {
     if (root.holdsLayers) gatherLayers(root, root, list);
   } finally {
     gatheringTop = null;
-    gatheringLines = null;
+    gatheringInline = null;
   }
-  if (noted.size) APART_LINES.set(root, noted);
-  else if (was) APART_LINES.delete(root);
+  noteApartLines(root, inline);
   settleLayers(root, list);
   if (!top.length) {
     TOP_LAYER.delete(root);
@@ -9000,8 +9028,15 @@ export function stackLayers(root: Box): void {
   TOP_LAYER.set(root, top);
 }
 
-function gatherLayers(box: Box, context: Box, into: Box[]): void {
+function gatherLayers(
+  box: Box,
+  context: Box,
+  into: Box[],
+  /** Whether the stacking contexts in it are gathered too. */
+  nested = true,
+): void {
   for (const child of PAINT_ORDER.get(box) ?? box.children) {
+    layersWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') continue;
     // a positioned box past a clamp point, or in a box that is
     if (CLAMPED.has(child)) continue;
@@ -9017,16 +9052,152 @@ function gatherLayers(box: Box, context: Box, into: Box[]): void {
       if (clips.length) CLIPS_BETWEEN.set(child, clips);
       else CLIPS_BETWEEN.delete(child);
       if (!below) into.push(child);
-      if (child.kind === 'inline') noteLinesOf(child);
+      if (child.kind === 'inline') gatheringInline?.push(child);
     }
     if (below || stacksLayers(child)) {
+      if (!nested) continue;
       const own: Box[] = [];
       if (child.holdsLayers) gatherLayers(child, child, own);
       settleLayers(child, own);
     } else if (child.holdsLayers) {
-      gatherLayers(child, context, into);
+      gatherLayers(child, context, into, nested);
     }
   }
+}
+
+/**
+ * The trees whose order of layers is what a walk of them would find
+ * (`hoistNegative`, `stackLayers`), each with the stacking contexts that are
+ * to be gathered again first: what a build of subtrees put a layer into or
+ * took one out of (`carryLayers`), which a walk of the context has to find
+ * in its place among the layers it holds, once a layout has said which
+ * boxes hold any (`Box.holdsLayers`).
+ *
+ * All of the order but one thing is made of what no layout changes: styles,
+ * which a restyle in place that moves a box among its layers works out
+ * again itself (`_restyleInPlace`'s `reorders`), and the tree's shape, which
+ * only a build changes. So it is worked out once for a tree, and neither
+ * pass walks a tree a layout laid out at another width. At each of the 280
+ * layouts of a drag of a mail page, `hoistNegative` walked all of its 14,800
+ * boxes and `stackLayers` 4,100, some 3 ms of layouts that laid out 500.
+ * What a layout does decide is in `layerMarks`,
+ * and a layout that moved it walks: a box past a clamp point, which no list
+ * holds, and a cell whose clip a layer is under. So does one that sets boxes
+ * aside, whose lists are of what it left, and the layout after it. The one
+ * thing is `LINES_APART`, which is by a block's lines, and is noted again.
+ */
+const LAYERS_HELD = new WeakMap<BoxTree, Set<Box>>();
+
+/** The order of the layers after a layout of `tree`: kept where it holds,
+ *  with the contexts a build owes gathered again, and otherwise walked, where
+ *  the layout moved what it reads (`moved`) or set boxes aside (`cut`). */
+export function stackAfterLayout(
+  tree: BoxTree,
+  moved: boolean,
+  cut: boolean,
+): void {
+  const root = tree.root;
+  const owed = moved || cut ? undefined : LAYERS_HELD.get(tree);
+  if (!owed) {
+    if (tree.negative) hoistNegative(root);
+    stackLayers(root);
+    if (cut) LAYERS_HELD.delete(tree);
+    else LAYERS_HELD.set(tree, new Set());
+    return;
+  }
+  for (const context of owed) {
+    if (tree.negative) hoistFrom(context, context === root, false);
+    const own: Box[] = [];
+    if (context.holdsLayers) gatherLayers(context, context, own, false);
+    settleLayers(context, own);
+  }
+  owed.clear();
+  const inline = APART_LINES.get(root);
+  if (inline) noteApartLines(root, inline.boxes);
+}
+
+/** That a tree's next layout walks its layers whatever it does: one given
+ *  up for a whole one may have moved what the walk reads, and said nothing. */
+export function forgetLayers(tree: BoxTree): void {
+  LAYERS_HELD.delete(tree);
+}
+
+/**
+ * Whether a box is in a list of layers, or may have been. One a build took
+ * out has no parent, and says no more of being a flex item or being named
+ * for a view transition than that it may.
+ */
+function inLayers(box: Box): boolean {
+  const style = box.style;
+  const z = style.zIndex;
+  if (box.parent) {
+    return (typeof z === 'number' && z < 0) || layered(box.parent, box);
+  }
+  return (
+    typeof z === 'number' ||
+    style.viewTransitionName !== 'none' ||
+    layered(box, box)
+  );
+}
+
+/**
+ * The order of the layers of the tree a build of subtrees made from `from`
+ * (`buildSubtrees`), from `from`'s. Where nothing it took out or put in is
+ * in a list of them, the lists stand. Where something is, the stacking
+ * context it is in gathers what it holds again at the next layout, with each
+ * new context in what was put in (`LAYERS_HELD`): a mail page's spinner is
+ * built again in its button at most steps of a drag, and its button is a
+ * context of a few boxes. Nothing is carried for what no context's lists
+ * say, which a walk of the tree finds: a box in the top layer, a layer on
+ * its block's lines, a context inside what a clamp point hides.
+ */
+export function carryLayers(from: BoxTree, built: SubtreesBuilt): void {
+  const held = LAYERS_HELD.get(from);
+  if (!held) return;
+  const owed = new Set(held);
+  const stack: Box[] = [];
+  /** Whether what is on `stack` holds a layer, with what new contexts it
+   *  holds into `contexts`; null where only a walk of the tree can say. */
+  const reached = (contexts: Set<Box> | null): boolean | null => {
+    let found = false;
+    while (stack.length) {
+      const at = stack.pop()!;
+      if (at.kind === 'text' || at.kind === 'break') continue;
+      if (at.topLayer || paintsApart(at)) return null;
+      if (inLayers(at)) found = true;
+      if (contexts && stacksLayers(at)) contexts.add(at);
+      for (const child of at.children) stack.push(child);
+    }
+    return found;
+  };
+  /** Note the context around a box; false where no walk reaches it. */
+  const owes = (parent: Box): boolean => {
+    let context: Box | null = null;
+    for (let at: Box | null = parent; at; at = at.parent) {
+      if (CLAMPED.has(at)) return false;
+      if (!context && (!at.parent || stacksLayers(at))) context = at;
+    }
+    owed.add(context!);
+    return true;
+  };
+  for (let i = 0; i < built.replaced.length; i += 1) {
+    stack.push(...built.replaced[i]);
+    const found = reached(null);
+    if (found === null || (found && !owes(built.parents[i]))) return;
+  }
+  for (const box of built.added) {
+    stack.push(box);
+    const found = reached(owed);
+    if (found === null || (found && !owes(box.parent!))) return;
+  }
+  LAYERS_HELD.set(built.tree, owed);
+}
+
+/** How many boxes the walks of the layers have looked at (`hoistNegative`,
+ *  `stackLayers`), for a test to count what a change walks. */
+let layersWalkedCount = 0;
+export function layersWalked(): number {
+  return layersWalkedCount;
 }
 
 /**
@@ -9570,12 +9741,22 @@ export function hoistNegative(root: Box): void {
   hoistFrom(root, true);
 }
 
-function hoistFrom(box: Box, root: boolean): Box[] | null {
+function hoistFrom(
+  box: Box,
+  root: boolean,
+  /** Whether the stacking contexts in it are worked out too. */
+  nested = true,
+): Box[] | null {
   let pending: Box[] | null = null;
   for (const child of box.children) {
+    layersWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') continue;
     // the root element is the root stacking context, over its own borders
-    const up = hoistFrom(child, root && child.el?.name === 'html');
+    const top = root && child.el?.name === 'html';
+    const up =
+      nested || top || !stacksLayers(child)
+        ? hoistFrom(child, top, nested)
+        : null;
     if (up) (pending ??= []).push(...up);
     const z = child.style.zIndex;
     if (
@@ -9596,6 +9777,31 @@ function hoistFrom(box: Box, root: boolean): Box[] | null {
     NEGATIVE.delete(box);
   }
   return null;
+}
+
+/** @internal What the stacking passes left of a box, for a test to hold
+ *  what a layout kept to what a build of the whole document works out: the
+ *  layers it paints over its flow and below it, the boxes whose clips it is
+ *  painted under, and, of an inline box that is a layer, what it has on its
+ *  block's lines. Nothing of a box a clamp hides, or one in it, which no
+ *  walk reaches and which keeps what it had. */
+export function stackingOf(box: Box): {
+  above: readonly Box[];
+  below: readonly Box[];
+  clips: readonly Box[];
+  lines: number;
+} {
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (CLAMPED.has(at)) {
+      return { above: NO_BOXES, below: NO_BOXES, clips: NO_BOXES, lines: 0 };
+    }
+  }
+  return {
+    above: STACKED.get(box) ?? NO_BOXES,
+    below: NEGATIVE.get(box) ?? NO_BOXES,
+    clips: CLIPS_BETWEEN.get(box) ?? NO_BOXES,
+    lines: apartOf(box)?.lines.size ?? 0,
+  };
 }
 
 function byZIndex(a: Box, b: Box): number {
@@ -13515,33 +13721,69 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
       : inkColor(value, style.color);
   // a user unit is a CSS pixel, zoomed as the box's lengths are
   const scale = (options.scale ?? 1) * style.effectiveZoom;
-  inlineDrawing(box.el).draw(
-    ctx,
-    x,
-    y,
-    w,
-    h,
-    scale,
-    style.color,
-    paint(style.fill),
-    paint(style.stroke),
-    options.shapeStyler?.(box) ?? null,
-    surfaceMaker(options),
-    // its text is set in the box's font where it names none, as a
-    // browser sets it: a size is a CSS pixel, which is a user unit
-    {
-      family: quotedFamilies(style.fontFamily),
-      size: style.fontSize / scale,
-      weight: style.fontWeight,
-      style: style.fontStyle,
-    },
-    svgInherited(style),
-    options.foreign && inlineDrawing(box.el).foreignObjects().length
-      ? foreignPainter(options.foreign, options)
-      : null,
-    options.drawingUnits?.() ?? null,
-    drawingCut(style),
-  );
+  const drawing = inlineDrawing(box.el);
+  const fill = paint(style.fill);
+  const stroke = paint(style.stroke);
+  const shapes = options.shapeStyler?.(box) ?? null;
+  const size = style.fontSize / scale;
+  const inherited = svgInherited(style);
+  const units = options.drawingUnits?.() ?? null;
+  const cut = drawingCut(style);
+  const set = (on: PaintContext, left: number, top: number): void =>
+    drawing.draw(
+      on,
+      left,
+      top,
+      w,
+      h,
+      scale,
+      style.color,
+      fill,
+      stroke,
+      shapes,
+      surfaceMaker(options),
+      // its text is set in the box's font where it names none, as a
+      // browser sets it: a size is a CSS pixel, which is a user unit
+      {
+        family: quotedFamilies(style.fontFamily),
+        size,
+        weight: style.fontWeight,
+        style: style.fontStyle,
+      },
+      inherited,
+      options.foreign && drawing.foreignObjects().length
+        ? foreignPainter(options.foreign, options)
+        : null,
+      units,
+      cut,
+    );
+  // from a raster where the context draws in whole pixels of its own, as an
+  // SVG image is (`drawSvg`), and it is cut to the raster: a page's icons
+  // were parsed and set from their paths at every paint that reached them,
+  // and sixty of them were a seventh of each frame of a window's edge
+  const key =
+    !options.matrix && options.drawingKept && ctx.drawImage && cut === CUT_BOTH
+      ? drawing.keptAs(
+          w,
+          h,
+          scale,
+          style.color,
+          fill,
+          stroke,
+          shapes,
+          size,
+          inherited,
+          units,
+        )
+      : null;
+  const kept =
+    key !== null
+      ? options.drawingKept!(key, w, h, (sctx) =>
+          set(sctx as PaintContext, 0, 0),
+        )
+      : null;
+  if (kept) ctx.drawImage!(kept, x, y);
+  else set(ctx, x, y);
 }
 
 /** The axes an inline drawing is cut to its content box on: those its

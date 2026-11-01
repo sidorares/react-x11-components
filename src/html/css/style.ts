@@ -29,6 +29,7 @@ import {
   parseColor,
   isPct,
   parseLength,
+  isMathFunction,
   parseNumber,
   parseStretch,
   parseWeight,
@@ -38,6 +39,7 @@ import {
   trimValue,
 } from './values.js';
 import type { FontSizeBasis, Len, Pct, UnitContext } from './values.js';
+import { CALC_SIZE, calcSizeOf } from './calc-size.js';
 import { joinFamilies, parseUrl, readFamilies } from './parse.js';
 import type { FamilyName } from './parse.js';
 import { decodesImageType } from '../image-types.js';
@@ -632,6 +634,14 @@ export interface GapRule {
 export interface SizeOf {
   size: number;
   plus: Len;
+  /** How it reads, in CSS pixels: the `calc-size()` it was written as. A
+   *  size an interpolation made has none, and reads as the sum it is. */
+  text?: string;
+  /** The calculation in place of the two numbers, where a function has
+   *  `size` in it and no sum says it (`sizeAt`), with what its pixels are
+   *  to the device's. */
+  calc?: string;
+  scale?: number;
 }
 
 /** Each corner's superellipse parameter (`ComputedStyle.cornerShape`). */
@@ -642,6 +652,10 @@ export type CornerShapes = readonly [number, number, number, number];
 export const ROUND_CORNERS: CornerShapes = Object.freeze([
   1, 1, 1, 1,
 ]) as CornerShapes;
+
+/** `background-position`'s initial value, `0% 0%` (CSS Backgrounds 3, 3.6):
+ *  it draws as `0 0` does, and reads as itself. */
+const NO_POSITION: [Len, Len] = [{ pct: 0 }, { pct: 0 }];
 
 export type BorderStyle =
   | 'none'
@@ -811,8 +825,10 @@ export interface ComputedStyle {
   overflowWrap: 'normal' | 'break-word';
   /** `word-break` (CSS Text 3, 5.2): `break-all` and `break-word` cut a
    *  word too long for its line whatever `overflow-wrap` says, which is
-   *  as near as the engines come to breaking between any two letters. */
-  wordBreak: 'normal' | 'break-all' | 'keep-all' | 'break-word';
+   *  as near as the engines come to breaking between any two letters.
+   *  `auto-phrase` breaks as `normal` does but in Japanese, which no engine
+   *  here sets by phrases. */
+  wordBreak: 'normal' | 'break-all' | 'keep-all' | 'break-word' | 'auto-phrase';
   /** `line-break: anywhere` (CSS Text 3, 5.3) breaks between any two
    *  letters, which the engines come nearest to by cutting a word where
    *  its line runs out; the other values are the engine's own breaking. */
@@ -1247,20 +1263,28 @@ export interface ComputedStyle {
   /** `min-height` as one: the content's height, which a flex item in a
    *  column is no shorter than whatever its `overflow` (`flex.ts`). */
   minHeightKeyword: ContentSize | null;
-  /** `max-height` as one: only `stretch` holds a height to anything, the
-   *  content ones being its content's, which it is anyway. */
+  /** `max-height` as one: the content's height, or `stretch`'s. */
   maxHeightKeyword: ContentSize | null;
   /** `height` as one, which is its content's as `auto` is — but it is not
    *  `auto`, and what stretches an item of `auto` height does not stretch
    *  it (CSS Grid 1, 10.3). */
   heightKeyword: ContentSize | null;
-  /** `width` and `height` as a `calc-size()` of a keyword (CSS Values 5,
-   *  9): the size `auto` or the keyword beside it would give the box, as
-   *  much of it as `size` says and `plus` added — which is also what a
-   *  size runs through between a length and a keyword under
-   *  `interpolate-size: allow-keywords`. Null for any other size. */
+  /** A size as a `calc-size()` (CSS Values 5, 9): the size `auto` or the
+   *  keyword beside it would give the box, as much of it as `size` says
+   *  and `plus` added — which is also what a width and a height run
+   *  through between a length and a keyword under `interpolate-size:
+   *  allow-keywords`. Where one comes to a length on every box, the
+   *  length is the size, and this says how it reads. Null for any other
+   *  size. */
   widthSize: SizeOf | null;
   heightSize: SizeOf | null;
+  minWidthSize: SizeOf | null;
+  maxWidthSize: SizeOf | null;
+  minHeightSize: SizeOf | null;
+  maxHeightSize: SizeOf | null;
+  flexBasisSize: SizeOf | null;
+  /** `flex-basis` as a `calc-size()` of a content keyword. */
+  flexBasisKeyword: ContentSize | null;
   /** Whether a size may run between a length and a keyword (CSS Values 5,
    *  12.1): `allow-keywords` lets `height: 0` grow to `auto`. Inherited. */
   interpolateSize: 'numeric-only' | 'allow-keywords';
@@ -1500,6 +1524,26 @@ export interface ComputedStyle {
   flexShrink: number;
   flexBasis: Len | 'auto' | 'content';
   order: number;
+  /** The four above where `settleClamp` wrote over them, as a page reads
+   *  them: a `-webkit-box` and its items keep the flex properties they
+   *  were given, and are laid out by `-webkit-box-orient` and
+   *  `-webkit-box-flex`. Null for every other box. */
+  flexRead: Pick<
+    ComputedStyle,
+    'flexDirection' | 'flexWrap' | 'flexGrow' | 'flexShrink'
+  > | null;
+  /** The alignment properties as a page reads them (`alignmentText`). The
+   *  fields above and below are what layout reads, one keyword of each
+   *  kind, which `settleAlign`, `settleClamp` and a position option write
+   *  over; these are what the sheets said: `start`, `safe center` and
+   *  `last baseline`. `justifyItemsText` is `legacy` for what reads
+   *  `normal` and takes a parent's `legacy` keyword (`settleAlign`). */
+  alignItemsText: string;
+  alignSelfText: string;
+  alignContentText: string;
+  justifyContentText: string;
+  justifyItemsText: string;
+  justifySelfText: string;
   /** A length or a percentage of the box's content size along it. */
   rowGap: Len;
   /** Whether `row-gap` is `normal`: nothing in a flex box or a grid, and
@@ -1923,6 +1967,12 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     heightKeyword: null,
     widthSize: null,
     heightSize: null,
+    minWidthSize: null,
+    maxWidthSize: null,
+    minHeightSize: null,
+    maxHeightSize: null,
+    flexBasisSize: null,
+    flexBasisKeyword: null,
     interpolateSize: 'numeric-only',
     readingFlow: 'normal',
     readingOrder: 0,
@@ -1994,8 +2044,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     backgroundRepeat: REPEAT,
     backgroundSize: 'auto',
     backgroundAttachment: 'scroll',
-    backgroundPositionX: 0,
-    backgroundPositionY: 0,
+    backgroundPositionX: NO_POSITION[0],
+    backgroundPositionY: NO_POSITION[1],
     backgroundImages: null,
     backgroundImageText: null,
     backgroundRepeats: null,
@@ -2034,6 +2084,13 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     flexShrink: 1,
     flexBasis: AUTO,
     order: 0,
+    flexRead: null,
+    alignItemsText: 'normal',
+    alignSelfText: 'auto',
+    alignContentText: 'normal',
+    justifyContentText: 'normal',
+    justifyItemsText: 'legacy',
+    justifySelfText: 'auto',
     rowGap: 0,
     rowGapNormal: true,
     columnGap: 0,
@@ -2709,7 +2766,7 @@ export function applyDeclaration(
     }
     case '-webkit-box-flex': {
       const n = parseNumber(value);
-      if (n !== null && n >= 0) style.webkitBoxFlex = n;
+      if (n !== null) style.webkitBoxFlex = n;
       return;
     }
     case 'position': {
@@ -2814,12 +2871,10 @@ export function applyDeclaration(
       return;
     }
     case 'text-overflow': {
-      // one value for the end a line is cut at, or two, start and end
-      const parts = splitValue(value).map((p) => p.toLowerCase());
-      const end = parts[parts.length - 1];
-      if (parts.length <= 2 && (end === 'clip' || end === 'ellipsis')) {
-        style.textOverflow = end;
-      }
+      // the end a line is cut at; the two values CSS Overflow 3 has, for
+      // either end, are Firefox's alone
+      const v = value.trim().toLowerCase();
+      if (v === 'clip' || v === 'ellipsis') style.textOverflow = v;
       return;
     }
     case 'box-sizing': {
@@ -3456,21 +3511,9 @@ export function applyDeclaration(
     case 'min-width':
     case 'min-height': {
       const across = name.endsWith('width');
-      // `calc-size()` (CSS Values 5, 9), of a width or a height alone: a
-      // keyword's size scaled and added to, or a length's, which is one
-      let calc: ReturnType<typeof calcSizeOf> = null;
-      if (CALC_SIZE.test(value)) {
-        if (name !== 'width' && name !== 'height') return;
-        calc = calcSizeOf(value, ctx, across);
-        if (!calc) return;
-        if ('size' in calc) {
-          style[camel(name) as 'width' | 'height'] = AUTO;
-          if (name === 'width') style.widthKeyword = calc.keyword;
-          else style.heightKeyword = calc.keyword;
-          style[across ? 'widthSize' : 'heightSize'] = calc.size;
-          return;
-        }
-      }
+      if (setCalcSize(style, name, value, ctx)) return;
+      const sizeField = `${camel(name)}Size` as SizeField;
+      style[sizeField] = null;
       // the anchor's size, kept beside the size, which takes the fallback
       if (
         setAnchorSize(
@@ -3481,19 +3524,13 @@ export function applyDeclaration(
           ctx,
         )
       ) {
-        if (name === 'width') {
-          style.widthKeyword = null;
-          style.widthSize = null;
-        } else if (name === 'height') {
-          style.heightKeyword = null;
-          style.heightSize = null;
-        } else if (name === 'min-width') style.minWidthKeyword = null;
+        if (name === 'width') style.widthKeyword = null;
+        else if (name === 'height') style.heightKeyword = null;
+        else if (name === 'min-width') style.minWidthKeyword = null;
         else style.minHeightKeyword = null;
         return;
       }
-      if (name === 'width') style.widthSize = null;
-      else if (name === 'height') style.heightSize = null;
-      const keyword = calc ? null : contentSizeOf(value, ctx, across);
+      const keyword = contentSizeOf(value, ctx, across);
       if (keyword) {
         // `auto` beside it, which is a height's content height already
         (style as unknown as Record<string, unknown>)[camel(name)] = AUTO;
@@ -3505,7 +3542,7 @@ export function applyDeclaration(
       }
       // a negative size is no value, and the declaration goes (CSS 2.1
       // 10.2, 10.4, 10.5, 10.7)
-      const len = calc ? calc.len : parseLength(value, ctx);
+      const len = parseLength(value, ctx);
       if (len !== null && notNegative(len)) {
         (style as unknown as Record<string, unknown>)[camel(name)] = len;
         if (name === 'width') style.widthKeyword = null;
@@ -3537,6 +3574,8 @@ export function applyDeclaration(
     case 'max-width':
     case 'max-height': {
       const across = name === 'max-width';
+      if (setCalcSize(style, name, value, ctx)) return;
+      style[across ? 'maxWidthSize' : 'maxHeightSize'] = null;
       if (
         setAnchorSize(
           style,
@@ -4400,7 +4439,8 @@ export function applyDeclaration(
         v === 'normal' ||
         v === 'break-all' ||
         v === 'keep-all' ||
-        v === 'break-word'
+        v === 'break-word' ||
+        v === 'auto-phrase'
       ) {
         style.wordBreak = v;
       }
@@ -4711,38 +4751,48 @@ export function applyDeclaration(
       return;
     }
     case 'flex-flow': {
-      for (const part of splitValue(value)) {
-        applyDeclaration(style, parent, 'flex-direction', part, ctx);
-        applyDeclaration(style, parent, 'flex-wrap', part, ctx);
-      }
+      // a shorthand is one declaration, and sets what it leaves out
+      const parts = splitValue(value.toLowerCase());
+      const direction = parts.filter((p) => FLEX_DIRECTIONS.has(p));
+      const wrap = parts.filter((p) => FLEX_WRAPS.has(p));
+      if (direction.length > 1 || wrap.length > 1) return;
+      if (direction.length + wrap.length !== parts.length) return;
+      style.flexDirection = (direction[0] ??
+        'row') as ComputedStyle['flexDirection'];
+      style.flexWrap = (wrap[0] ?? 'nowrap') as ComputedStyle['flexWrap'];
       return;
     }
     case 'justify-content': {
-      const v = justifyKeyword(value);
+      const text = alignmentText(name, value);
+      if (text === null) return;
+      style.justifyContentText = text;
+      const v = justifyKeyword(text);
       if (v) style.justifyContent = v;
       return;
     }
     case 'align-items': {
-      const v =
-        value.trim().toLowerCase() === 'normal'
-          ? 'normal'
-          : alignKeyword(value);
+      const text = alignmentText(name, value);
+      if (text === null) return;
+      style.alignItemsText = text;
+      const v = text === 'normal' ? 'normal' : alignKeyword(text);
       if (v) style.alignItems = v as ComputedStyle['alignItems'];
       return;
     }
     case 'align-self': {
-      const keyword = value.trim().toLowerCase();
-      if (keyword === 'auto' || keyword === 'normal') {
-        style.alignSelf = keyword;
+      const text = alignmentText(name, value);
+      if (text === null) return;
+      style.alignSelfText = text;
+      if (text === 'auto' || text === 'normal') {
+        style.alignSelf = text;
         style.alignAnchorCenter = false;
         return;
       }
-      if (ANCHOR_CENTER.test(keyword)) {
+      if (text === 'anchor-center') {
         style.alignSelf = 'center';
         style.alignAnchorCenter = true;
         return;
       }
-      const v = alignKeyword(value);
+      const v = alignKeyword(text);
       if (v) {
         style.alignSelf = v as ComputedStyle['alignSelf'];
         style.alignAnchorCenter = false;
@@ -4750,16 +4800,19 @@ export function applyDeclaration(
       return;
     }
     case 'align-content': {
+      const text = alignmentText(name, value);
+      if (text === null) return;
+      style.alignContentText = text;
       // `normal` is `stretch` in a flex and a grid container, the only
       // boxes it moves anything in (CSS Box Alignment 3, 5.1); `start` and
       // `end` are the box's own edges, and stay those
-      const plain = overflowAligned(value);
+      const plain = overflowAligned(text);
       const v =
-        value.trim().toLowerCase() === 'normal'
+        text === 'normal'
           ? 'stretch'
           : plain === 'start' || plain === 'end'
             ? plain
-            : alignKeyword(value);
+            : alignKeyword(text);
       if (v) style.alignContent = v as ComputedStyle['alignContent'];
       return;
     }
@@ -4769,26 +4822,43 @@ export function applyDeclaration(
     }
     case 'flex-grow':
     case 'flex-shrink': {
-      const n = parseNumber(value);
-      if (n !== null && n >= 0) {
+      const n = flexFactorOf(value);
+      if (n !== null) {
         if (name === 'flex-grow') style.flexGrow = n;
         else style.flexShrink = n;
       }
       return;
     }
     case 'flex-basis': {
-      const v = value.toLowerCase();
-      if (v === 'content') style.flexBasis = 'content';
-      else {
-        const len = parseLength(value, ctx);
-        if (len !== null) style.flexBasis = len;
+      if (CALC_SIZE.test(value)) {
+        const calc = calcSizeOf(value, name, ctx);
+        if (!calc) return;
+        style.flexBasisSize = calc.sized;
+        style.flexBasisKeyword =
+          calc.keyword === 'content' ? null : calc.keyword;
+        style.flexBasis =
+          calc.len ?? (calc.keyword === 'content' ? 'content' : AUTO);
+        return;
       }
+      const basis = flexBasisOf(value, ctx);
+      if (basis) setFlexBasis(style, basis);
       return;
     }
     case 'order': {
-      // an integer, and nothing else (CSS Flexbox 5.4)
+      // an integer (CSS Flexbox 5.4), which a calculation is rounded to and
+      // kept to the 32 bits Blink holds one in: Tailwind's `order-first` is
+      // `calc(-infinity)`
       const v = value.trim();
-      if (/^[+-]?\d+$/.test(v)) style.order = Number(v);
+      const n = /^[+-]?\d+$/.test(v)
+        ? Number(v)
+        : isMathFunction(v)
+          ? parseNumber(v, LARGEST_INTEGER)
+          : null;
+      if (n === null) return;
+      style.order = Math.min(
+        LARGEST_INTEGER,
+        Math.max(-LARGEST_INTEGER - 1, Math.round(n)),
+      );
       return;
     }
     case 'gap':
@@ -4980,18 +5050,21 @@ export function applyDeclaration(
     }
     case 'justify-items':
     case 'justify-self': {
-      const v = value.trim().toLowerCase();
-      if (name === 'justify-self' && ANCHOR_CENTER.test(v)) {
+      const text = alignmentText(name, value);
+      if (text === null) return;
+      if (name === 'justify-items') style.justifyItemsText = text;
+      else style.justifySelfText = text;
+      if (text === 'anchor-center') {
         style.justifySelf = 'center';
         style.justifyAnchorCenter = true;
         return;
       }
       const keyword =
-        v === 'auto' && name === 'justify-self'
-          ? 'auto'
-          : v === 'normal' || v === 'stretch'
-            ? v
-            : alignKeyword(v);
+        text === 'legacy'
+          ? 'normal'
+          : text === 'auto' || text === 'normal' || text === 'stretch'
+            ? text
+            : alignKeyword(text);
       if (
         keyword === 'auto' ||
         keyword === 'normal' ||
@@ -5009,38 +5082,14 @@ export function applyDeclaration(
       }
       return;
     }
-    case 'place-content': {
-      // `<'align-content'> <'justify-content'>?` (CSS Box Alignment 3,
-      // 5.3), either half one keyword or two — `first baseline`, `safe
-      // center` — and the second the first again where it is left out,
-      // but for a baseline, which is no `justify-content`: `start`
-      const words = value.trim().toLowerCase().split(/\s+/);
-      const span = (at: number) =>
-        /^(?:safe|unsafe|first|last)$/.test(words[at] ?? '') ? 2 : 1;
-      const cut = span(0);
-      const align = words.slice(0, cut).join(' ');
-      const rest = words.slice(cut);
-      if (rest.length && rest.length !== span(cut)) return;
-      const justify = rest.length
-        ? rest.join(' ')
-        : /baseline$/.test(align)
-          ? 'start'
-          : align;
-      // a shorthand is one declaration: either half unread drops both
-      if (align !== 'normal' && !alignKeyword(align)) return;
-      if (!justifyKeyword(justify)) return;
-      applyDeclaration(style, parent, 'align-content', align, ctx);
-      applyDeclaration(style, parent, 'justify-content', justify, ctx);
-      return;
-    }
+    case 'place-content':
     case 'place-items':
     case 'place-self': {
-      const parts = splitValue(value);
-      if (!parts.length || parts.length > 2) return;
-      const align = name === 'place-items' ? 'align-items' : 'align-self';
-      const justify = name === 'place-items' ? 'justify-items' : 'justify-self';
-      applyDeclaration(style, parent, align, parts[0], ctx);
-      applyDeclaration(style, parent, justify, parts[1] ?? parts[0], ctx);
+      const place = PLACE_LONGHANDS[name];
+      const halves = placeHalves(place, value);
+      if (!halves) return;
+      applyDeclaration(style, parent, place[0], halves[0], ctx);
+      applyDeclaration(style, parent, place[1], halves[1], ctx);
       return;
     }
 
@@ -5572,6 +5621,14 @@ export function settleAlign(
   if (style.alignSelf === 'normal' && !parent?.grid) {
     style.alignSelf = 'stretch';
   }
+  // the one `justify-items` a box takes from its parent unasked (CSS Box
+  // Alignment 3, 6.4)
+  if (
+    style.justifyItemsText === 'legacy' &&
+    parent?.justifyItemsText.startsWith('legacy ')
+  ) {
+    style.justifyItemsText = parent.justifyItemsText;
+  }
 }
 
 export function settleOverflow(style: ComputedStyle): void {
@@ -5618,6 +5675,96 @@ export function anchorsImplicitly(style: ComputedStyle): boolean {
   if (style.positionAnchor !== null) return false;
   const text = style.positionAnchorText;
   return text === 'auto' || (text === 'normal' && style.positionArea !== null);
+}
+
+/** What an alignment property takes beside `normal`, as Blink has them
+ *  (CSS Box Alignment 3). */
+const SELF_POSITIONS: ReadonlySet<string> = new Set([
+  'center',
+  'start',
+  'end',
+  'self-start',
+  'self-end',
+  'flex-start',
+  'flex-end',
+]);
+const CONTENT_POSITIONS: ReadonlySet<string> = new Set([
+  'center',
+  'start',
+  'end',
+  'flex-start',
+  'flex-end',
+]);
+const CONTENT_DISTRIBUTIONS: ReadonlySet<string> = new Set([
+  'space-between',
+  'space-around',
+  'space-evenly',
+]);
+
+/**
+ * An alignment property's value as `getComputedStyle` reads it, in the
+ * words and the order Chrome does, or null for what the property does not
+ * take. `justify-content` takes no baseline, and `align-content` no last
+ * one, which CSS Box Alignment 3 gives it and no browser takes. An element
+ * lays out by the keyword `alignKeyword` makes of this, and `safe` is
+ * nothing there: see the note on it.
+ */
+function alignmentText(name: string, value: string): string | null {
+  const v = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  const content = name.endsWith('-content');
+  const self = name.endsWith('-self');
+  const justify = name.startsWith('justify-');
+  if (v === 'normal' || v === 'stretch') return v;
+  if (self && v === 'auto') return v;
+  if (self && ANCHOR_CENTER.test(v)) return 'anchor-center';
+  if (content && CONTENT_DISTRIBUTIONS.has(v)) return v;
+  if (v === 'baseline' || v === 'first baseline') {
+    return name === 'justify-content' ? null : 'baseline';
+  }
+  if (v === 'last baseline') return content ? null : v;
+  if (name === 'justify-items') {
+    if (v === 'legacy') return v;
+    const legacy = /^legacy (left|right|center)$|^(left|right|center) legacy$/;
+    const m = legacy.exec(v);
+    if (m) return `legacy ${m[1] ?? m[2]}`;
+  }
+  const position = v.replace(/^(?:safe|unsafe) /, '');
+  if ((content ? CONTENT_POSITIONS : SELF_POSITIONS).has(position)) return v;
+  return justify && (position === 'left' || position === 'right') ? v : null;
+}
+
+/** The longhands of the `place-` shorthands, the align one first. */
+const PLACE_LONGHANDS: Record<string, readonly [string, string]> = {
+  'place-content': ['align-content', 'justify-content'],
+  'place-items': ['align-items', 'justify-items'],
+  'place-self': ['align-self', 'justify-self'],
+};
+
+/**
+ * A `place-` shorthand's two halves (CSS Box Alignment 3), or null where
+ * either is no value of its longhand: a shorthand is one declaration. A
+ * half may be two words, so each place it could end is tried, and a value
+ * that is one half is both, but for `place-content`'s baseline, which is
+ * no `justify-content`: `start`.
+ */
+function placeHalves(
+  [align, justify]: readonly [string, string],
+  value: string,
+): [string, string] | null {
+  const words = value.trim().split(/\s+/);
+  for (let cut = words.length; cut > 0; cut -= 1) {
+    const first = words.slice(0, cut).join(' ');
+    if (alignmentText(align, first) === null) continue;
+    const baseline = /baseline$/i.test(first);
+    const second =
+      cut < words.length
+        ? words.slice(cut).join(' ')
+        : baseline && justify === 'justify-content'
+          ? 'start'
+          : first;
+    if (alignmentText(justify, second) !== null) return [first, second];
+  }
+  return null;
 }
 
 /** A `justify-content`: the writing mode's `start` and `end`, and `left`
@@ -6360,9 +6507,8 @@ function applyBackgroundShorthand(
   style.backgroundAttachment = top.attachment;
   style.backgroundOrigin = top.origin;
   style.backgroundClip = top.clip;
-  [style.backgroundPositionX, style.backgroundPositionY] = top.position ?? [
-    0, 0,
-  ];
+  [style.backgroundPositionX, style.backgroundPositionY] =
+    top.position ?? NO_POSITION;
   const many = layers.length > 1;
   style.backgroundImages = many
     ? layers.map((l) => l.image ?? l.gradient)
@@ -6376,7 +6522,7 @@ function applyBackgroundShorthand(
   style.backgroundOrigins = many ? layers.map((l) => l.origin) : null;
   style.backgroundClips = many ? layers.map((l) => l.clip) : null;
   style.backgroundPositions = many
-    ? layers.map((l) => l.position ?? [0, 0])
+    ? layers.map((l) => l.position ?? NO_POSITION)
     : null;
 }
 
@@ -6961,62 +7107,43 @@ const READING_FLOWS = new Set([
   'source-order',
 ]);
 
-const CALC_SIZE = /^\s*calc-size\(/i;
-
-/** `size` in a `calc-size()`'s calculation, standing for its basis. */
-const SIZE_WORD = /(?<![\w-])size(?![\w-])/gi;
+/** A size's field for what it is as a `calc-size()`. */
+type SizeField =
+  | 'widthSize'
+  | 'heightSize'
+  | 'minWidthSize'
+  | 'maxWidthSize'
+  | 'minHeightSize'
+  | 'maxHeightSize';
 
 /**
- * A `calc-size()` (CSS Values 5, 9): its basis — `auto`, a content
- * keyword, or a length or a percentage — and a calculation that may name
- * it as `size`, which is all of it where there is none. With a length for
- * a basis it is the length the calculation comes to; with a keyword, that
- * keyword's size scaled and added to, worked out from the calculation at
- * two sizes, so one that is not a sum of `size` and lengths is none. Null
- * for no `calc-size()`.
+ * `width`, `height` or one of their limits as a `calc-size()`: true where
+ * the value is one, which leaves the declaration as it was where the
+ * property does not take it. Any other value is the caller's.
  */
-function calcSizeOf(
+function setCalcSize(
+  style: ComputedStyle,
+  name: string,
   value: string,
   ctx: UnitContext,
-  inline: boolean,
-): { len: Len | null } | { keyword: ContentSize | null; size: SizeOf } | null {
-  const v = value.trim();
-  const close = closingParen(v, v.indexOf('(') + 1);
-  if (close !== v.length - 1) return null;
-  const inner = v.slice(v.indexOf('(') + 1, close);
-  const [basisText, ...rest] = splitCommas(inner);
-  if (rest.length > 1) return null;
-  const expr = rest.length ? rest[0] : 'size';
-  if (!basisText || !expr) return null;
-  const basis = basisText.trim().toLowerCase();
-  const keyword =
-    basis === 'auto' || basis === 'any'
-      ? null
-      : contentSizeOf(basisText, ctx, inline);
-  if (keyword === null && basis !== 'auto' && basis !== 'any') {
-    // a length: the calculation of it
-    const len = parseLength(
-      `calc(${expr.replace(SIZE_WORD, `(${basisText})`)})`,
-      ctx,
-    );
-    return { len: len === AUTO ? null : len };
-  }
-  if (keyword !== null && typeof keyword === 'object') return null;
-  const at = (size: number) =>
-    parseLength(`calc(${expr.replace(SIZE_WORD, `(${size}px)`)})`, ctx);
-  const none = at(0);
-  const some = at(1000);
-  if (none === null || some === null || none === AUTO || some === AUTO) {
-    return null;
-  }
-  const px = (len: number | Pct) =>
-    typeof len === 'number' ? len : (len.px ?? 0);
-  const pct = (len: number | Pct) => (typeof len === 'number' ? 0 : len.pct);
-  if (pct(none) !== pct(some) || (isPct(none) && none.of)) return null;
-  return {
-    keyword,
-    size: { size: (px(some) - px(none)) / (1000 * ctx.scale), plus: none },
-  };
+): boolean {
+  if (!CALC_SIZE.test(value)) return false;
+  const calc = calcSizeOf(value, name, ctx);
+  if (!calc) return true;
+  const field = camel(name);
+  const fields = style as unknown as Record<string, unknown>;
+  fields[field] = calc.len ?? (name.startsWith('max-') ? 'none' : AUTO);
+  fields[`${field}Keyword`] = calc.keyword;
+  fields[`${field}Size`] = calc.sized;
+  // what an `anchor-size()` before it left
+  setAnchorSize(
+    style,
+    field as AnchorSizeField,
+    value,
+    name.endsWith('width') ? 'width' : 'height',
+    ctx,
+  );
+  return true;
 }
 
 function contentSizeOf(
@@ -7117,6 +7244,43 @@ const ALL_VARIANTS: VariantKind[] = [
   'position',
 ];
 
+/** The features `font-variant-ligatures: none` turns off. */
+const NO_LIGATURES = 'liga=0,clig=0,dlig=0,hlig=0,calt=0';
+
+/**
+ * `font-variant` from its longhands: each keyword in the order the shorthand
+ * is serialized, whatever order it was written in. `none` is `font-variant-
+ * ligatures`' alone, so beside anything else the shorthand cannot say it, and
+ * reads ''.
+ */
+export function fontVariantText(style: ComputedStyle): string {
+  const {
+    fontVariantLigatures: ligatures,
+    fontVariantCaps: caps,
+    fontVariantNumeric: numeric,
+    fontVariantPosition: position,
+  } = style;
+  if (!ligatures && !caps && !numeric && !position) return 'normal';
+  if (ligatures === NO_LIGATURES) {
+    return caps || numeric || position ? '' : 'none';
+  }
+  const words: string[] = [];
+  for (const kind of ['ligatures', 'caps', 'numeric', 'position'] as const) {
+    const held = style[VARIANT_FIELDS[kind]];
+    for (const word of Object.keys(VARIANTS)) {
+      const [of, features] = VARIANTS[word];
+      if (of !== kind) continue;
+      // `all-small-caps` holds what `small-caps` does and more
+      const named =
+        kind === 'caps'
+          ? held === features
+          : `,${held},`.includes(`,${features},`);
+      if (named) words.push(word);
+    }
+  }
+  return words.join(' ');
+}
+
 /**
  * A `font-variant` longhand's value, or the shorthand's (`kind` null), as
  * the fields it sets; null for a value it does not take. The shorthand
@@ -7136,7 +7300,7 @@ function parseFontVariant(
     words[0] === 'none' &&
     (kind === null || kind === 'ligatures')
   ) {
-    named.ligatures = ['liga=0,clig=0,dlig=0,hlig=0,calt=0'];
+    named.ligatures = [NO_LIGATURES];
   } else {
     for (const word of words) {
       const known = VARIANTS[word];
@@ -7492,39 +7656,110 @@ function negativeLength(value: string, ctx: UnitContext): boolean {
   return !!len && typeof len === 'object' && resolve(len, 100) < 0;
 }
 
+/** The largest number a float holds, which Blink keeps a `flex-grow` in. */
+const LARGEST_FLOAT = 3.4028234663852886e38;
+/** The largest number 32 bits hold, which Blink keeps an `order` in. */
+const LARGEST_INTEGER = 2147483647;
+
+const FLEX_DIRECTIONS: ReadonlySet<string> = new Set([
+  'row',
+  'row-reverse',
+  'column',
+  'column-reverse',
+]);
+const FLEX_WRAPS: ReadonlySet<string> = new Set([
+  'nowrap',
+  'wrap',
+  'wrap-reverse',
+]);
+
+/** A `flex-grow` or a `flex-shrink`: a number, nought or more, or null. A
+ *  calculation below nought is nought and no error (CSS Values 4, 10.12). */
+function flexFactorOf(value: string): number | null {
+  const n = parseNumber(value, LARGEST_FLOAT);
+  if (n === null) return null;
+  if (n >= 0) return Math.min(n, LARGEST_FLOAT);
+  return isMathFunction(value) ? 0 : null;
+}
+
+type FlexBasis = Pick<ComputedStyle, 'flexBasis' | 'flexBasisKeyword'>;
+
+/** The keywords a `flex-basis` takes as they are, which is none of the
+ *  prefixed ones a size takes. */
+const FLEX_BASIS_SIZES: ReadonlySet<string> = new Set([
+  'min-content',
+  'max-content',
+  'fit-content',
+  'stretch',
+]);
+
+/** A `flex-basis` but for a `calc-size()`, which `flex` does not take, or
+ *  null for what it is not. Its keywords are for a page to read, since
+ *  each lays out as `auto` does here. */
+function flexBasisOf(value: string, ctx: UnitContext): FlexBasis | null {
+  const word = value.trim().toLowerCase();
+  if (word === 'content') {
+    return { flexBasis: 'content', flexBasisKeyword: null };
+  }
+  if (FLEX_BASIS_SIZES.has(word)) {
+    return { flexBasis: AUTO, flexBasisKeyword: word as ContentSize };
+  }
+  const len = parseLength(value, ctx);
+  if (len === null) return null;
+  // a calculation of a percentage alone has a `px` of nought, and one of
+  // the two is no negative it could yet be told is one
+  const below =
+    typeof len === 'number' ? len < 0 : len !== AUTO && !len.px && len.pct < 0;
+  if (!below) return { flexBasis: len, flexBasisKeyword: null };
+  if (!isMathFunction(value)) return null;
+  return {
+    flexBasis: typeof len === 'number' ? 0 : { pct: 0 },
+    flexBasisKeyword: null,
+  };
+}
+
+function setFlexBasis(style: ComputedStyle, basis: FlexBasis): void {
+  style.flexBasis = basis.flexBasis;
+  style.flexBasisKeyword = basis.flexBasisKeyword;
+  style.flexBasisSize = null;
+}
+
+/**
+ * `flex` (CSS Flexbox 7.3): `none`, or a grow and perhaps a shrink beside
+ * one basis, in the order Blink reads them, and refused whole where any
+ * part is none of those: a part left out of what is kept would have the
+ * rest set a flex nobody wrote. A nought is a basis only after both
+ * numbers, and only as a nought is written; a basis goes before or after
+ * the numbers, not between them.
+ */
 function applyFlexShorthand(
   style: ComputedStyle,
   value: string,
   ctx: UnitContext,
 ): void {
-  const v = value.trim().toLowerCase();
-  if (v === 'none') {
+  const parts = splitValue(value);
+  if (parts.length === 1 && parts[0].toLowerCase() === 'none') {
     style.flexGrow = 0;
     style.flexShrink = 0;
-    style.flexBasis = AUTO;
+    setFlexBasis(style, { flexBasis: AUTO, flexBasisKeyword: null });
     return;
   }
-  if (v === 'auto') {
-    style.flexGrow = 1;
-    style.flexShrink = 1;
-    style.flexBasis = AUTO;
-    return;
-  }
-  const parts = splitValue(value);
-  const numbers: number[] = [];
-  let basis: Len | 'content' | null = null;
-  for (const part of parts) {
-    if (part.toLowerCase() === 'content') {
-      basis = 'content';
+  let grow: number | null = null;
+  let shrink: number | null = null;
+  let basis: FlexBasis | null = null;
+  for (let i = 0; i < parts.length; i += 1) {
+    const factor = flexFactorOf(parts[i]);
+    if (factor !== null) {
+      if (grow === null) grow = factor;
+      else if (shrink === null) shrink = factor;
+      else if (factor === 0 && !isMathFunction(parts[i]) && !basis) {
+        basis = { flexBasis: 0, flexBasisKeyword: null };
+      } else return;
       continue;
     }
-    const n = parseNumber(part);
-    if (n !== null && numbers.length < 2 && !part.includes('%')) {
-      numbers.push(n);
-      continue;
-    }
-    const len = parseLength(part, ctx);
-    if (len !== null) basis = len;
+    if (basis || (i === 1 && parts.length > 2)) return;
+    basis = flexBasisOf(parts[i], ctx);
+    if (!basis) return;
   }
   // what the shorthand leaves out is grow 1 and basis 0 (CSS Flexbox 7.1.1),
   // so `flex: 10px` grows. Every browser writes that basis as `0%`, and the
@@ -7534,10 +7769,12 @@ function applyFlexShorthand(
   // away — a dialog's scrolling body drawn empty. Across a row, and down a
   // column of a definite height, it is `0` all the same: not `auto`, which
   // would size each `flex: 1` sibling to its content rather than share.
-  if (numbers.length) style.flexGrow = numbers[0];
-  else if (basis !== null) style.flexGrow = 1;
-  style.flexShrink = numbers.length > 1 ? numbers[1] : 1;
-  style.flexBasis = basis ?? (numbers.length ? { pct: 0 } : AUTO);
+  style.flexGrow = grow ?? 1;
+  style.flexShrink = shrink ?? 1;
+  setFlexBasis(
+    style,
+    basis ?? { flexBasis: { pct: 0 }, flexBasisKeyword: null },
+  );
 }
 
 // --- grid ------------------------------------------------------------------
@@ -9231,10 +9468,10 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'interpolate-size': ['interpolateSize'],
   'reading-flow': ['readingFlow'],
   'reading-order': ['readingOrder'],
-  'min-width': ['minWidth', 'minWidthKeyword'],
-  'max-width': ['maxWidth', 'maxWidthKeyword'],
-  'min-height': ['minHeight', 'minHeightKeyword'],
-  'max-height': ['maxHeight', 'maxHeightKeyword'],
+  'min-width': ['minWidth', 'minWidthKeyword', 'minWidthSize'],
+  'max-width': ['maxWidth', 'maxWidthKeyword', 'maxWidthSize'],
+  'min-height': ['minHeight', 'minHeightKeyword', 'minHeightSize'],
+  'max-height': ['maxHeight', 'maxHeightKeyword', 'maxHeightSize'],
   'box-sizing': ['boxSizing'],
   'box-decoration-break': ['boxDecorationBreak'],
   '-webkit-box-decoration-break': ['boxDecorationBreak'],
@@ -9323,14 +9560,20 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'flex-direction': ['flexDirection'],
   'flex-wrap': ['flexWrap'],
   'flex-flow': ['flexDirection', 'flexWrap'],
-  'justify-content': ['justifyContent'],
-  'align-items': ['alignItems'],
-  'align-self': ['alignSelf', 'alignAnchorCenter'],
-  'align-content': ['alignContent'],
-  flex: ['flexGrow', 'flexShrink', 'flexBasis'],
+  'justify-content': ['justifyContent', 'justifyContentText'],
+  'align-items': ['alignItems', 'alignItemsText'],
+  'align-self': ['alignSelf', 'alignAnchorCenter', 'alignSelfText'],
+  'align-content': ['alignContent', 'alignContentText'],
+  flex: [
+    'flexGrow',
+    'flexShrink',
+    'flexBasis',
+    'flexBasisKeyword',
+    'flexBasisSize',
+  ],
   'flex-grow': ['flexGrow'],
   'flex-shrink': ['flexShrink'],
-  'flex-basis': ['flexBasis'],
+  'flex-basis': ['flexBasis', 'flexBasisKeyword', 'flexBasisSize'],
   order: ['order'],
   gap: ['rowGap', 'rowGapNormal', 'columnGap', 'columnGapNormal'],
   'row-gap': ['rowGap', 'rowGapNormal'],
@@ -9365,15 +9608,27 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'grid-column': ['gridColumnStart', 'gridColumnEnd'],
   'grid-column-start': ['gridColumnStart'],
   'grid-column-end': ['gridColumnEnd'],
-  'justify-items': ['justifyItems'],
-  'justify-self': ['justifySelf', 'justifyAnchorCenter'],
-  'place-content': ['alignContent', 'justifyContent'],
-  'place-items': ['alignItems', 'justifyItems'],
+  'justify-items': ['justifyItems', 'justifyItemsText'],
+  'justify-self': ['justifySelf', 'justifyAnchorCenter', 'justifySelfText'],
+  'place-content': [
+    'alignContent',
+    'justifyContent',
+    'alignContentText',
+    'justifyContentText',
+  ],
+  'place-items': [
+    'alignItems',
+    'justifyItems',
+    'alignItemsText',
+    'justifyItemsText',
+  ],
   'place-self': [
     'alignSelf',
     'justifySelf',
     'alignAnchorCenter',
     'justifyAnchorCenter',
+    'alignSelfText',
+    'justifySelfText',
   ],
   'border-radius': ['borderRadius', 'borderRadiusY'],
   'border-top-left-radius': ['borderRadius', 'borderRadiusY'],
@@ -9673,6 +9928,7 @@ export function settleClamp(
       style.display = box === 'inline' ? 'inline-block' : 'block';
       style.flowRoot = box === 'block';
     } else {
+      keepFlexRead(style);
       const reverse = style.webkitBoxDirection === 'reverse';
       style.flexDirection = vertical
         ? reverse
@@ -9690,13 +9946,24 @@ export function settleClamp(
     parent?.webkitBox &&
     (parent.display === 'flex' || parent.display === 'inline-flex')
   ) {
-    style.flexGrow = style.webkitBoxFlex;
-    style.flexShrink = style.webkitBoxFlex;
+    keepFlexRead(style);
+    style.flexGrow = Math.max(0, style.webkitBoxFlex);
+    style.flexShrink = style.flexGrow;
   }
   style.lineClamp =
     collapses && CLAMPS.has(style.display) && !style.columns
       ? (style.maxLines ?? Infinity)
       : null;
+}
+
+/** What a page reads of the flex properties `settleClamp` writes over. */
+function keepFlexRead(style: ComputedStyle): void {
+  style.flexRead ??= {
+    flexDirection: style.flexDirection,
+    flexWrap: style.flexWrap,
+    flexGrow: style.flexGrow,
+    flexShrink: style.flexShrink,
+  };
 }
 
 /** The displays of a block container, which `continue` applies to. */

@@ -89,12 +89,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
-import {
-  alphaOf,
-  inkColor,
-  isTransparent,
-  resolve as resolveLength,
-} from './css/values.js';
+import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
 import type { UsedBox } from './computed.js';
@@ -114,6 +109,7 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
+  isRootElement,
   readsFace,
   highlightKey,
 } from './css/cascade.js';
@@ -243,6 +239,7 @@ import {
   carryBlockers,
   containmentApplies,
   containsOutOfFlow,
+  forgetLayout,
   forgetSizes,
   heldBack,
   heldShift,
@@ -262,6 +259,7 @@ import {
   commitLastPositions,
   placedStyleOf,
   resolvedInsets,
+  usedMargins,
   restickToViewport,
   restickWithin,
   retranslate,
@@ -271,7 +269,12 @@ import {
   forgetSizesIn,
   isInlineLevel,
 } from './layout/block.js';
-import { frameModeOf, onPage, pageSides } from './layout/writing.js';
+import {
+  frameModeOf,
+  onPage,
+  pageMargins,
+  pageSides,
+} from './layout/writing.js';
 import {
   isScroller,
   scrollBarHit,
@@ -407,6 +410,7 @@ import {
   intersectionClips,
   apartFromLines,
   apartOf,
+  carryLayers,
   layered,
   layerOf,
   onLine,
@@ -466,7 +470,7 @@ import type {
 } from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges, SourceEnv } from './srcset.js';
-import { atDensity } from './svg.js';
+import { atDensity, forgetDrawings } from './svg.js';
 import {
   askMedia,
   cutByFixed,
@@ -609,6 +613,7 @@ export interface HtmlViewProps {
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
   canvasImage?: (element: Element) => unknown | null;
+  canvasOpaque?: (element: Element) => boolean;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -1212,6 +1217,10 @@ export class HtmlViewNode extends Node {
   private _laidSincePaint = false;
   private _overBudget: boolean[] = [];
   private _drawnCheaper = false;
+  /** When the page was last left to hear of its viewport, and how long its
+   *  tasks had taken by then (`viewportHeld`). */
+  private _heardAt = 0;
+  private _heardBusy = 0;
   /** When the last frame of the drag under way was painted. */
   private _dragFrameAt = -Infinity;
   /** The tile each background layer was drawn at in the drag under way, by
@@ -5079,15 +5088,21 @@ export class HtmlViewNode extends Node {
    */
   private _armSettle(): void {
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
+    const armed = resizeClock.now();
     this._settleTimer = resizeClock.arm(() => {
       this._settleTimer = null;
       if (this.destroyed) return;
       const live = this._liveResizing();
+      const now = resizeClock.now();
+      // a timer that comes this late says the thread was busy, and that
+      // the step after it may be waiting behind this: not that the hand
+      // has stopped
+      const late = now - armed >= DRAG_REST_MS;
       // a drag drawn cheaper is drawn as at rest once it is over, and once
       // the hand that drags it holds still (`DRAG_REST_MS`)
       if (
         this._cheap &&
-        (!live || resizeClock.now() - this._dragFrameAt >= DRAG_REST_MS)
+        (!live || (!late && now - this._dragFrameAt >= DRAG_REST_MS))
       ) {
         this._drawAtRest();
       }
@@ -5122,6 +5137,32 @@ export class HtmlViewNode extends Node {
     return over >= 2 && this._liveResizing();
   }
 
+  /**
+   * Whether the page waits to hear of its viewport: the drag under way fell
+   * behind its edge (`_cheap`), and its scripts have had more than
+   * `SCRIPT_SHARE` of the time since it last heard, `busy` being how long
+   * they have taken so far. A page's `resize` and its `ResizeObserver`s are
+   * a cycle of their own at each width — its script, a build, a paint —
+   * and through a drag it cannot keep up with, that cycle is the one to
+   * give up, since a layout says all a page's sheets do. A reaction that
+   * costs little is told at every frame, and only the drag's rest, which
+   * asks (`_drawAtRest`), tells one that costs a lot. Only what it is told
+   * waits: what it reads is what is there. A window that says nothing of a
+   * drag — X11's — tells a page at every step.
+   */
+  viewportHeld(busy: number): boolean {
+    const now = frameClock.now();
+    if (
+      this._cheap &&
+      busy - this._heardBusy > SCRIPT_SHARE * (now - this._heardAt)
+    ) {
+      return true;
+    }
+    this._heardAt = now;
+    this._heardBusy = busy;
+    return false;
+  }
+
   /** A drag drawn cheaper from now (`_behind`), until it rests. */
   private _cheapen(): void {
     this._cheap = true;
@@ -5147,6 +5188,8 @@ export class HtmlViewNode extends Node {
       this.invalidate(false, this, 'content');
     }
     this._scheduleFrame();
+    // what the page was held from (`viewportHeld`), which may be no paint
+    this._props().onPaint?.();
   }
 
   /**
@@ -5507,6 +5550,7 @@ export class HtmlViewNode extends Node {
           this._scale,
           (el) => this._sourceOf('video', el),
           this._covers,
+          (el) => this._props().canvasOpaque?.(el) ?? false,
         )
       : [];
     const mounted = new Set(this._mediaLaid.map((r) => r.element));
@@ -5686,6 +5730,14 @@ export class HtmlViewNode extends Node {
     source: K extends 'video' ? VideoSource : AudioSource;
     url: string;
   } | null {
+    const clip = kind === 'video' ? this._clips.get(el) : undefined;
+    if (clip) {
+      const source = { kind: 'video', src: clip } as const;
+      return {
+        source: source as K extends 'video' ? VideoSource : AudioSource,
+        url: clip,
+      };
+    }
     for (const { url, type } of this._videoChoice(el)) {
       if (this._resources.media(kind, url) === undefined) {
         this._resources.requestMedia(kind, url, type, el);
@@ -5715,6 +5767,22 @@ export class HtmlViewNode extends Node {
     );
     this._videoChoices.set(el, { signature, candidates });
     return candidates;
+  }
+
+  /** The files a page's `MediaSource`s came to, by their `<video>`s
+   *  (`showClip`). */
+  private readonly _clips = new WeakMap<Element, string>();
+
+  /**
+   * What a page's `MediaSource` came to, as a file (`scripts/clips.ts`): what
+   * the element's player plays from now on, whatever it was asked for
+   * before, or with null nothing any more. A `<video>` whose `src` is a
+   * `MediaSource` has no URL a host could answer for.
+   */
+  showClip(element: Element, file: string | null): void {
+    if (file) this._clips.set(element, file);
+    else this._clips.delete(element);
+    this._reportMedia();
   }
 
   /**
@@ -7254,14 +7322,15 @@ export class HtmlViewNode extends Node {
    * waiting, for a script that may read nothing a box decides (`comesFromBox`):
    * a style is right whether its text has been set again or not, since the
    * lists and the lengths read from a face are, and what a box answers is
-   * asked for again if it is read (`layoutOwed`). `keepsAuto` is
-   * `cssomStyle`'s, for what takes the computed value.
+   * asked for again if it is read (`layoutOwed`). `computed` is for what
+   * takes the computed value: it keeps `cssomStyle`'s `min-width: auto`, and
+   * asks no box of a `::before` or an `::after`.
    */
   computedStyle(
     element: Element,
     pseudo: string | null = null,
     waits = false,
-    keepsAuto = false,
+    computed = false,
   ): Record<string, string> | null {
     if (waits) this._prepare(this.abs.width || 1);
     else this._settle();
@@ -7274,28 +7343,34 @@ export class HtmlViewNode extends Node {
       return this._transitionComputed(tree, cascade, element, style, pseudo);
     }
     if (pseudo === 'before' || pseudo === 'after') {
+      const generated = this._pseudoBoxOf(tree, element, pseudo);
       // one placed by a position option has that option's style, and the
       // insets its layout came to (CSS Anchor Positioning 1, 6.2)
-      const generated = this._pseudoBoxOf(tree, element, pseudo);
       const placed = generated && this._placedStyle(generated);
-      if (generated && placed) {
-        return cssomStyle(
-          placed,
-          this._scale,
-          this._usedBox(generated, placed),
-        );
-      }
       // one the rules give no `content` is styled by them all the same
-      const own = this._atNow(element, () =>
-        cascade.pseudoComputedStyle(element, pseudo, style),
-      );
+      const own =
+        placed ??
+        this._atNow(element, () =>
+          cascade.pseudoComputedStyle(element, pseudo, style),
+        );
       // and one no rule styles has the style it would be made with all
       // the same, its element's inherited, as a browser answers for it
+      const read = own ?? inherit(style, cascade.initial);
+      // the box of a `display: contents` one only sets its content, and is
+      // none of its own (`contentsStyle`), and a box a drag set aside is a
+      // width ago, where its rules are now
+      const used =
+        generated && read.display !== 'contents' && !heldBack(tree, generated);
       return cssomStyle(
-        own ?? inherit(style, cascade.initial),
+        read,
         this._scale,
-        null,
-        keepsAuto || (!!generated && isItem(generated)),
+        !used
+          ? null
+          : computed
+            ? this._edgesOf(generated, read)
+            : this._usedBox(generated, read),
+        computed || (!!generated && isItem(generated)),
+        !generated,
       );
     }
     const key = pseudo ? highlightKey(pseudo) : null;
@@ -7305,9 +7380,31 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo) return null;
     const box = this._ownBoxOf(tree, element);
-    if (!box) return cssomStyle(style, this._scale, null);
+    if (!box) {
+      return cssomStyle(
+        style,
+        this._scale,
+        null,
+        false,
+        !!style.transform && this._unrendered(element, style),
+      );
+    }
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+  }
+
+  /**
+   * Whether a `display` says nothing renders an element, its own or one
+   * around it. No box of ours is not the test: what an `<svg>` draws, what
+   * `content-visibility: hidden` holds and a canvas's fallback have none
+   * here, and a browser has one for each.
+   */
+  private _unrendered(element: Element, style: ComputedStyle): boolean {
+    if (style.display === 'none' || style.display === 'contents') return true;
+    for (let at = flatParentOf(element); at; at = flatParentOf(at)) {
+      if (this._styleOf(at)?.display === 'none') return true;
+    }
+    return false;
   }
 
   /** The style of the position option a box was placed by
@@ -7322,19 +7419,10 @@ export class HtmlViewNode extends Node {
 
   /** What layout made of a box, as `getComputedStyle` reads it. */
   private _usedBox(box: Box, style: ComputedStyle): UsedBox {
-    // margins are no part of a box: worked out again, as layout did, from
-    // the width of the block that holds it
-    const across = box.parent ? box.parent.contentWidth : this.abs.width;
-    const margin = (len: Len) => resolveLength(len, across);
     const used: UsedBox = {
       width: box.width,
       height: box.height,
-      margin: [
-        margin(style.marginTop),
-        margin(style.marginRight),
-        margin(style.marginBottom),
-        margin(style.marginLeft),
-      ],
+      margin: usedMargins(box),
       border: [
         box.borderTop,
         box.borderRight,
@@ -7343,6 +7431,7 @@ export class HtmlViewNode extends Node {
       ],
       padding: [box.padTop, box.padRight, box.padBottom, box.padLeft],
       insets: resolvedInsets(box, this._laidOutWidth, this._viewportHeight()),
+      inline: box.kind === 'inline',
     };
     // a box laid out in a vertical flow's frame has the frame's sides,
     // which are drawn at the page's others (`layout/writing.ts`)
@@ -7350,6 +7439,7 @@ export class HtmlViewNode extends Node {
     if (mode) {
       used.width = box.height;
       used.height = box.width;
+      used.margin = pageMargins(used.margin, mode);
       used.border = pageSides(used.border, mode);
       used.padding = pageSides(used.padding, mode);
       if (used.insets) {
@@ -7364,6 +7454,39 @@ export class HtmlViewNode extends Node {
         );
       }
     }
+    // a margin written as a length reads as written, whatever an
+    // over-constrained line made of it
+    const written = [
+      style.marginTop,
+      style.marginRight,
+      style.marginBottom,
+      style.marginLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.margin[i] = len;
+    });
+    return used;
+  }
+
+  /**
+   * What a frame `getKeyframes()` makes up reads of a box. Chrome takes the
+   * computed value there, but for margins and padding, which it reads as
+   * `getComputedStyle` does whichever it is asked for: a length as `style`
+   * has it, and anything else as the box is laid out now, under whatever
+   * animation is running on it.
+   */
+  private _edgesOf(box: Box, style: ComputedStyle): UsedBox {
+    const used = this._usedBox(box, style);
+    const written = [
+      style.paddingTop,
+      style.paddingRight,
+      style.paddingBottom,
+      style.paddingLeft,
+    ];
+    written.forEach((len, i) => {
+      if (typeof len === 'number') used.padding[i] = len;
+    });
+    used.edgesOnly = true;
     return used;
   }
 
@@ -9027,7 +9150,7 @@ export class HtmlViewNode extends Node {
     let snapTyped = false;
     // what was kept of the sizes of a box at other lengths, and of every
     // box it is in, which take it in
-    for (const box of resizedBoxes) forgetSizes(box);
+    for (const box of resizedBoxes) forgetLayout(box);
     this._resizedInPlace = resizedBoxes;
     for (const [box, style] of restyled) {
       const was = box.style;
@@ -11273,7 +11396,8 @@ export class HtmlViewNode extends Node {
    * Explicit rather than observed: see `HtmlHandle.refresh`.
    */
   touchDocument(changes: readonly HtmlChange[] | null = null): void {
-    this._source.touch();
+    this._source.touch(!!changes);
+    if (changes) forgetDrawings(changes);
     this._updateBase();
     this._sweep();
     // a preload of what is here already settles as it is asked for, which
@@ -11922,6 +12046,7 @@ export class HtmlViewNode extends Node {
     }
     this._firstBoxes = { tree: built.tree, of: first };
     carryBlockers(tree, built.tree, built.replaced, built.added);
+    carryLayers(tree, built);
     return built.tree;
   }
 
@@ -12487,6 +12612,8 @@ export class HtmlViewNode extends Node {
     this._scripts.until = Infinity;
     // a cascade made again, which a sheet that reads as it did keeps
     this._sheetsRead = null;
+    // and what a change it cut was to, which no record has told
+    this._source.touch();
     this._invalidate(Stale.Style);
   }
 
@@ -12856,8 +12983,9 @@ export class HtmlViewNode extends Node {
     frames.sort((a, b) => a.offset - b.offset);
     // the values it runs from and to where the rule has no frame there:
     // the style under its animations
-    const record = this._underlyingRecord(element, pseudo) ?? {};
+    let record: Record<string, string> | undefined;
     const underlying = (): Record<string, string> => {
+      record ??= this._underlyingRecord(element, pseudo) ?? {};
       const out: Record<string, string> = {};
       for (const prop of animated) {
         if (record[prop] !== undefined) out[prop] = record[prop];
@@ -12890,6 +13018,7 @@ export class HtmlViewNode extends Node {
     element: Element,
     pseudo: string,
   ): Record<string, string> | null {
+    this._settle();
     const tree = this._tree;
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
@@ -12920,7 +13049,13 @@ export class HtmlViewNode extends Node {
       parentStyle,
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex',
     );
-    return cssomStyle(style, this._scale, null, true);
+    const box = this._ownBoxOf(tree, element);
+    return cssomStyle(
+      style,
+      this._scale,
+      box && this._edgesOf(box, style),
+      true,
+    );
   }
 
   cssAnimationsOf(
@@ -13740,12 +13875,21 @@ export class HtmlViewNode extends Node {
   }
 
   private _barsOf(box: Box): ScrollBar[] {
-    const hidden =
-      box.el && this._cascade
-        ? this._cascade.scrollbarHidden(box.el, box.style)
-        : BARS_SHOWN;
-    return scrollBarsOf(box, this._scale, hidden);
+    return scrollBarsOf(box, this._scale, this._barsHidden);
   }
+
+  /** Which of a container's bars the page hides: a selector match, which
+   *  `scrollBarsOf` asks last, of a bar that would show. */
+  private _barsHidden = (box: Box): { x: boolean; y: boolean } =>
+    box.el && this._cascade
+      ? this._cascade.scrollbarHidden(box.el, box.style)
+      : BARS_SHOWN;
+
+  /** SPIKE: `_barsHidden`, and no bar across while a guess draws. */
+  private _guessBarsHidden = (box: Box): { x: boolean; y: boolean } => ({
+    ...this._barsHidden(box),
+    x: true,
+  });
 
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
@@ -14776,15 +14920,10 @@ export class HtmlViewNode extends Node {
       selectionColor: this.selectionColor,
       highlights: this._litRanges(),
       litReplaced: this._litReplaced(),
-      scrollbarHidden: (box) => {
-        const hidden =
-          box.el && this._cascade
-            ? this._cascade.scrollbarHidden(box.el, box.style)
-            : BARS_SHOWN;
-        // SPIKE: an extent is the last exact layout's, which a box a guess
-        // narrowed would take for overflow, and show a bar across it
-        return this._guessedAt !== null ? { ...hidden, x: true } : hidden;
-      },
+      // SPIKE: an extent is the last exact layout's, which a box a guess
+      // narrowed would take for overflow, and show a bar across it
+      scrollbarHidden:
+        this._guessedAt !== null ? this._guessBarsHidden : this._barsHidden,
       imageFor: (box) => {
         if (box.replaced === 'frame') {
           return box.el && tagOf(box.el) === 'canvas'
@@ -14879,11 +15018,6 @@ function inForeignObject(
 function elementParent(el: Element): Element | null {
   const parent = el.parent;
   return parent && parent.type === 'tag' ? (parent as Element) : null;
-}
-
-/** Whether an element is its document's root: its parent the document. */
-function isRootElement(el: Element): boolean {
-  return !!el.parent && !el.parent.parent && !(el.parent instanceof ShadowRoot);
 }
 
 /** Device pixels as a CSS length, for a style the transition writes. */
@@ -18212,6 +18346,10 @@ export const frameClock = {
  *  drag is drawn cheaper (`_noteFrame`): most of a frame at 60Hz, where
  *  core's layout and the window's own paint and present take the rest. */
 const FRAME_BUDGET_MS = 12;
+
+/** The part of a drag that fell behind a page's scripts may take before
+ *  what they hear of the viewport waits (`viewportHeld`). */
+const SCRIPT_SHARE = 0.1;
 
 /** How long the hand that drags a window's edge holds still before a drag
  *  drawn cheaper is drawn as at rest (`_behind`): longer than the gaps a
