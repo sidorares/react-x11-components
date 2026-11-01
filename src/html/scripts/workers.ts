@@ -282,10 +282,14 @@ export class PageWorkers implements PageWorkersLike {
    * thread reads the word, since one still starting hears no message until
    * its script has run, and the message is what has one that is waiting read
    * it. A task under way runs to its end: what it asks reaches a frozen
-   * document (`_refused`).
+   * document (`_refused`). Their WebTransport sessions end now, told after
+   * the thread has heard it stopped.
    */
   freeze(): void {
     this._suspend(1);
+    for (const running of this._running.values()) {
+      running.transports?.contextCleanup();
+    }
   }
 
   /** It is shown again, and they go on from where they stopped. */
@@ -307,27 +311,31 @@ export class PageWorkers implements PageWorkersLike {
     return Atomics.load(new Int32Array(this._stopped), 0);
   }
 
+  /** Whether the document is in the back-forward cache. */
+  private get _kept(): boolean {
+    return Atomics.load(new Int32Array(this._frozen), 0) === 1;
+  }
+
   /**
    * Whether a connection a worker asked for goes no further: one a task
    * under way as the document was frozen asked for, which `connected` did
    * not know of yet. A peer would see it held, so the document is let go and
    * nothing is opened, as a browser evicts a page that comes to use what
-   * would have kept it out of the cache.
+   * would have kept it out of the cache. A WebTransport session keeps no
+   * document out, and fails instead (`TransportRelay.refuse`).
    */
-  private _refused(m: TransportAsk | SocketAsk): boolean {
-    const frozen = Atomics.load(new Int32Array(this._frozen), 0) === 1;
-    if (!frozen || m.op !== 'connect') return false;
+  private _refused(m: SocketAsk): boolean {
+    if (!this._kept || m.op !== 'connect') return false;
     this._seams.letGo();
     return true;
   }
 
-  /** Whether a worker has a WebTransport session or a WebSocket open, which
-   *  keeps the page out of the back-forward cache as one of its own would.
-   *  A peer connection a worker cannot make, and a data channel it is handed
-   *  stays the page's. */
+  /** Whether a worker has a WebSocket open, which keeps the page out of the
+   *  back-forward cache as one of its own would. A peer connection a worker
+   *  cannot make, and a data channel it is handed stays the page's. */
   get connected(): boolean {
     for (const running of this._running.values()) {
-      if (running.sockets?.open || running.transports?.open) return true;
+      if (running.sockets?.open) return true;
     }
     return false;
   }
@@ -400,7 +408,6 @@ export class PageWorkers implements PageWorkersLike {
         return;
       case 'wt':
         // a WebTransport session's, over the page's own seam
-        if (this._refused(m)) return;
         running.transports ??= new TransportRelay(
           () => this._seams.webTransport,
           (tell) => {
@@ -409,7 +416,8 @@ export class PageWorkers implements PageWorkersLike {
             }
           },
         );
-        running.transports.heard(m);
+        if (m.op === 'connect' && this._kept) running.transports.refuse(m.s);
+        else running.transports.heard(m);
         return;
       case 'ws':
         // a WebSocket's, over the page's own seam

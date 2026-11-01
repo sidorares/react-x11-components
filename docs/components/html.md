@@ -1421,9 +1421,14 @@ keeps up to `n` of them — Chrome keeps six on the desktop — the one left
 longest ago going first, and one no entry is of any more going as soon as
 that is so: a push from an earlier entry drops the entries ahead, and the
 documents they were of. A document is kept where its scripts run, it has
-loaded, and it holds no WebTransport session, WebSocket or peer
-connection open, its own or a worker's, which its server or its peer
-would see held. As it is left it hears `pageswap`,
+loaded, and it holds no WebSocket or peer connection open, its own or a
+worker's, which its server or its peer would see held. A WebTransport
+session does not keep it out, as its spec has it and as Chrome and Safari
+Technology Preview do, where Firefox does not pass WPT's test of it: the
+session ends as the document goes in, after `pagehide`, a worker's and a
+frame's with it, and once the document is shown again its `closed` rejects
+with a `WebTransportError` whose `source` is `"session"`, and `ready` with
+it where the session was still opening. As it is left it hears `pageswap`,
 then `pagehide` with `persisted` true and `visibilitychange` to `hidden`,
 its frames' documents first, and no `unload`: a page that listens for one
 is kept all the same and never hears it, as HTML has it and Chrome and
@@ -1433,8 +1438,10 @@ and its workers ask of it waits, a timer that fires again or a frame
 waiting once. Its workers stop with it, as HTML has them, and go on from
 where they stopped: a worker's timer, or a thread still starting, opens
 nothing while the document is kept. A task already under way as it was
-left runs to its end, and a connection that asks for lets the document
-go, nothing opened. A step to one of its entries, by the page's `history` or
+left runs to its end, and a WebSocket that asks for lets the document go,
+nothing opened; a WebTransport session it asks for is not opened either,
+and fails as the document is shown again. A step to one of its entries, by
+the page's `history` or
 `navigation` or the host's `session.go`, shows it again: it reads the
 session as it is now — `navigation.entries()` with the entries the
 documents shown meanwhile made, `navigation.activation` a `traverse` from

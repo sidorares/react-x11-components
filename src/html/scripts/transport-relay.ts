@@ -32,7 +32,7 @@ import type {
   WebTransportStreamLike,
   WebTransportStreamStats,
 } from '../transport.js';
-import { NO_WEBTRANSPORT, exportFrom } from '../transport.js';
+import { LEFT_FOR_CACHE, NO_WEBTRANSPORT, exportFrom } from '../transport.js';
 import type { SetTimeout } from './platform.js';
 
 declare const setTimeout: SetTimeout;
@@ -405,14 +405,31 @@ export class TransportRelay {
     private readonly _post: (m: TransportTell) => void,
   ) {}
 
-  /** Whether a session of the worker's is still open, or opening: what
-   *  keeps its page out of the back-forward cache. */
-  get open(): boolean {
-    return this._sessions.size > 0;
-  }
-
   private _tell(m: TransportTell): void {
     if (!this._disposed) this._post(m);
+  }
+
+  /**
+   * The worker's page is in the back-forward cache, and the worker stopped
+   * with it: its sessions end as the page's own do
+   * (`PageTransports.contextCleanup`), which the spec leaves to be said of
+   * workers (w3c/webtransport#127). Its thread's engine holds what it is
+   * told until it goes on.
+   */
+  contextCleanup(): void {
+    for (const [s, { session }] of this._sessions) {
+      this._tell({ kind: 'wt', ev: 'failed', s, message: LEFT_FOR_CACHE });
+      try {
+        session.close(0, '');
+      } catch {}
+    }
+    this._sessions.clear();
+  }
+
+  /** A session a task under way asked for once that was done, which fails
+   *  as one still opening did, nothing asked of the seam. */
+  refuse(s: number): void {
+    this._tell({ kind: 'wt', ev: 'failed', s, message: LEFT_FOR_CACHE });
   }
 
   /** The worker ended: its sessions go with it. */

@@ -2094,11 +2094,16 @@ export class DomHost {
     this._leaving = true;
   }
 
-  /** Whether the document has a WebTransport session, a WebSocket or a
-   *  peer connection open (`ScriptRunner.salvageable`). */
+  /** The document is frozen for the back-forward cache, and its WebTransport
+   *  sessions go (`PageTransports.contextCleanup`). */
+  contextCleanup(): void {
+    this._transportsMade?.contextCleanup();
+  }
+
+  /** Whether the document has a WebSocket or a peer connection open
+   *  (`ScriptRunner.salvageable`). */
   get connected(): boolean {
     return (
-      !!this._transportsMade?.open ||
       !!this._socketsMade?.open ||
       !!this._peersMade?.open ||
       !!this.workers?.connected

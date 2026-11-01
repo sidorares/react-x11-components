@@ -3735,7 +3735,18 @@ closes a way out a DOM binding opens by accident:
   keep a document (an entry is still of it, and it is no reload), the
   runner whether it may go (`salvageable`: loaded, and nothing open a peer
   would see held — `DomHost.connected`), so **anything new that holds a
-  connection open answers `open` and joins `connected`**. A document's
+  connection open answers `open` and joins `connected`**. A WebTransport
+  session is not one of them, though a WebSocket is: its spec's context
+  cleanup steps end it instead (w3c/webtransport#500), WPT's
+  `back-forward-cache-with-open-webtransport-connection` has held a page
+  with one to being restored since it was written, and Chrome, Edge and
+  Safari Technology Preview pass it. So `_freezeAll` ends the page's
+  sessions and its frames', and `PageWorkers.freeze` its workers', after
+  `pagehide` (`contextCleanup`), and the `__wtFailed` that tells the page is
+  held by the frozen engine as the steps' queued task is, so `closed` rejects
+  with `source: "session"` after `pageshow`. A session still opening goes the
+  same way, its `ready` rejected, as Chromium has it where the steps say
+  only that it fails. A document's
   workers stop with it, each at its own engine, and go on from there as it
   is shown again (`PageWorkers.freeze`, `followPage`): HTML 10.2.4 has a
   worker none of whose owners is fully active suspended, and WPT's
@@ -3747,7 +3758,9 @@ closes a way out a DOM binding opens by accident:
   waiting is (`_refused`, `_letGo`), with the page around it where it is a
   frame's. So **anything new a worker can open that a peer would see held
   answers `open` on its relay, joins `PageWorkers.connected` and goes
-  through `_refused`**. To know a thread has stopped, a test waits on
+  through `_refused`**. A WebTransport session asked for there keeps the
+  document and is never opened: it fails as one opening did
+  (`TransportRelay.refuse`). To know a thread has stopped, a test waits on
   `PageWorkers.stopped`, since it does nothing else to say so, and to hold
   a task under way it holds the `importScripts` of one at the page's
   network. Such a wait has no deadline of its own, so it ends with its test
