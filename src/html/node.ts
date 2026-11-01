@@ -5759,7 +5759,7 @@ export class HtmlViewNode extends Node {
     }
     if (!style || !this._tree?.styles.has(element)) return null;
     if (style.display === 'none') return null;
-    const record = cssomStyle(style, this._scale, null);
+    const record = cssomStyle(style, this._scale, null, true);
     const out: string[] = [];
     for (const prop of properties) {
       const value = prop.startsWith('--')
@@ -7149,12 +7149,14 @@ export class HtmlViewNode extends Node {
    * waiting, for a script that may read nothing a box decides (`comesFromBox`):
    * a style is right whether its text has been set again or not, since the
    * lists and the lengths read from a face are, and what a box answers is
-   * asked for again if it is read (`layoutOwed`).
+   * asked for again if it is read (`layoutOwed`). `keepsAuto` is
+   * `cssomStyle`'s, for what takes the computed value.
    */
   computedStyle(
     element: Element,
     pseudo: string | null = null,
     waits = false,
+    keepsAuto = false,
   ): Record<string, string> | null {
     if (waits) this._prepare(this.abs.width || 1);
     else this._settle();
@@ -7188,6 +7190,7 @@ export class HtmlViewNode extends Node {
         own ?? inherit(style, cascade.initial),
         this._scale,
         null,
+        keepsAuto || (!!generated && isItem(generated)),
       );
     }
     const key = pseudo ? highlightKey(pseudo) : null;
@@ -7199,7 +7202,7 @@ export class HtmlViewNode extends Node {
     const box = this._ownBoxOf(tree, element);
     if (!box) return cssomStyle(style, this._scale, null);
     const own = this._placedStyle(box) ?? style;
-    return cssomStyle(own, this._scale, this._usedBox(box, own));
+    return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
   }
 
   /** The style of the position option a box was placed by
@@ -12795,9 +12798,9 @@ export class HtmlViewNode extends Node {
         pseudo,
         true,
       );
-      return cssomStyle(style, this._scale, null);
+      return cssomStyle(style, this._scale, null, true);
     }
-    if (pseudo) return this.computedStyle(element, pseudo);
+    if (pseudo) return this.computedStyle(element, pseudo, false, true);
     const parent = flatParentOf(element);
     const parentStyle =
       (parent && isElement(parent) ? tree.styles.get(parent)?.style : null) ??
@@ -12807,7 +12810,7 @@ export class HtmlViewNode extends Node {
       parentStyle,
       parentStyle.display === 'flex' || parentStyle.display === 'inline-flex',
     );
-    return cssomStyle(style, this._scale, null);
+    return cssomStyle(style, this._scale, null, true);
   }
 
   cssAnimationsOf(
@@ -15255,6 +15258,21 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
     at = at.parent ?? (at instanceof ShadowRoot ? at.host : null);
   }
   return true;
+}
+
+/**
+ * Whether a box is a flex or a grid item, which is all that keeps a
+ * `min-width: auto` (`cssomStyle`): in the flow of such a box, `grid` being
+ * a flex box here, and not of a `-webkit-box`, which is one here alone.
+ */
+function isItem(box: Box): boolean {
+  const { position } = box.style;
+  if (position === 'absolute' || position === 'fixed') return false;
+  const around = box.parent?.style;
+  return (
+    (around?.display === 'flex' || around?.display === 'inline-flex') &&
+    !around.webkitBox
+  );
 }
 
 /** The first box an element made, depth first. */
