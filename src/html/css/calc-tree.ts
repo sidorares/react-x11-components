@@ -6,9 +6,13 @@
 // number first and what is no numeric value last. What it is for is a
 // value with a function in it no calculation can see through, which
 // `anchor()` is: `calc((anchor(top) + anchor(bottom)) / 2)` is
-// `calc(0.5 * (anchor(top) + anchor(bottom)))`. Nothing here resolves a
-// unit into another but the absolute lengths into pixels, which a
-// specified value does.
+// `calc(0.5 * (anchor(top) + anchor(bottom)))`, and `size` in a
+// `calc-size()`'s calculation is another (`serializeCalculation`). Nothing
+// here resolves a unit into another but the absolute lengths into pixels,
+// which a specified value does, and what a computed value's `dimension`
+// reads.
+
+import { parseMath, parseMathNumber } from './calc.js';
 
 /** A calculation's node. */
 type Node =
@@ -18,10 +22,27 @@ type Node =
   | { t: 'product'; of: Node[] }
   | { t: 'negate'; of: Node }
   | { t: 'invert'; of: Node }
-  | { t: 'fn'; name: string; args: Node[] };
+  | {
+      t: 'fn';
+      name: string;
+      args: Node[];
+      /** In a calculation, whose percentages are of a size: their sign is
+       *  that size's, so a comparison of them waits for it. */
+      sized?: boolean;
+    };
 
 /** The math functions this reads: `calc()` and the comparisons. */
 const MATH_FUNCTION = /^(?:-webkit-)?(calc|min|max|clamp)\($/i;
+
+/** And the rest of them, which a calculation may hold `size` in. */
+const OTHER_MATH =
+  /^(round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp|abs|sign)\($/i;
+
+/** `round()`'s strategy, an argument that is no calculation. */
+const STRATEGY = /^(nearest|up|down|to-zero)(?=\s*,)/i;
+
+/** Whether a `calc-size()`'s calculation has `size` in it. */
+export const HAS_SIZE = /(?<![\w-])size(?![\w-])/i;
 
 /** Pixels per one of each absolute length unit. */
 const ABSOLUTE: Record<string, number> = {
@@ -51,11 +72,68 @@ export function serializeMath(
   return serializeRoot(simplify(node));
 }
 
+/**
+ * A `calc-size()`'s calculation or its basis as it serializes: bare, with
+ * `size` kept as what no sum sees into, or null where it is none.
+ * `dimension` reads a `2em` to pixels where it can: all of them, for a
+ * computed value, and a specified value's absolute lengths, where a
+ * relative one keeps its unit. A math function with no `size` in it comes
+ * to its value where it has one. What follows a calculation that has
+ * ended is left, as Blink leaves it: `size+1px` is `size`, its `+1px` being
+ * a number and not an operator.
+ */
+export function serializeCalculation(
+  value: string,
+  dimension: (token: string) => number | null,
+): string | null {
+  const node = new Parser(value.trim(), (t) => t, dimension).calculation();
+  return node && serialize(simplify(node), true);
+}
+
+/** `size` scaled and a length and a percentage added, as a calculation
+ *  serializes: what an interpolation between two of them comes to. */
+export function serializeLinear(size: number, px: number, pct: number): string {
+  const of: Node[] = [];
+  if (pct !== 0) of.push({ t: 'num', value: pct, unit: '%' });
+  if (px !== 0 || (pct === 0 && size === 0)) {
+    of.push({ t: 'num', value: px, unit: 'px' });
+  }
+  if (size !== 0) {
+    of.push({
+      t: 'product',
+      of: [
+        { t: 'num', value: size, unit: '' },
+        { t: 'other', text: 'size' },
+      ],
+    });
+  }
+  return serialize(simplify({ t: 'sum', of }), true);
+}
+
+/** A math function with nothing in it to wait for, as a value; null where
+ *  it comes to none. */
+function folded(
+  text: string,
+  dimension: (token: string) => number | null,
+): Node | null {
+  const n = parseMathNumber(text);
+  if (n !== null) return { t: 'num', value: n, unit: '' };
+  const len = parseMath(text, dimension);
+  if (typeof len === 'number') return { t: 'num', value: len, unit: 'px' };
+  if (len === null || len === 'auto' || len.of) return null;
+  const pct: Node = { t: 'num', value: len.pct, unit: '%' };
+  if (!len.px) return pct;
+  return { t: 'sum', of: [pct, { t: 'num', value: len.px, unit: 'px' }] };
+}
+
 class Parser {
   private at = 0;
   constructor(
     private readonly text: string,
     private readonly other: (text: string) => string,
+    /** Reads a dimension where this is a `calc-size()`'s calculation. */
+    private readonly dimension:
+      ((token: string) => number | null) | null = null,
   ) {}
 
   done(): boolean {
@@ -77,6 +155,11 @@ class Parser {
     );
     if (!m) return null;
     return this.value();
+  }
+
+  /** A sum at the start, which is a calculation. */
+  calculation(): Node | null {
+    return this.sum();
   }
 
   private sum(): Node | null {
@@ -128,11 +211,11 @@ class Parser {
     if (num) {
       this.at += num[0].length;
       const unit = (num[1] ?? '').toLowerCase();
-      return {
-        t: 'num',
-        value: Number(num[0].slice(0, num[0].length - unit.length)),
-        unit,
-      };
+      const value = Number(num[0].slice(0, num[0].length - unit.length));
+      const px =
+        unit && unit !== '%' ? this.dimension?.(`${value}${unit}`) : null;
+      if (typeof px === 'number') return { t: 'num', value: px, unit: 'px' };
+      return { t: 'num', value, unit };
     }
     if (rest[0] === '(') {
       this.at += 1;
@@ -143,13 +226,22 @@ class Parser {
       return inner;
     }
     const fn = /^-?[a-z][\w-]*\(/i.exec(rest);
-    if (!fn) return null;
+    if (!fn) return this.word(rest);
     const math = MATH_FUNCTION.exec(fn[0]);
-    if (math) {
+    const further = this.dimension ? OTHER_MATH.exec(fn[0]) : null;
+    if (further) {
+      const whole = this.call();
+      if (whole === null) return null;
+      if (!HAS_SIZE.test(whole)) {
+        this.at += whole.length;
+        return folded(whole, this.dimension!) ?? { t: 'other', text: whole };
+      }
+    }
+    if (math || further) {
       this.at += fn[0].length;
       const args: Node[] = [];
       for (;;) {
-        const arg = this.sum();
+        const arg = this.argument();
         if (!arg) return null;
         args.push(arg);
         this.space();
@@ -158,22 +250,65 @@ class Parser {
         if (c === ')') break;
         if (c !== ',') return null;
       }
-      const name = math[1].toLowerCase();
+      const name = (math ?? further)![1].toLowerCase();
       if (name === 'calc') return args.length === 1 ? args[0] : null;
-      return { t: 'fn', name, args };
+      if (name === 'round') {
+        // `nearest` is what a strategy left out is
+        const strategy = args[0];
+        if (strategy.t === 'other' && strategy.text === 'nearest') {
+          args.shift();
+        }
+      }
+      return { t: 'fn', name, args, sized: this.dimension !== null };
     }
     // a function no calculation sees into, to its closing bracket
+    const text = this.call();
+    if (text === null) return null;
+    this.at += text.length;
+    return { t: 'other', text: this.other(text) };
+  }
+
+  /** The function call at the start, to its closing bracket; null where it
+   *  is not closed. */
+  private call(): string | null {
     let depth = 0;
-    let end = this.at;
-    for (; end < this.text.length; end += 1) {
+    for (let end = this.at; end < this.text.length; end += 1) {
       const c = this.text[end];
       if (c === '(') depth += 1;
-      else if (c === ')' && (depth -= 1) === 0) break;
+      else if (c === ')' && (depth -= 1) === 0) {
+        return this.text.slice(this.at, end + 1);
+      }
     }
-    if (depth !== 0) return null;
-    const text = this.text.slice(this.at, end + 1);
-    this.at = end + 1;
-    return { t: 'other', text: this.other(text) };
+    return null;
+  }
+
+  /** A math function's argument: a calculation, or a strategy. */
+  private argument(): Node | null {
+    this.space();
+    const word = this.dimension
+      ? STRATEGY.exec(this.text.slice(this.at))
+      : null;
+    if (!word) return this.sum();
+    this.at += word[0].length;
+    return { t: 'other', text: word[0].toLowerCase() };
+  }
+
+  /** What a calculation has for a word: `size`, and the constants. */
+  private word(rest: string): Node | null {
+    if (!this.dimension) return null;
+    const word = /^[a-z][\w-]*/i.exec(rest);
+    if (!word) return null;
+    this.at += word[0].length;
+    switch (word[0].toLowerCase()) {
+      case 'size':
+        return { t: 'other', text: 'size' };
+      case 'pi':
+        return { t: 'num', value: Math.PI, unit: '' };
+      case 'e':
+        return { t: 'num', value: Math.E, unit: '' };
+      default:
+        return null;
+    }
   }
 }
 
@@ -198,6 +333,12 @@ function simplify(node: Node): Node {
       const of = simplify(node.of);
       if (of.t === 'num') return { ...of, value: -of.value };
       if (of.t === 'negate') return of.of;
+      if (of.t === 'sum') {
+        return simplify({
+          t: 'sum',
+          of: of.of.map((child) => ({ t: 'negate', of: child })),
+        });
+      }
       return { t: 'negate', of };
     }
     case 'invert': {
@@ -210,11 +351,18 @@ function simplify(node: Node): Node {
     }
     case 'fn': {
       const args = node.args.map(simplify);
+      if (args.length === 1 && (node.name === 'min' || node.name === 'max')) {
+        return args[0];
+      }
       const nums = args.every((a) => a.t === 'num')
         ? (args as NumNode[])
         : null;
       const unit = nums?.[0]?.unit;
-      if (nums && nums.every((a) => a.unit === unit)) {
+      if (
+        nums &&
+        !(node.sized && unit === '%') &&
+        nums.every((a) => a.unit === unit)
+      ) {
         const v = nums.map((a) => a.value);
         if (node.name === 'min')
           return { t: 'num', value: Math.min(...v), unit: unit! };
@@ -228,7 +376,7 @@ function simplify(node: Node): Node {
           };
         }
       }
-      return { t: 'fn', name: node.name, args };
+      return { ...node, args };
     }
     case 'sum': {
       const of: Node[] = [];
@@ -282,7 +430,9 @@ function simplify(node: Node): Node {
           };
         }
       }
-      if (!numbers) return { t: 'product', of: rest };
+      if (factor === 1) numbers = 0;
+      if (!numbers)
+        return rest.length === 1 ? rest[0] : { t: 'product', of: rest };
       return {
         t: 'product',
         of: [{ t: 'num', value: factor, unit: '' }, ...rest],
@@ -313,9 +463,15 @@ function sorted(of: readonly Node[]): Node[] {
     .map(({ n }) => n);
 }
 
+/** A number to six significant figures, as C's `%g` writes it. */
 function numberText(n: number): string {
   const r = Number(n.toPrecision(6));
-  return Object.is(r, -0) ? '0' : String(r);
+  if (r === 0) return '0';
+  if (!Number.isFinite(r)) return String(r).toLowerCase();
+  const size = Math.abs(r);
+  if (size < 1e6 && size >= 1e-4) return String(r);
+  const [mantissa, exponent] = r.toExponential().split('e');
+  return `${mantissa}e${exponent[0]}${exponent.slice(1).padStart(2, '0')}`;
 }
 
 /** CSS Values 4, 10.12: a numeric value or an operation in `calc()`, and

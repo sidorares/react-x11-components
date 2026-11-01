@@ -4984,6 +4984,33 @@ test("getComputedStyle answers a positioned box's used insets, and clientWidth a
   );
 });
 
+test('getComputedStyle of a ::before reads its box once it has one, and its rules where it has none', async () => {
+  const doc = await hosted(
+    '<!doctype html><html><head><style>' +
+      'body { margin: 0 }' +
+      '#a { width: 200px }' +
+      '#a.on::before { content: ""; display: block; width: 50%; margin-left: 10% }' +
+      '#b::before { width: 50%; margin-left: 10% }' +
+      '</style></head><body><div id="a"></div><div id="b"></div><p id="out"></p><script>' +
+      'var a = document.getElementById("a");' +
+      'var before = getComputedStyle(a, "::before");' +
+      'var r = [before.width];' +
+      // the live declaration, and the layout a change is owed
+      'a.className = "on";' +
+      'r.push(before.width, before.marginLeft, before.getPropertyValue("margin-left"));' +
+      'var b = getComputedStyle(document.getElementById("b"), "::before");' +
+      'r.push(b.width, b.marginLeft);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script></body></html>',
+  );
+  // Chrome 156
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'auto|100px|20px|20px|50%|10%',
+    doc.logs.join('\n'),
+  );
+});
+
 test("getComputedStyle answers the flow-relative properties with their physical sides', as the writing mode and direction map them", async () => {
   // CSS Logical 1, 4: Apple's galleries read
   // `parseInt(getComputedStyle(button).marginInlineEnd)` and built a scroll

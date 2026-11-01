@@ -3141,6 +3141,26 @@ answers a page in CSS pixels from a style divides by both, as
 zoom**: one added to `INHERITED` that holds a length joins `zoomedBy`, or a
 zoomed child inherits it at its parent's size.
 
+**What `getComputedStyle` reads of a box is what layout used** (`_usedBox`,
+`usedMargins`), for a `::before` and an `::after` as for an element. A
+margin is read from the box, which layout resolved against what it laid the
+box out in: worked out again from `box.parent`, a box in an inline box read
+none, a grid item a share of the grid and an absolute box a share of the
+wrong block. Three things are load-bearing. **What a box does not keep is
+noted beside it**: `placeBlock` shares room out to a block's `auto` margins
+and leaves `marginLeft` and `marginRight` as they were (`AUTO_ROOM`), and
+`marginBottom` carries what hangs from the box for the next sibling to
+collapse with (`bottomStrut`), so anything new that gives a margin room
+tells `usedMargins`. Yoga tells no one, which is why a flex item's `auto`
+margin reads `0px`. **An inline box reads as it computes** (`UsedBox.inline`,
+`resolvedInsets`), a percentage as a percentage, as Chrome answers for a box
+with no rectangle of its own. And **what takes the computed value asks no
+box**: the frame `getKeyframes()` makes up (`computedStyle`'s `computed`), a
+`::before` a drag set aside (`heldBack`), which is a width ago where its rules
+are now, and one of `display: contents`, whose box only sets its content and
+is none of its own (`contentsStyle`). `_pseudoBoxOf` finds a box for all of
+them, so anything new it answers asks the same.
+
 **A computed colour is sRGB, and keeps what it was written as beside
 it.** Every drawing context reads a colour field as `#rrggbb` or `rgba()`,
 and the field holds that, whatever it was written in. Where its computed
@@ -5513,6 +5533,26 @@ opacity and, since a box is what counts (CSS Lists 3, 4.5), its counters.
 reach that half. **What a pseudo-element runs and starts reads
 `generatedStyle`**, never `box.style`, which has less than it does: its
 animations, and what a transition starts from.
+
+**A `calc-size()` reads as it was written and is laid out from numbers**
+(`css/calc-size.ts`). A style keeps each size's keyword and length as it
+would for any size, and beside them a `SizeOf` (`widthSize`, `minWidthSize`,
+`flexBasisSize` and their kin): `size` scaled and `plus` added, or the
+calculation itself where a function has `size` in it (`sizeAt`), and always
+its text, since a page reads the tree it wrote, which no two numbers say. A
+form that needs no box has its length in the size's field, and the `SizeOf`
+says only how it reads, so **anything that works a size out from a `SizeOf`
+asks that the field is `auto`** (`sizedWidth`, `finishHeight`), and
+**anything new that takes a size from a keyword does what `sizedBy` makes of
+it**, or `min-width: calc-size(fit-content, size + 7px)` comes out as the
+keyword alone. A check that a box's width is simple asks for the `SizeOf` as
+well as the keyword (`hasWidths`, `exactContribution`, `readsPercentBase`):
+`auto` beside a `SizeOf` is no `auto`. `test/html/calc-sizes.ts` is
+Chromium's answers over one document; regenerate it, do not write it by
+hand, and leave out of it a box that comes out right whatever the code
+does. A height's limit of a keyword is the content's, which only
+`finishHeight` has, so `clampHeight` is handed it there and answers without
+that limit everywhere else.
 
 **An inline element's opacity is in the colours its text is set in.**
 What an inline box holds is drawn on its block's lines, and a paragraph's
