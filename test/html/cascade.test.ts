@@ -27,6 +27,7 @@ import {
 } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
+import type { Len } from '../../src/html/css/values.js';
 import {
   boxOf,
   edgesOf,
@@ -291,6 +292,35 @@ test('a longhand that shares a field with its siblings takes only its own part o
   });
 });
 
+const PHYSICAL_SIDES = ['top', 'right', 'bottom', 'left'];
+
+/** A flow, and the sides its inline-start, inline-end, block-start and
+ *  block-end are. */
+const LOGICAL_FLOWS: [string, Record<string, string>][] = (
+  [
+    ['', 'left', 'right', 'top', 'bottom'],
+    ['direction:rtl', 'right', 'left', 'top', 'bottom'],
+    ['writing-mode:vertical-rl', 'top', 'bottom', 'right', 'left'],
+    ['writing-mode:vertical-lr', 'top', 'bottom', 'left', 'right'],
+    [
+      'writing-mode:vertical-rl;direction:rtl',
+      'bottom',
+      'top',
+      'right',
+      'left',
+    ],
+    ['writing-mode:sideways-lr', 'bottom', 'top', 'left', 'right'],
+  ] as const
+).map(([flow, start, end, before, after]) => [
+  flow,
+  {
+    'inline-start': start,
+    'inline-end': end,
+    'block-start': before,
+    'block-end': after,
+  },
+]);
+
 test('a logical property whose var() has no value goes back as though unset, in every flow', async () => {
   // A declaration with a `var()` goes back before what it substitutes is
   // read, and what took it back knew the physical names alone, so
@@ -298,39 +328,14 @@ test('a logical property whose var() has no value goes back as though unset, in 
   // 4px. Here is each of `LOGICAL`'s names in each flow, and what each case
   // comes to is Chrome's `getComputedStyle`
   const box = 'border:5px solid #ff0000;color:#0000ff';
-  const sides = ['top', 'right', 'bottom', 'left'];
+  const sides = PHYSICAL_SIDES;
   const corners = [
     ['top', 'left'],
     ['top', 'right'],
     ['bottom', 'right'],
     ['bottom', 'left'],
   ];
-  // a flow, and the sides its inline-start, inline-end, block-start and
-  // block-end are
-  const flows: [string, Record<string, string>][] = (
-    [
-      ['', 'left', 'right', 'top', 'bottom'],
-      ['direction:rtl', 'right', 'left', 'top', 'bottom'],
-      ['writing-mode:vertical-rl', 'top', 'bottom', 'right', 'left'],
-      ['writing-mode:vertical-lr', 'top', 'bottom', 'left', 'right'],
-      [
-        'writing-mode:vertical-rl;direction:rtl',
-        'bottom',
-        'top',
-        'right',
-        'left',
-      ],
-      ['writing-mode:sideways-lr', 'bottom', 'top', 'left', 'right'],
-    ] as const
-  ).map(([flow, start, end, before, after]) => [
-    flow,
-    {
-      'inline-start': start,
-      'inline-end': end,
-      'block-start': before,
-      'block-end': after,
-    },
-  ]);
+  const flows = LOGICAL_FLOWS;
   // what sets all four sides, the family's logical name, a side's physical
   // names, and what they read as set and as gone back
   const families: [
@@ -564,6 +569,200 @@ test('a logical property whose var() has no value goes back as though unset, in 
   drawn.forEach(([style, read, expected], i) => {
     const box = boxOf(el, `d${i}`) as unknown as { style: ComputedStyle };
     assert.deepStrictEqual(read(box.style), expected, style);
+  });
+});
+
+test('scroll-margin and scroll-padding have logical names, which follow the flow and go back as any does', async () => {
+  // Each name was a fixed side, as a left-to-right horizontal flow has it, so
+  // `direction:rtl;scroll-margin-inline-start:4px` set the left, and no table
+  // had them, so neither a keyword nor a `var()` took one back. The record has
+  // none of these properties, so each is read from the style's fields, and
+  // what each case comes to is Chrome's `getComputedStyle`
+  const css = (...parts: string[]) => parts.filter(Boolean).join(';');
+  const families = [
+    ['scroll-margin', '0px'],
+    ['scroll-padding', 'auto'],
+  ] as const;
+  const rows: [string, string[]][] = [];
+  const row = (
+    style: string,
+    family: string,
+    at: (side: string) => string,
+  ): void => {
+    rows.push([
+      style,
+      families.flatMap(([name, gone]) =>
+        PHYSICAL_SIDES.map((side) => (name === family ? at(side) : gone)),
+      ),
+    ]);
+  };
+  // where the old fixed sides were
+  const fixed = LOGICAL_FLOWS[0][1];
+  const goneBack = [
+    'var(--missing)',
+    'var(--color)',
+    '1px var(--missing)',
+    'var(--missing, revert)',
+    'unset',
+    'initial',
+    'revert',
+  ];
+  for (const [flow, of] of LOGICAL_FLOWS) {
+    for (const [family, gone] of families) {
+      for (const axis of ['inline', 'block']) {
+        const start = of[`${axis}-start`];
+        const end = of[`${axis}-end`];
+        for (const reach of [axis, `${axis}-start`, `${axis}-end`]) {
+          const reached = Object.keys(of)
+            .filter((logical) => logical.startsWith(reach))
+            .map((logical) => of[logical]);
+          const set = css(flow, `${family}:4px`);
+          for (const value of goneBack) {
+            row(css(set, `${family}-${reach}:${value}`), family, (side) =>
+              reached.includes(side) ? gone : '4px',
+            );
+          }
+          // the parent's, which is 9px
+          row(css(set, `${family}-${reach}:inherit`), family, (side) =>
+            reached.includes(side) ? '9px' : '4px',
+          );
+        }
+        // the fixed side was right where the flow has it there
+        if (start === fixed[`${axis}-start`]) continue;
+        const name = `${family}-${axis}`;
+        row(css(flow, `${name}:1px 2px`), family, (side) =>
+          side === start ? '1px' : side === end ? '2px' : gone,
+        );
+        row(css(flow, `${name}-start:7px`), family, (side) =>
+          side === start ? '7px' : gone,
+        );
+        row(css(flow, `${name}-end:7px`), family, (side) =>
+          side === end ? '7px' : gone,
+        );
+      }
+    }
+  }
+  const asDeclared: [string, string, (side: string) => string][] = [
+    // a physical name goes back by the logical one that stands for it
+    [
+      'scroll-margin:4px;scroll-margin-left:6px;scroll-margin-inline-start:var(--missing)',
+      'scroll-margin',
+      (side) => (side === 'left' ? '0px' : '4px'),
+    ],
+    // the flow is the element's, wherever it is declared
+    [
+      'scroll-margin-inline-start:7px;writing-mode:vertical-rl',
+      'scroll-margin',
+      (side) => (side === 'top' ? '7px' : '0px'),
+    ],
+    [
+      'scroll-padding-block-start:7px;writing-mode:vertical-rl',
+      'scroll-padding',
+      (side) => (side === 'right' ? '7px' : 'auto'),
+    ],
+    // what scroll-padding takes that scroll-margin does not
+    [
+      'direction:rtl;scroll-padding-inline:auto 10%',
+      'scroll-padding',
+      (side) => (side === 'left' ? '10%' : 'auto'),
+    ],
+  ];
+  for (const [style, family, at] of asDeclared) row(style, family, at);
+  // what is no value leaves what the cascade reached, all of it
+  for (const [family, value] of [
+    ['scroll-margin-inline', '1px 2px 3px'],
+    ['scroll-margin-block', '1px 10%'],
+    ['scroll-margin-inline', 'auto 1px'],
+    ['scroll-padding-inline', '1px 2px 3px'],
+    ['scroll-padding-block', '1px -2px'],
+    ['scroll-padding-inline', '1px red'],
+  ]) {
+    const name = family.replace(/-(inline|block)$/, '');
+    row(`${name}:4px;${family}:${value}`, name, () => '4px');
+  }
+  const page = rows
+    .map(
+      ([style], i) =>
+        `<div style="scroll-margin:9px;scroll-padding:9px"><div id="c${i}" style="${style}">x</div></div>`,
+    )
+    .join('');
+  const { node } = await render(`<style>:root{--color:red}</style>${page}`);
+  const el = view(node);
+  const read = (len: Len): string =>
+    typeof len === 'number'
+      ? `${len}px`
+      : typeof len === 'string'
+        ? len
+        : `${len.pct}%`;
+  rows.forEach(([style, expected], i) => {
+    const { style: s } = boxOf(el, `c${i}`) as unknown as {
+      style: ComputedStyle;
+    };
+    assert.deepStrictEqual(
+      [
+        s.scrollMarginTop,
+        s.scrollMarginRight,
+        s.scrollMarginBottom,
+        s.scrollMarginLeft,
+        s.scrollPaddingTop,
+        s.scrollPaddingRight,
+        s.scrollPaddingBottom,
+        s.scrollPaddingLeft,
+      ].map(read),
+      expected,
+      style,
+    );
+  });
+});
+
+test('place-content goes back with its two longhands', async () => {
+  // No table had it, so `place-content:center` stayed centred under anything
+  // that takes a declaration back. The record has neither longhand, so each
+  // is read from the style's fields, and what each case comes to is Chrome's
+  // `getComputedStyle`, `align-content`'s `normal` being `stretch` in its field
+  const rows: [string, string, string][] = [
+    ['place-content:center;place-content:unset', 'normal', 'normal'],
+    ['place-content:center;place-content:initial', 'normal', 'normal'],
+    ['place-content:center;place-content:revert', 'normal', 'normal'],
+    ['place-content:center;place-content:var(--missing)', 'normal', 'normal'],
+    ['place-content:center;place-content:var(--color)', 'normal', 'normal'],
+    [
+      'place-content:center;place-content:var(--missing, revert)',
+      'normal',
+      'normal',
+    ],
+    [
+      'align-content:center;justify-content:end;place-content:var(--missing)',
+      'normal',
+      'normal',
+    ],
+    ['place-content:center;place-content:inherit', 'end', 'space-between'],
+    [
+      'display:grid;place-content:center;place-content:var(--missing)',
+      'normal',
+      'normal',
+    ],
+  ];
+  const page = rows
+    .map(
+      ([style], i) =>
+        `<div style="place-content:end space-between"><div id="c${i}" style="${style}">x</div></div>`,
+    )
+    .join('');
+  const { node } = await render(`<style>:root{--color:red}</style>${page}`);
+  const el = view(node);
+  rows.forEach(([style, align, justify], i) => {
+    const { style: s } = boxOf(el, `c${i}`) as unknown as {
+      style: ComputedStyle;
+    };
+    assert.deepStrictEqual(
+      [
+        s.alignContent === 'stretch' ? 'normal' : s.alignContent,
+        s.justifyContent,
+      ],
+      [align, justify],
+      style,
+    );
   });
 });
 

@@ -2518,6 +2518,266 @@ test('what a computed style reads from a box says so, by name and in camel case'
   assert.ok(!comesFromBox('display'));
 });
 
+/** Every kind of box, for what a `min-width: auto` reads on it. */
+const MIN_SIZE_PAGE =
+  '<style>' +
+  '.b::before, .a::after { content: "x" }' +
+  '.o::before { content: "x"; position: absolute }' +
+  '.h::before { content: "x"; display: none }' +
+  '.k::before { content: "x"; min-width: min-content; min-height: stretch }' +
+  '</style>' +
+  '<div id="block"></div><span id="inline"></span>' +
+  '<div id="inline-block" style="display: inline-block"></div>' +
+  '<div id="float" style="float: left"></div>' +
+  '<div id="absolute" style="position: absolute"></div>' +
+  '<table><tr><td id="cell"></td></tr></table>' +
+  '<div id="none" style="display: none"></div>' +
+  '<div style="display: none"><span id="in-none"></span>' +
+  '<div style="display: flex"><div id="item-in-none"></div></div></div>' +
+  '<div id="contents" style="display: contents"></div>' +
+  '<div id="flex" style="display: flex">' +
+  '<div id="item"><div id="in-item"></div></div>' +
+  '<span id="span-item"></span>' +
+  '<div id="relative-item" style="position: relative"></div>' +
+  '<div id="sticky-item" style="position: sticky"></div>' +
+  '<div id="float-item" style="float: left"></div>' +
+  '<div id="absolute-child" style="position: absolute"></div>' +
+  '<div id="fixed-child" style="position: fixed"></div>' +
+  '<div id="none-child" style="display: none"></div>' +
+  '<div id="contents-child" style="display: contents">' +
+  '<div id="through-contents"></div></div>' +
+  '<div id="set" style="min-width: 5px; min-height: 10%"></div>' +
+  // a browser takes no property's name here, so the declaration goes and
+  // the item keeps its `auto`; here it finds the parent's computed `auto`
+  '<div id="inherit" style="min-width: inherit(min-width)"></div>' +
+  '</div>' +
+  '<div style="display: inline-flex"><div id="inline-flex-item"></div></div>' +
+  '<div id="grid" style="display: grid">' +
+  '<div id="grid-item"></div><span id="span-grid-item"></span>' +
+  '<div id="absolute-grid-child" style="position: absolute"></div>' +
+  '<div id="none-grid-child" style="display: none"></div>' +
+  '<div id="contents-grid-child" style="display: contents">' +
+  '<div id="through-grid-contents"></div></div>' +
+  '</div>' +
+  '<div style="display: inline-grid"><div id="inline-grid-item"></div></div>' +
+  '<div style="display: -webkit-box"><div id="webkit-box-child"></div></div>' +
+  '<details open style="display: flex"><summary id="summary">s</summary>' +
+  '<div id="details-content"></div></details>' +
+  '<button style="display: flex"><div id="in-button"></div></button>' +
+  '<div><template shadowrootmode="open"><div style="display: flex">' +
+  '<slot></slot></div></template><b id="slotted"></b></div>' +
+  '<div id="vertical" style="writing-mode: vertical-rl; min-height: 5px">' +
+  '</div>' +
+  '<div id="flex-before" class="b" style="display: flex"></div>' +
+  '<div id="flex-after" class="a" style="display: flex"></div>' +
+  '<div id="grid-before" class="b" style="display: grid"></div>' +
+  '<div id="block-before" class="b"></div>' +
+  '<div id="flex-absolute" class="o" style="display: flex"></div>' +
+  '<div id="flex-hidden" class="h" style="display: flex"></div>' +
+  '<div id="flex-no-content" style="display: flex"></div>' +
+  '<div id="block-keyword" class="k"></div>';
+
+/** Chrome's `getComputedStyle` on `MIN_SIZE_PAGE`: `min-width`, `min-height`,
+ *  `min-inline-size` and `min-block-size`. */
+const MIN_SIZE_READS: Record<string, string> = {
+  block: '0px 0px 0px 0px',
+  inline: '0px 0px 0px 0px',
+  'inline-block': '0px 0px 0px 0px',
+  float: '0px 0px 0px 0px',
+  absolute: '0px 0px 0px 0px',
+  cell: '0px 0px 0px 0px',
+  none: '0px 0px 0px 0px',
+  'in-none': '0px 0px 0px 0px',
+  'item-in-none': '0px 0px 0px 0px',
+  contents: '0px 0px 0px 0px',
+  flex: '0px 0px 0px 0px',
+  item: 'auto auto auto auto',
+  'in-item': '0px 0px 0px 0px',
+  'span-item': 'auto auto auto auto',
+  'relative-item': 'auto auto auto auto',
+  'sticky-item': 'auto auto auto auto',
+  'float-item': 'auto auto auto auto',
+  'absolute-child': '0px 0px 0px 0px',
+  'fixed-child': '0px 0px 0px 0px',
+  'none-child': '0px 0px 0px 0px',
+  'contents-child': '0px 0px 0px 0px',
+  'through-contents': 'auto auto auto auto',
+  set: '5px 10% 5px 10%',
+  inherit: 'auto auto auto auto',
+  'inline-flex-item': 'auto auto auto auto',
+  grid: '0px 0px 0px 0px',
+  'grid-item': 'auto auto auto auto',
+  'span-grid-item': 'auto auto auto auto',
+  'absolute-grid-child': '0px 0px 0px 0px',
+  'none-grid-child': '0px 0px 0px 0px',
+  'contents-grid-child': '0px 0px 0px 0px',
+  'through-grid-contents': 'auto auto auto auto',
+  'inline-grid-item': 'auto auto auto auto',
+  'webkit-box-child': '0px 0px 0px 0px',
+  summary: 'auto auto auto auto',
+  'details-content': '0px 0px 0px 0px',
+  'in-button': 'auto auto auto auto',
+  slotted: 'auto auto auto auto',
+  vertical: '0px 5px 5px 0px',
+  'flex-before': '0px 0px 0px 0px',
+  'flex-before::before': 'auto auto auto auto',
+  'flex-after': '0px 0px 0px 0px',
+  'flex-after::after': 'auto auto auto auto',
+  'grid-before': '0px 0px 0px 0px',
+  'grid-before::before': 'auto auto auto auto',
+  'block-before': '0px 0px 0px 0px',
+  'block-before::before': '0px 0px 0px 0px',
+  'flex-absolute': '0px 0px 0px 0px',
+  'flex-absolute::before': '0px 0px 0px 0px',
+  'flex-hidden': '0px 0px 0px 0px',
+  'flex-hidden::before': '0px 0px 0px 0px',
+  'flex-no-content': '0px 0px 0px 0px',
+  'flex-no-content::before': '0px 0px 0px 0px',
+  'block-keyword': '0px 0px 0px 0px',
+  'block-keyword::before': 'min-content stretch min-content stretch',
+};
+
+test('a min-width or a min-height of auto reads as zero, but on a flex or a grid item with a box', async () => {
+  const { node } = await render(MIN_SIZE_PAGE);
+  const el = view(node);
+  const read: Record<string, string> = {};
+  for (const at of Object.keys(MIN_SIZE_READS)) {
+    const [id, pseudo = null] = at.split('::');
+    const cs = el.computedStyle(findById(el.document, id)!, pseudo)!;
+    read[at] = [
+      cs['min-width'],
+      cs['min-height'],
+      cs['min-inline-size'],
+      cs['min-block-size'],
+    ].join(' ');
+  }
+  assert.deepStrictEqual(read, MIN_SIZE_READS);
+});
+
+/** What each size keyword reads as, Chrome's `getComputedStyle` on every
+ *  box of `keywordPage`: its prefixes go, and `-webkit-fill-available` is
+ *  `stretch`. */
+const SIZE_KEYWORDS: Record<string, string> = {
+  'min-content': 'min-content',
+  'max-content': 'max-content',
+  'fit-content': 'fit-content',
+  stretch: 'stretch',
+  '-webkit-fill-available': 'stretch',
+  '-webkit-min-content': 'min-content',
+  '-webkit-max-content': 'max-content',
+  '-webkit-fit-content': 'fit-content',
+  'MAX-CONTENT': 'max-content',
+};
+
+/** The limits, which read as they compute on any box. */
+const SIZE_LIMITS = [
+  'min-width',
+  'min-height',
+  'max-width',
+  'max-height',
+  'min-inline-size',
+  'min-block-size',
+  'max-inline-size',
+  'max-block-size',
+];
+
+/** The sizes, which read as they compute where no box takes them; on one
+ *  that does, they read as the length it came to. */
+const SIZES = ['width', 'height', 'inline-size', 'block-size'];
+
+/** A box of each kind for each keyword on each property it reads as written,
+ *  and the property and the keyword each `id` is for. */
+function keywordPage(): {
+  page: string;
+  rows: Record<string, [property: string, keyword: string]>;
+} {
+  const flat = [...SIZE_LIMITS, ...SIZES];
+  const kinds: [(style: string) => string, string[]][] = [
+    [(style) => `<div style="${style}" ID></div>`, SIZE_LIMITS],
+    [(style) => `<span style="${style}" ID></span>`, flat],
+    [(style) => `<div style="display: none; ${style}" ID></div>`, flat],
+    [(style) => `<div style="display: contents; ${style}" ID></div>`, flat],
+    [
+      (style) =>
+        `<div style="display: flex"><div style="${style}" ID></div></div>`,
+      SIZE_LIMITS,
+    ],
+    [
+      (style) =>
+        `<div style="display: grid"><div style="${style}" ID></div></div>`,
+      SIZE_LIMITS,
+    ],
+  ];
+  const rows: Record<string, [string, string]> = {};
+  let page = '';
+  for (const [box, properties] of kinds) {
+    for (const property of properties) {
+      for (const keyword of Object.keys(SIZE_KEYWORDS)) {
+        const id = `k${Object.keys(rows).length}`;
+        rows[id] = [property, keyword];
+        page += box(`${property}: ${keyword}`).replace('ID', `id="${id}"`);
+      }
+    }
+  }
+  return { page, rows };
+}
+
+test('a size that is a keyword reads as the keyword, whatever length stands beside it', async () => {
+  const { page, rows } = keywordPage();
+  const { node } = await render(page);
+  const el = view(node);
+  const wrong: string[] = [];
+  for (const [id, [property, keyword]] of Object.entries(rows)) {
+    const cs = el.computedStyle(findById(el.document, id)!)!;
+    if (cs[property] !== SIZE_KEYWORDS[keyword]) {
+      wrong.push(`${id} ${property}: ${keyword} reads ${cs[property]}`);
+    }
+  }
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('what takes a computed value keeps a min-width of auto on any box, as getKeyframes() and commitStyles() read it', async () => {
+  // Chrome's `getKeyframes()` on these, whose first frame is the style
+  // under the animation, and its `commitStyles()` of the same two values
+  const { node } = await render(
+    '<style>@keyframes k { to { min-width: 10px; max-width: 10px } }' +
+      '.k, .b::before { animation: k 100s paused }' +
+      '.b::before { content: "x" }' +
+      '.m, .b.m::before { min-width: min-content }</style>' +
+      '<div id="block" class="k"></div><span id="inline" class="k"></span>' +
+      '<div style="display: flex"><div id="item" class="k"></div></div>' +
+      '<div id="flex" class="b" style="display: flex"></div>' +
+      '<div id="block-before" class="b"></div>' +
+      '<div id="keyword" class="k m"></div>' +
+      '<div id="keyword-before" class="b m"></div>',
+  );
+  const el = view(node);
+  const under = (id: string, pseudo: string) =>
+    el.cssKeyframesOf(findById(el.document, id)!, pseudo, 'k')![0].values[
+      'min-width'
+    ];
+  assert.strictEqual(under('block', ''), 'auto');
+  assert.strictEqual(under('inline', ''), 'auto');
+  assert.strictEqual(under('item', ''), 'auto');
+  assert.strictEqual(under('flex', 'before'), 'auto');
+  assert.strictEqual(under('block-before', 'before'), 'auto');
+  assert.strictEqual(under('keyword', ''), 'min-content');
+  assert.strictEqual(under('keyword-before', 'before'), 'min-content');
+  for (const id of ['block', 'inline', 'item']) {
+    assert.strictEqual(
+      el.scriptAnimationValues(findById(el.document, id)!, 0, ['min-width']),
+      'min-width\u0000auto',
+      id,
+    );
+  }
+  assert.strictEqual(
+    el.scriptAnimationValues(findById(el.document, 'keyword')!, 0, [
+      'min-width',
+    ]),
+    'min-width\u0000min-content',
+  );
+});
+
 test('the scroll-timeline and view-timeline shorthands set their longhands, and getComputedStyle reads them back', async () => {
   const { node } = await render(
     '<div id="a" style="scroll-timeline: --s inline"></div>' +

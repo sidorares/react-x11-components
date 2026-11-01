@@ -4977,9 +4977,9 @@ test("getComputedStyle answers the flow-relative properties with their physical 
     // right the negated left
     '1px 3px 2px 4px 6px 12px solid 13px -14px 30px 20px 15px 40px',
     // top to bottom, from the right: the block runs leftwards, a line down
-    '2px 4px 1px 3px 5px 11px solid -14px 13px 20px 30px auto none',
+    '2px 4px 1px 3px 5px 11px solid -14px 13px 20px 30px 0px none',
     // sideways-lr: the block from the left, a line from the bottom up
-    '4px 2px 3px 1px 7px 9px solid 14px -13px 20px 30px auto none',
+    '4px 2px 3px 1px 7px 9px solid 14px -13px 20px 30px 0px none',
     '0',
     '2px',
   ]);

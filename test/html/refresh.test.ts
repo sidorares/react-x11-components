@@ -3245,6 +3245,31 @@ function stylesOf(el: HtmlViewNode, body: Element): string[] {
   });
 }
 
+const PX_LENGTH = /-?\d+(?:\.\d+)?px/g;
+
+/** Where two lists from `stylesOf` first say something else, or -1, a used
+ *  length a thousandth either way: the sum in a kept box comes out a last bit
+ *  from the same sum in a new one, and on a half that is two thousandths as
+ *  `getComputedStyle` writes it — 497.6125 and 497.61249999999995, seed 29 of
+ *  the form controls — as `thousandths` in the harness has it of a box. */
+function firstApart(a: readonly string[], b: readonly string[]): number {
+  return a.findIndex((line, i) => {
+    const other = b[i];
+    if (line === other) return false;
+    if (line.replace(PX_LENGTH, '') !== other?.replace(PX_LENGTH, '')) {
+      return true;
+    }
+    const mine = line.match(PX_LENGTH) ?? [];
+    const theirs = other.match(PX_LENGTH) ?? [];
+    return (
+      mine.length !== theirs.length ||
+      mine.some(
+        (n, j) => Math.abs(parseFloat(n) - parseFloat(theirs[j])) > 0.0015,
+      )
+    );
+  });
+}
+
 /** Where a node is among its siblings, as a record says, half the time:
  *  a host that keeps a `MutationObserver`'s records hands them on. */
 function sidesOf(
@@ -3699,7 +3724,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
       el.touchDocument();
       await act();
       const styled = stylesOf(el, bodyEl);
-      const at = scoped.findIndex((s, i) => s !== styled[i]);
+      const at = firstApart(scoped, styled);
       assert.ok(
         at < 0 && scoped.length === styled.length,
         `seed ${seed}, step ${step}: ${String(scoped[at]).slice(0, 300)}\n` +
@@ -3722,7 +3747,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
       chain._cascade = _cascade;
       el.touchDocument();
       await act();
-      const apart = styled.findIndex((s, i) => s !== made[i]);
+      const apart = firstApart(styled, made);
       assert.ok(
         apart < 0 && styled.length === made.length,
         `seed ${seed}, step ${step}: ${String(styled[apart]).slice(0, 300)}\n` +
@@ -4178,6 +4203,51 @@ test('a row with a control in it, put in a list, restyles the row and no row bef
   assert.ok(own.size <= 4, `${own.size} restyled`);
 });
 
+test('a change to a radio’s group restyles the fieldset around each radio in it, wherever the radio that changed is', async () => {
+  // a fieldset answers for what is in it, and a radio for its group, so a
+  // radio outside the fieldset moves its answer with nothing of the change
+  // inside it
+  const { node } = await render(
+    '<style>fieldset:valid, input:valid { color: #ff0000 }</style>' +
+      '<form><div id="d"><input id="a" type="radio" name="g" required></div>' +
+      '<fieldset id="f"><input id="r" type="radio" name="g"></fieldset>' +
+      '<input id="b" type="radio" name="g"></form>',
+    320,
+  );
+  const el = view(node);
+  await act();
+  const valid = 'rgb(255, 0, 0)';
+  const colour = (id = 'f') => el.computedStyle(byId(el, id))?.color;
+  assert.notStrictEqual(colour(), valid, 'a required group with none checked');
+  // the only required radio goes
+  const a = byId(el, 'a');
+  const holder = a.parent as Element;
+  DomUtils.removeElement(a);
+  el.touchDocument([
+    { type: 'childList', target: holder, addedNodes: [], removedNodes: [a] },
+  ]);
+  assert.strictEqual(colour(), valid, 'a radio taken out');
+  // another comes to be
+  const b = byId(el, 'b');
+  b.attribs.required = '';
+  el.touchDocument([
+    {
+      type: 'attributes',
+      target: b,
+      attributeName: 'required',
+      oldValue: null,
+    },
+  ]);
+  assert.notStrictEqual(colour(), valid, 'a radio made required');
+  assert.notStrictEqual(colour('r'), valid, 'another radio of its group');
+  // and is checked
+  b.attribs.checked = '';
+  el.touchDocument([
+    { type: 'attributes', target: b, attributeName: 'checked', oldValue: null },
+  ]);
+  assert.strictEqual(colour(), valid, 'a radio checked');
+});
+
 test('a control put in what holds no form tells nothing of what is there, whatever a rule below a form names', async () => {
   // what a form answers for from what is in it reaches what is in the
   // form: a `<div>` no selector answers for from what it holds is no form
@@ -4270,7 +4340,7 @@ test('in a document of form controls, a refresh told what changed comes to the s
       const told = stylesOf(el, bodyEl);
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
-      const at = told.findIndex((s, i) => s !== whole[i]);
+      const at = firstApart(told, whole);
       assert.ok(
         at < 0 && told.length === whole.length,
         `seed ${seed}, step ${step}: ${changes.map((c) => `${c.type} ${c.type === 'attributes' ? c.attributeName : ''} on ${(c.target as Element).name}`).join(', ')}\n` +
@@ -5152,7 +5222,7 @@ async function refreshesAgree(
       const scoped = stylesOf(el, bodyEl);
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
-      const at = scoped.findIndex((s, i) => s !== whole[i]);
+      const at = firstApart(scoped, whole);
       // the fields two lines of `stylesOf` differ in, which a style's
       // hundred fields hide
       const apart = (a = '', b = ''): string => {
