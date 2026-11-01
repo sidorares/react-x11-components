@@ -32,7 +32,7 @@ import { fadeColor } from './css/color.js';
 import { inkColor } from './css/values.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert, mapRect } from './css/transform.js';
-import { heldBack, placedMatrix } from './layout/block.js';
+import { heldBack, heldShift, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
 import { lineHeightMultiplier, lineHeightOf } from './layout/inline.js';
 import { frameOf } from './layout/writing.js';
@@ -53,6 +53,15 @@ import {
  * what is fixed to the viewport (`HtmlViewNode.viewportOrigin`).
  */
 export const AT_VIEWPORT = 'react-x11-components-html-viewport';
+
+/**
+ * The position the widget of a control in a sticky box the viewport keeps
+ * goes in (`ControlRect.held`), registered with core by `registerHtmlView`:
+ * a box of no size, at the element's corner, that core moves after every
+ * layout pass by as far as the sticky boxes hold the control
+ * (`HtmlViewNode.heldShiftOf`). Named with the control's element.
+ */
+export const HELD_AT_VIEWPORT = 'react-x11-components-html-held';
 
 /** The palette numbers a control's box has to reserve room for. */
 export interface ControlChrome {
@@ -133,6 +142,17 @@ export interface ControlRect {
    * so it stays with the box in the frame the pane scrolls.
    */
   atViewport?: true;
+  /**
+   * Set on a control in a sticky box the viewport keeps (`heldShift`),
+   * however far the box is held now. The pane's scroll moves such a box
+   * from the text it was laid out with, and lays nothing out, so the rect,
+   * its `bare` and its `clip` are where the flow has the control, and the
+   * widget goes in a box core moves from there by what the box is held by
+   * (`HELD_AT_VIEWPORT`), so it stays with the box in the frame the pane
+   * scrolls. A clip from outside the box does not move with it, and is
+   * told again as it is painted.
+   */
+  held?: true;
 }
 
 /** Where a styled field's widget goes, and how its text looks. */
@@ -296,10 +316,41 @@ export function controlRectsOf(
       const placeholder = placeholderOf(box.el, box.style);
       if (placeholder) rect.placeholderColor = placeholderInk(placeholder);
     }
+    // a sticky box's offset is across and down the page, which a flow's
+    // turn is not: one in a vertical flow is told again as it is painted
+    const held = frame ? null : heldShift(tree, box);
+    if (held) heldAtRest(rect, held);
     out.push(rect);
   }
   return out;
 }
+
+/**
+ * Take how far the sticky boxes around a control hold it out of its rect
+ * (`ControlRect.held`). A place worked out so is on a grid, since a box
+ * held at each step of a scroll is at the sum of those steps: what is left
+ * of it differs in its last bits, and two reports that differ are a render
+ * of the document (`sameRects`).
+ */
+function heldAtRest(rect: ControlRect, by: { x: number; y: number }): void {
+  rect.held = true;
+  rect.x = onGrid(rect.x - by.x);
+  rect.y = onGrid(rect.y - by.y);
+  const { clip, bare } = rect;
+  if (clip) {
+    rect.clip = {
+      ...clip,
+      x: onGrid(clip.x - by.x),
+      y: onGrid(clip.y - by.y),
+    };
+  }
+  if (bare) {
+    bare.x = onGrid(bare.x - by.x);
+    bare.y = onGrid(bare.y - by.y);
+  }
+}
+
+const onGrid = (n: number): number => Math.round(n * 1024) / 1024;
 
 /** How far into a control a box may reach and not be over it: the control
  *  is on whole pixels, and what is beside it in the flow starts at a

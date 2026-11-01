@@ -9179,6 +9179,47 @@ function stickyBox(box: Box): boolean {
  *  pane around it is scrolled to (`restickToViewport`). */
 export const VIEWPORT_STICKY = new WeakMap<object, readonly Box[]>();
 
+const HELD_SETS = new WeakMap<readonly Box[], ReadonlySet<Box>>();
+
+/** The sticky boxes a tree's viewport keeps, as a set. */
+export function heldSet(tree: object): ReadonlySet<Box> | null {
+  const held = VIEWPORT_STICKY.get(tree);
+  if (!held?.length) return null;
+  let set = HELD_SETS.get(held);
+  if (!set) HELD_SETS.set(held, (set = new Set(held)));
+  return set;
+}
+
+/**
+ * How far the sticky boxes the viewport keeps have moved a box from where
+ * the flow has it, in device pixels: what a scroll of the pane around the
+ * element moves it by, and lays nothing out. Zero for a box in one that
+ * only scrolls with the text; null for a box in none, and for one that
+ * goes with none of them (`offsetBox`): in the top layer, or fixed to
+ * something outside them.
+ */
+export function heldShift(
+  tree: object,
+  box: Box,
+): { x: number; y: number } | null {
+  const kept = heldSet(tree);
+  if (!kept) return null;
+  let shift: { x: number; y: number } | null = null;
+  let fixed: Box | null = null;
+  for (let at: Box | null = box; at && !at.topLayer; at = at.parent) {
+    if (kept.has(at) && !(fixed && positionedOutside(fixed, at))) {
+      const stuck = STUCK.get(at);
+      shift ??= { x: 0, y: 0 };
+      if (stuck) {
+        shift.x += stuck[0];
+        shift.y += stuck[1];
+      }
+    }
+    if (at.style.position === 'fixed') fixed = at;
+  }
+  return shift;
+}
+
 /** The trees whose next layout answers a question about their size —
  *  core's content floors, at a fraction of the width they are drawn at —
  *  which keeps no anchored box's last position option (`LAST_POSITIONS`):

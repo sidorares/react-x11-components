@@ -69,7 +69,12 @@ import { covers, shownBy } from './controls.js';
 import { attr, isElement, tagOf } from './dom.js';
 import type { ComputedStyle } from './css/style.js';
 import { masked } from './css/style.js';
-import { heldBack, placedMatrix, VIEWPORT_STICKY } from './layout/block.js';
+import {
+  heldBack,
+  heldSet,
+  placedMatrix,
+  VIEWPORT_STICKY,
+} from './layout/block.js';
 import type { Box, BoxTree } from './layout/boxes.js';
 import {
   clipFor,
@@ -473,25 +478,6 @@ function holds(outer: Box, box: Box): boolean {
 const NO_BOXES: readonly Box[] = [];
 
 /**
- * The sticky boxes the viewport holds (`VIEWPORT_STICKY`), as a set: what
- * asks whether an embedded element's mount would be under something passes
- * them over, and the mount is cut by them where the pane's scroll has them
- * instead (`cutByFixed`), as by a box fixed to the viewport. Asked of them
- * where they are when the mount is placed, a header held over a frame
- * refused the frame its mount, and the frame was blank under it and below
- * it.
- */
-function heldSet(tree: BoxTree): ReadonlySet<Box> | null {
-  const held = VIEWPORT_STICKY.get(tree);
-  if (!held?.length) return null;
-  let set = HELD_SETS.get(held);
-  if (!set) HELD_SETS.set(held, (set = new Set(held)));
-  return set;
-}
-
-const HELD_SETS = new WeakMap<readonly Box[], ReadonlySet<Box>>();
-
-/**
  * Where a sibling over the document stands for a replaced box, in device
  * pixels: its content box, its corners, what the boxes around it cut it to,
  * and how faded it is. Null for one a rectangle mounted over the document
@@ -556,9 +542,12 @@ function placementOf(
   const reach = inset(shows, OVERLAP);
   if (reach.width > 0 && reach.height > 0) {
     // the sticky boxes the viewport holds are asked about where the scroll
-    // has them, as the fixed ones are, for an embedded element: a player's
-    // covers paint one over it where it is held (`coversOf`). And not for a
-    // box at the viewport, which `_viewportRect` cuts by nothing
+    // has them, as the fixed ones are, for an embedded element: asked of
+    // them where they are when the mount is placed, a header held over a
+    // frame refused the frame its mount, and the frame was blank under it
+    // and below it. A player's covers paint one over it where it is held
+    // (`coversOf`). And not for a box at the viewport, which `_viewportRect`
+    // cuts by nothing
     const held = drawnOver || atViewport ? null : heldSet(tree);
     if (drawnOver && !zoomed && !atViewport) {
       // what the document paints after it, where a sibling after the

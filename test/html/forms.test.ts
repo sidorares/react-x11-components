@@ -2594,6 +2594,164 @@ test('a widget in a box fixed to the viewport stays where the viewport is as the
   }
 });
 
+test('a widget in a sticky box the viewport keeps stays with the box in every frame the pane scrolls, at a display scale of 1 and of 2', async () => {
+  // MDN's sidebar, sticky, holds a filter whose border the document draws
+  // and whose text a widget mounted beside the document does. The pane's
+  // scroll moved the widget with the text, and the sticky box stayed: the
+  // field's text left its frame by a step of the scroll at every frame, and
+  // was told where it belonged as that frame was painted. Core moves the
+  // widget with the box in the pass a scroll runs (`HELD_AT_VIEWPORT`), and
+  // the document tells its widgets nothing as it scrolls.
+  const source =
+    '<style>body{margin:0}#wrap{height:700px}' +
+    '#side{position:sticky;top:10px;height:60px}' +
+    '#cut{overflow:hidden;height:10px;width:60px}</style>' +
+    '<div style="height:40px"></div><div id="wrap"><div id="side">' +
+    '<input placeholder="framed" style="border:2px solid #000">' +
+    '<input placeholder="plain">' +
+    '<div id="cut"><input placeholder="cut"></div>' +
+    '</div></div><input placeholder="flowing">' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2] as const) {
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const result = await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 400, height: 200, overflow: 'scroll' },
+        },
+        h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      ),
+      {
+        ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+        width: 440,
+        height: 240,
+        ...(scale === 2 && { scale: 2 }),
+      },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const held = [
+      await screen.findByPlaceholder('framed'),
+      await screen.findByPlaceholder('plain'),
+      await screen.findByPlaceholder('cut'),
+    ] as DrawnNode[];
+    const flowing = screen.getByPlaceholder('flowing') as DrawnNode;
+    // where a widget is on screen, from the pane's top, in CSS pixels
+    const onScreen = (field: DrawnNode) => (field.abs.y - pane!.abs.y) / scale;
+    const tops = held.map(onScreen);
+    const flowTop = onScreen(flowing);
+    const told = (el as unknown as { _controls: { held?: true }[] })._controls;
+    assert.deepStrictEqual(
+      told.map((rect) => rect.held),
+      [true, true, true, undefined],
+      `the ones in the sticky box, ${scale}x`,
+    );
+    // every paint of the scroll, the frame that scrolled the first of them
+    const paint = el.paint;
+    let painted = 0;
+    let expected: number[] = [];
+    el.paint = function (this: HtmlViewNode, ctx) {
+      painted += 1;
+      assert.deepStrictEqual(
+        held.map(onScreen),
+        expected,
+        `a paint sees the widgets where the box is, ${scale}x`,
+      );
+      return paint.call(this, ctx);
+    };
+    // the box starts 40px down, stops 10px down, and leaves with the end of
+    // the box around it, 680px down the page
+    const boxAt = (y: number) => Math.min(Math.max(40 - y, 10), 680 - y);
+    for (const y of [20, 30, 45, 60, 500, 660, 670, 690, 600, 0]) {
+      expected = tops.map((top) => top - 40 + boxAt(y));
+      await act(async () => pane!.scrollTo(y));
+      assert.deepStrictEqual(
+        held.map(onScreen),
+        expected,
+        `scrolled to ${y}, the fields are where the box is, ${scale}x`,
+      );
+      assert.strictEqual(
+        onScreen(flowing),
+        flowTop - y,
+        `and one in the flow scrolls with the text, ${scale}x`,
+      );
+    }
+    assert.ok(painted > 0, `the document was painted, ${scale}x`);
+    el.paint = paint;
+    assert.strictEqual(
+      (el as unknown as { _controls: unknown })._controls,
+      told,
+      `a scroll tells the widgets nothing, ${scale}x`,
+    );
+    // and a press where it is drawn reaches it
+    await act(async () => pane!.scrollTo(300));
+    await userEvent.click(held[1]);
+    assert.strictEqual(
+      (el.focusedElement as Element | null)?.attribs.placeholder,
+      'plain',
+      `a press focuses it, ${scale}x`,
+    );
+    await result.unmount();
+  }
+});
+
+test('a sticky box a layout moves with no scroll takes its widget with it', async () => {
+  // Where the flow has the field is where it was, so the report says
+  // nothing and core has no reason to run a pass: the box the widget is
+  // kept in has to ask for one (`_followHeld`)
+  const source =
+    '<style>body{margin:0}#wrap{height:700px}' +
+    '#side{position:sticky;top:10px;height:60px}</style>' +
+    '<div style="height:40px"></div><div id="wrap">' +
+    '<div id="side" style=""><input placeholder="q"></div></div>' +
+    '<div style="height:2000px"></div>';
+  let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Doc() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source,
+      partial: false,
+      ref: handle.ref,
+      'data-testname': 'doc',
+    });
+  }
+  await renderX11(
+    h(
+      'box',
+      {
+        ref: (node: typeof pane) => {
+          pane = node;
+        },
+        style: { width: 400, height: 200, overflow: 'scroll' },
+      },
+      h(Doc),
+    ),
+    {
+      ...(FONTS ? { fonts: FONTS } : { backend: 'mock' as const }),
+      width: 440,
+      height: 240,
+    },
+  );
+  await act();
+  const field = (await screen.findByPlaceholder('q')) as DrawnNode;
+  const onScreen = () => field.abs.y - pane!.abs.y;
+  await act(async () => pane!.scrollTo(200));
+  const top = onScreen();
+  const side = findById(handle!.document!, 'side')!;
+  side.attribs.style = 'top:50px';
+  await act(() =>
+    handle!.refresh([
+      { type: 'attributes', target: side, attributeName: 'style' },
+    ]),
+  );
+  assert.strictEqual(onScreen(), top + 40, 'with the box, 40px down');
+});
+
 metric(
   "a pane scrolled a step at a time draws a fixed header's widget where a repaint of all of it does",
   async () => {
