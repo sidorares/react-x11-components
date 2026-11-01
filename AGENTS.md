@@ -3748,9 +3748,12 @@ closes a way out a DOM binding opens by accident:
   message moved, not its ports alone, so a canvas a port's message moves
   crosses a wire with it; **anything that makes a message event of it
   takes the ports out first**. A thread is terminated only once it has said
-  its modules are in (`up`, `PageWorkers.end`): Node 26's CommonJS lexer is
-  native, and a thread terminated in the middle of it aborts the process, so
-  a page left as its worker started took every page in the process with it.
+  its modules are in (`up`, `PageWorkers.end`): in Node 24.14 to 24.18, 25.7
+  to 25.9 and 26.0 to 26.3 a thread terminated in the middle of the native
+  CommonJS lexer aborts the process (nodejs/node#63323, fixed in 24.19 and
+  26.4), so a page left as its worker started took every page in the process
+  with it. CI runs the latest of each line and never sees it, and `engines`
+  admits them all: go back to terminating at once when it leaves them behind.
   One ended before then goes on loading and counts against the workers a
   page may have (`_ending`), or a page that starts and ends them in a loop
   has threads without end. **Anything new that ends a thread goes through

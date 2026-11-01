@@ -275,9 +275,11 @@ export class PageWorkers implements PageWorkersLike {
 
   /**
    * A worker goes. Its thread is terminated once its modules are in (`up`)
-   * and no sooner: Node 26's CommonJS lexer is native, and a thread terminated
-   * in the middle of it fails a `ToLocalChecked`, which aborts the process, so
-   * a page left as its worker started took every page in the process with it.
+   * and no sooner: in Node 24.14 to 24.18, 25.7 to 25.9 and 26.0 to 26.3 a
+   * thread terminated in the middle of the native CommonJS lexer fails a
+   * `ToLocalChecked`, which aborts the process (nodejs/node#63323), so a page
+   * left as its worker started took every page in the process with it. It can
+   * go back to terminating at once when `engines` leaves those behind.
    */
   end(id: number): void {
     const running = this._running.get(id);

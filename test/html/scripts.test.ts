@@ -1618,9 +1618,10 @@ test(
   'a worker ended as its thread starts is terminated once its modules are in, and one that is up at once',
   { timeout: 120_000 },
   async (t) => {
-    // Node 26 aborts the process for a thread terminated in the middle of its
-    // CommonJS lexer, which is a moment no test can aim at, so this holds the
-    // order instead: nothing is terminated until the thread has said it is up
+    // Node 24.14 to 26.3 can abort the process for a thread terminated in the
+    // middle of its CommonJS lexer (nodejs/node#63323), and CI runs none of
+    // them, so this holds the order instead: nothing is terminated until the
+    // thread has said it is up
     const terminate = t.mock.method(Worker.prototype, 'terminate');
     const { workers, said, start, until } = bareWorkers(t);
     workers.end(start(''));
