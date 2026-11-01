@@ -46,7 +46,8 @@
 //    over a player again where it is held (`coversOf`), and cuts what is
 //    mounted for an embedded element as a fixed box does: joshwcomeau.com's
 //    header is one, and a playground's frame that scrolled up under it was
-//    mounted nowhere.
+//    mounted nowhere. What is mounted for an element in such a box goes
+//    with it, in the pass a scroll runs (`MediaRect.held`).
 //  - **What a rectangle cannot follow keeps the poster**: a transform that
 //    turns, skews, flips or scales one way more than the other, a
 //    `clip-path` or a mask on the video or around it, a video fixed to the
@@ -72,6 +73,7 @@ import { masked } from './css/style.js';
 import {
   heldBack,
   heldSet,
+  heldShift,
   placedMatrix,
   VIEWPORT_STICKY,
 } from './layout/block.js';
@@ -152,6 +154,12 @@ export interface MediaRect {
    * the player paints them there again (`HtmlViewNode.paintCovers`).
    */
   over?: Rect;
+  /**
+   * Set on a video in a sticky box the viewport keeps: the rect, its
+   * `clip` and its `over` are where the flow has it, and the player goes
+   * with the box (`ControlRect.held`).
+   */
+  held?: true;
   /** HTML's attributes, as the element has them — but `muted`, which is
    *  what a script set where one did (`MediaState`). */
   autoPlay: boolean;
@@ -340,7 +348,7 @@ export function mediaRectsOf(
     if (over.length) covers.set(el, over);
     // a picture is fitted into whatever rect it is given: what a scale
     // around it does is in the rect already
-    const { zoom: _zoom, ...at } = placed;
+    const { zoom: _zoom, heldBy, ...at } = placed;
     const rect: MediaRect = {
       ...at,
       ...(over.length && { over: around(over.map((c) => c.rect)) }),
@@ -354,6 +362,7 @@ export function mediaRectsOf(
       ...(label && { label }),
     };
     FIXED_OVER.set(rect, fixedOver(tree, box));
+    if (heldBy) HELD_BY.set(rect, heldBy);
     out.push(rect);
   }
   return out;
@@ -388,6 +397,13 @@ export interface EmbeddedRect {
    */
   atViewport?: true;
   /**
+   * Set on an element in a sticky box the viewport keeps: the rect and its
+   * `clip` are where the flow has it, and what is mounted goes with the box
+   * (`ControlRect.held`). A scale around it keeps it off this, for a sticky
+   * offset is in the box's own coordinates, and is told as it is painted.
+   */
+  held?: true;
+  /**
    * The scale the element is drawn at, where the boxes around it, or the
    * element itself, are drawn through one — the same across as down, with
    * no turn or skew (`zoomBetween`). The rect is where it is drawn, so
@@ -407,9 +423,11 @@ export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
   for (const box of tree.embedded) {
     const placed = placementOf(tree, box, scale, null, true);
     if (!placed) continue;
-    const rect = { ...placed, kind: tagOf(placed.element) as EmbeddedKind };
+    const { heldBy, ...at } = placed;
+    const rect = { ...at, kind: tagOf(placed.element) as EmbeddedKind };
     FIXED_OVER.set(rect, fixedOver(tree, box));
     HELD_OVER.set(rect, heldOver(tree, box));
+    if (heldBy) HELD_BY.set(rect, heldBy);
     out.push(rect);
   }
   return out;
@@ -424,6 +442,14 @@ export const FIXED_OVER = new WeakMap<EmbeddedRect | MediaRect, Box[]>();
  *  each embedded element (`heldOver`), which its rect is cut by where the
  *  pane's scroll has put them (`cutByFixed`'s `held`). */
 export const HELD_OVER = new WeakMap<EmbeddedRect, readonly Box[]>();
+
+/** How far the sticky boxes the viewport keeps hold each laid-out rect from
+ *  where the flow has it (`heldShift`), for what is told of it to leave out
+ *  once it has been cut where the boxes are now (`MediaRect.held`). */
+export const HELD_BY = new WeakMap<
+  EmbeddedRect | MediaRect,
+  { x: number; y: number }
+>();
 
 /**
  * The boxes fixed to the viewport that the document paints after `box`: a
@@ -508,6 +534,8 @@ function placementOf(
   opacity?: number;
   zoom?: number;
   atViewport?: true;
+  held?: true;
+  heldBy?: { x: number; y: number };
 } | null {
   const el = box.el;
   if (!el) return null;
@@ -584,6 +612,7 @@ function placementOf(
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     opacity *= at.style.opacity;
   }
+  const heldBy = zoomed ? null : heldShift(tree, box);
   return {
     element: el,
     ...picture,
@@ -599,6 +628,7 @@ function placementOf(
       zoom: zoom.k * box.style.effectiveZoom,
     }),
     ...(atViewport && { atViewport: true as const }),
+    ...(heldBy && { held: true as const, heldBy }),
   };
 }
 

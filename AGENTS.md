@@ -5508,8 +5508,14 @@ the answer** (`_placeAgainstPane`), since the paint that would place them
 comes after the pass. And **core runs no pass for a layout of the
 document's own** (`_layoutOwed`), where the box can move while the flow
 leaves the control where it was, so a report says nothing: `_followHeld`
-asks for one. An embedded element and a player in such a box are told at
-the paint still, and are a frame late.
+asks for one. An embedded element and a video are the same
+(`EmbeddedRect.held`, `MediaRect.held`), cut where the boxes are now and
+told at rest after (`HELD_BY`), and a `<canvas>` of what is painted over a
+player goes with it. **Their mounts are always in the same two boxes**
+(`keptMount`), with only the position changing: a mount that came to be held
+as a page turned a box sticky would be a new node, and a new node is a new
+document in an `<iframe>`, its scripts started again, and a video from its
+start.
 
 **A sticky box the viewport holds cuts a mount as a fixed box does, and
 refuses none** (`heldSet`, `heldOver`, `cutByFixed`'s `held`). The pane's

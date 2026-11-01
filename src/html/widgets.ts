@@ -1332,7 +1332,7 @@ function renderControl(
  * scrolled that much past it to the widget. In a box at the element's
  * corner, the widget is laid out where it was.
  */
-export function atViewport(
+function atViewport(
   fixed: boolean,
   key: string,
   node: ReactElement,
@@ -1359,9 +1359,31 @@ function keptWithBox(
   return placed(heldPosition(rect.element), key, node);
 }
 
-/** The position that keeps a control with its sticky box. One object for
- *  an element, since a new one at each render of the document would be a
- *  new style for the box it is in. */
+/**
+ * What is mounted for an embedded element or a video, kept with the box it
+ * is drawn in, as a control's widget is. Always in these two boxes, with
+ * only the position changing: a page that stops a box being sticky at a
+ * breakpoint, or makes it fixed, does not make this another node, which
+ * would be a new document in an `<iframe>`, its scripts started again, and
+ * a video playing from its start. Where nothing moves it, the box is
+ * where the mount is, and nothing is placed.
+ */
+export function keptMount(
+  rect: { element: Element; atViewport?: true; held?: true },
+  key: string,
+  ...nodes: ReactNode[]
+): ReactElement {
+  const position = rect.held
+    ? heldPosition(rect.element)
+    : rect.atViewport
+      ? (AT_VIEWPORT as Style['position'])
+      : 'relative';
+  return placed(position, key, ...nodes);
+}
+
+/** The position that keeps a mount with its sticky box. One object for an
+ *  element, since a new one at each render of the document would be a new
+ *  style for the box it is in. */
 function heldPosition(element: Element): Style['position'] {
   let position = HELD_POSITIONS.get(element);
   if (!position) {
@@ -1382,7 +1404,7 @@ const HELD_POSITIONS = new WeakMap<Element, Style['position']>();
 function placed(
   position: Style['position'],
   key: string,
-  node: ReactElement,
+  ...nodes: ReactNode[]
 ): ReactElement {
   return hx(
     'box',
@@ -1393,7 +1415,7 @@ function placed(
         selectable: false,
         style: { position, width: 0, height: 0 },
       },
-      node,
+      ...nodes,
     ),
   );
 }

@@ -14,18 +14,19 @@
 // prop and is the element's size before it: what the host returned is laid
 // out at that size and drawn at the scale, as a browser draws an
 // `<iframe>`'s document inside a scaled slide, its text shaped at the size
-// it is drawn at rather than stretched. An element in a box fixed to the
-// viewport (`EmbeddedRect.atViewport`) has all three in a box core keeps
-// where the viewport is, as a widget's (`atViewport` in `widgets.ts`). The host's node is keyed by its element, so a mount that
-// moves, is cut or fades is the same node in the same place in the tree: a
-// new one would be a new document in an `<iframe>`, its scripts started
-// again.
+// it is drawn at rather than stretched. All of it is in a box core keeps
+// with what the element is drawn in, at the viewport for a box fixed there
+// (`EmbeddedRect.atViewport`) and with a sticky box the viewport keeps
+// (`EmbeddedRect.held`), as a widget is (`keptMount` in `widgets.ts`). The
+// host's node is keyed by its element, so a mount that moves, is cut or
+// fades is the same node in the same place in the tree: a new one would be
+// a new document in an `<iframe>`, its scripts started again.
 import React from 'react';
 import type { ReactNode } from 'react';
 import type { DrawnNode } from 'react-x11';
 
 import { hx } from './hx.js';
-import { atViewport } from './widgets.js';
+import { keptMount } from './widgets.js';
 import type { Element } from './dom.js';
 import type { EmbeddedRect } from './media.js';
 
@@ -111,9 +112,6 @@ function mount(
   const port = rect.clip ?? { x: left, y: top, width, height };
   const opacity = rect.hidden ? 0 : rect.opacity;
   const zoom = rect.zoom ?? 1;
-  // in a box fixed to the viewport, kept where the viewport is, as a
-  // widget is (`atViewport`)
-  const fixed = rect.atViewport === true;
   const node = hx(
     'box',
     {
@@ -171,5 +169,5 @@ function mount(
       ),
     ),
   );
-  return fixed ? atViewport(true, `embedded-fixed:${id}`, node) : node;
+  return keptMount(rect, `embedded-kept:${id}`, node);
 }

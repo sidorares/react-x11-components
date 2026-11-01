@@ -319,35 +319,40 @@ export function controlRectsOf(
     // a sticky box's offset is across and down the page, which a flow's
     // turn is not: one in a vertical flow is told again as it is painted
     const held = frame ? null : heldShift(tree, box);
-    if (held) heldAtRest(rect, held);
-    out.push(rect);
+    if (held) {
+      const atRest = heldAtRest(rect, held);
+      if (atRest.bare) atRest.bare = shiftedBack(atRest.bare, held);
+      out.push(atRest);
+    } else out.push(rect);
   }
   return out;
 }
 
 /**
- * Take how far the sticky boxes around a control hold it out of its rect
- * (`ControlRect.held`). A place worked out so is on a grid, since a box
- * held at each step of a scroll is at the sum of those steps: what is left
- * of it differs in its last bits, and two reports that differ are a render
- * of the document (`sameRects`).
+ * Something's rect with how far the sticky boxes around it hold it taken
+ * out, and its `clip` with it, for what is mounted to be told where the
+ * flow has it (`ControlRect.held`).
  */
-function heldAtRest(rect: ControlRect, by: { x: number; y: number }): void {
-  rect.held = true;
-  rect.x = onGrid(rect.x - by.x);
-  rect.y = onGrid(rect.y - by.y);
-  const { clip, bare } = rect;
-  if (clip) {
-    rect.clip = {
-      ...clip,
-      x: onGrid(clip.x - by.x),
-      y: onGrid(clip.y - by.y),
-    };
-  }
-  if (bare) {
-    bare.x = onGrid(bare.x - by.x);
-    bare.y = onGrid(bare.y - by.y);
-  }
+export function heldAtRest<R extends Rect & { clip?: Rect; held?: true }>(
+  rect: R,
+  by: { x: number; y: number },
+): R {
+  return {
+    ...shiftedBack(rect, by),
+    held: true,
+    ...(rect.clip && { clip: shiftedBack(rect.clip, by) }),
+  };
+}
+
+/** A rect `by` back. A place worked out so is on a grid, since a box held
+ *  at each step of a scroll is at the sum of those steps: what is left of
+ *  it differs in its last bits, and two reports that differ are a render
+ *  of the document (`sameRects`). */
+export function shiftedBack<R extends Rect>(
+  rect: R,
+  by: { x: number; y: number },
+): R {
+  return { ...rect, x: onGrid(rect.x - by.x), y: onGrid(rect.y - by.y) };
 }
 
 const onGrid = (n: number): number => Math.round(n * 1024) / 1024;

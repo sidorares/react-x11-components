@@ -3,6 +3,7 @@
 // content box, beside the document, held to the rules a video's player is.
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
+import { useEffect } from 'react';
 import {
   act,
   cleanup,
@@ -23,7 +24,7 @@ import type {
   FormSubmission,
   HtmlDomEvent,
 } from '../../src/html/index.js';
-import { FONTS, boxOf, h, metric, view } from './harness.js';
+import { FONTS, boxOf, findById, h, metric, view } from './harness.js';
 
 afterEach(cleanup);
 
@@ -690,6 +691,166 @@ test('a sticky header the viewport holds cuts a frame where it draws over it, ho
     });
     cleanup();
   }
+});
+
+test('what is mounted for an element in a sticky box stays with the box in every frame the pane scrolls, at 1x and 2x', async () => {
+  // A frame in a sticky sidebar was mounted at the box's rect, which the
+  // pane's scroll moved with the text while the box stayed: it left the box
+  // by a step of the scroll at every frame, and the report at the paint put
+  // it back. Core moves it with the box in the pass a scroll runs, and a
+  // scroll asks `renderEmbedded` nothing
+  const source =
+    '<style>body{margin:0}iframe{border:0;display:block}#wrap{height:700px}' +
+    '#side{position:sticky;top:10px;height:60px}' +
+    '#cut{overflow:hidden;width:60px;height:20px}</style>' +
+    '<div style="height:40px"></div><div id="wrap"><div id="side">' +
+    '<iframe id="f" width="120" height="20"></iframe>' +
+    '<div id="cut"><iframe id="g" width="120" height="50"></iframe></div>' +
+    '</div></div><iframe id="h" width="120" height="20"></iframe>' +
+    '<div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    const asked: EmbeddedRect[] = [];
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const result = await renderX11(
+      h(
+        'box',
+        {
+          ref: (node: typeof pane) => {
+            pane = node;
+          },
+          style: { width: 300, height: 200, overflow: 'scroll' },
+        },
+        h(Html, {
+          source,
+          partial: false,
+          'data-testname': 'doc',
+          renderEmbedded: (rect: EmbeddedRect) => {
+            asked.push(rect);
+            return h('box', {
+              'data-testname': `in-${rect.element.attribs.id}`,
+              style: { flexGrow: 1 },
+            });
+          },
+        }),
+      ),
+      { width: 340, height: 240, scale, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const inBox = ['f', 'g'].map((id) => mounted(id)!);
+    const flowing = mounted('h')!;
+    const onScreen = (node: DrawnNode) => (node.abs.y - pane!.abs.y) / scale;
+    const held = asked
+      .slice(-3)
+      .map((rect) => [rect.element.attribs.id, rect.held]);
+    assert.deepStrictEqual(
+      held,
+      [
+        ['f', true],
+        ['g', true],
+        ['h', undefined],
+      ],
+      `the ones in the sticky box, ${scale}x`,
+    );
+    // every paint of the scroll, the frame that scrolled the first of them
+    const paint = el.paint;
+    let painted = 0;
+    let expected: number[] = [];
+    el.paint = function (this: HtmlViewNode, ctx) {
+      painted += 1;
+      assert.deepStrictEqual(
+        inBox.map(onScreen),
+        expected,
+        `a paint sees them where the box is, ${scale}x`,
+      );
+      return paint.call(this, ctx);
+    };
+    // the box starts 40px down, stops 10px down, and leaves with the end of
+    // the box around it, 680px down the page
+    const boxAt = (y: number) => Math.min(Math.max(40 - y, 10), 680 - y);
+    const before = asked.length;
+    for (const y of [20, 30, 45, 60, 500, 660, 670, 690, 600, 0]) {
+      expected = [boxAt(y), boxAt(y) + 20];
+      await act(async () => pane!.scrollTo(y));
+      assert.deepStrictEqual(
+        inBox.map(onScreen),
+        expected,
+        `scrolled to ${y}, they are where the box is, ${scale}x`,
+      );
+      assert.strictEqual(
+        onScreen(flowing),
+        740 - y,
+        `and one in the flow scrolls with the text, ${scale}x`,
+      );
+    }
+    assert.ok(painted > 0, `the document was painted, ${scale}x`);
+    el.paint = paint;
+    assert.strictEqual(
+      asked.length,
+      before,
+      `a scroll asks nothing, ${scale}x`,
+    );
+    await result.unmount();
+  }
+});
+
+test('what is mounted stays the node it was as a page makes its box sticky, fixed or neither', async () => {
+  // A new node is a new document in an `<iframe>`, its scripts started
+  // again, so the boxes a mount is kept in do not come and go with the
+  // position of the box it is in. Each of these is a page's breakpoint
+  let gone = 0;
+  function Content() {
+    useEffect(
+      () => () => {
+        gone += 1;
+      },
+      [],
+    );
+    return h('box', { 'data-testname': 'in-f', style: { flexGrow: 1 } });
+  }
+  let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+  await renderX11(
+    h(
+      'box',
+      {
+        ref: (node: typeof pane) => {
+          pane = node;
+        },
+        style: { width: 300, height: 200, overflow: 'scroll' },
+      },
+      h(Html, {
+        source:
+          '<style>body{margin:0}iframe{border:0;display:block}</style>' +
+          '<div style="height:40px"></div><div style="height:700px">' +
+          '<div id="side" style="position:sticky;top:10px">' +
+          '<iframe id="f" width="120" height="20"></iframe></div></div>' +
+          '<div style="height:2000px"></div>',
+        partial: false,
+        'data-testname': 'doc',
+        renderEmbedded: () => h(Content),
+      }),
+    ),
+    { width: 340, height: 240, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const side = findById(el.document!, 'side')!;
+  const node = mounted('f')!;
+  const onScreen = () => node.abs.y - pane!.abs.y;
+  await act(async () => pane!.scrollTo(100));
+  assert.strictEqual(onScreen(), 10, 'sticky, and held');
+  for (const [style, top, name] of [
+    ['', -60, 'in the flow'],
+    ['position:fixed;top:30px', 30, 'fixed'],
+    ['position:sticky;top:10px', 10, 'sticky again'],
+  ] as const) {
+    side.attribs.style = style;
+    await act(() => el.touchDocument(null));
+    await act();
+    assert.strictEqual(mounted('f'), node, `the same node, ${name}`);
+    assert.strictEqual(onScreen(), top, `where the box is, ${name}`);
+  }
+  assert.strictEqual(gone, 0, 'and nothing was unmounted');
 });
 
 test('a sticky header cuts a frame where its mask shows it, not as far as the masked box reaches', async () => {
