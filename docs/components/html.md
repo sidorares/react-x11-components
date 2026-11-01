@@ -3731,15 +3731,36 @@ without them, as HTML sizes them — with nothing in them, because nothing is
 loaded, and what a host mounts over them where it gives one — see [Embedded
 content](#embedded-content).
 
-**`calc-size()`** (CSS Values 5): `width` and `height` take a size
-worked out from the one a keyword gives the box — `calc-size(auto, size *
-0.5)` is half of its content's height, `calc-size(min-content, size +
-20px)` its narrowest width and 20px — or from a length, `calc-size(50px,
-size * 2)`, which is the length it comes to. The calculation is a sum of
-`size` scaled and lengths or percentages, and one of anything else, `size *
-size`, is none. A block-level box in the flow is sized so; a flex item, a
-grid item, a float and a box out of the flow take the keyword's size, and
-`min-` and `max-` sizes do not take it.
+**`calc-size()`** (CSS Values 5): `width`, `height`, their `min-` and `max-`
+limits, their logical names and `flex-basis` take a size worked out from the
+one its basis gives the box: `calc-size(auto, size * 0.5)` is half of its
+content's height, `calc-size(min-content, size + 20px)` its narrowest width
+and 20px. A basis is `auto`, which the limits' `max-` sizes do not have, a
+size keyword, `any` for a calculation with no `size` in it, `content` on
+`flex-basis` alone, a length, a percentage, or another `calc-size()`, and
+the calculation may hold `size` in any math function: `calc-size(auto,
+min(size, 100px))` is the content's height up to 100px. As a limit, `auto`
+is nothing, so `min-width: calc-size(auto, size + 7px)` is 7px, but on a flex
+item it is the item's automatic minimum, which the sum is worked out from.
+A percentage of a height that is not there is none, where `height: 10%` is
+`auto`; of a basis, which all of it waits for, it is `auto` as well. Every
+kind of box is sized so, in a block's flow, as a float, out of the flow, and
+as a flex or a grid item, and each is what a box holding it measures.
+
+A page reads what it wrote, canonically and with its lengths resolved,
+wherever the size reads as computed: `calc-size(fit-content, size + 10px)`
+reads `calc-size(fit-content, 10px + size)`, and `size + size` stays two
+terms, as it does in Blink, the one engine that has this. So what Blink does
+goes, in `test/html/calc-sizes.ts`, written from Chromium: a third argument
+is dropped, `calc-size(auto, size+1px)` is `size`, its `+1px` a number where
+an operator would be, `calc-size(fit-content)` is refused, and `flex` does
+not take it. What is not as it is there: a calculation with `anchor-size()`,
+`infinity` or `NaN` in it, a function of `size` no length comes of
+(`sqrt(size)`), a ratio of lengths (`size * (1px / 1px)`) and
+`clamp(none, size, 10px)` are refused; `size + 1em + 2px` reads `18px + size`, where Blink adds only what came
+before `size` and reads `16px + 2px + size`; and one running in an animation
+reads the sum it has come to, where Blink reads the two ends mixed, a
+calculation with a function in it going over half way.
 
 **Intrinsic sizes:** `width`, `min-width` and `max-width` take
 `fit-content`, `max-content` and `min-content` — Tailwind's `w-fit`, `w-max`
@@ -3755,7 +3776,8 @@ room its argument makes: no wider than the content at its widest, nor
 narrower than its longest word. The sizes are the content's, whatever
 `width` the box has beside them, with the box's padding and border round
 them, a percentage of either of its containing block's width. A height of one is its content's, which
-is `auto`. `stretch` — and `-webkit-fill-available` and `-moz-available`,
+is `auto`, and a `min-height` or a `max-height` of one holds a box of another
+height to that. `stretch` — and `-webkit-fill-available` and `-moz-available`,
 as pages still write it — is what the box's margins leave of its
 containing block, in `width`, `height` and their limits: a float, an
 inline-block or an absolute box fills its room as a block does, an
@@ -5086,6 +5108,24 @@ out again. A channel
 of any colour function may be a math function — `calc()`, `min()`, `max()`,
 `clamp()` — of numbers, of percentages or of angles, one of the three
 throughout: `hsl(140 clamp(30%, 45%, 60%) 42%)`.
+
+What `getComputedStyle` reads of a box is what layout used, for a `::before`
+and an `::after` as for an element: `width: fit-content` and `margin-left:
+10%` read in pixels, a percentage worked out against what the box was laid
+out in, a track of a grid or the block an absolute box is placed in, and
+an `auto` margin of a block in the flow or of a flex item as the room it came
+to: a flex item's its share of what its line leaves free along the line, and
+what it leaves of its line across it, and none where there is none. One with
+no box — `display: none` or `contents`, no `content`, under an element that has
+none — reads as its rules compute it. An inline box has no rectangle of its own,
+so as in
+Chrome its percentage margins, padding and offsets stay percentages. The
+first frame `getKeyframes()` makes up takes the computed `width` and reads no
+box, and a `::before` a dragged width set aside reads as its rules compute
+it, its box being a width ago. One read is still not Chrome's: the opposite
+insets of an absolute box placed against an inline box stay `auto`. And Chrome
+reads a length in sixty-fourths of a pixel, so the third of a line it shares
+out reads `23.3281px` there and `23.333px` here.
 
 What `getComputedStyle` reads back for `color`, `background-color`, the
 borders' colours and `outline-color` is the computed value CSS Color 4 (15)

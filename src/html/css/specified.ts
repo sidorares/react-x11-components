@@ -7,6 +7,7 @@
 
 import { positionAreaText } from './anchor.js';
 import { serializeMath } from './calc-tree.js';
+import { CALC_SIZE, calcSizeSpecified } from './calc-size.js';
 import { animationItemText, animationLonghandsOf } from './animation.js';
 import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
@@ -60,6 +61,14 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return anchor(word);
+  }
+  // `calc-size()`, a whole value, on the sizes and their limits and
+  // `flex-basis` alone
+  if (/(?<![\w-])calc-size\(/i.test(value)) {
+    return CALC_SIZE.test(value) &&
+      (SIZE_PROPERTY.test(name) || name === 'flex-basis')
+      ? calcSizeSpecified(value, name)
+      : null;
   }
   // `anchor()` and `anchor-size()`, where each may be, their arguments
   // in canonical order

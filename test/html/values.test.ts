@@ -38,6 +38,11 @@ import { colorFormText } from '../../src/html/css/color.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { substitute } from '../../src/html/css/vars.js';
 import {
+  CALC_SIZE_BOXES,
+  CALC_SIZE_DOCUMENT,
+  CALC_SIZE_READS,
+} from './calc-sizes.js';
+import {
   boxOf,
   drawnText,
   findById,
@@ -2488,6 +2493,598 @@ test('the scroll-driven animation properties take their grammars, and are kept w
   );
 });
 
+/**
+ * A `::before` or an `::after` of every kind of box, and the elements whose
+ * margins are read the same way (`e-…`). Every value is what Chrome 156
+ * answers for this document in a window 400 wide. No row reads the
+ * viewport's height, which the two renders below differ in.
+ */
+const USED_PAGE =
+  '<!doctype html><style>' +
+  'body { margin: 0; font: 16px/20px serif }' +
+  '.w { width: 200px }' +
+  '#pct::after, #sizing::before, #centred::before, #over::before, #sum::before,' +
+  ' #turned::before, #wide::before, #wide-end::before, #wide-start::before,' +
+  ' #wide-rtl::before, #rel::before, #sticky::before, #upright::before, #rl::before,' +
+  ' #lr::before, #rl-auto::before, #zoomed::before { content: ""; display: block }' +
+  // a block
+  '#fit::before { content: "xxxxxxxxxxxxxxxxxxxxxxxx"; display: block; width: fit-content; max-width: 8px; overflow: hidden; margin-left: 10% }' +
+  '#fill::before { content: "x"; display: block }' +
+  '#pct { height: 100px }' +
+  '#pct::after { width: 50%; height: 25%; padding: 2% 5px; border: 3px solid; margin: 5% 10% 0 }' +
+  '#sizing::before { box-sizing: border-box; width: 50%; height: 30px; padding: 0 10px; border: 1px solid }' +
+  '#centred::before { width: 100px; margin: 0 auto }' +
+  '#over::before { width: 100px; margin-right: 10%; margin-left: 5% }' +
+  '#sum::before { width: calc(50% + 3px); margin-left: calc(10% - 1px) }' +
+  '#turned::before { width: 100px; height: 40px; transform: translateX(50%) }' +
+  '#wide::before { width: 300px; margin: 0 auto }' +
+  '#wide-end::before { width: 300px; margin-left: 10%; margin-right: auto }' +
+  '#wide-start::before { width: 300px; margin-left: auto; margin-right: 10% }' +
+  '#wide-rtl { direction: rtl }' +
+  '#wide-rtl::before { width: 300px; margin: 0 auto }' +
+  '#float::before { content: ""; float: right; width: 25%; height: 10px; margin-right: 10%; margin-left: auto }' +
+  // inline
+  '#inline::before { content: "x"; margin-left: 10%; padding-left: 5%; margin-top: 10%; width: 50px; height: 50px }' +
+  '#shifted::before { content: "x"; position: relative; top: 10px; left: 5% }' +
+  '#ib::before, #ib-span::before { content: ""; display: inline-block; width: 25%; height: 10px; margin-left: 10%; padding-left: 5% }' +
+  // flex and grid
+  '#flex { display: flex; height: 40px }' +
+  '#flex::before { content: ""; width: 50%; margin-left: 10% }' +
+  '#flex::after { content: ""; flex: 1; padding-left: 5% }' +
+  '#blockified { display: flex }' +
+  '#blockified::before { content: "x"; display: inline; width: 50%; height: 10px }' +
+  '#column { display: flex; flex-direction: column; height: 100px }' +
+  '#column::before { content: ""; flex: 1; margin-top: 10% }' +
+  '#grid { display: grid; grid-template-columns: 50px 100px; height: 40px }' +
+  '#grid::before { content: ""; margin-left: 10%; padding-left: 10% }' +
+  '#grid::after { content: ""; margin-left: 10% }' +
+  // a table cell
+  '#cell::before { content: ""; display: table-cell; width: 40px; height: 10px; padding: 5%; margin-left: 10% }' +
+  '#cell-px::before { content: ""; display: table-cell; width: 40px; height: 10px; margin-left: 5px }' +
+  // positioned
+  '#abs { position: relative; height: 100px; padding: 10px }' +
+  '#abs::before { content: ""; position: absolute; top: 10%; left: 5px; width: 50%; height: 25%; margin-left: 10% }' +
+  '#abs-auto { position: relative; height: 100px }' +
+  '#abs-auto::before { content: ""; position: absolute; left: 0; right: 0; width: 100px; height: 10px; margin: 0 auto }' +
+  '#abs-far::before { content: ""; position: absolute; left: 0; width: 10%; margin-left: 10% }' +
+  '#rel::before { position: relative; top: 10px; left: 5% }' +
+  '#fixed::before { content: ""; position: fixed; right: 10px; top: 5px; width: 10% }' +
+  '#sticky::before { position: sticky; top: 5px; height: 10px }' +
+  // vertical
+  '#rl, #lr, #rl-auto { width: 100px; height: 200px; writing-mode: vertical-rl }' +
+  '#lr { writing-mode: vertical-lr }' +
+  '#rl::before { width: 30px; height: 50%; margin-top: 10%; margin-left: 5px; padding-top: 2px; padding-left: 4px; border-right: 1px solid }' +
+  '#lr::before { width: 30px; height: 50%; margin-top: 10%; margin-bottom: 5%; margin-left: 5%; margin-right: 2.5% }' +
+  '#rl-auto::before { width: 30px; height: 100px; margin: auto 0 }' +
+  '#upright::before { writing-mode: vertical-rl; width: 30px; height: 50px; margin-left: 10% }' +
+  // zoomed
+  '#zoomed { zoom: 2; width: 100px }' +
+  '#zoomed::before { width: 50%; height: 10px; margin-left: 10% }' +
+  // on an element with no box
+  '#contents, #contents-nest, #contents-nest > div { display: contents }' +
+  '#contents::before { content: ""; display: block; width: 50%; height: 7px; margin-left: 10% }' +
+  '#contents-deep::after { content: ""; display: block; width: 25%; height: 3px }' +
+  // the same of elements
+  '.e-centred { width: 100px; margin: 0 auto }' +
+  '.e-end { width: 100px; margin-left: 10%; margin-right: auto }' +
+  '.e-inline { margin-left: 10%; padding-left: 5%; margin-top: 10% }' +
+  '.e-shifted { position: relative; top: 10px; left: 5% }' +
+  '.e-ib { display: inline-block; width: 25%; height: 10px; margin-left: 10% }' +
+  '.e-grid { display: grid; grid-template-columns: 50px 100px }' +
+  '.e-grid > div { margin-left: 10%; padding-left: 10% }' +
+  '.e-abs { position: relative; padding: 10px; height: 50px }' +
+  '.e-abs > div { position: absolute; left: 0; width: 50%; margin-left: 10% }' +
+  '.e-held { margin-bottom: 10% }' +
+  '.e-held > div { height: 5px; margin-bottom: 30px }' +
+  '.e-lr { writing-mode: vertical-lr; height: 200px }' +
+  '.e-lr > div { margin-left: 5%; margin-right: 2.5% }' +
+  // the `auto` margins of flex items: 40×10 in a 200×40 row, a 200×100 column
+  '.f, .fc { display: flex; width: 200px; height: 40px }' +
+  '.fc { flex-direction: column; height: 100px }' +
+  '.f > div, .fc > div { width: 40px; height: 10px; flex: none }' +
+  '#f-after::after { content: ""; width: 40px; height: 10px; margin-left: auto }' +
+  '#f-before::before { content: ""; width: 40px; height: 10px; margin: auto }' +
+  '.m { margin: auto }' +
+  '.ml { margin-left: auto }' +
+  '.mr { margin-right: auto }' +
+  '.mt { margin-top: auto }' +
+  '.mb { margin-bottom: auto }' +
+  '.gap { gap: 20px 30px }' +
+  '#f-held { margin: auto 15px auto auto }' +
+  '#f-pct { margin: 5% auto auto 10% }' +
+  '#f-pct-b { margin: auto 10% 5% auto }' +
+  '.reverse { flex-direction: row-reverse }' +
+  '.up { flex-direction: column-reverse }' +
+  '.rtl { direction: rtl }' +
+  '.f > #f-wide { width: 300px; margin: auto }' +
+  '.f > #f-tall { height: 50px; margin: auto }' +
+  '.fc > #f-column-wide { width: 300px; margin: auto }' +
+  '#f-grown { flex: 1; max-width: 50px }' +
+  '#f-spread { justify-content: space-between }' +
+  '.wrap { flex-wrap: wrap; height: 120px }' +
+  '.wrap.fc { height: 60px }' +
+  '.wrap > div { width: 120px }' +
+  '.wrap.fc > div { width: 30px; height: 30px }' +
+  '.wrap.pair > div { width: 70px; height: 20px }' +
+  '.wrap.small > div { width: 30px; height: 20px }' +
+  '.again { flex-wrap: wrap-reverse }' +
+  '.packed { align-content: flex-start }' +
+  '.centred { align-content: center }' +
+  '.spaced { align-content: space-between }' +
+  '.wrap > div.full { height: auto }' +
+  '.wrap > .full > div { height: 100% }' +
+  '.wrap > div.capped { height: auto; max-height: 30px }' +
+  '.wrap > div.high { height: 30px }' +
+  '.wrap > .shifted { position: relative; left: 300px; top: 50px }' +
+  '.wrap > .first { order: -1 }' +
+  '#f-least { height: auto; min-height: 60px }' +
+  '#f-most { height: auto; max-height: 30px }' +
+  '#f-most > div { height: 50px }' +
+  '#f-most > .m { height: 10px }' +
+  '#f-edges { padding: 5px 10px; border: 3px solid; box-sizing: border-box }' +
+  '#f-lines, #f-lines-up { align-items: baseline; align-content: flex-start }' +
+  '#f-lines > .text, #f-lines-up > .text { height: auto; width: 60px }' +
+  '.low { padding-top: 30px }' +
+  '.deep { padding-bottom: 30px }' +
+  '#f-nested { flex: 1; height: 30px; margin-left: 20px; display: flex }' +
+  '#f-nested > div { width: 40px; height: 10px }' +
+  '#f-rl { writing-mode: vertical-rl; width: 100px; height: 200px }' +
+  '#f-rl > div { display: flex; height: 100px; width: 40px }' +
+  '#f-rl > div > div { width: 10px; height: 20px; flex: none; margin: auto }' +
+  '</style>' +
+  [
+    'fit',
+    'fill',
+    'pct',
+    'sizing',
+    'centred',
+    'over',
+    'sum',
+    'turned',
+    'wide',
+    'wide-end',
+    'wide-start',
+    'wide-rtl',
+    'float',
+    'ib',
+    'flex',
+    'blockified',
+    'column',
+    'grid',
+    'cell',
+    'cell-px',
+    'abs',
+    'abs-auto',
+    'abs-far',
+    'rel',
+    'fixed',
+    'sticky',
+    'upright',
+  ]
+    .map((id) => `<div class="w" id="${id}"></div>`)
+    .join('') +
+  '<div class="w"><span id="inline"></span></div>' +
+  '<div class="w"><span id="shifted"></span></div>' +
+  '<div class="w"><span id="ib-span"></span></div>' +
+  '<div id="rl"></div><div id="lr"></div><div id="rl-auto"></div>' +
+  '<div id="zoomed"></div>' +
+  '<div class="w"><div id="contents"></div></div>' +
+  '<div class="w"><div id="contents-nest"><div id="contents-deep"></div></div></div>' +
+  '<div class="w"><div class="e-centred" id="e-centred"></div></div>' +
+  '<div class="w"><div class="e-end" id="e-end"></div></div>' +
+  '<div class="w"><span><b class="e-inline" id="e-inline">x</b></span></div>' +
+  '<div class="w"><span><b class="e-shifted" id="e-shifted">x</b></span></div>' +
+  '<div class="w"><span><b class="e-ib" id="e-ib"></b></span></div>' +
+  '<div class="w e-grid"><div id="e-grid"></div></div>' +
+  '<div class="w e-abs"><div id="e-abs"></div></div>' +
+  '<div class="w"><div class="e-held" id="e-held"><div></div></div><div></div></div>' +
+  '<div class="w e-lr"><div id="e-lr"></div></div>' +
+  '<table style="width: 200px"><tr><td id="e-cell" style="margin-left: 10%"></td></tr></table>' +
+  '<div class="f" id="f-after"></div>' +
+  '<div class="f" id="f-before"></div>' +
+  '<div class="f"><div class="m" id="f-both"></div></div>' +
+  '<div class="f"><div class="ml" id="f-share"></div><div class="mr" id="f-share-b"></div></div>' +
+  '<div class="f"><div class="mr" id="f-three"></div><div class="m" id="f-three-b"></div></div>' +
+  '<div class="f gap"><div class="ml" id="f-gap"></div><div></div><div></div></div>' +
+  '<div class="f"><div class="ml mt" id="f-held"></div></div>' +
+  '<div class="f"><div id="f-pct"></div></div>' +
+  '<div class="f"><div id="f-pct-b"></div></div>' +
+  '<div class="f"><div class="ml" id="f-grown"></div><div></div></div>' +
+  '<div class="f" id="f-spread"><div class="mr" id="f-spread-a"></div><div></div><div></div></div>' +
+  '<div class="f reverse"><div class="ml" id="f-reverse"></div></div>' +
+  '<div class="f reverse gap"><div class="ml" id="f-reverse-a"></div><div class="ml" id="f-reverse-b"></div><div></div></div>' +
+  '<div class="f rtl"><div class="ml" id="f-rtl"></div></div>' +
+  '<div class="f rtl"><div class="m" id="f-rtl-both"></div></div>' +
+  '<div class="f"><div id="f-wide"></div></div>' +
+  '<div class="f"><div id="f-tall"></div></div>' +
+  '<div class="fc"><div class="m" id="f-column"></div></div>' +
+  '<div class="fc"><div class="mt" id="f-down"></div></div>' +
+  '<div class="fc"><div class="mb" id="f-up"></div></div>' +
+  '<div class="fc gap"><div class="mt" id="f-column-gap"></div><div></div></div>' +
+  '<div class="fc up"><div class="mb" id="f-column-up"></div><div></div></div>' +
+  '<div class="fc rtl"><div class="ml" id="f-column-rtl"></div></div>' +
+  '<div class="fc rtl"><div class="mr" id="f-column-rtl-b"></div></div>' +
+  '<div class="fc"><div id="f-column-wide"></div></div>' +
+  '<div class="f wrap"><div class="ml" id="f-wrap"></div><div></div><div class="m" id="f-wrap-b"></div></div>' +
+  '<div class="f wrap gap pair"><div class="ml" id="f-wrap-gap"></div><div></div><div></div><div class="m" id="f-wrap-gap-b"></div></div>' +
+  '<div class="f wrap reverse"><div class="ml" id="f-wrap-reverse"></div><div class="m" id="f-wrap-reverse-b"></div></div>' +
+  '<div class="f wrap rtl pair"><div class="ml" id="f-wrap-rtl"></div><div></div><div class="mr mt" id="f-wrap-rtl-b"></div></div>' +
+  '<div class="f wrap again"><div class="mt" id="f-again"></div><div class="mb" id="f-again-b"></div><div></div></div>' +
+  '<div class="f wrap pair packed"><div class="high"></div><div class="mt" id="f-packed"></div><div></div></div>' +
+  '<div class="f wrap pair centred"><div class="high"></div><div class="mt" id="f-centred"></div><div></div></div>' +
+  '<div class="f wrap pair spaced"><div class="high"></div><div class="m" id="f-spaced"></div><div></div></div>' +
+  '<div class="f wrap"><div class="full"></div><div class="mt" id="f-stretched"></div></div>' +
+  '<div class="f wrap pair"><div class="full"></div><div class="mt" id="f-stretched-beside"></div><div></div></div>' +
+  '<div class="f wrap"><div class="full"><div></div></div><div class="mt" id="f-stretched-holds"></div></div>' +
+  '<div class="f wrap"><div class="capped"></div><div class="mt" id="f-capped"></div></div>' +
+  '<div class="f wrap"><div class="ml mt shifted" id="f-shifted"></div><div class="first mr" id="f-first"></div></div>' +
+  '<div class="fc wrap"><div class="mt"></div><div></div><div class="ml" id="f-column-wrap"></div><div class="m" id="f-column-wrap-b"></div></div>' +
+  '<div class="fc wrap up small"><div class="ml" id="f-column-wrap-up"></div><div></div><div></div><div class="mt" id="f-column-wrap-up-b"></div></div>' +
+  '<div class="fc wrap rtl small"><div class="mr" id="f-column-wrap-rtl"></div><div></div><div></div><div class="mb" id="f-column-wrap-rtl-b"></div></div>' +
+  '<div class="f" id="f-least"><div class="m" id="f-least-a"></div></div>' +
+  '<div class="f" id="f-most"><div></div><div class="m" id="f-most-a"></div></div>' +
+  '<div class="f" id="f-edges"><div class="m" id="f-edges-a"></div></div>' +
+  '<div class="f wrap small" id="f-lines"><div class="text deep">x</div><div class="text low">y</div><div class="mt" id="f-lines-a"></div></div>' +
+  '<div class="f wrap small again" id="f-lines-up"><div class="text deep">x</div><div class="text low">y</div><div class="mb" id="f-lines-up-a"></div></div>' +
+  '<div class="f"><div id="f-nested"><div class="m" id="f-nested-a"></div></div><div></div></div>' +
+  '<div id="f-rl"><div><div id="f-rl-a"></div></div></div>';
+
+/** All four margins of a row, top first, as `getComputedStyle` reads them. */
+function margins(sides: string): Record<string, string> {
+  const [top, right, bottom, left] = sides.split(' ');
+  return {
+    'margin-top': top,
+    'margin-right': right,
+    'margin-bottom': bottom,
+    'margin-left': left,
+  };
+}
+
+const USED_ROWS: [string, 'before' | 'after' | null, Record<string, string>][] =
+  [
+    ['fit', 'before', { width: '8px', height: '20px', 'margin-left': '20px' }],
+    ['fill', 'before', { width: '200px', height: '20px' }],
+    [
+      'pct',
+      'after',
+      {
+        width: '100px',
+        height: '25px',
+        'margin-top': '10px',
+        'margin-right': '20px',
+        'margin-left': '20px',
+        'padding-top': '4px',
+        'padding-bottom': '4px',
+        'padding-left': '5px',
+        'border-left-width': '3px',
+        'inline-size': '100px',
+        'block-size': '25px',
+        'margin-inline-start': '20px',
+      },
+    ],
+    ['sizing', 'before', { width: '100px', height: '30px' }],
+    [
+      'centred',
+      'before',
+      { height: '0px', 'margin-left': '50px', 'margin-right': '50px' },
+    ],
+    ['over', 'before', { 'margin-left': '10px', 'margin-right': '20px' }],
+    ['sum', 'before', { width: '103px', 'margin-left': '19px' }],
+    ['turned', 'before', { transform: 'matrix(1, 0, 0, 1, 50, 0)' }],
+    ['wide', 'before', { 'margin-left': '0px', 'margin-right': '-100px' }],
+    ['wide-end', 'before', { 'margin-left': '20px', 'margin-right': '-120px' }],
+    ['wide-start', 'before', { 'margin-left': '0px', 'margin-right': '20px' }],
+    ['wide-rtl', 'before', { 'margin-left': '-100px', 'margin-right': '0px' }],
+    [
+      'float',
+      'before',
+      { width: '50px', 'margin-left': '0px', 'margin-right': '20px' },
+    ],
+    [
+      'inline',
+      'before',
+      {
+        width: '50px',
+        height: '50px',
+        'margin-left': '10%',
+        'margin-top': '10%',
+        'padding-left': '5%',
+      },
+    ],
+    [
+      'shifted',
+      'before',
+      { top: '10px', right: 'auto', bottom: '-10px', left: '5%' },
+    ],
+    [
+      'ib',
+      'before',
+      { width: '50px', 'margin-left': '20px', 'padding-left': '10px' },
+    ],
+    [
+      'ib-span',
+      'before',
+      { width: '50px', 'margin-left': '20px', 'padding-left': '10px' },
+    ],
+    [
+      'flex',
+      'before',
+      { width: '100px', height: '40px', 'margin-left': '20px' },
+    ],
+    [
+      'flex',
+      'after',
+      { width: '70px', height: '40px', 'padding-left': '10px' },
+    ],
+    ['blockified', 'before', { display: 'block', width: '100px' }],
+    [
+      'column',
+      'before',
+      { width: '200px', height: '80px', 'margin-top': '20px' },
+    ],
+    [
+      'grid',
+      'before',
+      {
+        width: '40px',
+        height: '40px',
+        'margin-left': '5px',
+        'padding-left': '5px',
+      },
+    ],
+    ['grid', 'after', { width: '90px', 'margin-left': '10px' }],
+    [
+      'cell',
+      'before',
+      { 'margin-left': '0px', 'padding-top': '2px', 'padding-left': '2px' },
+    ],
+    ['cell-px', 'before', { 'margin-left': '5px' }],
+    [
+      'abs',
+      'before',
+      {
+        width: '110px',
+        height: '30px',
+        'margin-left': '22px',
+        top: '12px',
+        right: '83px',
+        bottom: '78px',
+        left: '5px',
+      },
+    ],
+    [
+      'abs-auto',
+      'before',
+      {
+        'margin-left': '50px',
+        'margin-right': '50px',
+        top: '0px',
+        bottom: '90px',
+      },
+    ],
+    [
+      'abs-far',
+      'before',
+      { width: '40px', 'margin-left': '40px', left: '0px', right: '320px' },
+    ],
+    [
+      'rel',
+      'before',
+      {
+        width: '200px',
+        top: '10px',
+        right: '-10px',
+        bottom: '-10px',
+        left: '10px',
+      },
+    ],
+    ['fixed', 'before', { width: '40px', right: '10px', left: '350px' }],
+    ['sticky', 'before', { width: '200px', top: '5px' }],
+    [
+      'rl',
+      'before',
+      {
+        width: '30px',
+        height: '100px',
+        'margin-top': '20px',
+        'margin-left': '5px',
+        'padding-top': '2px',
+        'padding-left': '4px',
+        'border-right-width': '1px',
+        'inline-size': '100px',
+        'block-size': '30px',
+      },
+    ],
+    [
+      'lr',
+      'before',
+      {
+        height: '100px',
+        'margin-top': '20px',
+        'margin-right': '5px',
+        'margin-bottom': '10px',
+        'margin-left': '10px',
+      },
+    ],
+    ['rl-auto', 'before', { 'margin-top': '50px', 'margin-bottom': '50px' }],
+    ['upright', 'before', { 'margin-left': '20px' }],
+    ['zoomed', 'before', { width: '50px', 'margin-left': '10px' }],
+    ['contents', 'before', { width: '100px', 'margin-left': '20px' }],
+    ['contents-deep', 'after', { width: '50px', height: '3px' }],
+    ['e-centred', null, { 'margin-left': '50px', 'margin-right': '50px' }],
+    ['e-end', null, { 'margin-left': '20px', 'margin-right': '80px' }],
+    [
+      'e-inline',
+      null,
+      { 'margin-left': '10%', 'margin-top': '10%', 'padding-left': '5%' },
+    ],
+    [
+      'e-shifted',
+      null,
+      { top: '10px', right: 'auto', bottom: '-10px', left: '5%' },
+    ],
+    ['e-ib', null, { 'margin-left': '20px' }],
+    ['e-grid', null, { 'margin-left': '5px', 'padding-left': '5px' }],
+    ['e-abs', null, { 'margin-left': '22px' }],
+    ['e-held', null, { 'margin-bottom': '20px' }],
+    ['e-lr', null, { 'margin-left': '10px', 'margin-right': '5px' }],
+    ['e-cell', null, { 'margin-left': '0px' }],
+    ['f-after', 'after', margins('0px 0px 0px 160px')],
+    ['f-before', 'before', margins('15px 80px 15px 80px')],
+    ['f-both', null, margins('15px 80px 15px 80px')],
+    ['f-share', null, margins('0px 0px 0px 60px')],
+    ['f-share-b', null, margins('0px 60px 0px 0px')],
+    ['f-three', null, margins('0px 40px 0px 0px')],
+    ['f-three-b', null, margins('15px 40px 15px 40px')],
+    ['f-gap', null, margins('0px 0px 0px 20px')],
+    ['f-held', null, margins('15px 15px 15px 145px')],
+    ['f-pct', null, margins('10px 140px 20px 20px')],
+    ['f-pct-b', null, margins('20px 20px 10px 140px')],
+    ['f-grown', null, margins('0px 0px 0px 110px')],
+    ['f-spread-a', null, margins('0px 80px 0px 0px')],
+    ['f-reverse', null, margins('0px 0px 0px 160px')],
+    ['f-reverse-a', null, margins('0px 0px 0px 10px')],
+    ['f-reverse-b', null, margins('0px 0px 0px 10px')],
+    ['f-rtl', null, margins('0px 0px 0px 160px')],
+    ['f-rtl-both', null, margins('15px 80px 15px 80px')],
+    ['f-wide', null, margins('15px 0px 15px 0px')],
+    ['f-tall', null, margins('0px 80px 0px 80px')],
+    ['f-column', null, margins('45px 80px 45px 80px')],
+    ['f-down', null, margins('90px 0px 0px 0px')],
+    ['f-up', null, margins('0px 0px 90px 0px')],
+    ['f-column-gap', null, margins('60px 0px 0px 0px')],
+    ['f-column-up', null, margins('0px 0px 80px 0px')],
+    ['f-column-rtl', null, margins('0px 0px 0px 160px')],
+    ['f-column-rtl-b', null, margins('0px 160px 0px 0px')],
+    ['f-column-wide', null, margins('45px 0px 45px 0px')],
+    ['f-wrap', null, margins('0px 0px 0px 80px')],
+    ['f-wrap-b', null, margins('15px 40px 15px 40px')],
+    ['f-wrap-gap', null, margins('0px 0px 0px 30px')],
+    ['f-wrap-gap-b', null, margins('15px 15px 15px 15px')],
+    ['f-wrap-reverse', null, margins('0px 0px 0px 80px')],
+    ['f-wrap-reverse-b', null, margins('25px 40px 25px 40px')],
+    ['f-wrap-rtl', null, margins('0px 0px 0px 60px')],
+    ['f-wrap-rtl-b', null, margins('40px 130px 0px 0px')],
+    ['f-again', null, margins('30px 0px 0px 0px')],
+    ['f-again-b', null, margins('0px 0px 30px 0px')],
+    ['f-packed', null, margins('10px 0px 0px 0px')],
+    ['f-centred', null, margins('10px 0px 0px 0px')],
+    ['f-spaced', null, margins('5px 30px 5px 30px')],
+    ['f-stretched', null, margins('55px 0px 0px 0px')],
+    ['f-stretched-beside', null, margins('40px 0px 0px 0px')],
+    ['f-stretched-holds', null, margins('55px 0px 0px 0px')],
+    ['f-capped', null, margins('55px 0px 0px 0px')],
+    ['f-shifted', null, margins('50px 0px 0px 80px')],
+    ['f-first', null, margins('0px 80px 0px 0px')],
+    ['f-column-wrap', null, margins('0px 0px 0px 70px')],
+    ['f-column-wrap-b', null, margins('0px 35px 0px 35px')],
+    ['f-column-wrap-up', null, margins('0px 0px 0px 70px')],
+    ['f-column-wrap-up-b', null, margins('40px 0px 0px 0px')],
+    ['f-column-wrap-rtl', null, margins('0px 70px 0px 0px')],
+    ['f-column-wrap-rtl-b', null, margins('0px 0px 40px 0px')],
+    ['f-least-a', null, margins('25px 80px 25px 80px')],
+    ['f-most-a', null, margins('10px 60px 10px 60px')],
+    ['f-edges-a', null, margins('7px 67px 7px 67px')],
+    ['f-lines-a', null, margins('60px 0px 0px 0px')],
+    ['f-lines-up-a', null, margins('0px 0px 60px 0px')],
+    ['f-nested-a', null, margins('10px 50px 10px 50px')],
+    ['f-rl-a', null, margins('40px 15px 40px 15px')],
+  ];
+
+for (const [scale, rendered] of [
+  ['1x', render],
+  ['2x', render2x],
+] as const) {
+  metric(
+    `getComputedStyle reads the box of a ::before as Chrome does, at ${scale}`,
+    async () => {
+      const { node } = await rendered(USED_PAGE, 400);
+      const el = view(node);
+      for (const [id, pseudo, want] of USED_ROWS) {
+        const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+        const read = Object.fromEntries(
+          Object.keys(want).map((name) => [name, style[name]]),
+        );
+        assert.deepStrictEqual(read, want, `${id} ${pseudo ?? ''}`);
+      }
+    },
+  );
+}
+
+test('the margins of the root box read as laid out', async () => {
+  // Chrome 156, in a window 400 wide
+  const { node } = await render(
+    '<!doctype html><html id="r"><style>html { width: 200px; margin: 0 auto 5% }' +
+      ' body { margin: 0 0 30px }</style>' +
+      '<body><div style="height: 10px"></div></body></html>',
+  );
+  const el = view(node);
+  const style = el.computedStyle(findById(el.document, 'r')!)!;
+  assert.deepStrictEqual(
+    [style['margin-left'], style['margin-right'], style['margin-bottom']],
+    ['100px', '100px', '20px'],
+  );
+});
+
+test('a ::before with no box reads as its rules compute it', async () => {
+  const { node } = await render(
+    '<!doctype html><style>' +
+      '#none::before { content: "x"; display: none; width: 50%; height: 10%; margin-left: 10%;' +
+      ' padding-left: 5%; top: 10%; position: relative }' +
+      '#empty::before { width: 50%; height: 10%; margin-left: 10%; padding-left: 5% }' +
+      '#gone::before { content: none; width: 50%; margin-left: 10% }' +
+      '#normal::after { content: normal; width: 50%; margin-left: 10% }' +
+      '#unseen { display: none }' +
+      '#unseen::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
+      '#held::before { content: "x"; display: block; width: 50%; margin-left: 10% }' +
+      // what it holds is set in a box, and that box is none of its own
+      '#contents::before { content: "x"; display: contents; width: 50%; height: 10%;' +
+      ' margin-left: 10%; padding-left: 5%; top: 10%; position: relative }' +
+      '#through { display: contents }' +
+      '#through::before { content: "x"; display: contents; width: 50%; margin-left: 10% }' +
+      '</style><div id="none"></div><div id="empty"></div><div id="gone"></div>' +
+      '<div id="normal"></div><div id="unseen"></div>' +
+      '<div id="contents"></div><div><div id="through"></div></div>' +
+      '<div style="display: none"><div id="held"></div></div>',
+  );
+  const el = view(node);
+  // Chrome 156: width, height, margin-left, padding-left, top
+  const rows = [
+    ['none', 'before', '50% 10% 10% 5% 10%'],
+    ['empty', 'before', '50% 10% 10% 5% auto'],
+    ['gone', 'before', '50% auto 10% 0px auto'],
+    ['normal', 'after', '50% auto 10% 0px auto'],
+    ['unseen', 'before', '50% auto 10% 0px auto'],
+    ['held', 'before', '50% auto 10% 0px auto'],
+    ['contents', 'before', '50% 10% 10% 5% 10%'],
+    ['through', 'before', '50% auto 10% 0px auto'],
+  ] as const;
+  for (const [id, pseudo, want] of rows) {
+    const style = el.computedStyle(findById(el.document, id)!, pseudo)!;
+    const read = ['width', 'height', 'margin-left', 'padding-left', 'top'];
+    assert.strictEqual(
+      read.map((name) => style[name]).join(' '),
+      want,
+      `${id} ${pseudo}`,
+    );
+  }
+});
+
+test('the first frame of a ::before takes its computed width, where its style reads its box', async () => {
+  const { node } = await render(
+    '<!doctype html><style>@keyframes k { to { width: 100px } }' +
+      '#a { width: 200px }' +
+      '#a::before { content: ""; display: block; width: 50%; animation: k 100s paused }' +
+      '</style><div id="a"></div>',
+  );
+  const el = view(node);
+  const a = findById(el.document, 'a')!;
+  // Chrome 156's `getKeyframes()` and `getComputedStyle()` of it
+  const frames = el.cssKeyframesOf(a, 'before', 'k')!;
+  assert.strictEqual(frames[0].values.width, '50%');
+  assert.strictEqual(el.computedStyle(a, 'before')!.width, '100px');
+});
+
 test('what a computed style reads from a box says so, by name and in camel case', async () => {
   const { node } = await render(
     '<div id="a" style="position: absolute; top: 1px; left: 1px; ' +
@@ -3194,4 +3791,45 @@ test('two custom property sets are the same where every link of them is, however
     assert.strictEqual(sameValue(d, e), false);
     assert.strictEqual(sameValue({ custom: a }, { custom: b }), true);
   }
+});
+
+test('calc-size() reads as Chromium reads it, and is taken where it takes it', async () => {
+  const { node } = await render(CALC_SIZE_DOCUMENT, 800);
+  const el = view(node);
+  const wrong: string[] = [];
+  CALC_SIZE_READS.forEach(([size, value, kept, computed], i) => {
+    const read = el.computedStyle(findById(el.document, `r${i}`)!)!;
+    if (read[size] !== computed) {
+      wrong.push(`${size}: ${value} reads ${read[size]}, not ${computed}`);
+    }
+    // a declaration the size does not take leaves `el.style` as it was
+    const specified = specifiedValue(size, value);
+    if (specified !== (kept === '' ? null : kept)) {
+      wrong.push(`${size}: ${value} is kept as ${specified}, not ${kept}`);
+    }
+  });
+  assert.deepStrictEqual(wrong, []);
+});
+
+test('calc-size() sizes every kind of box as Chromium does', async () => {
+  const { node } = await render(CALC_SIZE_DOCUMENT, 800);
+  const el = view(node);
+  const size = (id: string): string => {
+    const element = findById(el.document, id);
+    const rect = element && el.elementRect(element);
+    return rect ? `${rect.width}×${rect.height}` : 'none';
+  };
+  const wrong: string[] = [];
+  CALC_SIZE_BOXES.forEach(([kind, style, box, around], i) => {
+    const want = (of: readonly [number, number]) => `${of[0]}×${of[1]}`;
+    if (size(`b${i}`) !== want(box)) {
+      wrong.push(`${kind} ${style}: ${size(`b${i}`)}, not ${want(box)}`);
+    }
+    if (around && size(`o${i}`) !== want(around)) {
+      wrong.push(
+        `${kind} ${style}: around it ${size(`o${i}`)}, not ${want(around)}`,
+      );
+    }
+  });
+  assert.deepStrictEqual(wrong, []);
 });

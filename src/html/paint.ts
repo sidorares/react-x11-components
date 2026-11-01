@@ -4722,6 +4722,12 @@ function paintScrollBars(
   }
   const scale = options.scale ?? 1;
   const damage = options.damage;
+  const inDamage = (x: number, y: number, width: number, height: number) =>
+    !damage ||
+    (x < damage.x + damage.width &&
+      damage.x < x + width &&
+      y < damage.y + damage.height &&
+      damage.y < y + height);
   const stack: [Box, number, number, boolean][] = [
     [top ?? tree.root, options.originX, options.originY, false],
   ];
@@ -4736,17 +4742,21 @@ function paintScrollBars(
     }
     if (box.boundsY === Infinity) continue;
     if (
-      damage &&
-      !(
-        box.boundsX + ox < damage.x + damage.width &&
-        damage.x < box.boundsX + ox + box.boundsWidth &&
-        box.boundsY + oy < damage.y + damage.height &&
-        damage.y < box.boundsY + oy + box.boundsHeight
+      !inDamage(
+        box.boundsX + ox,
+        box.boundsY + oy,
+        box.boundsWidth,
+        box.boundsHeight,
       )
     ) {
       continue;
     }
-    if (isScroller(box) && box.style.visibility === 'visible') {
+    // a box's ink is all it holds, clipped or not, and its bars are inside it
+    if (
+      isScroller(box) &&
+      box.style.visibility === 'visible' &&
+      inDamage(box.x + ox, box.y + oy, box.width, box.height)
+    ) {
       paintBarsOf(ctx, box, ox, oy, scale, options);
     }
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
@@ -4769,11 +4779,7 @@ function paintBarsOf(
   scale: number,
   options: PaintOptions,
 ): void {
-  const bars = scrollBarsOf(
-    box,
-    scale,
-    options.scrollbarHidden?.(box) ?? { x: false, y: false },
-  );
+  const bars = scrollBarsOf(box, scale, options.scrollbarHidden);
   if (!bars.length) return;
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
     if (placedMatrix(at)) return;
