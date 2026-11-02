@@ -2580,15 +2580,20 @@ rest keep their posters:
   under a scale. On macOS a player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
-- **A box fixed to the viewport is asked about as the pane scrolls**: a
-  header that comes over a playing video cuts the player where it reaches
-  it, and one that reaches into its middle hides it for as long as it is
-  there, the poster showing in its place and the video playing on. Only one
-  the document paints after the video is over it: a fixed box before it in
-  the paint order is under it wherever the scroll has it. The same holds of
-  a frame, which is hidden whole by what it cannot be cut around —
-  joshwcomeau.com's floating like button, fixed beside its article and
-  before its playgrounds in the tree, hid each playground's result.
+- **A box fixed to the viewport is asked about as the pane scrolls**, and
+  at each paint, since a fade changes what it draws and lays nothing out. A
+  solid band that comes over a playing video, a header, cuts the player
+  where it reaches it. What lets the video show, or stands in its middle, is
+  painted over the player with the boxes above, and counts among the four:
+  YouTube's embed fixes its controls over the whole player and fades them
+  in, translucent, over the video. One that cannot be painted there hides
+  the player for as long as it is there, the poster showing in its place and
+  the video playing on. Only one the document paints after the video is over
+  it: a fixed box before it in the paint order is under it wherever the
+  scroll has it. A frame has nothing painted over it, so it is hidden whole
+  by what it cannot be cut around — joshwcomeau.com's floating like button,
+  fixed beside its article and before its playgrounds in the tree, hid each
+  playground's result.
 - **What a rectangle cannot follow** — a transform that turns or scales the
   video or a box around it, a `clip-path` or a mask, a video fixed to the
   viewport, or corners of its own, or of a box around it that cuts it, that
@@ -6633,6 +6638,20 @@ table's rows were its children, and `tbody > tr`, `table.tBodies` and a
 script's walk of the tree found another tree than a browser's. They go on
 the parser's own stack, so its end tags close them — a `</tbody>` in a cell
 ends the cell and the row, as Acid3's table has it.
+
+**SVG and MathML are read as HTML's parser reads them.** A `</p>`, a `</br>`
+and a `<font>` with a `color`, a `face` or a `size` end foreign content as a
+`<div>` does. An integration point is one in its own language only: `<svg><mi>`
+is SVG's and `<math><title>` MathML's, and an `<annotation-xml>` holds HTML only
+where its `encoding` says so. A name means nothing else it means in HTML there,
+so an `<input>` holds what comes after it, a `<td>` in a `<td>` nests and an
+`<html>` is an element like any. An end tag closes as all three engines have
+it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
+`</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
+table's scope stops at no integration point. HTML's own elements are closed as
+htmlparser2 closes them, foreign elements open or not, so a `</span>` over a
+`<div>` closes the `<span>`, where a browser ignores it, and no adoption agency
+runs for a nested `<a>`.
 
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once

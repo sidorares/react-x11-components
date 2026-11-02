@@ -3755,7 +3755,10 @@ closes a way out a DOM binding opens by accident:
   `<head>`. Met at `<Html>`'s read of the tree, they ran backwards and a
   module ran before the one defining what it needs. **Anything new that
   makes a `<script>` element sets its `forceAsync`**, as `create` and a
-  copy do.
+  copy do. A frame goes the same way, whichever of the two it went in by
+  (`_connected`): one `innerHTML` put in after the parse loaded only if a
+  page read its `contentWindow`, so a player written in by a press on its
+  poster, an `<iframe>` of YouTube's embed, was an empty box.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the
@@ -3939,7 +3942,11 @@ closes a way out a DOM binding opens by accident:
   **the host never reads what a page threw**: a module's error goes to the
   page through `__thrown` to be reported there, under the timeout.
 - **What a page feature-detects or assigns is the IDL's, not the facade's
-  reading of it.** A missing interface brings a polyfill: Next.js's
+  reading of it.** A property a style has answers `in`
+  (`isStyleProperty`, from `declaredProperties`): Vue 2 writes a name only
+  where it finds it there, so every `:style` binding on StackEdit came out
+  as `undefined: 44px`, and jQuery looks the same way. A missing interface
+  brings a polyfill: Next.js's
   IntersectionObserver polyfill re-measured every target at every
   mutation, because `IntersectionObserverEntry` was missing. A getter with
   no setter throws in strict code, as `contentEditable` did for
@@ -4970,7 +4977,7 @@ wrote already and what `cloneNode` keeps, and what reads those names asks
 `cascadeHeld`, the `sheets` and `title` ops, a frame, a window's names, a form's
 controls and the two `<base target>` readers. Chromium's Network panel asks for
 a `<link>` in a drawing all the same: that is its preload scanner, which goes
-with `doHtmlPreloadScanning=false`, and nothing comes of it. Six things are
+with `doHtmlPreloadScanning=false`, and nothing comes of it. Seven things are
 load-bearing.
 
 - **Only what `MARKED` names says.** All else in a drawing is told by its name,
@@ -5002,16 +5009,36 @@ load-bearing.
   (`rootNamespace`): `<math><svg><script>` runs in no engine, and `<svg><math>`
   is the same way round. An `<annotation-xml>` takes an `<svg>` as one.
 - **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
-  would turn `<svg><p></p><link>`, a sheet in every engine, into none. It goes by
-  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, nor does
-  an `<image>` there stay one, and a `<font color>` does not, whose attributes
-  come after its name. That stack is most of what is left between the scan and
-  the engines, which differ on 105 of 2,124 generated documents, and on 6 with
-  its context corrected to each element's language. Those are how elements
-  close, which no mark can say: a `</svg>` after an inner drawing broke out
-  closes the outer one, where HTML's stops at the `<div>` between them, and a
-  nested `<a>` runs no adoption agency. The list is the engines', and `<table>`
-  is on it.
+  would turn `<svg><p></p><link>`, a sheet in every engine, into none. The list
+  is the engines', and `<table>` is on it. What only attributes can say is
+  known at the end of a tag (`_tagEnds`): a `<font>` with a `color`, a `face` or
+  a `size` ends the drawing, and an `<annotation-xml>` with an HTML `encoding`
+  is a point.
+- **In foreign content the parser goes by an element's language, where
+  htmlparser2 goes by its name** (`_openForeign`, `_closedBy`). A foreign tag is
+  opened without `emitOpenTag`, which would close a `<td>` with a `<td>` and take
+  a `<math>` in a drawing for MathML, and with a frame of `foreignContext` in
+  that element's language. An end tag from a foreign element closes the nearest
+  of its name back to the first HTML element, and from there it is HTML's: it
+  closes HTML elements alone, and stops at what HTML's scopes stop at, a point
+  of the element's own language or any `<annotation-xml>`. A table's own end tags
+  do not stop there, since their scope has no such stop, which a reading of "in
+  scope" gets wrong and the engines do not. So **anything new that opens a
+  foreign element goes through `_openForeign`**, since `popElement` takes a
+  frame off by the name alone (`FRAMED`), and **a tag's end decides anything
+  more through `_tagEnds`**, where the element is not made yet. HTML content is
+  still htmlparser2's, foreign elements open or not: `<span><div></span>` closes
+  the `<span>`, where HTML's stops at the `<div>`, a `<p>` is closed only from
+  the top of the stack, and nothing runs an adoption agency. So a nested `<a>`
+  is the one difference left of 2,124 generated documents the engines agree on
+  (105 before), and every chain to depth 5 of foreign and HTML elements, with
+  each end tag after it, is read as they read it (788,922 documents, but for
+  HTML's own `td` scope). A generator for this holds HTML well nested, or HTML's
+  rules drown what foreign content's do. Left, and nobody writes it: a foreign
+  `<form>` hides an HTML one from `emitOpenTag`, an `<mglyph>` under a point
+  holds what it holds as HTML (its `/>` does end it), and at the top of a
+  fragment what breaks out leaves the tokenizer in HTML until the next tag's name
+  is read, so a `<title>` there is RCDATA.
 - **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
   `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
   path in the first, and a `clipPath` lost its capital. **Anything new that
@@ -6370,6 +6397,24 @@ paints after the element alone (`fixedOver`, by `paintOrderOf`), worked
 out as the rects are laid out: a fixed box before a frame in the paint
 order is under it, and joshwcomeau.com's like button, fixed beside its
 article, hid every playground's frame it was inside.
+
+**A box fixed over a video is a cover like any, asked at each paint**
+(`fixedCoversOf`, `_fixedOver`). `walkPaintedAfter` leaves fixed boxes out of
+`coverersOver`, since a scroll moves them against the video, and they cut the
+player instead (`cutByFixed`), which is right for a solid band, a header. It
+is wrong for what lets the video show or stands in its middle: YouTube's
+embed fixes `#player-controls` over the whole player, and as they faded in
+the picture went black with the video playing on. So what is not a solid band
+across a side goes on the canvas over the player, in the order the document
+paints it (`inPaintOrder`), and only what cannot be a cover is left to cut or
+to hide. Three things are load-bearing. **What covers a player changes with
+nothing laid out**, so it is decided in `_publishMedia`, at each paint, and
+never in `_reportMedia`. **The canvas draws again with any damage that
+reaches it** (core's `onDraw` runs at each repaint), so a fade over the same
+rect needs no telling: anything that changes a cover claims its damage as
+anything else does. And **a cover's rect is where the scroll has the box**,
+and `paintCovers` moves the viewport to the canvas's origin, which is what
+`atViewport` places a fixed box from.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
