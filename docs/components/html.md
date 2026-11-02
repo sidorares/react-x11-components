@@ -6551,6 +6551,20 @@ script's walk of the tree found another tree than a browser's. They go on
 the parser's own stack, so its end tags close them — a `</tbody>` in a cell
 ends the cell and the row, as Acid3's table has it.
 
+**SVG and MathML are read as HTML's parser reads them.** A `</p>`, a `</br>`
+and a `<font>` with a `color`, a `face` or a `size` end foreign content as a
+`<div>` does. An integration point is one in its own language only: `<svg><mi>`
+is SVG's and `<math><title>` MathML's, and an `<annotation-xml>` holds HTML only
+where its `encoding` says so. A name means nothing else it means in HTML there,
+so an `<input>` holds what comes after it, a `<td>` in a `<td>` nests and an
+`<html>` is an element like any. An end tag closes as all three engines have
+it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
+`</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
+table's scope stops at no integration point. HTML's own elements are closed as
+htmlparser2 closes them, foreign elements open or not, so a `</span>` over a
+`<div>` closes the `<span>`, where a browser ignores it, and no adoption agency
+runs for a nested `<a>`.
+
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once
 the head is behind it, as it ignores a second `<body>`: the attributes of
