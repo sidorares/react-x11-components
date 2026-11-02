@@ -1995,6 +1995,55 @@ test('what is told of a <link> or a <base> the parser made in a drawing is nothi
   assert.ok(!sheetsOf(el, [gone]), 'it was a sheet coming or going');
 });
 
+test('what is told of a <style> the parser made in a <math> is nothing to the cascade, as what is told of one in a drawing is', async () => {
+  // a sheet of the document's reads as the cascade read it whatever this
+  // says of it, so what says is seen in a shadow tree, whose sheets are taken
+  // as a change: only there is it asked of the element
+  const { node } = await render(
+    '<!doctype html><html><head></head><body><div id="host">' +
+      '<template shadowrootmode="open"><div id="in"></div>' +
+      '<math><style id="math">p{color:red}</style></math>' +
+      '<svg><style id="drawn">p{color:red}</style></svg>' +
+      '</template></div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const tree = shadowRootOf(byId(el, 'host'));
+  const holder = findById(tree, 'in')!;
+  for (const [id, sheet] of [
+    ['math', false],
+    ['drawn', true],
+  ] as const) {
+    const style = findById(tree, id)!;
+    assert.strictEqual(
+      sheetsOf(el, [setAttr(style, 'media', 'print')]),
+      sheet,
+      `its media, of #${id}`,
+    );
+    const written: HtmlChange = {
+      type: 'childList',
+      target: style,
+      addedNodes: [createText('p{color:blue}') as unknown as ChildNode],
+      removedNodes: [],
+    };
+    assert.strictEqual(sheetsOf(el, [written]), sheet, `its text, of #${id}`);
+    appendChild(holder, style as unknown as ChildNode);
+    removeNode(style as unknown as ChildNode);
+    const gone: HtmlChange = {
+      type: 'childList',
+      target: holder,
+      addedNodes: [],
+      removedNodes: [style as unknown as ChildNode],
+    };
+    assert.strictEqual(
+      sheetsOf(el, [gone]),
+      sheet,
+      `its coming or going, of #${id}`,
+    );
+  }
+});
+
 test('a stylesheet prop made again with the sheets it held styles nothing again, and one with other sheets restyles everything', async () => {
   // what `<Html scripts>` hands down at every render where the page adopted
   // a sheet: the application's sheets and the page's, in an array made then

@@ -95,6 +95,12 @@ export interface SubmitContext {
 /** The elements that can be submitted (HTML 4.10.2, "submittable"). */
 const SUBMITTABLE = new Set(['button', 'input', 'select', 'textarea']);
 
+/** Whether an element is one: an `<input>` a drawing or a `<math>` holds is
+ *  only a name, which no form owns. */
+function isSubmittable(el: Element): boolean {
+  return SUBMITTABLE.has(tagOf(el)) && !isForeign(el);
+}
+
 /** Every `<input type>` HTML knows. Any other type, or none, is a text
  *  field. */
 const INPUT_TYPES = new Set([
@@ -220,7 +226,7 @@ export function controlsOf(form: Element): Element[] {
   let byId: Map<string, Element> | null = null;
   const out: Element[] = [];
   for (const el of elementsIn(root, NON_RENDERED)) {
-    if (!SUBMITTABLE.has(tagOf(el))) continue;
+    if (!isSubmittable(el)) continue;
     // one walk for every id, and only when something asks by one
     if (attr(el, 'form') !== undefined && !byId) {
       byId = new Map();
@@ -1391,7 +1397,7 @@ function controlIndex(root: AnyNode): ControlIndex {
   let byId: Map<string, Element> | null = null;
   for (const el of elementsIn(root, NON_RENDERED)) {
     if (tagOf(el) === 'form') forms.push(el);
-    if (!SUBMITTABLE.has(tagOf(el)) && !FORM_ASSOCIATED.has(el)) continue;
+    if (!isSubmittable(el) && !FORM_ASSOCIATED.has(el)) continue;
     if (inert(el)) continue;
     if (attr(el, 'form') !== undefined && !byId) {
       byId = new Map();

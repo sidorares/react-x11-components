@@ -15659,7 +15659,11 @@ export function installDom(
     }
     get scripts(): Any {
       return heldList(this, 'scripts', () =>
-        liveCollection(() => wrapAll(call('byTag', this._id, 'script'))),
+        liveCollection(() =>
+          wrapAll(call('byTag', this._id, 'script')).filter(
+            (el: Any) => el.namespaceURI === HTML_NS,
+          ),
+        ),
       );
     }
     get doctype(): Any {
