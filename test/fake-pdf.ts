@@ -36,6 +36,8 @@ export interface FakeOptions {
   links?: (page: number) => PageLink[];
   /** Hold every render until `release()`. */
   hold?: boolean;
+  /** What the engine makes of a tile. It draws what this does not refuse. */
+  refuse?: (tile: TileRequest) => 'nothing' | 'throw' | undefined;
 }
 
 export class FakePdfEngine implements PdfEngine {
@@ -62,7 +64,15 @@ export class FakePdfEngine implements PdfEngine {
     this.inFlight++;
     this.mostInFlight = Math.max(this.mostInFlight, this.inFlight);
     if (this._holding) await new Promise<void>((go) => this._held.push(go));
+    // A thread answers with a message, which is a macrotask. Answered in a
+    // microtask, a view that asks again for ever holds the thread: no timer
+    // runs, so `--test-timeout` never fires and the test hangs at 100% of a
+    // core, where it should fail on how many times it asked.
+    await new Promise<void>((go) => setImmediate(go));
     this.inFlight--;
+    const refused = this._options.refuse?.(tile);
+    if (refused === 'nothing') return null;
+    if (refused === 'throw') throw new Error('no such tile');
     const { width, height, level, page } = tile;
     const data = new Uint8ClampedArray(width * height * 4);
     for (let y = 0; y < height; y++) {

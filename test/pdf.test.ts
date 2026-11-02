@@ -725,27 +725,24 @@ test("a scroll inside a zoom's rest asks for no tiles of the scale it left", asy
   }
 });
 
-test('a tile the engine cannot draw is asked for once', async () => {
-  const engine = new FakePdfEngine(FOUR_PAGES);
-  const real = engine.render.bind(engine);
-  let refused = 0;
-  engine.render = async (handle, tile) => {
-    if (tile.page === 0) {
-      refused++;
-      return null;
-    }
-    return real(handle, tile);
-  };
-  const { node } = await mounted(engine);
-  await waitFor(() => assert.ok(refused > 0, 'nothing refused yet'));
-  await act(async () => {
-    await new Promise((go) => setTimeout(go, 60));
-    node.scrollBy({ y: 1 });
-    await new Promise((go) => setTimeout(go, 60));
+for (const answer of ['nothing', 'throw'] as const) {
+  test(`a tile the engine answers with ${answer} is asked for once`, async () => {
+    const engine = new FakePdfEngine(FOUR_PAGES, {
+      refuse: (tile) => (tile.page === 0 ? answer : undefined),
+    });
+    const refused = () =>
+      engine.requests.filter((tile) => tile.page === 0).length;
+    const { node } = await mounted(engine);
+    await waitFor(() => assert.ok(refused() > 0, 'nothing refused yet'));
+    await act(async () => {
+      await new Promise((go) => setTimeout(go, 60));
+      node.scrollBy({ y: 1 });
+      await new Promise((go) => setTimeout(go, 60));
+    });
+    const tilesOfThePage = Math.ceil((420 * PX_PER_POINT) / TILE_SIZE) * 2;
+    assert.ok(refused() <= tilesOfThePage, `${refused()} asks for page 0`);
   });
-  const tilesOfThePage = Math.ceil((420 * PX_PER_POINT) / TILE_SIZE) * 2;
-  assert.ok(refused <= tilesOfThePage, `${refused} asks for page 0`);
-});
+}
 
 test('a backend with no surface asks for nothing more', async () => {
   const engine = new FakePdfEngine(FOUR_PAGES);
