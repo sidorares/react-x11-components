@@ -11992,7 +11992,8 @@ test('a delete beside a line break takes the break, Delete on an empty last line
 for (const scale of [1, 2]) {
   metric(
     `an empty editing host draws its caret at the start of its content, in its text colour where its caret-color is auto, at ${scale}x`,
-    async () => {
+    async (t) => {
+      holdClock(t, caretClock);
       const doc = await hosted(
         '<div id="ed" contenteditable style="font: 20px monospace; margin: 0;' +
           ' padding: 10px 30px; height: 40px; color: rgb(0, 0, 255)"></div>' +
