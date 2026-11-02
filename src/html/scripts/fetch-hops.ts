@@ -8,6 +8,17 @@
 // Pure, so that every rule here is asserted with no document, and the origin
 // it answers for is the host's own: nothing here reads anything of a page's.
 
+declare const URL: new (
+  url: string,
+  base?: string,
+) => {
+  href: string;
+  origin: string;
+  protocol: string;
+  username: string;
+  password: string;
+};
+
 /** An address's origin, serialized: `null` for one that has none. */
 export function originOf(url: string): string {
   try {
