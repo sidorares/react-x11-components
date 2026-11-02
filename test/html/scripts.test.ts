@@ -5587,6 +5587,69 @@ test("what a template holds is its content's, and no search of the document find
   );
 });
 
+test('a template set again has what it was set to in its content, the same fragment, as Vue uses one for each static tree', async () => {
+  // Vue's `insertStaticContent` keeps one <template>, and for each static
+  // tree sets its `innerHTML` and moves its `content` out: from the second
+  // on there was nothing to move, and one in a drawing took `firstChild` of
+  // null, which left JSFiddle's editors empty
+  const doc = await hosted(
+    '<main id="m"></main><p id="out"></p><script>' +
+      'var r = [], m = document.getElementById("m");' +
+      'var t = document.createElement("template");' +
+      't.innerHTML = "<a id=\\"one\\"></a>";' +
+      'var f = t.content;' +
+      'm.insertBefore(f, null);' +
+      'r.push(f.childNodes.length, m.children.length);' +
+      't.innerHTML = "<b id=\\"two\\"></b>";' +
+      'r.push(t.content === f, t.content.childNodes.length, t.content.firstChild.nodeName, t.childNodes.length);' +
+      'm.insertBefore(t.content, null);' +
+      'r.push(m.children.length, m.lastChild.id);' +
+      // as Vue unwraps what goes in a drawing
+      't.innerHTML = "<svg><path d=\\"M0 0\\"></path></svg>";' +
+      'var content = t.content, wrapper = content.firstChild;' +
+      'while (wrapper.firstChild) content.appendChild(wrapper.firstChild);' +
+      'content.removeChild(wrapper);' +
+      'r.push(content.childNodes.length, content.firstChild.nodeName);' +
+      // what is in its content is what it holds, to all that reads it
+      't.innerHTML = "<u></u>";' +
+      't.content.appendChild(document.createElement("i"));' +
+      'r.push(t.innerHTML, t.outerHTML, t.cloneNode(true).content.childNodes.length,' +
+      '  t.cloneNode(true).innerHTML, t.cloneNode(false).content.childNodes.length);' +
+      'var d = document.createElement("div");' +
+      'd.innerHTML = "<template><i></i></template>";' +
+      'd.firstChild.content.appendChild(document.createElement("b"));' +
+      'r.push(d.innerHTML, d.cloneNode(true).firstChild.content.childNodes.length);' +
+      // setting one's `innerHTML` is a change to its content
+      'var seen = new MutationObserver(function () {});' +
+      'seen.observe(t.content, { childList: true });' +
+      't.innerHTML = "";' +
+      'r.push(seen.takeRecords().length, t.content.childNodes.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '1',
+    'true',
+    '1',
+    'B',
+    '0',
+    '2',
+    'two',
+    '1',
+    'path',
+    '<u></u><i></i>',
+    '<template><u></u><i></i></template>',
+    '2',
+    '<u></u><i></i>',
+    '0',
+    '<template><i></i><b></b></template>',
+    '2',
+    '1',
+    '0',
+  ]);
+});
+
 test("a template's content is walked by its children's siblings, as Polymer walks it", async () => {
   // its content is made of copies of the template's children, which were
   // linked to no sibling: the first one's `nextSibling` was null, and

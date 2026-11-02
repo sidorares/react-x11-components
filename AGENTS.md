@@ -6607,6 +6607,16 @@ holding an absolute box. Lifting those out takes laying them apart, a line at
 a time, for a box that moves nowhere, so one still goes under an absolute box
 before it, where all three engines draw it over.
 
+**A template's content is one list with the template.** The parser and
+`innerHTML` put what a template holds in its `children`, which no page walks,
+and `content` is a fragment over that same array (`templateContent`), made the
+first time a page asks. So the array is never replaced, only changed in place,
+and what reads a template — its `innerHTML`, a serialization of what it is in, a
+clone — reads what a page left in its content. Made as a copy, it was what the
+template held the first time, and from the second time on Vue moved nothing out
+of the one `<template>` it keeps for its static trees. **Anything new that puts
+a template's children somewhere else takes `content` with it.**
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
