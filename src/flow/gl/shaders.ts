@@ -1,4 +1,5 @@
-// The GL renderer's four programs.
+// The GL renderer's programs: four for the graph, and one for the textures
+// of GL node bodies (`FlowNodeType.glBody`).
 //
 // GLSL ES 1.00, for the reason `src/maps/gl/shaders.ts` gives: it is the one
 // dialect both direct backends compile, Apple's GL 4.1 core through
@@ -263,6 +264,46 @@ export const TRI_FRAGMENT = `precision mediump float;
 varying vec4 v_color;
 void main() {
   gl_FragColor = v_color;
+}
+`;
+
+/**
+ * A GL body's texture, as a quad in its card (`FlowNodeType.glBody`).
+ *
+ * `u_rect` is the body's box in the scene's units, moved and scaled by the
+ * same contract as every other program, so a pan moves it and a zoom
+ * gesture stretches it with the world it is part of. Where the texture is
+ * the size the box is drawn at — at rest, `u_size` its size, and zero
+ * otherwise — the quad goes on the device grid at that size, so each texel
+ * is one pixel and the body is drawn as sharp as it drew itself; the
+ * scene's box is not on the grid, and drawn there a texture resampled half
+ * a pixel blurs every edge in it. A framebuffer's row 0 is its bottom, so
+ * the quad's top samples the texture's top row.
+ */
+export const TEX_VERTEX = `${PRELUDE}
+uniform vec4 u_rect;
+uniform vec2 u_size;
+attribute vec2 a_corner;
+varying vec2 v_uv;
+void main() {
+  vec2 corner = vec2(a_corner.x, a_corner.y * 0.5 + 0.5);
+  vec2 origin = device(u_rect.xy);
+  vec2 size = u_rect.zw * u_zoom * u_scale;
+  if (u_size.x > 0.0) {
+    origin = floor(origin + 0.5);
+    size = u_size;
+  }
+  v_uv = vec2(corner.x, 1.0 - corner.y);
+  gl_Position = clip(origin + corner * size);
+}
+`;
+
+/** Premultiplied already, as every colour the pane blends is. */
+export const TEX_FRAGMENT = `precision mediump float;
+uniform sampler2D u_texture;
+varying vec2 v_uv;
+void main() {
+  gl_FragColor = texture2D(u_texture, v_uv);
 }
 `;
 

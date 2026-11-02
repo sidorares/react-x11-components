@@ -253,6 +253,20 @@ transform.** If it is, the element draws, and anything that has to be a real
 widget is mounted beside it rather than inside it. If it is not — a calendar,
 a date picker — compose.
 
+**A body that is itself GL is neither.** Mounted beside the pane, a
+`<Map renderer="gl">` brings a `<glarea>` of its own among the pane's
+surface's children, and core does not stack a surface among another
+surface's children: on macOS every GL layer shares one depth, under the
+overlay holding the bodies, so the map is drawn at every frame of a pan and
+never seen (checked on a real Mac, `examples/flow-map.tsx --glarea`).
+`FlowNodeType.glBody` is the third shape: the body draws into a texture of
+its own in the pane's context, and the pane draws the texture as a quad in
+its paint order (`src/flow/gl/renderer.ts`, `bodyTextures`). The seam is
+structural, so `GlMapLayer` (`src/maps/layer.ts`) fits it without importing
+`<Flow>`. **A surface's content that is not the surface's owner's goes
+through its owner's context, not a second surface** — the next 3D view in a
+node, a chart drawn with GL, takes the same seam.
+
 **And whichever it is, know which unit you are in.** react-x11 hands a
 registered element two (its `docs/scale.md`): `abs`, `contentBox()`,
 `this.style`, the paint context, `paintDamage()`, a rect handed to

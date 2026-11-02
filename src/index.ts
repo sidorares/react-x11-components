@@ -233,6 +233,11 @@ export type {
   FlowEdge,
   FlowBodyBudget,
   FlowFrameStats,
+  FlowGlBody,
+  FlowGlBodyFrame,
+  FlowGlBodyHost,
+  FlowGlBodyPointer,
+  FlowGlTexture,
   FlowInstance,
   FlowNode,
   FlowNodeData,
@@ -250,6 +255,7 @@ export type {
   NodeAppearance,
   NodeBodyRect,
   NodeChange,
+  NodeGlBodyContext,
   NodeMouseHandler,
   NodePaintContext,
   NodeRenderContext,
@@ -298,6 +304,10 @@ export type {
 // module that imports it, so `import { Map as MapView }` is there for a
 // module that needs both.
 export { Map, MapViewNode, MAPVIEW_ELEMENT } from './maps/index.js';
+// A map drawn into a GL context somebody else owns — the body of a `<Flow>`
+// node, through `FlowNodeType.glBody` — with `<Map>`'s controller and its
+// GL renderer, which it loads when it is first drawn.
+export { GlMapLayer, useGlMapLayer } from './maps/index.js';
 // The projection and the tile grid, which an application doing its own
 // geography — clustering markers, deciding what to fetch — needs the same
 // arithmetic for. Qualified on the way through the barrel where a bare name
@@ -326,6 +336,11 @@ export {
 } from './maps/index.js';
 export type {
   FitBoundsOptions as MapFitBoundsOptions,
+  GlMapLayerFrame,
+  GlMapLayerHost,
+  GlMapLayerPointer,
+  GlMapLayerProps,
+  GlMapLayerTexture,
   LngLat,
   LngLatBounds,
   MapCamera,
