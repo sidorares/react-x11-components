@@ -979,6 +979,8 @@ since this component navigates nowhere by itself:
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
+| `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                           |
+| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` answers and what guards a read of the clipboard. See below.                                   |
 | `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
 | `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
 | `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
@@ -2015,12 +2017,15 @@ page for its switch.
 `delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
 `selectAll`, in an editing host or a focused text field, each told as a
 `beforeinput` and an `input`. `queryCommandSupported` says which, so a
-formatting command, `undo` and `copy` answer false rather than pretending, and
-`queryCommandState` and `queryCommandValue` have nothing to report.
+formatting command and `undo` answer false rather than pretending, and
+`queryCommandState` and `queryCommandValue` have nothing to report. `copy` and
+`cut` are there where the host handed a clipboard, under a user's press or
+key, and `paste` is not for a page to ask for.
 
-**`navigator.permissions` answers `prompt` for every name a browser knows**,
-since nothing has been asked and nothing refused, and a name it does not know
-is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and `TaskController`
+**`navigator.permissions` answers what `scripts.permissions` holds**, and
+`prompt` where it holds nothing, as a browser does before it has asked; a name
+it does not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
+`TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
 **A drawing's geometry is worked out from its attributes.** No box stands for
@@ -2031,6 +2036,61 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
+
+### The clipboard
+
+```js
+const clipboard = useHtmlClipboard();
+const permissions = useMemo(() => myPermissionPrompts(), []);
+
+<Html source={source} scripts={{ clipboard, permissions }} />;
+```
+
+**The user's own copy and paste need no seam.** Ctrl+C on a selection and
+Ctrl+C, Ctrl+X and Ctrl+V in a text field are core's, on Cmd on a Mac, and work
+in a bare `<Html scripts>`, where a page hears `copy`, `cut` and `paste` with
+empty data and may cancel them. What `scripts.clipboard` adds is the page's
+part: what a `copy` listener wrote goes on the clipboard, what is on the
+clipboard is in a `paste`'s `clipboardData`, a paste no listener cancels is
+made by the page's realm, as `insertFromPaste` with a `beforeinput` and an
+`input`, into the field or at the selection of the editing host, and
+`navigator.clipboard` is there, in a secure context. Without one a page reaches
+no clipboard, and `'clipboard' in navigator` says so.
+
+A chord is told after its `keydown`, if that was not cancelled, at the field or
+the editing host that has the focus, else at what the selection starts in,
+else at the body. A `paste` waits for the read, since an event is told at once
+and a read of the clipboard is not, so it comes a turn after its key. Its
+`clipboardData` is read-only and a `copy`'s is read/write, and each is
+protected once its event is over: a page keeps no `DataTransfer` to read what
+was pasted later. What is not text on the clipboard reaches a paste as a file,
+so a picture is `clipboardData.files[0]`, `image.png`. A paste into a field or
+a host is the text alone, and what `text/html` means for the page is a
+listener's to decide.
+
+`navigator.clipboard` has its gates here rather than in the seam. A write needs
+a press or a key behind it that is recent, or `clipboard-write` granted, and
+never one denied. A read needs `clipboard-read` granted, or, where it is
+`prompt`, a press or a key and `scripts.permissions.request` saying so: a page
+that reads the clipboard after any click reads what was copied in every other
+application. With no `permissions` nothing can be granted, so a page cannot
+read the clipboard at all, though a `paste` the user made still reaches it. A
+frame of another origin has neither without an `allow` naming the feature. What
+a read hands back of `text/html` has what would run, or load, taken out, and
+`read({ unsanitized: ['text/html'] })` asks for it as it is. A write takes
+`text/plain`, `text/html`, `text/uri-list`, `image/png`, `image/svg+xml` and
+`web ` types, one `ClipboardItem` at a time, as Chrome does, and a refusal is
+the page's own `NotAllowedError`, whatever the host threw.
+
+`HtmlClipboard` is `read()` and `write(data)`, each a map of MIME type to text
+or bytes. `useHtmlClipboard()` is core's `useClipboard()`, on every backend:
+X11's selections, NSPasteboard and the Windows clipboard. It holds in a
+`<Frame>` pane as well, since NSPasteboard asks nothing of the process's
+NSApplication. `memoryClipboard()` is one that reaches no machine, for a test.
+
+Not here: `clipboardchange`, a paste whose `text/html` keeps its structure
+without a listener's help, and `navigator.clipboard` behaving as a detached
+frame's own where the frame has no realm of its own.
 
 ### Cookies and storage
 

@@ -189,6 +189,9 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
+import { clipboardOfWire, clipboardWire } from '../clipboard.js';
+import type { HtmlClipboard } from '../clipboard.js';
+import type { HtmlPermissions } from '../permissions.js';
 import * as ntk from 'react-x11/ntk';
 import { decodeGif } from '../gif.js';
 import { encodePng } from './png.js';
@@ -387,6 +390,9 @@ export interface HandleInternals {
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** What is selected in the document, as it is drawn: what a copy of it
+   *  puts on the clipboard. */
+  selectedText(): string;
   /** `document.write` from the script the parse waits at, into the input
    *  stream after it (`HtmlViewNode.parserWrite`): false where the parse
    *  waits at no such script. */
@@ -663,6 +669,12 @@ export interface HostSeams {
   /** What a page's `WebSocket`s are carried over (`HtmlScripts`'
    *  `webSocket`). Absent, every socket fails, as with no network. */
   webSocket?: HtmlWebSocket;
+  /** The clipboard a page's `copy`, `paste` and `navigator.clipboard` reach
+   *  (`HtmlScripts`' `clipboard`). Absent, they reach none. */
+  clipboard?: HtmlClipboard;
+  /** What a page has been allowed (`HtmlScripts`' `permissions`). Absent,
+   *  nothing has, and asking refuses. */
+  permissions?: HtmlPermissions;
   /** What a page's `RTCPeerConnection`s are carried over (`HtmlScripts`'
    *  `webRTC`). Absent, no stack: an operation that needs one rejects. */
   webRTC?: HtmlWebRTC;
@@ -1000,6 +1012,11 @@ function base64Of(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     'base64',
   );
+}
+
+/** Bytes from what crossed as base64. */
+function bytesOf(text: string): Uint8Array {
+  return Buffer.from(text, 'base64');
 }
 
 /** The methods a request may have and be a simple one (Fetch 2.2.1). */
@@ -1933,6 +1950,7 @@ export class DomHost {
       metaKey: event.metaKey,
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
+      clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
     });
     return answer !== false;
   }
@@ -3823,6 +3841,8 @@ export class DomHost {
             ])
           : '';
       }
+      case 'selectedText':
+        return this._seams.handle.selectedText?.() ?? null;
       // the page's selection, drawn as the reader's is
       case 'setDocumentSelection': {
         const points = text(a)
@@ -5051,6 +5071,16 @@ export class DomHost {
         return crypto.randomUUID();
       case 'secureContext':
         return this._secureContext();
+      case 'clipboard':
+        return this._clipboardOp(text(a), b, text(c));
+      case 'permission':
+        return (
+          this._seams.permissions?.state(text(a), this._origin()) ?? 'prompt'
+        );
+      case 'featureAllowed':
+        return this._featureAllowed(text(a));
+      case 'fullyActive':
+        return this._fullyActive();
       // a page's `crypto.subtle` (`subtle.ts`): what it asks the runtime,
       // whose errors are told, and what opens a key
       case 'crypto':
@@ -6867,6 +6897,80 @@ export class DomHost {
       trustworthy(this._s.top ?? this.url) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
+  }
+
+  /**
+   * A page's clipboard: whether the host handed one, a read and a write of
+   * it, and a request for what guards the read. The answer comes as
+   * `__clipboard`, under the number the page asked with: a write told as 0
+   * is a `copy`'s, whose page has nothing waiting on it.
+   */
+  private _clipboardOp(
+    what: string,
+    id: Primitive,
+    payload: string,
+  ): Primitive {
+    const seam = this._seams.clipboard;
+    if (what === 'on') return seam !== undefined;
+    const tell = (ok: boolean, value?: string): void => {
+      if (!this._disposed && id) {
+        this.entries?.call('__clipboard', [id, ok, value ?? null]);
+      }
+    };
+    if (what === 'request') {
+      const asked = this._seams.permissions?.request(payload, this._origin());
+      if (!asked) tell(true, 'denied');
+      else {
+        asked.then(
+          (state) => tell(true, state),
+          () => tell(true, 'denied'),
+        );
+      }
+      return null;
+    }
+    if (!seam) {
+      tell(false, 'There is no clipboard.');
+      return null;
+    }
+    const done =
+      what === 'read'
+        ? seam
+            .read()
+            .then((data) => JSON.stringify(clipboardWire(data, base64Of)))
+        : seam
+            .write(clipboardOfWire(JSON.parse(payload), bytesOf))
+            .then(() => undefined);
+    done.then(
+      (value) => tell(true, value),
+      () =>
+        tell(
+          false,
+          what === 'read'
+            ? 'Read permission denied.'
+            : 'Write permission denied.',
+        ),
+    );
+    return null;
+  }
+
+  /** Whether a feature whose default allowlist is the document's own origin
+   *  reaches this document (Permissions Policy 8.8): every document of the
+   *  top's origin, and any other whose frame names it in `allow`. */
+  private _featureAllowed(feature: string): boolean {
+    const frame = this._frameOf.get(this.document);
+    if (!frame) return true;
+    const top = this._s.top;
+    if (top && originOf(top) === this._origin()) return true;
+    return (frame.attribs.allow ?? '')
+      .split(';')
+      .some((entry) => entry.trim().split(/\s+/)[0] === feature);
+  }
+
+  /** Whether the document is still where a user can see it: not one whose
+   *  frame has gone. */
+  private _fullyActive(): boolean {
+    const frame = this._frameOf.get(this.document);
+    return !frame || this._inDocument(frame);
   }
 
   private _crypto: PageCrypto | null = null;

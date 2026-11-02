@@ -61,6 +61,7 @@ import type {
   ScriptRequest,
 } from './node.js';
 import {
+  clipboardChord,
   documentPoint,
   domButton,
   domButtons,
@@ -91,6 +92,7 @@ import { useSounds } from './sounds.js';
 import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
+import type { HtmlClipboardData } from './clipboard.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
@@ -174,6 +176,9 @@ export type {
   WebTransportStreamStats,
 } from './transport.js';
 export { NO_WEBSOCKET } from './socket.js';
+export { memoryClipboard, useHtmlClipboard } from './clipboard.js';
+export type { HtmlClipboard, HtmlClipboardData } from './clipboard.js';
+export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export type {
   HtmlWebSocket,
   WebSocketConnectRequest,
@@ -1170,6 +1175,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     forms,
     stops,
     embedded,
+    props._readClipboard,
   );
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
@@ -1473,6 +1479,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
       transitionEnd: () => nodeRef.current?.transitionEnd(),
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
+      selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
       setCaret: (point) => nodeRef.current?.setCaret(point),
       movedPoint: (node, offset, granularity, back) =>
@@ -1729,6 +1736,7 @@ function useDocumentEvents(
   forms: ReturnType<typeof useForms>,
   stops: ReturnType<typeof useFocusStops>,
   embedded: Embedded,
+  readClipboard?: () => Promise<HtmlClipboardData>,
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
@@ -1786,6 +1794,26 @@ function useDocumentEvents(
       if (!go) ev.preventDefault();
     };
   const keyDown = key('keydown');
+  /** The key just told, where it is the clipboard's chord and the page let
+   *  it be: told as what it is, before core's own copy, cut or paste. An
+   *  event is told at once and a read of the clipboard is not, so with a
+   *  clipboard to read, a paste stops core's and is the page's to make. */
+  const clipboardKey = (ev: X11KeyboardEvent<DrawnNode>) => {
+    if (!onDomEvent || ev.defaultPrevented || ev.composing) return;
+    if (embedded.contains(ev.target as DrawnNode)) return;
+    const type = clipboardChord(ev, view.current?.app);
+    const target = type && keyedAt(ev.target as DrawnNode);
+    if (!type || !target) return;
+    if (type === 'paste' && readClipboard) {
+      ev.preventDefault();
+      const told = (clipboard: HtmlClipboardData) => {
+        if (view.current) fire('paste', target, { clipboard });
+      };
+      readClipboard().then(told, () => told({}));
+      return;
+    }
+    if (!fire(type, target, modifiersOf(ev))) ev.preventDefault();
+  };
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
       forms.userInput('pointer');
@@ -1831,6 +1859,7 @@ function useDocumentEvents(
         forms.userInput('keyboard');
       }
       keyDown(ev);
+      clipboardKey(ev);
     },
     onKeyUpCapture: key('keyup'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {

@@ -110,6 +110,7 @@ import {
   schemeOf,
   sniffCharset,
   threadTransport,
+  useHtmlClipboard,
   useHtmlHandle,
   videoSource,
   gpuWebGL,
@@ -660,6 +661,7 @@ export default function Page(props: PageProps): ReactElement {
   // what a secondary press was on, which the context menu is about
   const [menuAt, setMenuAt] = useState<MenuTarget | null>(null);
   const clipboard = useClipboard();
+  const pageClipboard = useHtmlClipboard();
   // the tab's developer tools: what they inspect, and what its pages wrote
   // to their console, kept from the start
   const [inspection] = useState(() => new Inspection());
@@ -1268,6 +1270,8 @@ export default function Page(props: PageProps): ReactElement {
         connect: (request, events) =>
           network.webSockets(withoutHash(view.url)).connect(request, events),
       },
+      // what a page puts on the machine's clipboard and reads off it
+      clipboard: pageClipboard,
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
       // and its WebGL, on the GPU where x11-dri can reach one
