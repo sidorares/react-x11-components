@@ -1225,10 +1225,14 @@ function renderControl(
         {
           style: {
             flexDirection: 'row',
-            alignItems: 'stretch',
+            alignItems: 'center',
             width: '100%',
             height: '100%',
           },
+          // all of it is the button: a page lays a file input over what it
+          // draws, transparent, and means all of it, and a native button is
+          // no taller than its bezel
+          onClick: disabled ? undefined : choose,
         },
         h(Button, {
           key: 'choose',
@@ -1236,28 +1240,26 @@ function renderControl(
           disabled,
           ...order,
           ...(ownFont && { native: false }),
-          onPress: choose,
+          // the keyboard's, and a press on it, which goes no further
+          onPress: (ev) => {
+            ev.stopPropagation?.();
+            choose(ev);
+          },
         }),
-        // the rest of the box is the button too: a page lays a file input
-        // over what it draws, transparent, and means all of it
         hx(
-          'box',
+          'text',
           {
             key: 'chosen',
             style: {
               flexGrow: 1,
               flexShrink: 1,
               flexBasis: 0,
-              justifyContent: 'center',
               paddingLeft: 6,
+              textWrap: 'nowrap',
+              textOverflow: 'ellipsis',
             },
-            onClick: disabled ? undefined : choose,
           },
-          hx(
-            'text',
-            { style: { textWrap: 'nowrap', textOverflow: 'ellipsis' } },
-            filesLabel(el, several),
-          ),
+          filesLabel(el, several),
         ),
       );
       break;

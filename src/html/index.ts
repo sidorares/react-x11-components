@@ -1727,6 +1727,7 @@ const CONTROLS = new Set(['button', 'input', 'select', 'textarea']);
 /** What a press on a control's widget ticks or presses: its click is the
  *  widget's to tell, after the box changes (`widgets.ts`). */
 const CLICKS_ITSELF = new Set([
+  'file',
   'checkbox',
   'radio',
   'submit',
