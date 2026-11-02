@@ -2151,6 +2151,17 @@ class Handler extends DomHandler {
    *  takeAppended`). */
   recording: ParseRecord | null = null;
 
+  /** How many `<p>`s are open, which saves every block's start tag a walk
+   *  of the stack to find there is none to close. */
+  paragraphs = 0;
+
+  /** HTML's form element pointer (13.2.4.4): the `<form>` the parser met
+   *  last, which outlives its end on the stack, and until its own end tag
+   *  turns another away and owns the controls that come. */
+  form: Element | null = null;
+  /** Whether the `<form>` being opened is that form. */
+  pointing = false;
+
   /** Whether an element is open: its end tag not met yet. */
   isOpen(el: Element): boolean {
     return this.tagStack.includes(el);
@@ -2201,6 +2212,7 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    if (name === 'p') this.paragraphs += 1;
     if (name !== 'html') this._impliedHtml();
     if (this._ignored(name, attribs)) return;
     this._closeImpliedHead(name);
@@ -2238,6 +2250,17 @@ class Handler extends DomHandler {
     if (attribs.customelementregistry !== undefined) {
       NULL_REGISTRY.add(opened);
       nullRegistriesParsed = true;
+    }
+    if (this.pointing && name === 'form') {
+      this.pointing = false;
+      this.form = opened;
+    } else if (
+      this.form &&
+      FORM_CONTROLS.has(name) &&
+      !isForeign(opened) &&
+      !this.tagStack.includes(this.form)
+    ) {
+      PARSED_FORMS.set(opened, this.form);
     }
     if (name === 'head') this._headSeen = true;
     if (name === 'html' && !this._html && opened.parent === this.root) {
@@ -2480,7 +2503,14 @@ class Handler extends DomHandler {
     }
   }
 
-  override onclosetag(): void {
+  /** Take what stands `fromTop` under what is open off the stack and leave
+   *  all it holds open, which is the tree staying as it is. */
+  removeOpen(fromTop: number): void {
+    this.tagStack.splice(this.tagStack.length - 1 - fromTop, 1);
+  }
+
+  override onclosetag(name?: string): void {
+    if (name === 'p') this.paragraphs -= 1;
     this._afterPre = false;
     // a close htmlparser2 makes is of what it opened, which the implied
     // head is not: it closes with it
@@ -2611,13 +2641,13 @@ function createParser(declarative = true): {
 interface ParserInternals {
   readonly stack: string[];
   readonly foreignContext: number[];
+  readonly cbs: Handler;
   attribs: Record<string, string> | null;
   tagname: string;
   openTagStart: number;
   startIndex: number;
   endIndex: number;
   readTagName(start: number, endIndex: number): string;
-  emitOpenTag(name: string): void;
   endOpenTag(isImplied: boolean): void;
   closeCurrentTag(isOpenImplied: boolean): void;
   popElement(implied: boolean): void;
@@ -2637,6 +2667,222 @@ const TABLE_END_TAGS = new Set([
   'th',
   'tr',
 ]);
+
+/** A table's parts, and the part each holds as a child, or by what it opens
+ *  round it (`_impliedBy`): a cell and a caption hold none of them, and close
+ *  for any. */
+const TABLE_PARTS = new Set([...TABLE_END_TAGS, 'colgroup', 'template']);
+const IN_A_ROW = new Set(['td', 'th']);
+const IN_A_SECTION = new Set(['td', 'th', 'tr']);
+const HOLDS = new Map([
+  [
+    'table',
+    new Set([...IN_A_SECTION, ...SECTIONS, 'caption', 'col', 'colgroup']),
+  ],
+  ['colgroup', new Set(['col'])],
+  ['tbody', IN_A_SECTION],
+  ['tfoot', IN_A_SECTION],
+  ['thead', IN_A_SECTION],
+  ['tr', IN_A_ROW],
+]);
+
+/** Where the parser stands in a table and not in a cell or a caption, where
+ *  HTML takes what is out of place out of the table (13.2.6.4.9). */
+const BETWEEN_PARTS = new Set([...SECTIONS, 'colgroup', 'table', 'tr']);
+
+/** The elements whose end tag goes by whether they are in scope, and whose
+ *  start tag ends a `<p>` (HTML 13.2.6.4.7, "in body"). */
+const BLOCKS = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'center',
+  'details',
+  'dialog',
+  'dir',
+  'div',
+  'dl',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'header',
+  'hgroup',
+  'listing',
+  'main',
+  'menu',
+  'nav',
+  'ol',
+  'pre',
+  'search',
+  'section',
+  'summary',
+  'ul',
+]);
+
+const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const DESCRIPTIONS = new Set(['dd', 'dt']);
+
+/** The start tags that end a `<p>` as they open. A `<table>` does in a
+ *  document with no quirks, and `<Html>` has no quirks mode. */
+const ENDS_A_PARAGRAPH = new Set([
+  ...BLOCKS,
+  ...DESCRIPTIONS,
+  ...HEADINGS,
+  'form',
+  'hr',
+  'li',
+  'p',
+  'plaintext',
+  'table',
+  'xmp',
+]);
+
+/** The elements a list keeps for what comes after them, and brings back
+ *  where one is closed from under it (13.2.4.3). Nothing here keeps that list,
+ *  so nothing a start tag implies closes one. */
+const FORMATTING = new Set([
+  'a',
+  'b',
+  'big',
+  'code',
+  'em',
+  'font',
+  'i',
+  'nobr',
+  's',
+  'small',
+  'strike',
+  'strong',
+  'tt',
+  'u',
+]);
+
+/** HTML's scopes (13.2.4.2), but for `html`: there is one, under everything,
+ *  and what stands for an ignored one on the stack is no stop. */
+const SCOPE = new Set([
+  'applet',
+  'caption',
+  'marquee',
+  'object',
+  'select',
+  'table',
+  'td',
+  'template',
+  'th',
+]);
+const LIST_SCOPE = new Set([...SCOPE, 'ol', 'ul']);
+const BUTTON_SCOPE = new Set([...SCOPE, 'button']);
+const TABLE_SCOPE = new Set(['table', 'template']);
+const NO_SCOPE = new Set<string>();
+
+/** HTML's special category (13.2.4.2), which "any other end tag" stops at,
+ *  less what cannot be open and what stands for an ignored tag. */
+const SPECIAL = new Set([
+  ...BLOCKS,
+  ...DESCRIPTIONS,
+  ...HEADINGS,
+  ...TABLE_PARTS,
+  ...SCOPE,
+  'button',
+  'form',
+  'frameset',
+  'iframe',
+  'li',
+  'noembed',
+  'noframes',
+  'noscript',
+  'p',
+  'plaintext',
+  'select',
+  'xmp',
+]);
+
+/** What a start tag that closes something implied looks past (`_implied`).
+ *  An `<li>` closes its like past anything but what is special, and of what
+ *  is special, past these three. */
+const SPECIAL_TO_AN_ITEM = new Set(
+  [...SPECIAL, ...FORMATTING].filter(
+    (name) => name !== 'address' && name !== 'div' && name !== 'p',
+  ),
+);
+const TO_A_PARAGRAPH = new Set([...BUTTON_SCOPE, ...FORMATTING]);
+const IMPLYING = new Set([...SCOPE, ...FORMATTING]);
+
+/** The end tags HTML takes by a default scope, as a `<div>`'s: past what
+ *  "any other end tag" stops at. A formatting element's takes that much and
+ *  its adoption agency the rest (`onclosetag`). */
+const ENDS_IN_SCOPE = new Set([
+  ...BLOCKS,
+  ...DESCRIPTIONS,
+  ...HEADINGS,
+  ...FORMATTING,
+  'applet',
+  'body',
+  'button',
+  'form',
+  'html',
+  'marquee',
+  'object',
+  'select',
+]);
+
+/** What "generate implied end tags" pops from the top of the stack. */
+const ENDS_IMPLIED = new Set([
+  'dd',
+  'dt',
+  'li',
+  'optgroup',
+  'option',
+  'p',
+  'rb',
+  'rp',
+  'rt',
+  'rtc',
+]);
+
+/** The start tags with something to do before they open (`_implied`). */
+const IMPLIES = new Set([
+  ...DESCRIPTIONS,
+  ...HEADINGS,
+  ...TABLE_END_TAGS,
+  'a',
+  'button',
+  'col',
+  'colgroup',
+  'form',
+  'hr',
+  'input',
+  'li',
+  'optgroup',
+  'option',
+  'rb',
+  'rp',
+  'rt',
+  'rtc',
+  'select',
+]);
+
+/** The elements a form owns (HTML 4.10.18.1, "listed"). */
+const FORM_CONTROLS = new Set([
+  'button',
+  'fieldset',
+  'input',
+  'object',
+  'output',
+  'select',
+  'textarea',
+]);
+
+/** The controls HTML's parser gave the `<form>` it met last, which they are
+ *  not in: `<table><form><tr><td><input>` closes the form as it opens. */
+const PARSED_FORMS = new WeakMap<Element, Element>();
+
+/** The form the parser gave a control that is in none. */
+export function parsedForm(el: Element): Element | null {
+  return PARSED_FORMS.get(el) ?? null;
+}
 
 /** htmlparser2's foreign contexts, which it does not export. */
 const NOT_FOREIGN = 0;
@@ -2731,12 +2977,16 @@ const BREAKS_OUT = new Set([
 ]);
 
 /**
- * htmlparser2's parser, with what HTML's does in foreign content: a tree
- * builder goes by the language an element is in, where htmlparser2 goes by its
- * name. Each difference is at its own method: what a start tag opens
- * (`_openForeign`), what its attributes decide (`_tagEnds`), what ends foreign
- * content (`_breakOut`) and what an end tag closes (`_closedBy`). HTML content
- * is read as htmlparser2 reads it.
+ * htmlparser2's tokenizer, with HTML's tree construction where htmlparser2's
+ * parser has a table of its own: a tree builder goes by the language an element
+ * is in and the stack of open elements, where htmlparser2 goes by its name and
+ * the top of the stack. Each is at its own method: what a start tag closes and
+ * whether it opens anything (`_implied`, `_tablePart`), what opens in SVG or
+ * MathML (`_openForeign`), what its attributes decide (`_tagEnds`), what ends
+ * foreign content (`_breakOut`) and what an end tag closes (`_closedBy`). The
+ * adoption agency, the list it keeps and foster parenting are not here: nothing
+ * a start tag implies closes a formatting element, and what a table holds out
+ * of place stays in it.
  *
  * It decides a `/>` from the context its tag was read in, as HTML's does.
  * htmlparser2 decides from the context the tag opens, and an integration point
@@ -2751,6 +3001,12 @@ class DocumentParser extends Parser {
   private _tagDecides = false;
   /** What a fragment is read in (`readIn`). */
   private _context = NOT_FOREIGN;
+  /** What it is read as the content of, where that is HTML's: the part of a
+   *  table a row is read in, or a `<template>`, which holds any. */
+  private _holder = '';
+  /** Whether the `<form>` being opened closes as it opens, as one between a
+   *  table's parts does. */
+  private _closesAsItOpens = false;
 
   override isInForeignContext(): boolean {
     return this._acknowledging || super.isInForeignContext();
@@ -2758,13 +3014,19 @@ class DocumentParser extends Parser {
 
   /** A name is void in HTML alone: `<svg><input><g>` puts the `<g>` in it. */
   protected override isVoidElement(name: string): boolean {
+    if (this._closesAsItOpens) return name === 'form';
     return super.isVoidElement(name) && !this.isInForeignContext();
   }
 
   /** Read what comes as what an element of `namespace` holds, as `innerHTML`
    *  reads it (HTML 13.4): in SVG a `<path/>` closes itself and a `clipPath`
-   *  keeps its capital, and read as HTML `<path/><path/>` nested. */
-  readIn(namespace: string | undefined): void {
+   *  keeps its capital, and read as HTML `<path/><path/>` nested. `holder` is
+   *  the element's name where it is HTML's, and `form` the form around it. */
+  readIn(
+    namespace: string | undefined,
+    holder: string,
+    form: Element | null,
+  ): void {
     const self = this as unknown as ParserInternals;
     this._context =
       namespace === SVG_NS
@@ -2773,6 +3035,8 @@ class DocumentParser extends Parser {
           ? IN_MATHML
           : NOT_FOREIGN;
     self.foreignContext[0] = this._context;
+    this._holder = holder;
+    self.cbs.form = form;
   }
 
   override onopentagname(start: number, endIndex: number): void {
@@ -2804,8 +3068,241 @@ class DocumentParser extends Parser {
         (name === 'mglyph' || name === 'malignmark') &&
         MATHML_POINTS.has(self.stack[0]) &&
         foreignContext[1] === IN_MATHML;
-      this._impliedBy(name);
-      self.emitOpenTag(name);
+      this._open(name);
+    }
+  }
+
+  /**
+   * What HTML's parser does with a start tag in HTML content, where
+   * htmlparser2's keeps a table of what each closes and asks only the top of
+   * the stack. A tag with nothing to do pays two lookups.
+   */
+  private _open(name: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
+    // a head ends at the first thing that is not head content
+    if (
+      stack[0] === 'head' &&
+      !HEAD_CONTENT.has(name) &&
+      name !== 'head' &&
+      name !== 'html'
+    ) {
+      self.popElement(true);
+    }
+    if (IMPLIES.has(name) && !this._implied(name)) return;
+    if (self.cbs.paragraphs > 0 && ENDS_A_PARAGRAPH.has(name)) {
+      this._endParagraph();
+    }
+    this._impliedBy(name);
+    this._push(name);
+  }
+
+  /** An element on the stack, as htmlparser2's parser puts one, with no table
+   *  of what that closes. Its frame goes by the name, as `popElement` does. */
+  private _push(name: string): void {
+    const self = this as unknown as ParserInternals;
+    self.openTagStart = self.startIndex;
+    self.tagname = name;
+    if (!this.isVoidElement(name)) {
+      self.stack.unshift(name);
+      if (FRAMED.has(name)) {
+        self.foreignContext.unshift(
+          name === 'svg' ? IN_SVG : name === 'math' ? IN_MATHML : NOT_FOREIGN,
+        );
+      }
+    }
+    self.attribs = {};
+  }
+
+  /** The element at `at` in the stack closed, and what stands above it. */
+  private _closeTo(at: number): void {
+    const self = this as unknown as ParserInternals;
+    for (let k = 0; k <= at; k++) self.popElement(true);
+  }
+
+  /** "Close a p element", where one is in button scope. */
+  private _endParagraph(): void {
+    const at = this._closedBy('p', TO_A_PARAGRAPH);
+    if (at >= 0) this._closeTo(at);
+  }
+
+  /** "Generate implied end tags", but for `except`. */
+  private _impliedEnds(except?: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
+    while (ENDS_IMPLIED.has(stack[0]) && stack[0] !== except) {
+      self.popElement(true);
+    }
+  }
+
+  /** Where one of `name` stands in scope, or -1, which most documents answer
+   *  without a walk: a tag asks it at each control. A foreign one is none of
+   *  these, as a start tag read in an integration point is HTML. */
+  private _inScope(name: string): number {
+    const { stack } = this as unknown as ParserInternals;
+    return stack.includes(name)
+      ? this._closedBy(name, IMPLYING, null, true)
+      : -1;
+  }
+
+  /**
+   * What a start tag closes before it opens (HTML 13.2.6.4.7, "in body"), and
+   * false where it opens nothing. Nothing here closes a formatting element, as
+   * a stop in what each walk looks past: HTML brings one back around what comes
+   * after it, from a list nothing here keeps, and without that a `<p><a><div>`
+   * would have its block out of the link it is in.
+   */
+  private _implied(name: string): boolean {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
+    switch (name) {
+      case 'a':
+        if (stack[0] === 'a') self.popElement(true);
+        return true;
+      case 'li': {
+        const at = this._closedBy('li', SPECIAL_TO_AN_ITEM);
+        if (at >= 0) this._closeTo(at);
+        return true;
+      }
+      case 'dd':
+      case 'dt': {
+        const at = this._closedBy(name, SPECIAL_TO_AN_ITEM, DESCRIPTIONS);
+        if (at >= 0) this._closeTo(at);
+        return true;
+      }
+      case 'h1':
+      case 'h2':
+      case 'h3':
+      case 'h4':
+      case 'h5':
+      case 'h6':
+        if (self.cbs.paragraphs > 0) this._endParagraph();
+        if (HEADINGS.has(stack[0])) self.popElement(true);
+        return true;
+      case 'button': {
+        const at = this._inScope('button');
+        if (at >= 0) this._closeTo(at);
+        return true;
+      }
+      case 'input': {
+        const at = this._inScope('select');
+        if (at >= 0) this._closeTo(at);
+        return true;
+      }
+      case 'select': {
+        // a second one ends the first, and is no element
+        const at = this._inScope('select');
+        if (at >= 0) this._closeTo(at);
+        return at < 0 && this._holder !== 'select';
+      }
+      case 'option':
+        if (this._inScope('select') >= 0) this._impliedEnds('optgroup');
+        else if (stack[0] === 'option') self.popElement(true);
+        return true;
+      case 'optgroup':
+        if (this._inScope('select') >= 0) this._impliedEnds();
+        else if (stack[0] === 'option') self.popElement(true);
+        return true;
+      case 'hr':
+        if (this._inScope('select') >= 0) this._impliedEnds();
+        return true;
+      case 'rb':
+      case 'rtc':
+        if (this._inScope('ruby') >= 0) this._impliedEnds();
+        return true;
+      case 'rp':
+      case 'rt':
+        if (this._inScope('ruby') >= 0) this._impliedEnds('rtc');
+        return true;
+      case 'form':
+        return this._openForm();
+      case 'table':
+        return this._openTable();
+      default:
+        return this._tablePart(name);
+    }
+  }
+
+  /** A `<form>` is turned away while the form pointer holds one, outside a
+   *  `<template>`, and between a table's parts it closes as it opens, which
+   *  leaves the table as it was and the controls that come to the pointer. */
+  private _openForm(): boolean {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    const template = stack.includes('template');
+    if (cbs.form && !template) return false;
+    cbs.pointing = !template;
+    this._closesAsItOpens = BETWEEN_PARTS.has(stack[0] ?? this._holder);
+    return true;
+  }
+
+  /** The end of a form, by the pointer: the form leaves the stack and what it
+   *  holds stays open, so that `<form><div></form>x` has the `x` in the
+   *  `<div>` (13.2.6.4.7). A second `<form>`, which was turned away, has its
+   *  end tag end none of this. */
+  private _closeForm(at: number): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    if (stack.includes('template')) {
+      if (at >= 0) this._closeTo(at);
+      return;
+    }
+    const pointed = cbs.form !== null;
+    cbs.form = null;
+    if (!pointed || at < 0) return;
+    this._impliedEnds();
+    this._leaveOpen(this._closedBy('form', SCOPE));
+  }
+
+  /** The element at `at` in the stack off it, and what it holds still open. */
+  private _leaveOpen(at: number): void {
+    const self = this as unknown as ParserInternals;
+    if (at === 0) {
+      self.popElement(false);
+      return;
+    }
+    self.stack.splice(at, 1);
+    self.cbs.removeOpen(at);
+  }
+
+  /** The nearest of a table's parts open, or -1. */
+  private _nearestPart(): number {
+    return this._closedBy('', NO_SCOPE, TABLE_PARTS);
+  }
+
+  /** A `<table>` between a table's parts ends that table, which has to be
+   *  there to end: `innerHTML` on a `<table>` has none on the stack. */
+  private _openTable(): boolean {
+    const { stack } = this as unknown as ParserInternals;
+    const at = this._nearestPart();
+    if (!BETWEEN_PARTS.has(at < 0 ? this._holder : stack[at])) return true;
+    const table = this._closedBy('table', TABLE_SCOPE);
+    if (table >= 0) this._closeTo(table);
+    return table >= 0;
+  }
+
+  /**
+   * A table's part, which HTML's modes for a table place (13.2.6.4.9 to
+   * 13.2.6.4.15). Those modes say what is open, and the stack says the same:
+   * from the nearest part open, each that does not hold this one closes, with
+   * all that stands above it, until one does. In a cell or a caption that
+   * closes them, and past that none has anything open: a `<td>` in a `<div>`
+   * outside a table is ignored, and a row in a row's `innerHTML` as well. A
+   * `<template>` holds whichever comes first, which says what it is a template
+   * of.
+   */
+  private _tablePart(name: string): boolean {
+    const { stack } = this as unknown as ParserInternals;
+    for (;;) {
+      const at = this._nearestPart();
+      const part = at < 0 ? this._holder : stack[at];
+      if (part === 'template') return at === 0 || !stack.length;
+      if (HOLDS.get(part)?.has(name)) {
+        this._closeTo((at < 0 ? stack.length : at) - 1);
+        return true;
+      }
+      if (at < 0) return false;
+      this._closeTo(at);
     }
   }
 
@@ -2867,27 +3364,40 @@ class DocumentParser extends Parser {
   override onopentagend(endIndex: number): void {
     if (this._tagDecides) this._tagEnds();
     super.onopentagend(endIndex);
+    this._closesAsItOpens = false;
   }
 
   /**
-   * HTML's end tag where a foreign element is open (13.2.6.5, 13.2.6.4.7).
+   * HTML's end tag (13.2.6.4.7, and 13.2.6.5 where a foreign element is open).
    * htmlparser2 closes the nearest element of the name, whatever stands
-   * between, so a `</svg>` after an inner drawing ended closed the outer one
-   * from inside its `<foreignObject>`. A `</p>` and a `</br>` end foreign
-   * content, as the start tags in `BREAKS_OUT` do. Where no foreign element
-   * is open nothing changes, and an end tag that closes what is current, as
-   * nearly all do, costs what htmlparser2's would.
+   * between, so a `</span>` closed a block it was never in and the block's own
+   * end tag an outer one, and a `</svg>` after an inner drawing ended closed
+   * the outer one from inside its `<foreignObject>`. A `</p>` and a `</br>` end
+   * foreign content, as the start tags in `BREAKS_OUT` do. An end tag that
+   * closes what is current, as nearly all do, costs what htmlparser2's would.
    */
   override onclosetag(start: number, endIndex: number): void {
     const self = this as unknown as ParserInternals;
-    if (
-      self.foreignContext.length === 1 &&
-      self.foreignContext[0] === NOT_FOREIGN
-    ) {
-      super.onclosetag(start, endIndex);
-      return;
-    }
     const name = self.readTagName(start, endIndex);
+    self.endIndex = endIndex;
+    if (
+      self.stack[0] === name &&
+      name !== 'form' &&
+      name !== 'body' &&
+      name !== 'html'
+    ) {
+      self.popElement(false);
+      self.startIndex = endIndex + 1;
+    } else {
+      this._endTag(name, start, endIndex);
+    }
+  }
+
+  /** An end tag that closes something other than what is current, or has a
+   *  rule of its own. */
+  private _endTag(name: string, start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
     if ((name === 'p' || name === 'br') && this.isInForeignContext()) {
       this._breakOut();
     }
@@ -2895,35 +3405,87 @@ class DocumentParser extends Parser {
       super.onclosetag(start, endIndex);
       return;
     }
-    self.endIndex = endIndex;
-    const closes = this._closedBy(name);
-    if (closes >= 0) {
-      for (let k = 0; k < closes; k++) self.popElement(true);
-      self.popElement(false);
-    } else if (name === 'p') {
-      self.emitOpenTag('p');
+    const closes = this._closedBy(
+      name,
+      this._stopsAt(name),
+      HEADINGS.has(name) ? HEADINGS : null,
+    );
+    if (
+      (name === 'form' || name === 'body' || name === 'html') &&
+      (closes < 0 || this._isHtml(closes))
+    ) {
+      // a body and a document end where the input does: what comes after
+      // them goes where the last of what they held left it
+      if (name === 'form') this._closeForm(closes);
+    } else if (closes >= 0) {
+      // the adoption agency would move a block out of this; it stays where
+      // it is, and open, as its end tag expects
+      if (
+        FORMATTING.has(name) &&
+        stack.slice(0, closes).some((el) => SPECIAL.has(el))
+      ) {
+        this._leaveOpen(closes);
+      } else {
+        for (let k = 0; k < closes; k++) self.popElement(true);
+        self.popElement(false);
+      }
+    } else if (name === 'p' && (stack[0] ?? this._holder) !== 'template') {
+      this._push('p');
       self.closeCurrentTag(true);
     }
     self.startIndex = endIndex + 1;
   }
 
+  /** What stops the end tag of `name`: its own scope, or, where it has no rule
+   *  of its own, what is special ("any other end tag"). */
+  private _stopsAt(name: string): ReadonlySet<string> {
+    if (TABLE_END_TAGS.has(name)) return TABLE_SCOPE;
+    if (name === 'p') return BUTTON_SCOPE;
+    if (name === 'li') return LIST_SCOPE;
+    if (name === 'template') return NO_SCOPE;
+    return ENDS_IN_SCOPE.has(name) ? SCOPE : SPECIAL;
+  }
+
+  /** Whether the element at `at` in the stack is HTML's: it stands in the
+   *  frame under its own, if it has one, and an `<svg>` or a `<math>` in any
+   *  frame is not. */
+  private _isHtml(at: number): boolean {
+    const { stack, foreignContext } = this as unknown as ParserInternals;
+    let frame = 0;
+    for (let k = 0; k <= at; k++) if (FRAMED.has(stack[k])) frame++;
+    const el = stack[at];
+    return (
+      foreignContext[frame] === NOT_FOREIGN && el !== 'svg' && el !== 'math'
+    );
+  }
+
   /**
-   * Where in the stack the end tag of `name` closes, or -1 where HTML's rules
-   * ignore it. From a foreign element it closes the nearest element of the
-   * name up to the first HTML one. From an HTML one, or from that first one,
-   * it is HTML's, which closes HTML elements alone and reaches nothing past a
-   * foreign element its scopes stop at, an `<annotation-xml>` whatever that
-   * holds, but for a table's own end tags, whose scope has none of them. An
-   * entry stands in the frame under its own, if it has one, and an `<svg>` or
-   * a `<math>` in any frame is no HTML element.
+   * Where in the stack `name`, or one of `kin`, is found for what a tag closes,
+   * or -1 where HTML's rules ignore it. From a foreign element it closes the
+   * nearest element of the name up to the first HTML one. From an HTML one, or
+   * from that first one, it is HTML's, which closes HTML elements alone and
+   * reaches nothing past `stops` or a foreign element its scopes stop at, an
+   * `<annotation-xml>` whatever that holds, but for what goes by a table's scope
+   * or by none, which have none of them. An entry stands in the frame under its
+   * own, if it has one, and an `<svg>` or a `<math>` in any frame is no HTML
+   * element. `html` is for a start tag (`_inScope`), since one read in an
+   * integration point is HTML, where an end tag read there is still foreign
+   * content's.
    */
-  private _closedBy(name: string): number {
+  private _closedBy(
+    name: string,
+    stops: ReadonlySet<string>,
+    kin: ReadonlySet<string> | null = null,
+    html = false,
+  ): number {
     const { stack, foreignContext } = this as unknown as ParserInternals;
     if (stack[0] === name) return 0;
+    if (foreignContext.length === 1 && foreignContext[0] === NOT_FOREIGN) {
+      return this._walked(name, stops, kin);
+    }
     const lower = name.toLowerCase();
-    const scoped = !TABLE_END_TAGS.has(name);
+    const scoped = stops !== TABLE_SCOPE && stops !== NO_SCOPE;
     let frame = 0;
-    let html = false;
     let stopped = false;
     for (let at = 0; at < stack.length; at++) {
       const el = stack[at].toLowerCase();
@@ -2932,7 +3494,8 @@ class DocumentParser extends Parser {
       if (language === NOT_FOREIGN && el !== 'svg' && el !== 'math') {
         if (stopped) return -1;
         html = true;
-        if (el === lower) return at;
+        if (el === lower || kin?.has(el)) return at;
+        if (stops.has(el)) return -1;
         continue;
       }
       if (!html && el === lower) return at;
@@ -2946,6 +3509,28 @@ class DocumentParser extends Parser {
       }
     }
     return -1;
+  }
+
+  /**
+   * `_closedBy` with nothing foreign open, which is nearly every walk there is.
+   * It looks as far as a document's tree goes (`MAX_DEPTH`), and past that takes
+   * the name for what it finds, as htmlparser2 did: a walk costs what is open, so
+   * thousands of unclosed elements and a tag for each that closes nothing would
+   * cost the square of them, and a parse that long holds the page up.
+   */
+  private _walked(
+    name: string,
+    stops: ReadonlySet<string>,
+    kin: ReadonlySet<string> | null,
+  ): number {
+    const { stack } = this as unknown as ParserInternals;
+    const end = Math.min(stack.length, MAX_DEPTH);
+    for (let at = 0; at < end; at++) {
+      const el = stack[at];
+      if (el === name || kin?.has(el)) return at;
+      if (stops.has(el)) return -1;
+    }
+    return kin ? -1 : stack.indexOf(name, end);
   }
 
   /**
@@ -2977,22 +3562,23 @@ class DocumentParser extends Parser {
   private _impliedBy(name: string): void {
     const self = this as unknown as ParserInternals;
     // asked only where a table is open, since every tag comes through here
-    if (!IN_TABLE.has(self.stack[0])) return;
+    if (!IN_TABLE.has(self.stack[0] ?? this._holder)) return;
     // a column group holds columns and nothing else
     if (self.stack[0] === 'colgroup' && name !== 'col') self.popElement(true);
     if (name !== 'tr' && name !== 'td' && name !== 'th' && name !== 'col') {
       return;
     }
+    const top = (): string => self.stack[0] ?? this._holder;
     const open = (tag: string): void => {
-      self.emitOpenTag(tag);
+      this._push(tag);
       self.endOpenTag(true);
     };
     if (name === 'col') {
-      if (self.stack[0] === 'table') open('colgroup');
+      if (top() === 'table') open('colgroup');
       return;
     }
-    if (self.stack[0] === 'table') open('tbody');
-    if (name !== 'tr' && SECTIONS.has(self.stack[0])) open('tr');
+    if (top() === 'table') open('tbody');
+    if (name !== 'tr' && SECTIONS.has(top())) open('tr');
   }
 
   override onselfclosingtag(endIndex: number): void {
@@ -3002,6 +3588,7 @@ class DocumentParser extends Parser {
       super.onselfclosingtag(endIndex);
     } finally {
       this._acknowledging = false;
+      this._closesAsItOpens = false;
     }
   }
 }
@@ -3094,7 +3681,15 @@ export function parseFragment(
   if (context) {
     // hung off it while it is read, for `namespaceIn` to go on up
     handler.root.parent = context;
-    parser.readIn(namespaceIn(context));
+    const namespace = namespaceIn(context);
+    parser.readIn(
+      namespace,
+      namespace === undefined ? context.name : '',
+      formAround(context),
+    );
+  } else {
+    // nothing says what it is the content of, so it is a `<template>`'s
+    parser.readIn(undefined, 'template', null);
   }
   parser.write(html);
   parser.end();
@@ -3105,6 +3700,15 @@ export function parseFragment(
     kid.next = null;
   }
   return kids;
+}
+
+/** The nearest `<form>` at or around an element, which `innerHTML` reads with
+ *  the form pointer on (HTML 13.4). */
+function formAround(context: Element): Element | null {
+  for (let at: ParentNode | null = context; at; at = at.parent) {
+    if (at instanceof Element && at.name === 'form') return at;
+  }
+  return null;
 }
 
 /** Whether a tag's content is raw text — the box builder skips these, and
