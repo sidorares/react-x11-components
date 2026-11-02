@@ -7215,6 +7215,7 @@ function isControl(box: Box): boolean {
     case 'file':
     case 'checkbox':
     case 'radio':
+    case 'range':
       return true;
     default:
       return false;

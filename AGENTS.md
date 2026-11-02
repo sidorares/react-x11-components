@@ -2040,6 +2040,31 @@ shuts a control's picker goes through `pickerChanged`**, or the menu and
 box, which is how `holdsOpen` tells, so they go on the `<Select>` itself
 and never on a box around it.
 
+**A range is core's `<Slider>` with its handlers taken** (`range.ts`). A
+`<Slider>` puts what it is handed over its own, so nothing can be said beside
+them, and HTML's range differs from an application's in every one: a press
+that was cancelled, or is on the thumb, or is of another button, moves nothing,
+a release tells `change` only where the value moved, and keys are Chrome's in
+each writing mode. So the pointer's, the keys' and the focus's handlers are all
+here, and `<Slider>` is the drawing, the accessible node and what an assistive
+technology sets. It runs only across, so one that runs down is composed in
+`range.ts` from the same tokens, and goes when core's can. Four things are
+load-bearing. **What a range holds is `rangeValue`'s**, in `controlValue`, read
+at each read since it moves with `min`, `max` and `step`, and what a read takes
+from it stays taken, as a browser's does as the attribute changes: anything new
+that sets it goes through `rangeValue`. **Anything new that changes what it
+holds with no render calls `ranges.get(el)`**, as a script's `value` does,
+since a value is no rect (`RangeLook.key` is what tells a report of a change to
+its attributes, and a reset is a render). A range is in `CHECKABLE`, so no
+`change` comes of a blur, and it is always `bare`, in its content box, the
+document drawing the rest, with a `hitSlop` out to its border box, which is
+where Chrome takes a press. And **what a page draws of one was read off
+Chromium and not off its sheet** (`rangeLook`, `ownThickness`): a thumb has no
+`appearance: inherit` to go by, which the first cut took from the sheet and which
+left a range at `appearance: none` with no thumb, and a range at `appearance:
+auto` draws no border or background of the page's (`themed` in `paint.ts`). Put
+a page beside Chromium's before changing either.
+
 **A `display: contents` element's `::before` and `::after` are items of the
 flex or grid box around it**, as its children are. A pseudo-element is styled
 from no more than its element's style, whose `display` says `contents`, so the

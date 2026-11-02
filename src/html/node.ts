@@ -4601,7 +4601,15 @@ export class HtmlViewNode extends Node {
             return fonts ? faceExtentOf(fonts, style) : undefined;
           },
           controlSize: (el, kind, style) =>
-            measureControl(el, kind, style, this._fonts(), look),
+            measureControl(
+              el,
+              kind,
+              style,
+              this._fonts(),
+              look,
+              this._scale,
+              this._sliderOf,
+            ),
         });
         const boxes = () => buildBoxes(this._source.document, options());
         // Where every change the build is for said which elements its boxes
@@ -5398,6 +5406,14 @@ export class HtmlViewNode extends Node {
     return shown && size ? atDensity(size, shown.density) : null;
   }
 
+  /** What a range's thumb and track are styled as (`Cascade.sliderStyle`). */
+  private readonly _sliderOf = (
+    el: Element,
+    style: ComputedStyle,
+    part: 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null =>
+    this._cascade?.sliderStyle(el, style, part) ?? null;
+
   /** `near`: only the controls within it are asked what is over them,
    *  for a scroll, which moves boxes over the viewport alone. */
   private _reportControls(near: Rect | null = null): void {
@@ -5429,6 +5445,7 @@ export class HtmlViewNode extends Node {
       near,
       this._covered,
       this._fonts(),
+      this._sliderOf,
     ).map((r) =>
       s === 1
         ? r
@@ -8550,7 +8567,7 @@ export class HtmlViewNode extends Node {
           found.follows ? found.reach : null,
         )
       ) {
-        if (cascade.placeholderFollows('hoverSensitive')) {
+        if (cascade.widgetPartsFollow('hoverSensitive')) {
           this._reportControls();
         }
         // an animation the move started, or let go of, wants its frames
@@ -8630,8 +8647,8 @@ export class HtmlViewNode extends Node {
         )
       ) {
         // what a field's placeholder is drawn in is its widget's, which no
-        // restyle of a box tells (`Cascade.placeholderFollows`)
-        if (cascade.placeholderFollows('focusSensitive')) {
+        // restyle of a box tells (`Cascade.widgetPartsFollow`)
+        if (cascade.widgetPartsFollow('focusSensitive')) {
           this._reportControls();
         }
         this._scheduleFrame();
@@ -16548,6 +16565,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.placeholderColor !== q.placeholderColor ||
       p.atViewport !== q.atViewport ||
       p.held !== q.held ||
+      p.range?.key !== q.range?.key ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {
@@ -18913,6 +18931,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'file',
   'checkbox',
   'radio',
+  'range',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

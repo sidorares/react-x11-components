@@ -759,8 +759,18 @@ type PseudoElement =
   | 'selection'
   | 'placeholder'
   | 'scrollbar'
+  | 'slider-thumb'
+  | 'slider-track'
   | 'backdrop'
   | 'details-content';
+
+/** A widget's part's style (`Cascade._widgetPart`), and what it was worked
+ *  out from. */
+interface KeptPart {
+  from: ComputedStyle;
+  key: string;
+  style: ComputedStyle;
+}
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
  *  `::first-line`, `::marker`, `::selection`, `::placeholder`,
@@ -768,9 +778,19 @@ type PseudoElement =
  *  single-colon spelling of any of its first four. `::-webkit-input-
  *  placeholder` is `::placeholder` under the name WebKit gave it, which
  *  Chrome and Safari still take, and pages written before the standard
- *  name still use. */
+ *  name still use. `::-webkit-slider-thumb` and
+ *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
+ *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+
+/** The pseudo-elements WebKit named, under what their rules are kept by. */
+const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
+  '-webkit-input-placeholder': 'placeholder',
+  '-webkit-scrollbar': 'scrollbar',
+  '-webkit-slider-thumb': 'slider-thumb',
+  '-webkit-slider-runnable-track': 'slider-track',
+};
 
 /**
  * The name `::target-text`'s rules are kept under among the custom
@@ -935,11 +955,7 @@ function splitPseudoElement(rule: StyleRule): {
     };
   }
   return {
-    which: (name === '-webkit-input-placeholder'
-      ? 'placeholder'
-      : name === '-webkit-scrollbar'
-        ? 'scrollbar'
-        : name) as PseudoElement,
+    which: (VENDOR_PSEUDO_ELEMENTS[name] ?? name) as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -3986,6 +4002,8 @@ export class Cascade {
     selection: new RuleIndex(true),
     placeholder: new RuleIndex(true),
     scrollbar: new RuleIndex(true),
+    'slider-thumb': new RuleIndex(true),
+    'slider-track': new RuleIndex(true),
     backdrop: new RuleIndex(true),
     'details-content': new RuleIndex(true),
   };
@@ -4822,7 +4840,7 @@ export class Cascade {
       this._pseudo['first-letter'].hoverSensitive ||
       this._pseudo['first-line'].hoverSensitive ||
       this._pseudo.marker.hoverSensitive ||
-      this._pseudo.placeholder.hoverSensitive
+      this.widgetPartsFollow('hoverSensitive')
     );
   }
 
@@ -4840,7 +4858,7 @@ export class Cascade {
       this._pseudo['first-letter'].focusSensitive ||
       this._pseudo['first-line'].focusSensitive ||
       this._pseudo.marker.focusSensitive ||
-      this._pseudo.placeholder.focusSensitive
+      this.widgetPartsFollow('focusSensitive')
     );
   }
 
@@ -4887,8 +4905,8 @@ export class Cascade {
    * (`HOVER_PSEUDO_GENERATED`), whose boxes a move restyles where they are
    * as it does an element's; or a `::first-line`'s, a `::first-letter`'s
    * or a `::marker`'s (`HOVER_PSEUDO_OTHER`), which layout styles and a
-   * move cannot. A `::placeholder`'s is none of them: it is no box's
-   * (`placeholderFollows`).
+   * move cannot. A `::placeholder`'s is none of them, nor a range's thumb's
+   * or track's: each is no box's (`widgetPartsFollow`).
    */
   get hoverPseudo(): 0 | 1 | 2 {
     return this._pseudoRules('hoverSensitive');
@@ -7891,16 +7909,20 @@ export class Cascade {
   }
 
   /**
-   * Whether a rule for a `::placeholder` tests the pointer
-   * (`hoverSensitive`) or the focus (`focusSensitive`). A move of either
-   * restyles no box for it, where one for any other pseudo-element does
-   * (`hoverPseudo`): what it changes is a widget's, which is told the look
-   * again (`HtmlViewNode._reportControls`). `input:focus::placeholder {
-   * color: transparent }`, which takes the hint away as the field is
-   * typed into, is the one pages write.
+   * Whether a rule for a `::placeholder`, or a range's thumb or track, tests
+   * the pointer (`hoverSensitive`) or the focus (`focusSensitive`). A move of
+   * either restyles no box for it, where one for any other pseudo-element
+   * does (`hoverPseudo`): what it changes is a widget's, which is told the
+   * look again (`HtmlViewNode._reportControls`). `input:focus::placeholder
+   * { color: transparent }`, which takes the hint away as the field is typed
+   * into, is the one pages write.
    */
-  placeholderFollows(state: 'hoverSensitive' | 'focusSensitive'): boolean {
-    return this._pseudo.placeholder[state];
+  widgetPartsFollow(state: 'hoverSensitive' | 'focusSensitive'): boolean {
+    return (
+      this._pseudo.placeholder[state] ||
+      this._pseudo['slider-thumb'][state] ||
+      this._pseudo['slider-track'][state]
+    );
   }
 
   /**
@@ -7915,21 +7937,44 @@ export class Cascade {
    * changes which rules match asks again and comes to another answer.
    */
   placeholderStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
-    const index = this._pseudo.placeholder;
+    return this._widgetPart(el, style, 'placeholder');
+  }
+
+  /**
+   * A range's `::-webkit-slider-thumb` or `::-webkit-slider-runnable-track`
+   * style, as `placeholderStyle` is a field's hint's, or null where no rule
+   * reaches it. Its parent here is the range, where Blink has the track and
+   * a box between them: neither takes anything a page sets on them that the
+   * range would not have handed on.
+   */
+  sliderStyle(
+    el: Element,
+    style: ComputedStyle,
+    part: 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null {
+    return this._widgetPart(el, style, part);
+  }
+
+  private _widgetPart(
+    el: Element,
+    style: ComputedStyle,
+    which: 'placeholder' | 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null {
+    const index = this._pseudo[which];
     const indexed = index.size > 0 && index.reaches(el);
-    const edges = this._scoped && this._scopedPseudos.has('placeholder');
+    const edges = this._scoped && this._scopedPseudos.has(which);
     if (!indexed && !edges) return null;
     const candidates: Candidate[] = [];
     const matched: number[] = [];
     if (indexed) this._matchInto(index, el, candidates, matched);
-    if (edges) this._scopedInto(el, 'placeholder', candidates, matched);
+    if (edges) this._scopedInto(el, which, candidates, matched);
     if (!candidates.length) return null;
     const key = matched.join(',');
-    const kept = this._placeholders.get(el);
+    const kept = this._widgetParts[which].get(el);
     if (kept?.from === style && kept.key === key) return kept.style;
     candidates.sort(byCascade);
     const out = this._computeStyle(el, style, false, candidates);
-    this._placeholders.set(el, { from: style, key, style: out });
+    this._widgetParts[which].set(el, { from: style, key, style: out });
     return out;
   }
 
@@ -7967,11 +8012,12 @@ export class Cascade {
     { from: ComputedStyle; key: string; hidden: { x: boolean; y: boolean } }
   >();
 
-  /** What `placeholderStyle` keeps, by element. */
-  private _placeholders = new WeakMap<
-    Element,
-    { from: ComputedStyle; key: string; style: ComputedStyle }
-  >();
+  /** What `_widgetPart` keeps, by element. */
+  private _widgetParts = {
+    placeholder: new WeakMap<Element, KeptPart>(),
+    'slider-thumb': new WeakMap<Element, KeptPart>(),
+    'slider-track': new WeakMap<Element, KeptPart>(),
+  };
 
   /**
    * An element's `::first-line` style, inheriting from its own, or null
