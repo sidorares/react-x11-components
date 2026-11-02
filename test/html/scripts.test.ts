@@ -4364,6 +4364,65 @@ test('a body a page is slow to read comes in one chunk of all that arrived, wher
   );
 });
 
+test('a body with two reads waiting hands each byte over once and ends, where the second read was handed what the first had', async () => {
+  // a stream with no high-water mark pulls from inside `enqueue` while a
+  // read is left waiting, and that pull found what was being handed over
+  // still held: pdf.js's viewer read its PDF some 16 KB long and stalled.
+  // Nothing arrives until both reads wait, so nothing here turns on how
+  // long a task took
+  const pieces = Array.from({ length: 6 }, (_, i) =>
+    new Uint8Array(8).fill(i + 1),
+  );
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'fetch("/stream").then(function (r) {' +
+      '  var reader = r.body.getReader(), bytes = [];' +
+      '  var out = document.getElementById("out");' +
+      '  var pump = function () {' +
+      '    return reader.read().then(function (part) {' +
+      '      if (part.done) return;' +
+      '      bytes.push.apply(bytes, part.value);' +
+      '      return pump();' +
+      '    });' +
+      '  };' +
+      '  Promise.all([pump(), pump()]).then(function () {' +
+      '    out.textContent = JSON.stringify(bytes);' +
+      '  });' +
+      '  out.textContent = "reading";' +
+      '});' +
+      '</script>',
+    {
+      answer: () => ({
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        url: `${PAGE}stream`,
+        body: '',
+        chunks: {
+          async *[Symbol.asyncIterator]() {
+            await held;
+            for (const piece of pieces) yield piece;
+          },
+        },
+      }),
+    },
+  );
+  assert.equal(await settled(doc, 'out', (t) => t === 'reading'), 'reading');
+  release();
+  const text = await settled(doc, 'out', (t) => t.startsWith('['));
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(
+    JSON.parse(text) as number[],
+    pieces.flatMap((p) => [...p]),
+    'each byte once, in order, and both reads told it ended',
+  );
+});
+
 /** A GL that keeps what it was told and answers what a test says. */
 function fakeGL(answers: Record<string, unknown> = {}) {
   const calls: HtmlGLCommand[] = [];

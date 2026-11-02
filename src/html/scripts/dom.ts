@@ -18783,19 +18783,22 @@ export function installDom(
     let closing = false;
     const hand = (): void => {
       wanted = false;
-      if (held.length === 1) controller.enqueue(held[0]);
+      // taken first: with a second read waiting, `enqueue` pulls from inside
+      // itself, and `pulled` must find nothing left to hand that read
+      const pieces = held;
+      held = [];
+      if (pieces.length === 1) controller.enqueue(pieces[0]);
       else {
         let size = 0;
-        for (const piece of held) size += piece.length;
+        for (const piece of pieces) size += piece.length;
         const whole = new Uint8Array(size);
         let at = 0;
-        for (const piece of held) {
+        for (const piece of pieces) {
           whole.set(piece, at);
           at += piece.length;
         }
         controller.enqueue(whole);
       }
-      held = [];
     };
     return {
       arrived(bytes: Uint8Array): void {
