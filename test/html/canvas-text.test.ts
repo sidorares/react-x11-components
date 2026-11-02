@@ -284,6 +284,78 @@ test('a string is set again in the face that lands, not kept in the one before i
   );
 });
 
+test("the context's fontStretch chooses a face as a font-stretch does", async () => {
+  // it was an attribute that read back and reached nothing, so a family with
+  // faces of two widths drew the regular one whatever it was set to
+  const { readFileSync } = await import('node:fs');
+  const mono = readFileSync(FONTS!.monospace);
+  const bytes = [...new Uint8Array(mono.buffer, mono.byteOffset, mono.length)];
+  const sans = readFileSync(FONTS!['sans-serif']);
+  const regular = [
+    ...new Uint8Array(sans.buffer, sans.byteOffset, sans.length),
+  ];
+  const p = await scriptedPage(
+    '<script>' +
+      LOG +
+      'function width() { return x.measureText("iiii").width; }' +
+      // and the width is a face's from its setter as much as from the
+      // descriptors it was made with
+      `var wide = new FontFace("Widths", new Uint8Array(${JSON.stringify(bytes)}).buffer);` +
+      'wide.stretch = "ultra-expanded";' +
+      `var plain = new FontFace("Widths", new Uint8Array(${JSON.stringify(regular)}).buffer);` +
+      `var named = new FontFace("condensed", new Uint8Array(${JSON.stringify(bytes)}).buffer);` +
+      'document.fonts.add(wide); document.fonts.add(plain); document.fonts.add(named);' +
+      'Promise.all([wide.load(), plain.load(), named.load()]).then(function () {' +
+      '  x.font = "30px Widths";' +
+      '  var a = width();' +
+      '  x.fillText("iiii", 0, 50); var seen = ink(); wipe();' +
+      '  x.fontStretch = "ultra-expanded";' +
+      '  var b = width();' +
+      '  x.fillText("iiii", 0, 50); var then = ink(); wipe();' +
+      '  var read = x.font;' +
+      // a width `font` wrote gives way to the attribute: two make no font
+      '  x.font = "condensed 30px Widths";' +
+      '  var c = width();' +
+      // and a family of that name is no width
+      '  x.font = "30px condensed";' +
+      '  var e = width();' +
+      '  log("widths", a, b, JSON.stringify(seen), JSON.stringify(then), read, c, e);' +
+      '}, function (e) { log("widths", "failed " + e); });' +
+      '</script>',
+    20000,
+  );
+  const [a, b, seen, then, read, c, e] = (await p.until('widths|')).split('|');
+  assert.ok(Number(b) > Number(a) * 1.2, `the wide face: ${a}, ${b}`);
+  assert.ok(
+    JSON.parse(then)[2] > JSON.parse(seen)[2] + 5,
+    `and it is drawn in it: ${seen}, ${then}`,
+  );
+  assert.strictEqual(read, '30px Widths', 'and `font` reads as it was set');
+  assert.strictEqual(c, b, 'the attribute wins over a width in `font`');
+  assert.strictEqual(e, b, 'and a family that reads like one is a family');
+});
+
+test('a string set right to left starts past the spaces it ends on, which are on its left', async () => {
+  // an engine leaves those out of a line's width, so its first letter went
+  // at the anchor, and a run drawn after another lost the space between them
+  const p = await scriptedPage(
+    '<script>' +
+      LOG +
+      'x.font = "40px sans-serif"; x.direction = "rtl"; x.textAlign = "left";' +
+      'var space = x.measureText(" ").width;' +
+      'x.fillText("HH", 20, 100); var bare = ink(); wipe();' +
+      'x.fillText("HH  ", 20, 100); var spaced = ink(); wipe();' +
+      'x.textAlign = "right"; x.fillText("HH", 200, 100); var end = ink(); wipe();' +
+      'x.fillText("HH  ", 200, 100); var right = ink(); wipe();' +
+      'log("drawn", space, JSON.stringify(bare), JSON.stringify(spaced), JSON.stringify(end), JSON.stringify(right));' +
+      '</script>',
+  );
+  const [space, ...drawn] = (await p.until('drawn|')).split('|');
+  const [a, b, end, right] = drawn.map((v) => JSON.parse(v));
+  near(b[0] - a[0], 2 * Number(space), 1, 'the spaces on its left');
+  near(right[2], end[2], 1, 'and it ends where it would with none');
+});
+
 test("a display's scale is no part of a canvas's units", async () => {
   const run = async (scale: number) => {
     const p = await scriptedPage(

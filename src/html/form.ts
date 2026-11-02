@@ -288,17 +288,23 @@ function firstLegend(fieldset: Element): Element | null {
 /** A `<select>`'s `<option>`s, in tree order, through its `<optgroup>`s. */
 export function optionElements(select: Element): Element[] {
   const out: Element[] = [];
-  const walk = (node: Element): void => {
+  const walk = (node: Element, inGroup: boolean): void => {
     for (const child of childrenOf(node)) {
       if (!isElement(child)) continue;
       const tag = tagOf(child);
       if (tag === 'option') out.push(child);
-      else if (tag === 'optgroup' && node === select) walk(child);
+      else if (!OPTIONS_NOT_IN.has(tag) && !(inGroup && tag === 'optgroup')) {
+        walk(child, inGroup || tag === 'optgroup');
+      }
     }
   };
-  walk(select);
+  walk(select, false);
   return out;
 }
+
+/** What a `<select>`'s list of options does not go on into (HTML 4.10.7),
+ *  which is otherwise everything it holds, however deep. */
+const OPTIONS_NOT_IN = new Set(['select', 'hr', 'datalist']);
 
 /** An option's text, its white space collapsed, as HTML's `text` IDL
  *  attribute reads it. */

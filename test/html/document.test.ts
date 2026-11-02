@@ -15,7 +15,7 @@ import {
   rawTextOf,
 } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
-import { controlsOf, formOwner } from '../../src/html/form.js';
+import { controlsOf, formOwner, optionElements } from '../../src/html/form.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
@@ -1515,6 +1515,104 @@ test('a <head> ends at the first thing that is not head content', () => {
       '!doctype() html(head(template()) body(x))',
     ],
   ]);
+});
+
+test("a <head> or an <html> written in a head ends with it, so the body is the <html>'s and not the head's", () => {
+  // the first thing that is no head content closed one of what stood for the
+  // head, and a body opened inside it took the document with it: `body` had
+  // no rules, a `200vh` none of its height, and nothing scrolled
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><html><head><title>t</title><head><body><p>a</p></body></html>',
+    ),
+    '!doctype() html(head(title(t)) body(p(a)))',
+  );
+  assert.strictEqual(
+    shapeOf(
+      '<!doctype html><html><head><meta name="a"><html class="w"><body><p>a',
+    ),
+    '!doctype() html(head(meta()) body(p(a)))',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html><html><head><head><head><p>a</p></head></html>'),
+    '!doctype() html(head() body(p(a)))',
+    'however many',
+  );
+  assert.strictEqual(
+    shapeOf('<!doctype html><html><head><head><title>t</title></head><p>a'),
+    '!doctype() html(head(title(t)) body(p(a)))',
+    'and what is head content stays in it',
+  );
+});
+
+test('a comment after </body> goes in the <html>, and one after </html> in the document', () => {
+  holds([
+    [
+      '<!doctype html><html><body><p>a</p></body><!-- c --></html>',
+      '!doctype() html(head() body(p(a)) c)',
+    ],
+    [
+      '<!doctype html><html><body><p>a</p></body></html><!-- c -->',
+      '!doctype() html(head() body(p(a))) c',
+    ],
+    // white space between them keeps to the body, as anything else goes back
+    [
+      '<!doctype html><html><body><p>a</p></body> <!-- c --> <!-- d --></html>',
+      '!doctype() html(head() body(p(a)) c d)',
+    ],
+    [
+      '<!doctype html><html><body><p>a</p></body><!-- c -->x<!-- d -->',
+      '!doctype() html(head() body(p(a) x d) c)',
+    ],
+    [
+      '<!doctype html><html><body><p>a</p></body><!-- c --><p>b</p><!-- d -->',
+      '!doctype() html(head() body(p(a) p(b) d) c)',
+    ],
+    // an end tag that closes nothing leaves a comment where it was
+    [
+      '<!doctype html><html><body><div><!-- c --></div></body>',
+      '!doctype() html(head() body(div(c)))',
+    ],
+  ]);
+});
+
+test("a select's list of options goes on down what it holds, and stops where HTML's does", () => {
+  const source = new HtmlSource();
+  source.setSource(
+    '<!doctype html><select><option>a</option><div><option>b</option></div>' +
+      '<optgroup><option>c</option></optgroup><hr>' +
+      '<datalist><option>no</option></datalist></select>',
+    true,
+  );
+  const find = (nodes: ChildNode[]): Element | null => {
+    for (const node of nodes) {
+      const el = node as Element;
+      if (el.name === 'select') return el;
+      const inner = el.children && find(el.children as ChildNode[]);
+      if (inner) return inner;
+    }
+    return null;
+  };
+  const select = find(source.document.children as ChildNode[])!;
+  assert.deepStrictEqual(
+    optionElements(select as never).map(
+      (option) => (option.children[0] as unknown as { data: string }).data,
+    ),
+    ['a', 'b', 'c'],
+  );
+});
+
+test('innerHTML on an <html> keeps a comment after its body', () => {
+  const html = parseFragment('<html></html>')[0] as Element;
+  const kids = parseFragment(
+    '<head></head><body></body><!-- c -->',
+    false,
+    html as never,
+  );
+  assert.deepStrictEqual(
+    kids.map((kid) => (kid as { name?: string }).name ?? kid.type),
+    ['head', 'body', 'comment'],
+  );
 });
 
 test('a </body> and a </html> close nothing, so what comes after goes where the last of the body left it', () => {
