@@ -604,6 +604,8 @@ export type ReplacedKind =
   | 'textarea'
   | 'select'
   | 'button'
+  /** An `<input type=file>`: its button and what it holds. */
+  | 'file'
   | 'checkbox'
   | 'radio'
   | 'hr'
@@ -637,7 +639,14 @@ function controlBaseline(
   if (kind === 'input' && (attr(el, 'type') ?? '').toLowerCase() === 'range') {
     return 'border';
   }
-  if (kind !== 'input' && kind !== 'select' && kind !== 'button') return null;
+  if (
+    kind !== 'input' &&
+    kind !== 'select' &&
+    kind !== 'button' &&
+    kind !== 'file'
+  ) {
+    return null;
+  }
   // a list box shows rows, and sits on its bottom edge
   if (kind === 'select' && Number(attr(el, 'size') ?? 1) > 1) return null;
   return (
@@ -6420,6 +6429,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';
+      if (type === 'file') return 'file';
       return 'input';
     }
     default:

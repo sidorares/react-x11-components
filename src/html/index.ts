@@ -61,6 +61,7 @@ import type {
   ScriptRequest,
 } from './node.js';
 import {
+  clipboardChord,
   documentPoint,
   domButton,
   domButtons,
@@ -85,12 +86,14 @@ import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
+import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import { useSounds } from './sounds.js';
 import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
+import type { HtmlClipboardData } from './clipboard.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
@@ -143,6 +146,13 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export {
+  acceptFilters,
+  fileTypeOf,
+  readHtmlFiles,
+  useHtmlFilePicker,
+} from './files.js';
+export type { HtmlFile, HtmlFileRequest, HtmlPickFiles } from './files.js';
 export type {
   ConsoleProperty,
   ConsoleResult,
@@ -174,6 +184,9 @@ export type {
   WebTransportStreamStats,
 } from './transport.js';
 export { NO_WEBSOCKET } from './socket.js';
+export { memoryClipboard, useHtmlClipboard } from './clipboard.js';
+export type { HtmlClipboard, HtmlClipboardData } from './clipboard.js';
+export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export type {
   HtmlWebSocket,
   WebSocketConnectRequest,
@@ -557,6 +570,12 @@ export interface HtmlProps {
    * component never sends anything by itself, any more than it navigates.
    */
   onSubmit?: (submission: FormSubmission) => void;
+  /**
+   * Ask the user for files: a press on an `<input type=file>`, its label or,
+   * under a gesture, a script's `click()`. Default: none, and a file input
+   * opens nothing. `useHtmlFilePicker()` is core's file dialog.
+   */
+  onPickFiles?: HtmlPickFiles;
   /**
    * How the document asks to be scrolled: the `overflow` its root element
    * gives the viewport, or its `<body>` where the root's is `visible` (CSS
@@ -1138,6 +1157,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     baseUrl,
     onControlChange,
     onSubmit,
+    onPickFiles: props.onPickFiles,
     onDomEvent,
     touch: (changes) => {
       if (changes) viewNode.current?.touchDocument(changes);
@@ -1164,12 +1184,17 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
+  // what a script focused before anything could take it takes it from the
+  // render that mounts a widget or a stop for it, however long that is: no
+  // count of turns is long enough on a page still loading
+  React.useEffect(() => interactive.settleFocus());
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,
     forms,
     stops,
     embedded,
+    props._readClipboard,
   );
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
@@ -1460,6 +1485,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
       transitionEnd: () => nodeRef.current?.transitionEnd(),
       selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
+      selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
       selectPoints: (points) => nodeRef.current?.selectPoints(points),
       setCaret: (point) => nodeRef.current?.setCaret(point),
       movedPoint: (node, offset, granularity, back) =>
@@ -1515,6 +1541,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scriptFontsChanged: (id: number, added: boolean) =>
         nodeRef.current?.scriptFontsChanged(id, added),
       svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+      canvasText: () => nodeRef.current?.canvasText() ?? null,
+      foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
       mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
         nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
@@ -1553,6 +1581,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         }) ?? false,
       showPicker: (element: Element) =>
         nodeRef.current?.interactive?.showPicker(element) ?? false,
+      pickFiles: (element: Element) =>
+        nodeRef.current?.interactive?.pickFiles(element),
+      setFiles: (element: Element, files: readonly HtmlFile[]) =>
+        nodeRef.current?.interactive?.setFiles(element, files),
       focus: (element: Element) =>
         nodeRef.current?.interactive?.focus(element) ?? false,
       toldFocus: (element: Element) =>
@@ -1640,6 +1672,8 @@ function documentInteraction(
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
     showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
+    pickFiles: (el) => live.current?.forms.pickFiles(el),
+    setFiles: (el, files) => live.current?.forms.setFiles(el, files),
     focus: (el) => {
       const now = live.current;
       if (!now) return false;
@@ -1659,12 +1693,27 @@ function documentInteraction(
       }
       return took;
     },
-    told: (el) => live.current?.forms.focused(el, true),
+    told: (el) => {
+      const forms = live.current?.forms;
+      forms?.focused(el, true);
+      forms?.owe(el);
+    },
+    settleFocus: () => {
+      const now = live.current;
+      const el = now?.forms.owed();
+      if (el) void (now!.forms.focusControl(el) || now!.stops.focus(el));
+    },
     blur: () => {
+      const forms = live.current?.forms;
+      if (forms?.owed()) {
+        forms.letGo();
+        return;
+      }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
     },
-    activeElement: () => owner(focusedNode(view.current)),
+    activeElement: () =>
+      live.current?.forms.owed() ?? owner(focusedNode(view.current)),
     activate: (el) => {
       const node = view.current;
       const now = live.current;
@@ -1693,6 +1742,7 @@ const CONTROLS = new Set(['button', 'input', 'select', 'textarea']);
 /** What a press on a control's widget ticks or presses: its click is the
  *  widget's to tell, after the box changes (`widgets.ts`). */
 const CLICKS_ITSELF = new Set([
+  'file',
   'checkbox',
   'radio',
   'submit',
@@ -1716,6 +1766,7 @@ function useDocumentEvents(
   forms: ReturnType<typeof useForms>,
   stops: ReturnType<typeof useFocusStops>,
   embedded: Embedded,
+  readClipboard?: () => Promise<HtmlClipboardData>,
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
@@ -1773,6 +1824,26 @@ function useDocumentEvents(
       if (!go) ev.preventDefault();
     };
   const keyDown = key('keydown');
+  /** The key just told, where it is the clipboard's chord and the page let
+   *  it be: told as what it is, before core's own copy, cut or paste. An
+   *  event is told at once and a read of the clipboard is not, so with a
+   *  clipboard to read, a paste stops core's and is the page's to make. */
+  const clipboardKey = (ev: X11KeyboardEvent<DrawnNode>) => {
+    if (!onDomEvent || ev.defaultPrevented || ev.composing) return;
+    if (embedded.contains(ev.target as DrawnNode)) return;
+    const type = clipboardChord(ev, view.current?.app);
+    const target = type && keyedAt(ev.target as DrawnNode);
+    if (!type || !target) return;
+    if (type === 'paste' && readClipboard) {
+      ev.preventDefault();
+      const told = (clipboard: HtmlClipboardData) => {
+        if (view.current) fire('paste', target, { clipboard });
+      };
+      readClipboard().then(told, () => told({}));
+      return;
+    }
+    if (!fire(type, target, modifiersOf(ev))) ev.preventDefault();
+  };
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
       forms.userInput('pointer');
@@ -1818,6 +1889,7 @@ function useDocumentEvents(
         forms.userInput('keyboard');
       }
       keyDown(ev);
+      clipboardKey(ev);
     },
     onKeyUpCapture: key('keyup'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {

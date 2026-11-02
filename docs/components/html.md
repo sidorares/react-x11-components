@@ -50,6 +50,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                                                                                   |
+| `onPickFiles`        | `(request) => Promise<HtmlFile[] \| null>`       | Ask the user for files, for an `<input type=file>` — see [File inputs](#file-inputs). `useHtmlFilePicker()` is core's file dialog. Absent, a file input opens nothing.                                                                                                                              |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                                                                                        |
 | `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).                                                                                |
 | `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                                                                                  |
@@ -979,6 +980,8 @@ since this component navigates nowhere by itself:
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
+| `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                           |
+| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` answers and what guards a read of the clipboard. See below.                                   |
 | `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
 | `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
 | `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
@@ -1010,6 +1013,13 @@ and `brotli`.
 page and its frames. A worker's thread keeps its own, and so does each tab, which
 is a process of its own, so a channel does not cross to a worker and a lock
 excludes nothing in another tab.
+
+**`Math.sumPrecise` is the realm's where the runtime has none**, in a page, a
+frame's realm and a worker, and a runtime's own is left alone: Node has none yet
+and Bun has its own. It is the exact sum, rounded once, so a sum that overflows
+on the way and comes back is still a number. What a page sets on `Math`, `Number`
+or `BigInt` afterwards does not change its answer. pdf.js's worker adds up the
+tables of each font it rebuilds with it.
 
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
@@ -1228,6 +1238,17 @@ as WPT's tests make them, and to another peer the host can reach.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
+- **A canvas's text is drawn in the document's fonts**: `fillText`,
+  `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
+  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  transform, clip and compositing operator a path goes through. A `font`
+  names what the document's `@font-face` rules and `new FontFace` do, and a
+  face not loaded yet is asked for and drawn in what the list has until it
+  lands, as a browser draws it. `strokeText` is a band along the glyphs'
+  edges, so its joins are round and it draws no dash, and a worker has no
+  fonts, so an `OffscreenCanvas` there draws no text and measures it as a
+  guess. The tentative parts of `TextMetrics`, `getSelectionRects` and its
+  kin, are not there.
 - **WebGL draws where the host hands it a GL**, `scripts.webgl`, an
   `HtmlWebGL`. With none a context keeps the state a page sets and reads
   back and draws nothing, so a page written for a context still runs.
@@ -2015,12 +2036,15 @@ page for its switch.
 `delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
 `selectAll`, in an editing host or a focused text field, each told as a
 `beforeinput` and an `input`. `queryCommandSupported` says which, so a
-formatting command, `undo` and `copy` answer false rather than pretending, and
-`queryCommandState` and `queryCommandValue` have nothing to report.
+formatting command and `undo` answer false rather than pretending, and
+`queryCommandState` and `queryCommandValue` have nothing to report. `copy` and
+`cut` are there where the host handed a clipboard, under a user's press or
+key, and `paste` is not for a page to ask for.
 
-**`navigator.permissions` answers `prompt` for every name a browser knows**,
-since nothing has been asked and nothing refused, and a name it does not know
-is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and `TaskController`
+**`navigator.permissions` answers what `scripts.permissions` holds**, and
+`prompt` where it holds nothing, as a browser does before it has asked; a name
+it does not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
+`TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
 **A drawing's geometry is worked out from its attributes.** No box stands for
@@ -2031,6 +2055,61 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
+
+### The clipboard
+
+```js
+const clipboard = useHtmlClipboard();
+const permissions = useMemo(() => myPermissionPrompts(), []);
+
+<Html source={source} scripts={{ clipboard, permissions }} />;
+```
+
+**The user's own copy and paste need no seam.** Ctrl+C on a selection and
+Ctrl+C, Ctrl+X and Ctrl+V in a text field are core's, on Cmd on a Mac, and work
+in a bare `<Html scripts>`, where a page hears `copy`, `cut` and `paste` with
+empty data and may cancel them. What `scripts.clipboard` adds is the page's
+part: what a `copy` listener wrote goes on the clipboard, what is on the
+clipboard is in a `paste`'s `clipboardData`, a paste no listener cancels is
+made by the page's realm, as `insertFromPaste` with a `beforeinput` and an
+`input`, into the field or at the selection of the editing host, and
+`navigator.clipboard` is there, in a secure context. Without one a page reaches
+no clipboard, and `'clipboard' in navigator` says so.
+
+A chord is told after its `keydown`, if that was not cancelled, at the field or
+the editing host that has the focus, else at what the selection starts in,
+else at the body. A `paste` waits for the read, since an event is told at once
+and a read of the clipboard is not, so it comes a turn after its key. Its
+`clipboardData` is read-only and a `copy`'s is read/write, and each is
+protected once its event is over: a page keeps no `DataTransfer` to read what
+was pasted later. What is not text on the clipboard reaches a paste as a file,
+so a picture is `clipboardData.files[0]`, `image.png`. A paste into a field or
+a host is the text alone, and what `text/html` means for the page is a
+listener's to decide.
+
+`navigator.clipboard` has its gates here rather than in the seam. A write needs
+a press or a key behind it that is recent, or `clipboard-write` granted, and
+never one denied. A read needs `clipboard-read` granted, or, where it is
+`prompt`, a press or a key and `scripts.permissions.request` saying so: a page
+that reads the clipboard after any click reads what was copied in every other
+application. With no `permissions` nothing can be granted, so a page cannot
+read the clipboard at all, though a `paste` the user made still reaches it. A
+frame of another origin has neither without an `allow` naming the feature. What
+a read hands back of `text/html` has what would run, or load, taken out, and
+`read({ unsanitized: ['text/html'] })` asks for it as it is. A write takes
+`text/plain`, `text/html`, `text/uri-list`, `image/png`, `image/svg+xml` and
+`web ` types, one `ClipboardItem` at a time, as Chrome does, and a refusal is
+the page's own `NotAllowedError`, whatever the host threw.
+
+`HtmlClipboard` is `read()` and `write(data)`, each a map of MIME type to text
+or bytes. `useHtmlClipboard()` is core's `useClipboard()`, on every backend:
+X11's selections, NSPasteboard and the Windows clipboard. It holds in a
+`<Frame>` pane as well, since NSPasteboard asks nothing of the process's
+NSApplication. `memoryClipboard()` is one that reaches no machine, for a test.
+
+Not here: `clipboardchange`, a paste whose `text/html` keeps its structure
+without a listener's help, and `navigator.clipboard` behaving as a detached
+frame's own where the frame has no realm of its own.
 
 ### Cookies and storage
 
@@ -2158,7 +2237,7 @@ anywhere is the host's to decide, as whether an image loads is. Without
 | `url`         | The `action`, resolved as `onLink`'s `href` is — against the document's base, and an empty one is the document's own URL. A GET's has the entries as its query, so a GET is a link to exactly this. |
 | `enctype`     | `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain`.                                                                                                                         |
 | `entries`     | The `[name, value]` pairs, in tree order, unencoded.                                                                                                                                                |
-| `body`        | A POST's body, encoded as `enctype` says; null for a GET.                                                                                                                                           |
+| `body`        | A POST's body, encoded as `enctype` says: bytes where a file is in it; null for a GET.                                                                                                              |
 | `contentType` | The `Content-Type` for the body — `multipart/form-data`'s names its boundary; null for a GET.                                                                                                       |
 | `target`      | `formtarget`, `target` or `<base target>`: `'_blank'` asks for a new browsing context, empty for this one.                                                                                          |
 
@@ -2286,6 +2365,59 @@ is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
 and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
+
+### File inputs
+
+```jsx
+const onPickFiles = useHtmlFilePicker();
+
+<Html source={page} onPickFiles={onPickFiles} onSubmit={post} />;
+```
+
+An `<input type=file>` is a button and what it holds, as wide as Blink's, and a
+press anywhere on it asks `onPickFiles`, so one a page makes transparent over
+what it draws works as it does in a browser. So does a press on its `<label>`,
+and a page's `click()` or `showPicker()` under a user's press or key, which is
+how a page's own button opens one that is hidden: such an input needs no box.
+Without `onPickFiles` it opens nothing: a component that shows a page does not
+open a dialog for it.
+
+`onPickFiles` is handed the element, `multiple` and what `accept` names, and
+answers with files or, for a dialog dismissed, null. What comes back is told as
+`input` and `change`; a dialog dismissed, or one that changed nothing, as
+`cancel`. A page's `click` that it cancelled asks nothing.
+
+| `HtmlFile`     |                               |
+| -------------- | ----------------------------- |
+| `name`         | Its name, with no path.       |
+| `type`         | Its MIME type, or `''`.       |
+| `lastModified` | Milliseconds since the epoch. |
+| `bytes`        | What it holds.                |
+
+`useHtmlFilePicker()` is core's file dialog, on the best rung the machine has,
+with `accept` as its filters, and `readHtmlFiles(paths)` reads what it answers
+with; `fileTypeOf(name)` is the type a file goes by, by its extension, since
+nothing on a disk says. **A host whose documents are in a `<Frame>` pane shows
+the dialog itself**: a pane has no NSApplication on a Mac to show a panel from.
+It hands the pane the paths, `acceptFilters(accept)` being the dialog's filters,
+and the pane calls `readHtmlFiles`, as the example browser does, so that nothing
+of a file passes through the host.
+
+A form with files in it posts them: `multipart/form-data` has each with its
+name, its type and its bytes, and `body` is then a `Uint8Array`, which a host's
+`post` hands on as it does text; the other two encodings send the file's name.
+An input with nothing in it goes as HTML has it, one file with no name.
+`required` is satisfied by a file, and a reset empties the input.
+
+A page's `input.files` is a `FileList` of `File`s, the same list until what the
+input holds changes, and a `File`'s bytes cross as the page reads them, so a
+video chosen to be uploaded need never reach the page at all. `value` reads
+`C:\\fakepath\\name`, and takes nothing but `''`. `files` takes another
+input's list, or a `DataTransfer`'s, and tells no event. `new FormData(form)`
+holds the files, and `URL.createObjectURL(file)` shows one in an `<img>` before
+anything is uploaded. Not here: `webkitdirectory`, `capture`, and
+`showOpenFilePicker`, which is left out rather than half there, since a page
+that finds it goes on to `showSaveFilePicker` and handles it can write to.
 
 ## Video
 
@@ -2425,15 +2557,20 @@ rest keep their posters:
   under a scale. On macOS a player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
-- **A box fixed to the viewport is asked about as the pane scrolls**: a
-  header that comes over a playing video cuts the player where it reaches
-  it, and one that reaches into its middle hides it for as long as it is
-  there, the poster showing in its place and the video playing on. Only one
-  the document paints after the video is over it: a fixed box before it in
-  the paint order is under it wherever the scroll has it. The same holds of
-  a frame, which is hidden whole by what it cannot be cut around —
-  joshwcomeau.com's floating like button, fixed beside its article and
-  before its playgrounds in the tree, hid each playground's result.
+- **A box fixed to the viewport is asked about as the pane scrolls**, and
+  at each paint, since a fade changes what it draws and lays nothing out. A
+  solid band that comes over a playing video, a header, cuts the player
+  where it reaches it. What lets the video show, or stands in its middle, is
+  painted over the player with the boxes above, and counts among the four:
+  YouTube's embed fixes its controls over the whole player and fades them
+  in, translucent, over the video. One that cannot be painted there hides
+  the player for as long as it is there, the poster showing in its place and
+  the video playing on. Only one the document paints after the video is over
+  it: a fixed box before it in the paint order is under it wherever the
+  scroll has it. A frame has nothing painted over it, so it is hidden whole
+  by what it cannot be cut around — joshwcomeau.com's floating like button,
+  fixed beside its article and before its playgrounds in the tree, hid each
+  playground's result.
 - **What a rectangle cannot follow** — a transform that turns or scales the
   video or a box around it, a `clip-path` or a mask, a video fixed to the
   viewport, or corners of its own, or of a box around it that cuts it, that
@@ -2926,6 +3063,14 @@ parsed before its scripts ran: a frame's classic scripts run after its parse,
 in order, and what one writes goes in after it, parsed as a fragment. And an
 inline script that `document.write` writes runs once the script that wrote
 it has ended, where a browser runs it inside the `write`.
+
+**What a script focuses has the focus from then on, whenever its widget
+comes.** A control has no widget until the render after it is put in, or
+after a page still loading is laid out, so `focus()` tells `focusin` and
+`activeElement` answers for the element at once, as a browser's does, and
+the first render that mounts a widget for it hands the focus over. A focus
+sent elsewhere first, or a `blur()`, takes that back. A page goes by what it
+was told: Monaco, told it had the focus, asks for nothing when it is pressed.
 
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
@@ -6486,6 +6631,20 @@ table's rows were its children, and `tbody > tr`, `table.tBodies` and a
 script's walk of the tree found another tree than a browser's. They go on
 the parser's own stack, so its end tags close them — a `</tbody>` in a cell
 ends the cell and the row, as Acid3's table has it.
+
+**SVG and MathML are read as HTML's parser reads them.** A `</p>`, a `</br>`
+and a `<font>` with a `color`, a `face` or a `size` end foreign content as a
+`<div>` does. An integration point is one in its own language only: `<svg><mi>`
+is SVG's and `<math><title>` MathML's, and an `<annotation-xml>` holds HTML only
+where its `encoding` says so. A name means nothing else it means in HTML there,
+so an `<input>` holds what comes after it, a `<td>` in a `<td>` nests and an
+`<html>` is an element like any. An end tag closes as all three engines have
+it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
+`</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
+table's scope stops at no integration point. HTML's own elements are closed as
+htmlparser2 closes them, foreign elements open or not, so a `</span>` over a
+`<div>` closes the `<span>`, where a browser ignores it, and no adoption agency
+runs for a nested `<a>`.
 
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once

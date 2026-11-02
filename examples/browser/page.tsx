@@ -106,10 +106,12 @@ import {
   navigableFor,
   preloadHtmlScripts,
   publicSuffixList,
+  readHtmlFiles,
   resourceResult,
   schemeOf,
   sniffCharset,
   threadTransport,
+  useHtmlClipboard,
   useHtmlHandle,
   videoSource,
   gpuWebGL,
@@ -119,6 +121,7 @@ import type {
   DocumentResponse,
   Element,
   FormSubmission,
+  HtmlPickFiles,
   HtmlScripts,
   HtmlSessionEntry,
   PostData,
@@ -344,6 +347,13 @@ export interface PageProps {
   ): void;
   /** A link followed, or a form submitted: with `post`, a POST of it. */
   onLink(url: string, target: LinkTarget, post: PostData | null): void;
+  /** A file input asked for files. A pane has no AppKit to show a panel
+   *  from, so the browser shows the dialog, and what was chosen comes back
+   *  as `picked`, under `id`. */
+  onPickFiles(id: number, multiple: boolean, accept: string[]): void;
+  /** The last answer to `onPickFiles`: paths, or null where it was
+   *  cancelled. */
+  picked?: { id: number; paths: string[] | null } | null;
   /** An entry wants its document loaded, which this process does not have:
    *  a step to one it let go, the page's own reload, or the entry shown
    *  after a crash. `doc` is the document it was, whose POST to send. */
@@ -660,6 +670,7 @@ export default function Page(props: PageProps): ReactElement {
   // what a secondary press was on, which the context menu is about
   const [menuAt, setMenuAt] = useState<MenuTarget | null>(null);
   const clipboard = useClipboard();
+  const pageClipboard = useHtmlClipboard();
   // the tab's developer tools: what they inspect, and what its pages wrote
   // to their console, kept from the start
   const [inspection] = useState(() => new Inspection());
@@ -1198,6 +1209,27 @@ export default function Page(props: PageProps): ReactElement {
   // scripts>` loads before this is called, and nothing does without them.
   // The tab stays where it is either way, as Chrome's does when Facebook's
   // pixel posts into its hidden frame.
+  // What a file input is given: the browser shows the dialog, since a pane
+  // has no AppKit to show one from, and this process reads what was chosen,
+  // so nothing of a file passes through the browser.
+  const pickFiles = useMemo<HtmlPickFiles>(() => {
+    let next = 1;
+    return (request) =>
+      new Promise<string[] | null>((resolve) => {
+        const id = next;
+        next += 1;
+        picking.current.set(id, resolve);
+        live.current.onPickFiles(id, request.multiple, request.accept);
+      }).then((paths) => (paths ? readHtmlFiles(paths) : null));
+  }, []);
+  const picking = useRef(new Map<number, (paths: string[] | null) => void>());
+  const answered = props.picked;
+  useEffect(() => {
+    if (!answered) return;
+    picking.current.get(answered.id)?.(answered.paths);
+    picking.current.delete(answered.id);
+  }, [answered]);
+
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
     if (!/^(?:https?|file|data):/i.test(action)) {
@@ -1268,6 +1300,8 @@ export default function Page(props: PageProps): ReactElement {
         connect: (request, events) =>
           network.webSockets(withoutHash(view.url)).connect(request, events),
       },
+      // what a page puts on the machine's clipboard and reads off it
+      clipboard: pageClipboard,
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
       // and its WebGL, on the GPU where x11-dri can reach one
@@ -1590,6 +1624,7 @@ export default function Page(props: PageProps): ReactElement {
                   onResource={onResourceOf(view)}
                   onLink={onLink}
                   onSubmit={onSubmit}
+                  onPickFiles={pickFiles}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>

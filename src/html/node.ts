@@ -91,6 +91,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
+import type { HtmlFile } from './files.js';
 import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
@@ -475,12 +476,16 @@ import {
   namersOf,
 } from './svg.js';
 import {
+  around,
   askMedia,
   cutByFixed,
   embeddedRectsOf,
+  fixedCoversOf,
   FIXED_OVER,
   HELD_BY,
   HELD_OVER,
+  inPaintOrder,
+  MAX_COVERS,
   mediaRectsOf,
   sameSounds,
   videoCandidates,
@@ -498,6 +503,7 @@ import type {
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
+import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
@@ -734,12 +740,17 @@ export interface DocumentInteraction {
   controlSelection(el: Element): FieldSelection | null;
   setControlSelection(el: Element, selection: FieldSelection): boolean;
   showPicker(el: Element): boolean;
+  pickFiles(el: Element): void;
+  setFiles(el: Element, files: readonly HtmlFile[]): void;
   focus(el: Element): boolean;
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal
    *  dialog gave back to as it closed — as a script's `focus()` tells it
-   *  before it returns (HTML 6.6.3); `focus` gives it core's once it can. */
+   *  before it returns (HTML 6.6.3); `settleFocus` gives it core's. */
   told(el: Element): void;
+  /** Hand a focus the page was told of to what has come to take it, after
+   *  a render: a widget or a stop mounted in it. */
+  settleFocus(): void;
   blur(): void;
   activeElement(): Element | null;
   activate(el: Element): boolean;
@@ -1319,6 +1330,9 @@ export class HtmlViewNode extends Node {
   /** What the document paints over each player, as the last layout left
    *  it (`coversOf`, `paintCovers`). */
   private _covers = new Map<Element, Cover[]>();
+  /** The boxes fixed to the viewport painted over each player too, asked
+   *  as the players are told, at each paint (`fixedCoversOf`). */
+  private _fixedCovers = new Map<Element, Cover[]>();
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
@@ -5490,13 +5504,49 @@ export class HtmlViewNode extends Node {
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
     const rects = this._mediaLaid.map((laid) => {
-      const rect = this._viewportRect(laid, FIXED_OVER.get(laid) ?? fixed);
+      const over = FIXED_OVER.get(laid) ?? fixed;
+      const drawn = this._fixedOver(tree, laid, over);
+      const rect = this._viewportRect(
+        laid,
+        drawn?.cutting ?? over,
+        NO_BOXES,
+        drawn?.over,
+      );
       const asked = this._mediaAsked.get(rect.element);
       return asked ? { ...rect, ...asked } : rect;
     });
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
+  }
+
+  /** Which of the boxes fixed over a player are painted over it again
+   *  (`fixedCoversOf`), noted for `paintCovers`: where it paints over the
+   *  player with them, and what is left to cut it. Null where none is. */
+  private _fixedOver(
+    tree: BoxTree,
+    laid: MediaRect,
+    fixed: readonly Box[] | undefined,
+  ): { over: Rect; cutting: readonly Box[] } | null {
+    const el = laid.element;
+    this._fixedCovers.delete(el);
+    if (!fixed?.length || 'atViewport' in laid || laid.hidden) return null;
+    const { covers, cutting } = fixedCoversOf(
+      tree,
+      fixed,
+      laid.clip ?? laid,
+      this._fixedShift(),
+      this._viewportInDocument(),
+      this._scale,
+      MAX_COVERS - (this._covers.get(el)?.length ?? 0),
+    );
+    if (!covers.length) return null;
+    this._fixedCovers.set(el, covers);
+    const rects = covers.map((c) => c.rect);
+    return {
+      over: around(laid.over ? [...rects, laid.over] : rects),
+      cutting,
+    };
   }
 
   /** What a host mounts over the embedded elements, to `onEmbedded` where
@@ -5537,6 +5587,9 @@ export class HtmlViewNode extends Node {
     laid: R,
     fixed: readonly Box[] | undefined,
     held: readonly Box[] = NO_BOXES,
+    /** Where the document paints over a player with the boxes fixed over
+     *  it as well (`_fixedOver`). */
+    over: Rect | undefined = undefined,
   ): R {
     let r = laid;
     // one in a box fixed to the viewport goes where the viewport is, with
@@ -5556,6 +5609,7 @@ export class HtmlViewNode extends Node {
       if (cut === 'hidden') r = { ...laid, hidden: true };
       else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
     }
+    if (over) r = { ...r, over };
     // and in a sticky box the viewport keeps, where the flow has it, which
     // core moves it from with the box (`HELD_AT_VIEWPORT`)
     const by = HELD_BY.get(laid);
@@ -5607,7 +5661,9 @@ export class HtmlViewNode extends Node {
     at: { x: number; y: number },
   ): void {
     const tree = this._tree;
-    const covers = this._covers.get(element);
+    const laid = this._covers.get(element);
+    const fixed = this._fixedCovers.get(element);
+    const covers = fixed ? inPaintOrder([...(laid ?? []), ...fixed]) : laid;
     const c = ctx as PaintContext;
     if (!tree || !covers || !c.save || !c.beginPath || !c.rect || !c.clip) {
       return;
@@ -5617,6 +5673,15 @@ export class HtmlViewNode extends Node {
       originX: this.abs.x - at.x,
       originY: this.abs.y - at.y,
     };
+    // the context's origin is `at`, where a box fixed to the viewport is
+    // placed from the viewport (`atViewport`)
+    if (options.viewport) {
+      options.viewport = {
+        ...options.viewport,
+        x: options.viewport.x - at.x,
+        y: options.viewport.y - at.y,
+      };
+    }
     for (const { box, rect } of covers) {
       c.save();
       c.beginPath();
@@ -6990,6 +7055,36 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * Where an element a `<foreignObject>` holds was laid out, in the object's
+   * user units from its corner, with the object: null for one in no object.
+   * It is in no box of the document's, and what the drawing's matrices do
+   * to the object is `svg-geometry.ts`'s to say.
+   */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null {
+    this._settle();
+    const objects = this._tree?.foreign;
+    if (!objects) return null;
+    for (let at = elementParent(element); at; at = elementParent(at)) {
+      const object = objects.get(at);
+      if (!object) continue;
+      const box = boxFor(object.tree.root, element);
+      const rect = box && this._drawnRect(object.tree, box, false);
+      if (!rect) return null;
+      const unit = object.scale || 1;
+      return {
+        object: at,
+        rect: {
+          x: rect.x / unit,
+          y: rect.y / unit,
+          width: rect.width / unit,
+          height: rect.height / unit,
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
    * What an `IntersectionObserver` measures of its targets against its root
    * (Intersection Observer, 3.2.8), laid out first as `elementRect` is and
    * in its coordinates. The root's rectangle: its padding box where it
@@ -7161,6 +7256,24 @@ export class HtmlViewNode extends Node {
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
   }
+
+  /** What a canvas's context asks of the fonts (`canvas-text.ts`). */
+  canvasText(): CanvasText {
+    // a face a script added is read with the sheets, and a page that waited
+    // for its `load()` draws in it at once
+    if (!this._cascade || this._sheetsRead === null) {
+      this._prepare(this.abs.width || 1);
+    }
+    this._canvasText ??= new CanvasText({
+      fonts: () => this._fonts(),
+      cascade: () => this._cascade,
+      styleOf: (element) => this._styleOf(element),
+      webFonts: this._webFonts,
+    });
+    return this._canvasText;
+  }
+
+  private _canvasText: CanvasText | null = null;
 
   /** The document's fonts, where a page's `new FontFace` goes. */
   scriptFonts(): WebFonts {
@@ -18340,6 +18453,7 @@ const READS_FACE_AS_BUILT: ReadonlySet<string> = new Set([
   'textarea',
   'select',
   'button',
+  'file',
   'svg',
 ]);
 
@@ -18629,6 +18743,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'textarea',
   'select',
   'button',
+  'file',
   'checkbox',
   'radio',
 ]);

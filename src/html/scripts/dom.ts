@@ -43,6 +43,8 @@ import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
 import type { installWebCrypto } from './webcrypto.js';
+import type { installDataTransfer } from './datatransfer.js';
+import type { installClipboard } from './clipboard.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -79,6 +81,8 @@ export function installDom(
   mse: typeof installMse,
   geometry: typeof installGeometry,
   webcrypto: typeof installWebCrypto,
+  transfers: typeof installDataTransfer,
+  clipboards: typeof installClipboard,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -824,11 +828,16 @@ export function installDom(
     readonly data: string | null;
     readonly inputType: string;
     readonly isComposing: boolean;
+    readonly dataTransfer: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.data = init.data ?? null;
       this.inputType = String(init.inputType ?? '');
       this.isComposing = !!init.isComposing;
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+    getTargetRanges(): Any[] {
+      return [];
     }
   }
   class SubmitEvent extends Event {
@@ -5040,7 +5049,8 @@ export function installDom(
   const itemsOf = (state: Any): Any[] => {
     if (
       state.read &&
-      state.at !== (state.readsAttributes ? attrEpoch : treeEpoch)
+      (state.unkept ||
+        state.at !== (state.readsAttributes ? attrEpoch : treeEpoch))
     ) {
       state.items = state.read();
       state.at = state.readsAttributes ? attrEpoch : treeEpoch;
@@ -6137,6 +6147,20 @@ export function installDom(
    *  `float`, a word JavaScript once kept for itself. */
   const blockProperty = (key: string): string =>
     key === 'cssFloat' ? 'float' : cssName(kebab(key));
+  /** The names of the properties a style has, once a page looks for one. */
+  let styleProperties: Set<string> | null = null;
+  /** Whether a style has an attribute of a name, which a page asks with
+   *  `in`: Vue 2 writes `style[name]` only where it finds `name` there, or a
+   *  prefixed one, and jQuery the same, so a style that had none took every
+   *  `:style` binding for a property with no name. */
+  const isStyleProperty = (key: string): boolean => {
+    if (!styleProperties) {
+      const names = str(call('styleProperties', document.documentElement?._id));
+      if (!names) return false;
+      styleProperties = new Set(names.split(','));
+    }
+    return !key.startsWith('--') && styleProperties.has(blockProperty(key));
+  };
   /**
    * A declaration block a page may write, an element's or a rule's: its
    * names by index, and each property read and set as an attribute of its
@@ -6165,6 +6189,12 @@ export function installDom(
           '',
         );
         return true;
+      },
+      has(t, key) {
+        if (key in t) return true;
+        if (typeof key !== 'string') return false;
+        const at = index(key);
+        return at >= 0 ? at < block.names().length : isStyleProperty(key);
       },
       ownKeys(t) {
         return [
@@ -8605,6 +8635,11 @@ export function installDom(
         'NotAllowedError',
       );
     }
+    if (el._name === 'input' && el.type === 'file') {
+      consumeActivation();
+      call('pickFiles', el._id);
+      return;
+    }
     if (call('showPicker', el._id) === 'unrendered') {
       throw refused(
         `${iface}::showPicker() requires the select is rendered.`,
@@ -8631,7 +8666,12 @@ export function installDom(
         return this.getAttribute('value') ?? 'on';
       }
       if (DEFAULT_MODE.has(type)) return this.getAttribute('value') ?? '';
-      if (type === 'file') return '';
+      // the first file's name behind a path no page can read anything from
+      // (HTML 4.10.5.4, "filename")
+      if (type === 'file') {
+        const first = this.files[0];
+        return first ? `C:\\fakepath\\${first.name}` : '';
+      }
       const v = controlValue(this);
       return typeof v === 'string' ? v : (this.getAttribute('value') ?? '');
     }
@@ -8639,7 +8679,15 @@ export function installDom(
       const type = this.type;
       if (type === 'checkbox' || type === 'radio' || DEFAULT_MODE.has(type)) {
         this.setAttribute('value', v === null ? '' : v);
-      } else if (type !== 'file') {
+      } else if (type === 'file') {
+        if (str(v === null ? '' : v) !== '') {
+          throw new DOMException(
+            "Failed to set the 'value' property on 'HTMLInputElement': This input element accepts a filename, which may only be programmatically set to the empty string.",
+            'InvalidStateError',
+          );
+        }
+        call('setFiles', this._id, '[]');
+      } else {
         const was = this.value;
         call('setValue', this._id, v === null ? '' : str(v));
         valueSet(this, was);
@@ -8689,10 +8737,42 @@ export function installDom(
     set indeterminate(v: Any) {
       call('indeterminate', this._id, !!v);
     }
+    /** The same list until what the input holds changes (HTML 4.10.5.4). */
+    _files: Any = null;
+    _filesAs = '';
     get files(): Any {
-      return heldList(this, 'files', () =>
-        listMade(FileList, [], null, false, null),
-      );
+      if (this.type !== 'file') return null;
+      const told = str(call('fileList', this._id));
+      if (!this._files || told !== this._filesAs) {
+        const made: Any[] = [];
+        for (const file of JSON.parse(told)) made.push(hostFile(file));
+        this._files = listMade(FileList, made, null, false, null);
+        this._filesAs = told;
+      }
+      return this._files;
+    }
+    set files(v: Any) {
+      if (this.type !== 'file' || v === null) return;
+      if (!(v instanceof FileList)) {
+        throw new TypeError(
+          "Failed to set the 'files' property on 'HTMLInputElement': The provided value is not of type 'FileList'.",
+        );
+      }
+      const given: Any[] = [];
+      for (const file of Array.from(v as Any) as Any[]) {
+        const id = hostIdOf(file);
+        given.push(
+          id
+            ? { id }
+            : {
+                name: file.name,
+                type: file.type,
+                lastModified: file.lastModified,
+                b: base64OfBytes(file._bytes),
+              },
+        );
+      }
+      call('setFiles', this._id, JSON.stringify(given));
     }
     select(): void {
       if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
@@ -10534,10 +10614,11 @@ export function installDom(
         const { width, height, data } = source;
         return { width, height, data: new Uint8Array(data.buffer) };
       }
-      const state = source instanceof HTMLCanvasElement && canvases.get(source);
-      if (!state || !state.data) return null;
-      const { width, height, data } = state;
-      return { width, height, data: new Uint8Array(data.buffer) };
+      if (!(source instanceof HTMLCanvasElement) || !canvases.has(source)) {
+        return null;
+      }
+      const { width, height, data } = canvasBitmap(source);
+      return data ? { width, height, data: new Uint8Array(data.buffer) } : null;
     },
   });
 
@@ -10606,6 +10687,15 @@ export function installDom(
       resetCanvas(canvas, state, width, height);
     }
     return state;
+  };
+  /** A canvas as an image, as `drawImage` and `toDataURL` read one. A WebGL
+   *  context's pixels are the GL's, and read in as the document paints the
+   *  canvas, so one the document does not show held none: jspaint draws its
+   *  shapes on such a canvas and copies them, and a pencil left no mark. */
+  const canvasBitmap = (canvas: Any): Any => {
+    const state = canvasState(canvas);
+    const gl = state.kind === 'webgl' || state.kind === 'webgl2';
+    return (gl && WEBGL.pixels(state.context)) || state;
   };
   /** Whether a context is a 2d one, a canvas's or an `OffscreenCanvas`'s. */
   const is2d = (context: Any): boolean =>
@@ -10779,9 +10869,216 @@ export function installDom(
     direction: 'inherit',
     letterSpacing: '0px',
     wordSpacing: '0px',
+    fontKerning: 'auto',
+    fontStretch: 'normal',
+    fontVariantCaps: 'normal',
+    textRendering: 'auto',
+    lang: 'inherit',
     filter: 'none',
     imageSmoothingEnabled: true,
     imageSmoothingQuality: 'low',
+  };
+
+  /** A context's font's size in pixels, kept beside `font` and no property. */
+  const FONT_SIZE = '_fontSize';
+
+  /** What each of a context's keywords may be: any other is ignored. */
+  const TEXT_KEYWORDS: Record<string, string[]> = {
+    textAlign: ['start', 'end', 'left', 'right', 'center'],
+    textBaseline: [
+      'top',
+      'hanging',
+      'middle',
+      'alphabetic',
+      'ideographic',
+      'bottom',
+    ],
+    direction: ['ltr', 'rtl', 'inherit'],
+    fontKerning: ['auto', 'normal', 'none'],
+    fontStretch: [
+      'ultra-condensed',
+      'extra-condensed',
+      'condensed',
+      'semi-condensed',
+      'normal',
+      'semi-expanded',
+      'expanded',
+      'extra-expanded',
+      'ultra-expanded',
+    ],
+    fontVariantCaps: [
+      'normal',
+      'small-caps',
+      'all-small-caps',
+      'petite-caps',
+      'all-petite-caps',
+      'unicase',
+      'titling-caps',
+    ],
+    textRendering: [
+      'auto',
+      'optimizeSpeed',
+      'optimizeLegibility',
+      'geometricPrecision',
+    ],
+  };
+
+  /** The OpenType feature each of a context's capitals asks for. */
+  const CAPS_FEATURES: Record<string, string> = {
+    'small-caps': 'smcp',
+    'all-small-caps': 'c2sc',
+    'petite-caps': 'pcap',
+    'all-petite-caps': 'c2pc',
+    unicase: 'unic',
+    'titling-caps': 'titl',
+  };
+
+  /** The white space a context's text takes for a space (HTML 4.12.5.1.8). */
+  const TEXT_SPACES = /[\t\n\f\r]/g;
+
+  /** Pixels in each absolute unit of a context's spacing. */
+  const SPACING_UNITS: Record<string, number> = {
+    px: 1,
+    pt: 4 / 3,
+    pc: 16,
+    in: 96,
+    cm: 96 / 2.54,
+    mm: 96 / 25.4,
+    q: 96 / 101.6,
+    rem: 16,
+    rlh: 19.2,
+  };
+
+  /** Em in each unit of a context's spacing that goes by its font, as near
+   *  as can be said with no face in hand. */
+  const SPACING_EMS: Record<string, number> = {
+    em: 1,
+    ic: 1,
+    ex: 0.5,
+    ch: 0.5,
+    cap: 0.7,
+    lh: 1.2,
+  };
+
+  /** A `letterSpacing` or a `wordSpacing` in pixels at a font's size: null
+   *  for what is no length. */
+  const spacingPixels = (value: string, em: number): number | null => {
+    const read = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]+)$/.exec(
+      value,
+    );
+    if (!read) return null;
+    const n = Number(read[1]);
+    const ems = SPACING_EMS[read[2]];
+    if (ems !== undefined) return n * ems * em;
+    const unit = SPACING_UNITS[read[2]];
+    return unit === undefined ? null : n * unit;
+  };
+
+  /** How many times finer than it is drawn a string is set: a quarter of a
+   *  pixel is as near as Skia places a glyph, and large text is smooth with
+   *  less. */
+  const textFineness = (device: number): number =>
+    device <= 48 ? 4 : device <= 128 ? 2 : 1;
+
+  /** The most pixels of coverage a string is set in, a side squared: a
+   *  heading the size of a window is no reason for gigabytes. */
+  const TEXT_RASTER_MOST = 16e6;
+
+  /** The strings this realm has set, by everything they were set from: a
+   *  chart draws the same labels at each frame, and pdf.js the same letters
+   *  on each line. */
+  const textRasters = new Map<string, Any>();
+  let textRasterBytes = 0;
+  const TEXT_RASTER_BYTES = 64 * 1024 * 1024;
+
+  /** A string's coverage from the host, with what of it anything covers:
+   *  null where there is no text engine, or it sets none. */
+  const canvasRaster = (
+    owner: number,
+    font: string,
+    chars: string,
+    size: number,
+    stroke: number,
+    setting: string,
+    generation: string,
+  ): Any => {
+    const key = `${generation}\0${font}\0${size}\0${stroke}\0${setting}\0${chars}`;
+    let raster = textRasters.get(key);
+    if (raster !== undefined) {
+      // the last used stays the longest
+      textRasters.delete(key);
+      textRasters.set(key, raster);
+      return raster;
+    }
+    const raw = call(
+      'canvasRaster',
+      owner,
+      font,
+      chars,
+      `${size},${stroke},${setting}`,
+    );
+    raster = null;
+    if (typeof raw === 'string') {
+      const end = raw.indexOf('\n');
+      raster = JSON.parse(raw.slice(0, end));
+      const { width, height } = raster;
+      const data = new Uint8Array(width * height);
+      let u0 = width;
+      let v0 = height;
+      let u1 = 0;
+      let v1 = 0;
+      for (let v = 0, i = 0; v < height; v += 1) {
+        for (let u = 0; u < width; u += 1, i += 1) {
+          const byte = raw.charCodeAt(end + 1 + i);
+          if (!byte) continue;
+          data[i] = byte;
+          if (u < u0) u0 = u;
+          if (u >= u1) u1 = u + 1;
+          if (v < v0) v0 = v;
+          v1 = v + 1;
+        }
+      }
+      raster.data = data;
+      raster.ink = u1 > u0 ? [u0, v0, u1, v1] : null;
+      textRasterBytes += data.length;
+    }
+    textRasters.set(key, raster);
+    while (textRasterBytes > TEXT_RASTER_BYTES) {
+      const oldest = textRasters.keys().next().value as string;
+      textRasterBytes -= textRasters.get(oldest)?.data.length ?? 0;
+      textRasters.delete(oldest);
+    }
+    return raster;
+  };
+
+  /** How far down from the alphabetic baseline a `textBaseline` is, so far
+   *  up the text is moved from `y`, in a raster's or a measure's pixels. */
+  const baselineOffset = (lengths: Any, baseline: string): number => {
+    switch (baseline) {
+      case 'top':
+        return lengths.emAscent;
+      case 'bottom':
+        return -lengths.emDescent;
+      case 'middle':
+        return (lengths.emAscent - lengths.emDescent) / 2;
+      case 'hanging':
+        return lengths.ascent * 0.8;
+      case 'ideographic':
+        return -lengths.descent;
+      default:
+        return 0;
+    }
+  };
+
+  /** How far left of its anchor a line of a width starts. */
+  const alignOffset = (
+    width: number,
+    align: string,
+    direction: string,
+  ): number => {
+    if (align === 'center') return width / 2;
+    const end = direction === 'rtl' ? 'start' : 'end';
+    return align === 'right' || align === end ? width : 0;
   };
 
   /**
@@ -10790,12 +11087,13 @@ export function installDom(
    * paths are filled, stroked and clipped to with colours, gradients and
    * patterns of another canvas, through every compositing operator
    * (`raster.ts`); and another canvas is drawn where the transform keeps a
-   * rectangle one. Text and an image are kept as state and drawn as
-   * nothing: a font's outlines and an image's pixels are the host's.
+   * rectangle one. Text is set by the host and painted here as any shape is
+   * (`canvasRaster`). An image is kept as state and drawn as nothing: its
+   * pixels are the host's.
    */
   class CanvasRenderingContext2D {
     _canvas: Any;
-    _state: Any = { ...CONTEXT_STATE };
+    _state: Any = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
     _stack: Any[] = [];
     _matrix: number[] = [1, 0, 0, 1, 0, 0];
     _dash: number[] = [];
@@ -10812,7 +11110,7 @@ export function installDom(
       return this._canvas;
     }
     _reset(): void {
-      this._state = { ...CONTEXT_STATE };
+      this._state = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
       this._stack = [];
       this._matrix = [1, 0, 0, 1, 0, 0];
       this._dash = [];
@@ -11380,24 +11678,191 @@ export function installDom(
         Number(b),
       );
     }
-    fillText(): void {}
-    strokeText(): void {}
-    /** A width as a sans-serif's average character, the text being drawn
-     *  as nothing yet. */
-    measureText(text: Any): Any {
-      const size = parseFloat(
-        /(\d+(?:\.\d+)?)px/.exec(this._state.font)?.[1] ?? '10',
+    fillText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], false);
+    }
+    strokeText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], true);
+    }
+    /** What the document's fonts are for this context, its id with them: a
+     *  canvas in a page, or the document for an `OffscreenCanvas`. Null in a
+     *  worker, which has none. Asked once a task, since a face landing or a
+     *  canvas's `dir` can change them between any two. */
+    _textNow(): Any {
+      if (this._textAsked === undefined) {
+        const owner = this._canvas._id ?? document._id;
+        const raw = call('canvasTextNow', owner);
+        const now = typeof raw === 'string' ? raw.split(',') : null;
+        this._textAsked = now && {
+          owner,
+          generation: now[0],
+          direction: now[1],
+        };
+        queueMicrotask(() => {
+          this._textAsked = undefined;
+        });
+      }
+      return this._textAsked;
+    }
+    _textAsked: Any;
+    /** A string's setting as it crosses, which `textSetting` reads. */
+    _textSetting(direction: string): string {
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      return [
+        state.direction === 'inherit' ? direction : state.direction,
+        spacingPixels(state.letterSpacing, size) ?? 0,
+        spacingPixels(state.wordSpacing, size) ?? 0,
+        state.fontKerning,
+        CAPS_FEATURES[state.fontVariantCaps] ?? '',
+      ].join(',');
+    }
+    /** What a `font` comes to: null for no font. Where there is no text
+     *  engine it is kept as written, with what size can be read off it. */
+    _fontOf(value: string): Any {
+      const raw = call('canvasFont', this._canvas._id ?? document._id, value);
+      if (typeof raw === 'string') return raw ? JSON.parse(raw) : null;
+      if (!value.trim()) return null;
+      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(value)?.[1] ?? '10');
+      return { text: value, size };
+    }
+    _drawText(text: Any, x: Any, y: Any, maxWidth: Any, stroke: boolean): void {
+      const left = Number(x);
+      const top = Number(y);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+      const most = maxWidth === undefined ? Infinity : Number(maxWidth);
+      if (!(most > 0)) return;
+      const state = this._state;
+      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const [a, b, c, d, e, f] = this._matrix;
+      const scale = Math.max(Math.hypot(a, b), Math.hypot(c, d));
+      const now = this._textNow();
+      if (!how || !now || !(scale > 0) || !chars.trim()) return;
+      const fontSize = state[FONT_SIZE];
+      const device = fontSize * scale;
+      const size = Math.max(
+        1,
+        Math.round(
+          Math.min(
+            device * textFineness(device),
+            Math.sqrt(TEXT_RASTER_MOST / chars.length),
+          ),
+        ),
       );
-      const width = str(text).length * size * 0.55;
-      return {
-        width,
-        actualBoundingBoxLeft: 0,
-        actualBoundingBoxRight: width,
-        actualBoundingBoxAscent: size * 0.8,
-        actualBoundingBoxDescent: size * 0.2,
-        fontBoundingBoxAscent: size * 0.9,
-        fontBoundingBoxDescent: size * 0.25,
+      const perUnit = size / fontSize;
+      const setting = this._textSetting(now.direction);
+      const raster = canvasRaster(
+        now.owner,
+        state.font,
+        chars,
+        size,
+        stroke ? state.lineWidth * perUnit : 0,
+        setting,
+        now.generation,
+      );
+      if (!raster?.ink) return;
+      // what a `maxWidth` is short of the text is taken off across it, and
+      // the anchor goes by the width it comes to
+      const width = raster.advance / perUnit;
+      const across = width > most ? most / width : 1;
+      const sx = across / perUnit;
+      const sy = 1 / perUnit;
+      const ux =
+        left -
+        alignOffset(width * across, state.textAlign, setting.split(',')[0]) -
+        raster.x * sx;
+      const uy =
+        top + baselineOffset(raster, state.textBaseline) * sy - raster.y * sy;
+      this._paint(
+        (target, paint) =>
+          RASTER.mask(
+            target,
+            raster.data,
+            raster.width,
+            raster.ink,
+            [
+              a * sx,
+              b * sx,
+              c * sy,
+              d * sy,
+              a * ux + c * uy + e,
+              b * ux + d * uy + f,
+            ],
+            paint,
+          ),
+        how,
+      );
+    }
+    measureText(text: Any): Any {
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      const now = this._textNow();
+      const setting = this._textSetting(now?.direction ?? 'ltr');
+      const raw =
+        now && call('canvasMeasure', now.owner, state.font, chars, setting);
+      // where there is no text engine, a sans-serif's average character
+      const lengths =
+        typeof raw === 'string'
+          ? JSON.parse(raw)
+          : {
+              width: chars.length * size * 0.55,
+              ascent: size * 0.9,
+              descent: size * 0.25,
+              emAscent: size * 0.8,
+              emDescent: size * 0.2,
+            };
+      const down = baselineOffset(lengths, state.textBaseline);
+      const across = alignOffset(
+        lengths.width,
+        state.textAlign,
+        setting.split(',')[0],
+      );
+      const metrics = new TextMetrics(CANVAS_KEY);
+      metrics._width = lengths.width;
+      metrics._font = [lengths.ascent - down, lengths.descent + down];
+      metrics._em = [lengths.emAscent - down, lengths.emDescent + down];
+      metrics._baselines = [
+        lengths.ascent * 0.8 - down,
+        -down,
+        -lengths.descent - down,
+      ];
+      // read off a raster only if a page asks: a page measures far more
+      // strings than it reads the ink of
+      metrics._read = (): number[] => {
+        const fine = Math.max(1, Math.round(size * 4));
+        const raster =
+          chars.trim() && now
+            ? canvasRaster(
+                now.owner,
+                state.font,
+                chars,
+                fine,
+                0,
+                setting,
+                now.generation,
+              )
+            : null;
+        const perUnit = fine / size;
+        const ink = raster?.ink;
+        return !raster
+          ? [
+              across,
+              lengths.width - across,
+              size * 0.8 - down,
+              size * 0.2 + down,
+            ]
+          : !ink
+            ? [0, 0, 0, 0]
+            : [
+                (raster.x - ink[0]) / perUnit + across,
+                (ink[2] - raster.x) / perUnit - across,
+                (raster.y - ink[1]) / perUnit - down,
+                (ink[3] - raster.y) / perUnit + down,
+              ];
       };
+      return metrics;
     }
     setLineDash(segments: Any): void {
       this._dash = Array.from(segments ?? [], Number);
@@ -11463,6 +11928,60 @@ export function installDom(
       }
       return n;
     });
+  /** What `measureText` answers (HTML 4.12.5.1.8), every length of it from
+   *  the context's anchor, as it was when the text was measured. */
+  class TextMetrics {
+    _width = 0;
+    _font = [0, 0];
+    _em = [0, 0];
+    _baselines = [0, 0, 0];
+    _read: () => number[] = () => [0, 0, 0, 0];
+    _ink: number[] | null = null;
+    constructor(key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+    }
+    get width(): number {
+      return this._width;
+    }
+    _inkAt(side: number): number {
+      this._ink ??= this._read();
+      return this._ink[side];
+    }
+    get actualBoundingBoxLeft(): number {
+      return this._inkAt(0);
+    }
+    get actualBoundingBoxRight(): number {
+      return this._inkAt(1);
+    }
+    get actualBoundingBoxAscent(): number {
+      return this._inkAt(2);
+    }
+    get actualBoundingBoxDescent(): number {
+      return this._inkAt(3);
+    }
+    get fontBoundingBoxAscent(): number {
+      return this._font[0];
+    }
+    get fontBoundingBoxDescent(): number {
+      return this._font[1];
+    }
+    get emHeightAscent(): number {
+      return this._em[0];
+    }
+    get emHeightDescent(): number {
+      return this._em[1];
+    }
+    get hangingBaseline(): number {
+      return this._baselines[0];
+    }
+    get alphabeticBaseline(): number {
+      return this._baselines[1];
+    }
+    get ideographicBaseline(): number {
+      return this._baselines[2];
+    }
+  }
+
   for (const name of Object.keys(CONTEXT_STATE)) {
     Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
       get(this: Any) {
@@ -11487,7 +12006,23 @@ export function installDom(
         }
         // as is no font, which is what `getComputedStyle(el).font` reads
         // where the shorthand cannot say the element's
-        if (name === 'font' && !str(v).trim()) return;
+        if (name === 'font') {
+          const font = this._fontOf(str(v));
+          if (font) {
+            this._state.font = font.text;
+            this._state[FONT_SIZE] = font.size;
+          }
+          return;
+        }
+        if (name in TEXT_KEYWORDS) {
+          if (TEXT_KEYWORDS[name].includes(str(v))) this._state[name] = str(v);
+          return;
+        }
+        if (name === 'letterSpacing' || name === 'wordSpacing') {
+          const length = str(v).trim().toLowerCase();
+          if (spacingPixels(length, 0) !== null) this._state[name] = length;
+          return;
+        }
         this._state[name] =
           typeof was === 'number'
             ? Number.isFinite(Number(v))
@@ -11585,7 +12120,7 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      from = canvasState(source);
+      from = canvasBitmap(source);
     } else {
       return null;
     }
@@ -12326,7 +12861,7 @@ export function installDom(
         "Failed to execute 'toDataURL'",
         'Cannot read from a canvas that has transferred its control to offscreen.',
       );
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const bytes = encodedBitmap(state.width, state.height, state.data);
       return bytes ? `data:image/png;base64,${base64OfBytes(bytes)}` : 'data:,';
     }
@@ -12344,7 +12879,7 @@ export function installDom(
           `${what} on 'HTMLCanvasElement': The callback provided as parameter 1 is not a function.`,
         );
       }
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const { width, height } = state;
       const data = state.data.slice();
       setTimer(
@@ -14806,6 +15341,15 @@ export function installDom(
   for (const name of ['media', 'type']) {
     Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
   }
+  // an HTML element's `title` is every HTML element's
+  for (const name of ['media', 'type', 'title']) {
+    Object.defineProperty(SVGStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(
+    SVGStyleElement.prototype,
+    'sheet',
+    Object.getOwnPropertyDescriptor(HTMLStyleElement.prototype, 'sheet')!,
+  );
   Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
     get(this: Any): Any {
       return this.isConnected &&
@@ -15005,6 +15549,15 @@ export function installDom(
     }
     if (!go) return false;
     popoverActivation(target);
+    // a file input's picker, with a user's press or key behind it (HTML
+    // 6.5.5, "show the picker, if applicable"): what a page's own button
+    // calls `click()` for
+    if (input?.type === 'file') {
+      if (!isDisabled(input) && hasTransientActivation()) {
+        call('pickFiles', input._id);
+      }
+      return true;
+    }
     // a submit button submits its form and a reset button resets it
     // (HTML 4.10.6, 4.10.5.1.19): here, since a button the page made a
     // moment ago is none `<Html>` has drawn yet
@@ -15808,6 +16361,7 @@ export function installDom(
         );
       }
       const name = commandName(id);
+      if (CLIPBOARD_COMMANDS.has(name)) return clipboardCommand(name);
       if (!commandEnabled(name)) return false;
       if (name === 'selectall') selectAllCommand();
       else COMMANDS[name](commandTarget(), str(value));
@@ -17311,6 +17865,9 @@ export function installDom(
     'keydown',
     'keyup',
     'keypress',
+    'copy',
+    'cut',
+    'paste',
     'input',
     'change',
     'select',
@@ -18749,19 +19306,22 @@ export function installDom(
     let closing = false;
     const hand = (): void => {
       wanted = false;
-      if (held.length === 1) controller.enqueue(held[0]);
+      // taken first: with a second read waiting, `enqueue` pulls from inside
+      // itself, and `pulled` must find nothing left to hand that read
+      const pieces = held;
+      held = [];
+      if (pieces.length === 1) controller.enqueue(pieces[0]);
       else {
         let size = 0;
-        for (const piece of held) size += piece.length;
+        for (const piece of pieces) size += piece.length;
         const whole = new Uint8Array(size);
         let at = 0;
-        for (const piece of held) {
+        for (const piece of pieces) {
           whole.set(piece, at);
           at += piece.length;
         }
         controller.enqueue(whole);
       }
-      held = [];
     };
     return {
       arrived(bytes: Uint8Array): void {
@@ -18953,7 +19513,7 @@ export function installDom(
       }
       // a blob URL is this realm's, read here
       if (url.startsWith('blob:')) {
-        const blob = blobUrls.get(url);
+        const blob = blobUrls.get(url.replace(/#.*$/, ''));
         const response = blob ? blobResponse(blob, url, headers) : null;
         if (response) resolve(response);
         else reject(new TypeError('Failed to fetch'));
@@ -20426,6 +20986,16 @@ export function installDom(
       seen.set(value, out);
       return out;
     }
+    // and so is an `ImageData`, which a page hands a worker to encode
+    if (value instanceof ImageData) {
+      out = new ImageData(
+        new Uint8ClampedArray(value.data),
+        value.width,
+        value.height,
+      );
+      seen.set(value, out);
+      return out;
+    }
     // an `ImageBitmap` is serializable, its pixels copied (HTML 8.11.2)
     if (value instanceof ImageBitmap) {
       if (!value._data) {
@@ -20810,7 +21380,25 @@ export function installDom(
       seen.set(v, index);
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
-        return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
+        return {
+          i: index,
+          t: 'L',
+          b: bytesOf(v._bytes),
+          y: v.type,
+          // a file stays one, with its name and its date
+          ...(v instanceof File && { fn: v.name, fm: v.lastModified }),
+        };
+      }
+      if (v instanceof ImageData) {
+        return {
+          i: index,
+          t: 'Z',
+          w: v.width,
+          h: v.height,
+          b: bytesOf(
+            new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.length),
+          ),
+        };
       }
       if (CRYPTO.isKey(v)) return { i: index, t: 'Y', s: CRYPTO.sealedOf(v) };
       const shape = GEOMETRY.serialize(v);
@@ -20995,8 +21583,23 @@ export function installDom(
           out = byWire.get(str(v.w)) ?? null;
           break;
         case 'L':
-          out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          out =
+            v.fn === undefined
+              ? new Blob([bytesOfBase64(v.b)], { type: v.y })
+              : new File([bytesOfBase64(v.b)], str(v.fn), {
+                  type: v.y,
+                  lastModified: v.fm,
+                });
           break;
+        case 'Z': {
+          const bytes = bytesOfBase64(v.b);
+          out = new ImageData(
+            new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+            v.w,
+            v.h,
+          );
+          break;
+        }
         case 'Y':
           out = CRYPTO.fromSealed(str(v.s));
           break;
@@ -21192,18 +21795,32 @@ export function installDom(
     }
   }
 
+  /** Line endings as this platform has them (File API 3.1, "convert line
+   *  endings to native"). */
+  const nativeEndings = (text: string): string =>
+    text.replace(/\r\n?|\n/g, '\n');
   /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
    *  a view as its bytes, a `Blob` as its own. */
-  const blobBytes = (parts: Any): Uint8Array => {
+  const blobBytes = (parts: Any, endings: string): Uint8Array => {
     const chunks: Uint8Array[] = [];
     for (const part of parts ?? []) {
       if (part instanceof Blob) chunks.push(part._bytes);
       else if (part instanceof ArrayBuffer) chunks.push(new Uint8Array(part));
       else if (ArrayBuffer.isView(part)) {
+        // a buffer sent elsewhere is empty, and a view of one cannot be made
+        if (part.buffer.byteLength) {
+          chunks.push(
+            new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          );
+        }
+      } else {
+        const text = str(part);
         chunks.push(
-          new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          new TextEncoder().encode(
+            endings === 'native' ? nativeEndings(text) : text,
+          ),
         );
-      } else chunks.push(new TextEncoder().encode(str(part)));
+      }
     }
     const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
     let at = 0;
@@ -21213,24 +21830,98 @@ export function installDom(
     }
     return out;
   };
+  /** A `Blob`'s type as File API has it: nothing past printable ASCII,
+   *  lowercase. */
+  const blobType = (type: string): string =>
+    /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+  /** A sequence of parts and a bag of options, each as Web IDL takes them
+   *  (File API 3.1): what is neither is a `TypeError`. */
+  const blobInit = (name: string, parts: Any, options: Any): Any => {
+    if (parts !== undefined) {
+      if (
+        parts === null ||
+        (typeof parts !== 'object' && typeof parts !== 'function') ||
+        typeof parts[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(
+          `Failed to construct '${name}': The provided value cannot be converted to a sequence.`,
+        );
+      }
+    }
+    if (
+      options !== undefined &&
+      options !== null &&
+      typeof options !== 'object' &&
+      typeof options !== 'function'
+    ) {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value is not of type '${name}PropertyBag'.`,
+      );
+    }
+    const list = parts === undefined ? [] : Array.from(parts as Any[]);
+    const endings =
+      options?.endings === undefined ? 'transparent' : str(options.endings);
+    if (endings !== 'transparent' && endings !== 'native') {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value '${endings}' is not a valid enum value of type EndingType.`,
+      );
+    }
+    return {
+      list,
+      endings,
+      type: options?.type === undefined ? '' : str(options.type),
+    };
+  };
   class Blob {
     _bytes: Uint8Array;
-    readonly type: string;
-    constructor(parts: Any = [], options: Any = {}) {
-      this._bytes = blobBytes(parts);
-      const type = str(options?.type ?? '');
-      this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+    _type: string;
+    // a rest, since the interface's `length` is what it requires
+    constructor(...given: Any[]) {
+      const init = blobInit(
+        new.target === Blob ? 'Blob' : 'File',
+        given[0],
+        given[1],
+      );
+      this._bytes = blobBytes(init.list, init.endings);
+      this._type = blobType(init.type);
     }
+    get type(): string {
+      return this._type;
+    }
+    /** A file the host holds has a size before it has bytes here. */
+    _size?: number;
     get size(): number {
-      return this._bytes.length;
+      return this._size ?? this._bytes.length;
     }
     slice(start?: Any, end?: Any, type?: Any): Any {
-      const blob = new Blob([], { type: type ?? '' });
-      blob._bytes = this._bytes.slice(
-        start === undefined ? 0 : Number(start),
-        end === undefined ? this._bytes.length : Number(end),
-      );
+      const size = this.size;
+      const edge = (value: Any, otherwise: number): number => {
+        if (value === undefined) return otherwise;
+        const at = Math.trunc(Number(value)) || 0;
+        return at < 0 ? Math.max(size + at, 0) : Math.min(at, size);
+      };
+      const from = edge(start, 0);
+      const to = Math.max(edge(end, size), from);
+      const blob = new Blob([], { type: type === undefined ? '' : str(type) });
+      blob._bytes = this._bytes.slice(from, to);
       return blob;
+    }
+    stream(): Any {
+      const bytes = this._bytes;
+      let at = 0;
+      return new ReadableStream({
+        type: 'bytes',
+        pull(controller: Any): void {
+          if (at >= bytes.length) {
+            controller.close();
+            controller.byobRequest?.respond(0);
+            return;
+          }
+          const piece = bytes.slice(at, at + BLOB_CHUNK);
+          at += piece.length;
+          controller.enqueue(piece);
+        },
+      });
     }
     text(): Promise<string> {
       return Promise.resolve(new TextDecoder().decode(this._bytes));
@@ -21242,6 +21933,8 @@ export function installDom(
       return Promise.resolve(this._bytes.slice());
     }
   }
+  /** How much of a blob a read of its stream hands over at once. */
+  const BLOB_CHUNK = 65536;
   /** A worker's location (WorkerLocation, HTML 10.3.4), which `location`
    *  answers in a realm that is a worker's (`__becomeWorker`). */
   let workerLocation: Any = null;
@@ -21249,6 +21942,13 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone: a worker has no clipboard and nothing dragged to it
+    'DataTransfer',
+    'DataTransferItem',
+    'DataTransferItemList',
+    'ClipboardEvent',
+    'Clipboard',
+    'ClipboardItem',
     // WebRTC's and Media Capture's interfaces but the data channel's
     // (`webrtc.ts`, `mediastream.ts`), which a worker can be handed
     'RTCPeerConnection',
@@ -22019,20 +22719,109 @@ export function installDom(
     }
   }
   class File extends Blob {
-    readonly name: string;
-    readonly lastModified: number;
-    constructor(parts: Any, name: Any, options: Any = {}) {
+    _name: string;
+    _lastModified: number;
+    constructor(parts: Any, name: Any, options?: Any) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'File': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
       super(parts, options);
-      this.name = str(name);
-      this.lastModified = Number(options?.lastModified ?? Date.now());
+      this._name = str(name);
+      const when = options?.lastModified;
+      this._lastModified =
+        when === undefined ? Date.now() : Math.trunc(Number(when)) || 0;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get lastModified(): number {
+      return this._lastModified;
+    }
+    get webkitRelativePath(): string {
+      return '';
     }
   }
+  idlAttributes(Blob);
+  idlAttributes(File);
+
+  /** The files of the host's this realm has been told of, by the number the
+   *  host knows each by, so that an input's next list has the same `File`s. */
+  const hostFiles = new Map<number, Any>();
+  /** The number the host knows a file by, 0 for one the page made. */
+  const hostIdOf = (file: Any): number => {
+    for (const [id, held] of hostFiles) if (held === file) return id;
+    return 0;
+  };
+  /** A file of the host's. Its bytes are read as a page asks for them: a
+   *  video chosen to be uploaded need never cross to the page at all. */
+  const hostFile = (told: Any): Any => {
+    let file = hostFiles.get(told.id);
+    if (file) return file;
+    file = new File([], told.name, {
+      type: told.type,
+      lastModified: told.lastModified,
+    });
+    file._size = told.size;
+    let bytes: Uint8Array | null = null;
+    Object.defineProperty(file, '_bytes', {
+      get(): Uint8Array {
+        if (bytes) return bytes;
+        bytes = new Uint8Array(told.size);
+        for (let at = 0; at < told.size;) {
+          const piece = bytesOfBase64(str(call('fileChunk', told.id, at)));
+          if (!piece.length) break;
+          bytes.set(piece, at);
+          at += piece.length;
+        }
+        return bytes;
+      },
+      set(value: Uint8Array) {
+        bytes = value;
+      },
+      configurable: true,
+    });
+    hostFiles.set(told.id, file);
+    return file;
+  };
+
+  // --- what a clipboard and a drag carry -----------------------------------------
+  //
+  // `datatransfer.ts`: the data store, its mode what the event carrying it
+  // says, and the events.
+  const TRANSFER = transfers({
+    DOMException,
+    Event,
+    File,
+    FileList,
+    // what a store holds is no tree's, so no count says it moved
+    listOf: (Proto: Any, read: () => Any[]) => {
+      const list = listMade(Proto, [], read, false, null);
+      listState(list).unkept = true;
+      return list;
+    },
+    idlAttributes,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+  });
 
   /** A blob's bytes as text in the encoding a label names, else its
    *  type's charset, else UTF-8 (File API 6.6, "package data"). */
   const blobText = (blob: Any, label: Any): string => {
     const charset = /;\s*charset=([^;]+)/i.exec(blob.type)?.[1];
-    for (const name of [label, charset]) {
+    // a byte order mark says more than anything else does (Encoding 6)
+    const b = blob._bytes;
+    const marked =
+      b[0] === 0xfe && b[1] === 0xff
+        ? 'utf-16be'
+        : b[0] === 0xff && b[1] === 0xfe
+          ? 'utf-16le'
+          : b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf
+            ? 'utf-8'
+            : null;
+    for (const name of [marked, label, charset]) {
       if (name === undefined || name === null) continue;
       try {
         return new TextDecoder(str(name)).decode(blob._bytes);
@@ -22127,6 +22916,10 @@ export function installDom(
         this.readyState = 2;
         this.result = result();
         this._progress('load', size, size);
+      });
+      // in a task of its own: what a `load` listener queued runs before it,
+      // as a browser checks for microtasks between one listener and the next
+      step(() => {
         if (this.readyState !== 1) this._progress('loadend', size, size);
       });
     }
@@ -22182,6 +22975,16 @@ export function installDom(
         const type = el instanceof HTMLInputElement ? (el as Any).type : '';
         if (type === 'checkbox' || type === 'radio') {
           if ((el as Any).checked) this.append(name, (el as Any).value || 'on');
+        } else if (type === 'file') {
+          const files = Array.from((el as Any).files) as Any[];
+          for (const file of files) this.append(name, file);
+          // none is one file with no name and no bytes (HTML 4.10.21.4)
+          if (!files.length) {
+            this.append(
+              name,
+              new File([], '', { type: 'application/octet-stream' }),
+            );
+          }
         } else if (
           !['submit', 'reset', 'button', 'image', 'file'].includes(type) &&
           !(el instanceof HTMLButtonElement)
@@ -25770,10 +26573,8 @@ export function installDom(
     get name(): string {
       return this._name;
     }
-    /** Nothing here has been granted, and nothing refused: the answer a
-     *  browser gives before it has asked. */
     get state(): string {
-      return 'prompt';
+      return permissionState(this._name);
     }
   }
   idlAttributes(PermissionStatus);
@@ -25811,6 +26612,11 @@ export function installDom(
       });
     }
   }
+  /** What a permission is for this document, as the host has it: `prompt`
+   *  where nothing has been granted or refused, which is the answer a
+   *  browser gives before it has asked. */
+  const permissionState = (name: string): string =>
+    str(call('permission', name) ?? 'prompt');
   const madePermissions = (): Any => {
     makingPermissions = true;
     try {
@@ -25819,6 +26625,32 @@ export function installDom(
       makingPermissions = false;
     }
   };
+  // --- the Async Clipboard API ---------------------------------------------------
+  //
+  // `clipboard.ts`, what it reads and writes the host's (`scripts.clipboard`,
+  // the `clipboard` op and the `__clipboard` entry).
+  const clipboardEntries: [string, () => Primitive][] = [];
+  const CLIP = clipboards({
+    call: call as Any,
+    // its entries are registered with the rest, below
+    entry: (name: string, fn: () => Any) => {
+      clipboardEntries.push([name, fn]);
+    },
+    input: () => input(),
+    DOMException,
+    EventTarget,
+    Blob,
+    bytesOfBase64,
+    base64OfBytes,
+    textOf: (bytes: Uint8Array) => new TextDecoder().decode(bytes),
+    hasTransientActivation: () => hasTransientActivation(),
+    allowed: (feature: string) => call('featureAllowed', feature) === true,
+    fullyActive: () => call('fullyActive') !== false,
+    sanitize: (html: string) => sanitizedHtml(html),
+  });
+  /** Whether the host handed this document a clipboard. */
+  const hasClipboard = (): boolean => call('clipboard', 'on') === true;
+
   const navigator = {
     userAgent,
     appName: 'Netscape',
@@ -25847,6 +26679,14 @@ export function installDom(
     userActivation: new UserActivation(ACTIVATION_KEY),
     permissions: madePermissions(),
   };
+  // a secure context's alone, and only where the host has one to give
+  if (call('secureContext') === true && hasClipboard()) {
+    Object.defineProperty(navigator, 'clipboard', {
+      get: () => CLIP.clipboard,
+      enumerable: true,
+      configurable: true,
+    });
+  }
   // a page's service workers, where the host lets it have them and it is a
   // secure context; left out otherwise, as `clipboard` is
   const serviceWorkersOn =
@@ -27332,7 +28172,12 @@ export function installDom(
       const hash = url.indexOf('#');
       const fragment = hash < 0 ? '' : url.slice(hash);
       const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
-      url = `${base}?${new URLSearchParams(formData as Any)}${fragment}`;
+      // what is a file in the entry list is its name in a query
+      const query = new URLSearchParams();
+      for (const [name, value] of (formData as Any)._entries) {
+        query.append(name, value instanceof File ? value.name : value);
+      }
+      url = `${base}?${query}${fragment}`;
     }
     // replaced where it is made while the document loads, unless a user
     // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
@@ -29950,6 +30795,9 @@ export function installDom(
     return !before || breaksLine(before, keeps) ? after : null;
   };
 
+  /** Where text goes from one line to the next. */
+  const LINE_BREAK = /\r\n?|\n/;
+
   /** Put a line break in at a boundary point: a `<br>`, or a line feed
    *  where the host keeps them. The point after it. */
   const putBreak = (
@@ -30007,7 +30855,12 @@ export function installDom(
    * cancelled, and told as an `input`. Whether anything was told: false
    * where the selection is in no editing host.
    */
-  const edit = (host: Any, inputType: string, data: string | null): void => {
+  const edit = (
+    host: Any,
+    inputType: string,
+    data: string | null,
+    pasted: { text: string; transfer: Any } | null = null,
+  ): void => {
     const range = editRange(host);
     if (!range) return;
     const init = {
@@ -30017,6 +30870,7 @@ export function installDom(
       view: G,
       inputType,
       data,
+      dataTransfer: pasted?.transfer ?? null,
     };
     if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
     const back = inputType === 'deleteContentBackward';
@@ -30049,7 +30903,29 @@ export function installDom(
       if (!range.collapsed) range.deleteContents();
       const node = range.startContainer;
       const offset = range.startOffset;
-      if (inputType === 'insertText' && data !== null) {
+      if (pasted) {
+        const held = placeholderAfter(host, keeps, node, offset);
+        if (held) dropUnit(held);
+        const lines = keeps ? [pasted.text] : pasted.text.split(LINE_BREAK);
+        let n = node;
+        let o = offset;
+        lines.forEach((line, i) => {
+          if (i) [n, o] = putBreak(keeps, n, o);
+          if (!line) return;
+          const [text, at] = textAt(n, o);
+          text.insertData(at, line);
+          n = text;
+          o = at + line.length;
+        });
+        if (
+          lines.length > 1 &&
+          !lines[lines.length - 1] &&
+          !unitBeside(host, keeps, n, o, false, true)
+        ) {
+          putBreak(keeps, n, o);
+        }
+        selection.collapse(n, o);
+      } else if (inputType === 'insertText' && data !== null) {
         // what is typed on a line a placeholder holds takes its place
         const held = placeholderAfter(host, keeps, node, offset);
         if (held) dropUnit(held);
@@ -30156,10 +31032,240 @@ export function installDom(
   const commandName = (id: Any): string => str(id).toLowerCase();
   const commandSupported = (name: string): boolean =>
     name === 'selectall' ||
+    (CLIPBOARD_COMMANDS.has(name) && hasClipboard()) ||
     Object.prototype.hasOwnProperty.call(COMMANDS, name);
   const commandEnabled = (name: string): boolean =>
     name === 'selectall' ||
-    (commandSupported(name) && commandTarget() !== null);
+    (CLIPBOARD_COMMANDS.has(name)
+      ? hasClipboard() && hasTransientActivation()
+      : commandSupported(name) && commandTarget() !== null);
+
+  // --- copy, cut and paste ---------------------------------------------------------
+  //
+  // Clipboard API and events, 5: the chord, or `execCommand`, is told as an
+  // event a page may cancel, with a data store the page writes to or reads
+  // from. Its text goes to the clipboard or comes off it through the host's
+  // `scripts.clipboard`; with none, a `copy` a page cancelled reaches nothing
+  // and a `paste` is told empty, and what the chord does in a field is core's
+  // as it always was.
+
+  /** `document.execCommand`'s, a user's gesture behind each. A page cannot
+   *  ask for a paste (Clipboard API and events, 11, "paste"). */
+  const CLIPBOARD_COMMANDS = new Set(['copy', 'cut']);
+
+  /** A field whose text a user can edit. */
+  const editableField = (el: Any): Any =>
+    (el?.localName === 'textarea' ||
+      (el?.localName === 'input' && selects(el))) &&
+    !el.readOnly &&
+    !el.disabled
+      ? el
+      : null;
+
+  /** What a clipboard event is fired at (5.3.2): what has the focus where it
+   *  is an element of the document's own, else what the selection starts
+   *  in, else the body. */
+  const clipboardTargetOf = (told: Any): Any => {
+    if (told && told !== document.body) return told;
+    const range = selection._range;
+    if (range && !range.collapsed) {
+      const node = range.startContainer;
+      return node.nodeType === 1 ? node : node.parentNode;
+    }
+    return document.body ?? document.documentElement;
+  };
+
+  /** What was offered as the entries of a store: text as it is, and what is
+   *  no text as a file, which is how a pasted picture reaches a page. */
+  const offeredEntries = (offered: Any): Any[] => {
+    const entries: Any[] = [];
+    for (const item of offered) {
+      if (item.b === undefined) {
+        entries[entries.length] = {
+          kind: 'text',
+          type: item.t,
+          data: item.s ?? '',
+        };
+        continue;
+      }
+      const type = str(item.t);
+      entries[entries.length] = {
+        kind: 'file',
+        type,
+        data: new File(
+          [bytesOfBase64(item.b)],
+          `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
+          { type },
+        ),
+      };
+    }
+    return entries;
+  };
+  /** A store's text as it crosses to the clipboard. */
+  const storeWire = (transfer: Any): Any[] => {
+    const out: Any[] = [];
+    for (const held of TRANSFER.entriesOf(transfer)) {
+      if (held.kind === 'text') {
+        out[out.length] = { t: held.type, s: held.data };
+      }
+    }
+    return out;
+  };
+
+  /** What is selected where an element has the focus, as text: as it is
+   *  drawn, white space collapsed and lines broken, since that is what a
+   *  user selected and what a copy of it is (5.3.1). */
+  const selectedTextIn = (at: Any): string => {
+    const field = at?.localName === 'textarea' || at?.localName === 'input';
+    if (field && selects(at)) {
+      return at.value.slice(at.selectionStart ?? 0, at.selectionEnd ?? 0);
+    }
+    // `_range` first: it tells the host of a selection this realm made
+    if (!selection._range) return '';
+    return str(call('selectedText') ?? '') || selection.toString();
+  };
+
+  /** A paste no listener cancelled: into the field that has the focus, or
+   *  at the selection of the host it is in. Text alone, and the structure of
+   *  `text/html` is a listener's to use (5.3.1). */
+  const pasteInto = (at: Any, entries: Any[]): void => {
+    let text = '';
+    for (const held of entries) {
+      if (held.kind === 'text' && held.type === 'text/plain') text = held.data;
+    }
+    if (!text) return;
+    const field = editableField(at);
+    if (field) {
+      let value = text;
+      if (field.localName === 'input') {
+        value = value.replace(/\r\n?|\n/g, ' ');
+        const room =
+          field.maxLength < 0
+            ? Infinity
+            : field.maxLength -
+              field.value.length +
+              (field.selectionEnd - field.selectionStart);
+        value = value.slice(0, Math.max(0, room));
+      }
+      if (value) editField(field, 'insertFromPaste', value);
+      return;
+    }
+    const host = editingHostOf(at);
+    if (host) {
+      edit(host, 'insertFromPaste', null, {
+        text,
+        transfer: TRANSFER.made('read-only', entries),
+      });
+    }
+  };
+
+  /**
+   * A cut no listener cancelled, where the document does it: what is
+   * selected goes to the clipboard and out of the field or the host.
+   */
+  const cutFrom = (at: Any): boolean => {
+    const field = editableField(at);
+    if (field && field.selectionStart === field.selectionEnd) return false;
+    const host = field ? null : editingHostOf(at);
+    if (!field && (!host || editRange(host).collapsed)) return false;
+    CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
+    if (field) editField(field, 'deleteByCut', null);
+    else edit(host, 'deleteByCut', null);
+    return true;
+  };
+
+  /**
+   * `copy`, `cut` or `paste`, told at what has the focus, with a store
+   * that holds what is on the clipboard for a paste and takes what a page
+   * means to put there for the others. Whether the host's own default goes
+   * on: core's, on a chord, which puts a selection on the clipboard and
+   * edits a field. `offered` is what was on the clipboard, where the host
+   * has one: that paste is this realm's, since core's was stopped before the
+   * read. `own` is a command, which has no core behind it.
+   */
+  const clipboardEvent = (
+    type: string,
+    told: Any,
+    offered: Any,
+    own: boolean,
+  ): boolean => {
+    const at = clipboardTargetOf(told);
+    const entries = offered ? offeredEntries(offered) : [];
+    const data = TRANSFER.made(
+      type === 'paste' ? 'read-only' : 'read/write',
+      entries,
+    );
+    const go = dispatch(
+      at,
+      trusted(
+        new (TRANSFER.interfaces.ClipboardEvent as Any)(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clipboardData: data,
+        }),
+      ),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'paste') {
+      if (!offered) return go;
+      if (go) pasteInto(at, entries);
+      return false;
+    }
+    if (!go) {
+      const written = storeWire(data);
+      if (written.length) CLIP.write(written);
+      return false;
+    }
+    const editable = !!editableField(at) || !!editingHostOf(at);
+    if (type === 'cut' && editable && (own || !editableField(at))) {
+      if (hasClipboard()) cutFrom(at);
+      return false;
+    }
+    if (own) {
+      const text = selectedTextIn(at);
+      if (text) CLIP.write([{ t: 'text/plain', s: text }]);
+      return false;
+    }
+    return true;
+  };
+
+  /** A clipboard command: `execCommand('copy')` under a user's gesture. */
+  const clipboardCommand = (name: string): boolean => {
+    if (!commandEnabled(name)) return false;
+    clipboardEvent(name, document.activeElement, undefined, true);
+    return true;
+  };
+
+  /** Markup with what would run, or load, taken out: what a page reads of
+   *  `text/html` off the clipboard, which any application may have put
+   *  there (7.2.3.1). A second pass takes what the first turned into
+   *  something, since a serialized tree may parse into another. */
+  const sanitizedHtml = (html: string): string => {
+    let out = html;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const parsed = new DOMParser().parseFromString(out, 'text/html');
+      for (const el of parsed.querySelectorAll(
+        'script,iframe,object,embed,link,meta,base,noscript,xmp,noembed,noframes,plaintext,template,math,svg',
+      )) {
+        el.remove();
+      }
+      for (const el of parsed.querySelectorAll('*')) {
+        for (const name of el.getAttributeNames()) {
+          if (
+            /^on/i.test(name) ||
+            /^\s*(?:javascript|data|vbscript):/i.test(el.getAttribute(name))
+          ) {
+            el.removeAttribute(name);
+          }
+        }
+      }
+      const next = parsed.body?.innerHTML ?? '';
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  };
 
   /** What a key not cancelled does in an editing host: the edit it is, if
    *  any, and whether it was one — which keeps it from the host's own
@@ -30488,6 +31594,7 @@ export function installDom(
     SharedWorker,
     ImageData,
     CanvasRenderingContext2D,
+    TextMetrics,
     OffscreenCanvas,
     OffscreenCanvasRenderingContext2D,
     ImageBitmap,
@@ -30976,6 +32083,14 @@ export function installDom(
   for (const name of Object.getOwnPropertyNames(CRYPTO.interfaces)) {
     define(name, CRYPTO.interfaces[name]);
   }
+  for (const name of Object.getOwnPropertyNames(TRANSFER.interfaces)) {
+    define(name, TRANSFER.interfaces[name]);
+  }
+  if (call('secureContext') === true && hasClipboard()) {
+    for (const name of Object.getOwnPropertyNames(CLIP.interfaces)) {
+      define(name, CLIP.interfaces[name]);
+    }
+  }
   // `new Image()`, `new Option()` and `new Audio()`: the elements, made
   // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
   const Image = function (width?: Any, height?: Any): Any {
@@ -31059,57 +32174,6 @@ export function installDom(
       }
     });
   });
-  // `Math.sumPrecise` (ES2026), which no V8 under Node has yet and pdf.js's
-  // font compiler calls: every font a document embedded threw, and it was
-  // set in what the machine had. A finite double is a whole number of
-  // 2^-1074, so the sum is a BigInt of those, and is rounded once
-  if (!(Math as Any).sumPrecise) {
-    const double = new Float64Array(1);
-    const bits = new BigUint64Array(double.buffer);
-    Object.defineProperty(Math, 'sumPrecise', {
-      writable: true,
-      configurable: true,
-      value: {
-        sumPrecise(items: Any): number {
-          let sum = 0n;
-          let negativeZero = true;
-          let nan = false;
-          let up = false;
-          let down = false;
-          for (const item of items) {
-            if (typeof item !== 'number') {
-              throw new TypeError('Math.sumPrecise adds numbers');
-            }
-            if (item !== item) nan = true;
-            else if (item === Infinity) up = true;
-            else if (item === -Infinity) down = true;
-            else if (item !== 0 || 1 / item > 0) {
-              negativeZero = false;
-              double[0] = item;
-              const word = bits[0];
-              const exponent = Number((word >> 52n) & 0x7ffn);
-              const fraction = word & 0xfffffffffffffn;
-              const units = exponent
-                ? (fraction | (1n << 52n)) << BigInt(exponent - 1)
-                : fraction;
-              sum += word >> 63n ? -units : units;
-            }
-          }
-          if (nan || (up && down)) return NaN;
-          if (up) return Infinity;
-          if (down) return -Infinity;
-          if (negativeZero) return -0;
-          const size = sum < 0n ? -sum : sum;
-          // 55 bits, the last of them set if anything is cut off below,
-          // which is all that rounding to 53 reads
-          const cut = Math.max(size.toString(2).length - 55, 0);
-          let kept = size >> BigInt(cut);
-          if (kept << BigInt(cut) !== size) kept |= 1n;
-          return (sum < 0n ? -1 : 1) * Number(kept) * 2 ** (cut - 1074);
-        },
-      }.sumPrecise,
-    });
-  }
   // what the options transfer is given up once it is copied, as a
   // `postMessage`'s is
   define('createImageBitmap', createImageBitmap);
@@ -31285,6 +32349,9 @@ export function installDom(
     'blur',
     'keydown',
     'click',
+    'copy',
+    'cut',
+    'paste',
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
@@ -31587,6 +32654,7 @@ export function installDom(
   };
   for (const [name, fn] of transportEntries) entry(name, fn);
   for (const [name, fn] of cryptoEntries) entry(name, fn);
+  for (const [name, fn] of clipboardEntries) entry(name, fn);
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's
@@ -32087,6 +33155,10 @@ export function installDom(
         if (go && e.type === 'keydown' && editForKey(target, e)) return false;
         return go;
       }
+      case 'copy':
+      case 'cut':
+      case 'paste':
+        return clipboardEvent(e.type, target, e.clipboard, false);
       case 'input':
         return dispatch(
           target,
@@ -32155,6 +33227,11 @@ export function installDom(
         );
       case 'toggle':
         return dispatch(target, trusted(new Event('toggle')));
+      case 'cancel':
+        return dispatch(
+          target,
+          trusted(new Event('cancel', { bubbles: true })),
+        );
       // a `<link>`'s sheet applied, or not to be had, or what an `<img>`
       // came to: neither bubbles
       case 'load':
@@ -33158,6 +34235,14 @@ export function installDom(
     const [url] = input();
     const blob = blobUrls.get(str(url));
     return blob instanceof Blob ? blobText(blob, null) : null;
+  });
+
+  // and the bytes of one, as base64, for an image, a sheet or a font whose
+  // URL names it: what shows a page's own `File` before it is uploaded
+  entry('__blobBytes', () => {
+    const [url] = input();
+    const blob = blobUrls.get(str(url));
+    return blob instanceof Blob ? base64OfBytes(blob._bytes) : null;
   });
 
   // a plain event at an element: a script's `load` or `error`

@@ -68,6 +68,8 @@ const FRAME_MS = 16;
 export const SCRIPT_TIMEOUT_MS = 2000;
 
 /** What the page around a document gives its scripts. */
+declare const Buffer: { from(text: string, encoding: 'base64'): Uint8Array };
+
 export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
@@ -853,6 +855,13 @@ export class ScriptRunner {
    *  URL and a page may revoke it as soon as it has set it: ZoomInfo's tag
    *  fetches its next script, and runs it from a blob. Null for a URL the
    *  realm did not make, or let go. */
+  /** The bytes of a blob URL this realm made, or null for one it did not,
+   *  or revoked. */
+  blobBytes(url: string): Uint8Array | null {
+    const text = this.engine.call('__blobBytes', [url]);
+    return typeof text === 'string' ? Buffer.from(text, 'base64') : null;
+  }
+
   private _blobSource(url: string): string | null {
     const text = this.engine.call('__blobText', [url]);
     return typeof text === 'string' ? text : null;

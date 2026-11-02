@@ -368,7 +368,8 @@ export interface DocumentResponse {
  *  that says how, and the page the form was on — which a server that
  *  checks where a POST came from reads as its `Origin` and `Referer`. */
 export interface PostData {
-  body: string;
+  /** Bytes where a file is in it. */
+  body: string | Uint8Array;
   contentType: string;
   from: string;
 }

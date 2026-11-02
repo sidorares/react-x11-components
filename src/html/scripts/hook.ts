@@ -205,6 +205,12 @@ export function useScripts(
     get webSocket() {
       return latest.current.webSocket;
     },
+    get clipboard() {
+      return latest.current.clipboard;
+    },
+    get permissions() {
+      return latest.current.permissions;
+    },
     get webRTC() {
       return latest.current.webRTC;
     },

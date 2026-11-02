@@ -35,6 +35,7 @@ import {
   XK_SPACE,
   XK_TAB,
   ctrlChordLetter,
+  primaryModifierHeld,
 } from 'react-x11/keysyms';
 
 import type {} from 'react-x11/jsx-runtime';
@@ -137,16 +138,15 @@ export function useFocusStops(options: StopsOptions): Stops {
     boxes.node(pending)?.focus();
   }, [pending, boxes]);
 
-  /** Tab arrives at a stop, or at a control's widget. */
-  const go = (stop: FocusStop) => {
+  /** Tab arrives at a stop, or at a control's widget: false where the
+   *  widget is not mounted, which nothing will do on its behalf. */
+  const go = (stop: FocusStop): boolean => {
     setAnchor(stop.element);
-    if (stop.widget) {
-      forms.focusControl(stop.element);
-      return;
-    }
+    if (stop.widget) return forms.focusControl(stop.element);
     const node = boxes.node(stop.element);
     if (node) node.focus();
     else setPending(stop.element);
+    return true;
   };
 
   const onKeyDown = (ev: X11KeyboardEvent<DrawnNode>) => {
@@ -184,9 +184,9 @@ export function useFocusStops(options: StopsOptions): Stops {
     // the surface focused (`TextSelection.keyDown`, by the same rule); a
     // stop inside it is focused instead, and the document's selection is
     // still what they are for.
-    if (selectable && ev.ctrlKey) {
+    const surface = root.current;
+    if (selectable && primaryModifierHeld(ev, view.current?.app)) {
       const letter = ctrlChordLetter(ev);
-      const surface = root.current;
       if (letter === 0x61 /* a */ && surface) {
         surface.selectAll();
         ev.preventDefault();
@@ -291,8 +291,7 @@ export function useFocusStops(options: StopsOptions): Stops {
         if (!stop.widget && !boxes.node(stop.element)) {
           forms.focused(el, true);
         }
-        go(stop);
-        return true;
+        return go(stop);
       }
       return false;
     },
