@@ -97,6 +97,8 @@ export interface ScriptProps {
    *  presence makes the parse yield to the page's scripts. */
   _onParserBlocked?: (script: Element) => void;
   onDomEvent?: (event: HtmlDomEvent) => boolean | void;
+  /** Whether a page listens for what a pointer's moves make. */
+  movesHeard?: () => boolean;
   stylesheet?: string[];
   /** A frame of the page's sent somewhere by a link or a form whose target
    *  names it, where scripts run: absent where nothing loads a frame. */
@@ -455,6 +457,10 @@ export function useScripts(
     const go = runner.current?.dispatch(event) ?? true;
     return go ? undefined : false;
   }, []);
+  const movesHeard = useCallback(
+    () => runner.current?.host.movesHeard ?? false,
+    [],
+  );
   const navigateFrame = useCallback(
     (frame: Element, to: string, post: FramePost | null) =>
       runner.current?.host.navigateFrame(frame, to, post),
@@ -557,6 +563,7 @@ export function useScripts(
     onLoaded,
     _onParserBlocked: onParserBlocked,
     onDomEvent,
+    movesHeard,
     navigateFrame,
     scrolled,
     painted,

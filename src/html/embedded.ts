@@ -39,6 +39,8 @@ export interface Embedded {
    *  `<iframe>`'s document is that document's, as a browser's is, and the
    *  embedding document hears nothing of it. */
   contains(node: DrawnNode | null): boolean;
+  /** The element whose mount a node is in, or null. */
+  elementOf(node: DrawnNode | null): Element | null;
 }
 
 /** What a host gives for an embedded element: the node to mount over it,
@@ -61,7 +63,7 @@ export function useEmbedded(
   const onEmbedded = React.useCallback((reported: EmbeddedRect[]) => {
     setRects(reported);
   }, []);
-  const ports = React.useRef(new Set<DrawnNode>()).current;
+  const ports = React.useRef(new Map<DrawnNode, string>()).current;
   const refs = React.useRef(
     new Map<string, (node: DrawnNode | null) => void>(),
   ).current;
@@ -74,7 +76,7 @@ export function useEmbedded(
       ref = (node: DrawnNode | null) => {
         if (held) ports.delete(held);
         held = node;
-        if (node) ports.add(node);
+        if (node) ports.set(node, id);
       };
       refs.set(id, ref);
     }
@@ -87,6 +89,18 @@ export function useEmbedded(
         if (ports.has(at)) return true;
       }
       return false;
+    },
+    elementOf: (node) => {
+      if (!ports.size) return null;
+      for (let at = node; at; at = at.parent as DrawnNode | null) {
+        const id = ports.get(at);
+        if (id !== undefined) {
+          return (
+            rects.find((r) => `${idOf(r.element)}` === id)?.element ?? null
+          );
+        }
+      }
+      return null;
     },
     render: () => {
       if (!renderEmbedded) return [];

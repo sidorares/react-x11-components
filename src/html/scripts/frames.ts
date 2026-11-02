@@ -330,7 +330,10 @@ function FrameDocument({
       onScript: scripts.onScript,
       onParsed: scripts.onParsed,
       onLoaded: scripts.onLoaded,
-      onDomEvent: scripts.onDomEvent,
+      // a document of the page realm's has its events heard there
+      onDomEvent: realm
+        ? scripts.onDomEvent
+        : (event) => (context.parent.dispatch(event) ? undefined : false),
       onDocument: scripts.onDocument,
       onElementScroll: scripts.onElementScroll,
       stylesheet: scripts.stylesheet,

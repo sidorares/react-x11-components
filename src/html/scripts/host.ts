@@ -84,6 +84,7 @@ import {
   setModal,
   setPopoverOpen,
   shadowRootAround,
+  flatParentOf,
   topLayerIn,
   topLayerOf,
   treeGeneration,
@@ -100,6 +101,8 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
+import { eventPath, shadowIncludingHolds } from './event-path.js';
+import { NO_MODIFIERS } from '../dom-events.js';
 import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
@@ -443,6 +446,24 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** What is under the pointer now, where it is over the document. */
+  pointerElement(): Element | null;
+  /** What was under the pointer as the document was last laid out. */
+  pointerDrawn(): Element | null;
+  /** What the reader's selection is, to compare. */
+  selectionKey(): string;
+  /** What is under a pointer that did not move is `:hover` now. */
+  hoverAgain(): void;
+  /** `:hover` is on what has the pointer's capture, whatever it is over. */
+  hoverOn(element: Element | null): void;
+  /** A point of the page in an element's own coordinates
+   *  (`HtmlViewNode.pointIn`). */
+  pointIn(
+    how: 'offset' | 'layer',
+    element: Element,
+    x: number,
+    y: number,
+  ): [number, number] | null;
   /** Hand the host what a page asked to have saved: whether it takes it. */
   download(request: HtmlDownloadRequest): boolean;
   /** A file input's dialog (`HtmlProps.onPickFiles`). */
@@ -2135,11 +2156,16 @@ export class DomHost {
   /** An event `<Html>` told of, dispatched in the page; whether its default
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
+    if (event.type.startsWith('mouse')) this._under = event.target;
     const answer = this.entries?.call('__event', {
       type: event.type,
       target: this.idOf(event.target),
       x: event.x,
       y: event.y,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      samples: event.samples,
+      locks: event.locks,
       button: event.button,
       buttons: event.buttons,
       deltaX: event.deltaX,
@@ -2147,6 +2173,8 @@ export class DomHost {
       detail: event.detail,
       key: event.key,
       code: event.code,
+      repeat: event.repeat,
+      data: event.data,
       shiftKey: event.shiftKey,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
@@ -2345,6 +2373,15 @@ export class DomHost {
    * whether the facade was woken since it last asked.
    */
   private _viewports = new Map<number, string>([[1, '']]);
+  /** Whether a page listens for what a pointer's moves make: until one
+   *  does `<Html>` tells it nothing of them (`noteHeard`). */
+  movesHeard = false;
+  /** The element the last of the pointer's events was told at. */
+  private _under: Element | null = null;
+  /** What the pointer is over and around it, once a kind (`pointers.ts`),
+   *  and how far up that a removal has moved it, or -1. */
+  private _pointerChains: (Element[] | null)[] = [null, null];
+  private _pointerCut = [-1, -1];
   private _viewportsWoken = false;
 
   /** `<Html>` painted (`ScriptRunner.painted`): the facade is woken for a
@@ -2353,6 +2390,34 @@ export class DomHost {
    *  `<iframe>`'s box the page laid out again — so that the frame runs its
    *  resize steps and reports its media queries (HTML's "update the
    *  rendering") whether or not anything else asked for one. */
+  /** The pointer did not move and what is under it may have: told as the
+   *  boundary events it comes to, as a browser's fake move is
+   *  (`MouseEventManager`'s), and only where a page listens for them. */
+  askUnder(): void {
+    if (this._disposed || !this.entries || !this.movesHeard) return;
+    const el = this._seams.handle.pointerElement?.() ?? null;
+    if (!el || el === this._under) return;
+    this.dispatch({
+      ...NO_MODIFIERS,
+      type: 'mouseover',
+      target: el,
+      cancelable: false,
+    });
+    this._seams.handle.hoverAgain?.();
+  }
+
+  /** The reader's selection moved, which a page that listens hears as it
+   *  moves and not only as it next reads it. */
+  askSelection(): void {
+    if (this._disposed || !this.entries || !this._selectionHeard) return;
+    const key = this._seams.handle.selectionKey?.() ?? '';
+    if (key === this._selectionSeen) return;
+    this._selectionSeen = key;
+    this.entries.call('__selectionMoved', null);
+  }
+  private _selectionHeard = false;
+  private _selectionSeen = '';
+
   renderingMoved(): void {
     if (this._disposed || !this.entries || this._viewportsWoken) return;
     for (const [id, was] of this._viewports) {
@@ -2909,6 +2974,55 @@ export class DomHost {
       case 'parent': {
         const node = this._node(a);
         return this._isDocument(node) ? 0 : this.idOf(node.parent);
+      }
+      // an event's whole path, in one answer (`event-path.ts`)
+      case 'eventPath':
+        return eventPath(
+          this._node(a),
+          b === true,
+          c ? this._node(c) : null,
+          (node) => this.idOf(node),
+        );
+      // what a pointer is over and around it (`pointers.ts`), and how far
+      // up that a removal has moved it since it was last asked
+      case 'pointerChain': {
+        const chain: Element[] = [];
+        let at: Element | null = b ? this._element(b) : null;
+        for (; at; at = flatParentOf(at)) chain.push(at);
+        this._pointerChains[a as number] = chain;
+        this._pointerCut[a as number] = -1;
+        return chain.map((el) => this.idOf(el)).join(',');
+      }
+      // a pointer's capture has `:hover` go with it
+      case 'pointerHover':
+        this._seams.handle.hoverOn?.(a ? this._element(a) : null);
+        return null;
+      case 'pointerOver': {
+        const cut = this._pointerCut.join(',');
+        this._pointerCut = [-1, -1];
+        return cut;
+      }
+      // a page came to listen for its selection's changes
+      case 'selectionHeard':
+        this._selectionHeard = true;
+        this._selectionSeen = this._seams.handle.selectionKey?.() ?? '';
+        return null;
+      // a page came to listen for what a pointer's moves make
+      case 'movesHeard': {
+        this.movesHeard = true;
+        const el = this._seams.handle.pointerDrawn?.() ?? null;
+        this._under = el;
+        return el ? this.idOf(el) : 0;
+      }
+      case 'pointIn': {
+        const v = this._seams.viewport();
+        const at = this._seams.handle.pointIn?.(
+          a as 'offset' | 'layer',
+          this._element(b),
+          (c as number) + v.scrollX,
+          (d as number) + v.scrollY,
+        );
+        return at ? `${at[0]},${at[1]}` : '';
       }
       // the document a node is in, and none for a document
       case 'owner': {
@@ -5860,6 +5974,31 @@ export class DomHost {
     this._connected(nodes);
   }
 
+  /** What a pointer is over moves to what held what was taken out, as
+   *  Chromium's `BoundaryEventDispatchTracksNodeRemoval` has it, whether or
+   *  not it comes back in the same task. */
+  private _pointerLost(parent: AnyNode, removed: readonly AnyNode[]): void {
+    for (let kind = 0; kind < 2; kind += 1) {
+      const chain = this._pointerChains[kind];
+      if (!chain?.length) continue;
+      if (
+        !(parent instanceof ShadowRoot) &&
+        !chain.includes(parent as Element)
+      ) {
+        continue;
+      }
+      // what is out is what was around it as the tree has it: a light child
+      // whose slot went is where it was, in no box
+      for (const node of removed) {
+        const at = chain.indexOf(node as Element);
+        if (at < 0 || at + 1 <= this._pointerCut[kind]) continue;
+        if (shadowIncludingHolds(node, chain[0])) {
+          this._pointerCut[kind] = at + 1;
+        }
+      }
+    }
+  }
+
   private _childList(
     parent: ParentNode,
     added: readonly AnyNode[],
@@ -5875,6 +6014,7 @@ export class DomHost {
       previousSibling: previous,
       nextSibling: next,
     });
+    if (removed.length) this._pointerLost(parent, removed);
     // a policy a `<meta>` brings is the document's once the element is in
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
     // security policy" state)
