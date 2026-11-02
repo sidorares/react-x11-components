@@ -102,6 +102,10 @@
       "types": "./dist/mermaid/index.d.ts",
       "default": "./dist/mermaid/index.js"
     },
+    "./pdf": {
+      "types": "./dist/pdf/index.d.ts",
+      "default": "./dist/pdf/index.js"
+    },
     "./qml": {
       "types": "./dist/qml/index.d.ts",
       "default": "./dist/qml/index.js"
@@ -189,6 +193,7 @@
     "examples:json-render": "node --import tsx examples/json-render/json-render.tsx",
     "examples:json-render-check": "node --import tsx examples/json-render/check.ts",
     "examples:maps": "node --import tsx examples/maps.tsx",
+    "examples:pdf": "node --import tsx examples/pdf.tsx",
     "examples:maps-gl": "node --import tsx examples/maps-gl.tsx",
     "examples:markdown": "node --import tsx examples/markdown.tsx",
     "examples:mdx": "node --import tsx examples/mdx.tsx",
@@ -232,18 +237,22 @@
     "react-reconciler": "^0.34.0"
   },
   "peerDependencies": {
+    "@embedpdf/pdfium": ">=2.15.0 <3.0.0",
     "@lezer/highlight": "^1.0.0",
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
     "ondine": ">=0.0.3 <0.1.0",
     "quico": ">=0.8.0 <0.9.0",
     "react": "^19.0.0",
-    "react-x11": "^2.56.1",
+    "react-x11": "^2.56.3",
     "tldts": "^7.4.19",
     "werift": ">=0.25.2 <0.26.0",
     "x11-dri": ">=0.9.0 <1"
   },
   "peerDependenciesMeta": {
+    "@embedpdf/pdfium": {
+      "optional": true
+    },
     "@lezer/highlight": {
       "optional": true
     },
@@ -270,6 +279,7 @@
     }
   },
   "devDependencies": {
+    "@embedpdf/pdfium": "^2.15.1",
     "@eslint/js": "^9.32.0",
     "@json-render/core": "^0.21.0",
     "@json-render/react": "^0.21.0",
@@ -285,7 +295,7 @@
     "prettier": "^3.6.0",
     "quico": "^0.8.0",
     "react": "^19.2.8",
-    "react-x11": "^2.56.1",
+    "react-x11": "^2.56.3",
     "tldts": "^7.4.19",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",

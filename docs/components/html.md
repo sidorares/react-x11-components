@@ -3046,6 +3046,14 @@ no listeners, since nothing runs in it. A host that has some — a script
 engine over the DOM, as the browser example's is, or an application wiring
 behaviour onto a document with `domutils` — dispatches them, and answers.
 
+**A press moves the focus after its `mousedown`**, as its default action,
+which is the order all three engines have. The host hears the press with
+`activeElement` where it was, then `focusout` and `focusin`, and a `false`
+leaves the focus where it is. That is what lets a toolbar keep the caret in
+a field, and what keeps Monaco's editor focused when it is pressed. A press
+on what `user-select: none` keeps out of a selection starts none and still
+moves the focus, since nothing cancelled it.
+
 | `type`                 | When                                                                                                     | Cancelling it                                    |
 | ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
@@ -6792,10 +6800,25 @@ so an `<input>` holds what comes after it, a `<td>` in a `<td>` nests and an
 `<html>` is an element like any. An end tag closes as all three engines have
 it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
 `</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
-table's scope stops at no integration point. HTML's own elements are closed as
-htmlparser2 closes them, foreign elements open or not, so a `</span>` over a
-`<div>` closes the `<span>`, where a browser ignores it, and no adoption agency
-runs for a nested `<a>`.
+table's scope stops at no integration point.
+
+**Mis-nested HTML is read as a browser reads it, but for formatting.** An end
+tag goes by HTML's scopes: a `</span>` over a `<div>` is ignored, so that the
+`<div>`'s own end tag closes the `<div>` and no outer one, a `</li>` stops at a
+list, and any heading's end tag ends a heading. A start tag closes what HTML has
+it close, from under whatever is open: a `<div>` or an `<li>` ends a `<p>`, an
+`<li>` ends the one before it, and a `<button>` holds an `<input>`, as a
+`<select>` holds a `<button>`. A part of a table outside one is ignored, and in
+one closes what cannot hold it. A `</form>` leaves what the form holds open, a
+second `<form>` is turned away for as long as the parser points at the first,
+and between a table's parts a `<form>` closes as it opens and owns the controls
+that come after it, which is why a page reads `input.form` where `closest('form')`
+finds nothing. What is left differs from a browser: there is no adoption agency,
+so nothing closes a formatting element from under what it holds and nothing brings
+one back, and `<p><a><div>` stays in the `<p>`; a nested `<a>` is not ended; and
+there is no foster parenting, so what is out of place in a table stays in it. A
+`<table>` ends a `<p>` in a source of any kind, as it does in a document with no
+quirks.
 
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once

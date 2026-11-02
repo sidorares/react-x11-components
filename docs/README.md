@@ -26,6 +26,7 @@ component.
 | [Markdown](components/markdown.md)                     | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | [MediaPlayer](components/media-player.md)              | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.  |
 | [Mermaid](components/mermaid.md)                       | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
+| [Pdf](components/pdf.md)                               | `@react-x11/components/pdf`              | A PDF, drawn: PDFium on a thread, zoom, selection, links.    |
 | [QML](components/qml.md)                               | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | [ReorderList](components/reorder.md)                   | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | [RichTextEditor](components/rich-text-editor.md)       | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |
@@ -55,6 +56,10 @@ parts.
 
 ## Design documents
 
+- [Office documents](prd-office-documents.md) — design: where `<Pdf>` left
+  docx, pptx and xlsx, which parser each should stand on and what was measured
+  of the alternatives, why reading comes before writing, and the order of work
+  to pick up from.
 - [A pure-JS VT backend for `<Terminal>`](prd-vt-terminal.md) — the design
   behind `backend="vt"`.
 - [Composable, cost-bounded charts](prd-charts.md) — the decimation

@@ -1421,21 +1421,6 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
         stops.onMouseDown(ev);
-        // a press on what `user-select: none` keeps out of a selection
-        // starts none, and leaves the one there is: turned down here, it
-        // never reaches the surface's press, nor its drag
-        const view = viewNode.current;
-        if (
-          selectable &&
-          view &&
-          ev.target === view &&
-          ev.button === 1 &&
-          !view.startsSelectionAt(ev.x, ev.y) &&
-          // a press core has to see to arm a drag of what it is on
-          !(onDomEvent && drag.pressCanDrag())
-        ) {
-          ev.preventDefault();
-        }
       },
       onKeyDown: (ev: X11KeyboardEvent<DrawnNode>) => {
         stops.onKeyDown(ev);

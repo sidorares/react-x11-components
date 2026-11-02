@@ -12,6 +12,7 @@ import {
   renderX11,
   screen,
   userEvent,
+  waitFor,
 } from 'react-x11/test';
 import type { DrawnNode, KeyboardEvent } from 'react-x11';
 import { XK_BACKSPACE, XK_LEFT } from 'react-x11/keysyms';
@@ -1120,6 +1121,62 @@ test("a key typed in an iframe's document is that document's: the embedding page
   // and the page's own keys are still the page's
   await userEvent.type(screen.getByRole('textbox') as DrawnNode, 'x');
   assert.deepStrictEqual(told, ['x:a']);
+});
+
+test("a press an iframe's document cancels leaves the focus in the page around it, as one it does not cancel does not", async () => {
+  // what all three engines do with a field focused in the page and a press
+  // in a frame: the frame's own `mousedown` decides it
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}iframe{border:0;display:block}' +
+          'input{display:block;width:150px;height:24px;margin-bottom:12px}' +
+          '</style><input id="t"><iframe id="f" width="200" height="120"></iframe>',
+        partial: false,
+        baseUrl: 'https://page.test/',
+        renderEmbedded: () =>
+          h(Html, {
+            'data-testname': 'inner',
+            partial: false,
+            baseUrl: 'https://frame.test/',
+            source:
+              '<style>body{margin:0}p{margin:0;height:40px}</style>' +
+              '<p id="kept">kept</p><p id="free">free</p>',
+            onDomEvent: (e: HtmlDomEvent) =>
+              e.type === 'mousedown' && e.target.attribs.id === 'kept'
+                ? false
+                : undefined,
+          }),
+      }),
+    ),
+    { width: 340, height: 240, ...(FONTS && { fonts: FONTS }) },
+  );
+  await waitFor(() => screen.getByTestName('inner'));
+  const field = screen.getByRole('textbox') as DrawnNode;
+  await userEvent.click(field);
+  assert.strictEqual(field.focused, true);
+  const inner = view(screen.getByTestName('inner') as DrawnNode);
+  const press = async (id: string) => {
+    const doc = inner.document as unknown as Element;
+    const rect = inner.elementRect(byId(doc, id))!;
+    const node = inner as unknown as DrawnNode;
+    const at = {
+      dx: rect.x + rect.width / 2 - node.abs.width / 2,
+      dy: rect.y + rect.height / 2 - node.abs.height / 2,
+    };
+    await act(async () => {
+      fireEvent.mouseDown(node, at);
+      fireEvent.mouseUp(node, at);
+    });
+    await act();
+  };
+  await press('kept');
+  assert.strictEqual(field.focused, true, 'a cancelled press keeps it');
+  await press('free');
+  assert.strictEqual(field.focused, false, 'and any other takes it away');
 });
 
 test("a press in an iframe's document is that document's: its summary opens once, and the embedding page follows none of its links or forms", async () => {
