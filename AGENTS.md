@@ -4417,7 +4417,10 @@ closes a way out a DOM binding opens by accident:
   load-bearing. **Anything that reaches another document is refused on the host
   by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
   `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
-  first. A facade's check is a courtesy, for the error a page should see.
+  first, and a `javascript:` URL sent across origins (`maySend`,
+  `frameNavigate`), of the address as `URL` left it, which ends there with no
+  navigation for a host to hear. A facade's check is a courtesy, for the error
+  a page should see.
   **What an origin is read from cannot be moved by a page**: `setLocation`
   stays in its origin, since every check of one, storage and cookies among them,
   reads it, and `creator` is an `about:blank` document's alone, or a popup's

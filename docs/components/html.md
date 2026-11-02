@@ -2218,7 +2218,9 @@ wptrunner runs a browser.
 it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
 `location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
 from one to the other as the window navigates, so one object stands for a window
-through a popup login. `closed` is true from the moment `close()` is called, and
+through a popup login. A `javascript:` URL sent to a window or a frame of another
+origin ends there, as HTML has it, and a host hears of no navigation. `closed` is
+true from the moment `close()` is called, and
 the window goes in a task after it: `opener` reads null then, and a name no longer
 finds it.
 

@@ -225,6 +225,17 @@ function sameOrigin(a: ScriptRunner, b: ScriptRunner): boolean {
   return a.host.origin === b.host.origin && a.host.origin !== 'null';
 }
 
+/** Whether a document may send a window to an address: a `javascript:` URL
+ *  runs in the document it is sent to, so it is only that origin's to send
+ *  (HTML 7.4.2.3.2, which ends the navigation there), and a host hears of
+ *  none. Asked here, of the address as `URL` left it, and not of what the
+ *  page's realm says it is. */
+function maySend(from: ScriptRunner, to: WindowSlot, url: string): boolean {
+  return (
+    !/^javascript:/i.test(url) || (!!to.runner && sameOrigin(from, to.runner))
+  );
+}
+
 /** The slot of a document, which is made for it the first time something
  *  asks: a window nothing opened and that opens nothing has none. */
 function slotOf(runner: ScriptRunner): WindowSlot {
@@ -472,7 +483,10 @@ export function windowOps(
       slotById(id)?.popup?.focused();
     },
     navigate(id, url, replace) {
-      slotById(id)?.navigate(url, replace ? 'replace' : 'here', null);
+      const slot = slotById(id);
+      if (slot && maySend(runner, slot, url)) {
+        slot.navigate(url, replace ? 'replace' : 'here', null);
+      }
     },
     named(name) {
       // a tab's name outlives its document; a frame's is its element's
@@ -514,7 +528,7 @@ export function windowOps(
       if (!runner.seams.popups) return false;
       const there = find(target);
       if (there) {
-        there.navigate(url, 'here', post);
+        if (maySend(runner, there, url)) there.navigate(url, 'here', post);
         return true;
       }
       if (noopener) return false;

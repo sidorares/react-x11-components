@@ -4252,8 +4252,16 @@ export class DomHost {
         }
         return at;
       }
-      case 'frameNavigate':
-        this.navigateFrame(this._element(a), text(b), null);
+      case 'frameNavigate': {
+        const frame = this._element(a);
+        // only its own origin may send it a `javascript:` URL (`maySend`)
+        if (
+          /^javascript:/i.test(this._resolve(text(b))) &&
+          !this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank')
+        ) {
+          return null;
+        }
+        this.navigateFrame(frame, text(b), null);
         return null;
       }
       // a frame's address changed by its own history, with no navigation:
