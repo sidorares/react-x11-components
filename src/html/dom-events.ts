@@ -43,6 +43,8 @@ export type HtmlDomEventType =
   | 'focusin'
   | 'focusout'
   | 'toggle'
+  // a file input's dialog dismissed, with nothing changed by it
+  | 'cancel'
   // a text field's text selected, by a key, a press or a release in it
   | 'select'
   // told after the fact: a `<link rel=stylesheet>`'s sheet applied, or not

@@ -41,6 +41,7 @@ export type FrameLook = Pick<
   | 'animate'
   | 'reducedMotion'
   | 'selectionColor'
+  | 'onPickFiles'
 >;
 
 /** What the page a frame is in gives it. */

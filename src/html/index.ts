@@ -85,6 +85,7 @@ import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
+import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import { useSounds } from './sounds.js';
@@ -143,6 +144,13 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export {
+  acceptFilters,
+  fileTypeOf,
+  readHtmlFiles,
+  useHtmlFilePicker,
+} from './files.js';
+export type { HtmlFile, HtmlFileRequest, HtmlPickFiles } from './files.js';
 export type {
   ConsoleProperty,
   ConsoleResult,
@@ -557,6 +565,12 @@ export interface HtmlProps {
    * component never sends anything by itself, any more than it navigates.
    */
   onSubmit?: (submission: FormSubmission) => void;
+  /**
+   * Ask the user for files: a press on an `<input type=file>`, its label or,
+   * under a gesture, a script's `click()`. Default: none, and a file input
+   * opens nothing. `useHtmlFilePicker()` is core's file dialog.
+   */
+  onPickFiles?: HtmlPickFiles;
   /**
    * How the document asks to be scrolled: the `overflow` its root element
    * gives the viewport, or its `<body>` where the root's is `visible` (CSS
@@ -1138,6 +1152,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     baseUrl,
     onControlChange,
     onSubmit,
+    onPickFiles: props.onPickFiles,
     onDomEvent,
     touch: (changes) => {
       if (changes) viewNode.current?.touchDocument(changes);
@@ -1566,6 +1581,10 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         }) ?? false,
       showPicker: (element: Element) =>
         nodeRef.current?.interactive?.showPicker(element) ?? false,
+      pickFiles: (element: Element) =>
+        nodeRef.current?.interactive?.pickFiles(element),
+      setFiles: (element: Element, files: readonly HtmlFile[]) =>
+        nodeRef.current?.interactive?.setFiles(element, files),
       focus: (element: Element) =>
         nodeRef.current?.interactive?.focus(element) ?? false,
       toldFocus: (element: Element) =>
@@ -1653,6 +1672,8 @@ function documentInteraction(
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
     showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
+    pickFiles: (el) => live.current?.forms.pickFiles(el),
+    setFiles: (el, files) => live.current?.forms.setFiles(el, files),
     focus: (el) => {
       const now = live.current;
       if (!now) return false;

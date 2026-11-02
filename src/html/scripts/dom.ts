@@ -8605,6 +8605,11 @@ export function installDom(
         'NotAllowedError',
       );
     }
+    if (el._name === 'input' && el.type === 'file') {
+      consumeActivation();
+      call('pickFiles', el._id);
+      return;
+    }
     if (call('showPicker', el._id) === 'unrendered') {
       throw refused(
         `${iface}::showPicker() requires the select is rendered.`,
@@ -8631,7 +8636,12 @@ export function installDom(
         return this.getAttribute('value') ?? 'on';
       }
       if (DEFAULT_MODE.has(type)) return this.getAttribute('value') ?? '';
-      if (type === 'file') return '';
+      // the first file's name behind a path no page can read anything from
+      // (HTML 4.10.5.4, "filename")
+      if (type === 'file') {
+        const first = this.files[0];
+        return first ? `C:\\fakepath\\${first.name}` : '';
+      }
       const v = controlValue(this);
       return typeof v === 'string' ? v : (this.getAttribute('value') ?? '');
     }
@@ -8639,7 +8649,15 @@ export function installDom(
       const type = this.type;
       if (type === 'checkbox' || type === 'radio' || DEFAULT_MODE.has(type)) {
         this.setAttribute('value', v === null ? '' : v);
-      } else if (type !== 'file') {
+      } else if (type === 'file') {
+        if (str(v === null ? '' : v) !== '') {
+          throw new DOMException(
+            "Failed to set the 'value' property on 'HTMLInputElement': This input element accepts a filename, which may only be programmatically set to the empty string.",
+            'InvalidStateError',
+          );
+        }
+        call('setFiles', this._id, '[]');
+      } else {
         const was = this.value;
         call('setValue', this._id, v === null ? '' : str(v));
         valueSet(this, was);
@@ -8689,10 +8707,42 @@ export function installDom(
     set indeterminate(v: Any) {
       call('indeterminate', this._id, !!v);
     }
+    /** The same list until what the input holds changes (HTML 4.10.5.4). */
+    _files: Any = null;
+    _filesAs = '';
     get files(): Any {
-      return heldList(this, 'files', () =>
-        listMade(FileList, [], null, false, null),
-      );
+      if (this.type !== 'file') return null;
+      const told = str(call('fileList', this._id));
+      if (!this._files || told !== this._filesAs) {
+        const made: Any[] = [];
+        for (const file of JSON.parse(told)) made.push(hostFile(file));
+        this._files = listMade(FileList, made, null, false, null);
+        this._filesAs = told;
+      }
+      return this._files;
+    }
+    set files(v: Any) {
+      if (this.type !== 'file' || v === null) return;
+      if (!(v instanceof FileList)) {
+        throw new TypeError(
+          "Failed to set the 'files' property on 'HTMLInputElement': The provided value is not of type 'FileList'.",
+        );
+      }
+      const given: Any[] = [];
+      for (const file of Array.from(v as Any) as Any[]) {
+        const id = hostIdOf(file);
+        given.push(
+          id
+            ? { id }
+            : {
+                name: file.name,
+                type: file.type,
+                lastModified: file.lastModified,
+                b: base64OfBytes(file._bytes),
+              },
+        );
+      }
+      call('setFiles', this._id, JSON.stringify(given));
     }
     select(): void {
       if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
@@ -15005,6 +15055,15 @@ export function installDom(
     }
     if (!go) return false;
     popoverActivation(target);
+    // a file input's picker, with a user's press or key behind it (HTML
+    // 6.5.5, "show the picker, if applicable"): what a page's own button
+    // calls `click()` for
+    if (input?.type === 'file') {
+      if (!isDisabled(input) && hasTransientActivation()) {
+        call('pickFiles', input._id);
+      }
+      return true;
+    }
     // a submit button submits its form and a reset button resets it
     // (HTML 4.10.6, 4.10.5.1.19): here, since a button the page made a
     // moment ago is none `<Html>` has drawn yet
@@ -18949,7 +19008,7 @@ export function installDom(
       }
       // a blob URL is this realm's, read here
       if (url.startsWith('blob:')) {
-        const blob = blobUrls.get(url);
+        const blob = blobUrls.get(url.replace(/#.*$/, ''));
         const response = blob ? blobResponse(blob, url, headers) : null;
         if (response) resolve(response);
         else reject(new TypeError('Failed to fetch'));
@@ -20422,6 +20481,16 @@ export function installDom(
       seen.set(value, out);
       return out;
     }
+    // and so is an `ImageData`, which a page hands a worker to encode
+    if (value instanceof ImageData) {
+      out = new ImageData(
+        new Uint8ClampedArray(value.data),
+        value.width,
+        value.height,
+      );
+      seen.set(value, out);
+      return out;
+    }
     // an `ImageBitmap` is serializable, its pixels copied (HTML 8.11.2)
     if (value instanceof ImageBitmap) {
       if (!value._data) {
@@ -20806,7 +20875,25 @@ export function installDom(
       seen.set(v, index);
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
-        return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
+        return {
+          i: index,
+          t: 'L',
+          b: bytesOf(v._bytes),
+          y: v.type,
+          // a file stays one, with its name and its date
+          ...(v instanceof File && { fn: v.name, fm: v.lastModified }),
+        };
+      }
+      if (v instanceof ImageData) {
+        return {
+          i: index,
+          t: 'Z',
+          w: v.width,
+          h: v.height,
+          b: bytesOf(
+            new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.length),
+          ),
+        };
       }
       if (CRYPTO.isKey(v)) return { i: index, t: 'Y', s: CRYPTO.sealedOf(v) };
       const shape = GEOMETRY.serialize(v);
@@ -20991,8 +21078,23 @@ export function installDom(
           out = byWire.get(str(v.w)) ?? null;
           break;
         case 'L':
-          out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          out =
+            v.fn === undefined
+              ? new Blob([bytesOfBase64(v.b)], { type: v.y })
+              : new File([bytesOfBase64(v.b)], str(v.fn), {
+                  type: v.y,
+                  lastModified: v.fm,
+                });
           break;
+        case 'Z': {
+          const bytes = bytesOfBase64(v.b);
+          out = new ImageData(
+            new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+            v.w,
+            v.h,
+          );
+          break;
+        }
         case 'Y':
           out = CRYPTO.fromSealed(str(v.s));
           break;
@@ -21188,18 +21290,32 @@ export function installDom(
     }
   }
 
+  /** Line endings as this platform has them (File API 3.1, "convert line
+   *  endings to native"). */
+  const nativeEndings = (text: string): string =>
+    text.replace(/\r\n?|\n/g, '\n');
   /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
    *  a view as its bytes, a `Blob` as its own. */
-  const blobBytes = (parts: Any): Uint8Array => {
+  const blobBytes = (parts: Any, endings: string): Uint8Array => {
     const chunks: Uint8Array[] = [];
     for (const part of parts ?? []) {
       if (part instanceof Blob) chunks.push(part._bytes);
       else if (part instanceof ArrayBuffer) chunks.push(new Uint8Array(part));
       else if (ArrayBuffer.isView(part)) {
+        // a buffer sent elsewhere is empty, and a view of one cannot be made
+        if (part.buffer.byteLength) {
+          chunks.push(
+            new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          );
+        }
+      } else {
+        const text = str(part);
         chunks.push(
-          new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          new TextEncoder().encode(
+            endings === 'native' ? nativeEndings(text) : text,
+          ),
         );
-      } else chunks.push(new TextEncoder().encode(str(part)));
+      }
     }
     const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
     let at = 0;
@@ -21209,24 +21325,98 @@ export function installDom(
     }
     return out;
   };
+  /** A `Blob`'s type as File API has it: nothing past printable ASCII,
+   *  lowercase. */
+  const blobType = (type: string): string =>
+    /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+  /** A sequence of parts and a bag of options, each as Web IDL takes them
+   *  (File API 3.1): what is neither is a `TypeError`. */
+  const blobInit = (name: string, parts: Any, options: Any): Any => {
+    if (parts !== undefined) {
+      if (
+        parts === null ||
+        (typeof parts !== 'object' && typeof parts !== 'function') ||
+        typeof parts[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(
+          `Failed to construct '${name}': The provided value cannot be converted to a sequence.`,
+        );
+      }
+    }
+    if (
+      options !== undefined &&
+      options !== null &&
+      typeof options !== 'object' &&
+      typeof options !== 'function'
+    ) {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value is not of type '${name}PropertyBag'.`,
+      );
+    }
+    const list = parts === undefined ? [] : Array.from(parts as Any[]);
+    const endings =
+      options?.endings === undefined ? 'transparent' : str(options.endings);
+    if (endings !== 'transparent' && endings !== 'native') {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value '${endings}' is not a valid enum value of type EndingType.`,
+      );
+    }
+    return {
+      list,
+      endings,
+      type: options?.type === undefined ? '' : str(options.type),
+    };
+  };
   class Blob {
     _bytes: Uint8Array;
-    readonly type: string;
-    constructor(parts: Any = [], options: Any = {}) {
-      this._bytes = blobBytes(parts);
-      const type = str(options?.type ?? '');
-      this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+    _type: string;
+    // a rest, since the interface's `length` is what it requires
+    constructor(...given: Any[]) {
+      const init = blobInit(
+        new.target === Blob ? 'Blob' : 'File',
+        given[0],
+        given[1],
+      );
+      this._bytes = blobBytes(init.list, init.endings);
+      this._type = blobType(init.type);
     }
+    get type(): string {
+      return this._type;
+    }
+    /** A file the host holds has a size before it has bytes here. */
+    _size?: number;
     get size(): number {
-      return this._bytes.length;
+      return this._size ?? this._bytes.length;
     }
     slice(start?: Any, end?: Any, type?: Any): Any {
-      const blob = new Blob([], { type: type ?? '' });
-      blob._bytes = this._bytes.slice(
-        start === undefined ? 0 : Number(start),
-        end === undefined ? this._bytes.length : Number(end),
-      );
+      const size = this.size;
+      const edge = (value: Any, otherwise: number): number => {
+        if (value === undefined) return otherwise;
+        const at = Math.trunc(Number(value)) || 0;
+        return at < 0 ? Math.max(size + at, 0) : Math.min(at, size);
+      };
+      const from = edge(start, 0);
+      const to = Math.max(edge(end, size), from);
+      const blob = new Blob([], { type: type === undefined ? '' : str(type) });
+      blob._bytes = this._bytes.slice(from, to);
       return blob;
+    }
+    stream(): Any {
+      const bytes = this._bytes;
+      let at = 0;
+      return new ReadableStream({
+        type: 'bytes',
+        pull(controller: Any): void {
+          if (at >= bytes.length) {
+            controller.close();
+            controller.byobRequest?.respond(0);
+            return;
+          }
+          const piece = bytes.slice(at, at + BLOB_CHUNK);
+          at += piece.length;
+          controller.enqueue(piece);
+        },
+      });
     }
     text(): Promise<string> {
       return Promise.resolve(new TextDecoder().decode(this._bytes));
@@ -21238,6 +21428,8 @@ export function installDom(
       return Promise.resolve(this._bytes.slice());
     }
   }
+  /** How much of a blob a read of its stream hands over at once. */
+  const BLOB_CHUNK = 65536;
   /** A worker's location (WorkerLocation, HTML 10.3.4), which `location`
    *  answers in a realm that is a worker's (`__becomeWorker`). */
   let workerLocation: Any = null;
@@ -22015,20 +22207,88 @@ export function installDom(
     }
   }
   class File extends Blob {
-    readonly name: string;
-    readonly lastModified: number;
-    constructor(parts: Any, name: Any, options: Any = {}) {
+    _name: string;
+    _lastModified: number;
+    constructor(parts: Any, name: Any, options?: Any) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'File': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
       super(parts, options);
-      this.name = str(name);
-      this.lastModified = Number(options?.lastModified ?? Date.now());
+      this._name = str(name);
+      const when = options?.lastModified;
+      this._lastModified =
+        when === undefined ? Date.now() : Math.trunc(Number(when)) || 0;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get lastModified(): number {
+      return this._lastModified;
+    }
+    get webkitRelativePath(): string {
+      return '';
     }
   }
+  idlAttributes(Blob);
+  idlAttributes(File);
+
+  /** The files of the host's this realm has been told of, by the number the
+   *  host knows each by, so that an input's next list has the same `File`s. */
+  const hostFiles = new Map<number, Any>();
+  /** The number the host knows a file by, 0 for one the page made. */
+  const hostIdOf = (file: Any): number => {
+    for (const [id, held] of hostFiles) if (held === file) return id;
+    return 0;
+  };
+  /** A file of the host's. Its bytes are read as a page asks for them: a
+   *  video chosen to be uploaded need never cross to the page at all. */
+  const hostFile = (told: Any): Any => {
+    let file = hostFiles.get(told.id);
+    if (file) return file;
+    file = new File([], told.name, {
+      type: told.type,
+      lastModified: told.lastModified,
+    });
+    file._size = told.size;
+    let bytes: Uint8Array | null = null;
+    Object.defineProperty(file, '_bytes', {
+      get(): Uint8Array {
+        if (bytes) return bytes;
+        bytes = new Uint8Array(told.size);
+        for (let at = 0; at < told.size;) {
+          const piece = bytesOfBase64(str(call('fileChunk', told.id, at)));
+          if (!piece.length) break;
+          bytes.set(piece, at);
+          at += piece.length;
+        }
+        return bytes;
+      },
+      set(value: Uint8Array) {
+        bytes = value;
+      },
+      configurable: true,
+    });
+    hostFiles.set(told.id, file);
+    return file;
+  };
 
   /** A blob's bytes as text in the encoding a label names, else its
    *  type's charset, else UTF-8 (File API 6.6, "package data"). */
   const blobText = (blob: Any, label: Any): string => {
     const charset = /;\s*charset=([^;]+)/i.exec(blob.type)?.[1];
-    for (const name of [label, charset]) {
+    // a byte order mark says more than anything else does (Encoding 6)
+    const b = blob._bytes;
+    const marked =
+      b[0] === 0xfe && b[1] === 0xff
+        ? 'utf-16be'
+        : b[0] === 0xff && b[1] === 0xfe
+          ? 'utf-16le'
+          : b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf
+            ? 'utf-8'
+            : null;
+    for (const name of [marked, label, charset]) {
       if (name === undefined || name === null) continue;
       try {
         return new TextDecoder(str(name)).decode(blob._bytes);
@@ -22123,6 +22383,10 @@ export function installDom(
         this.readyState = 2;
         this.result = result();
         this._progress('load', size, size);
+      });
+      // in a task of its own: what a `load` listener queued runs before it,
+      // as a browser checks for microtasks between one listener and the next
+      step(() => {
         if (this.readyState !== 1) this._progress('loadend', size, size);
       });
     }
@@ -22178,6 +22442,16 @@ export function installDom(
         const type = el instanceof HTMLInputElement ? (el as Any).type : '';
         if (type === 'checkbox' || type === 'radio') {
           if ((el as Any).checked) this.append(name, (el as Any).value || 'on');
+        } else if (type === 'file') {
+          const files = Array.from((el as Any).files) as Any[];
+          for (const file of files) this.append(name, file);
+          // none is one file with no name and no bytes (HTML 4.10.21.4)
+          if (!files.length) {
+            this.append(
+              name,
+              new File([], '', { type: 'application/octet-stream' }),
+            );
+          }
         } else if (
           !['submit', 'reset', 'button', 'image', 'file'].includes(type) &&
           !(el instanceof HTMLButtonElement)
@@ -27328,7 +27602,12 @@ export function installDom(
       const hash = url.indexOf('#');
       const fragment = hash < 0 ? '' : url.slice(hash);
       const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
-      url = `${base}?${new URLSearchParams(formData as Any)}${fragment}`;
+      // what is a file in the entry list is its name in a query
+      const query = new URLSearchParams();
+      for (const [name, value] of (formData as Any)._entries) {
+        query.append(name, value instanceof File ? value.name : value);
+      }
+      url = `${base}?${query}${fragment}`;
     }
     // replaced where it is made while the document loads, unless a user
     // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
@@ -32151,6 +32430,11 @@ export function installDom(
         );
       case 'toggle':
         return dispatch(target, trusted(new Event('toggle')));
+      case 'cancel':
+        return dispatch(
+          target,
+          trusted(new Event('cancel', { bubbles: true })),
+        );
       // a `<link>`'s sheet applied, or not to be had, or what an `<img>`
       // came to: neither bubbles
       case 'load':
@@ -33154,6 +33438,14 @@ export function installDom(
     const [url] = input();
     const blob = blobUrls.get(str(url));
     return blob instanceof Blob ? blobText(blob, null) : null;
+  });
+
+  // and the bytes of one, as base64, for an image, a sheet or a font whose
+  // URL names it: what shows a page's own `File` before it is uploaded
+  entry('__blobBytes', () => {
+    const [url] = input();
+    const blob = blobUrls.get(str(url));
+    return blob instanceof Blob ? base64OfBytes(blob._bytes) : null;
   });
 
   // a plain event at an element: a script's `load` or `error`

@@ -79,6 +79,7 @@ import {
   ThemeProvider,
   createRoot,
   matchesShortcut,
+  useFileDialog,
   useSupports,
   useTheme,
   useWindowState,
@@ -114,6 +115,7 @@ import type {
   LoadHow,
   PageProps,
 } from './page.js';
+import { acceptFilters } from '../../src/html/index.js';
 import type { PostData } from '../../src/html/index.js';
 import { DEVELOP, developShortcuts, shortcuts } from './keys.js';
 import type { Command } from './keys.js';
@@ -1054,6 +1056,18 @@ function TabPage({
     },
     [id, dispatch],
   );
+  // a file input's dialog, on this window: the pane reads what was chosen
+  const { openFile } = useFileDialog();
+  const [picked, setPicked] = useState<PageProps['picked']>(null);
+  const onPickFiles = useCallback(
+    (pick: number, multiple: boolean, accept: string[]) => {
+      openFile({ multiple, filters: acceptFilters(accept) }).then(
+        (paths) => setPicked({ id: pick, paths }),
+        () => setPicked({ id: pick, paths: null }),
+      );
+    },
+    [openFile],
+  );
   // the page's Inspect opened its tools, or their own button closed them
   const onDevtools = useCallback(
     (open: boolean) =>
@@ -1087,6 +1101,8 @@ function TabPage({
     onHistory,
     onMeta,
     onLink,
+    onPickFiles,
+    picked,
     onLoad,
     onCommand,
   };

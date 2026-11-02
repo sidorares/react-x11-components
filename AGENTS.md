@@ -3475,6 +3475,22 @@ its frames read as `rgb()` rather than as the colour it set out from. And
 **nothing that draws reads a source**: the common hex and named colour
 keep nothing, and cost two string tests.
 
+**A file input holds what a host gave it, and its bytes stay the host's
+until a page asks** (`files.ts`, `CHOSEN` in `form.ts`, `hostFile` in
+`dom.ts`). What was chosen is by element at `form.ts`'s module scope, for the
+reason `TYPED` is, and a form's entries, validity and reset read it there. A
+page's `File` is made from what `fileList` answers and has an accessor for
+`_bytes` that pulls them a piece at a time (`fileChunk`), since a string has a
+limit and a file has none. So **anything new that reads a `Blob`'s bytes reads
+`_bytes` and never holds a copy of what the constructor set, and anything that
+asks a blob's size asks `size`**, which answers without pulling. A picker is the
+host's to show (`onPickFiles`), and a pane on a Mac cannot, so the example
+browser shows it and the pane reads the paths: a thing a pane cannot do goes
+through a callback and an answering prop, since a `<Frame>`'s functions are
+one-way. **A press on any of the control is the button**, since a page lays a
+transparent one over what it draws: the box beside the button has the same
+`onClick`.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
@@ -3870,6 +3886,17 @@ closes a way out a DOM binding opens by accident:
   between its reads of a computed style. What an image answers before the
   engine is here is kept (`Early.images`), since an `onload` in the markup
   is still to hear it.
+- **A `<link rel=preload>` a script puts in is asked for, to hear `load` or
+  `error`** (`_preloadLink`), and for no more: what it fetched goes through the
+  network's cache to whatever asks next. `as=style` is `<Html>`'s own
+  (`isStylePreload`). Squoosh's loader waits on it before it adds the script,
+  and with neither told, its editor never loaded. **What a page draws of its
+  own `blob:` URL is answered in `useScriptedHtml`** (`onResource`,
+  `__blobBytes`), since no host could fetch one, a turn later, as it is asked
+  from inside the page's ops. And **what crosses a thread keeps its kind**: an
+  `ImageData` clones and a `File` stays one, with `fn` and `fm` on the wire,
+  since `n` is a number's and `D` a `Date`'s: **a new clone tag or key is checked
+  against `make`'s reserved ones**, which take it silently for something else.
 - **What a page asks of a media element is the player's, kept by
   element.** `play()`, `pause()`, `muted`, `volume`, `playbackRate` and a
   seek are the facade's state (`mediaAsks`) and one `mediaState` op each;

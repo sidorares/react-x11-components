@@ -20,6 +20,7 @@
 // back.
 import type { AnyNode, Element } from 'domhandler';
 
+import type { HtmlFile } from './files.js';
 import {
   NON_RENDERED,
   attr,
@@ -59,8 +60,9 @@ export interface FormSubmission {
   /** The name–value pairs the form carries, in tree order, unencoded. A
    *  file field's value is the name of its file: always empty here. */
   entries: [name: string, value: string][];
-  /** A POST's body, encoded as `enctype` says; null for a GET. */
-  body: string | null;
+  /** A POST's body, encoded as `enctype` says; null for a GET. Bytes where
+   *  a file is in it, which no string holds. */
+  body: string | Uint8Array | null;
   /** The `Content-Type` a POST's body goes with — `multipart/form-data`'s
    *  names its boundary; null for a GET. */
   contentType: string | null;
@@ -523,11 +525,12 @@ function offStep(el: Element, type: string, value: number): boolean {
 // --- the entry list --------------------------------------------------------------
 
 /** One entry, and whether it is a file's — encoded differently in a
- *  multipart body. */
+ *  multipart body, where `chosen` is what goes in it. */
 interface Entry {
   name: string;
   value: string;
   file: boolean;
+  chosen?: HtmlFile;
 }
 
 /**
@@ -573,8 +576,12 @@ function entriesOf(
       continue;
     }
     if (type === 'file') {
-      // no file is ever chosen here: the field goes as one with no name
-      add(name, '', true);
+      const chosen = chosenFiles(el);
+      // a field with none goes as one file with no name and no bytes
+      if (!chosen.length) add(name, '', true);
+      for (const file of chosen) {
+        out.push({ name, value: file.name, file: true, chosen: file });
+      }
       continue;
     }
     if (type === 'hidden' && name.toLowerCase() === '_charset_') {
@@ -654,15 +661,48 @@ function dispositionName(name: string): string {
   );
 }
 
-function multipart(entries: readonly Entry[], boundary: string): string {
+function multipart(
+  entries: readonly Entry[],
+  boundary: string,
+): string | Uint8Array {
+  // what is text so far, then each file's bytes after the text before it
+  const parts: (string | Uint8Array)[] = [];
   let body = '';
-  for (const { name, value, file } of entries) {
+  for (const { name, value, file, chosen } of entries) {
     body += `--${boundary}\r\nContent-Disposition: form-data; name="${dispositionName(name)}"`;
-    body += file
-      ? `; filename="${dispositionName(value)}"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n`
-      : `\r\n\r\n${crlf(value)}\r\n`;
+    if (!file) {
+      body += `\r\n\r\n${crlf(value)}\r\n`;
+      continue;
+    }
+    const type = chosen?.type || 'application/octet-stream';
+    body += `; filename="${dispositionName(value)}"\r\nContent-Type: ${type}\r\n\r\n`;
+    if (chosen?.bytes.length) {
+      parts.push(body, chosen.bytes);
+      body = '';
+    }
+    body += '\r\n';
   }
-  return `${body}--${boundary}--\r\n`;
+  body += `--${boundary}--\r\n`;
+  if (!parts.length) return body;
+  parts.push(body);
+  return joinParts(parts);
+}
+
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+
+/** Text and bytes as one run of bytes, the text as UTF-8. */
+function joinParts(parts: readonly (string | Uint8Array)[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const chunks = parts.map((part) =>
+    typeof part === 'string' ? encoder.encode(part) : part,
+  );
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
 }
 
 function makeBoundary(): string {
@@ -964,7 +1004,9 @@ export function validityError(
       : wrong('valueMissing', 'Please select one of these options.');
   }
   if (type === 'file') {
-    return required ? wrong('valueMissing', 'Please select a file.') : null;
+    return required && !chosenFiles(el).length
+      ? wrong('valueMissing', 'Please select a file.')
+      : null;
   }
   if (type === 'range' || type === 'color' || type === 'submit') return null;
 
@@ -1201,6 +1243,22 @@ export function setCheckedDefault(el: Element, value: string | null): void {
  * really use and it reads those; so for them this keeps the markup's
  * attributes, from before the first change, for a reset.
  */
+/** What each file input holds, by element, for the same reason `TYPED`
+ *  is: a cascade asks what a control holds, and has no `FormState`. */
+const CHOSEN = new WeakMap<Element, readonly HtmlFile[]>();
+const NO_FILES: readonly HtmlFile[] = [];
+
+/** The files an `<input type=file>` holds. */
+export function chosenFiles(el: Element): readonly HtmlFile[] {
+  return CHOSEN.get(el) ?? NO_FILES;
+}
+
+/** Give a file input what was chosen, none to leave it empty. */
+export function chooseFiles(el: Element, files: readonly HtmlFile[]): void {
+  if (files.length) CHOSEN.set(el, files);
+  else CHOSEN.delete(el);
+}
+
 export class FormState {
   private _selections = new WeakMap<Element, FieldSelection>();
   /** The fields the user typed in since they took the focus, which their
@@ -1286,6 +1344,7 @@ export class FormState {
     let changed = false;
     for (const el of controlsOf(form)) {
       changed = TYPED.delete(el) || changed;
+      changed = CHOSEN.delete(el) || changed;
       changed = setUserValidity(el, false) || changed;
       SET_BY_SCRIPT.delete(el);
       this._edited.delete(el);

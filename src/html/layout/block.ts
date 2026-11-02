@@ -7212,6 +7212,7 @@ function isControl(box: Box): boolean {
     case 'textarea':
     case 'select':
     case 'button':
+    case 'file':
     case 'checkbox':
     case 'radio':
       return true;
