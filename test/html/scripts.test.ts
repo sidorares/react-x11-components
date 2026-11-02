@@ -80,6 +80,7 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
+import { mulberry32 } from '../mulberry32.js';
 import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
@@ -2745,6 +2746,72 @@ test('an EventSource reads its stream, hears each event, and connects again with
     'open:1',
     'after|7|https://example.test',
   ]);
+});
+
+test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker', async () => {
+  // pdf.js's font compiler calls it, in a worker
+  const asks = `
+    var s = Math.sumPrecise, r = [];
+    var at = function (a) { try { return s(a); } catch (e) { return e.name; } };
+    [[], [-0], [-0, -0], [0, -0], [1, 2, 3], [0.1, 0.2], [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+     [1, 1e100, 1, -1e100], [1e308, 1e308, -1e308], [1.7976931348623157e308, 1.7976931348623157e308],
+     [1.7976931348623157e308, Math.pow(2, 970)], [1.7976931348623157e308, Math.pow(2, 970) - Math.pow(2, 917)],
+     [5e-324, 5e-324], [1e-320, -1e-320], [1, 1.1102230246251565e-16], [1, 1.1102230246251568e-16],
+     [Infinity, 1], [-Infinity, 1], [Infinity, -Infinity], [NaN, 1], [Infinity, NaN],
+     [1, '2'], 5, null, undefined].forEach(function (a) {
+      var v = at(a); r.push(Object.is(v, -0) ? '-0' : String(v));
+    });
+    var closed = 0;
+    var numbers = { [Symbol.iterator]: function () { return {
+      next: function () { return { value: 'x', done: false }; },
+      return: function () { closed += 1; return {}; } }; } };
+    at(numbers);
+    r.push(closed, s.length, s.name, Object.keys(Math).indexOf('sumPrecise'));
+    try { new s([]); r.push('made'); } catch (e) { r.push(e.name); }
+    r.push(s(new Set([1, 2, 3])));
+    return r.join(' ');
+  `;
+  const doc = await hosted(
+    '<p id="out"></p><p id="thread"></p><script>' +
+      `document.getElementById("out").textContent = (function () {${asks}})();` +
+      `var src = ${JSON.stringify(`postMessage((function () {${asks}})());`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
+      '</script>',
+  );
+  await waitFor(() => assert.ok(doc.text('thread')));
+  const answers = [
+    '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
+    // half the last place past the largest double is the even way up, and
+    // a hair under it the largest double
+    'Infinity 1.7976931348623157e+308',
+    '1e-323 0 1 1.0000000000000002',
+    'Infinity -Infinity NaN NaN NaN',
+    'TypeError TypeError TypeError TypeError',
+    '1 1 sumPrecise -1 TypeError 6',
+  ].join(' ');
+  assert.strictEqual(doc.text('out'), answers);
+  assert.strictEqual(doc.text('thread'), answers);
+});
+
+test('Math.sumPrecise takes back what it added, at any size', async () => {
+  // a sum rounded along the way loses what is small beside what is large,
+  // and comes back other than it was
+  const random = mulberry32(1214);
+  const numbers = Array.from({ length: 300 }, () => {
+    const exponent = Math.floor(random() * 2000) - 1000;
+    return (random() - 0.5) * 2 ** exponent;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var n = ${JSON.stringify(numbers)}, bad = 0;` +
+      'for (var i = 0; i + 1 < n.length; i += 1) {' +
+      '  if (Math.sumPrecise([n[i], n[i + 1], -n[i]]) !== n[i + 1]) bad += 1;' +
+      '}' +
+      'document.getElementById("out").textContent = bad;' +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '0');
 });
 
 test('a CompressionStream and a DecompressionStream go through zlib, and corrupt input is a TypeError', async () => {
