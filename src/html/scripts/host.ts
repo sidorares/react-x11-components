@@ -1536,7 +1536,10 @@ const RAW_TEXT = new Set([
 export function cssRulesOf(css: string): string[] {
   const out: string[] = [];
   const n = css.length;
-  let depth = 0;
+  // the closing bracket of each block open, innermost last
+  const open: string[] = [];
+  // what the text ends inside, past its brackets: a string or a comment
+  let inside = '';
   let start = 0;
   const end = (at: number, statement: boolean): void => {
     const rule = css.slice(start, at).trim();
@@ -1549,27 +1552,56 @@ export function cssRulesOf(css: string): string[] {
     const ch = css[i];
     if (ch === '/' && css[i + 1] === '*') {
       const close = css.indexOf('*/', i + 2);
+      if (close < 0) inside = '*/';
       const after = close < 0 ? n : close + 2;
       // a comment before a rule is not the rule's
       if (!css.slice(start, i).trim()) start = after;
       i = after - 1;
     } else if (ch === '"' || ch === "'") {
-      for (i += 1; i < n && css[i] !== ch && css[i] !== '\n'; i++) {
-        if (css[i] === '\\') i += 1;
+      // a newline ends a string that has not ended, and a form feed is one
+      i += 1;
+      while (
+        i < n &&
+        css[i] !== ch &&
+        css[i] !== '\n' &&
+        css[i] !== '\r' &&
+        css[i] !== '\f'
+      ) {
+        i += css[i] === '\\' ? 2 : 1;
       }
+      if (i >= n) inside = ch;
     } else if (ch === '\\') {
       i += 1;
     } else if (ch === '{' || ch === '(' || ch === '[') {
-      depth += 1;
+      open.push(ch === '{' ? '}' : ch === '(' ? ')' : ']');
     } else if (ch === '}' || ch === ')' || ch === ']') {
-      if (depth > 0) depth -= 1;
-      if (depth === 0 && ch === '}') end(i + 1, false);
-    } else if (ch === ';' && depth === 0) {
+      // a closing bracket of another kind inside is only a token
+      if (open[open.length - 1] === ch) open.pop();
+      if (!open.length && ch === '}') end(i + 1, false);
+    } else if (ch === ';' && !open.length) {
       end(i + 1, true);
     }
   }
-  // an unclosed block is closed where the text ends
+  // What the text ends inside is closed there, as CSS's tokenizer closes it
+  // (CSS Syntax 3, 5.4.9), and the rule says so in its text: rules are
+  // written back beside each other (`_writeSheets`), where what one left
+  // open would hold the rest. Grafana's global styles set `content: "\f0d7"`
+  // in a JavaScript string, a form feed and so a broken string, one rule of
+  // 578 that each go in by `insertRule`: the 246 after it were lost in it,
+  // `.grafana-app` among them, and no dashboard had a height.
+  const before = out.length;
   end(n, false);
+  if (out.length > before) {
+    let rule = out.pop() as string;
+    const atRule = rule[0] === '@';
+    // what has no block by then is no rule, but for an at-rule
+    if (!atRule && !open.includes('}')) return out;
+    if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
+      rule = rule.slice(0, -1);
+    }
+    rule += inside + open.reverse().join('');
+    out.push(atRule && !rule.endsWith('}') ? `${rule};` : rule);
+  }
   return out;
 }
 
