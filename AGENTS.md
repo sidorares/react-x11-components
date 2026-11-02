@@ -4895,7 +4895,7 @@ wrote already and what `cloneNode` keeps, and what reads those names asks
 `cascadeHeld`, the `sheets` and `title` ops, a frame, a window's names, a form's
 controls and the two `<base target>` readers. Chromium's Network panel asks for
 a `<link>` in a drawing all the same: that is its preload scanner, which goes
-with `doHtmlPreloadScanning=false`, and nothing comes of it. Six things are
+with `doHtmlPreloadScanning=false`, and nothing comes of it. Seven things are
 load-bearing.
 
 - **Only what `MARKED` names says.** All else in a drawing is told by its name,
@@ -4927,16 +4927,36 @@ load-bearing.
   (`rootNamespace`): `<math><svg><script>` runs in no engine, and `<svg><math>`
   is the same way round. An `<annotation-xml>` takes an `<svg>` as one.
 - **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
-  would turn `<svg><p></p><link>`, a sheet in every engine, into none. It goes by
-  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, nor does
-  an `<image>` there stay one, and a `<font color>` does not, whose attributes
-  come after its name. That stack is most of what is left between the scan and
-  the engines, which differ on 105 of 2,124 generated documents, and on 6 with
-  its context corrected to each element's language. Those are how elements
-  close, which no mark can say: a `</svg>` after an inner drawing broke out
-  closes the outer one, where HTML's stops at the `<div>` between them, and a
-  nested `<a>` runs no adoption agency. The list is the engines', and `<table>`
-  is on it.
+  would turn `<svg><p></p><link>`, a sheet in every engine, into none. The list
+  is the engines', and `<table>` is on it. What only attributes can say is
+  known at the end of a tag (`_tagEnds`): a `<font>` with a `color`, a `face` or
+  a `size` ends the drawing, and an `<annotation-xml>` with an HTML `encoding`
+  is a point.
+- **In foreign content the parser goes by an element's language, where
+  htmlparser2 goes by its name** (`_openForeign`, `_closedBy`). A foreign tag is
+  opened without `emitOpenTag`, which would close a `<td>` with a `<td>` and take
+  a `<math>` in a drawing for MathML, and with a frame of `foreignContext` in
+  that element's language. An end tag from a foreign element closes the nearest
+  of its name back to the first HTML element, and from there it is HTML's: it
+  closes HTML elements alone, and stops at what HTML's scopes stop at, a point
+  of the element's own language or any `<annotation-xml>`. A table's own end tags
+  do not stop there, since their scope has no such stop, which a reading of "in
+  scope" gets wrong and the engines do not. So **anything new that opens a
+  foreign element goes through `_openForeign`**, since `popElement` takes a
+  frame off by the name alone (`FRAMED`), and **a tag's end decides anything
+  more through `_tagEnds`**, where the element is not made yet. HTML content is
+  still htmlparser2's, foreign elements open or not: `<span><div></span>` closes
+  the `<span>`, where HTML's stops at the `<div>`, a `<p>` is closed only from
+  the top of the stack, and nothing runs an adoption agency. So a nested `<a>`
+  is the one difference left of 2,124 generated documents the engines agree on
+  (105 before), and every chain to depth 5 of foreign and HTML elements, with
+  each end tag after it, is read as they read it (788,922 documents, but for
+  HTML's own `td` scope). A generator for this holds HTML well nested, or HTML's
+  rules drown what foreign content's do. Left, and nobody writes it: a foreign
+  `<form>` hides an HTML one from `emitOpenTag`, an `<mglyph>` under a point
+  holds what it holds as HTML (its `/>` does end it), and at the top of a
+  fragment what breaks out leaves the tokenizer in HTML until the next tag's name
+  is read, so a `<title>` there is RCDATA.
 - **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
   `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
   path in the first, and a `clipPath` lost its capital. **Anything new that
