@@ -16403,7 +16403,9 @@ export function installDom(
           "Failed to execute 'has' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
         );
       }
-      return this._all().includes(face);
+      // what a script made is here by this set's own list: Excalidraw asks
+      // before it adds each of its 230 faces, in the one task
+      return face._script ? this._added.has(face) : this._all().includes(face);
     }
     forEach(fn: Any, thisArg?: Any): void {
       for (const face of this._all()) fn.call(thisArg, face, face, this);

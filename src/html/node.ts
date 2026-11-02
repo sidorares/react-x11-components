@@ -1590,6 +1590,7 @@ export class HtmlViewNode extends Node {
     pseudo: 0 | 1 | 2 = HOVER_PSEUDO_NONE,
   ): void {
     this._geometry += 1;
+    this._onlyFaces = false;
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
       const seeded = only !== null && seeds !== null;
@@ -7254,7 +7255,7 @@ export class HtmlViewNode extends Node {
    * script has just put in has its faces in the set.
    */
   fontFaces(): DocumentFontFace[] {
-    this._prepare(this.abs.width || 1);
+    if (!this._onlyFaces) this._prepare(this.abs.width || 1);
     return this._webFonts.faces();
   }
 
@@ -7262,7 +7263,7 @@ export class HtmlViewNode extends Node {
    *  `check()` find them (`WebFonts.match`), styled first as `fontFaces`
    *  is. */
   matchFonts(query: FontQuery, text: string): FontMatch {
-    this._prepare(this.abs.width || 1);
+    if (!this._onlyFaces) this._prepare(this.abs.width || 1);
     return this._webFonts.match(
       query.families,
       query.weight,
@@ -7304,9 +7305,18 @@ export class HtmlViewNode extends Node {
    *  sheet with an `@font-face` is, it changes what every family reads. */
   scriptFontsChanged(id: number, added: boolean): void {
     if (!this._webFonts.addFace(id, added)) return;
+    const only = this._onlyFaces || this._stale === Stale.Nothing;
     this._sheetsRead = null;
     this._invalidate(Stale.Everything);
+    this._onlyFaces = only;
   }
+
+  /** All that has changed since the document was styled is what faces a
+   *  script has put among its fonts, which `document.fonts` reads from where
+   *  they went (`WebFonts.addFace`), so reading it styles nothing for them:
+   *  every read after an add styled the whole document, one read a face
+   *  where a page reads between them. */
+  private _onlyFaces = false;
 
   /** What `svg-geometry.ts` asks of the document: an element's text and
    *  where a drawing was laid out, in CSS pixels. */

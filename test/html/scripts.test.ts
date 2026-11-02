@@ -11953,6 +11953,68 @@ metric(
   },
 );
 
+test('a page that asks document.fonts about each face it adds styles nothing for it', async () => {
+  // Excalidraw, on its way up: `has` and `add` for each of its 230 faces in
+  // one task, and each `has` styled the whole document for the `add` before
+  // it. That was 8 seconds of one task on a loaded machine, which is where
+  // what the page asks next is refused (`_spent`), and its library, its
+  // fonts and its scene all threw `TimeoutError` by turns.
+  const doc = await hosted(
+    `<p id=out></p><p>A page with something to style.</p>
+     <style>p { color: rgb(1, 2, 3) }</style>
+     <script>
+       window.go = (faces) => {
+         const fonts = document.fonts;
+         const made = [];
+         for (let i = 0; i < faces; i += 1) {
+           const face = new FontFace('Brand', 'url(brand.ttf)', {
+             unicodeRange: 'U+' + (0x100 + i).toString(16),
+           });
+           made.push(face);
+           if (!fonts.has(face)) fonts.add(face);
+         }
+         return [fonts.has(made[0]), fonts.size, fonts.check('16px Brand', 'a')];
+       };
+       window.after = () => {
+         const sheet = document.createElement('style');
+         sheet.textContent = '@font-face { font-family: Sheet; src: url(sheet.ttf) }';
+         document.body.append(sheet);
+         const size = document.fonts.size;
+         const face = new FontFace('Other', 'url(other.ttf)');
+         const had = document.fonts.has(face);
+         document.fonts.add(face);
+         return [size, had, document.fonts.has(face), document.fonts.size];
+       };
+     </script>`,
+  );
+  await settle();
+  const view = doc.view as unknown as {
+    _update(width: number): void;
+    fontFaces(): unknown[];
+  };
+  const update = view._update;
+  const fontFaces = view.fontFaces;
+  let updates = 0;
+  let reads = 0;
+  view._update = function (this: unknown, width: number) {
+    updates += 1;
+    update.call(this, width);
+  };
+  view.fontFaces = function (this: unknown) {
+    reads += 1;
+    return fontFaces.call(this);
+  };
+  const answer = (code: string) =>
+    doc.runner()!.evaluate(`JSON.stringify(${code})`)?.text ?? '';
+  assert.equal(answer('go(60)'), '"[true,60,true]"');
+  assert.equal(updates, 0, 'nothing is styled for the faces while they go in');
+  assert.ok(reads < 5, `${reads} reads of the list for 60 faces`);
+  // a read of the set still finds what a sheet put in, and what it styled
+  assert.equal(answer('after()'), '"[61,false,true,62]"');
+  await settle();
+  assert.ok(updates >= 1, 'and they are styled for');
+});
+
 metric(
   "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
   async () => {

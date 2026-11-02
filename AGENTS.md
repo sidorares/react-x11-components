@@ -5043,6 +5043,20 @@ not before. Three things are load-bearing:
   thirty messages apart passed what a change is told as (`CHANGES_TOLD`),
   and every page of messages styled the whole document again.
 
+**A read of `document.fonts` styles nothing for what a script put in it.** A
+face a script adds changes what every family reads, so the document is styled
+again from the cascade up, once, at the next read of a style or a paint. The set
+is told at once (`WebFonts.addFace`), so its own reads go past that
+(`_onlyFaces`) and `has()` of a script's face asks no host. Excalidraw asks
+`has()` before it adds each of its 230 faces, in one task, and each styled the
+whole document: 7.4 seconds of ops in the task, 80 ms of the page's own, and a
+task that runs into `_spent`'s ceiling has every op after it refused, so its
+library, its fonts and its scene threw `TimeoutError` where nothing had run away.
+**An op a page can ask in a loop costs what it reads.** A read that brings the
+document up to date is worth it where a page asks once; the ceiling counts ops,
+because the runtime's watchdog cannot be paused, so a loop of them is what it
+finds.
+
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
 react-x11's font manager with `loadFont` — the application's manager, so
