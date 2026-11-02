@@ -7689,6 +7689,15 @@ One more, specific to here:
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
 
+One that comes from Node 20, and fails a long way from the cause:
+
+- **An `assert.ok` inside a `waitFor` has a message.** Without one, Node 20
+  builds the message by parsing the test's own source with acorn, and that
+  search is quadratic in the file: `waitFor`'s two-second budget ran for five
+  and eight minutes on `test/pdf.test.ts`, at a line or two of the file, and
+  the job failed after 28 with `'false == true'`. Node 22 and later do not
+  parse, so nothing shows locally. It looks like a hang at 100% of a core.
+
 One that comes from the test harness:
 
 - **The in-process server is not pixman.** ntk draws a mask either itself

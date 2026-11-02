@@ -481,10 +481,10 @@ async function mounted(
     ),
     { width: 800, height: 600, scale: options.scale ?? 1 } as never,
   );
-  await waitFor(() => assert.ok(ref.current?.node));
+  await waitFor(() => assert.ok(ref.current?.node, 'no element yet'));
   const handle = ref.current!;
   const node = handle.node!;
-  await waitFor(() => assert.ok(node.abs.width > 0));
+  await waitFor(() => assert.ok(node.abs.width > 0, 'not laid out yet'));
   return { result, handle, node };
 }
 
@@ -498,7 +498,7 @@ async function settled(
     const drawn = node.stats.tilesDrawn;
     const still = drawn === last && engine.inFlight === 0 && drawn > 0;
     last = drawn;
-    assert.ok(still);
+    assert.ok(still, 'tiles are still landing');
   });
   await act(async () => {});
 }
@@ -621,7 +621,9 @@ test('the queue never holds more than it can answer, through a flick', async () 
   }));
   const engine = new FakePdfEngine(pages, { hold: true });
   const { node } = await mounted(engine);
-  await waitFor(() => assert.ok(engine.requests.length > 0));
+  await waitFor(() =>
+    assert.ok(engine.requests.length > 0, 'nothing asked for'),
+  );
   for (let i = 0; i < 40; i++) {
     await act(async () => node.scrollBy({ y: 1400 }));
   }
@@ -647,8 +649,12 @@ test('a zoom shows what there is and draws its own tiles once it rests', async (
     asked,
     'a zoom asked for tiles at once',
   );
-  await waitFor(() => assert.ok(node.stats.staleComposited > 0));
-  await waitFor(() => assert.ok(engine.requests.length > asked));
+  await waitFor(() =>
+    assert.ok(node.stats.staleComposited > 0, 'nothing stretched yet'),
+  );
+  await waitFor(() =>
+    assert.ok(engine.requests.length > asked, 'no tiles asked for yet'),
+  );
   await settled(engine, node);
   const levels = new Set(engine.requests.slice(asked).map((r) => r.level));
   assert.deepStrictEqual([...levels], [1.5 * PX_PER_POINT]);
@@ -678,7 +684,9 @@ test("a scroll inside a zoom's rest asks for no tiles of the scale it left", asy
     node.scrollBy({ y: 9000 });
   });
   assert.strictEqual(engine.requests.length, asked);
-  await waitFor(() => assert.ok(engine.requests.length > asked));
+  await waitFor(() =>
+    assert.ok(engine.requests.length > asked, 'no tiles asked for yet'),
+  );
   for (const request of engine.requests.slice(asked)) {
     assert.strictEqual(request.level, 1.5 * PX_PER_POINT);
   }
@@ -696,7 +704,7 @@ test('a tile the engine cannot draw is asked for once', async () => {
     return real(handle, tile);
   };
   const { node } = await mounted(engine);
-  await waitFor(() => assert.ok(refused > 0));
+  await waitFor(() => assert.ok(refused > 0, 'nothing refused yet'));
   await act(async () => {
     await new Promise((go) => setTimeout(go, 60));
     node.scrollBy({ y: 1 });
@@ -718,7 +726,7 @@ test('a backend with no surface asks for nothing more', async () => {
     }),
     { backend: 'mock' } as never,
   );
-  await waitFor(() => assert.ok(ref.current?.node));
+  await waitFor(() => assert.ok(ref.current?.node, 'no element yet'));
   await act(async () => {
     await new Promise((go) => setTimeout(go, 60));
   });
@@ -756,6 +764,7 @@ test('two presses take a word and three a line', async () => {
   await waitFor(() =>
     assert.ok(
       (node as unknown as { _texts: Map<number, unknown> })._texts.size > 0,
+      'no text yet',
     ),
   );
   const box = node.contentBox();
@@ -778,6 +787,7 @@ test('a press and a drag select, and a copy takes what was selected', async () =
   await waitFor(() =>
     assert.ok(
       (node as unknown as { _texts: Map<number, unknown> })._texts.size > 0,
+      'no text yet',
     ),
   );
   const box = node.contentBox();
@@ -871,6 +881,7 @@ test('at a scale that is no whole number a scroll still meets its band', async (
   await waitFor(() =>
     assert.ok(
       engine.requests.some((r) => r.level !== engine.requests[0]!.level),
+      'still at the first level',
     ),
   );
   await settled(engine, node);
@@ -902,6 +913,7 @@ test('a press on a link goes where it says', async () => {
   await waitFor(() =>
     assert.ok(
       (node as unknown as { _links: Map<number, unknown> })._links.size > 0,
+      'no links yet',
     ),
   );
   const box = node.contentBox();
