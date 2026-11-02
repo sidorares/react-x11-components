@@ -373,6 +373,10 @@ export interface DocumentResponse {
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
+  /** Stop the clock on a stalled response, for a host that will not read it
+   *  yet: one asking its user where to save it. The clock starts again as
+   *  the body is first read. */
+  hold?: () => void;
 }
 
 /** What a form sends with a POST: its body as `<Html>` encoded it, the type
@@ -1375,6 +1379,7 @@ export class HtmlNetwork {
       size: Number(response.headers.get('content-length')) || null,
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
+      hold: stall.hold,
     };
   }
 
@@ -2355,6 +2360,7 @@ export function downloadSource(
     type: response.type,
     size: response.size ?? null,
     body: response.whole ?? response.body,
+    hold: response.hold,
   };
 }
 
@@ -2387,6 +2393,8 @@ export const stallClock = {
 function stallTimer(ms: number): {
   signal: InstanceType<typeof AbortController>['signal'];
   progress(): void;
+  /** Disarmed until the next `progress()`: nobody is reading. */
+  hold(): void;
   stop(): void;
 } {
   const controller = new AbortController();
@@ -2411,6 +2419,9 @@ function stallTimer(ms: number): {
       stallClock.disarm(timer);
       arm();
     },
+    hold() {
+      if (timer !== null) stallClock.disarm(timer);
+    },
     stop() {
       if (timer !== null) stallClock.disarm(timer);
       timer = null;
@@ -2425,6 +2436,7 @@ async function* arriving(
   stall: ReturnType<typeof stallTimer>,
 ): AsyncIterable<Uint8Array> {
   try {
+    stall.progress();
     for await (const chunk of body) {
       stall.progress();
       yield chunk;
@@ -2533,8 +2545,27 @@ const TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.css': 'text/css',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/x-m4v',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.aif': 'audio/aiff',
+  '.aiff': 'audio/aiff',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
   '.ttf': 'font/ttf',
@@ -2548,8 +2579,6 @@ const TEXT = new Set([
   '.mjs',
   '.ts',
   '.tsx',
-  '.json',
-  '.xml',
   '.yml',
   '.yaml',
   '.sh',
@@ -2566,6 +2595,15 @@ interface FileSystem {
     size: number;
   }>;
   readFile(path: string): Promise<Uint8Array>;
+  open(path: string): Promise<{
+    read(
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: null,
+    ): Promise<{ bytesRead: number }>;
+    close(): Promise<void>;
+  }>;
   readdir(
     path: string,
     options: { withFileTypes: true },
@@ -2636,11 +2674,52 @@ async function localDocument(url: string): Promise<DocumentResponse> {
       body: once(new TextEncoder().encode(listing)),
     };
   }
-  const fetched = await readLocal(url, MAX_DOCUMENT);
-  if (!fetched) {
-    throw new NetworkError(`${path} is too large to open.`, 'ERR_FILE_TOO_BIG');
+  if (!info.isFile()) {
+    throw new NetworkError(`${path} is no file to open.`, 'ERR_FILE');
   }
-  return { ...fetched, redirected: false, body: once(fetched.bytes) };
+  return {
+    url,
+    redirected: false,
+    status: 200,
+    type: localType(path),
+    charset: null,
+    size: info.size,
+    body: localBody(path, MAX_DOCUMENT),
+    whole: localBody(path, Infinity),
+  };
+}
+
+/** How much of a file is read at a time. */
+const FILE_CHUNK = 256 * 1024;
+
+/**
+ * A file a piece at a time, read only as it is asked for: a video is not read
+ * here at all, since its player opens it, and one saved has no limit on it.
+ * Past `limit` bytes it throws, as `bodyOf` does for a response.
+ */
+async function* localBody(
+  path: string,
+  limit: number,
+): AsyncIterable<Uint8Array> {
+  const file = await (await fileSystem()).open(path);
+  try {
+    let total = 0;
+    for (;;) {
+      const chunk = new Uint8Array(FILE_CHUNK);
+      const { bytesRead } = await file.read(chunk, 0, FILE_CHUNK, null);
+      if (!bytesRead) return;
+      total += bytesRead;
+      if (total > limit) {
+        throw new NetworkError(
+          `${path} is too large to open.`,
+          'ERR_FILE_TOO_BIG',
+        );
+      }
+      yield chunk.subarray(0, bytesRead);
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function* once(bytes: Uint8Array): AsyncIterable<Uint8Array> {
