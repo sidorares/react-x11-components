@@ -380,6 +380,10 @@ export interface DocumentResponse {
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
+  /** Stop the clock on a stalled response, for a host that will not read it
+   *  yet: one asking its user where to save it. The clock starts again as
+   *  the body is first read. */
+  hold?: () => void;
 }
 
 /** What a form sends with a POST: its body as `<Html>` encoded it, the type
@@ -492,6 +496,8 @@ export class HtmlNetwork {
   private readonly _webRTC: boolean;
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
+  /** Whose opening handshake each host and port waits for. */
+  private readonly _socketTurns = new Map<string, Promise<void>>();
   private readonly _cookies: CookieJar | null;
   private readonly _serviceWorkers: HtmlServiceWorkers | null;
   /** Who is told of each request (`observe`), and the last id handed out. */
@@ -605,7 +611,9 @@ export class HtmlNetwork {
    * says what the handshake was answered with — Node's, from 24, through
    * undici's `undici:websocket:open` channel — its `Set-Cookie` is stored;
    * Bun says nothing of it. A runtime with no `WebSocket`, Node 20, fails
-   * every socket, as with no network.
+   * every socket, as with no network. One opening handshake to a host and
+   * port goes at a time (RFC 6455, 4.1), each waiting for the one before to
+   * be answered or to fail, or for `HANDSHAKE_TURN_MS`.
    */
   webSockets(page: string): HtmlWebSocket {
     if (!this._webSocket) return NO_WEBSOCKET;
@@ -618,6 +626,7 @@ export class HtmlNetwork {
           language: this._language,
           cookies: this._cookies,
           site,
+          turns: this._socketTurns,
         });
       },
     };
@@ -1431,6 +1440,7 @@ export class HtmlNetwork {
       size: Number(response.headers.get('content-length')) || null,
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
+      hold: stall.hold,
     };
   }
 
@@ -1953,6 +1963,45 @@ function watchHandshakes(): Promise<void> {
   ));
 }
 
+/** How long a socket waits for the handshake before it to the same host and
+ *  port. A server that never answers holds its own socket, which has no
+ *  bound here, and not every socket after it. */
+const HANDSHAKE_TURN_MS = 30000;
+
+/**
+ * A place in the line of opening handshakes to `url`'s host and port (RFC
+ * 6455, 4.1, step 2): `ready` settles when the one before is done, and
+ * `done` is called once this one is. Keyed by name where the RFC has the
+ * address: a name is what the runtime's socket hands over, and two names of
+ * one server run side by side, which no server minds.
+ */
+function socketTurn(
+  turns: Map<string, Promise<void>>,
+  url: string,
+): { ready: Promise<void>; done(): void } {
+  const { host } = new URL(url);
+  const ready = turns.get(host) ?? Promise.resolve();
+  let finish = (): void => {};
+  const mine = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const last = ready.then(() => mine);
+  turns.set(host, last);
+  let timer: unknown = null;
+  const done = (): void => {
+    if (timer !== null) stallClock.disarm(timer);
+    timer = null;
+    finish();
+  };
+  void ready.then(() => {
+    timer = stallClock.arm(done, HANDSHAKE_TURN_MS);
+  });
+  void last.then(() => {
+    if (turns.get(host) === last) turns.delete(host);
+  });
+  return { ready, done };
+}
+
 /** A connection over the runtime's `WebSocket`, its events told in the
  *  order they came. */
 function runtimeSocket(
@@ -1963,6 +2012,7 @@ function runtimeSocket(
     language: string;
     cookies: CookieJar | null;
     site: string;
+    turns: Map<string, Promise<void>>;
   },
 ): WebSocketConnectionLike {
   const Native = (globalThis as { WebSocket?: RuntimeWebSocketClass })
@@ -1991,6 +2041,7 @@ function runtimeSocket(
   const cookie = jar?.header(request.url, context);
   if (cookie) headers.cookie = cookie;
 
+  const turn = socketTurn(options.turns, request.url);
   let ws: RuntimeWebSocket | null = null;
   /** Abandoned before the runtime's socket was made. */
   let abandoned = false;
@@ -2003,7 +2054,10 @@ function runtimeSocket(
     else fn();
   };
   const make = (): void => {
-    if (abandoned) return;
+    if (abandoned) {
+      turn.done();
+      return;
+    }
     let socket: RuntimeWebSocket;
     try {
       socket = new Native(request.url, {
@@ -2012,12 +2066,14 @@ function runtimeSocket(
       });
     } catch (error) {
       done = true;
+      turn.done();
       events.failed(String((error as Error)?.message ?? error));
       return;
     }
     ws = socket;
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
+      turn.done();
       // undici publishes the handshake's answer just after `open`
       held = [];
       void Promise.resolve().then(() => {
@@ -2059,12 +2115,14 @@ function runtimeSocket(
     socket.onerror = (event) =>
       inOrder(() => {
         done = true;
+        turn.done();
         const message = event?.message ?? (event?.error as Error)?.message;
         events.failed(message ? String(message) : 'the connection failed.');
       });
     socket.onclose = (event) =>
       inOrder(() => {
         done = true;
+        turn.done();
         events.closed(
           Number(event?.code ?? 1006),
           String(event?.reason ?? ''),
@@ -2074,8 +2132,7 @@ function runtimeSocket(
   };
   // the handshake's answer is watched for where there is a jar to keep its
   // cookies in, before the first socket is made
-  if (jar) void watchHandshakes().then(make);
-  else make();
+  void Promise.all([turn.ready, jar && watchHandshakes()]).then(make);
   return {
     send(data) {
       ws?.send(data);
@@ -2454,6 +2511,7 @@ export function downloadSource(
     type: response.type,
     size: response.size ?? null,
     body: response.whole ?? response.body,
+    hold: response.hold,
   };
 }
 
@@ -2486,6 +2544,8 @@ export const stallClock = {
 function stallTimer(ms: number): {
   signal: InstanceType<typeof AbortController>['signal'];
   progress(): void;
+  /** Disarmed until the next `progress()`: nobody is reading. */
+  hold(): void;
   stop(): void;
 } {
   const controller = new AbortController();
@@ -2510,6 +2570,9 @@ function stallTimer(ms: number): {
       stallClock.disarm(timer);
       arm();
     },
+    hold() {
+      if (timer !== null) stallClock.disarm(timer);
+    },
     stop() {
       if (timer !== null) stallClock.disarm(timer);
       timer = null;
@@ -2524,6 +2587,7 @@ async function* arriving(
   stall: ReturnType<typeof stallTimer>,
 ): AsyncIterable<Uint8Array> {
   try {
+    stall.progress();
     for await (const chunk of body) {
       stall.progress();
       yield chunk;
@@ -2632,8 +2696,27 @@ const TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.css': 'text/css',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/x-m4v',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.aif': 'audio/aiff',
+  '.aiff': 'audio/aiff',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
   '.ttf': 'font/ttf',
@@ -2647,8 +2730,6 @@ const TEXT = new Set([
   '.mjs',
   '.ts',
   '.tsx',
-  '.json',
-  '.xml',
   '.yml',
   '.yaml',
   '.sh',
@@ -2665,6 +2746,15 @@ interface FileSystem {
     size: number;
   }>;
   readFile(path: string): Promise<Uint8Array>;
+  open(path: string): Promise<{
+    read(
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: null,
+    ): Promise<{ bytesRead: number }>;
+    close(): Promise<void>;
+  }>;
   readdir(
     path: string,
     options: { withFileTypes: true },
@@ -2735,11 +2825,52 @@ async function localDocument(url: string): Promise<DocumentResponse> {
       body: once(new TextEncoder().encode(listing)),
     };
   }
-  const fetched = await readLocal(url, MAX_DOCUMENT);
-  if (!fetched) {
-    throw new NetworkError(`${path} is too large to open.`, 'ERR_FILE_TOO_BIG');
+  if (!info.isFile()) {
+    throw new NetworkError(`${path} is no file to open.`, 'ERR_FILE');
   }
-  return { ...fetched, redirected: false, body: once(fetched.bytes) };
+  return {
+    url,
+    redirected: false,
+    status: 200,
+    type: localType(path),
+    charset: null,
+    size: info.size,
+    body: localBody(path, MAX_DOCUMENT),
+    whole: localBody(path, Infinity),
+  };
+}
+
+/** How much of a file is read at a time. */
+const FILE_CHUNK = 256 * 1024;
+
+/**
+ * A file a piece at a time, read only as it is asked for: a video is not read
+ * here at all, since its player opens it, and one saved has no limit on it.
+ * Past `limit` bytes it throws, as `bodyOf` does for a response.
+ */
+async function* localBody(
+  path: string,
+  limit: number,
+): AsyncIterable<Uint8Array> {
+  const file = await (await fileSystem()).open(path);
+  try {
+    let total = 0;
+    for (;;) {
+      const chunk = new Uint8Array(FILE_CHUNK);
+      const { bytesRead } = await file.read(chunk, 0, FILE_CHUNK, null);
+      if (!bytesRead) return;
+      total += bytesRead;
+      if (total > limit) {
+        throw new NetworkError(
+          `${path} is too large to open.`,
+          'ERR_FILE_TOO_BIG',
+        );
+      }
+      yield chunk.subarray(0, bytesRead);
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function* once(bytes: Uint8Array): AsyncIterable<Uint8Array> {

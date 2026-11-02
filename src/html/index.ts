@@ -50,6 +50,7 @@ import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
 import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import { focusableElement } from './focus.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -1379,6 +1380,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
 
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
+    // what keeps a key in the document while a focus a script asked for
+    // has nothing to take it, which only a page that hears keys needs
+    ...(onDomEvent ? [stops.keyHolder()] : []),
     // over the document and under its widgets: a video a control is drawn
     // over is no video a player is mounted for
     ...videos.render(),
@@ -1467,7 +1471,16 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         if (!view || !key || ev.ctrlKey || ev.metaKey || ev.altKey) return;
         const target = ev.target as DrawnNode;
         const on = stops.elementOf(target);
-        if (!on && target !== rootNode.current && target !== (view as unknown))
+        const held = stops.holds(target);
+        // and not where a focus is owed: what will take it may keep its
+        // arrows, as a field's widget does
+        if (held && on) return;
+        if (
+          !on &&
+          !held &&
+          target !== rootNode.current &&
+          target !== (view as unknown)
+        )
           return;
         const [axis, how, sign] = key;
         const back = ev.keysym === XK_SPACE && ev.shiftKey;
@@ -1793,6 +1806,26 @@ function documentInteraction(
     return now.forms.controlOf(node) ?? now.stops.elementOf(node);
   };
   return {
+    // Core's press goes to the nearest node that takes the focus, and what the
+    // document draws has none under it but the surface. A browser leaves the
+    // focus where it is when the nearest area that takes it around the press
+    // has it, which a page's `mousedown` may just have done: a button that
+    // focuses itself there lost the focus again as the handler returned. Told
+    // a microtask later, a blur put right here is one the page never hears.
+    pressLanded(at) {
+      const now = live.current;
+      const held = view.current?.focusedElement;
+      if (!now || !held) return;
+      for (let el = at; el; el = flatParentOf(el)) {
+        if (el === held) {
+          this.focus(el);
+          return;
+        }
+        if (focusableElement(el)) break;
+      }
+      // and a focus owed to something else is not what the press wanted
+      if (now.forms.owed()) now.forms.letGo();
+    },
     controlValue: (el) => live.current?.forms.value(el) ?? null,
     setControlValue: (el, value) =>
       live.current?.forms.setValue(el, value) ?? false,
@@ -1830,9 +1863,10 @@ function documentInteraction(
       return took;
     },
     told: (el) => {
-      const forms = live.current?.forms;
-      forms?.focused(el, true);
-      forms?.owe(el);
+      const now = live.current;
+      now?.forms.focused(el, true);
+      now?.forms.owe(el);
+      now?.stops.hold();
     },
     settleFocus: () => {
       const now = live.current;
@@ -1988,8 +2022,9 @@ function useDocumentEvents(
     const doc = view.current?.document;
     return doc ? rootElementOf(doc) : null;
   };
-  /** What a key is typed at: a control's widget, a stop's element, or the
-   *  document's body where the document itself has the focus. */
+  /** What a key is typed at: a control's widget, a stop's element, the
+   *  element a focus is owed to (`stops.ts`), or the document's body where
+   *  the document itself has the focus. */
   const keyedAt = (target: DrawnNode): Element | null => {
     const node = view.current;
     if (!node) return null;

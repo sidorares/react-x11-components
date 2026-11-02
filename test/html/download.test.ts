@@ -126,6 +126,59 @@ metric('another origin’s download attribute says nothing', async () => {
   assert.deepEqual(shown.followed, ['https://other.test/x.pdf']);
 });
 
+metric('a name is no path, however it is spelt', () => {
+  const name = (header: string) =>
+    downloadName('https://x.test/d', '', header, '');
+  for (const header of [
+    'attachment; filename="../../.ssh/authorized_keys"',
+    'attachment; filename="..\\\\..\\\\.ssh\\\\authorized_keys"',
+    "attachment; filename*=UTF-8''..%2F..%2F.ssh%2Fauthorized_keys",
+    "attachment; filename*=UTF-8''..%5C..%5C.ssh%5Cauthorized_keys",
+    'attachment; filename="/home/me/.ssh/authorized_keys"',
+  ]) {
+    assert.equal(name(header), 'authorized_keys', header);
+  }
+  assert.equal(
+    downloadName('https://x.test/a/..%2F..%2Fetc%2Fpasswd', '', null, ''),
+    'passwd',
+    'the end of the URL, once it is decoded',
+  );
+  assert.equal(name('attachment; filename=".."'), 'd', 'nothing of it is left');
+});
+
+metric('a name hides nothing, and disguises nothing', () => {
+  assert.equal(safeFilename('.bashrc'), 'bashrc');
+  assert.equal(safeFilename('. .bashrc'), 'bashrc');
+  assert.equal(safeFilename('a\u0000b\u0085c.txt'), 'a_b_c.txt');
+  assert.equal(
+    safeFilename('evil‮fdp.exe'),
+    'evil_fdp.exe',
+    'a right-to-left override reads this one as evilexe.pdf',
+  );
+  assert.equal(safeFilename('a​b﻿c.txt'), 'a_b_c.txt');
+  assert.equal(
+    safeFilename('etc／passwd∕x'),
+    'etc_passwd_x',
+    'a slash that is only like one',
+  );
+  assert.equal(safeFilename('x.txt:evil.exe'), 'x.txt_evil.exe', 'a stream');
+  assert.equal(safeFilename('name.txt. . '), 'name.txt');
+  assert.equal(safeFilename('NUL.txt'), '_NUL.txt');
+});
+
+metric('a long name keeps its extension, and is cut between characters', () => {
+  const long = safeFilename(`${'x'.repeat(300)}.pdf`);
+  assert.equal(long.length, 200);
+  assert.ok(long.endsWith('.pdf'));
+  const emoji = safeFilename('😀'.repeat(150));
+  assert.ok(emoji.length <= 200);
+  assert.doesNotMatch(emoji, /[\ud800-\udbff]$/, 'half a character is none');
+  assert.equal(
+    safeFilename(`${'x'.repeat(198)}. ${'y'.repeat(30)}`).at(-1),
+    'x',
+  );
+});
+
 const logged = (logs: string[]) => ({
   scripts: {
     log: (level: string, line: string) => void logs.push(`${level}: ${line}`),

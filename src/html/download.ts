@@ -43,6 +43,10 @@ export interface HtmlDownloadSource {
   /** Its length, where the server said. */
   size: number | null;
   body: AsyncIterable<Uint8Array>;
+  /** Call this before keeping `body` waiting, as a host that asks its user
+   *  where to save it does: a response nobody reads looks like one that
+   *  stalled. */
+  hold?: () => void;
 }
 
 /** What a `Content-Disposition` header says (RFC 6266). */
@@ -102,22 +106,33 @@ export function dispositionOf(header: string | null | undefined): Disposition {
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 /**
+ * What no name of a file should have: what a filesystem refuses or keeps for
+ * itself, control characters of either range, and what changes how a name
+ * reads without being seen. A right-to-left override makes `evil\u202Efdp.exe`
+ * read as `evilexe.pdf` in a save dialog, and a slash that is only like one
+ * reads as a folder.
+ */
+const UNFIT =
+  /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}<>:"|?*\u2044\u2215\u29f8\uff0f\uff3c]/gu;
+
+/**
  * A name a server or a page gave, as one a host can join to a directory: no
- * path, no control characters, nothing that hides it or runs off the end of
- * the name a filesystem takes. Empty where nothing of it is left.
+ * path, no control characters, nothing that hides it or disguises it or runs
+ * off the end of the name a filesystem takes. Empty where nothing of it is
+ * left.
  */
 export function safeFilename(name: string): string {
   const leaf = name.split(/[/\\]/).pop() ?? '';
-  // eslint-disable-next-line no-control-regex
-  let clean = leaf.replace(/[\x00-\x1f\x7f<>:"|?*]/g, '_').trim();
-  clean = clean.replace(/^\.+/, '').replace(/[. ]+$/, '');
+  let clean = leaf.replace(UNFIT, '_').trim();
+  clean = clean.replace(/^[. ]+/, '').replace(/[. ]+$/, '');
   if (RESERVED.test(clean)) clean = `_${clean}`;
   // keep the extension of a name past what a filesystem holds
   if (clean.length > 200) {
     const dot = clean.lastIndexOf('.');
     const extension =
       dot > 0 && clean.length - dot <= 16 ? clean.slice(dot) : '';
-    clean = clean.slice(0, 200 - extension.length) + extension;
+    const stem = clean.slice(0, 200 - extension.length);
+    clean = stem.replace(/[\ud800-\udbff]?[. ]*$/, '') + extension;
   }
   return clean;
 }

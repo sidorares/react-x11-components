@@ -810,8 +810,10 @@ the face says it has loaded. `document.fonts.add` puts a face among the
 document's, which styles the document again, as an `@font-face` in a sheet
 would; `delete` and `clear` take it out, and only what a script put there. A
 family or a descriptor that cannot be read is the `SyntaxError` `loaded`
-rejects with, and a font the engine cannot read a `NetworkError`. A
-descriptor set after a face is made reads back and changes nothing of it.
+rejects with, and a font the engine cannot read a `NetworkError`. A `style`,
+a `weight` or a `stretch` set after a face is made is what it is matched by
+from then on; any other descriptor set then reads back and changes nothing of
+it.
 
 ## Scripts
 
@@ -1079,7 +1081,9 @@ a request whose site for cookies is `page`'s. Where the runtime says what
 the handshake was answered with — Node's from 24, through undici's
 `undici:websocket:open` diagnostics channel — its `Set-Cookie` is kept in
 the jar before the page hears `open`; Bun's says nothing of it. Node 20 has
-no `WebSocket`, and there every socket fails as with no network.
+no `WebSocket`, and there every socket fails as with no network. One
+opening handshake to a host and port goes at a time, as RFC 6455 has it, each
+waiting for the one before to be answered or to fail, or for 30 seconds.
 `webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
@@ -1247,7 +1251,8 @@ as WPT's tests make them, and to another peer the host can reach.
   speakers has silence; WPT's WebRTC tests make their audio from one.
 - **A canvas's text is drawn in the document's fonts**: `fillText`,
   `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
-  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  `direction`, `fontStretch`, `letterSpacing`, `wordSpacing` and `maxWidth`,
+  through every
   transform, clip and compositing operator a path goes through. A `font`
   names what the document's `@font-face` rules and `new FontFace` do, and a
   face not loaded yet is asked for and drawn in what the list has until it
@@ -2215,7 +2220,9 @@ wptrunner runs a browser.
 it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
 `location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
 from one to the other as the window navigates, so one object stands for a window
-through a popup login. `closed` is true from the moment `close()` is called, and
+through a popup login. A `javascript:` URL sent to a window or a frame of another
+origin ends there, as HTML has it, and a host hears of no navigation. `closed` is
+true from the moment `close()` is called, and
 the window goes in a task after it: `opener` reads null then, and a name no longer
 finds it.
 
@@ -2302,7 +2309,9 @@ What can be dragged is an element marked `draggable=true`, a link and an image.
 The store is read/write at `dragstart`, read-only at `drop` and protected in
 between, where a page sees its types and not its data. A target that takes a
 drop cancels `dragover`; a field or an editing host takes text with nothing
-said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+said, as `insertFromDrop`. A press on a text field or a `<select>` starts no
+drag of it or of what it is in, `draggable` or `readonly` or not, as in a
+browser: it selects. A page that cancels `dragstart`, and a press on
 anything else, leaves the gesture what it was: a selection, or a drag of the
 page's own over pointer events. After `dragstart` the pointer is the drag's, so
 a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
@@ -2691,16 +2700,31 @@ are there to save it with; `downloadSource(response, '')` makes the source. What
 to do about it is the host's: the example browser saves what says `attachment`
 and what is of a type it cannot show, and the tab stays on what it was showing.
 
+A source's `hold()` is for a host that will not read it yet, as one asking its
+user where to save it will not: the clock on a stalled response runs from the
+request, so without it a dialog left open for 30 seconds ends the download. The
+clock starts again as the body is first read. `file:` responses are read as
+they are asked for, so a large one is held to a document's limit only by what
+holds it.
+
 `downloadName` goes by the response's name, the attribute, the end of the URL
 and the type's extension, in that order, and `safeFilename` leaves a name that
 is safe to join to a directory: no path in it, no control characters, nothing
-that hides the file, whatever a server or a page said. `dispositionOf` reads
-RFC 6266, `filename*` over `filename`.
+that hides the file or disguises it, whatever a server or a page said. A
+right-to-left override and a slash that is only like one are taken out with the
+rest. `dispositionOf` reads RFC 6266, `filename*` over `filename`.
 
-The example browser writes into the user's Downloads folder, or
-`BROWSER_DOWNLOADS_DIR`, from the tab's own process, with a `.part` file until
-all of it has arrived, and draws a shelf along the bottom of its window with
-each one's progress and a Cancel and a Show in Folder. A tab closed with a
+The example browser asks where each file goes: a save dialog, shown by the
+browser's process, opens on the user's Downloads folder, or
+`BROWSER_DOWNLOADS_DIR`, starting on the cleaned name, numbered so that accepting
+it replaces nothing. A server's name is only that suggestion, nothing of the
+response is read until the dialog answers, and a dialog dismissed leaves no
+trace. Four asks may wait at once, and a page asking for more is refused.
+
+The tab's own process writes to the path chosen, with a `.part` file until all
+of it has arrived, so a file the user chose to replace stands until there is all
+of what replaces it. The browser draws a shelf along the bottom of its window
+with each one's progress and a Cancel and a Show in Folder. A tab closed with a
 download under way ends it, and the shelf says so. `showSaveFilePicker` is left
 out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
 `<a download>`.
@@ -3174,7 +3198,10 @@ says nothing, the UA sheet's `:focus-visible { outline: auto 1px
 element's border box, or round each of a link's fragments. A press does not
 focus a link or a button, which it does in a browser: the press focuses the
 document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
-link follows it. Tab after a press goes on from where it landed, as from a
+link follows it. A press on what has the focus leaves it there, whether it
+had it before or a page's `mousedown` just gave it, as a page that focuses a
+button itself expects of the browsers that focus none on a click.
+Tab after a press goes on from where it landed, as from a
 link pressed or from text between links, which is HTML's sequential focus
 navigation starting point (6.6.4). The element focused is scrolled into
 view, by the box around the document that scrolls. An element a page's
@@ -3183,6 +3210,16 @@ document was not a press, as Chrome, Firefox and WebKit decide it: a menu a
 click opens, whose script focuses its first link, draws no ring round it,
 where Tab and Enter, or no input yet, draw one. A modifier alone, and a
 chord with Ctrl, Alt or Meta, is no input that changes the answer.
+
+**A focus a script asks for is the keyboard's at once.** `focus()` is told
+before it returns, and what takes it for a control or a link may be a render
+or two away on a page still loading. A key typed until then reaches the page
+at that element, and does what it does on a link or a button; only text typed
+at a field whose widget is still to come is heard and not typed. A press
+elsewhere takes such a focus back, as it takes any.
+
+Tab goes by the document as it stands, so a Tab straight after a script put
+something focusable in reaches it.
 
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed

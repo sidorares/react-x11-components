@@ -4366,9 +4366,18 @@ export class DomHost {
         }
         return at;
       }
-      case 'frameNavigate':
-        this.navigateFrame(this._element(a), text(b), null);
+      case 'frameNavigate': {
+        const frame = this._element(a);
+        // only its own origin may send it a `javascript:` URL (`maySend`)
+        if (
+          /^javascript:/i.test(this._resolve(text(b))) &&
+          !this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank')
+        ) {
+          return null;
+        }
+        this.navigateFrame(frame, text(b), null);
         return null;
+      }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
       // `frameDocument` hands a page a document by
@@ -4843,6 +4852,11 @@ export class DomHost {
         );
         return true;
       }
+      case 'fontFaceSet':
+        this._fontsOf(a)
+          ?.scriptFonts?.()
+          ?.setFace(Number(b), JSON.parse(text(c)) as FontFaceInit);
+        return null;
       case 'fontFaceLoad': {
         const id = Number(b);
         const fonts = this._fontsOf(a)?.scriptFonts?.();
@@ -5186,6 +5200,8 @@ export class DomHost {
             // focused elsewhere since
             if (pending && this._focusing !== el) return;
             if (pending) this._focusing = null;
+            // or taken back, as a press elsewhere takes a focus still owed
+            if (pending && this._seams.handle.activeElement !== el) return;
             this._seams.handle.focus(el);
           }, 16);
         }

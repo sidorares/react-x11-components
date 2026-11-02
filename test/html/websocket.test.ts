@@ -12,12 +12,13 @@ import { act, cleanup, renderX11 } from 'react-x11/test';
 
 import { Html, preloadHtmlScripts } from '../../src/html/index.js';
 import { CookieJar } from '../../src/html/cookies.js';
-import { HtmlNetwork } from '../../src/html/network.js';
+import { HtmlNetwork, stallClock } from '../../src/html/network.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { NO_WEBSOCKET } from '../../src/html/socket.js';
 import type { HtmlWebSocket } from '../../src/html/socket.js';
 import { FakeSockets } from '../fake-socket.js';
 import type { FakeConnection } from '../fake-socket.js';
+import { holdClock } from '../held-clock.js';
 import { wsServer } from '../ws-server.js';
 import { FONTS, h } from './harness.js';
 
@@ -406,6 +407,69 @@ test('a worker’s sockets are carried across its thread over the page’s seam:
   assert.equal(await p.until('heard|'), 'from worker,7.8');
   assert.equal(await p.until('close|'), '3000|done|true');
   assert.deepEqual(conn.closes, [[3000, 'done']]);
+});
+
+test('HtmlNetwork opens one handshake to a host and port at a time, each waiting for the one before to be answered or to fail', async (t) => {
+  /** The runtime's socket, whose handshake a test answers by hand. */
+  class Held {
+    static made: Held[] = [];
+    binaryType = '';
+    protocol = '';
+    extensions = '';
+    bufferedAmount = 0;
+    onopen: (() => void) | null = null;
+    onerror: ((event: object) => void) | null = null;
+    onclose: ((event: object) => void) | null = null;
+    onmessage: ((event: object) => void) | null = null;
+    constructor(readonly url: string) {
+      Held.made.push(this);
+    }
+    send(): void {}
+    close(): void {}
+  }
+  const runtime = globalThis as { WebSocket?: unknown };
+  const before = runtime.WebSocket;
+  runtime.WebSocket = Held;
+  t.after(() => {
+    runtime.WebSocket = before;
+  });
+  const held = holdClock(t, stallClock);
+  const network = new HtmlNetwork();
+  const sockets = network.webSockets('http://a.test/');
+  const events = {
+    open() {},
+    message() {},
+    closed() {},
+    failed() {},
+  };
+  const open = (url: string) =>
+    sockets.connect({ url, origin: 'http://a.test', protocols: [] }, events);
+  const made = async (): Promise<string[]> => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    return Held.made.map((s) => s.url);
+  };
+  open('ws://a.test/1');
+  open('ws://a.test/2');
+  open('ws://a.test/3');
+  const other = 'ws://a.test:81/';
+  open(other);
+  assert.deepEqual(await made(), ['ws://a.test/1', other]);
+  // an answer lets the next go
+  Held.made[0].onopen?.();
+  assert.deepEqual(await made(), ['ws://a.test/1', other, 'ws://a.test/2']);
+  // and so does a failure
+  Held.made[2].onerror?.({ message: 'refused' });
+  assert.deepEqual(await made(), [
+    'ws://a.test/1',
+    other,
+    'ws://a.test/2',
+    'ws://a.test/3',
+  ]);
+  // a server that never answers holds its own socket and no other
+  open('ws://a.test/4');
+  assert.equal((await made()).length, 4);
+  while (await held.frame());
+  assert.equal((await made()).length, 5);
 });
 
 runtimeTest(

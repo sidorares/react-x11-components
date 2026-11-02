@@ -115,7 +115,7 @@ import type {
   LoadHow,
   PageProps,
 } from './page.js';
-import { acceptFilters } from '../../src/html/index.js';
+import { acceptFilters, safeFilename } from '../../src/html/index.js';
 import type { PostData } from '../../src/html/index.js';
 import { DEVELOP, developShortcuts, shortcuts } from './keys.js';
 import type { Command } from './keys.js';
@@ -124,6 +124,7 @@ import type { DevtoolsPanel, DockSide } from './devtools/model.js';
 import { DownloadShelf } from './shelf.js';
 import { PermissionBar, QUESTIONS } from './permissions.js';
 import type { PermissionAsk } from './permissions.js';
+import { downloadsDir, freeName } from './downloads.js';
 import type { DownloadState } from './downloads.js';
 import { HOME, fileName } from './pages.js';
 import {
@@ -1093,7 +1094,7 @@ function TabPage({
     [id, dispatch],
   );
   // a file input's dialog, on this window: the pane reads what was chosen
-  const { openFile } = useFileDialog();
+  const { openFile, saveFile } = useFileDialog();
   const [picked, setPicked] = useState<PageProps['picked']>(null);
   const [dropped, setDropped] = useState<PageProps['dropped']>(null);
   const landed = useRef(false);
@@ -1105,6 +1106,28 @@ function TabPage({
       );
     },
     [openFile],
+  );
+  // and a download's, one at a time: a pane writes to the path that comes
+  // back and to no other, so the name is cleaned here, whatever the page's
+  // process says it is, and starts as one that replaces nothing
+  const [savePath, setSavePath] = useState<PageProps['savePath']>(null);
+  const placing = useRef<Promise<unknown>>(Promise.resolve());
+  const onSaveFile = useCallback(
+    (ask: string, name: string) => {
+      placing.current = placing.current.then(async () => {
+        const defaultFolder = downloadsDir();
+        const path = await saveFile({
+          title: 'Save As',
+          defaultFolder,
+          defaultName: freeName(
+            defaultFolder,
+            safeFilename(name) || 'download',
+          ),
+        }).catch(() => null);
+        setSavePath({ id: ask, path });
+      });
+    },
+    [saveFile],
   );
   // the page's Inspect opened its tools, or their own button closed them
   const onDevtools = useCallback(
@@ -1142,6 +1165,8 @@ function TabPage({
     onPickFiles,
     picked,
     dropped,
+    onSaveFile,
+    savePath,
     onDownloadState: onTabDownload,
     cancelDownloads,
     onAskPermission: onTabAsks,
