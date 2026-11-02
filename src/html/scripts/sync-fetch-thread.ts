@@ -4,8 +4,9 @@
 // synchronous `XMLHttpRequest` nothing of that network can run. This is a
 // network that can: an `HtmlNetwork` made here from what the page's says of
 // itself, over a cookie jar that holds what the page's held as the request
-// was made. Its request is `HtmlNetwork.request`, so its headers, its redirects
-// and what it does with cookies are the same code as every other request's.
+// was made. Its request is `HtmlNetwork.request`, so its headers and what it
+// does with cookies are the same code as every other request's, and a redirect
+// comes back as it is, for the page's thread to ask about (`DomHost._hops`).
 // What the jar came to goes back with the answer.
 import { CookieJar, publicSuffixList } from '../cookies.js';
 import type { HtmlCookie, HtmlCookieStore } from '../cookies.js';

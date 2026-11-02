@@ -1101,9 +1101,10 @@ thread back, which a page waiting in `send()` will not give it. So
 `scripts.syncNetwork` is a network on a thread of its own, made again there from
 what `HtmlNetwork.syncNetwork()` says of itself, and the page's thread sleeps on
 a shared word until it answers. It is the same `HtmlNetwork.request` as any
-other: its headers, redirects, cookies and CORS are the ones every request has,
-and the jar goes over with the request and comes back with what became of it,
-so a `Set-Cookie` on the way is the page's by the time `send()` returns. With no
+other, and the same walk of a request's hops, so CORS, a preflight and what a
+page's `Origin` says are asked at every redirect, as for any request. The jar
+goes over with each hop and comes back with what became of it, so a `Set-Cookie`
+on the way is the page's by the time `send()` returns. With no
 `syncNetwork` a page has only asynchronous ones, and `open` with `async` false
 throws `InvalidAccessError`, as it always did; `useHtmlNetwork` hands one. On
 Node and on Bun alike.
