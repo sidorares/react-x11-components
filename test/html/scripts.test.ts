@@ -3869,6 +3869,72 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
   });
 });
 
+test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
+  // Grafana's global styles, by emotion, a rule at a time: `\\f` in a
+  // JavaScript string is a form feed, a newline to CSS, which breaks the
+  // string, and what comes after it opens one that runs to the end of the
+  // rule. Every browser ends it there; written back beside the rules after
+  // it, it ate them, `.grafana-app` among them.
+  const doc = await hosted(
+    '<div id="a" class="a"></div><p id="b" class="b"></p>' +
+      '<p id="out"></p><p id="adopted"></p><script>' +
+      'var r = [], s = document.createElement("style");' +
+      'document.body.append(s);' +
+      'var sheet = s.sheet;' +
+      'function add(rule) {' +
+      '  try { sheet.insertRule(rule, sheet.cssRules.length);' +
+      '    var it = sheet.cssRules[sheet.cssRules.length - 1];' +
+      '    r.push(it.selectorText || it.conditionText || it.cssText);' +
+      '  } catch (e) { r.push(e.name); } }' +
+      'add(".a::after{position:absolute;color:rgb(1, 2, 3);content:\\"\\f0d7\\";pointer-events:none;}");' +
+      'add(".b{color:rgb(4, 5, 6)}");' +
+      'add("@media (min-width: 1px) { .c { color: red");' +
+      'add(".d { color: red /* open");' +
+      'add(".e { background: url(a");' +
+      'add(".f { content: \\"a\\\\");' +
+      'add(".g");' +
+      'add("@layer l");' +
+      'add(".h{margin-left:7px}");' +
+      'r.push(sheet.cssRules.length, sheet.cssRules[0].style.pointerEvents,' +
+      '  sheet.cssRules[0].style.position);' +
+      'var b = document.getElementById("b");' +
+      'r.push(getComputedStyle(b).color);' +
+      'b.className = "b h";' +
+      'r.push(getComputedStyle(b).marginLeft);' +
+      'var made = new CSSStyleSheet();' +
+      'made.insertRule(".k{content:\\"\\f0d7\\";color:red}");' +
+      'made.insertRule(".b{outline-color:rgb(1, 1, 1)}", 1);' +
+      'document.adoptedStyleSheets = [made];' +
+      'r.push(made.cssRules.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      'setInterval(function () {' +
+      '  document.getElementById("adopted").textContent = getComputedStyle(b).outlineColor;' +
+      '}, 10);' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '.a::after',
+    '.b',
+    '(min-width: 1px)',
+    '.d',
+    '.e',
+    '.f',
+    'SyntaxError',
+    '@layer l;',
+    '.h',
+    '8',
+    '',
+    'absolute',
+    'rgb(4, 5, 6)',
+    '7px',
+    '2',
+  ]);
+  assert.equal(
+    await settled(doc, 'adopted', (t) => t === 'rgb(1, 1, 1)'),
+    'rgb(1, 1, 1)',
+  );
+});
+
 test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
   const doc = await hosted(
     '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +

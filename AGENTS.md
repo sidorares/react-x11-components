@@ -6679,6 +6679,16 @@ again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
 
+**A rule's text stands alone.** A `<style>`'s rules are kept as text and
+written back as the element's text, one after another (`_writeSheets`), and a
+constructed sheet's are joined the same way, where a browser keeps rules parsed
+and what one leaves open ends with it. So `cssRulesOf` closes what a rule leaves
+open in its text: a string, a comment, its brackets. **Anything new that keeps a
+rule's text goes through `cssRulesOf`**, or a rule with a broken string holds
+every rule after it with no error anywhere: emotion inserts Grafana's global
+styles a rule at a time, one had a form feed in a string, and the 246 rules
+after it were lost, `.grafana-app` among them, so no dashboard had a height.
+
 **A sheet a shadow root adopts is the tree's last sheet, and the host has it
 once.** `root.adoptedStyleSheets` is the document's array (`adoptedArray`,
 `setAdopted`), but where the document's reaches `<Html>` as the `stylesheet`
