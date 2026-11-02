@@ -4438,8 +4438,16 @@ and `font-weight` — `text { font: 10px/1 Ahem }` — and a gradient stop's
 `style` attribute, as the cascade orders them, `!important` and `var()`
 included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
-— `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
-ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
+— `.st0 { fill: #fff }` for `<path class="st0">`. A `<link>` or a `<base>`
+written there is neither a sheet nor the document's base, and asks
+`onResource` for nothing: HTML's parser makes an SVG element of each, and a
+MathML one under `<math>`, which it stays wherever a script moves or copies
+it. One in a `<foreignObject>`, in an SVG `<title>` or `<desc>`, or in
+MathML's `<mi>` and its kin is HTML's, and one a script or an application
+makes with `createElement` is a sheet wherever it is put, as in all three
+engines. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
+drawing there, and it and what comes after it stand after the drawing. Those
+properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
 no others: a rule's `transform` is not. A length in the drawing's
 geometry is worked out as CSS has it, where ntk's `SvgView` would read it
 as the number before its unit: `x2="2.5em"` is of the element's font
@@ -6496,6 +6504,9 @@ operations that are easy to get wrong (`appendChild`, `removeNode`,
 `replaceNode`, and `createHtmlElement`/`createText`/`parseHtmlFragment` to
 build nodes), because a domhandler node carries `parent`, `prev`, `next` and
 `children` and a splice has to keep all four straight.
+`parseHtmlFragment(html, false, element)` reads the markup as what `element`
+holds, as its `innerHTML` does: in a drawing a `<path/>` closes itself and a
+`clipPath` keeps its capital.
 
 After mutating, call `handle.refresh()`. That is explicit on purpose:
 observing a plain object graph would cost a proxy per node and tax the static

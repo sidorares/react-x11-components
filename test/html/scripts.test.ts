@@ -9661,6 +9661,121 @@ test('DOM Core as Acid3 asks it: constants, namespaces, documents of XML, doctyp
   );
 });
 
+test('a <link> or a <base> is what it was made as: the parser’s in a drawing is SVG’s, wherever it goes, and a script’s is HTML’s', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const SHEET = '#probe{color:rgb(0,0,255)}';
+  const blue = 'rgb(0, 0, 255)';
+  const SVG = 'http://www.w3.org/2000/svg';
+  const answer = async (run: string, markup = ''): Promise<string> => {
+    const doc = await hosted(
+      `<!DOCTYPE html><html><head></head><body><p id="probe">p</p>${markup}` +
+        `<svg><g id="g"></g><foreignObject id="fo"></foreignObject></svg>` +
+        `<p id="out"></p><script>var g=document.getElementById("g"),` +
+        `fo=document.getElementById("fo"),out=document.getElementById("out"),` +
+        `probe=document.getElementById("probe");` +
+        `var link=function(){var l=document.createElement("link");` +
+        `l.rel="stylesheet";l.href="s.css";return l};` +
+        `addEventListener("load",function(){${run};` +
+        `setTimeout(function(){out.textContent=[document.styleSheets.length,` +
+        `getComputedStyle(probe).color===${JSON.stringify(blue)},` +
+        `document.baseURI.replace(/.*\\/\\/[^/]*/,"")].join("|")},30)});` +
+        `</script></body></html>`,
+      { sheets: { 's.css': SHEET } },
+    );
+    const text = await settled(doc, 'out', (t) => t !== '');
+    cleanup();
+    return text;
+  };
+  const LINK = '<link id="l" rel="stylesheet" href="s.css">';
+  const unstyled = '0|false|/dir/page.html';
+  const styled = '1|true|/dir/page.html';
+  // the parser's, as it stands, moved, copied and given a rel
+  assert.equal(await answer('', `<svg><g>${LINK}</g></svg>`), unstyled);
+  const parsed = 'var made=document.getElementById("l");';
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made)`,
+      `<svg><g>${LINK}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made.cloneNode())`,
+      `<svg><g>${LINK}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer(
+      `${parsed}made.setAttribute("rel","stylesheet")`,
+      '<svg><g><link id="l" href="s.css"></g></svg>',
+    ),
+    unstyled,
+  );
+  // what a script's `innerHTML` makes, by what it is read in
+  assert.equal(await answer(`g.innerHTML='${LINK}'`), unstyled);
+  assert.equal(
+    await answer(`g.insertAdjacentHTML("beforeend",'${LINK}')`),
+    unstyled,
+  );
+  assert.equal(await answer(`fo.innerHTML='${LINK}'`), styled);
+  // what a script makes, wherever it goes
+  assert.equal(await answer('g.appendChild(link())'), styled);
+  assert.equal(await answer('fo.appendChild(link())'), styled);
+  assert.equal(
+    await answer(
+      `var l=document.createElementNS("${SVG}","link");` +
+        `l.setAttribute("rel","stylesheet");l.setAttribute("href","s.css");` +
+        `document.head.appendChild(l)`,
+    ),
+    unstyled,
+  );
+  // a `<base>` the same way
+  const BASE = '<base id="l" href="/b/">';
+  const based = '0|false|/b/';
+  assert.equal(await answer('', `<svg><g>${BASE}</g></svg>`), unstyled);
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made)`,
+      `<svg><g>${BASE}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer('', `<svg><foreignObject>${BASE}</foreignObject></svg>`),
+    based,
+  );
+  // by its attribute: `href` is no property of the facade's `<base>`
+  const made = (into: string) =>
+    `var b=document.createElement("base");b.setAttribute("href","/b/");` +
+    `${into}.appendChild(b)`;
+  assert.equal(await answer(made('g')), based);
+  assert.equal(await answer(made('fo')), based);
+  assert.equal(await answer(`fo.innerHTML='${BASE}'`), based);
+});
+
+test('what a page reads of an element a drawing’s markup made, and what it writes into a drawing', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><svg id="s"><g id="g"><link id="l" rel="stylesheet" href="s.css"></g></svg>' +
+      '<p id="out"></p><script>' +
+      'var l = document.getElementById("l"), g = document.getElementById("g"), r = [];' +
+      'r.push(l.namespaceURI === "http://www.w3.org/2000/svg", l instanceof HTMLElement,' +
+      '  l instanceof SVGElement, l.tagName, l.sheet === undefined,' +
+      '  document.querySelector("svg link") === l);' +
+      // an icon set writes its paths closed, and each stayed in the last
+      "g.innerHTML = \"<path d='M0 0'/><path d='M1 1'/><clipPath id='c'/>\";" +
+      'r.push(g.children.length, g.lastChild.localName);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|false|true|link|true|true|3|clipPath',
+    doc.logs.join('\n'),
+  );
+});
+
 test('tables, forms and the rest of HTML’s DOM Acid3 reads: rows and sections, controls by name, a submit button’s click', async () => {
   const doc = await hosted(
     '<form id="f" action="javascript:"><input id="i" type="HIDDEN"></form>' +
@@ -10601,6 +10716,13 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
   // a link's own target, else the document's `<base target>`
   assert.equal(linkTarget(by('own'), document), 'side');
   assert.equal(linkTarget(by('based'), document), '_top');
+  // which one in a drawing is not, in any of the three engines
+  const drawn = new HtmlSource();
+  drawn.setSource(
+    '<svg><g><base target="drawn"></g></svg><a id="x" href="x.html">x</a>',
+    true,
+  );
+  assert.equal(linkTarget(null, drawn.document), '');
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {
