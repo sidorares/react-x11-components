@@ -3491,6 +3491,17 @@ one-way. **A press on any of the control is the button**, since a page lays a
 transparent one over what it draws: the box beside the button has the same
 `onClick`.
 
+**What leaves a document as a file goes through a seam that does nothing by
+default** (`download.ts`, `onDownload`). A link's `download` is the realm's to
+read where scripts run (`downloadLink`), and `<Html>`'s where they do not
+(`followed`), with the same rule: another origin's says nothing. A `blob:`'s
+bytes cross with the request, since no host can read one. **`safeFilename` is
+what stands between a server's name and a path**: anything new that takes a name
+for a file goes through `downloadName` or `safeFilename`, never around them, and
+a host joins nothing else to a directory. `HtmlNetwork.document` hands over a
+second body with no limit on it (`whole`), lazily: **read `body` or `whole`,
+never both**, since both drain the one response.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides

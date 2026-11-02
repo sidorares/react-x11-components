@@ -91,6 +91,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
+import type { HtmlDownloadRequest } from './download.js';
 import type { HtmlDrop } from './drag.js';
 import type { HtmlFile } from './files.js';
 import { alphaOf, inkColor, isTransparent } from './css/values.js';
@@ -738,6 +739,7 @@ export interface DocumentInteraction {
   showPicker(el: Element): boolean;
   pickFiles(el: Element): void;
   setFiles(el: Element, files: readonly HtmlFile[]): void;
+  download(request: HtmlDownloadRequest): boolean;
   dragOver(drop: HtmlDrop): boolean;
   dragLeave(): void;
   dropHere(drop: HtmlDrop): Promise<boolean>;

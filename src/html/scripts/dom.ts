@@ -27619,9 +27619,8 @@ export function installDom(
    *  hyperlink"): `navigate` first, and the host follows it only where it
    *  goes to another document. False where the page kept it. */
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
-    if (!anchor.hasAttribute('href') || anchor.hasAttribute('download')) {
-      return true;
-    }
+    if (!anchor.hasAttribute('href')) return true;
+    if (anchor.hasAttribute('download')) return !downloadLink(anchor);
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
@@ -27654,6 +27653,35 @@ export function installDom(
       hostFollows: true,
     });
     return went === 'other';
+  };
+
+  /** A link that says to save what it names (HTML 4.6.5, "download the
+   *  hyperlink"), where the host saves things: a `blob:`'s bytes are this
+   *  realm's to hand over. Another origin's `download` says nothing, as a
+   *  browser takes it, or a link could name any file it likes. */
+  const downloadLink = (anchor: Any): boolean => {
+    const href = str(anchor.href);
+    let foreign = false;
+    try {
+      const url = new URL(href);
+      foreign =
+        url.protocol !== 'blob:' &&
+        url.protocol !== 'data:' &&
+        url.origin !== location.origin;
+    } catch {
+      return false;
+    }
+    if (foreign) return false;
+    const blob = blobUrls.get(href.replace(/#.*$/, ''));
+    return (
+      call(
+        'download',
+        href,
+        str(anchor.getAttribute('download') ?? ''),
+        blob instanceof Blob ? base64OfBytes(blob._bytes) : '',
+        blob instanceof Blob ? blob.type : '',
+      ) === true
+    );
   };
 
   /** A form's submission (HTML 4.10.21.3, "submit"), once its `submit`

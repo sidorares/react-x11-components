@@ -121,6 +121,8 @@ import { DEVELOP, developShortcuts, shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import { DOCK_SIDES } from './devtools/model.js';
 import type { DevtoolsPanel, DockSide } from './devtools/model.js';
+import { DownloadShelf } from './shelf.js';
+import type { DownloadState } from './downloads.js';
 import { HOME, fileName } from './pages.js';
 import {
   openProfile,
@@ -960,6 +962,10 @@ const DOCK_LABELS: Record<DockSide, string> = {
 type PaneTransport = FrameComponentProps['transport'];
 
 interface TabPageProps {
+  /** A tab's download's news, or `null` where its process ended. */
+  onDownloadState(tab: string, state: DownloadState | null): void;
+  /** The downloads the shelf asked to have stopped. */
+  cancelDownloads: readonly string[];
   tab: Tab;
   /** Whether it is the tab showing, the only one whose page Tab goes to. */
   active: boolean;
@@ -999,6 +1005,8 @@ function TabPage({
   dispatch,
   open,
   onCommand,
+  onDownloadState,
+  cancelDownloads,
 }: TabPageProps): ReactElement {
   const id = tab.id;
   const latest = useRef(tab);
@@ -1059,6 +1067,10 @@ function TabPage({
     },
     [id, dispatch],
   );
+  const onTabDownload = useCallback(
+    (state: DownloadState) => onDownloadState(id, state),
+    [id, onDownloadState],
+  );
   // a file input's dialog, on this window: the pane reads what was chosen
   const { openFile } = useFileDialog();
   const [picked, setPicked] = useState<PageProps['picked']>(null);
@@ -1109,6 +1121,8 @@ function TabPage({
     onPickFiles,
     picked,
     dropped,
+    onDownloadState: onTabDownload,
+    cancelDownloads,
     onLoad,
     onCommand,
   };
@@ -1171,6 +1185,8 @@ function TabPage({
         onExit={({ expected }) => {
           // a navigation the process was loading is not arriving
           if (!expected) dispatch({ type: 'stop', id });
+          // nor is anything it was saving
+          onDownloadState(id, null);
         }}
       />
     </box>
@@ -1397,6 +1413,29 @@ export function Browser({
   const chromeShown = chrome.shown || active.focusAddress;
   // Ctrl+L in full screen: the field is focused once it is shown again
   const [addressWanted, setAddressWanted] = useState(false);
+  // what the tabs have saved and are saving, and what the shelf has stopped
+  const [downloads, setDownloads] = useState<readonly DownloadState[]>([]);
+  const [cancelled, setCancelled] = useState<readonly string[]>([]);
+  const tabOf = useRef(new Map<string, string>());
+  const onDownloadState = useCallback(
+    (tab: string, state: DownloadState | null) => {
+      if (state) tabOf.current.set(state.id, tab);
+      setDownloads((all) => {
+        // a process that ended takes what it was saving with it
+        if (!state) {
+          return all.map((item) =>
+            item.state === 'running' && tabOf.current.get(item.id) === tab
+              ? { ...item, state: 'failed', error: 'The tab closed.' }
+              : item,
+          );
+        }
+        return all.some((item) => item.id === state.id)
+          ? all.map((item) => (item.id === state.id ? state : item))
+          : [...all, state];
+      });
+    },
+    [],
+  );
   useEffect(() => {
     if (!addressWanted || !chromeShown) return;
     setAddressWanted(false);
@@ -1813,10 +1852,19 @@ export function Browser({
                 dispatch={dispatch}
                 open={open}
                 onCommand={onCommand}
+                onDownloadState={onDownloadState}
+                cancelDownloads={cancelled}
               />
             </box>
           ))}
         </box>
+        <DownloadShelf
+          downloads={downloads}
+          onCancel={(id) => setCancelled((all) => [...all, id])}
+          onDismiss={(id) =>
+            setDownloads((all) => all.filter((d) => d.id !== id))
+          }
+        />
       </ThemeProvider>
     </window>
   );

@@ -192,6 +192,7 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles } from '../form.js';
+import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
 import type { HtmlClipboard } from '../clipboard.js';
@@ -392,6 +393,8 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** Hand the host what a page asked to have saved: whether it takes it. */
+  download(request: HtmlDownloadRequest): boolean;
   /** A file input's dialog (`HtmlProps.onPickFiles`). */
   pickFiles(element: Element): void;
   /** Set what a file input holds, as a script's `files` does. */
@@ -5127,6 +5130,15 @@ export class DomHost {
         return this._fileList(this._element(a));
       case 'fileChunk':
         return this._fileChunk(Number(a), Number(b));
+      case 'download':
+        return (
+          this._seams.handle.download?.({
+            url: text(a),
+            filename: text(b),
+            ...(text(c) && { bytes: bytesOf(text(c)) }),
+            ...(text(d) && { type: text(d) }),
+          }) ?? false
+        );
       case 'dragOut':
         this._dragOut = text(a);
         return null;

@@ -49,7 +49,7 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -95,6 +95,7 @@ import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
 import type { HtmlClipboardData } from './clipboard.js';
 import { useDocumentDrag } from './drag.js';
+import type { HtmlDownloadHandler, HtmlDownloadRequest } from './download.js';
 import type { HtmlDrop } from './drag.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
@@ -148,6 +149,7 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export { downloadSource } from './network.js';
 export {
   acceptFilters,
   fileTypeOf,
@@ -189,6 +191,12 @@ export { NO_WEBSOCKET } from './socket.js';
 export { memoryClipboard, useHtmlClipboard } from './clipboard.js';
 export type { HtmlClipboard, HtmlClipboardData } from './clipboard.js';
 export type { HtmlDragData, HtmlDrop } from './drag.js';
+export { dispositionOf, downloadName, safeFilename } from './download.js';
+export type {
+  HtmlDownloadHandler,
+  HtmlDownloadRequest,
+  HtmlDownloadSource,
+} from './download.js';
 export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export type {
   HtmlWebSocket,
@@ -579,6 +587,13 @@ export interface HtmlProps {
    * opens nothing. `useHtmlFilePicker()` is core's file dialog.
    */
   onPickFiles?: HtmlPickFiles;
+  /**
+   * A page asked to have something saved: an `<a download>` of its own
+   * origin, or of a `blob:` or `data:` URL it made. Default: none, and such a
+   * link is a link like any other, since a component that shows a page writes
+   * nothing to a disk for it. `HtmlNetwork.download` reads what it names.
+   */
+  onDownload?: HtmlDownloadHandler;
   /**
    * Read what another application dropped on the document, for a page's
    * `drop`: `readHtmlFiles` is one. Default: none, and nothing from outside
@@ -1113,7 +1128,22 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // is drawn while the window has the keyboard
   const { caretBlink, caretBlinkMs } = useDesktopSettings();
   const windowFocused = useWindowState().focused;
-  const links = useLinkClicks(onLink);
+  // a link that says to save what it names, with no script to read it: the
+  // realm answers for one where a document's scripts run (`downloadLink`)
+  const onDownload = props.onDownload;
+  const followed = React.useMemo(() => {
+    if (!onLink || !onDownload || props.scripts) return onLink;
+    return (href: string, ev: X11MouseEvent<DrawnNode>) => {
+      const anchor = linkAround(viewNode.current?.elementAtPoint(ev.x, ev.y));
+      const name = anchor && attr(anchor, 'download');
+      if (name === undefined || name === null || !sameOriginAs(href, baseUrl)) {
+        onLink(href, ev);
+        return;
+      }
+      onDownload({ url: href, filename: name });
+    };
+  }, [onLink, onDownload, props.scripts, baseUrl]);
+  const links = useLinkClicks(followed);
   const menu = useSelectionMenu(selectable);
 
   // The element, for the document's base when a form is submitted, as well
@@ -1220,7 +1250,13 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     controlOf: forms.controlOf,
     onDropFiles: props.onDropFiles,
   });
-  live.current = { forms, stops, onLink, drag: drag.external };
+  live.current = {
+    forms,
+    stops,
+    onLink,
+    onDownload: props.onDownload,
+    drag: drag.external,
+  };
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)
@@ -1624,6 +1660,8 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.interactive?.showPicker(element) ?? false,
       pickFiles: (element: Element) =>
         nodeRef.current?.interactive?.pickFiles(element),
+      download: (request: HtmlDownloadRequest) =>
+        nodeRef.current?.interactive?.download(request) ?? false,
       dragOver: (drop: HtmlDrop) =>
         nodeRef.current?.interactive?.dragOver(drop) ?? false,
       dragLeave: () => nodeRef.current?.interactive?.dragLeave(),
@@ -1683,6 +1721,7 @@ interface Live {
   forms: ReturnType<typeof useForms>;
   stops: ReturnType<typeof useFocusStops>;
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  onDownload?: HtmlDownloadHandler;
   drag: ReturnType<typeof useDocumentDrag>['external'];
 }
 
@@ -1719,6 +1758,11 @@ function documentInteraction(
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
     showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
+    download: (request) => {
+      const save = live.current?.onDownload;
+      save?.(request);
+      return !!save;
+    },
     dragOver: (drop) => live.current?.drag.over(drop) ?? false,
     dragLeave: () => live.current?.drag.leave(),
     dropHere: (drop) => live.current?.drag.drop(drop) ?? Promise.resolve(false),
@@ -1983,6 +2027,27 @@ function useDocumentEvents(
       return go;
     },
   };
+}
+
+/** The link an element is in, or null. */
+function linkAround(el: Element | null | undefined): Element | null {
+  for (let at = el ?? null; at; at = flatParentOf(at)) {
+    if (tagOf(at) === 'a' || tagOf(at) === 'area') return at;
+  }
+  return null;
+}
+
+declare const URL: new (url: string) => { origin: string };
+
+/** Whether an address is of a document's origin, or is one a page made: what
+ *  a link's `download` counts on (HTML 4.6.5). */
+function sameOriginAs(href: string, base: string | null | undefined): boolean {
+  if (/^(?:blob|data):/i.test(href)) return true;
+  try {
+    return new URL(href).origin === new URL(base ?? '').origin;
+  } catch {
+    return false;
+  }
 }
 
 /** The nearest element two are both in, themselves included. */
