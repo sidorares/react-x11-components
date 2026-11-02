@@ -1278,7 +1278,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // core's `<audio>` for each that a page's script plays (`sounds.ts`)
   const sounds = useSounds(viewNode);
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
-  const embedded = useEmbedded(props.renderEmbedded);
+  const embedded = useEmbedded(props.renderEmbedded, viewNode);
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,

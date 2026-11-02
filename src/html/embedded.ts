@@ -21,14 +21,20 @@
 // host's node is keyed by its element, so a mount that moves, is cut or
 // fades is the same node in the same place in the tree: a new one would be
 // a new document in an `<iframe>`, its scripts started again.
+//
+// What the document paints over the element goes on a `<canvas>` after the
+// mount, as what it paints over a player does (`renderCovers`), and that
+// canvas takes the press: it is the document's, and goes to whatever is there.
 import React from 'react';
 import type { ReactNode } from 'react';
 import type { DrawnNode } from 'react-x11';
 
 import { hx } from './hx.js';
+import { renderCovers } from './videos.js';
 import { keptMount } from './widgets.js';
 import type { Element } from './dom.js';
 import type { EmbeddedRect } from './media.js';
+import type { HtmlViewNode } from './node.js';
 
 export interface Embedded {
   /** What the element reports to. */
@@ -49,6 +55,7 @@ export type RenderEmbedded = (embedded: EmbeddedRect) => ReactNode | null;
  *  element reported. */
 export function useEmbedded(
   renderEmbedded: RenderEmbedded | undefined,
+  view: { readonly current: HtmlViewNode | null },
 ): Embedded {
   const [rects, setRects] = React.useState<EmbeddedRect[]>([]);
   const ids = React.useRef(new WeakMap<Element, number>()).current;
@@ -95,7 +102,8 @@ export function useEmbedded(
         const content = renderEmbedded(rect);
         if (content === null || content === undefined) continue;
         const id = `${idOf(rect.element)}`;
-        out.push(mount(rect, id, content, refOf(id)));
+        const over = renderCovers(rect, id, view, true);
+        out.push(mount(rect, id, content, refOf(id), over));
       }
       return out;
     },
@@ -107,6 +115,8 @@ function mount(
   id: string,
   content: ReactNode,
   ref: (node: DrawnNode | null) => void,
+  /** What the document paints over it again (`renderCovers`). */
+  over: ReactNode,
 ): ReactNode {
   const { x: left, y: top, width, height } = rect;
   const port = rect.clip ?? { x: left, y: top, width, height };
@@ -169,5 +179,5 @@ function mount(
       ),
     ),
   );
-  return keptMount(rect, `embedded-kept:${id}`, node);
+  return keptMount(rect, `embedded-kept:${id}`, node, over);
 }

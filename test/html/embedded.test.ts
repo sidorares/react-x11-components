@@ -590,11 +590,80 @@ test('a box fixed to the viewport that the document paints before a frame is und
   assert.ok(!under.asked.at(-1)?.hidden, 'and shown, over the box');
   cleanup();
   const over = await renderEmbedded(page(true));
-  assert.ok(
-    over.asked.at(-1)?.hidden,
-    'hidden by one painted over it inside its rect, as before',
+  const frame = over.asked.at(-1);
+  assert.ok(!frame?.hidden, 'and shown under one painted after it');
+  assert.deepStrictEqual(
+    frame?.over,
+    { x: 80, y: 30, width: 20, height: 20 },
+    'which is painted over it again',
   );
 });
+
+for (const position of ['absolute', 'fixed']) {
+  test(`what a page puts ${position} over part of a frame is drawn over its mount, and a press on it is the page's`, async () => {
+    // JSFiddle's ad sits in a corner of its result pane, and left no
+    // rectangle of the frame to mount, so a page's result was never shown
+    const links: string[] = [];
+    const presses: string[] = [];
+    const source =
+      '<style>body{margin:0}iframe{border:0;display:block;width:200px;height:200px}' +
+      `.ad{position:${position};left:120px;top:120px;width:60px;height:40px;` +
+      'background:rgb(0,0,255)}.wrap{position:relative;width:200px}</style>' +
+      '<div class="wrap"><iframe id="f"></iframe>' +
+      '<a class="ad" href="https://example.test/close"></a></div>';
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, height: 200, flexDirection: 'column' } },
+        h(Html, {
+          source,
+          partial: false,
+          baseUrl: 'https://example.test/',
+          onLink: (href: string) => void links.push(href),
+
+          renderEmbedded: () =>
+            h('box', {
+              'data-testname': 'in-f',
+              style: { flexGrow: 1, backgroundColor: '#ff0000' },
+              onMouseDown: () => void presses.push('frame'),
+            }),
+        }),
+      ),
+      { width: 240, height: 240, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    assert.ok(mounted('f'), 'the frame is mounted');
+    await expectPixel(result.ctx, 20, 20, '#ff0000', { message: 'the frame' });
+    await expectPixel(result.ctx, 190, 190, '#ff0000', {
+      message: 'the frame beyond it',
+    });
+    await expectPixel(result.ctx, 150, 140, '#0000ff', {
+      message: 'what is over it',
+    });
+    // through the server, which finds what is under the point
+    const { server } = result as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    };
+    const press = async (x: number, y: number) => {
+      server.injectPointerMove(x, y);
+      await act();
+      server.injectButton(1, true);
+      await act();
+      server.injectButton(1, false);
+      await act();
+    };
+    await press(20, 20);
+    await waitFor(() => assert.deepStrictEqual(presses, ['frame']));
+    await press(150, 140);
+    await waitFor(() =>
+      assert.deepStrictEqual(links, ['https://example.test/close']),
+    );
+    assert.deepStrictEqual(presses, ['frame'], 'and the frame heard no more');
+  });
+}
 
 test('a box fixed to the viewport that draws nothing where it reaches a frame hides none of it', async () => {
   // joshwcomeau.com's popup, fixed over its article: a wrapper with nothing

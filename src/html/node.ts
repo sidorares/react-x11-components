@@ -1345,6 +1345,7 @@ export class HtmlViewNode extends Node {
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
+  private _embeddedCovers = new Map<Element, Cover[]>();
   private _mounted: ReadonlySet<Element> = new Set();
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
@@ -5534,7 +5535,7 @@ export class HtmlViewNode extends Node {
    *  player with them, and what is left to cut it. Null where none is. */
   private _fixedOver(
     tree: BoxTree,
-    laid: MediaRect,
+    laid: MediaRect | EmbeddedRect,
     fixed: readonly Box[] | undefined,
   ): { over: Rect; cutting: readonly Box[] } | null {
     const el = laid.element;
@@ -5547,7 +5548,9 @@ export class HtmlViewNode extends Node {
       this._fixedShift(),
       this._viewportInDocument(),
       this._scale,
-      MAX_COVERS - (this._covers.get(el)?.length ?? 0),
+      MAX_COVERS -
+        (this._covers.get(el) ?? this._embeddedCovers.get(el) ?? NO_COVERS)
+          .length,
     );
     if (!covers.length) return null;
     this._fixedCovers.set(el, covers);
@@ -5564,8 +5567,9 @@ export class HtmlViewNode extends Node {
   private _reportEmbedded(): void {
     const tree = this._tree;
     if (!tree || !this._props().onEmbedded) return;
+    this._embeddedCovers = new Map();
     this._embeddedLaid = tree.embedded.length
-      ? embeddedRectsOf(tree, this._scale)
+      ? embeddedRectsOf(tree, this._scale, this._embeddedCovers)
       : [];
     this._publishEmbedded();
   }
@@ -5576,13 +5580,16 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const report = this._props().onEmbedded;
     if (!tree || !report) return;
-    const rects = this._embeddedLaid.map((laid) =>
-      this._viewportRect(
+    const rects = this._embeddedLaid.map((laid) => {
+      const over = FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree);
+      const drawn = this._fixedOver(tree, laid, over);
+      return this._viewportRect(
         laid,
-        FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree),
+        drawn?.cutting ?? over,
         HELD_OVER.get(laid),
-      ),
-    );
+        drawn?.over,
+      );
+    });
     if (sameEmbedded(rects, this._embedded)) return;
     this._embedded = rects;
     report(rects);
@@ -5670,7 +5677,7 @@ export class HtmlViewNode extends Node {
     at: { x: number; y: number },
   ): void {
     const tree = this._tree;
-    const laid = this._covers.get(element);
+    const laid = this._covers.get(element) ?? this._embeddedCovers.get(element);
     const fixed = this._fixedCovers.get(element);
     const covers = fixed ? inPaintOrder([...(laid ?? []), ...fixed]) : laid;
     const c = ctx as PaintContext;
@@ -16448,6 +16455,8 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
   return true;
 }
 
+const NO_COVERS: readonly Cover[] = [];
+
 function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -16466,7 +16475,8 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
       p.zoom !== q.zoom ||
       p.atViewport !== q.atViewport ||
       p.held !== q.held ||
-      !sameClip(p.clip, q.clip)
+      !sameClip(p.clip, q.clip) ||
+      !sameClip(p.over, q.over)
     ) {
       return false;
     }

@@ -6957,6 +6957,18 @@ up. **Anything new that reads what a box draws asks `maskShows` where the
 box is masked**, or takes the box for its bounds; it answers for the box in
 its own plane, so one drawn through a matrix is taken at its bounds still.
 
+**What a page puts over a frame is painted over its mount again**
+(`placementOf`'s `covering`, `_fixedOver`, `renderCovers`), as what it puts over
+a player is, where it kept the frame from being mounted at all. A video has a
+poster to fall back on and a frame has nothing, so JSFiddle's ad, in a corner of
+its result pane, left the pane blank. Two things differ from a player. **A
+frame takes presses**, so a press on the canvas is handed to the document
+(`coverOf`), which finds what is under the point: through to the frame, the
+ad's close button was never pressed. And a box that leaves no rectangle and
+cannot be a cover still refuses the frame, a page laid over it past
+`MAX_COVERS` among them: a frame under a page's modal is blank, where drawn
+over it, it would take the modal's presses.
+
 **A scale the same both ways is a rectangle a mount can stand for, and
 the mount is drawn at it** (`zoomBetween`, `evenScaleOf` in `paint.ts`). A
 slide deck fits its stage to the window with `scale()`, and an `<iframe>`
