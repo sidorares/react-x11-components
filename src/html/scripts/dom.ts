@@ -9023,16 +9023,24 @@ export function installDom(
     const options: Any[] = [];
     const inHtml = (el: Any, tag: string): boolean =>
       el.localName === tag && el.namespaceURI === HTML_NS;
-    for (const kid of wrapAll(call('kids', select._id, 'elements'))) {
-      if (inHtml(kid, 'option')) options.push(kid);
-      else if (inHtml(kid, 'optgroup')) {
-        for (const inner of wrapAll(call('kids', kid._id, 'elements'))) {
-          if (inHtml(inner, 'option')) options.push(inner);
+    const walk = (at: Any, inGroup: boolean): void => {
+      for (const kid of wrapAll(call('kids', at._id, 'elements'))) {
+        if (inHtml(kid, 'option')) options.push(kid);
+        else if (
+          !OPTIONS_NOT_IN.has(kid.localName) ||
+          !inHtml(kid, kid.localName)
+        ) {
+          const group = inHtml(kid, 'optgroup');
+          if (!group || !inGroup) walk(kid, inGroup || group);
         }
       }
     }
     return options;
   };
+  /** What a `<select>`'s list of options (HTML 4.10.7) does not go on into:
+   *  it holds its options however deep, in a `<div>` as much as in an
+   *  `<optgroup>`, so an option moved into a wrapper stays one of them. */
+  const OPTIONS_NOT_IN = new Set(['select', 'hr', 'datalist']);
   /** The options chosen: those `selected`, as `<Html>` keeps them, and in a
    *  list of one the last of those, or else the first that can be (HTML
    *  4.10.7, "selectedness setting algorithm"). */
