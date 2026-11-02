@@ -47,6 +47,7 @@ import type { HtmlWebGL } from '../webgl.js';
 import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
+import { SB_FORMS, SB_SCRIPTS, sandboxOfPolicy } from './sandbox.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
@@ -74,6 +75,7 @@ type OpenedWindow = HtmlPopup &
   ViewLink['parent'] & {
     initialDocument: Document | null;
     creator: string;
+    sandbox: number;
   };
 
 /** The pane a document is shown in, as its scripts measure it: its size
@@ -109,6 +111,13 @@ export interface HtmlScripts {
     request: FetchRequest,
     signal: AbortSignalLike,
   ) => Promise<FetchResponse>;
+  /**
+   * The headers of the response the document came in, for what it says of
+   * itself to the engine: its `Content-Security-Policy`'s `sandbox`, which a
+   * frame's response is read for as it arrives. Default: none. `HtmlNetwork`'s
+   * `document` and `html` answer them.
+   */
+  headers?: [string, string][];
   /**
    * A script's source by its URL: a `<script src>`'s, with its element, and
    * a module's an import names. Default: asked of `onResource` as `kind:
@@ -503,8 +512,12 @@ export function useScriptedHtml(
 ): InternalHtmlProps {
   const config: HtmlScripts =
     typeof props.scripts === 'object' && props.scripts ? props.scripts : {};
-  const latest = useRef({ props, config });
-  latest.current = { props, config };
+  // what the document's own response and the window it is in take from it
+  const sandbox =
+    sandboxOfPolicy(config.headers ?? []) |
+    ((config.popup as OpenedWindow | undefined)?.sandbox ?? 0);
+  const latest = useRef({ props, config, sandbox });
+  latest.current = { props, config, sandbox };
   const node = (): PaneNode | null =>
     (handle.ref as React.RefObject<PaneNode | null>).current;
 
@@ -521,6 +534,7 @@ export function useScriptedHtml(
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,
+    headers: config.headers,
     popups: config.popups,
     popup: config.popup ?? null,
     close: config.close,
@@ -567,7 +581,7 @@ export function useScriptedHtml(
       ? { document: popup.initialDocument, base: popup.creator }
       : null;
   const scripts = useScripts(
-    true,
+    !(sandbox & SB_SCRIPTS),
     handle,
     url,
     options,
@@ -663,6 +677,7 @@ export function useScriptedHtml(
   );
   const onSubmit = useCallback(
     (submission: FormSubmission) => {
+      if (latest.current.sandbox & SB_FORMS) return;
       const to = navigableFor(handle.document, submission.target);
       const post =
         submission.method === 'post'

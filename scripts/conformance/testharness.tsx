@@ -327,6 +327,7 @@ interface Loaded {
   source: string;
   baseUrl: string;
   charset: string;
+  headers?: [string, string][];
 }
 
 /**
@@ -575,7 +576,12 @@ function Tab(props: {
             ...w.docs,
             {
               n,
-              doc: { source: doc.source, baseUrl: at, charset: doc.charset },
+              doc: {
+                source: doc.source,
+                baseUrl: at,
+                charset: doc.charset,
+                headers: doc.headers,
+              },
               number,
             },
           ],
@@ -626,6 +632,7 @@ function Tab(props: {
     };
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
+      headers: doc.headers,
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
@@ -1087,6 +1094,7 @@ async function render(
         source: withTestRendered(doc.source),
         baseUrl: doc.url,
         charset: doc.charset,
+        headers: doc.headers,
       },
       network,
       page,

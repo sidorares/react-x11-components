@@ -4440,6 +4440,28 @@ closes a way out a DOM binding opens by accident:
   another realm is an op on its number, refused on the host**, and a window
   moving between origins links or unlinks in `adopt`, so nothing keeps a global
   past it.
+- **A sandbox is flags on the host, by the document** (`sandbox.ts`,
+  `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
+  goes by a document's origin holds. Six things are load-bearing. **`'null'` is
+  never another `'null'`**: anything new that compares two origins treats an
+  opaque one as no other (`_sameOrigin`, `sameOrigin` in `popups.ts`, `takeNode`),
+  and anything keyed by origin keys an opaque one apart, as `BroadcastChannel`'s
+  does, or every sandbox shares one store. **What a sandbox's address says is
+  not its origin**, so anything new that reads a document's origin asks the host
+  and never `location.origin`, which keeps the address's as HTML has it; a blob
+  URL made in a sandbox is `blob:null`, since a worker's host has its address to
+  go by and nothing else, and `workerStart` holds an address to the document's
+  origin, or a worker comes out at the page's. **What a frame
+  loads asks `_frameSandbox` as it loads**, and of the document the frame is in
+  (`_ownerOf`), never of `this`: a frame's document with no realm has its frames
+  loaded by a host that is no sandbox's. **A request a sandbox makes says so**
+  (`opaqueOrigin`), since a frame's `client` is its address, which `HtmlNetwork`
+  takes `Origin` and `same-origin` cookies from. And **anything new a sandbox
+  flag takes away is refused on the host**: `form.submit()` and a press both end
+  in `submit`, but a window has four ops and each asks. What a frame refuses is
+  read from the response before it is parsed, in `_refusedFraming`, of each
+  document around it (`_ancestorOrigins`): **anything new that shows a response
+  in a frame goes through it.**
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as

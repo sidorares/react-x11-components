@@ -46,6 +46,7 @@ import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, wholeBytes } from './host.js';
+import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
 import type { ServiceClient } from './sw-registry.js';
@@ -98,6 +99,9 @@ export interface ScriptsOptions extends Omit<
    *  where there is none: a `<script src>`'s, with its element, or a
    *  module's an import names, with none. */
   load(url: string, element: Element | null): Promise<string | null>;
+  /** The headers of the response the document came in
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
   /** How long a script's own code may run in a task before it is
@@ -240,13 +244,25 @@ export class ScriptRunner {
     );
     this.host.arrival = arrival;
     // before its realm is made, which asks what context it is as it starts
-    if (popup && url === 'about:blank') this.host.creator = popup.creator;
+    if (popup && url === 'about:blank') {
+      this.host.creator = popup.creator;
+      this.host.creatorOrigin = popup.creatorOrigin;
+    }
+    // a window's flags are every document's it shows, and a host says what a
+    // document's own response said of itself
+    const sandbox =
+      (slot?.sandbox ?? 0) | sandboxOfPolicy(_options.headers ?? []);
+    if (sandbox) this.host.shared.sandboxes.set(document, sandbox);
+    if (_link?.frame) this.host.frameParent = _link.parent.host;
     // the host's to know, and never the facade's: it decides what a realm is
     // handed, and what is refused it
     const foreign =
       !!_link &&
-      url !== 'about:blank' &&
-      (originOf(url) === 'null' || originOf(url) !== _link.parent.host.origin);
+      (this.host.origin === 'null'
+        ? url !== 'about:blank' || !!(this.host.sandbox & SB_ORIGIN)
+        : url !== 'about:blank' &&
+          (originOf(url) === 'null' ||
+            originOf(url) !== _link.parent.host.origin));
     this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
@@ -424,7 +440,7 @@ export class ScriptRunner {
    */
   private _attachService(): void {
     const keeper = this.serviceKeeper;
-    if (!keeper || !this.host.secure) return;
+    if (!keeper || !this.host.secure || this.host.sandbox & SB_ORIGIN) return;
     const popup = this._options.popup as Popup | null | undefined;
     // a window's `about:blank` is its opener's client, as a frame's is its
     // parent's: the document of no address that the opener made

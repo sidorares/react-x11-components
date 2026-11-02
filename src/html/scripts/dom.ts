@@ -10010,7 +10010,9 @@ export function installDom(
    *  what made it (HTML 7.1.1), which `location` does not say. */
   const documentOrigin = (): string => {
     const origin = str(G.location?.origin ?? location.origin);
-    return origin === 'null' ? str(call('documentOrigin')) : origin;
+    // a sandbox's is no origin, whatever its address says, and only the host
+    // knows of its sandbox
+    return workerLocation ? origin : str(call('documentOrigin'));
   };
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
@@ -16409,11 +16411,18 @@ export function installDom(
       return this === document ? str(call('referrer')) : '';
     }
     get domain(): string {
-      return location.hostname;
+      return documentOrigin() === 'null' ? '' : location.hostname;
     }
     // what a tag manager sets to share a document with its frames, which
     // here are all the page's origin's or nothing of the page's
-    set domain(_v: Any) {}
+    set domain(_v: Any) {
+      if (documentOrigin() === 'null') {
+        throw new DOMException(
+          "Failed to set the 'domain' property on 'Document': Assignment is forbidden for sandboxed iframes.",
+          'SecurityError',
+        );
+      }
+    }
     // the host's jar, where it has one, for this document's address: a
     // document that is not on the web, or one a page made of its own, is
     // cookie-averse (HTML 3.1.3) and reads ''
@@ -18707,7 +18716,8 @@ export function installDom(
           "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
         );
       }
-      const origin = str(location.origin);
+      // the document's, which a sandbox's address does not say
+      const origin = workerLocation ? str(location.origin) : documentOrigin();
       const url = `blob:${origin === 'null' ? 'null' : origin}/${str(call('uuid'))}`;
       (source ? mediaSourceUrls : blobUrls).set(url, blob);
       return url;
@@ -31979,8 +31989,19 @@ export function installDom(
   }
   const localArea = storage('local');
   const sessionArea = storage('session');
-  define('localStorage', localArea);
-  define('sessionStorage', sessionArea);
+  // of an origin of none there is no store to hand over: the host refuses it
+  // as well (`DomHost._storage`), and this is where HTML throws
+  const area = (held: Any) => (): Any => {
+    if (!workerLocation && documentOrigin() === 'null') {
+      throw new DOMException(
+        "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+        'SecurityError',
+      );
+    }
+    return held;
+  };
+  getter('localStorage', area(localArea));
+  getter('sessionStorage', area(sessionArea));
   define('fetch', fetch);
   // WebAssembly's compile, as the page's. The runtime's asynchronous one
   // settles its promise from a task of the host's, in a context that runs
@@ -34247,9 +34268,15 @@ export function installDom(
             if (key === 'parent' || key === 'top') return window;
             if (key === 'location') {
               return {
-                set href(_v: Any) {},
-                replace() {},
-                assign() {},
+                set href(v: Any) {
+                  call('navigateTop', str(v));
+                },
+                replace(v: Any) {
+                  call('navigateTop', str(v));
+                },
+                assign(v: Any) {
+                  call('navigateTop', str(v));
+                },
               };
             }
             if (Object.prototype.hasOwnProperty.call(allowed, key)) {
@@ -34265,8 +34292,11 @@ export function installDom(
             }
             throw blocked();
           },
-          set(_t, key) {
-            if (key === 'location') return true;
+          set(_t, key, value) {
+            if (key === 'location') {
+              call('navigateTop', str(value));
+              return true;
+            }
             throw blocked();
           },
           has: (_t, key) =>

@@ -377,6 +377,9 @@ export interface DocumentResponse {
   disposition?: string | null;
   /** Its `Content-Length`, where it said. */
   size?: number | null;
+  /** Its response's headers, for what a document says of itself
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
@@ -1438,6 +1441,7 @@ export class HtmlNetwork {
       charset,
       disposition: response.headers.get('content-disposition'),
       size: Number(response.headers.get('content-length')) || null,
+      headers: [...response.headers.entries()],
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
@@ -1482,6 +1486,7 @@ export class HtmlNetwork {
       charset,
       disposition: header('content-disposition'),
       size: Number(header('content-length')) || null,
+      headers: response.headers,
       body: chunks,
       whole: chunks,
     };
@@ -1534,6 +1539,8 @@ export class HtmlNetwork {
       /** The document it is made from, where that is not `page`: a
        *  frame's (`FetchRequest.client`). */
       client?: string;
+      /** An `Origin` of `null` (`FetchRequest.opaqueOrigin`). */
+      opaqueOrigin?: boolean;
     },
     page: string,
     signal: AbortSignalLike,
@@ -1573,7 +1580,7 @@ export class HtmlNetwork {
     headers.accept ??= '*/*';
     // a frame's request is the frame's, and its site for cookies the page's
     const client = request.client ?? page;
-    headers.origin = originOf(client);
+    headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
     const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
@@ -1621,8 +1628,9 @@ export class HtmlNetwork {
           },
           {
             credentials: request.credentials ?? 'same-origin',
-            origin: originOf(client),
-            site: page,
+            origin: request.opaqueOrigin ? 'null' : originOf(client),
+            // no document of no origin is same-site with anything
+            site: request.opaqueOrigin ? 'about:blank' : page,
             topLevel: false,
             initiator: null,
           },
@@ -1734,6 +1742,7 @@ export class HtmlNetwork {
     type: string;
     charset: string;
     source: string;
+    headers: [string, string][];
   }> {
     const signal = options.signal ?? new AbortController().signal;
     const response = await this.document(url, signal, options.post ?? null);
@@ -1747,6 +1756,7 @@ export class HtmlNetwork {
       type: response.type,
       charset,
       source: decodeText(bytes, charset),
+      headers: response.headers ?? [],
     };
   }
 
