@@ -27,6 +27,7 @@ import {
   elementsIn,
   isElement,
   isForeign,
+  parsedForm,
   tagOf,
   treeGeneration,
 } from './dom.js';
@@ -179,9 +180,11 @@ export function rootOf(el: AnyNode): AnyNode {
 
 /**
  * The form a control belongs to (HTML 4.10.17.3): the one its `form`
- * attribute names by id, or else the nearest `<form>` around it. A `form`
- * attribute that names nothing, or names something that is not a form,
- * leaves it with none — it does not fall back to the form around it.
+ * attribute names by id, or else the nearest `<form>` around it, or else the
+ * one the parser met last, which a `<table><form>` needs: the form closes as
+ * it opens, and the rows after it are none of its. A `form` attribute that
+ * names nothing, or names something that is not a form, leaves it with none —
+ * it does not fall back to the form around it.
  */
 export function formOwner(
   el: Element,
@@ -203,7 +206,8 @@ function ownerOf(
   for (let at = el.parent; at && isElement(at); at = at.parent) {
     if (tagOf(at) === 'form') return at;
   }
-  return null;
+  const parsed = parsedForm(el);
+  return parsed && rootOf(parsed) === root ? parsed : null;
 }
 
 /** The first element in the document with an id, as `getElementById`

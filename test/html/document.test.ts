@@ -15,7 +15,7 @@ import {
   rawTextOf,
 } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
-import { controlsOf } from '../../src/html/form.js';
+import { controlsOf, formOwner } from '../../src/html/form.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
@@ -1073,7 +1073,652 @@ test('a table’s own end tags reach past an integration point, which no other e
       '<table><tr><td><svg><g></td><style></style></table>',
       'table(tbody(tr(td(svg(g())) style())))',
     ],
+    ['<svg><td><foreignObject></td>x', 'svg(td(foreignObject()) x)'],
   ]);
+});
+
+test('an end tag with no rule of its own stops at what is special, and leaves the block open for its own end tag', () => {
+  holds([
+    ['<span><div></span>y', 'span(div(y))'],
+    ['<span><p></span>y', 'span(p(y))'],
+    ['<span><ul><li></span>y', 'span(ul(li(y)))'],
+    ['<x-a><button></x-a>y', 'x-a(button(y))'],
+    ['<x-a><select></x-a>y', 'x-a(select(y))'],
+    ['<x-a><form></x-a>y', 'x-a(form(y))'],
+    ['<x-a><h1></x-a>y', 'x-a(h1(y))'],
+    ['<x-a><marquee></x-a>y', 'x-a(marquee(y))'],
+    ['<x-a><object></x-a>y', 'x-a(object(y))'],
+    ['<x-a><fieldset></x-a>y', 'x-a(fieldset(y))'],
+    ['<span><x-b></span>y', 'span(x-b()) y'],
+    ['<span><x-b><x-c></span>y', 'span(x-b(x-c())) y'],
+    ['<span><span></span>y</span>z', 'span(span() y) z'],
+    ['<div><span><div></span>y</div>z</div>w', 'div(span(div(y) z)) w'],
+    ['<section><span><div></span></div></section>y', 'section(span(div())) y'],
+  ]);
+});
+
+test('a block’s end tag goes by its scope, past what is special and not past a table, a button’s content or an object', () => {
+  holds([
+    ['<div><span></div>y', 'div(span()) y'],
+    ['<div><p></div>y', 'div(p()) y'],
+    ['<div><ul><li></div>y', 'div(ul(li())) y'],
+    ['<section><div></section>y', 'section(div()) y'],
+    ['<div><button></div>y', 'div(button()) y'],
+    [
+      '<div><table><tr><td></div><style></style>',
+      'div(table(tbody(tr(td(style())))))',
+    ],
+    ['<div><table></div><style></style>', 'div(table(style()))'],
+    [
+      '<div><table><caption></div><style></style>',
+      'div(table(caption(style())))',
+    ],
+    ['<div><object></div>y', 'div(object(y))'],
+    ['<div><marquee></div>y', 'div(marquee(y))'],
+    ['<div><select></div>y', 'div(select(y))'],
+    ['<div><template></div>y</template>z', 'div(template(y) z)'],
+    ['<ul><li></ul>y', 'ul(li()) y'],
+    ['<summary><p></summary>y', 'summary(p()) y'],
+    ['<button><div></button>y', 'button(div()) y'],
+    ['<select><div></select>y', 'select(div()) y'],
+    ['<address><span><p></address>y', 'address(span(p())) y'],
+    ['<div><svg><foreignObject></div>y', 'div(svg(foreignObject(y)))'],
+  ]);
+});
+
+test('a heading’s end tag ends any heading, and a heading’s start tag the one on top of the stack', () => {
+  holds([
+    ['<h1>x</h2>y', 'h1(x) y'],
+    ['<h3><span></h1>y', 'h3(span()) y'],
+    ['<h1><div></h2>y', 'h1(div()) y'],
+    ['<div></h1>y', 'div(y)'],
+    ['<h1><object></h2>y', 'h1(object(y))'],
+    ['<h1>x<h2>y', 'h1(x) h2(y)'],
+    ['<h1><span><h2>x', 'h1(span(h2(x)))'],
+    ['<h1><p><h2>x', 'h1(p()) h2(x)'],
+    ['<p><h1>x', 'p() h1(x)'],
+  ]);
+});
+
+test('a list item’s end tag stops at a list, and a description’s end tag ends no other', () => {
+  holds([
+    ['<li><ul></li>y', 'li(ul(y))'],
+    ['<li><ol></li>y', 'li(ol(y))'],
+    ['<li><div></li>y', 'li(div()) y'],
+    ['<li><p></li>y', 'li(p()) y'],
+    ['<ul><li><ul><li></ul>y', 'ul(li(ul(li()) y))'],
+    ['<dd><ul></dd>y', 'dd(ul()) y'],
+    ['<dd></dt>y', 'dd(y)'],
+    ['<dt></dd>y', 'dt(y)'],
+    ['<li><object></li>y', 'li(object(y))'],
+    ['<li><select></li>y', 'li(select(y))'],
+  ]);
+});
+
+test('a </p> goes by button scope, and makes a <p> where none is in it, but straight in a <template>', () => {
+  holds([
+    ['<p><button></p>y', 'p(button(p() y))'],
+    ['<p><span></p>y', 'p(span()) y'],
+    ['<p><select></p>y', 'p(select(p() y))'],
+    ['<p><object></p>y', 'p(object(p() y))'],
+    ['</p>y', 'p() y'],
+    [
+      '<p><table><tr><td></p><style></style>',
+      'p() table(tbody(tr(td(p() style()))))',
+    ],
+    ['<div></p>y</div>', 'div(p() y)'],
+    ['<template></p></template>y', 'template() y'],
+    ['<template><div></p></div></template>y', 'template(div(p())) y'],
+    ['<p><noscript></p>y', 'p(noscript()) y'],
+  ]);
+});
+
+test('a start tag ends a <p> from under what is open in it', () => {
+  holds([
+    ['<p><li>x', 'p() li(x)'],
+    ['<p><dd>x', 'p() dd(x)'],
+    ['<p><dt>x', 'p() dt(x)'],
+    ['<p><center>x', 'p() center(x)'],
+    ['<p><menu>x', 'p() menu(x)'],
+    ['<p><summary>x', 'p() summary(x)'],
+    ['<p><dialog>x', 'p() dialog(x)'],
+    ['<p><hgroup>x', 'p() hgroup(x)'],
+    ['<p><search>x', 'p() search(x)'],
+    ['<p><dir>x', 'p() dir(x)'],
+    ['<p><listing>x', 'p() listing(x)'],
+    ['<p><form>x', 'p() form(x)'],
+    ['<p><span><div>x', 'p(span()) div(x)'],
+    ['<p><x-a><hr>x', 'p(x-a()) hr() x'],
+    ['<p><g><hr>x', 'p(g()) hr() x'],
+    ['<p><x-a><p>x', 'p(x-a()) p(x)'],
+    ['<p><x-a><h1>x', 'p(x-a()) h1(x)'],
+    ['<p><span><ul>x', 'p(span()) ul(x)'],
+    ['<p><x-a><x-b><div>x', 'p(x-a(x-b())) div(x)'],
+  ]);
+});
+
+test('a <p> stays open past what its scope stops at', () => {
+  holds([
+    ['<p><button><p>x', 'p(button(p(x)))'],
+    ['<p><object><p>x', 'p(object(p(x)))'],
+    ['<p><marquee><div>x', 'p(marquee(div(x)))'],
+    ['<p><select><div>x', 'p(select(div(x)))'],
+    ['<p><table><tr><td><p>x', 'p() table(tbody(tr(td(p(x)))))'],
+    ['<p><svg><foreignObject><div>x', 'p(svg(foreignObject(div(x))))'],
+    ['<p><math><mi><div>x', 'p(math(mi(div(x))))'],
+    ['<p><template><div>x', 'p(template(div(x)))'],
+    ['<p><option><div>x', 'p(option()) div(x)'],
+  ]);
+});
+
+test('an <li>, a <dd> and a <dt> end their like past what is not special', () => {
+  holds([
+    ['<li><li>x', 'li() li(x)'],
+    ['<li><span><li>x', 'li(span()) li(x)'],
+    ['<li><div><li>x', 'li(div()) li(x)'],
+    ['<li><p><li>x', 'li(p()) li(x)'],
+    ['<li><address><li>x', 'li(address()) li(x)'],
+    ['<li><section><li>x', 'li(section(li(x)))'],
+    ['<li><ul><li>x', 'li(ul(li(x)))'],
+    ['<li><button><li>x', 'li(button(li(x)))'],
+    ['<dd><dt>x', 'dd() dt(x)'],
+    ['<dt><dd>x', 'dt() dd(x)'],
+    ['<dd><div><dt>x', 'dd(div()) dt(x)'],
+    ['<dd><dl><dt>x', 'dd(dl(dt(x)))'],
+    ['<dd><p><dd>x', 'dd(p()) dd(x)'],
+    ['<li><dd>x', 'li(dd(x))'],
+    ['<dd><li>x', 'dd(li(x))'],
+    ['<li><svg><foreignObject><li>x', 'li(svg(foreignObject(li(x))))'],
+  ]);
+});
+
+test('a form control closes no other form control', () => {
+  holds([
+    ['<button><input>x</button>', 'button(input() x)'],
+    [
+      '<select><button>x</button><option>y</option></select>',
+      'select(button(x) option(y))',
+    ],
+    ['<button><select></select>x', 'button(select() x)'],
+    ['<button><textarea></textarea>x', 'button(textarea() x)'],
+    ['<datalist><option><input>x', 'datalist(option(input() x))'],
+    ['<select><textarea></textarea>x', 'select(textarea() x)'],
+    ['<output><button>x', 'output(button(x))'],
+    ['<output><input>x', 'output(input() x)'],
+    ['<datalist><select></select>x', 'datalist(select() x)'],
+    ['<select><datalist></datalist>x', 'select(datalist() x)'],
+    ['<option><input>x', 'option(input() x)'],
+    ['<button><option>x', 'button(option(x))'],
+  ]);
+});
+
+test('a <select>, an <option> and a <button> close what HTML’s rules for each say', () => {
+  holds([
+    ['<select><input>x', 'select() input() x'],
+    ['<select><div><input>x', 'select(div()) input() x'],
+    ['<select><select>x', 'select() x'],
+    ['<select><div><select>x', 'select(div()) x'],
+    ['<select><button>x<select>y', 'select(button(x)) y'],
+    ['<select><option>a<option>b', 'select(option(a) option(b))'],
+    ['<select><option><optgroup>x', 'select(option() optgroup(x))'],
+    ['<select><optgroup><optgroup>x', 'select(optgroup() optgroup(x))'],
+    ['<select><optgroup><option>x', 'select(optgroup(option(x)))'],
+    ['<option><option>x', 'option() option(x)'],
+    ['<option><span><option>x', 'option(span(option(x)))'],
+    ['<option><optgroup>x', 'option() optgroup(x)'],
+    ['<optgroup><optgroup>x', 'optgroup(optgroup(x))'],
+    ['<optgroup><option><optgroup>x', 'optgroup(option() optgroup(x))'],
+    ['<select><option><hr>x', 'select(option() hr() x)'],
+    ['<select><li><hr>x', 'select(li() hr() x)'],
+    ['<hr>x', 'hr() x'],
+    ['<button><button>x', 'button() button(x)'],
+    ['<button><div><button>x', 'button(div()) button(x)'],
+    ['<button><span><button>x', 'button(span()) button(x)'],
+    ['<button><object><button>x', 'button(object(button(x)))'],
+    [
+      '<svg><button><foreignObject><button>x',
+      'svg(button(foreignObject(button(x))))',
+    ],
+    [
+      '<svg><select><foreignObject><input>x',
+      'svg(select(foreignObject(input() x)))',
+    ],
+  ]);
+});
+
+test('a ruby’s parts end one another in a <ruby> alone', () => {
+  holds([
+    [
+      '<ruby><rb>a<rt>b<rtc>c<rp>d<rb>e',
+      'ruby(rb(a) rt(b) rtc(c rp(d)) rb(e))',
+    ],
+    ['<rt>a<rt>b', 'rt(a rt(b))'],
+    ['<rt><div><rt>', 'rt(div(rt()))'],
+    ['<ruby><rt>a<rp>b', 'ruby(rt(a) rp(b))'],
+    ['<ruby><rt><div><rt>x', 'ruby(rt(div(rt(x))))'],
+    ['<ruby><rtc><rt>x', 'ruby(rtc(rt(x)))'],
+    ['<ruby><rtc><rb>x', 'ruby(rtc() rb(x))'],
+    ['<rb>a<rb>b', 'rb(a rb(b))'],
+  ]);
+});
+
+test('a part of a table outside one is ignored', () => {
+  holds([
+    ['<tr><td>x', 'x'],
+    ['<div><tr><td>x', 'div(x)'],
+    ['<td>x', 'x'],
+    ['<p><th>x', 'p(x)'],
+    ['<tbody>x', 'x'],
+    ['<thead>x', 'x'],
+    ['<tfoot>x', 'x'],
+    ['<col>x', 'x'],
+    ['<caption>x', 'x'],
+    ['<colgroup>x', 'x'],
+    ['<select><tr><td>x', 'select(x)'],
+    ['<div><tr>x</tr>y</div>', 'div(xy)'],
+    ['<td></td><td>x', 'x'],
+  ]);
+});
+
+test('a part of a table closes what cannot hold it, past whatever is open in that', () => {
+  holds([
+    ['<table><tr><td>a<td>b', 'table(tbody(tr(td(a) td(b))))'],
+    ['<table><tr><td>a<th>b', 'table(tbody(tr(td(a) th(b))))'],
+    ['<table><tr><td><div>a<td>b', 'table(tbody(tr(td(div(a)) td(b))))'],
+    [
+      '<table><tr><td><span>a<tr><td>b',
+      'table(tbody(tr(td(span(a))) tr(td(b))))',
+    ],
+    ['<table><tr><td><b>a<td>b', 'table(tbody(tr(td(b(a)) td(b))))'],
+    [
+      '<table><tr><td><div><tbody><style></style>',
+      'table(tbody(tr(td(div()))) tbody(style()))',
+    ],
+    ['<table><tbody><thead><style></style>', 'table(tbody() thead(style()))'],
+    ['<table><tfoot><tbody><style></style>', 'table(tfoot() tbody(style()))'],
+    ['<table><thead><tbody><style></style>', 'table(thead() tbody(style()))'],
+    ['<table><thead><tfoot><style></style>', 'table(thead() tfoot(style()))'],
+    ['<table><caption>a<tr><td>b', 'table(caption(a) tbody(tr(td(b))))'],
+    ['<table><caption><div><td>b', 'table(caption(div()) tbody(tr(td(b))))'],
+    [
+      '<table><colgroup><col><tr><style></style>',
+      'table(colgroup(col()) tbody(tr(style())))',
+    ],
+    [
+      '<table><colgroup><colgroup><style></style>',
+      'table(colgroup() colgroup() style())',
+    ],
+    [
+      '<table><colgroup><tbody><style></style>',
+      'table(colgroup() tbody(style()))',
+    ],
+    ['<table><tr><td>a<caption>b', 'table(tbody(tr(td(a))) caption(b))'],
+    [
+      '<table><tr><td><col><style></style>',
+      'table(tbody(tr(td())) colgroup(col()) style())',
+    ],
+    [
+      '<table><tr><col><style></style>',
+      'table(tbody(tr()) colgroup(col()) style())',
+    ],
+    [
+      '<table><tbody><col><style></style>',
+      'table(tbody() colgroup(col()) style())',
+    ],
+    [
+      '<table><caption><colgroup><style></style>',
+      'table(caption() colgroup() style())',
+    ],
+    [
+      '<table><tr><td><svg><foreignObject><tr><td>b',
+      'table(tbody(tr(td(svg(foreignObject()))) tr(td(b))))',
+    ],
+    [
+      '<table><tr><td><math><mi><td>b',
+      'table(tbody(tr(td(math(mi())) td(b))))',
+    ],
+    [
+      '<table><tr><td><select><tr><td>b',
+      'table(tbody(tr(td(select())) tr(td(b))))',
+    ],
+    [
+      '<table><tr><td><table><tr><td>b<tr><td>c</table><td>d',
+      'table(tbody(tr(td(table(tbody(tr(td(b)) tr(td(c))))) td(d))))',
+    ],
+    [
+      '<template><tr><td>x</td></tr><div></div></template>',
+      'template(tr(td(x)) div())',
+    ],
+    ['<template><div><tr>x</template>', 'template(div(x))'],
+    ['<template><td>x</template>', 'template(td(x))'],
+    [
+      '<table><tr><td><template><tr><td>x</template>y',
+      'table(tbody(tr(td(template(tr(td(x))) y))))',
+    ],
+  ]);
+});
+
+test('a <table> between a table’s parts ends that table, and in a cell or a caption nests', () => {
+  holds([
+    ['<table><table><style></style>', 'table() table(style())'],
+    ['<table><tr><table><style></style>', 'table(tbody(tr())) table(style())'],
+    ['<table><tbody><table><style></style>', 'table(tbody()) table(style())'],
+    [
+      '<table><colgroup><table><style></style>',
+      'table(colgroup()) table(style())',
+    ],
+    [
+      '<table><tr><td><table><style></style>',
+      'table(tbody(tr(td(table(style())))))',
+    ],
+    [
+      '<table><caption><table><style></style>',
+      'table(caption(table(style())))',
+    ],
+    [
+      '<template><table><table><style></style></template>',
+      'template(table() table(style()))',
+    ],
+  ]);
+});
+
+test('a <form> goes by the form pointer, and its end tag leaves what it holds open', () => {
+  holds([
+    ['<form><form></form>x</form>y', 'form() xy'],
+    ['<form><div></form>x</div>y', 'form(div(x)) y'],
+    ['<form><p></form>x', 'form(p()) x'],
+    ['<form><span></form>x</span>y', 'form(span(x)) y'],
+    ['<form><li></form>x', 'form(li()) x'],
+    ['<div><form></div><form><input></form>x', 'div(form()) input() x'],
+    ['<form></form><form></form>x', 'form() form() x'],
+    ['<div><form><div></form>x</div></div>y', 'div(form(div(x))) y'],
+    [
+      '<form><table><tr><td></form><style></style></td></tr></table>',
+      'form(table(tbody(tr(td(style())))))',
+    ],
+    ['<form><table></form><style></style></table>', 'form(table(style()))'],
+    [
+      '<form><template><form></form></template></form>',
+      'form(template(form()))',
+    ],
+    [
+      '<template><form></form><form></form></template>',
+      'template(form() form())',
+    ],
+    [
+      '<table><form><tr><td><input></td></tr></form></table>',
+      'table(form() tbody(tr(td(input()))))',
+    ],
+    [
+      '<table><tr><form><td>x</td></form></tr></table>',
+      'table(tbody(tr(form() td(x))))',
+    ],
+    [
+      '<table><tbody><form><tr><td>x</td></tr></form></tbody></table>',
+      'table(tbody(form() tr(td(x))))',
+    ],
+    [
+      '<table><colgroup><form></form></colgroup></table>',
+      'table(colgroup() form())',
+    ],
+    [
+      '<form><table><form><tr><td>x</td></tr></form></table></form>',
+      'form(table(tbody(tr(td(x)))))',
+    ],
+    ['<form><svg><form></form></svg><form></form>x', 'form(svg(form())) x'],
+    ['<svg><form></form></svg><form>x</form>', 'svg(form()) form(x)'],
+    ['<form><svg><g></form>x', 'form(svg(g(x)))'],
+    ['</form>x', 'x'],
+    [
+      '<template><form></template><form>x</form>y',
+      'template(form()) form(x) y',
+    ],
+    [
+      '<table><form><tr><td><input>x</td></tr></table>',
+      'table(form() tbody(tr(td(input() x))))',
+    ],
+    [
+      '<form><table><tr><td></form></td></tr></table></form>x',
+      'form(table(tbody(tr(td()))) x)',
+    ],
+  ]);
+});
+
+test('a <head> ends at the first thing that is not head content', () => {
+  holds([
+    [
+      '<!doctype html><html><head><div>x</head>y',
+      '!doctype() html(head() body(div(xy)))',
+    ],
+    [
+      '<!doctype html><html><head><title>t</title><p>x',
+      '!doctype() html(head(title(t)) body(p(x)))',
+    ],
+    [
+      '<!doctype html><html><head><meta><body>x',
+      '!doctype() html(head(meta()) body(x))',
+    ],
+    [
+      '<!doctype html><html><head><noscript><link></noscript></head><body>x',
+      '!doctype() html(head(noscript(link())) body(x))',
+    ],
+    [
+      '<!doctype html><html><head><head><title>t</title></head><body>x',
+      '!doctype() html(head(title(t)) body(x))',
+    ],
+    [
+      '<!doctype html><html><head><noscript></head><link></noscript></head><body>x',
+      '!doctype() html(head(noscript(link())) body(x))',
+    ],
+    [
+      '<!doctype html><html><head><template></head></template></head><body>x',
+      '!doctype() html(head(template()) body(x))',
+    ],
+  ]);
+});
+
+test('a </body> and a </html> close nothing, so what comes after goes where the last of the body left it', () => {
+  holds([
+    [
+      '<!doctype html><html><body><div></body>x',
+      '!doctype() html(head() body(div(x)))',
+    ],
+    [
+      '<!doctype html><html><body><div></body>x</div>y',
+      '!doctype() html(head() body(div(x) y))',
+    ],
+    [
+      '<!doctype html><html><body><div></html>x</div>y',
+      '!doctype() html(head() body(div(x) y))',
+    ],
+    [
+      '<!doctype html><html><body><div></div></body></html>x',
+      '!doctype() html(head() body(div() x))',
+    ],
+    [
+      '<!doctype html><html><body><span></body><p>x</p></html>',
+      '!doctype() html(head() body(span(p(x))))',
+    ],
+    [
+      '<!doctype html><html><body><table><tr><td></body>x',
+      '!doctype() html(head() body(table(tbody(tr(td(x))))))',
+    ],
+  ]);
+});
+
+/**
+ * These two are ours and no engine's: an engine keeps a list of the formatting
+ * elements open and brings each back around what comes after one closed from
+ * under it, which nothing here does. So what is written here is what is left
+ * until something does, and each comment says what the engines make of it.
+ */
+test('nothing a start tag implies closes a formatting element, which nothing here would bring back', () => {
+  holds([
+    // the engines: p(a()) div(a(x)) y p()
+    ['<p><a><div>x</div></a>y</p>', 'p(a(div(x)) y)'],
+    // p(b()) p(b(x))
+    ['<p><b><p>x', 'p(b(p(x)))'],
+    // p(b()) li(b(x))
+    ['<p><b><li>x', 'p(b(li(x)))'],
+    // li(b()) li(b(x))
+    ['<li><b><li>x', 'li(b(li(x)))'],
+    // dd(i()) dt(i(x))
+    ['<dd><i><dt>x', 'dd(i(dt(x)))'],
+    // button(b()) button(b(x))
+    ['<button><b><button>x', 'button(b(button(x)))'],
+    // the one they share: an `<a>` ends the `<a>` on top of the stack
+    ['<a>x<a>y', 'a(x) a(y)'],
+  ]);
+});
+
+test('a formatting element’s end tag leaves the block its adoption agency would move open, as that block’s end tag expects', () => {
+  holds([
+    // b() div(b(y) x) z
+    ['<b><div>y</b>x</div>z', 'b(div(yx)) z'],
+    // div(a() div(a(y)) z) w
+    ['<div><a><div>y</a></div>z</div>w', 'div(a(div(y)) z) w'],
+    // font() p(font(x)) y
+    ['<font><p>x</font></p>y', 'font(p(x)) y'],
+    // what stands between goes with it, where nothing special does
+    ['<b><span></b>y', 'b(span()) y'],
+    ['<b><x-a><i></b></i>y', 'b(x-a(i())) y'],
+    // and a table is out of its reach
+    [
+      '<b><table><tr><td></b><style></style></table>',
+      'b(table(tbody(tr(td(style())))))',
+    ],
+  ]);
+});
+
+test('a form owns what the parser met while it pointed at it, in it or not', () => {
+  const ownerOf = (markup: string): string | undefined => {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    const owner = formOwner(findById(source.document, 'i')!);
+    return owner?.attribs.id;
+  };
+  assert.strictEqual(
+    ownerOf(
+      '<table><form id="f"><tr><td><input id="i"></td></tr></form></table>',
+    ),
+    'f',
+    'the form closes as it opens, and the row is not in it',
+  );
+  assert.strictEqual(
+    ownerOf('<div><form id="f"></div><form><input id="i"></form>'),
+    'f',
+    'a form that ended with what held it still turns the next away',
+  );
+  assert.strictEqual(
+    ownerOf('<table><form id="f"></form><tr><td><input id="i">'),
+    undefined,
+    'an end tag ends the pointing',
+  );
+  assert.strictEqual(
+    ownerOf('<form id="a"><input id="i"></form>'),
+    'a',
+    'one in a form is that form’s',
+  );
+  assert.strictEqual(
+    ownerOf('<table><form id="f"><tr><td><input id="i" form="g">'),
+    undefined,
+    'a `form` attribute that names nothing leaves it with none',
+  );
+  const source = new HtmlSource();
+  source.setSource(
+    '<table><form id="f"><tr><td><input id="i" name="n"></table>',
+    true,
+  );
+  assert.deepStrictEqual(
+    controlsOf(findById(source.document, 'f')!).map((el) => el.attribs.id),
+    ['i'],
+  );
+});
+
+test('a walk of the stack looks as far as a document’s tree goes, and past that takes the name for what it finds', () => {
+  const end = (open: number): string =>
+    shapeOf(`<div><table>${'<span>'.repeat(open)}</div><x-m></x-m>`);
+  // near enough to see the <table>, the </div> is ignored, as the engines have it
+  assert.ok(!end(100).endsWith(') x-m()'), 'within the tree’s depth');
+  // past what the tree holds it closes, as it did before there was a walk
+  assert.ok(end(300).endsWith(') x-m()'), 'past it');
+  const item = (open: number): string =>
+    shapeOf(`<dd>${'<x-a>'.repeat(open)}<dt>x`);
+  assert.ok(item(100).endsWith(') dt(x)'), 'a like near enough is ended');
+  assert.ok(!item(300).endsWith(') dt(x)'), 'and past it none is');
+});
+
+test('a fragment is read in the part of a table, the form or the <select> it is the content of', () => {
+  type N = { name?: string; children?: N[]; data?: string };
+  const walk = (nodes: N[]): string =>
+    nodes
+      .map((n) =>
+        n.name !== undefined
+          ? `${n.name}(${walk(n.children ?? [])})`
+          : (n.data ?? '').trim(),
+      )
+      .filter(Boolean)
+      .join(' ');
+  const read = (markup: string, context?: string): string =>
+    walk(
+      parseFragment(
+        markup,
+        false,
+        context === undefined ? null : createElement(context),
+      ) as unknown as N[],
+    );
+  const form = createElement('form');
+  const inForm = createElement('div');
+  appendChild(form, inForm);
+  // each of these is what all three engines read for `innerHTML`
+  for (const [markup, context, shape] of [
+    ['<tr><td>x</td></tr>', 'div', 'x'],
+    ['<tr><td>x</td></tr>', 'table', 'tbody(tr(td(x)))'],
+    ['<tr><td>x</td></tr>', 'tbody', 'tr(td(x))'],
+    ['<tr><td>x</td></tr>', 'tr', 'td(x)'],
+    ['<td>x', 'tr', 'td(x)'],
+    ['<tr><td>x</td></tr>', 'td', 'x'],
+    ['<td>x', 'caption', 'x'],
+    ['<td>x', 'table', 'tbody(tr(td(x)))'],
+    ['<td>x', 'tbody', 'tr(td(x))'],
+    ['<col>', 'table', 'colgroup(col())'],
+    ['<caption>x', 'table', 'caption(x)'],
+    ['<table><tr><td>x', 'table', 'tbody(tr(td(x)))'],
+    ['<tr><td>x</td></tr>', 'template', 'tr(td(x))'],
+    ['<td>x', 'template', 'td(x)'],
+    ['<div><tr><td>x', 'template', 'div(x)'],
+    ['</p>x', 'template', 'x'],
+    ['</p>x', 'div', 'p() x'],
+    ['<div><tr><td>x', 'table', 'div() tbody(tr(td(x)))'],
+    ['<form>x</form>', 'table', 'form() x'],
+    ['<form>x</form>', 'tr', 'form() x'],
+    ['<form>x</form>', 'form', 'x'],
+    ['<form>x</form>', 'div', 'form(x)'],
+    ['</form>x', 'form', 'x'],
+    ['<select><option>x', 'select', 'option(x)'],
+    ['<select><option>x', 'div', 'select(option(x))'],
+    ['<button>x', 'button', 'button(x)'],
+    ['<p>x', 'p', 'p(x)'],
+    ['<li><li>', 'ul', 'li() li()'],
+    ['<li>x', 'li', 'li(x)'],
+  ] as const) {
+    assert.strictEqual(read(markup, context), shape, `${markup} in ${context}`);
+  }
+  assert.strictEqual(
+    walk(parseFragment('<form>x</form>', false, inForm) as unknown as N[]),
+    'x',
+    'the form around it turns one away',
+  );
+  // nothing says what it is the content of, so it is a template's
+  assert.strictEqual(read('<tr><td>x</td></tr>'), 'tr(td(x))');
+  const [drawing] = parseFragment('<svg></svg>') as Element[];
+  assert.strictEqual(
+    walk(
+      parseFragment('<x-a><select></x-a>y', false, drawing) as unknown as N[],
+    ),
+    'x-a(select()) y',
+    'with nothing on the stack that says so, it is foreign content all the same',
+  );
 });
 
 test('a </p> and a </br> end foreign content', () => {

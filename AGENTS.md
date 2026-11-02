@@ -4991,24 +4991,84 @@ load-bearing.
   scope" gets wrong and the engines do not. So **anything new that opens a
   foreign element goes through `_openForeign`**, since `popElement` takes a
   frame off by the name alone (`FRAMED`), and **a tag's end decides anything
-  more through `_tagEnds`**, where the element is not made yet. HTML content is
-  still htmlparser2's, foreign elements open or not: `<span><div></span>` closes
-  the `<span>`, where HTML's stops at the `<div>`, a `<p>` is closed only from
-  the top of the stack, and nothing runs an adoption agency. So a nested `<a>`
-  is the one difference left of 2,124 generated documents the engines agree on
-  (105 before), and every chain to depth 5 of foreign and HTML elements, with
-  each end tag after it, is read as they read it (788,922 documents, but for
-  HTML's own `td` scope). A generator for this holds HTML well nested, or HTML's
-  rules drown what foreign content's do. Left, and nobody writes it: a foreign
-  `<form>` hides an HTML one from `emitOpenTag`, an `<mglyph>` under a point
-  holds what it holds as HTML (its `/>` does end it), and at the top of a
-  fragment what breaks out leaves the tokenizer in HTML until the next tag's name
-  is read, so a `<title>` there is RCDATA.
+  more through `_tagEnds`**, where the element is not made yet. Every chain to
+  depth 5 of foreign and HTML elements, with each end tag after it, is read as
+  the engines read it (788,922 documents). A generator for this holds HTML well
+  nested, or HTML's rules drown what foreign content's do. Left, and nobody
+  writes it: an `<mglyph>` under a point holds what it holds as HTML (its `/>`
+  does end it), and at the top of a fragment what breaks out leaves the tokenizer
+  in HTML until the next tag's name is read, so a `<title>` there is RCDATA.
 - **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
   `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
   path in the first, and a `clipPath` lost its capital. **Anything new that
   parses markup for an element hands the element over.** What breaks out of the
   context is HTML's until it closes, and the context is there again after it.
+
+**HTML's tags are closed by HTML's rules, read off the stack** (`_open`,
+`_implied`, `_tablePart`, `_closedBy`, `_endTag`). htmlparser2's parser keeps a
+table of what a start tag closes and asks only the top of the stack, and closes
+the nearest element of an end tag's name whatever stands between, so a `</span>`
+ended a block it was never in, the block's own end tag then ended an outer one,
+and `<button><input>` closed the button. `DocumentParser` keeps htmlparser2's
+tokenizer and opens every element itself: nothing calls `emitOpenTag`. A
+differential over 969,873 generated chains to depth 3 differs from all three
+engines in two, each a `<select>` that ended in a `<template>`, where it was 2,170
+in 16,002 and 3,225 in 18,981 at depth 2. Six things are load-bearing.
+
+- **Generate for one rule at a time.** Whole trees from a loose vocabulary drown
+  in foster parenting and the adoption agency. The rig's families leave out what
+  only foster-parents, and a marker after each tag says where the tag left the
+  parser, a `<style>` in a table.
+- **An end tag goes by a scope, and `_stopsAt` says which.** A block's and a
+  heading's go by default scope, a `</li>` stops at a list, a `</p>` at a button,
+  a table's at a table, and any other at what is `SPECIAL`, which is what keeps a
+  block open for its own end tag. `select` is in the default scope, which the
+  engines all have and an older reading of HTML does not. `html`, `head` and
+  `body` are in none of them: an ignored `<html>` stands on the stack for what it
+  would have closed (`_ignored`), and the real ones are at the bottom.
+- **Nothing a start tag implies closes a formatting element**, which is a stop
+  in every walk `_implied` makes (`TO_A_PARAGRAPH`, `IMPLYING`,
+  `SPECIAL_TO_AN_ITEM`). An engine brings one closed from under it back around
+  what comes after, from a list nothing here keeps, so `<p><a><div>` closed here
+  would have the block out of the link. The two together are the adoption agency
+  and belong together. A cell and a caption do close what is in them, since HTML
+  clears that list at each. Where a formatting element's end tag has a block
+  above it, the agency would move the block out; here it leaves the stack and the
+  block stays open (`_leaveOpen`), so the block's end tag closes the block and no
+  outer one.
+- **What takes an element off the middle of the stack goes through `_leaveOpen`**,
+  which tells the handler, since the two stacks have to stay in step from the
+  top. HTML's `</form>` is the other that does: `<form><div></form>x` has the `x`
+  in the `<div>`, after it generates implied end tags.
+- **The form pointer outlives the stack** (`Handler.form`). A `<form>` closed by
+  what held it still turns the next away, and between a table's parts one closes
+  as it opens, so the rows are not in it and each control after it has the form
+  through `PARSED_FORMS`. `formOwner` and a page's `form` both end there, after
+  what is around the control, so **anything new that asks a control's form asks
+  `parsedForm` last**. Old pages write `<table><form><tr>`, whose rows were in a
+  form in a table and laid out as nothing a browser draws.
+- **Every document pays for this, so the cost is kept off the path of a page with
+  no mistakes.** A start tag with nothing to do asks one `Set`, as htmlparser2 did;
+  `Handler.paragraphs` saves each block a walk of the stack to find there is no
+  `<p>`, which is O(n) at every level of a document of unclosed `<div>`s; and an
+  end tag that closes what is current goes no further than `onclosetag`. A 3 MB
+  document of plain HTML parses within 1% of what it did, and one all of SVG takes
+  2% more.
+  **And no walk with nothing foreign open goes past `MAX_DEPTH`** (`_walked`):
+  past what a tree holds it takes the name for what it finds, as htmlparser2 did,
+  since a page of unclosed elements and a tag for each that closes nothing would
+  otherwise cost the square of them. Unbounded, a 150 KB document of 20,000
+  `<span>`s took a hundred times as long as it did. Measure a change here on such
+  a document as well: no real page shows it.
+
+What is left, each against all three engines: the adoption agency and its list,
+so a formatting element closed from under what follows it is not brought back,
+and a nested `<a>` is not ended; foster parenting, so what is out of place in a
+table stays in it; `<template>`'s modes past the first tag it holds and
+`colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
+quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
+which ends no written `<head>`. A comment after `</body>` goes in the body, where
+HTML has it after it.
 
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
