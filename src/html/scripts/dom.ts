@@ -18743,6 +18743,10 @@ export function installDom(
     return new Uint8Array(out);
   };
 
+  /** The headers of a request the user agent makes, which a page's script
+   *  has no say in, so CORS asks nothing of them (`EventSource`). No page
+   *  has the key. */
+  const UA_HEADERS = Symbol('uaHeaders');
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
@@ -18870,6 +18874,7 @@ export function installDom(
             ...(sourceless && bytes !== null ? { streamedBody: true } : {}),
             // the body is taken as it arrives
             stream: true,
+            ...(init[UA_HEADERS] ? { uaHeaders: init[UA_HEADERS] } : null),
             // what the host checks another origin's answer against
             mode,
             credentials: str(
@@ -21828,6 +21833,117 @@ export function installDom(
     ByteLengthQueuingStrategy,
     CountQueuingStrategy,
   } = STREAMS.classes as Record<string, Any>;
+
+  // --- compression (Compression Standard) ---------------------------------
+
+  let zlibSeq = 0;
+  /** A running compression stream's listeners, by the number the host has
+   *  it by. */
+  const zlibs = new Map<number, Any>();
+  const COMPRESSION_FORMATS = ['gzip', 'deflate', 'deflate-raw', 'brotli'];
+  /** A chunk's bytes, or its `TypeError`: a `BufferSource` and nothing
+   *  else, and no shared memory. */
+  const chunkBytes = (chunk: Any): Uint8Array => {
+    const view = ArrayBuffer.isView(chunk)
+      ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : chunk instanceof ArrayBuffer
+        ? new Uint8Array(chunk)
+        : null;
+    if (
+      !view ||
+      (typeof SharedArrayBuffer === 'function' &&
+        view.buffer instanceof SharedArrayBuffer)
+    ) {
+      throw new TypeError('The chunk is not a BufferSource.');
+    }
+    return view;
+  };
+  /** The transform of both streams: each chunk through the host's zlib, and
+   *  what it came to enqueued before the next is taken. */
+  const zlibTransform = (kind: string, format: Any, on: string): Any => {
+    const name = str(format);
+    if (!COMPRESSION_FORMATS.includes(name)) {
+      throw new TypeError(
+        `Failed to construct '${on}': Unsupported compression format: '${name}'`,
+      );
+    }
+    const id = (zlibSeq += 1);
+    let started = false;
+    const open = (controller: Any): Any => {
+      const state = {
+        controller,
+        written: null as Any,
+        ended: null as Any,
+        failed: false,
+      };
+      zlibs.set(id, state);
+      started = true;
+      call('zlibNew', id, `${kind} ${name}`);
+      return state;
+    };
+    return {
+      transform(chunk: Any, controller: Any): Any {
+        const bytes = chunkBytes(chunk);
+        const state = started ? zlibs.get(id) : open(controller);
+        if (!state) return undefined;
+        return new Promise((resolve, reject) => {
+          state.written = { resolve, reject };
+          call('zlibWrite', id, base64OfBytes(bytes));
+        });
+      },
+      flush(controller: Any): Any {
+        const state = started ? zlibs.get(id) : open(controller);
+        if (!state) return undefined;
+        return new Promise((resolve, reject) => {
+          state.ended = { resolve, reject };
+          call('zlibEnd', id);
+        });
+      },
+      cancel(): void {
+        if (zlibs.delete(id)) call('zlibDrop', id);
+      },
+    };
+  };
+  class CompressionStream {
+    _stream: Any;
+    constructor(format: Any) {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'CompressionStream': 1 argument required, but only 0 present.",
+        );
+      }
+      this._stream = new TransformStream(
+        zlibTransform('compress', format, 'CompressionStream'),
+      );
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  class DecompressionStream {
+    _stream: Any;
+    constructor(format: Any) {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'DecompressionStream': 1 argument required, but only 0 present.",
+        );
+      }
+      this._stream = new TransformStream(
+        zlibTransform('decompress', format, 'DecompressionStream'),
+      );
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  idlAttributes(CompressionStream);
+  idlAttributes(DecompressionStream);
 
   class TextDecoderStream extends TransformStream {
     readonly encoding: string;
@@ -25303,6 +25419,444 @@ export function installDom(
       configurable: true,
     });
   }
+
+  // --- Server-Sent Events (HTML 9.2) -----------------------------------------
+
+  const SSE_RETRY_MS = 3000;
+  class EventSource extends EventTarget {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSED = 2;
+    _url: string;
+    _withCredentials: boolean;
+    _state = 0;
+    _lastId = '';
+    _retry = SSE_RETRY_MS;
+    _controller: Any = null;
+    _timer = 0;
+    constructor(url: Any, init: Any = {}) {
+      super();
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'EventSource': 1 argument required, but only 0 present.",
+        );
+      }
+      let parsed: Any;
+      try {
+        parsed = new URL(str(url), str(document.baseURI));
+      } catch {
+        throw new DOMException(
+          `Failed to construct 'EventSource': Cannot open an EventSource to '${str(url)}'. The URL is invalid.`,
+          'SyntaxError',
+        );
+      }
+      this._url = parsed.href;
+      this._withCredentials = !!init?.withCredentials;
+      this._connect();
+    }
+    get url(): string {
+      return this._url;
+    }
+    get withCredentials(): boolean {
+      return this._withCredentials;
+    }
+    get readyState(): number {
+      return this._state;
+    }
+    close(): void {
+      this._state = 2;
+      this._controller?.abort();
+      this._controller = null;
+      if (this._timer) clearTimer(this._timer);
+      this._timer = 0;
+    }
+    /** A request, with the `Last-Event-ID` of the stream so far. */
+    _connect(): void {
+      const controller = new AbortController();
+      this._controller = controller;
+      const headers: Record<string, string> = {
+        accept: 'text/event-stream',
+        'cache-control': 'no-cache',
+      };
+      // the id's UTF-8, each byte a code unit, as a header holds it
+      if (this._lastId) {
+        headers['last-event-id'] = String.fromCharCode(
+          ...new TextEncoder().encode(this._lastId),
+        );
+      }
+      fetch(this._url, {
+        headers,
+        mode: 'cors',
+        credentials: this._withCredentials ? 'include' : 'same-origin',
+        signal: controller.signal,
+        cache: 'no-store',
+        [UA_HEADERS]: ['cache-control', 'last-event-id'],
+      }).then(
+        (response: Any) => this._opened(response, controller),
+        () => {
+          if (this._controller !== controller) return;
+          // a request nothing here can make is never made again
+          if (/^https?:/i.test(this._url)) this._reconnect();
+          else this._fail();
+        },
+      );
+    }
+    /** The connection is over, and says so (HTML 9.2.4, "fail the
+     *  connection"). */
+    _fail(): void {
+      this._state = 2;
+      this._controller = null;
+      dispatch(this, trusted(new Event('error')));
+    }
+    /** What a response says of the stream (HTML 9.2.3): one that is no
+     *  event stream ends it, and one that ends is connected to again. */
+    _opened(response: Any, controller: Any): void {
+      if (this._controller !== controller) return;
+      const type = str(response.headers.get('content-type') ?? '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      if (response.status !== 200 || type !== 'text/event-stream') {
+        this._fail();
+        return;
+      }
+      this._state = 1;
+      dispatch(this, trusted(new Event('open')));
+      if (this._state === 2) return;
+      const origin = new URL(response.url || this._url).origin;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      const parse = sseParser(this, origin);
+      const read = (): void => {
+        reader.read().then(
+          ({ done, value }: Any) => {
+            if (this._controller !== controller) return;
+            if (done) {
+              this._reconnect();
+              return;
+            }
+            parse(decoder.decode(value, { stream: true }));
+            read();
+          },
+          () => {
+            if (this._controller === controller) this._reconnect();
+          },
+        );
+      };
+      read();
+    }
+    _reconnect(): void {
+      this._controller = null;
+      if (this._state === 2) return;
+      this._state = 0;
+      dispatch(this, trusted(new Event('error')));
+      if (this._state === 2) return;
+      this._timer = setTimer(
+        () => {
+          this._timer = 0;
+          if (this._state === 0) this._connect();
+        },
+        this._retry,
+        [],
+        false,
+      );
+    }
+  }
+  /** The event stream's interpretation (HTML 9.2.5): text as it arrives,
+   *  each line a field, and a blank one the event they make. */
+  const sseParser = (source: Any, origin: string): ((text: string) => void) => {
+    let rest = '';
+    let data = '';
+    let type = '';
+    let lastId = source._lastId;
+    let skippedCR = false;
+    const line = (text: string): void => {
+      if (text === '') {
+        source._lastId = lastId;
+        if (data !== '') {
+          const event = new MessageEvent(type || 'message', {
+            data: data.slice(0, -1),
+            origin,
+            lastEventId: source._lastId,
+          });
+          data = '';
+          type = '';
+          if (source._state !== 2) dispatch(source, trusted(event));
+        } else type = '';
+        return;
+      }
+      if (text[0] === ':') return;
+      const colon = text.indexOf(':');
+      const field = colon < 0 ? text : text.slice(0, colon);
+      let value = colon < 0 ? '' : text.slice(colon + 1);
+      if (value[0] === ' ') value = value.slice(1);
+      if (field === 'event') type = value;
+      else if (field === 'data') data += `${value}\n`;
+      else if (field === 'id') {
+        if (!value.includes('\0')) lastId = value;
+      } else if (field === 'retry' && /^[0-9]+$/.test(value)) {
+        source._retry = Number(value);
+      }
+    };
+    return (text: string) => {
+      let from = 0;
+      let buffer = rest + text;
+      // a CR at the end of a chunk has its LF, if any, at the start of the
+      // next
+      if (skippedCR && buffer[0] === '\n') buffer = buffer.slice(1);
+      skippedCR = false;
+      for (let i = 0; i < buffer.length; i += 1) {
+        const c = buffer[i];
+        if (c !== '\n' && c !== '\r') continue;
+        line(buffer.slice(from, i));
+        if (c === '\r') {
+          if (i + 1 === buffer.length) skippedCR = true;
+          else if (buffer[i + 1] === '\n') i += 1;
+        }
+        from = i + 1;
+      }
+      rest = buffer.slice(from);
+    };
+  };
+  idlAttributes(EventSource);
+  for (const type of ['open', 'message', 'error']) {
+    handlerProperty(EventSource.prototype, type);
+  }
+  for (const [name, value] of [
+    ['CONNECTING', 0],
+    ['OPEN', 1],
+    ['CLOSED', 2],
+  ] as const) {
+    Object.defineProperty(EventSource.prototype, name, {
+      value,
+      enumerable: true,
+    });
+  }
+
+  // --- BroadcastChannel (HTML 9.5) -------------------------------------------
+
+  let channelSeq = 0;
+  const channelsOpen = new Map<number, Any>();
+  class BroadcastChannel extends EventTarget {
+    _name: string;
+    _id: number;
+    _closed = false;
+    constructor(name: Any) {
+      super();
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.",
+        );
+      }
+      this._name = str(name);
+      this._id = channelSeq += 1;
+      channelsOpen.set(this._id, this);
+      call('bcOpen', this._id, this._name);
+    }
+    get name(): string {
+      return this._name;
+    }
+    postMessage(message: Any): void {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to execute 'postMessage' on 'BroadcastChannel': 1 argument required, but only 0 present.",
+        );
+      }
+      if (this._closed) {
+        throw new DOMException(
+          "Failed to execute 'postMessage' on 'BroadcastChannel': Channel is closed",
+          'InvalidStateError',
+        );
+      }
+      call('bcPost', this._id, serializeClone(message));
+    }
+    close(): void {
+      if (this._closed) return;
+      this._closed = true;
+      channelsOpen.delete(this._id);
+      call('bcClose', this._id);
+    }
+    _receive(text: string): void {
+      let data: Any;
+      try {
+        data = deserializeClone(text);
+      } catch {
+        dispatch(this, trusted(new MessageEvent('messageerror', {})));
+        return;
+      }
+      const origin = str(location.origin);
+      dispatch(this, trusted(new MessageEvent('message', { data, origin })));
+    }
+  }
+  idlAttributes(BroadcastChannel);
+  handlerProperty(BroadcastChannel.prototype, 'message');
+  handlerProperty(BroadcastChannel.prototype, 'messageerror');
+
+  // --- Web Locks ---------------------------------------------------------------
+
+  let lockSeq = 0;
+  /** What waits on the host, by request. */
+  const lockRequests = new Map<number, { granted(): void; stolen(): void }>();
+  let makingLock = false;
+  class Lock {
+    _name = '';
+    _mode = '';
+    constructor() {
+      if (!makingLock) throw new TypeError('Illegal constructor');
+    }
+    get name(): string {
+      return this._name;
+    }
+    get mode(): string {
+      return this._mode;
+    }
+  }
+  idlAttributes(Lock);
+  const lockOf = (name: string, mode: string): Any => {
+    makingLock = true;
+    try {
+      const lock = new Lock();
+      lock._name = name;
+      lock._mode = mode;
+      return lock;
+    } finally {
+      makingLock = false;
+    }
+  };
+  class LockManager {
+    constructor() {
+      if (!makingLock) throw new TypeError('Illegal constructor');
+    }
+    request(name: Any, second: Any, third?: Any): Any {
+      return new Promise((resolve, reject) => {
+        const callback = third === undefined ? second : third;
+        const options = third === undefined ? {} : (second ?? {});
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'request' on 'LockManager': parameter 2 is not of type 'LockGrantedCallback'.",
+          );
+        }
+        const lockName = str(name);
+        const mode =
+          options.mode === undefined ? 'exclusive' : str(options.mode);
+        if (mode !== 'exclusive' && mode !== 'shared') {
+          throw new TypeError(
+            `Failed to execute 'request' on 'LockManager': The provided value '${mode}' is not a valid enum value of type LockMode.`,
+          );
+        }
+        const steal = !!options.steal;
+        const ifAvailable = !!options.ifAvailable;
+        const signal = options.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new TypeError(
+            "Failed to execute 'request' on 'LockManager': member signal is not of type AbortSignal.",
+          );
+        }
+        const refused = (why: string): Any =>
+          new DOMException(
+            `Failed to execute 'request' on 'LockManager': ${why}`,
+            'NotSupportedError',
+          );
+        if (lockName.startsWith('-')) {
+          throw refused("Names cannot start with '-'.");
+        }
+        if (steal && ifAvailable) {
+          throw refused(
+            "The 'steal' and 'ifAvailable' options cannot be used together.",
+          );
+        }
+        if (steal && mode !== 'exclusive') {
+          throw refused(
+            "The 'steal' option may only be used with 'exclusive' locks.",
+          );
+        }
+        if (signal && (steal || ifAvailable)) {
+          throw refused(
+            "The 'signal' and 'steal' or 'ifAvailable' options cannot be used together.",
+          );
+        }
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        const id = (lockSeq += 1);
+        let held = false;
+        let stolen = false;
+        const release = (): void => {
+          lockRequests.delete(id);
+          call('lockRelease', id);
+        };
+        lockRequests.set(id, {
+          granted() {
+            held = true;
+            let result: Any;
+            try {
+              result = Promise.resolve(callback(lockOf(lockName, mode)));
+            } catch (error) {
+              result = Promise.reject(error);
+            }
+            result.then(
+              (value: Any) => {
+                if (stolen) return;
+                release();
+                resolve(value);
+              },
+              (error: Any) => {
+                if (stolen) return;
+                release();
+                reject(error);
+              },
+            );
+          },
+          stolen() {
+            stolen = true;
+            lockRequests.delete(id);
+            reject(
+              new DOMException('The lock request was aborted.', 'AbortError'),
+            );
+          },
+        });
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            if (held) return;
+            release();
+            reject(signal.reason);
+          });
+        }
+        const flags = `${ifAvailable ? 'i' : ''}${steal ? 's' : ''}`;
+        const asked = call(
+          'lockRequest',
+          id,
+          lockName,
+          mode === 'exclusive',
+          flags,
+        );
+        if (asked === false) {
+          lockRequests.delete(id);
+          new Promise((run) => run(callback(null))).then(resolve, reject);
+        }
+      });
+    }
+    query(): Any {
+      return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+    }
+  }
+  // `classes` says this of the rest: these two are defined where a context
+  // is secure (`secureGlobals`)
+  for (const Kind of [Lock, LockManager]) {
+    Object.defineProperty(Kind.prototype, Symbol.toStringTag, {
+      value: Kind.name,
+      configurable: true,
+    });
+  }
+  const madeLocks = (): Any => {
+    makingLock = true;
+    try {
+      return new LockManager();
+    } finally {
+      makingLock = false;
+    }
+  };
 
   // --- session history and the Navigation API (HTML 7.4 and 7.2.6) ------------
   //
@@ -29568,6 +30122,10 @@ export function installDom(
     WritableStreamDefaultWriter,
     WritableStreamDefaultController,
     TransformStream,
+    CompressionStream,
+    DecompressionStream,
+    EventSource,
+    BroadcastChannel,
     TransformStreamDefaultController,
     TextDecoderStream,
     TextEncoderStream,
@@ -29640,6 +30198,22 @@ export function installDom(
   define('history', history);
   define('navigation', navigation);
   define('navigator', navigator);
+  /** What only a secure context has, which a worker asks again of its own
+   *  address (`[SecureContext]`, Web IDL 3.3.17). */
+  const secureGlobals = (secure: boolean): void => {
+    delete (navigator as Any).locks;
+    delete G.Lock;
+    delete G.LockManager;
+    if (!secure) return;
+    define('Lock', Lock);
+    define('LockManager', LockManager);
+    Object.defineProperty(navigator, 'locks', {
+      value: madeLocks(),
+      enumerable: true,
+      configurable: true,
+    });
+  };
+  secureGlobals(location.protocol === 'https:');
   // `[Replaceable]`: a page's own `scheduler` takes its place
   Object.defineProperty(G, 'scheduler', {
     value: madeScheduler(),
@@ -31273,6 +31847,7 @@ export function installDom(
       hash: here.hash,
       toString: () => here.href,
     };
+    secureGlobals(here.protocol === 'https:');
     const scope = (label: string): Any => {
       const fn: Any = function () {
         throw new TypeError('Illegal constructor');
@@ -31493,6 +32068,45 @@ export function installDom(
     return true;
   });
 
+  // what a compression stream's zlib came to
+  entry('__zlib', () => {
+    const [id, kind, value] = input();
+    const state = zlibs.get(id);
+    if (!state) return false;
+    if (kind === 'data') state.controller.enqueue(bytesOfBase64(str(value)));
+    else if (kind === 'written') {
+      state.written?.resolve();
+      state.written = null;
+    } else {
+      zlibs.delete(id);
+      const error = new TypeError('The compressed data was not valid.');
+      if (value === true) state.ended?.resolve();
+      else {
+        state.written?.reject(error);
+        state.ended?.reject(error);
+        if (!state.written && !state.ended) state.controller.error(error);
+      }
+    }
+    return true;
+  });
+  // what another realm of the origin posted to a channel
+  entry('__bcMessage', () => {
+    const [id, message] = input();
+    const channel = channelsOpen.get(id);
+    if (channel && !channel._closed) channel._receive(str(message));
+    return true;
+  });
+  // what became of a lock
+  entry('__lockGranted', () => {
+    const [id] = input();
+    lockRequests.get(id)?.granted();
+    return true;
+  });
+  entry('__lockStolen', () => {
+    const [id] = input();
+    lockRequests.get(id)?.stolen();
+    return true;
+  });
   // what came of a `fetch`
   entry('__fetched', () => {
     const [id, answer] = input();

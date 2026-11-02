@@ -117,6 +117,17 @@ import {
   supportsCondition,
 } from '../css/parse.js';
 import { closeBrackets, hasVar } from '../css/vars.js';
+import {
+  PageZlib,
+  closeChannel,
+  openChannel,
+  postChannel,
+  queryLocks,
+  releaseClient,
+  releaseLock,
+  requestLock,
+} from './page-channels.js';
+import type { ChannelEnd } from './page-channels.js';
 import { svgAnswer } from './svg-geometry.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
@@ -340,6 +351,8 @@ export interface FetchResponse {
 interface PageRequest extends FetchRequest {
   mode: 'cors' | 'no-cors' | 'same-origin';
   credentials: 'omit' | 'same-origin' | 'include';
+  /** The headers the user agent set, of which CORS asks nothing. */
+  uaHeaders?: string[];
 }
 
 /** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
@@ -2230,6 +2243,13 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    for (const { key, end } of this._channels.values()) {
+      closeChannel(key, end);
+    }
+    this._channels.clear();
+    for (const zlib of this._zlibs.values()) zlib.dispose();
+    this._zlibs.clear();
+    releaseClient(this._origin(), this._lockClient);
     this._unwatchStorage?.();
     this._unwatchStorage = null;
     this._transportsMade?.dispose();
@@ -4823,6 +4843,97 @@ export class DomHost {
             new Uint8Array(Math.min(65536, Math.max(0, Number(a) || 0))),
           ),
         );
+      // a page's `BroadcastChannel`s, by origin and name
+      case 'bcOpen': {
+        const key = `${this._origin()} ${text(b)}`;
+        const end = { id: Number(a), tell: this._channelTold };
+        this._channels.set(Number(a), { key, end });
+        openChannel(key, end);
+        return null;
+      }
+      case 'bcPost': {
+        const channel = this._channels.get(Number(a));
+        if (channel) {
+          postChannel(channel.key, channel.end, text(b), (fn) =>
+            setTimeout(fn, 0),
+          );
+        }
+        return null;
+      }
+      case 'bcClose': {
+        const channel = this._channels.get(Number(a));
+        if (channel) closeChannel(channel.key, channel.end);
+        this._channels.delete(Number(a));
+        return null;
+      }
+      // a page's `navigator.locks` (`page-channels.ts`)
+      case 'lockRequest':
+        return requestLock(
+          this._origin(),
+          {
+            id: Number(a),
+            name: text(b),
+            exclusive: c === true,
+            client: this._lockClient,
+            granted: this._lockGranted,
+            stolen: this._lockStolen,
+          },
+          text(d).includes('i'),
+          text(d).includes('s'),
+        );
+      case 'lockRelease':
+        releaseLock(this._origin(), Number(a), this._lockClient);
+        return null;
+      case 'lockQuery':
+        return queryLocks(this._origin());
+      case 'lockClient':
+        return this._lockClient;
+      // a page's compression streams, on node's zlib
+      case 'zlibNew': {
+        const id = Number(a);
+        const tell = (kind: string, value: unknown): void => {
+          if (!this._disposed) this.entries?.call('__zlib', [id, kind, value]);
+        };
+        this._zlibs.set(
+          id,
+          new PageZlib(text(b), {
+            output: (chunks) => {
+              for (const chunk of chunks) tell('data', base64Of(chunk));
+            },
+            end: (ok) => {
+              this._zlibs.delete(id);
+              tell('end', ok);
+            },
+          }),
+        );
+        return null;
+      }
+      case 'zlibWrite': {
+        const id = Number(a);
+        this._zlibs.get(id)?.write(Buffer.from(text(b), 'base64'), () => {
+          if (!this._disposed) {
+            this.entries?.call('__zlib', [id, 'written', true]);
+          }
+        });
+        return null;
+      }
+      case 'zlibEnd':
+        this._zlibs.get(Number(a))?.end();
+        return null;
+      case 'zlibDrop':
+        this._zlibs.get(Number(a))?.dispose();
+        this._zlibs.delete(Number(a));
+        return null;
+      // where what an inline drawing holds is (`svg-geometry.ts`)
+      case 'svg': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        const answer = svgAnswer(text(b), el, measure, Number(c));
+        return answer ? answer.join(',') : '';
+      }
       case 'uuid':
         return crypto.randomUUID();
       case 'secureContext':
@@ -5482,6 +5593,25 @@ export class DomHost {
     if (at === this.document) return this._seams.handle;
     return this._s.drawn.get(at as Document) ?? null;
   }
+
+  /** This realm's `BroadcastChannel`s, compression streams and what it
+   *  goes by among those holding locks. */
+  private _channels = new Map<number, { key: string; end: ChannelEnd }>();
+  private _zlibs = new Map<number, PageZlib>();
+  private _lockClient = crypto.randomUUID();
+  private _channelTold = (id: number, message: string): void => {
+    if (!this._disposed) this.entries?.call('__bcMessage', [id, message]);
+  };
+  /** Told in a task of its own: a lock held by a page that took its
+   *  request back in the same task is none. */
+  private _lockGranted = (id: number): void => {
+    setTimeout(() => {
+      if (!this._disposed) this.entries?.call('__lockGranted', [id]);
+    }, 0);
+  };
+  private _lockStolen = (id: number): void => {
+    if (!this._disposed) this.entries?.call('__lockStolen', [id]);
+  };
 
   /** The reader's selection as the page last heard of it or set it, as
    *  core's range (`documentSelection`). */
@@ -6791,6 +6921,7 @@ export class DomHost {
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
         ...(raw.stream === true ? { stream: true } : {}),
+        ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
         ...(raw.streamedBody === true ? { streamedBody: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
@@ -7038,7 +7169,9 @@ export class DomHost {
         type: 'opaque',
       };
     }
-    const unsafe = unsafeRequestHeaders(request.headers);
+    const unsafe = unsafeRequestHeaders(
+      request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
+    );
     if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
       await this._preflight(request, unsafe, page, signal);
     }
