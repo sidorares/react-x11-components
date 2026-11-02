@@ -1228,6 +1228,17 @@ as WPT's tests make them, and to another peer the host can reach.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
+- **A canvas's text is drawn in the document's fonts**: `fillText`,
+  `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
+  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  transform, clip and compositing operator a path goes through. A `font`
+  names what the document's `@font-face` rules and `new FontFace` do, and a
+  face not loaded yet is asked for and drawn in what the list has until it
+  lands, as a browser draws it. `strokeText` is a band along the glyphs'
+  edges, so its joins are round and it draws no dash, and a worker has no
+  fonts, so an `OffscreenCanvas` there draws no text and measures it as a
+  guess. The tentative parts of `TextMetrics`, `getSelectionRects` and its
+  kin, are not there.
 - **WebGL draws where the host hands it a GL**, `scripts.webgl`, an
   `HtmlWebGL`. With none a context keeps the state a page sets and reads
   back and draws nothing, so a page written for a context still runs.

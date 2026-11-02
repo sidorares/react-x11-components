@@ -10531,7 +10531,9 @@ test("a page reads an element's font, and draws on a canvas in it, as it would i
       });
       </script>`,
   );
-  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const { drawn, ...out } = JSON.parse(
+    await settled(doc, 'out', (t) => t !== ''),
+  );
   assert.deepStrictEqual(out, {
     font: 'italic 700 16px / 20px Inter, serif',
     property: 'italic 700 16px / 20px Inter, serif',
@@ -10540,9 +10542,10 @@ test("a page reads an element's font, and draws on a canvas in it, as it would i
     unkept: '13px "Helvetica Neue"',
     listed: -1,
     family: true,
-    // no font set leaves the one before, and the element's is the next
-    drawn: ['20px sans-serif', 22, 17.6],
   });
+  // no font set leaves the one before, and the element's is the next
+  assert.strictEqual(drawn[0], '20px sans-serif');
+  assert.ok(drawn[2] < drawn[1], `16px is narrower than 20px: ${drawn}`);
 });
 
 metric(

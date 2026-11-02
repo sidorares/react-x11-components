@@ -64,7 +64,7 @@ export interface BufferClass {
     buffer: ArrayBufferLike,
     offset?: number,
     length?: number,
-  ): Uint8Array & { toString(encoding: 'base64'): string };
+  ): Uint8Array & { toString(encoding: 'base64' | 'latin1'): string };
 }
 
 /** The slice of `process` the engine reads. */
