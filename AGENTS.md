@@ -4451,20 +4451,100 @@ closes a way out a DOM binding opens by accident:
   overtakes goes at once**, and so does the one a reload makes again, or
   it comes into the session after the document that overtook it — which is
   why the browser numbers a document only as it comes in, never ahead.
-- **A page's streams are the standard's, and none of their state is the
-  page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
-  operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
-  the public object, and the promise and array methods they call are taken
-  before page code runs. So **anything new that makes or drives a stream
-  goes through `StreamsInternals`** — `readable`, `readableBytes`,
-  `writable`, `controllerOf`, `errorReadable`, `errorWritable`,
-  `writableSignal` — never through a field of the object, and a subclass
-  (WebTransport's send and receive streams) is made with `INTERNAL` and set
-  up by them. A byte stream a source closes answers a pending BYOB read
-  with `respond(0)` after `close()`, or the reader waits for ever
-  (`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
-  it after a change, through `scripts/conformance/testharness.tsx` and a
-  list.
+- **A service worker is the registry's, and a realm only holds what stands for
+  it** (`sw-registry.ts` on the host, `serviceworkers.ts` in a realm). A worker
+  outlives every document, and a navigation has to reach one with no realm there
+  to ask, so registrations, the job queue, the threads and what a `fetch` event
+  comes to are `ServiceWorkerRegistry`, one for each `HtmlServiceWorkers`, which a
+  host hands to `HtmlNetwork` and to every document alike. `HtmlServiceWorkers` is
+  light, since `<Html>` and the network reach it whether or not anything runs: a
+  navigation asks `controls`, one read of a list of scopes, and only a request
+  with a worker to go to loads the engine's chunk. A realm asks by the `sw` op and
+  is told by `__sw`, as JSON, in the order the registry tells it, so a
+  registration's attributes change before a worker's `statechange`, and a client
+  is told a task later (`_told`), since it may be told from inside one of its ops.
+  Seven things are load-bearing.
+
+- **A process has its own worker, over one store.** Each tab is a process, so
+  nothing here can hold a tab's request and ask another's thread: a registration,
+  its scripts, `caches` and IndexedDB are the profile's, a worker is a thread any
+  process starts from them, and `_sync` reads what another process changed as the
+  next request asks about the scope. So **nothing that has to outlive a thread may
+  live in a worker's realm or in the registry alone**, and `clients` is the
+  process's, which the docs say.
+- **A request goes to a worker where its client is known, before CORS.** A
+  subresource is the document's client's: `_fetchFor` for a page's `fetch`,
+  `workerResource` in the hook for what `<Html>` asks for, which waits for the
+  client where a document is controlled and its realm is not up (`controls`), or
+  a controlled page's first stylesheet goes to a network that may be off.
+  **Anything new that asks the network for a document's subresource asks its
+  client first**, and goes to the network only on an undefined. A navigation and
+  a frame's document are the scope's, whatever the requester is
+  (`navigation`, `_navigationFetch`). A worker's own requests and scripts go
+  straight to the network (`_network`), or a worker hears itself.
+- **What a worker ran it can run again with the network off.** Its main script
+  and each it imported are `Version.scripts`, kept with the registration, and a
+  thread is started from them (`_importScript`, `load` in the thread), so **a
+  script a worker's thread loads goes through `script`**, and past `installing` an
+  import it did not make is no script, as the specification has it.
+- **An opaque response stays on the host** (`_opaques`, `held`). A realm is told
+  status 0 and a number, and `respondWith` and `put` hand the number back, so a
+  site that answers a cross-origin `<img>` with `fetch(e.request)`, or caches one,
+  moves bytes no script read. **Anything new that takes a `Response` asks
+  `_held` before it asks for a body.** The held list is bounded (`OPAQUE_HELD`),
+  so a page that fetches and drops holds no more than that.
+- **A worker's dispatch ends in an entry of its own** (`__swDispatched`). A
+  browser runs microtasks as each listener returns, with the event still
+  dispatching; a context runs them as an entry ends, which is after the dispatch.
+  So `_dispatching` stays on until the next entry, or `respondWith` from a
+  microtask throws, and whether a `fetch` fell through is decided there.
+- **What a thread is told it hears as a task, and a thread keeps no process
+  alive.** `PageWorkers`' `background` unrefs a service worker's thread: it has no
+  page to answer for it, and held the process 30 seconds past its last client.
+- **A frame a worker can have for a client has a realm.** A secure page's frame of
+  its own origin has one whatever it holds (`_frameLoaded`), a script or none, a
+  page or a 404's JSON, since its `navigator` has to answer for it and a claim
+  reaches it, and `fetch` from its window has to be its own. `DomShared.realms`
+  was HTML with scripts alone, and a frame's `controller` read the page's.
+- **`_held` is a field a page can write**, so the host never believes what came
+  with it: a body held by number goes on under `OPAQUE_HEAD` whatever head the
+  realm sent (`_serviceSaid`, `_cacheOp`), and a forged number can draw an image
+  and never read one. The same goes for what a realm's `URL` said: the registry
+  holds a `register` and a post to the realm's origin itself.
+
+**A promise of one realm with a reaction of another's runs in the other's
+queue** (`_drainRealms`). `then` goes by the handler's realm, and a context's
+queue runs only as the host enters it, so `frame.contentWindow.fetch().then()`
+in a page, settled in the frame, waited for a timer of the page's to happen. An
+entry into a realm linked with others of its origin enters them after it, a few
+turns, and `__drain` is what never does that again. Anything that links realms
+goes through `link`.
+
+**`caches` is a store and one function over it** (`../cache-storage.ts`,
+`caches.ts`). What a query matches, `Vary` and a batch's all-or-none are
+`askCaches`, whichever realm or thread asked, so a store only files entries by a
+URL with no query (`cacheUrlKey`) and hands over a head with no body: a cache of a
+thousand responses costs a `match` one body and a `keys()` none. A worker reaches
+it across its thread (`cachesThrough`), and the profile's is `workers.sqlite`, a
+third file for the reason the HTTP cache is a second. **Anything new a cache's
+semantics need goes in `askCaches`**, not in a store or a facade, or memory and
+the profile come apart: `test/html/cache-storage.test.ts` runs over both.
+
+**A page's streams are the standard's, and none of their state is the
+page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
+operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
+the public object, and the promise and array methods they call are taken
+before page code runs. So **anything new that makes or drives a stream
+goes through `StreamsInternals`** — `readable`, `readableBytes`,
+`writable`, `controllerOf`, `errorReadable`, `errorWritable`,
+`writableSignal` — never through a field of the object, and a subclass
+(WebTransport's send and receive streams) is made with `INTERNAL` and set
+up by them. A byte stream a source closes answers a pending BYOB read
+with `respond(0)` after `close()`, or the reader waits for ever
+(`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
+it after a change, through `scripts/conformance/testharness.tsx` and a
+list.
+
 - **A page's `CryptoKey` is a sealed string, and that string is the whole
   of the key** (`webcrypto.ts` in the page, `subtle.ts` on the host,
   docs/prd-webcrypto.md). The specification's split is the line between the

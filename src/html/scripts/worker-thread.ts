@@ -27,6 +27,7 @@ import type {
   HtmlShownNotification,
 } from '../notifications.js';
 import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
+import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const AbortController: AbortControllerClass;
 
@@ -234,6 +235,21 @@ const heardNotification = (id: number, told: string): void => {
   }
 };
 
+/** What this worker's `caches` asked, across the thread: its store is the
+ *  page's. */
+const cacheAsks = new Map<number, (answer: HtmlCacheAnswer) => void>();
+let nextCacheAsk = 1;
+const cachesThrough = (
+  origin: string,
+  ask: HtmlCacheAsk,
+): Promise<HtmlCacheAnswer> =>
+  new Promise((resolve) => {
+    const id = nextCacheAsk;
+    nextCacheAsk += 1;
+    cacheAsks.set(id, resolve);
+    tell({ kind: 'caches', id, origin, ask });
+  });
+
 const seams: HostSeams = {
   handle: NO_VIEW,
   viewport: () => ({
@@ -255,6 +271,7 @@ const seams: HostSeams = {
   fetch: fetchThrough,
   webTransport: transports,
   webSocket: sockets,
+  caches: cachesThrough,
   permissions: permissionsCopied,
   ...(notifies && { notifications: notificationsThrough }),
   userAgent,
@@ -278,6 +295,8 @@ host.workerScope = {
   error: (message, filename, line, column) =>
     tell({ kind: 'error', message, filename, line, column }),
   rtc: (message) => tell(message),
+  service: (text, bytes) =>
+    tell({ kind: 'service', text, ...(bytes ? { bytes } : {}) }),
 };
 const engine = new ScriptEngine(host.bridge, {
   timeout: WORKER_TIMEOUT_MS,
@@ -287,6 +306,9 @@ const engine = new ScriptEngine(host.bridge, {
   log,
   settled: () => host.flush(),
   load: async (url) => {
+    // a service worker's modules are those it was installed with, as its
+    // `importScripts` are
+    if (init.service) return importScript(url);
     try {
       const response = await fetchThrough(
         { url, method: 'GET', headers: [], body: null },
@@ -337,6 +359,12 @@ const followPage = (): void => {
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
     engine.call('__workerMessage', [0, m.data]);
+  } else if (m.kind === 'service') {
+    engine.call('__sw', [m.text]);
+    engine.call('__swDispatched', null);
+  } else if (m.kind === 'caches') {
+    cacheAsks.get(m.id)?.(m.answer);
+    cacheAsks.delete(m.id);
   } else if (m.kind === 'permission') {
     permissionStates.set(m.name, m.state);
     for (const listener of permissionWatchers) listener(m.name);
@@ -384,16 +412,15 @@ script = () => {
       0,
       0,
     );
-    if (init.service) engine.call('__serviceInstall', [false]);
+    if (init.service) engine.call('__serviceStarted', [false]);
   } else if (init.type === 'module') {
     void engine.module(source, init.url, init.source === null).then((ran) => {
-      if (init.service) engine.call('__serviceInstall', [ran]);
+      if (init.service) engine.call('__serviceStarted', [ran]);
     });
   } else {
     const ran = engine.exec(source, init.url, 0);
-    // a service worker is installed once its script has run (Service
-    // Workers 1, "Install")
-    if (init.service) engine.call('__serviceInstall', [ran]);
+    // its registry goes on from here (Service Workers 1, "Run Service Worker")
+    if (init.service) engine.call('__serviceStarted', [ran]);
   }
 };
 // its page may have been left while this thread was starting

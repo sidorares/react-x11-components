@@ -32,6 +32,10 @@ import type {
 import type { ScriptsOptions } from './runner.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
+import { HtmlServiceWorkers } from '../service-workers.js';
+import { decodeText } from '../network.js';
+import type { ResourceKind } from '../network.js';
+import type { ResourceRequest, ResourceResult } from '../resources.js';
 
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
@@ -122,6 +126,35 @@ export interface ScriptProps {
   runner?: () => ScriptRunner | null;
   /** The engine, once it is loaded. Not a prop. */
   runtime?: ScriptRuntime | null;
+  /** What a subresource comes to where a service worker controls the
+   *  document: undefined where the network is to answer. Not a prop. */
+  workerResource?: (
+    url: string,
+    kind: ResourceKind,
+    cors: boolean,
+  ) => Promise<ResourceResult | null | undefined>;
+}
+
+/**
+ * What `<Html>` asks for, where a service worker may control the document: its
+ * worker's answer, or, where that leaves it to the network, the host's. What a
+ * page draws is the worker's to answer in a frame as in a window.
+ */
+export async function throughWorker(
+  scripts: ScriptProps,
+  request: ResourceRequest,
+  host: ((request: ResourceRequest) => unknown) | undefined,
+): Promise<unknown> {
+  const { kind } = request;
+  if (kind === 'image' || kind === 'stylesheet' || kind === 'font') {
+    const answered = await scripts.workerResource?.(
+      request.url,
+      kind,
+      request.element?.attribs?.crossorigin !== undefined,
+    );
+    if (answered !== undefined) return answered;
+  }
+  return host?.(request) ?? null;
 }
 
 /** No sheet adopted: one array, so that a page that adopts none renders
@@ -150,6 +183,19 @@ export function useScripts(
   const [adopted, setAdopted] = useState<string[]>(NO_SHEETS);
   const latest = useRef(options);
   latest.current = options;
+  // what keeps the page's service workers: the host's, or, where it only said
+  // yes, one of this `<Html>`'s own, which a frame's shares
+  const ownWorkers = useRef<HtmlServiceWorkers | null>(null);
+  const keeper = useCallback((): HtmlServiceWorkers | null => {
+    const given = latest.current.serviceWorkers;
+    if (!given) return null;
+    if (given !== true) return given;
+    return (ownWorkers.current ??=
+      link?.parent.serviceKeeper ?? new HtmlServiceWorkers());
+  }, []);
+  /** Those waiting for the document to have a client: a request a controlled
+   *  document makes before its realm is up. */
+  const waitingForRunner = useRef<(() => void)[]>([]);
   const address = useRef(url);
   address.current = url;
   const [engine, setEngine] = useState<ScriptRuntime | null>(runtime);
@@ -187,7 +233,18 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: (src, element) => latest.current.load(src, element),
+    load: async (src, element) => {
+      const answered = await workerResource(
+        src,
+        'script',
+        element?.attribs.crossorigin !== undefined,
+      );
+      if (answered === undefined) return latest.current.load(src, element);
+      if (answered?.kind !== 'script') return null;
+      return 'text' in answered
+        ? answered.text
+        : decodeText(answered.bytes, answered.charset ?? null);
+    },
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,
     get timeout() {
@@ -197,7 +254,7 @@ export function useScripts(
       return latest.current.workers;
     },
     get serviceWorkers() {
-      return latest.current.serviceWorkers;
+      return keeper();
     },
     get webTransport() {
       return latest.current.webTransport;
@@ -316,7 +373,29 @@ export function useScripts(
         seams.current.handle.canvasChanged(canvas),
       ) ?? null;
     ran();
+    for (const go of waitingForRunner.current.splice(0)) go();
   }, []);
+
+  /** What a subresource comes to where a service worker controls the
+   *  document: undefined where the network is to answer. */
+  const workerResource = useCallback(
+    async (
+      url: string,
+      kind: ResourceKind,
+      cors: boolean,
+    ): Promise<ResourceResult | null | undefined> => {
+      const workers = keeper();
+      if (!workers || !/^https?:/i.test(url)) return undefined;
+      if (!runner.current) {
+        if (!workers.controls(address.current)) return undefined;
+        await new Promise<void>((go) => waitingForRunner.current.push(go));
+      }
+      const client = runner.current?.host.serviceClient;
+      if (!client?.controlled) return undefined;
+      return client.resource(url, kind, cors);
+    },
+    [],
+  );
 
   const onDocument = useCallback((document: Document) => {
     if (runner.current?.host.document === document) return;
@@ -471,6 +550,7 @@ export function useScripts(
     canvasOpaque,
     runner: getRunner,
     runtime: engine,
+    workerResource,
     ...(adopted.length ? { stylesheet: adopted } : {}),
   };
 }
