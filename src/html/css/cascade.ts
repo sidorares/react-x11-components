@@ -4378,7 +4378,8 @@ export class Cascade {
    *  is and its line height what an `rlh` is (CSS Values 4, 6.1.1), in
    *  every element but the root, whose own declarations measure them from
    *  the initial values. Set as the root's style is computed, which a build
-   *  does ahead of every element under it. */
+   *  does ahead of every element under it, or with the styles a cascade
+   *  keeps from the one before it (`keepsStylesOf`). */
   private _root: ComputedStyle | null = null;
   /** The constructor's `documentElement`, which is the root in its turn. */
   private readonly _documentElement: Element | null;
@@ -6042,6 +6043,22 @@ export class Cascade {
     // which tree each element is in, found again: an element a script
     // moved into another tree since the last build is styled by its rules
     this._trees = new WeakMap();
+  }
+
+  /**
+   * The styles of the document are `before`'s, and go on being the ones
+   * this cascade's builds keep (`_sheetsAdded`): it was made for the rules a
+   * sheet added, and styles the root only if one reaches it. So the root is
+   * taken over with them, and what they read of its font, which only
+   * computing a style notes. A page with a font size on its `html` measured
+   * every `rem` an added rule holds from the initial size, and a rule that
+   * moved the root left the `rem`s kept under a `<body>` of another size.
+   */
+  keepsStylesOf(before: Cascade): void {
+    this._root = before._root;
+    this._rootRead = before._rootRead;
+    this._pseudoRoot = before._pseudoRoot;
+    this._queryRoot = before._queryRoot;
   }
 
   /** Whether an element's parent has the style it had before the build,
