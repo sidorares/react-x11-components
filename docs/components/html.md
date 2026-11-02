@@ -810,10 +810,8 @@ the face says it has loaded. `document.fonts.add` puts a face among the
 document's, which styles the document again, as an `@font-face` in a sheet
 would; `delete` and `clear` take it out, and only what a script put there. A
 family or a descriptor that cannot be read is the `SyntaxError` `loaded`
-rejects with, and a font the engine cannot read a `NetworkError`. A `style`,
-a `weight` or a `stretch` set after a face is made is what it is matched by
-from then on; any other descriptor set then reads back and changes nothing of
-it.
+rejects with, and a font the engine cannot read a `NetworkError`. A
+descriptor set after a face is made reads back and changes nothing of it.
 
 ## Scripts
 
@@ -1081,9 +1079,7 @@ a request whose site for cookies is `page`'s. Where the runtime says what
 the handshake was answered with — Node's from 24, through undici's
 `undici:websocket:open` diagnostics channel — its `Set-Cookie` is kept in
 the jar before the page hears `open`; Bun's says nothing of it. Node 20 has
-no `WebSocket`, and there every socket fails as with no network. One
-opening handshake to a host and port goes at a time, as RFC 6455 has it, each
-waiting for the one before to be answered or to fail, or for 30 seconds.
+no `WebSocket`, and there every socket fails as with no network.
 `webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
@@ -1251,8 +1247,7 @@ as WPT's tests make them, and to another peer the host can reach.
   speakers has silence; WPT's WebRTC tests make their audio from one.
 - **A canvas's text is drawn in the document's fonts**: `fillText`,
   `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
-  `direction`, `fontStretch`, `letterSpacing`, `wordSpacing` and `maxWidth`,
-  through every
+  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
   transform, clip and compositing operator a path goes through. A `font`
   names what the document's `@font-face` rules and `new FontFace` do, and a
   face not loaded yet is asked for and drawn in what the list has until it
@@ -2220,9 +2215,7 @@ wptrunner runs a browser.
 it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
 `location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
 from one to the other as the window navigates, so one object stands for a window
-through a popup login. A `javascript:` URL sent to a window or a frame of another
-origin ends there, as HTML has it, and a host hears of no navigation. `closed` is
-true from the moment `close()` is called, and
+through a popup login. `closed` is true from the moment `close()` is called, and
 the window goes in a task after it: `opener` reads null then, and a name no longer
 finds it.
 
@@ -2242,8 +2235,58 @@ opened; a host knows the rest, and answers true where it closes, which `closed` 
 reads. A tab a host opened under a name, the fourth argument of `navigate`, goes by it
 through `scripts.windowName`.
 
-Not done: `Cross-Origin-Opener-Policy`, `sandbox`'s `allow-popups`, `moveTo` and
+Not done: `Cross-Origin-Opener-Policy`, `moveTo` and
 `resizeTo` ([the design](../prd-popups.md#left-out)).
+
+### Sandboxes and framing
+
+**`<iframe sandbox>` is enforced by the host**, which keeps a document's flags
+where no realm can reach them (`src/html/scripts/sandbox.ts`, HTML's "sandboxing
+flag sets"). The flags are read as a document is loaded, so a change to the
+attribute waits for the next load, and they add up: a frame's are its own and
+those of the document it is in, and no token takes back what was inherited. A
+response's own `Content-Security-Policy: sandbox` adds to them, a frame's as it
+arrives and a top-level document's where the host hands the engine its
+`scripts.headers`, which `HtmlNetwork`'s `document` and `html` answer.
+
+| without                | the document                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-same-origin`    | has an opaque origin, whatever its address, so the page has it by a number, as any other origin's frame, and it has the page so. `self.origin` is `null`, `location.origin` still its address's. `document.cookie` and `localStorage` are a `SecurityError`, a request says `Origin: null` and carries no `same-origin` cookies, and no service worker has it. |
+| `allow-scripts`        | runs nothing, whoever puts a script in, and shows its `<noscript>`.                                                                                                                                                                                                                                                                                            |
+| `allow-forms`          | submits no form.                                                                                                                                                                                                                                                                                                                                               |
+| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out.                                                                                                                                                                                                                                  |
+| `allow-top-navigation` | sends the top window nowhere. `allow-top-navigation-by-user-activation` lets a press do it.                                                                                                                                                                                                                                                                    |
+| `allow-downloads`      | saves no file.                                                                                                                                                                                                                                                                                                                                                 |
+| `allow-modals`         | is answered as any document is: `alert` draws nothing here, and `confirm` is no and `prompt` is null.                                                                                                                                                                                                                                                          |
+
+A frame with both `allow-scripts` and `allow-same-origin`, of the page's own
+origin, is handed the page's window as any such frame is, so its flags stop
+what it does for itself and not what it does through the page. HTML warns of
+that pair for the same reason: such a frame can take its own `sandbox` off.
+
+Not read: `allow-pointer-lock`, `allow-orientation-lock` and
+`allow-presentation`, which guard nothing here; and the automatic features, so
+`autofocus` works in a sandbox. A subresource of a sandboxed frame, an `<img>` or
+a `<script src>`, goes through `onResource` as the page's does, with the page's
+cookies.
+
+**A cross-origin frame sends the top window somewhere only behind a press**, as
+Chromium has it, where it could not at all; a sandbox goes by its flags. A
+`javascript:` address goes nowhere.
+
+**A document that refuses to be framed is not loaded in that frame**
+(`src/html/scripts/framing.ts`): `Content-Security-Policy: frame-ancestors`, of
+every policy the response carries, or else `X-Frame-Options`, read from its
+headers before anything of it is parsed, of every document around the frame and
+not only the one it is in. So a site's `SAMEORIGIN` page in a frame of its own,
+in a frame of another's, refuses. The frame shows that it did, in a document of
+no origin, and hears `load`, as it would for any failure to show one. A
+service worker's answer is held to the same.
+
+**A `file:` page's `file:` frame is another origin**, as Chromium and Firefox
+have it: the page has its window by a number and no `contentDocument`, and it
+loads where the host's `fetch` answers it. `data:` frames are loaded from their
+own URL, of an opaque origin, where they were left blank.
 
 ### The clipboard
 
@@ -2309,9 +2352,7 @@ What can be dragged is an element marked `draggable=true`, a link and an image.
 The store is read/write at `dragstart`, read-only at `drop` and protected in
 between, where a page sees its types and not its data. A target that takes a
 drop cancels `dragover`; a field or an editing host takes text with nothing
-said, as `insertFromDrop`. A press on a text field or a `<select>` starts no
-drag of it or of what it is in, `draggable` or `readonly` or not, as in a
-browser: it selects. A page that cancels `dragstart`, and a press on
+said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
 anything else, leaves the gesture what it was: a selection, or a drag of the
 page's own over pointer events. After `dragstart` the pointer is the drag's, so
 a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
@@ -3198,10 +3239,7 @@ says nothing, the UA sheet's `:focus-visible { outline: auto 1px
 element's border box, or round each of a link's fragments. A press does not
 focus a link or a button, which it does in a browser: the press focuses the
 document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
-link follows it. A press on what has the focus leaves it there, whether it
-had it before or a page's `mousedown` just gave it, as a page that focuses a
-button itself expects of the browsers that focus none on a click.
-Tab after a press goes on from where it landed, as from a
+link follows it. Tab after a press goes on from where it landed, as from a
 link pressed or from text between links, which is HTML's sequential focus
 navigation starting point (6.6.4). The element focused is scrolled into
 view, by the box around the document that scrolls. An element a page's
@@ -3210,16 +3248,6 @@ document was not a press, as Chrome, Firefox and WebKit decide it: a menu a
 click opens, whose script focuses its first link, draws no ring round it,
 where Tab and Enter, or no input yet, draw one. A modifier alone, and a
 chord with Ctrl, Alt or Meta, is no input that changes the answer.
-
-**A focus a script asks for is the keyboard's at once.** `focus()` is told
-before it returns, and what takes it for a control or a link may be a render
-or two away on a page still loading. A key typed until then reaches the page
-at that element, and does what it does on a link or a button; only text typed
-at a field whose widget is still to come is heard and not typed. A press
-elsewhere takes such a focus back, as it takes any.
-
-Tab goes by the document as it stands, so a Tab straight after a script put
-something focusable in reaches it.
 
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed

@@ -2778,19 +2778,6 @@ export function scriptFontFace(
     ? [{ bytes }]
     : faceSources(src ?? '', base);
   if (!sources.length) return null;
-  const matching = faceMatching(init);
-  if (!matching) return null;
-  const unicodeRange =
-    init.unicodeRange === undefined ? null : unicodeRanges(init.unicodeRange);
-  if (init.unicodeRange !== undefined && !unicodeRange) return null;
-  return { family, sources, ...matching, unicodeRange, media: null };
-}
-
-/** What a face is matched by, of what a script gave it: null where one of
- *  them is no value of its descriptor. */
-export function faceMatching(
-  init: FontFaceInit,
-): Pick<FontFaceRule, 'weight' | 'style' | 'stretch'> | null {
   const weight = faceWeight(init.weight ?? 'normal');
   const stretch = init.stretch === undefined ? null : faceStretch(init.stretch);
   const slant = (init.style ?? 'normal').trim().toLowerCase();
@@ -2798,10 +2785,17 @@ export function faceMatching(
   if (slant !== 'normal' && slant !== 'italic' && !/^oblique\b/.test(slant)) {
     return null;
   }
+  const unicodeRange =
+    init.unicodeRange === undefined ? null : unicodeRanges(init.unicodeRange);
+  if (init.unicodeRange !== undefined && !unicodeRange) return null;
   return {
+    family,
+    sources,
     weight,
     style: slant === 'normal' ? 'normal' : 'italic',
     stretch,
+    unicodeRange,
+    media: null,
   };
 }
 

@@ -377,6 +377,9 @@ export interface DocumentResponse {
   disposition?: string | null;
   /** Its `Content-Length`, where it said. */
   size?: number | null;
+  /** Its response's headers, for what a document says of itself
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
@@ -496,8 +499,6 @@ export class HtmlNetwork {
   private readonly _webRTC: boolean;
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
-  /** Whose opening handshake each host and port waits for. */
-  private readonly _socketTurns = new Map<string, Promise<void>>();
   private readonly _cookies: CookieJar | null;
   private readonly _serviceWorkers: HtmlServiceWorkers | null;
   /** Who is told of each request (`observe`), and the last id handed out. */
@@ -611,9 +612,7 @@ export class HtmlNetwork {
    * says what the handshake was answered with — Node's, from 24, through
    * undici's `undici:websocket:open` channel — its `Set-Cookie` is stored;
    * Bun says nothing of it. A runtime with no `WebSocket`, Node 20, fails
-   * every socket, as with no network. One opening handshake to a host and
-   * port goes at a time (RFC 6455, 4.1), each waiting for the one before to
-   * be answered or to fail, or for `HANDSHAKE_TURN_MS`.
+   * every socket, as with no network.
    */
   webSockets(page: string): HtmlWebSocket {
     if (!this._webSocket) return NO_WEBSOCKET;
@@ -626,7 +625,6 @@ export class HtmlNetwork {
           language: this._language,
           cookies: this._cookies,
           site,
-          turns: this._socketTurns,
         });
       },
     };
@@ -1438,6 +1436,7 @@ export class HtmlNetwork {
       charset,
       disposition: response.headers.get('content-disposition'),
       size: Number(response.headers.get('content-length')) || null,
+      headers: [...response.headers.entries()],
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
@@ -1482,6 +1481,7 @@ export class HtmlNetwork {
       charset,
       disposition: header('content-disposition'),
       size: Number(header('content-length')) || null,
+      headers: response.headers,
       body: chunks,
       whole: chunks,
     };
@@ -1534,6 +1534,8 @@ export class HtmlNetwork {
       /** The document it is made from, where that is not `page`: a
        *  frame's (`FetchRequest.client`). */
       client?: string;
+      /** An `Origin` of `null` (`FetchRequest.opaqueOrigin`). */
+      opaqueOrigin?: boolean;
     },
     page: string,
     signal: AbortSignalLike,
@@ -1573,7 +1575,7 @@ export class HtmlNetwork {
     headers.accept ??= '*/*';
     // a frame's request is the frame's, and its site for cookies the page's
     const client = request.client ?? page;
-    headers.origin = originOf(client);
+    headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
     const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
@@ -1621,8 +1623,9 @@ export class HtmlNetwork {
           },
           {
             credentials: request.credentials ?? 'same-origin',
-            origin: originOf(client),
-            site: page,
+            origin: request.opaqueOrigin ? 'null' : originOf(client),
+            // no document of no origin is same-site with anything
+            site: request.opaqueOrigin ? 'about:blank' : page,
             topLevel: false,
             initiator: null,
           },
@@ -1734,6 +1737,7 @@ export class HtmlNetwork {
     type: string;
     charset: string;
     source: string;
+    headers: [string, string][];
   }> {
     const signal = options.signal ?? new AbortController().signal;
     const response = await this.document(url, signal, options.post ?? null);
@@ -1747,6 +1751,7 @@ export class HtmlNetwork {
       type: response.type,
       charset,
       source: decodeText(bytes, charset),
+      headers: response.headers ?? [],
     };
   }
 
@@ -1963,45 +1968,6 @@ function watchHandshakes(): Promise<void> {
   ));
 }
 
-/** How long a socket waits for the handshake before it to the same host and
- *  port. A server that never answers holds its own socket, which has no
- *  bound here, and not every socket after it. */
-const HANDSHAKE_TURN_MS = 30000;
-
-/**
- * A place in the line of opening handshakes to `url`'s host and port (RFC
- * 6455, 4.1, step 2): `ready` settles when the one before is done, and
- * `done` is called once this one is. Keyed by name where the RFC has the
- * address: a name is what the runtime's socket hands over, and two names of
- * one server run side by side, which no server minds.
- */
-function socketTurn(
-  turns: Map<string, Promise<void>>,
-  url: string,
-): { ready: Promise<void>; done(): void } {
-  const { host } = new URL(url);
-  const ready = turns.get(host) ?? Promise.resolve();
-  let finish = (): void => {};
-  const mine = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  const last = ready.then(() => mine);
-  turns.set(host, last);
-  let timer: unknown = null;
-  const done = (): void => {
-    if (timer !== null) stallClock.disarm(timer);
-    timer = null;
-    finish();
-  };
-  void ready.then(() => {
-    timer = stallClock.arm(done, HANDSHAKE_TURN_MS);
-  });
-  void last.then(() => {
-    if (turns.get(host) === last) turns.delete(host);
-  });
-  return { ready, done };
-}
-
 /** A connection over the runtime's `WebSocket`, its events told in the
  *  order they came. */
 function runtimeSocket(
@@ -2012,7 +1978,6 @@ function runtimeSocket(
     language: string;
     cookies: CookieJar | null;
     site: string;
-    turns: Map<string, Promise<void>>;
   },
 ): WebSocketConnectionLike {
   const Native = (globalThis as { WebSocket?: RuntimeWebSocketClass })
@@ -2041,7 +2006,6 @@ function runtimeSocket(
   const cookie = jar?.header(request.url, context);
   if (cookie) headers.cookie = cookie;
 
-  const turn = socketTurn(options.turns, request.url);
   let ws: RuntimeWebSocket | null = null;
   /** Abandoned before the runtime's socket was made. */
   let abandoned = false;
@@ -2054,10 +2018,7 @@ function runtimeSocket(
     else fn();
   };
   const make = (): void => {
-    if (abandoned) {
-      turn.done();
-      return;
-    }
+    if (abandoned) return;
     let socket: RuntimeWebSocket;
     try {
       socket = new Native(request.url, {
@@ -2066,14 +2027,12 @@ function runtimeSocket(
       });
     } catch (error) {
       done = true;
-      turn.done();
       events.failed(String((error as Error)?.message ?? error));
       return;
     }
     ws = socket;
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
-      turn.done();
       // undici publishes the handshake's answer just after `open`
       held = [];
       void Promise.resolve().then(() => {
@@ -2115,14 +2074,12 @@ function runtimeSocket(
     socket.onerror = (event) =>
       inOrder(() => {
         done = true;
-        turn.done();
         const message = event?.message ?? (event?.error as Error)?.message;
         events.failed(message ? String(message) : 'the connection failed.');
       });
     socket.onclose = (event) =>
       inOrder(() => {
         done = true;
-        turn.done();
         events.closed(
           Number(event?.code ?? 1006),
           String(event?.reason ?? ''),
@@ -2132,7 +2089,8 @@ function runtimeSocket(
   };
   // the handshake's answer is watched for where there is a jar to keep its
   // cookies in, before the first socket is made
-  void Promise.all([turn.ready, jar && watchHandshakes()]).then(make);
+  if (jar) void watchHandshakes().then(make);
+  else make();
   return {
     send(data) {
       ws?.send(data);

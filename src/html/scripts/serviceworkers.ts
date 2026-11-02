@@ -127,13 +127,6 @@ export function installServiceWorkers(
   /** Asks the registry, and what it answers. */
   const ask = (message: Any): Any =>
     new P((resolve: Any, reject: Any) => {
-      // a document taken out of its frame asks nothing, whatever it kept
-      if (!D.fullyActive()) {
-        reject(
-          new DOMException('The document is detached.', 'InvalidStateError'),
-        );
-        return;
-      }
       const n = nextAsk;
       nextAsk += 1;
       pending.set(n, { resolve, reject });
@@ -163,12 +156,6 @@ export function installServiceWorkers(
       if (this._state === 'redundant') {
         throw new DOMException(
           "Failed to execute 'postMessage' on 'ServiceWorker': ServiceWorker is in redundant state.",
-          'InvalidStateError',
-        );
-      }
-      if (!D.fullyActive()) {
-        throw new DOMException(
-          "Failed to execute 'postMessage' on 'ServiceWorker': The document is detached.",
           'InvalidStateError',
         );
       }

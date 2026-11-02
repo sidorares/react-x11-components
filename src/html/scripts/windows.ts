@@ -386,6 +386,7 @@ export function installWindows(deps: WindowDeps): WindowInternals {
       return null;
     }
     const seam = str(call('windowPopups'));
+    if (seam === 'sandboxed') return null;
     if (seam === 'none') {
       // no host to say where a window goes: a tab, and no window to hand
       // back, as with no seam it always was

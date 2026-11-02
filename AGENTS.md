@@ -1905,38 +1905,7 @@ did nothing. The render that mounts a widget or a stop hands the focus on,
 and `activeElement` answers for it until then. **Wait for what takes it, as
 for a layout, and never for a count of turns.** Anything that moves the focus
 before then goes through `Forms.focused` or `letGo`, which take the debt
-back, and a press on the document does, as it lands (`pressLanded`).
-
-**And the keys are held while it is owed** (`stops.hold`, `keyHolder`). With
-no focused node core sends a key to the window, past `<Html>`'s root, so a
-key typed in that gap reached no page: `dialog-closedby-corner-cases.html`
-heard the release of an Escape whose press it never had, and waited for good.
-So core's focus goes to a box that stands in for the element as the focus is
-told, in the op and not in a render: nothing races it, whatever the machine is
-doing. A key then comes through the root, is told at the owed element
-(`keyedAt`, through `elementOf`) and does what it does on a stop. The box is
-of no size, so taking the focus damages nothing, and in a box of no size that
-scrolls, since core scrolls what it focuses into view through the nearest
-scroll container around it and the document's would be taken to the top. The
-root will not do: core rings what a script focuses, round the whole document,
-and repaints it. **Anything new that leaves core's focus nowhere while the
-page has been told something has it calls `hold`.** Text typed before a field's
-widget is there is heard and not typed, which nothing has yet asked for.
-
-**Tab goes by the stops as the document stands** (`stopsNow`). What is
-reported reaches React a layout and a render later, and a Tab straight after a
-page's script changed the document found none, and went nowhere. Anything new
-that steps through the stops from a key asks `stopsNow` and not the state.
-
-**A press on what has the focus leaves it there** (`pressLanded`, from
-`defaultMouseDown`). Core's press goes to the nearest node that takes the
-focus, and all the document draws has the root for that, after the page's
-`mousedown` since 2.56.3. So a `button.focus()` in the handler lasted until
-the handler returned. A browser keeps the focus where the nearest focusable
-area around the press has it. The blur is told a microtask later, so one put
-right here is one the page never hears. **Nothing else about a press on what
-the document draws focuses it**, as a click focuses a `<button>` in Chrome and
-does not in Safari: the page's `mousedown` is the way in.
+back.
 
 **A control's state has one answer, which a rule and a page both ask for**
 (`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,
@@ -4425,10 +4394,7 @@ closes a way out a DOM binding opens by accident:
   load-bearing. **Anything that reaches another document is refused on the host
   by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
   `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
-  first, and a `javascript:` URL sent across origins (`maySend`,
-  `frameNavigate`), of the address as `URL` left it, which ends there with no
-  navigation for a host to hear. A facade's check is a courtesy, for the error
-  a page should see.
+  first. A facade's check is a courtesy, for the error a page should see.
   **What an origin is read from cannot be moved by a page**: `setLocation`
   stays in its origin, since every check of one, storage and cookies among them,
   reads it, and `creator` is an `about:blank` document's alone, or a popup's
@@ -4440,6 +4406,28 @@ closes a way out a DOM binding opens by accident:
   another realm is an op on its number, refused on the host**, and a window
   moving between origins links or unlinks in `adopt`, so nothing keeps a global
   past it.
+- **A sandbox is flags on the host, by the document** (`sandbox.ts`,
+  `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
+  goes by a document's origin holds. Six things are load-bearing. **`'null'` is
+  never another `'null'`**: anything new that compares two origins treats an
+  opaque one as no other (`_sameOrigin`, `sameOrigin` in `popups.ts`, `takeNode`),
+  and anything keyed by origin keys an opaque one apart, as `BroadcastChannel`'s
+  does, or every sandbox shares one store. **What a sandbox's address says is
+  not its origin**, so anything new that reads a document's origin asks the host
+  and never `location.origin`, which keeps the address's as HTML has it; a blob
+  URL made in a sandbox is `blob:null`, since a worker's host has its address to
+  go by and nothing else, and `workerStart` holds an address to the document's
+  origin, or a worker comes out at the page's. **What a frame
+  loads asks `_frameSandbox` as it loads**, and of the document the frame is in
+  (`_ownerOf`), never of `this`: a frame's document with no realm has its frames
+  loaded by a host that is no sandbox's. **A request a sandbox makes says so**
+  (`opaqueOrigin`), since a frame's `client` is its address, which `HtmlNetwork`
+  takes `Origin` and `same-origin` cookies from. And **anything new a sandbox
+  flag takes away is refused on the host**: `form.submit()` and a press both end
+  in `submit`, but a window has four ops and each asks. What a frame refuses is
+  read from the response before it is parsed, in `_refusedFraming`, of each
+  document around it (`_ancestorOrigins`): **anything new that shows a response
+  in a frame goes through it.**
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
@@ -4966,10 +4954,6 @@ not before. Three things are load-bearing:
   and with a realm each it scored 92 where it scores 96. Such a frame is
   drawn, and told of what the page's scripts change in it, and runs nothing
   of its own.
-- **What a same-origin frame's realm made is of no class here**, so
-  `instanceof` says no of what a page hands its frame's window: a `Request`
-  was read as a URL and lost its method and body (`requestIn`). Anything new
-  that takes a platform object from a linked realm asks by what it holds.
 - **A change is told to the `<Html>` that draws its document, whichever
   realm made it** (`_tell`, `DomShared.changes`). What a realm's
   `MutationObserver` sees is still only what that realm changed. A change
@@ -5398,16 +5382,8 @@ and a nested `<a>` is not ended; foster parenting, so what is out of place in a
 table stays in it; `<template>`'s modes past the first tag it holds and
 `colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
 quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
-which ends no written `<head>`.
-
-**A `</body>` and an `</html>` close nothing, and say so** (`Handler.ended`):
-what comes after them goes back in the body, and a comment after one goes
-outside it, in the `<html>` and the document, which is the one thing the two
-modes HTML keeps for this do differently. **A `<head>` ends with what stands in
-for it**: a second `<head>` or a stray `<html>` in one is a stand-in on the
-stack (`_ignored`), so the first thing that is no head content closes all of
-them, or the body opens inside the head. WPT's `scroll_support` tests write
-`<head>` twice, and their `200vh` body scrolled nothing.
+which ends no written `<head>`. A comment after `</body>` goes in the body, where
+HTML has it after it.
 
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,

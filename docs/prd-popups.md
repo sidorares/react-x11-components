@@ -290,10 +290,9 @@ the prototype, frames nested in frames, `document.domain`, and a window's
 
 - **Cross-Origin-Opener-Policy.** A provider that sends `same-origin` severs the
   opener in a browser, and does not here. Login flows that work in a browser
-  send `same-origin-allow-popups`, which this already behaves as.
-- **`sandbox`.** A frame's `sandbox` is read for what it supports and enforced
-  nowhere: a sandboxed frame opens a window, runs its scripts and keeps its
-  origin, so one of the page's origin is handed the page's global.
+  send `same-origin-allow-popups`, which this already behaves as. It waits on a
+  window being able to leave its group: `WindowGroup` and `DomShared` are one to
+  one, and a severed window has to go on over the tree of nodes it is in.
 - **A window opened from a realm-less frame** opens as its page: such a frame
   has no script of its own to call it, only the page reaching in.
 - **`resizeTo` and `moveTo`** on a popup, and `screenX` and `screenY`: a popup

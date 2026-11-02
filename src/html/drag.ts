@@ -69,9 +69,8 @@ const DRAG_DATA: Record<string, () => string> = {
  *  page marked, a link or an image, and nothing past one marked `false`. */
 function draggableFrom(at: Element | null): Element | null {
   for (let el = at; el; el = flatParentOf(el)) {
-    // what a press edits, selects or opens is that press's, in whatever it
-    // is in and whatever it says of itself
-    if (el === at && (takesText(el) || holdsText(el))) return null;
+    // what a press edits, or opens, is that press's, in whatever it is in
+    if (el === at && (takesText(el) || tagOf(el) === 'select')) return null;
     const said = attr(el, 'draggable')?.trim().toLowerCase();
     if (said === 'true') return el;
     if (said === 'false') return null;
@@ -96,15 +95,6 @@ function defaultEntries(
     { t: 'text/uri-list', s: url },
     { t: 'text/plain', s: url },
   ];
-}
-
-/** Whether a press on a control is on its text, or opens it: `readonly`
- *  takes the typing away and leaves the text to select, so a press on one
- *  starts no drag in a browser either. */
-function holdsText(el: Element): boolean {
-  const tag = tagOf(el);
-  if (tag === 'textarea' || tag === 'select') return true;
-  return tag === 'input' && !NO_TEXT_INPUTS.has(inputType(el));
 }
 
 /** Whether what is under a drag takes text with nothing of a page's say. */

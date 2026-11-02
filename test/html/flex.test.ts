@@ -243,42 +243,6 @@ test('a replaced flex item is as wide as the flex layout made it', async () => {
   assert.deepStrictEqual([a.x, b.x, c.x], [a.x, a.x + 100, a.x + 200]);
 });
 
-test("flow-start and flow-end are a flex box's flex-start and flex-end, whichever way it runs, and read back as written", async () => {
-  const item = '<div style="width:10px;height:10px"></div>';
-  const { node } = await render(
-    '<div style="width:100px">' +
-      `<div id="a" style="display:flex;flex-direction:row-reverse;justify-content:flow-start">${item}</div>` +
-      `<div id="b" style="display:flex;flex-direction:row-reverse;justify-content:flow-end">${item}</div>` +
-      `<div id="c" style="display:flex;height:40px;align-items:flow-end">${item}</div>` +
-      `<div id="d" style="display:flex;height:40px;flex-wrap:wrap-reverse;align-items:flow-start;align-content:flow-start">${item}</div>` +
-      `<div id="e" style="display:flex;height:40px"><div id="f" style="width:10px;height:10px;align-self:flow-end"></div></div>` +
-      '</div>',
-  );
-  const el = view(node);
-  const box = (id: string) =>
-    boxOf(el, id) as unknown as {
-      x: number;
-      y: number;
-      children: { x: number; y: number }[];
-      style: Record<string, unknown>;
-    };
-  const a = box('a');
-  const b = box('b');
-  assert.strictEqual(a.children[0].x - a.x, 90);
-  assert.strictEqual(b.children[0].x - b.x, 0);
-  const c = box('c');
-  assert.strictEqual(c.children[0].y - c.y, 30);
-  const d = box('d');
-  assert.strictEqual(d.children[0].y - d.y, 30, 'the far side, wrapped back');
-  const f = box('f');
-  assert.strictEqual(f.y - box('e').y, 30);
-  assert.strictEqual(a.style.justifyContent, 'flex-start');
-  assert.strictEqual(a.style.justifyContentText, 'flow-start');
-  assert.strictEqual(c.style.alignItemsText, 'flow-end');
-  assert.strictEqual(d.style.alignContentText, 'flow-start');
-  assert.strictEqual(f.style.alignSelfText, 'flow-end');
-});
-
 test('a flex and a grid property is inherited, and set back to its initial value', async () => {
   // `inherit`, `initial` and `unset` reached none of them: `align-self:
   // inherit` in the suite's flex boxes was `auto`

@@ -32,6 +32,7 @@ import { hx } from '../hx.js';
 import { throughWorker, useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
+import { SB_FORMS, SB_POPUPS, SB_TOP_GESTURE } from './sandbox.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
@@ -190,6 +191,8 @@ function FrameDocument({
   const scroller = useRef<ScrollableNode | null>(null);
   const host = context.parent.host;
   const outer = context.seams;
+  /** What the document's sandbox takes from it, which only the host knows. */
+  const sandbox = host.shared.sandboxes.get(document) ?? 0;
   const seams: ScriptsOptions = {
     ...outer,
     // the frame's own pane: its size and its scroll, in the page's zoom —
@@ -268,11 +271,13 @@ function FrameDocument({
   ) => {
     const keyword = target.toLowerCase();
     if (keyword === '_top' || keyword === '_parent') {
-      outer.navigate(to, 'here');
+      // a link followed is a gesture
+      if (!(sandbox & SB_TOP_GESTURE)) outer.navigate(to, 'here');
       return;
     }
     const where = navigableFor(document, target);
     if (where === 'tab') {
+      if (sandbox & SB_POPUPS) return;
       const { noopener, noreferrer } = linkOpener(target, rel);
       const runner = scripts.runner?.();
       if (!runner?.followTarget(to, target, noopener, noreferrer, post)) {
@@ -316,6 +321,7 @@ function FrameDocument({
       },
       onSubmit: (submission) => {
         const { url: to, method, body, contentType, target } = submission;
+        if (sandbox & SB_FORMS) return;
         if (!/^(?:https?|file|data):/i.test(to)) return;
         send(
           target,

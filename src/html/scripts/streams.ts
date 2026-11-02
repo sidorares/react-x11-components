@@ -2246,9 +2246,8 @@ export function installStreams(
     const signal = d.signal;
     if (
       signal !== undefined &&
-      // and one a constructor made, which `aborted` is no field of
       (!(signal instanceof AbortSignalCtor()) ||
-        !apply(hasOwn, signal, ['_aborted']))
+        !apply(hasOwn, signal, ['aborted']))
     ) {
       throw typeError(
         "Failed to read the 'signal' property from 'StreamPipeOptions': Failed to convert value to 'AbortSignal'.",

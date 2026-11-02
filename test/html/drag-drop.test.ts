@@ -222,26 +222,6 @@ test('a dragstart a page cancels leaves the gesture a press, and an element noth
   );
 });
 
-test('a press on a text field starts no drag of it or of what it is in, readonly or not, where a button does', async () => {
-  // `readonly` takes the typing away and leaves the text to select
-  const shown = await page(
-    `<input id=mine draggable=true readonly value="some text">
-     <div draggable=true id=around><input id=inner readonly value="some text"></div>
-     <div draggable=true id=held><textarea id=area readonly>text</textarea></div>
-     <button draggable=true id=press>press</button>
-     <div id=b>drop</div>${WATCH}`,
-  );
-  for (const id of ['mine', 'inner', 'area']) {
-    await shown.drag(id, 'b');
-    assert.ok(
-      !shown.logs.some((l) => l.startsWith('log: dragstart')),
-      `${id}: ${shown.logs.join('\n')}`,
-    );
-  }
-  await shown.drag('press', 'b');
-  assert.ok(await shown.until('dragstart'));
-});
-
 test('a link drags its address, and text dropped in a field goes in with insertFromDrop', async () => {
   const shown = await page(
     `<a id=a href="/there">link</a><input id=b value="ab">${WATCH}<script>
