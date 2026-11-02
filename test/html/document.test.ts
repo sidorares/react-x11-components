@@ -9,11 +9,13 @@ import type { ChildNode, Element } from 'domhandler';
 import {
   HtmlSource,
   appendChild,
+  blocksParser,
   createElement,
   parseFragment,
   rawTextOf,
 } from '../../src/html/dom.js';
 import { parseColor } from '../../src/html/css/values.js';
+import { controlsOf } from '../../src/html/form.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import {
   boxOf,
@@ -651,6 +653,236 @@ test('a <link> and a <base> are in the namespace HTML’s parser reads them in, 
     true,
   );
   assert.strictEqual(preload.facts().resources.length, 0);
+});
+
+test('a name HTML has is in the namespace HTML’s parser reads it in, and the scan takes what is another language’s for no HTML element', () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const factsOf = (markup: string) => {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    return { source, facts: source.facts() };
+  };
+  const marked = (markup: string) =>
+    findById(factsOf(markup).source.document, 't')!.namespace;
+  const NAMES = [
+    'title id="t"',
+    'object id="t" data="o.png"',
+    'input id="t" type="image" src="i.png"',
+    'video id="t" poster="v.png"',
+    'image id="t" src="m.png"',
+  ];
+  for (const name of NAMES) {
+    const tag = `<${name}></${name.split(' ')[0]}>`;
+    assert.strictEqual(marked(`<svg>${tag}</svg>`), SVG, tag);
+    assert.strictEqual(marked(`<svg><g>${tag}</g></svg>`), SVG, tag);
+    assert.strictEqual(marked(`<math>${tag}</math>`), MATHML, tag);
+    assert.strictEqual(marked(`<math><mrow>${tag}</mrow></math>`), MATHML, tag);
+    for (const html of [
+      tag,
+      `<svg><foreignObject>${tag}</foreignObject></svg>`,
+      `<svg><desc>${tag}</desc></svg>`,
+      `<math><mtext>${tag}</mtext></math>`,
+      `<math><annotation-xml encoding="text/html">${tag}</annotation-xml></math>`,
+    ]) {
+      assert.strictEqual(marked(html), undefined, html);
+    }
+  }
+  // SVG has both of these, so what says is MathML's alone
+  for (const tag of ['<style id="t"></style>', '<script id="t"></script>']) {
+    assert.strictEqual(marked(`<svg><g>${tag}</g></svg>`), undefined, tag);
+    assert.strictEqual(marked(`<math>${tag}</math>`), MATHML, tag);
+    assert.strictEqual(marked(`<math><mi>${tag}</mi></math>`), undefined, tag);
+  }
+
+  const titleOf = (markup: string) => factsOf(markup).facts.title;
+  for (const [markup, title] of [
+    ['<svg><title>drawn</title></svg>', null],
+    ['<svg><g><title>drawn</title></g></svg>', null],
+    ['<svg><title>drawn</title></svg><title>real</title>', 'real'],
+    ['<title>real</title><svg><title>drawn</title></svg>', 'real'],
+    ['<svg><desc><title>desc</title></desc></svg>', 'desc'],
+    ['<svg><foreignObject><title>fo</title></foreignObject></svg>', 'fo'],
+    ['<math><title>m</title></math>', null],
+    ['<math><mtext><title>mt</title></mtext></math>', 'mt'],
+    [
+      '<math><annotation-xml encoding="text/html"><title>ax</title></annotation-xml></math>',
+      'ax',
+    ],
+    ['<math><annotation-xml><title>ax</title></annotation-xml></math>', null],
+  ] as const) {
+    assert.strictEqual(titleOf(markup), title, markup);
+  }
+
+  const askedBy = (markup: string) =>
+    factsOf(markup).facts.resources.map((el) => el.name);
+  for (const asked of [
+    '<object data="o.png"></object>',
+    '<input type="image" src="i.png">',
+    '<video poster="v.png"></video>',
+  ]) {
+    const name = /\w+/.exec(asked)![0];
+    assert.deepStrictEqual(askedBy(`<svg>${asked}</svg>`), [], asked);
+    assert.deepStrictEqual(askedBy(`<math>${asked}</math>`), [], asked);
+    assert.deepStrictEqual(
+      askedBy(`<svg><foreignObject>${asked}</foreignObject></svg>`),
+      [name],
+      asked,
+    );
+    assert.deepStrictEqual(askedBy(asked), [name], asked);
+  }
+  // an `<image>` is an `<img>` in HTML, a drawing's reads no `src`, and
+  // MathML has none
+  assert.deepStrictEqual(askedBy('<image src="m.png"></image>'), ['img']);
+  assert.deepStrictEqual(askedBy('<svg><image src="m.png"></image></svg>'), []);
+  assert.deepStrictEqual(
+    askedBy('<math><image src="m.png"></image></math>'),
+    [],
+  );
+
+  const sheetsIn = (markup: string) => factsOf(markup).facts.sheets.length;
+  const scriptsIn = (markup: string) => factsOf(markup).facts.scripts.length;
+  const STYLE = '<style>p{color:red}</style>';
+  const SCRIPT = '<script>ran()</script>';
+  assert.strictEqual(sheetsIn(`<math>${STYLE}</math>`), 0);
+  assert.strictEqual(sheetsIn(`<svg>${STYLE}</svg>`), 1);
+  assert.strictEqual(sheetsIn(`<math><mtext>${STYLE}</mtext></math>`), 1);
+  assert.strictEqual(scriptsIn(`<math>${SCRIPT}</math>`), 0);
+  assert.strictEqual(scriptsIn(`<svg>${SCRIPT}</svg>`), 1);
+  assert.strictEqual(scriptsIn(`<math><mtext>${SCRIPT}</mtext></math>`), 1);
+});
+
+test('an <svg> in a <math> is MathML’s and what it holds with it, and the other way round, where a language’s own point takes it back to HTML', () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const factsOf = (markup: string) => {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    return source.facts();
+  };
+  const TITLE = '<title>x</title>';
+  for (const [markup, title] of [
+    [`<math><svg>${TITLE}</svg></math>`, null],
+    [`<math><svg><foreignObject>${TITLE}</foreignObject></svg></math>`, null],
+    [`<svg><math>${TITLE}</math></svg>`, null],
+    [`<svg><math><mi>${TITLE}</mi></math></svg>`, null],
+    // an `<annotation-xml>` takes an `<svg>` for one
+    [
+      `<math><annotation-xml><svg><foreignObject>${TITLE}</foreignObject></svg></annotation-xml></math>`,
+      'x',
+    ],
+    [
+      `<math><mtext><svg><foreignObject>${TITLE}</foreignObject></svg></mtext></math>`,
+      'x',
+    ],
+    [
+      `<svg><foreignObject><math><mi>${TITLE}</mi></math></foreignObject></svg>`,
+      'x',
+    ],
+  ] as const) {
+    assert.strictEqual(factsOf(markup).title, title, markup);
+  }
+  assert.strictEqual(
+    factsOf('<math><svg><script>ran()</script></svg></math>').scripts.length,
+    0,
+    'a script in it does not run',
+  );
+  assert.strictEqual(
+    factsOf('<math><annotation-xml><svg><script>ran()</script></svg>').scripts
+      .length,
+    1,
+  );
+});
+
+test('the parse waits at no <script> a <math> holds, which no one runs, and at one a drawing holds', () => {
+  const source = new HtmlSource();
+  source.setSource(
+    '<math><script id="m">a()</script></math><svg><script id="s">b()</script></svg>',
+    true,
+  );
+  assert.strictEqual(
+    blocksParser(findById(source.document, 'm')!, true),
+    false,
+  );
+  assert.strictEqual(blocksParser(findById(source.document, 's')!, true), true);
+});
+
+test('what a script makes in a namespace is what it was made as, wherever it is put', () => {
+  const source = new HtmlSource();
+  source.setSource('<svg><g id="g"></g></svg><p id="p"></p>', true);
+  const p = findById(source.document, 'p')!;
+  const made = (name: string, namespace?: string) => {
+    const el = createElement(name, { src: 'x.png', data: 'x.png' });
+    if (namespace !== undefined) el.namespace = namespace;
+    appendChild(p, el);
+    source.touch();
+    return el;
+  };
+  // SVG has a sheet and a script, as HTML has
+  const drawnStyle = made('style', SVG);
+  const drawnScript = made('script', SVG);
+  assert.deepStrictEqual(
+    source.facts().sheets.map((sheet) => sheet.element),
+    [drawnStyle],
+  );
+  assert.deepStrictEqual(source.facts().scripts, [drawnScript]);
+  // and a name is only a name in anything else, a language of none as much
+  made('style', MATHML);
+  made('script', MATHML);
+  made('style', 'urn:other');
+  made('script', '');
+  assert.strictEqual(source.facts().sheets.length, 1);
+  assert.strictEqual(source.facts().scripts.length, 1);
+  made('object', SVG);
+  made('embed', SVG);
+  made('img', MATHML);
+  made('title', SVG);
+  assert.deepStrictEqual(source.facts().resources, []);
+  assert.strictEqual(source.facts().title, null);
+  // an application's own, with no namespace, is HTML's in a drawing too
+  appendChild(findById(source.document, 'g')!, createElement('title'));
+  source.touch();
+  assert.strictEqual(source.facts().title, '');
+});
+
+test('what a drawing or a <math> holds asks onResource for nothing, and what a <foreignObject> holds does', async () => {
+  const asked: string[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<svg width="10" height="10"><object data="a.png"></object>' +
+          '<input type="image" src="b.png"><video poster="c.png"></video>' +
+          '<foreignObject width="10" height="10">' +
+          '<object data="d.png"></object></foreignObject></svg>' +
+          '<math><object data="e.png"></object>' +
+          '<input type="image" src="f.png"><video poster="g.png"></video>' +
+          '<image src="h.png"></image></math>',
+        partial: false,
+        onResource: (r: { url: string }) => {
+          asked.push(r.url);
+          return null;
+        },
+      }),
+    ),
+    { backend: 'mock' },
+  );
+  assert.deepStrictEqual(asked.sort(), ['d.png']);
+});
+
+test('a form submits no <input> a drawing or a <math> holds', () => {
+  // what Chromium, Firefox and WebKit each send
+  const source = new HtmlSource();
+  source.setSource(
+    '<form id="f"><input name="a"><svg><input name="b"></svg>' +
+      '<math><input name="c"></math>' +
+      '<svg><foreignObject><input name="d"></foreignObject></svg></form>',
+    true,
+  );
+  assert.deepStrictEqual(
+    controlsOf(findById(source.document, 'f')!).map((el) => el.attribs.name),
+    ['a', 'd'],
+  );
 });
 
 test('a <link> an application puts in a drawing is a sheet, as a script’s is, and one it parsed in a drawing is not', () => {

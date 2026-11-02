@@ -92,7 +92,7 @@ export function isClassicScriptType(type: string): boolean {
  * import map, a deferred or an `async` script is no reason to wait.
  */
 export function blocksParser(el: Element, scripting: boolean): boolean {
-  if (el.name !== 'script') return false;
+  if (el.name !== 'script' || !isStyleOrScript(el)) return false;
   const { attribs } = el;
   if (!isClassicScriptType(attribs.type ?? 'text/javascript')) return false;
   if (attribs.nomodule !== undefined) return false;
@@ -224,15 +224,25 @@ export function isSvgRoot(el: Element): boolean {
 /**
  * Whether an element says it is no HTML element, which only an element whose
  * name means something in HTML has to. A `<path>` is told by its name and says
- * nothing; a `<link>` or a `<base>` that HTML's parser made in a drawing says
- * so (`namespaceIn`), as whatever a script makes with `createElementNS` does.
- * It stays with the element wherever it is put and in every copy, so this is
- * no question of where an element stands: a `<link>` a script puts in a drawing
- * is a sheet, and one the parser made there, moved to the `<head>`, is not.
+ * nothing; what `MARKED` names, that HTML's parser made in a drawing or a
+ * `<math>`, says so (`namespaceIn`), as whatever a script makes with
+ * `createElementNS` does. It stays with the element wherever it is put and in
+ * every copy, so this is no question of where an element stands: a `<link>` a
+ * script puts in a drawing is a sheet, and one the parser made there, moved to
+ * the `<head>`, is not.
  */
 export function isForeign(el: Element): boolean {
   const { namespace } = el;
   return namespace !== undefined && namespace !== HTML_NAMESPACE;
+}
+
+/**
+ * Whether a `<style>` or a `<script>` is one. SVG has both, so one the parser
+ * made in a drawing says nothing and is one wherever it goes, and one in
+ * MathML or anywhere else is only a name, in all three engines.
+ */
+export function isStyleOrScript(el: Element): boolean {
+  return !isForeign(el) || el.namespace === SVG_NS;
 }
 
 /** What HTML's parser reads as HTML in SVG and in MathML, each in its own
@@ -246,7 +256,7 @@ const HTML_ENCODINGS = new Set(['text/html', 'application/xhtml+xml']);
  * The namespace HTML's parser makes an element in that goes in `parent`, or
  * undefined for HTML's (13.2.6.5): that of the nearest `<svg>`, `<math>` or
  * element that says, unless an integration point of its language stands
- * between. A walk up, which a `<link>`, a `<base>` or an `innerHTML` pays for
+ * between. A walk up, which a name `MARKED` holds or an `innerHTML` pays for
  * as it is parsed, and a scan of the document never does.
  */
 export function namespaceIn(parent: AnyNode | null): string | undefined {
@@ -262,7 +272,7 @@ export function namespaceIn(parent: AnyNode | null): string | undefined {
         HTML_ENCODINGS.has((at.attribs.encoding ?? '').toLowerCase()));
     const namespace =
       at.namespace ??
-      (name === 'svg' ? SVG_NS : name === 'math' ? MATHML_NS : undefined);
+      (name === 'svg' || name === 'math' ? rootNamespace(at, name) : undefined);
     if (namespace === SVG_NS) return svgPoint ? undefined : namespace;
     if (namespace === MATHML_NS) return mathPoint ? undefined : namespace;
     if (namespace !== undefined) {
@@ -272,6 +282,25 @@ export function namespaceIn(parent: AnyNode | null): string | undefined {
     if (BREAKS_OUT.has(name)) return undefined;
   }
   return undefined;
+}
+
+/**
+ * The namespace of an `<svg>` or a `<math>` the parser made, which starts its
+ * language only outside the other's: `<math><svg>` is a MathML element and all
+ * it holds is MathML's, a `<script>` that does not run among it, and
+ * `<svg><math>` the same way round. An `<annotation-xml>` takes an `<svg>` as
+ * one (13.2.6.5).
+ */
+function rootNamespace(el: Element, name: string): string {
+  const around = namespaceIn(el.parent);
+  const own = name === 'svg' ? SVG_NS : MATHML_NS;
+  if (around === undefined) return own;
+  const parent = el.parent;
+  return own === SVG_NS &&
+    isElement(parent) &&
+    parent.name.toLowerCase() === 'annotation-xml'
+    ? own
+    : around;
 }
 
 export function isElement(node: AnyNode | null | undefined): node is Element {
@@ -1955,7 +1984,7 @@ function scanElements(
       trees.push(tree);
     }
     const tag = tagOf(el);
-    if (tag === 'style') {
+    if (tag === 'style' && isStyleOrScript(el)) {
       // A sheet whose `media` can hold nowhere here, `print`, is left
       // out; any other is under it, as though an `@media` block of it
       // were around all of it (HTML 4.2.6, 4.2.4).
@@ -1981,7 +2010,7 @@ function scanElements(
           facts.resources.push(el);
         }
       } else if (isStylePreload(el)) facts.resources.push(el);
-    } else if (tag === 'script') {
+    } else if (tag === 'script' && isStyleOrScript(el)) {
       facts.scripts.push(el);
     } else if (tag === 'img' && choosesSource(el)) {
       facts.pictures.push(el);
@@ -1994,12 +2023,12 @@ function scanElements(
       (tag === 'input' &&
         (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
     ) {
-      if (imageUrlOf(el)) facts.resources.push(el);
+      if (imageUrlOf(el) && !isForeign(el)) facts.resources.push(el);
     } else if (tag === 'svg') {
       if (!inDrawing(el)) facts.drawings.push(el);
     } else if (shadow) {
       continue;
-    } else if (tag === 'title' && facts.title === null) {
+    } else if (tag === 'title' && facts.title === null && !isForeign(el)) {
       facts.title = rawTextOf(el).trim();
     } else if (tag === 'base' && facts.base === null && !isForeign(el)) {
       const href = attr(el, 'href');
@@ -2197,9 +2226,14 @@ class Handler extends DomHandler {
     if (this.marksSheets && (name === 'link' || name === 'style')) {
       PARSER_SHEETS.add(opened);
     }
-    if (name === 'link' || name === 'base') {
+    if (MARKED.has(name)) {
       const namespace = namespaceIn(opened.parent);
-      if (namespace !== undefined) opened.namespace = namespace;
+      if (
+        namespace !== undefined &&
+        !(namespace === SVG_NS && (name === 'style' || name === 'script'))
+      ) {
+        opened.namespace = namespace;
+      }
     }
     if (attribs.customelementregistry !== undefined) {
       NULL_REGISTRY.add(opened);
@@ -2590,6 +2624,25 @@ const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
 const NOT_FOREIGN = 0;
 const IN_SVG = 1;
 const IN_MATHML = 2;
+
+/**
+ * What the parser says of an element it made in a drawing or a `<math>`
+ * (`isForeign`): the names the scan and a page's reads take as HTML's, each of
+ * which HTML's parser makes something else there. An `<img>` and an `<embed>`
+ * end foreign content instead (`BREAKS_OUT`). SVG has a `<style>` and a
+ * `<script>` of its own, so those say so in MathML alone (`isStyleOrScript`).
+ */
+const MARKED = new Set([
+  'base',
+  'image',
+  'input',
+  'link',
+  'object',
+  'script',
+  'style',
+  'title',
+  'video',
+]);
 
 /**
  * The start tags that end foreign content, as all three engines have them

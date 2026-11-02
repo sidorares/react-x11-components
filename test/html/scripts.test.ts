@@ -80,6 +80,7 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
+import { mulberry32 } from '../mulberry32.js';
 import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
@@ -2745,6 +2746,73 @@ test('an EventSource reads its stream, hears each event, and connects again with
     'open:1',
     'after|7|https://example.test',
   ]);
+});
+
+test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker', async () => {
+  // pdf.js's font compiler calls it, in a worker
+  const asks = `
+    var s = Math.sumPrecise, r = [];
+    var at = function (a) { try { return s(a); } catch (e) { return e.name; } };
+    [[], [-0], [-0, -0], [0, -0], [1, 2, 3], [0.1, 0.2], [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+     [1, 1e100, 1, -1e100], [1e308, 1e308, -1e308], [1.7976931348623157e308, 1.7976931348623157e308],
+     [1.7976931348623157e308, Math.pow(2, 970)], [1.7976931348623157e308, Math.pow(2, 970) - Math.pow(2, 917)],
+     [5e-324, 5e-324], [1e-320, -1e-320], [1, 1.1102230246251565e-16], [1, 1.1102230246251568e-16],
+     [Infinity, 1], [-Infinity, 1], [Infinity, -Infinity], [NaN, 1], [Infinity, NaN],
+     [1, '2'], 5, null, undefined].forEach(function (a) {
+      var v = at(a); r.push(Object.is(v, -0) ? '-0' : String(v));
+    });
+    var closed = 0;
+    var numbers = { [Symbol.iterator]: function () { return {
+      next: function () { return { value: 'x', done: false }; },
+      return: function () { closed += 1; return {}; } }; } };
+    at(numbers);
+    r.push(closed, s.length, s.name, Object.keys(Math).indexOf('sumPrecise'));
+    try { new s([]); r.push('made'); } catch (e) { r.push(e.name); }
+    r.push(s(new Set([1, 2, 3])));
+    return r.join(' ');
+  `;
+  const doc = await hosted(
+    '<p id="out"></p><p id="thread"></p><script>' +
+      `document.getElementById("out").textContent = (function () {${asks}})();` +
+      `var src = ${JSON.stringify(`postMessage((function () {${asks}})());`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
+      '</script>',
+  );
+  // a worker takes most of `waitFor`'s two seconds to start on Node 20 and 22
+  await settled(doc, 'thread', (t) => t !== '', 15000);
+  const answers = [
+    '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
+    // half the last place past the largest double is the even way up, and
+    // a hair under it the largest double
+    'Infinity 1.7976931348623157e+308',
+    '1e-323 0 1 1.0000000000000002',
+    'Infinity -Infinity NaN NaN NaN',
+    'TypeError TypeError TypeError TypeError',
+    '1 1 sumPrecise -1 TypeError 6',
+  ].join(' ');
+  assert.strictEqual(doc.text('out'), answers);
+  assert.strictEqual(doc.text('thread'), answers);
+});
+
+test('Math.sumPrecise takes back what it added, at any size', async () => {
+  // a sum rounded along the way loses what is small beside what is large,
+  // and comes back other than it was
+  const random = mulberry32(1214);
+  const numbers = Array.from({ length: 300 }, () => {
+    const exponent = Math.floor(random() * 2000) - 1000;
+    return (random() - 0.5) * 2 ** exponent;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var n = ${JSON.stringify(numbers)}, bad = 0;` +
+      'for (var i = 0; i + 1 < n.length; i += 1) {' +
+      '  if (Math.sumPrecise([n[i], n[i + 1], -n[i]]) !== n[i + 1]) bad += 1;' +
+      '}' +
+      'document.getElementById("out").textContent = bad;' +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '0');
 });
 
 test('a CompressionStream and a DecompressionStream go through zlib, and corrupt input is a TypeError', async () => {
@@ -10069,6 +10137,359 @@ test('a <link> or a <base> is what it was made as: the parser’s in a drawing i
   assert.equal(await answer(`fo.innerHTML='${BASE}'`), based);
 });
 
+/** What a script at the end of `markup` hands back as a JSON array. */
+async function reads(markup: string, run: string): Promise<unknown[]> {
+  const doc = await hosted(
+    `<!DOCTYPE html><html><head></head><body>${markup}<p id="out"></p>` +
+      `<script>var by=function(i){return document.getElementById(i)};` +
+      `var SVG="http://www.w3.org/2000/svg",MATH="http://www.w3.org/1998/Math/MathML",` +
+      `XHTML="http://www.w3.org/1999/xhtml";var ran=0;` +
+      `out=by("out");try{var r=(function(){${run}})();` +
+      `out.textContent=JSON.stringify(r)}catch(e){out.textContent="threw "+e}` +
+      `</script></body></html>`,
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  cleanup();
+  assert.ok(!text.startsWith('threw'), `${run}: ${text}`);
+  return JSON.parse(text) as unknown[];
+}
+
+test('a document’s title is the first of HTML’s, and a drawing’s only where the drawing is the document', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const DRAWN = '<svg id="s"><title id="t">drawn</title></svg>';
+  assert.deepEqual(await reads(DRAWN, 'return [document.title]'), ['']);
+  assert.deepEqual(
+    await reads(`${DRAWN}<title>real</title>`, 'return [document.title]'),
+    ['real'],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.title="x";var t=by("t");return [document.title,t.textContent,' +
+        'document.head.children.length,document.head.firstChild.localName]',
+    ),
+    ['x', 'drawn', 1, 'title'],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><foreignObject><title id="t">a</title></foreignObject></svg>',
+      'document.title="x";return [document.title,by("t").textContent,document.head.children.length]',
+    ),
+    ['x', 'x', 0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><title>m</title></math><math><mtext><title id="t">mt</title></mtext></math>',
+      'return [document.title]',
+    ),
+    ['mt'],
+  );
+  // what it was made as stays with it, wherever it goes and in each copy
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t"));return [document.title,by("t") instanceof HTMLElement]',
+    ),
+    ['', false],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t").cloneNode(true));return [document.title]',
+    ),
+    [''],
+  );
+  // what a script makes, by how it made it
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElement("title");t.textContent="made";by("s").appendChild(t);' +
+        'return [document.title,t.namespaceURI===XHTML,t instanceof HTMLElement]',
+    ),
+    ['made', true, true],
+  );
+  // and a copy of it is HTML's too, the first a page hears of it in a drawing
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'by("s").appendChild(document.createElement("title"));' +
+        'var c=by("s").cloneNode(true).firstChild;' +
+        'return [c.namespaceURI===XHTML,c instanceof HTMLElement]',
+    ),
+    [true, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElementNS(SVG,"title");t.textContent="made";' +
+        'by("s").appendChild(t);return [document.title]',
+    ),
+    [''],
+  );
+  // what `innerHTML` makes, by what it is read in
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg><math id="m"></math>' +
+        '<svg><foreignObject id="f"></foreignObject></svg>',
+      'by("s").innerHTML="<title>s</title>";by("m").innerHTML="<title>m</title>";' +
+        'var was=document.title;by("f").innerHTML="<title>f</title>";' +
+        'return [was,document.title]',
+    ),
+    ['', 'f'],
+  );
+  // a document of SVG's own
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(){return document.implementation.createDocument(SVG,"svg",null)};' +
+        'var d=made(),t=d.createElementNS(SVG,"title");t.textContent="x";d.documentElement.appendChild(t);' +
+        'var deep=made(),g=deep.createElementNS(SVG,"g"),u=deep.createElementNS(SVG,"title");' +
+        'u.textContent="x";g.appendChild(u);deep.documentElement.appendChild(g);' +
+        'var set=made();set.documentElement.appendChild(set.createElementNS(SVG,"g"));set.title="y";' +
+        'var has=set.documentElement.firstChild;' +
+        'return [d.title,deep.title,set.title,has.localName,has.namespaceURI===SVG]',
+    ),
+    ['x', '', 'y', 'title', true],
+  );
+  assert.deepEqual(
+    await reads(
+      '',
+      'var d=document.implementation.createDocument(SVG,"svg",null);' +
+        'var t=d.createElementNS(XHTML,"title");t.textContent="x";' +
+        'd.documentElement.appendChild(t);var was=d.title;' +
+        't=d.createElementNS(SVG,"title");t.textContent="y";' +
+        'd.documentElement.appendChild(t);return [was,d.title]',
+    ),
+    ['', 'y'],
+    'only a title of its own',
+  );
+  // and one of XML's, where a title of no language is none
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(ns){var d=document.implementation.createDocument(null,"r",null),' +
+        't=d.createElementNS(ns,"title");t.textContent="x";d.documentElement.appendChild(t);return d};' +
+        'return [made(XHTML).title,made(null).title]',
+    ),
+    ['x', ''],
+  );
+});
+
+test('a <script> or a <style> a <math> holds is only a name, wherever it goes, and one in SVG’s namespace is one, however it was made', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const SCRIPT = '<math><script id="c">ran=1</script></math>';
+  const blue = 'rgb(0, 0, 255)';
+  const painted = 'getComputedStyle(by("p")).color==="rgb(0, 0, 255)"';
+  const STYLE =
+    '<p id="p">p</p><math><style id="c">#p{color:rgb(0,0,255)}</style></math>';
+  assert.notEqual(blue, '');
+  assert.deepEqual(await reads(SCRIPT, 'return [ran]'), [0]);
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c"));return [ran,by("c") instanceof HTMLElement]',
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c").cloneNode(true));return [ran]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      `${SCRIPT}<script>1</script>`,
+      'return [document.scripts.length,document.getElementsByTagName("script").length]',
+    ),
+    [2, 3],
+    'document.scripts holds HTML’s and getElementsByTagName all of them',
+  );
+  const make = (name: string, ns: string, text: string) =>
+    `var c=document.createElementNS(${ns},"${name}");c.textContent=${JSON.stringify(text)};` +
+    `document.body.appendChild(c);`;
+  assert.deepEqual(
+    await reads('', `${make('script', 'SVG', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'XHTML', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'MATH', 'ran=1')}return [ran]`),
+    [0],
+  );
+  const RULE = '#p{color:rgb(0,0,255)}';
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'SVG', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'MATH', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(STYLE, `return [document.styleSheets.length,${painted}]`),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${STYLE}`,
+      `by("d").appendChild(by("c"));return [document.styleSheets.length,${painted},by("c").sheet===undefined]`,
+    ),
+    [0, false, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style id="c"></style></math>',
+      `by("c").textContent=${JSON.stringify(RULE)};return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style>a{}</style><style id="c">a{}</style></math>' +
+        '<svg><style id="s">#p{color:rgb(0,0,255)}</style></svg>',
+      `return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+    'a drawing’s is a sheet beside them',
+  );
+});
+
+test('what the parser made of an HTML name in a drawing or a <math> is no HTML element to a page', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<svg><object id="o" data="x"></object><input id="i" value="3" type="image">' +
+        '<video id="v" poster="x"></video><image id="g" href="x"></image></svg>',
+      'var o=by("o"),i=by("i"),v=by("v"),g=by("g");return [typeof o.data,typeof i.value,' +
+        'typeof i.form,o.getAttribute("data"),typeof v.play,typeof v.poster,' +
+        'o instanceof SVGElement,i instanceof SVGElement,v instanceof SVGElement,g instanceof SVGElement]',
+    ),
+    [
+      'undefined',
+      'undefined',
+      'undefined',
+      'x',
+      'undefined',
+      'undefined',
+      true,
+      true,
+      true,
+      true,
+    ],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><image id="g" src="x"></image></math>',
+      'var g=by("g");return [g.localName,g.namespaceURI===MATH,g.src===undefined]',
+    ),
+    ['image', true, true],
+  );
+  // what `innerHTML` reads an element's markup as, by what the element is
+  assert.deepEqual(
+    await reads(
+      '<svg><title id="t">a</title></svg>',
+      'var t=by("t");t.innerHTML="<b>x</b>";return [t.children.length,t.textContent]',
+    ),
+    [1, 'x'],
+  );
+  for (const name of ['title', 'style', 'script']) {
+    assert.deepEqual(
+      await reads(
+        `<math><${name} id="t">a</${name}></math>`,
+        'var t=by("t");t.innerHTML="<mi>x</mi>";return [t.children.length]',
+      ),
+      [1],
+      name,
+    );
+  }
+  // and a window names none of them
+  assert.deepEqual(
+    await reads(
+      '<svg><object name="nob"></object></svg><math><object name="mob"></object></math>',
+      'return [typeof window.nob,typeof window.mob]',
+    ),
+    ['undefined', 'undefined'],
+  );
+});
+
+test('a form owns no <input> a drawing or a <math> holds', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><input name="a" value="1">' +
+        '<svg><input name="b" value="2"></svg>' +
+        '<math><input name="c" value="3"></math>' +
+        '<svg><foreignObject><input name="d" value="4"></foreignObject></svg></form>',
+      'var f=by("f");return [f.elements.length,Array.from(new FormData(f).keys()).join(""),' +
+        'f.querySelectorAll("input").length]',
+    ),
+    [2, 'ad', 4],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><input form="f" name="a"></svg><form id="f"></form>',
+      'return [by("f").elements.length]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><svg><input required></svg></form>' +
+        '<form id="g"><input required></form>',
+      'var f=by("f"),g=by("g");return [f.matches(":invalid"),f.checkValidity(),' +
+        'g.matches(":invalid"),g.checkValidity()]',
+    ),
+    [false, true, true, false],
+  );
+});
+
+test('an <object> a drawing or a <math> holds loads nothing, as one a <foreignObject> holds does', async () => {
+  // what Chromium, Firefox and WebKit each ask for
+  const asked: string[] = [];
+  const files = new Proxy<Record<string, string>>(
+    {},
+    {
+      get(_, name) {
+        asked.push(String(name));
+        return `<p>${String(name)}</p>`;
+      },
+    },
+  );
+  await hostedFrames(
+    '<svg><object data="a.html"></object></svg>' +
+      '<math><object data="b.html"></object></math>' +
+      '<svg><foreignObject><object data="c.html"></object></foreignObject></svg>',
+    files,
+  );
+  await waitFor(() => assert.deepEqual(asked, ['c.html']));
+  await settle(30);
+  assert.deepEqual(asked, ['c.html']);
+});
+
+test('a frame’s document reads no sheet from a <style> a <math> holds', async () => {
+  // what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<iframe id="f"></iframe>',
+      'var d=by("f").contentDocument;' +
+        'd.body.innerHTML=\'<math><style>p{color:rgb(0,0,255)}</style></math><p id="p">p</p>\';' +
+        'return [d.defaultView.getComputedStyle(d.getElementById("p")).color==="rgb(0, 0, 255)"]',
+    ),
+    [false],
+  );
+});
+
 test('what a page reads of an element a drawing’s markup made, and what it writes into a drawing', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><svg id="s"><g id="g"><link id="l" rel="stylesheet" href="s.css"></g></svg>' +
@@ -11037,6 +11458,13 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
     true,
   );
   assert.equal(linkTarget(null, drawn.document), '');
+  // and a frame's name is no name of an element that is no frame
+  drawn.setSource(
+    '<svg><object name="side"></object></svg><math><iframe></iframe>' +
+      '<object name="side"></object></math>',
+    true,
+  );
+  assert.equal(navigableFor(drawn.document, 'side'), 'tab');
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {
@@ -14152,12 +14580,13 @@ async function hostedFrames(
   return { text, logs, runner: page, result };
 }
 
-/** What `read` answers once `done` holds of it, or by three seconds. */
+/** What `read` answers once `done` holds of it, or by `ms`. */
 async function until(
   read: () => string,
   done: (text: string) => boolean,
+  ms = 3000,
 ): Promise<string> {
-  const end = Date.now() + 3000;
+  const end = Date.now() + ms;
   let text = read();
   while (!done(text) && Date.now() < end) {
     await settle(20);
@@ -14165,6 +14594,39 @@ async function until(
   }
   return text;
 }
+
+test('Math.sumPrecise is in the page, in a frame’s realm and in a worker, each its realm’s own and each a builtin to read', async () => {
+  // `math.test.ts` has what it answers; this has where it is
+  const read =
+    '[Math.sumPrecise([1e20, 0.1, -1e20]), Object.is(Math.sumPrecise([]), -0),' +
+    ' /native code/.test(String(Math.sumPrecise))].join(",")';
+  const frame =
+    '<!DOCTYPE html><p id="sum">-</p><script>' +
+    `document.getElementById("sum").textContent = ${read} + "," + (Math !== parent.Math);` +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe>' +
+      '<p id="page"></p><p id="worker"></p><script>' +
+      `document.getElementById("page").textContent = ${read};` +
+      `var src = ${JSON.stringify(`postMessage(${read} + "," + (typeof document));`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("worker").textContent = e.data; };' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const held = await until(
+    () =>
+      text('page', 'page') && text('page', 'worker') && text('f', 'sum') !== '-'
+        ? 'in'
+        : '',
+    (t) => t === 'in',
+    15000,
+  );
+  assert.equal(held, 'in', logs.join('\n'));
+  assert.equal(text('page', 'page'), '0.1,true,true');
+  assert.equal(text('f', 'sum'), '0.1,true,true,true');
+  assert.equal(text('page', 'worker'), '0.1,true,true,undefined');
+});
 
 test('a frame runs in a realm of its own, linked to the page: its window, its parent and messages both ways', async () => {
   const frame =

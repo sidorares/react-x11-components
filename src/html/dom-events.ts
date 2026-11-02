@@ -20,6 +20,9 @@ import type {
   MouseEvent as X11MouseEvent,
 } from 'react-x11';
 
+import { ctrlChordLetter, primaryModifierHeld } from 'react-x11/keysyms';
+
+import type { HtmlClipboardData } from './clipboard.js';
 import type { Element } from './dom.js';
 
 /** What can happen to a document that `<Html>` tells its host about. */
@@ -36,6 +39,10 @@ export type HtmlDomEventType =
   | 'contextmenu'
   | 'keydown'
   | 'keyup'
+  // the user's chord for the clipboard, told before it does anything
+  | 'copy'
+  | 'cut'
+  | 'paste'
   | 'input'
   | 'change'
   | 'submit'
@@ -90,6 +97,9 @@ export interface HtmlDomEvent {
   /** For `focusin` the element losing the focus, for `focusout` the one
    *  taking it, where it is the document's. */
   relatedTarget?: Element | null;
+  /** For a `paste`, what was on the clipboard, where the host handed a
+   *  clipboard and it was read first. */
+  clipboard?: HtmlClipboardData;
 }
 
 /** `onDomEvent`: false cancels a cancelable event. */
@@ -132,6 +142,9 @@ const CANCELABLE = new Set<HtmlDomEventType>([
   'contextmenu',
   'keydown',
   'keyup',
+  'copy',
+  'cut',
+  'paste',
   'submit',
   'reset',
 ]);
@@ -162,6 +175,23 @@ export function fireDomEvent(
     cancelable,
   });
   return !(cancelable && answer === false);
+}
+
+/** The clipboard event a key is the chord of, on this backend's primary
+ *  modifier: Ctrl on X11, Cmd on a Mac. */
+export function clipboardChord(
+  ev: X11KeyboardEvent<DrawnNode>,
+  app: Parameters<typeof primaryModifierHeld>[1],
+): 'copy' | 'cut' | 'paste' | null {
+  if (ev.shiftKey || ev.altKey || !primaryModifierHeld(ev, app)) return null;
+  const letter = ctrlChordLetter(ev);
+  return letter === 0x63
+    ? 'copy'
+    : letter === 0x78
+      ? 'cut'
+      : letter === 0x76
+        ? 'paste'
+        : null;
 }
 
 /** A core button's number as the DOM numbers it: X's 1, 2, 3 are the

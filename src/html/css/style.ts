@@ -2654,7 +2654,7 @@ export function applyDeclaration(
 
     // --- box ----------------------------------------------------------------
     case 'display': {
-      const v = value.toLowerCase();
+      const v = oneDisplay(value.toLowerCase());
       if (v === 'inline-block' || v === 'inline-flex') style.display = v;
       // a grid container is a flex container to the box tree — its
       // children are blockified items, and it holds its floats — and its
@@ -5168,6 +5168,45 @@ const DISPLAYS = new Set<string>([
   'table-column-group',
   'contents',
 ]);
+
+/** What a box is inside, which an outer display can stand beside. */
+const INNER_DISPLAYS = new Set(['flow', 'flow-root', 'flex', 'grid', 'table']);
+
+/**
+ * `display`'s words as the one keyword that says the same (CSS Display 3,
+ * 2.1): an outer display and an inner one, in either order, and `list-item`
+ * beside them, so `inline flex` is `inline-flex` and `flow` is `block`.
+ * pdf.js's toolbar is written so, and every group in it was a block. A value
+ * of one keyword is itself, and what is no display comes back to be refused.
+ */
+function oneDisplay(value: string): string {
+  if (value === 'flow') return 'block';
+  if (!/\s/.test(value)) return value;
+  let outer = '';
+  let inner = '';
+  let item = false;
+  for (const word of value.split(/\s+/)) {
+    if (word === 'block' || word === 'inline') {
+      if (outer) return value;
+      outer = word;
+    } else if (word === 'list-item') {
+      if (item) return value;
+      item = true;
+    } else if (INNER_DISPLAYS.has(word)) {
+      if (inner) return value;
+      inner = word;
+    } else return value;
+  }
+  // the marker's box is a block's, and an inline one is not drawn yet
+  if (item) {
+    return outer !== 'inline' && (inner === '' || inner === 'flow')
+      ? 'list-item'
+      : value;
+  }
+  if (!inner || inner === 'flow') return outer;
+  if (outer !== 'inline') return inner;
+  return inner === 'flow-root' ? 'inline-block' : `inline-${inner}`;
+}
 
 /** `text-decoration-line`'s lines. `blink` is one a user agent may leave
  *  undrawn (CSS 2.1 16.3.1), and this one does; `overline` is not drawn

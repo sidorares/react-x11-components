@@ -57,10 +57,13 @@ import { installMediaStreams } from './mediastream.js';
 import { installWebAudio } from './webaudio.js';
 import { installMse } from './mse.js';
 import { installRaster } from './raster.js';
+import { installMath } from './math.js';
 import { installStreams } from './streams.js';
 import { installWebRTC } from './webrtc.js';
 import { installRtcTransports } from './rtc-transports.js';
 import { installWebCrypto } from './webcrypto.js';
+import { installDataTransfer } from './datatransfer.js';
+import { installClipboard } from './clipboard.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
@@ -266,6 +269,7 @@ const INSTALL = `(function () {
     return target;
   };
   (${lockStacks.toString()})(${JSON.stringify(FACADE)});
+  (${installMath.toString()})();
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
@@ -280,11 +284,13 @@ const INSTALL = `(function () {
   const mse = (${installMse.toString()});
   const geometry = (${installGeometry.toString()});
   const webcrypto = (${installWebCrypto.toString()});
+  const transfers = (${installDataTransfer.toString()});
+  const clipboards = (${installClipboard.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, named);
 })()`;
 
 /**

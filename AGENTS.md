@@ -4502,6 +4502,37 @@ closes a way out a DOM binding opens by accident:
   kept apart from the blobs' (`mediaSourceUrls`), since a `fetch` finds
   nothing behind one, and an element goes through the load algorithm for one
   with no network, or a page waits for a `sourceopen` that never comes.
+- **A data store's mode is what keeps what was pasted**
+  (`datatransfer.ts`, a `DataTransfer`'s state in a `WeakMap`). A store is
+  read/write for `copy`, read-only for `paste`, and protected from the moment
+  its event has been dispatched, which `setMode` does; a page that keeps the
+  object reads nothing after. **Anything new that hands a page a store moves it
+  to protected once its event is over.** Its lists are `listOf`'s, which reads
+  each time (`unkept`): no count says a store moved, and read by `treeEpoch`
+  a page's `FileList` stood still through `items.add`.
+- **A clipboard chord is told by `<Html>`, and only a paste is the realm's
+  to finish** (`clipboardKey`, `clipboardEvent`). `copy` and `cut` answer
+  whether core's default goes on, as `keydown` does: core copies a selection
+  and edits a field, and the realm writes only what a listener left, or cuts
+  from an editing host, which core has no hold on. A paste with a clipboard to
+  read cannot be told in time to stop core, so `clipboardKey` stops core's
+  first, the read comes back as `e.clipboard`, and `pasteInto` makes the paste.
+  With no seam there is nothing to read, and core's goes on: **`offered` being
+  undefined is what says so**, so anything new that tells a `paste` passes what
+  it read, or nothing is pasted in a page whose host has a clipboard. A frame's
+  `<Html>` is handed the same read (`_readClipboard`, `frames.ts`). An `<Html>`
+  host's chord is the primary modifier (`clipboardChord`), which is Cmd on a
+  Mac: a chord tested on `ctrlKey` did nothing there, as `stops.ts`'s Ctrl+C
+  did until this.
+- **What a page reads or writes of the clipboard crosses as text**
+  (`clipboard.ts`, the `clipboard` op and `__clipboard`): JSON of `{ t, s }`
+  and `{ t, b }`, bytes as base64, and `__clipboard` is no `HELD_ONCE`, since it
+  carries an answer. The gates are the realm's, as `crypto.subtle`'s splitting
+  is the specification's: activation is the realm's to know
+  (`hasTransientActivation`), and `permission` the host's. **A read that a host
+  has not said yes to is refused, whatever gesture is behind it**: with
+  `scripts.permissions` absent, `request` answers `denied`, so a host that hands
+  a page its clipboard does not hand it the clipboard's contents.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells
@@ -4889,30 +4920,54 @@ engines keep it so wherever a script moves or copies it. One a script makes
 with `createElement` and puts in the same `<g>` is a sheet. So no walk of the
 tree can say, and neither could the element: the parser's and a script's
 carried nothing, and a host's `createElement` is the same. The parser now writes
-`Element.namespace`, which is what `createElementNS` wrote already and what
-`cloneNode` keeps, and the scan, `changesCascade`, `cascadeHeld`, the `sheets`
-op and the two `<base target>` readers ask `isForeign`, one property a `<link>`.
-Chromium's Network panel asks for a `<link>` in a drawing all the same: that is
-its preload scanner, which goes with `doHtmlPreloadScanning=false`, and nothing
-comes of it. Four things are load-bearing.
+`Element.namespace` on the names in `MARKED`, which is what `createElementNS`
+wrote already and what `cloneNode` keeps, and what reads those names asks
+`isForeign`, one property an element: the scan, `changesCascade`,
+`cascadeHeld`, the `sheets` and `title` ops, a frame, a window's names, a form's
+controls and the two `<base target>` readers. Chromium's Network panel asks for
+a `<link>` in a drawing all the same: that is its preload scanner, which goes
+with `doHtmlPreloadScanning=false`, and nothing comes of it. Six things are
+load-bearing.
 
-- **Only `link` and `base` are marked.** All else in a drawing is told by its
-  name, as it was. Marking everything is no small change: `_prepareScript` runs
-  no script with a namespace, `wrap` picks another class, and `sheet` is on the
-  facade's `HTMLStyleElement` alone. **Anything new that reads an HTML element by
-  a name a drawing can hold asks `isForeign`, and the parser marks the name.**
-  `<svg><title>` is still taken for the document's title, `<object>` and `<input
-type=image>` in a drawing are still asked for, and a `<style>` and a `<script>`
-  in a `<math>` still count, where no engine does any of it.
+- **Only what `MARKED` names says.** All else in a drawing is told by its name,
+  as it was. Marking everything is no small change: `wrap` picks another class,
+  and `sheet` is on the facade's `HTMLStyleElement` alone. **Anything new that
+  reads an HTML element by a name a drawing can hold asks `isForeign`, and the
+  parser marks the name.** An `<img>` and an `<embed>` need no mark, since they
+  end the drawing. What is left reads an element as HTML's where no engine does:
+  a form owns a `<button>`, a `<select>` or a `<textarea>` in a drawing, an
+  `<iframe>` there loads, `:disabled` and `:checked` match an `<input>` there and
+  a `<label>` finds one, and `<math><input>` draws a widget where all three
+  draw nothing. `<math><style>` stays `display: none`: Chromium and WebKit draw
+  nothing of it, and Firefox its text.
+- **SVG has a `<style>` and a `<script>` of its own, so those are not foreign**
+  (`isStyleOrScript`). The parser marks them in MathML alone: one in a drawing
+  says nothing, is a sheet or runs, and is an `HTMLStyleElement` to a page. So
+  `document.scripts` lists a drawing's, which no engine does, and it reads `src`
+  where all three read `href`. A `<style>` or a `<script>` is asked
+  `isStyleOrScript` and never `isForeign`, or a sheet a script makes with
+  `createElementNS` is none.
+- **A title is the first of HTML's, wherever it stands**, and a drawing's only
+  where the drawing is the document's element (`titleOf`, HTML 3.1.3): the
+  `title` op and `setTitle` go through it, and a setter writes a drawing's own.
 - **`namespaceIn` goes by HTML's integration points, not by htmlparser2's
   `foreignContext`**, which has one list for both languages and takes any
   `annotation-xml`: `<math><title>` and `<svg><mi>` are no points, and an
-  `annotation-xml` is one only with an HTML `encoding`, in any case.
+  `annotation-xml` is one only with an HTML `encoding`, in any case. And an
+  `<svg>` or a `<math>` starts its language only outside the other's
+  (`rootNamespace`): `<math><svg><script>` runs in no engine, and `<svg><math>`
+  is the same way round. An `<annotation-xml>` takes an `<svg>` as one.
 - **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
   would turn `<svg><p></p><link>`, a sheet in every engine, into none. It goes by
-  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, and a
-  `<font color>` does not, whose attributes come after its name. The list is the
-  engines', and `<table>` is on it.
+  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, nor does
+  an `<image>` there stay one, and a `<font color>` does not, whose attributes
+  come after its name. That stack is most of what is left between the scan and
+  the engines, which differ on 105 of 2,124 generated documents, and on 6 with
+  its context corrected to each element's language. Those are how elements
+  close, which no mark can say: a `</svg>` after an inner drawing broke out
+  closes the outer one, where HTML's stops at the `<div>` between them, and a
+  nested `<a>` runs no adoption agency. The list is the engines', and `<table>`
+  is on it.
 - **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
   `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
   path in the first, and a `clipPath` lost its capital. **Anything new that

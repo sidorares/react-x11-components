@@ -66,11 +66,14 @@ import {
   HtmlNetwork,
   HtmlSessionHistory,
   fakeMediaDevices,
+  memoryClipboard,
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
   FakeMediaDevices,
+  HtmlClipboard,
   HtmlHandle,
+  HtmlPermissionState,
   HtmlProps,
   HtmlScripts,
   ResourceRequest,
@@ -283,6 +286,12 @@ interface Current {
   loaded: boolean;
   /** Its devices, which `set_permission` changes. */
   media: FakeMediaDevices;
+  /** What it may do, which `set_permission` changes: whatever it has not
+   *  been given is `prompt`, and asking grants it, as a test run with
+   *  nobody at the screen takes a browser's prompt as answered. */
+  permissions: Record<string, HtmlPermissionState>;
+  /** The clipboard its page reaches, a fresh one for each test. */
+  clipboard: HtmlClipboard;
 }
 
 let current: Current | null = null;
@@ -558,6 +567,14 @@ function Tab(props: {
       // two peers in one page, over werift
       webRTC: network.webRTC,
       mediaDevices: page.media,
+      clipboard: page.clipboard,
+      permissions: {
+        state: (name) => page.permissions[name] ?? 'prompt',
+        request: (name) => {
+          page.permissions[name] ??= 'granted';
+          return Promise.resolve(page.permissions[name]);
+        },
+      },
       fetch: (request, signal) => {
         const path = request.url.replace(/^[a-z]+:\/\/[^/]+/i, '');
         if (path.startsWith('/__testdriver__/')) {
@@ -723,7 +740,7 @@ async function driver(what: string, body: string | null): Promise<string> {
     };
     const kind = MEDIA_PERMISSIONS[name ?? ''];
     if (
-      !kind ||
+      !name ||
       !current ||
       (state !== 'granted' && state !== 'denied' && state !== 'prompt')
     ) {
@@ -732,7 +749,8 @@ async function driver(what: string, body: string | null): Promise<string> {
         'set_permission() is not implemented by testdriver-vendor.js',
       );
     }
-    current.media.setPermission(kind, state);
+    if (kind) current.media.setPermission(kind, state);
+    current.permissions[name] = state;
     return '{}';
   }
   // the first page of a run starts its scripts while the window it is in
@@ -921,6 +939,8 @@ async function render(
     errors: [],
     loaded: false,
     media: fakeMediaDevices(),
+    permissions: {},
+    clipboard: memoryClipboard(),
   };
   current = page;
   let doc;
@@ -1060,6 +1080,8 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     errors: [],
     loaded: false,
     media: fakeMediaDevices(),
+    permissions: {},
+    clipboard: memoryClipboard(),
   };
   current = page;
   let doc;
