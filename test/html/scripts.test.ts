@@ -6804,6 +6804,122 @@ test(':defined is false for a custom element no definition has upgraded, and res
   assert.equal(doc.view.computedStyle(doc.byId('late'))?.color, 'rgb(1, 2, 3)');
 });
 
+/** A document with a field that holds the focus, what can be pressed beside
+ *  it, and a log of what the page heard, each `mousedown` with what
+ *  `activeElement` said as it ran. What each test asks of it is what
+ *  Chromium, Firefox and WebKit do with this page. */
+const PRESS_PAGE =
+  '<!doctype html><html><head><style>body{margin:0;font:16px sans-serif}' +
+  'textarea,input{display:block;width:200px;height:30px}' +
+  'div{width:300px;height:30px;margin-top:6px}</style></head><body>' +
+  '<textarea id="t">text</textarea><input id="other">' +
+  '<div id="cancelled"></div><div id="plain"></div>' +
+  '<div id="unselectable" style="user-select:none">none</div>' +
+  '<div id="stop" tabindex="0"></div><div id="kept" tabindex="0"></div>' +
+  '<div id="sends"></div><pre id="out"></pre><script>' +
+  'var log = [], t = document.getElementById("t");' +
+  'function say(s) { log.push(s); document.getElementById("out").textContent = log.join(" | "); }' +
+  'function active() { var a = document.activeElement; return a.id || a.nodeName; }' +
+  'function name(n) { return n ? n.id || n.nodeName : "null"; }' +
+  'document.addEventListener("mousedown", function (e) { say("mousedown " + e.target.id + ", active " + active()); }, true);' +
+  'document.addEventListener("focusin", function (e) { say("focusin " + e.target.id + " from " + name(e.relatedTarget)); });' +
+  'document.addEventListener("focusout", function (e) { say("focusout " + e.target.id + " to " + name(e.relatedTarget)); });' +
+  'document.getElementById("cancelled").addEventListener("mousedown", function (e) { e.preventDefault(); });' +
+  'document.getElementById("kept").addEventListener("mousedown", function (e) { e.preventDefault(); });' +
+  'document.getElementById("sends").addEventListener("mousedown", function (e) { e.preventDefault(); document.getElementById("other").focus(); });' +
+  't.focus();</script></body></html>';
+
+/** Press and release in the middle of an element, through the server, so
+ *  that it comes through core's press as a user's does; what the page heard
+ *  from there on. */
+async function pressOn(doc: Hosted, id: string): Promise<string> {
+  await act(() => doc.run('log.length = 0'));
+  const node = doc.view as unknown as DrawnNode;
+  const rect = doc.view.elementRect(doc.byId(id))!;
+  const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+  const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(node, { dx, dy });
+    fireEvent.mouseUp(node, { dx, dy });
+  });
+  await settle();
+  return doc.text('out');
+}
+
+/** Whom `activeElement` names, by id. */
+const activeIn = (doc: Hosted) => doc.handle.activeElement?.attribs.id ?? null;
+
+test('a press a page cancels leaves the focus where it was, which is where it still was as the page heard it, and keys go on landing there', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(activeIn(doc), 't', doc.logs.join('\n'));
+  assert.equal(
+    await pressOn(doc, 'cancelled'),
+    'mousedown cancelled, active t',
+  );
+  assert.equal(activeIn(doc), 't');
+  const node = doc.view as unknown as DrawnNode;
+  await act(async () => fireEvent.char('x', { target: node }));
+  await settle();
+  await act(() => doc.run('say(t.value)'));
+  assert.ok(doc.text('out').endsWith('textx'), doc.text('out'));
+});
+
+test('a press a page cancels on what takes the focus leaves it where it was as well', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(await pressOn(doc, 'kept'), 'mousedown kept, active t');
+  assert.equal(activeIn(doc), 't');
+});
+
+test('a press a page cancels and sends the focus somewhere itself leaves it there, told in the order it went', async () => {
+  // Monaco's press, on a textarea that does not have the focus yet
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'sends'),
+    'mousedown sends, active t | focusout t to other | focusin other from t',
+  );
+  assert.equal(activeIn(doc), 'other');
+});
+
+test('a press nothing cancels moves the focus after its mousedown, which has already been heard by then', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'plain'),
+    'mousedown plain, active t | focusout t to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press on a field moves the focus into it after its mousedown, the one leaving told first', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'other'),
+    'mousedown other, active t | focusout t to other | focusin other from t',
+  );
+  assert.equal(activeIn(doc), 'other');
+});
+
+test('a press on what user-select keeps out of a selection starts none, and moves the focus as any press does', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'unselectable'),
+    'mousedown unselectable, active t | focusout t to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press in the field that has the focus tells nothing of the focus', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(await pressOn(doc, 't'), 'mousedown t, active t');
+  assert.equal(activeIn(doc), 't');
+});
+
 test('a focus a script asks for is told before focus() returns: a control just put in, and what a modal dialog gives the focus back to', async () => {
   const doc = await hosted(
     '<dl><dt id="dt" contenteditable>x</dt><dialog id="d"></dialog></dl><p id="out"></p><script>' +
