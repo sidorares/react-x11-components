@@ -135,6 +135,7 @@ export interface WorkerLike {
   on(event: 'error', listener: (error: Error) => void): void;
   on(event: 'exit', listener: (code: number) => void): void;
   terminate(): Promise<number>;
+  ref(): void;
   unref(): void;
 }
 

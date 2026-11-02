@@ -23,6 +23,7 @@
 import type { Document, Element } from 'domhandler';
 
 import type { HtmlPopup, HtmlPopupFeatures } from '../popups.js';
+import type { HtmlServiceWorkers } from '../service-workers.js';
 import { makeHtmlHandle } from '../index.js';
 import type { FramePost, DomShared } from './host.js';
 import type { RunnerSeams, ScriptRunner } from './runner.js';
@@ -242,6 +243,8 @@ export class Popup implements HtmlPopup {
   initial: ScriptRunner | null = null;
   /** The address the page opened it at. */
   readonly openedAt: string;
+  /** What keeps the service workers of the document that opened it. */
+  readonly serviceKeeper: HtmlServiceWorkers | null;
   private _url: string;
   private _closes = new Set<() => void>();
   private _focuses = new Set<() => void>();
@@ -250,8 +253,14 @@ export class Popup implements HtmlPopup {
   private _idle = idleHandle();
   private _referred = false;
 
-  constructor(ask: PopupAsk, creator: string, id: number) {
+  constructor(
+    ask: PopupAsk,
+    creator: string,
+    id: number,
+    opener: ScriptRunner,
+  ) {
     this.id = id;
+    this.serviceKeeper = opener.serviceKeeper;
     this._url = ask.url;
     this.openedAt = ask.url;
     this.name = ask.name;
@@ -319,8 +328,8 @@ export class Popup implements HtmlPopup {
     };
     // what the document asks before a view is mounted waits for the host,
     // which reads where to go from `url` as it mounts one
-    const navigate: RunnerSeams['navigate'] = (to, how, post) => {
-      if (this._views.length) current().navigate(to, how, post);
+    const navigate: RunnerSeams['navigate'] = (to, how, post, name) => {
+      if (this._views.length) current().navigate(to, how, post, name);
       else this._url = to;
     };
     return new Proxy({} as RunnerSeams, {
@@ -387,7 +396,7 @@ export function windowOps(
     const popups = runner.seams.popups;
     if (!popups) return 0;
     const from = slotOf(runner);
-    const popup = new Popup(ask, runner.host.url, from.group.number());
+    const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
     if (!popups.open(popup)) return 0;
     const slot = new WindowSlot(from.group, from, popup, popup.id);
     slot.name = ask.name;

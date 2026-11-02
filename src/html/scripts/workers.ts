@@ -40,6 +40,7 @@ import type {
   HtmlShownNotification,
 } from '../notifications.js';
 import type { ChannelRelay } from './peers.js';
+import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
@@ -50,7 +51,12 @@ const { MessageChannel, Worker: Thread } =
 
 /** What a page's workers are given by the page they are the workers of. */
 export interface PageWorkersSeams {
-  fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
+  /** A worker's request, and the worker that made it. */
+  fetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+    id?: number,
+  ): Promise<FetchResponse>;
   /** What a worker's WebTransport sessions are carried over: the page's
    *  own seam, read as each session opens. */
   readonly webTransport?: HtmlWebTransport;
@@ -80,6 +86,17 @@ export interface PageWorkersSeams {
     line: number,
     column: number,
   ): void;
+  /** What a worker's `caches` ask, in the store the page's are kept in. */
+  caches?(origin: string, ask: HtmlCacheAsk): Promise<HtmlCacheAnswer>;
+  /** What a service worker's realm said to its registry, and the bytes of a
+   *  body it handed on (`sw-registry.ts`). */
+  service?(id: number, text: string, bytes?: Uint8Array): void;
+  /** A script a worker imports, where it does not come from the network: a
+   *  service worker's, from those it was installed with. */
+  script?(id: number, url: string): Promise<string | null>;
+  /** A worker's thread started, or ended, whoever ended it. */
+  started?(id: number, init: WorkerInit): void;
+  exited?(id: number): void;
 }
 
 /** What the thread is started with. */
@@ -120,6 +137,10 @@ export type FromWorker =
   | { kind: 'abort'; id: number }
   | { kind: 'log'; level: string; text: string }
   | { kind: 'close' }
+  /** What a service worker's realm says to its registry. */
+  | { kind: 'service'; text: string; bytes?: Uint8Array }
+  /** What a worker's `caches` ask. */
+  | { kind: 'caches'; id: number; origin: string; ask: HtmlCacheAsk }
   | TransportAsk
   | SocketAsk
   | ChannelRelay;
@@ -127,6 +148,10 @@ export type FromWorker =
 /** What this side tells the thread. */
 export type ToWorker =
   | { kind: 'message'; data: string }
+  /** What a service worker's registry says to its realm. */
+  | { kind: 'service'; text: string }
+  /** What a worker's `caches` asked came to. */
+  | { kind: 'caches'; id: number; answer: HtmlCacheAnswer }
   | { kind: 'permission'; name: string; state: string }
   /** What became of a worker's notification. */
   | { kind: 'notification'; id: number; told: string }
@@ -233,6 +258,10 @@ export class PageWorkers implements PageWorkersLike {
   constructor(
     private readonly _seams: PageWorkersSeams,
     private readonly _limit: number = MAX_WORKERS,
+    /** Whether a thread keeps the process alive only while something waits
+     *  on it (`hold`): a service worker's stays with no page to answer for
+     *  it, and held the process 30 seconds past its last client. */
+    private readonly _background: boolean = false,
   ) {}
 
   start(init: WorkerInit): number {
@@ -277,30 +306,50 @@ export class PageWorkers implements PageWorkersLike {
       sockets: null,
     };
     this._running.set(id, running);
+    this._seams.started?.(id, init);
     thread.on('message', (m: FromWorker) => this._heard(id, running, m));
     thread.on('error', (error: Error) => {
       this._seams.error(id, String(error?.message ?? error), init.url, 0, 0);
     });
     thread.on('exit', () => {
+      this._seams.exited?.(id);
       this._running.delete(id);
       this._ending.delete(running);
       running.transports?.dispose();
       running.sockets?.dispose();
       port1.close();
     });
+    if (this._background) thread.unref();
     const word = new Int32Array(flag);
     port1.on('message', (m: { url: string }) => {
-      void this._load(m.url).then((source) => {
-        port1.postMessage({ source });
-        Atomics.store(word, 0, 1);
-        Atomics.notify(word, 0);
-      });
+      void (this._seams.script?.(id, m.url) ?? this._load(m.url, id)).then(
+        (source) => {
+          port1.postMessage({ source });
+          Atomics.store(word, 0, 1);
+          Atomics.notify(word, 0);
+        },
+      );
     });
+    if (this._background) port1.unref?.();
     return id;
   }
 
   post(id: number, data: string): void {
     const message: ToWorker = { kind: 'message', data };
+    this._running.get(id)?.thread.postMessage(message);
+  }
+
+  /** Whether something waits on a background thread, which keeps the process
+   *  alive for as long as it does. */
+  hold(id: number, waited: boolean): void {
+    const running = this._running.get(id);
+    if (waited) running?.thread.ref();
+    else running?.thread.unref();
+  }
+
+  /** A service worker's registry to its realm. */
+  service(id: number, text: string): void {
+    const message: ToWorker = { kind: 'service', text };
     this._running.get(id)?.thread.postMessage(message);
   }
 
@@ -456,11 +505,12 @@ export class PageWorkers implements PageWorkersLike {
 
   /** A script's source, through the page's network: null where there is
    *  none to be had. */
-  private async _load(url: string): Promise<string | null> {
+  private async _load(url: string, id: number): Promise<string | null> {
     try {
       const response = await this._seams.fetch(
         { url, method: 'GET', headers: [], body: null },
         new AbortController().signal,
+        id,
       );
       return response.status >= 200 && response.status < 300
         ? response.body
@@ -468,6 +518,26 @@ export class PageWorkers implements PageWorkersLike {
     } catch {
       return null;
     }
+  }
+
+  /** A worker's `caches`, in the page's store. */
+  private _caches(
+    id: number,
+    running: Running,
+    m: Extract<FromWorker, { kind: 'caches' }>,
+  ): void {
+    const told = (answer: HtmlCacheAnswer): void => {
+      if (this._running.get(id) !== running) return;
+      const message: ToWorker = { kind: 'caches', id: m.id, answer };
+      running.thread.postMessage(message);
+    };
+    if (!this._seams.caches) {
+      told({ error: 'SecurityError' });
+      return;
+    }
+    this._seams
+      .caches(m.origin, m.ask)
+      .then(told, () => told({ error: 'UnknownError' }));
   }
 
   /** A body handed to the thread a chunk at a time, until it ends or the
@@ -516,6 +586,12 @@ export class PageWorkers implements PageWorkersLike {
       case 'close':
         this.end(id);
         return;
+      case 'service':
+        this._seams.service?.(id, m.text, m.bytes);
+        return;
+      case 'caches':
+        this._caches(id, running, m);
+        return;
       case 'notification':
         this._notification(id, running, m);
         return;
@@ -563,7 +639,7 @@ export class PageWorkers implements PageWorkersLike {
           running.fetches.delete(m.id);
           running.thread.postMessage(message);
         };
-        this._seams.fetch(m.request, controller.signal).then(
+        this._seams.fetch(m.request, controller.signal, id).then(
           (response) => {
             const { chunks, ...rest } = response;
             if (!chunks) {

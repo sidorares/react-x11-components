@@ -40,6 +40,7 @@ import type {
 } from '../index.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
+import type { HtmlServiceWorkers } from '../service-workers.js';
 import { NO_MEDIA_DEVICES } from '../media-devices.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebGL } from '../webgl.js';
@@ -57,7 +58,7 @@ import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
-import { useScripts } from './hook.js';
+import { throughWorker, useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse, FramePost } from './host.js';
 import type { AbortSignalLike } from './platform.js';
 import type { ScriptsOptions, ViewLink } from './runner.js';
@@ -286,15 +287,18 @@ export interface HtmlScripts {
    */
   webgl?: HtmlWebGL;
   /**
-   * Whether a page may register service workers (`navigator.serviceWorker`,
-   * Service Workers 1), each a worker thread with its lifecycle and its
-   * messages, where the page is a secure context. They intercept none of
-   * the page's requests and keep no `caches`, so a site that registers one
-   * to work offline or to be pushed to finds less than it expects: off by
-   * default, and `navigator.serviceWorker` is then not there at all, which
-   * is what such a site checks for. Default false.
+   * What keeps a page's service workers (`navigator.serviceWorker`, Service
+   * Workers 1), where the page is a secure context: an `HtmlServiceWorkers`,
+   * the one the host's `HtmlNetwork` was made with, so that a worker hears the
+   * navigations of its scope as well as what its pages ask for, or `true` for
+   * one of this `<Html>`'s own, which goes with it. A worker runs in a thread
+   * of its own, answers `fetch` events, reaches its clients and keeps what it
+   * caches in `caches` (`HtmlStorage.caches`). Push, Background Sync and
+   * Periodic Sync are not here, and a page that looks for `PushManager` or
+   * `registration.sync` finds nothing. Default false: a page has no
+   * `navigator.serviceWorker`, which is what a site checks for.
    */
-  serviceWorkers?: boolean;
+  serviceWorkers?: boolean | HtmlServiceWorkers;
   /**
    * What `document.cookie`, `navigator.cookieEnabled` and `cookieStore`
    * read and write: a `CookieJar`, the one a network sends its requests
@@ -692,7 +696,11 @@ export function useScriptedHtml(
   const onResource = useCallback(
     async (request: ResourceRequest) => {
       if (!request.url.startsWith('blob:')) {
-        return latest.current.props.onResource?.(request) ?? null;
+        return throughWorker(
+          scripts,
+          request,
+          latest.current.props.onResource,
+        ) as Promise<ResourceResult | null>;
       }
       // a turn on, since this is asked from inside the page's own ops
       await Promise.resolve();
@@ -703,7 +711,7 @@ export function useScriptedHtml(
         ? ({ kind, bytes } as ResourceResult)
         : null;
     },
-    [scripts.runner],
+    [scripts.runner, scripts.workerResource],
   );
 
   // the application's own callbacks, called beside the engine's

@@ -20,9 +20,16 @@ import type { ReactElement } from 'react';
 import type { ScrollableNode } from 'react-x11';
 
 import { Html, useHtmlHandle } from '../index.js';
-import type { Document, Element, EmbeddedRect, HtmlProps } from '../index.js';
+import type {
+  Document,
+  Element,
+  EmbeddedRect,
+  HtmlProps,
+  ResourceRequest,
+  ResourceResult,
+} from '../index.js';
 import { hx } from '../hx.js';
-import { useScripts } from './hook.js';
+import { throughWorker, useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
@@ -294,6 +301,12 @@ function FrameDocument({
       baseUrl: url,
       ref: handle.ref,
       ...look,
+      onResource: (request: ResourceRequest) =>
+        throughWorker(
+          scripts,
+          request,
+          look.onResource,
+        ) as Promise<ResourceResult | null>,
       onLink: (href, ev) => {
         let link = handle.elementAt(ev.x, ev.y);
         while (link && link.name !== 'a' && link.name !== 'area') {

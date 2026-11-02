@@ -871,9 +871,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   `res.body` reads each chunk as it comes — a model's reply, a stream of
   events. A host that answers whole is answered whole. The page aborting,
   or cancelling the body, calls the iterator's `return()`, and a body
-  nothing will read — a `no-cors` answer, one CORS refuses — is let go the
-  same way. `HtmlNetwork` answers so, and bounds only the wait for the
-  headers.
+  nothing will read — one CORS refuses, a `no-cors` answer on a page that
+  is no secure context — is let go the same way; a secure page's `no-cors`
+  answer is held for it a while, unread, since `caches` and a service
+  worker can hand it on. `HtmlNetwork` answers so, and bounds only the
+  wait for the headers.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
@@ -958,41 +960,41 @@ frame's box for a pane (see [Embedded content](#embedded-content)).
 **What leaves the document is handed back**, and goes nowhere by default,
 since this component navigates nowhere by itself:
 
-| Seam             | Default                   | What it is                                                                                                                                                                   |
-| ---------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                 |
-| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
-| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                      |
-| `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                |
-| `popup`          | none                      | The window this document is shown in, where a page opened it.                                                                                                                |
-| `close`          | nothing                   | A page closed the tab it is in, with `window.close()`.                                                                                                                       |
-| `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
-| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names. |
-| `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                  |
-| `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
-| `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
-| `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
-| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                 |
-| `onTimeout`      | nothing                   | One was.                                                                                                                                                                     |
-| `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
-| `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
-| `canPlayType`    | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                   |
-| `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
-| `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
-| `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
-| `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                     |
-| `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
-| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
-| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
-| `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                           |
-| `notifications`  | none: reaches none        | What a page's `Notification`s reach (`HtmlNotifications`). `useHtmlNotifications()` is the desktop's. See below.                                                             |
-| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.     |
-| `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
-| `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
-| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
-| `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
-| `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
-| `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+| Seam             | Default                   | What it is                                                                                                                                                                       |
+| ---------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                     |
+| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                          |
+| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
+| `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
+| `popup`          | none                      | The window this document is shown in, where a page opened it.                                                                                                                    |
+| `close`          | nothing                   | A page closed the tab it is in, with `window.close()`.                                                                                                                           |
+| `reload`         | nothing                   | `location.reload()`.                                                                                                                                                             |
+| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names.     |
+| `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                      |
+| `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                      |
+| `title`          | nothing                   | `document.title` was set.                                                                                                                                                        |
+| `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                          |
+| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                     |
+| `onTimeout`      | nothing                   | One was.                                                                                                                                                                         |
+| `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither.     |
+| `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                            |
+| `canPlayType`    | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                       |
+| `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                          |
+| `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.                  |
+| `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: an `HtmlServiceWorkers`, the one its `HtmlNetwork` was made with, or `true` for one of its own. A worker answers `fetch`. See below. |
+| `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                         |
+| `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.                |
+| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                     |
+| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                             |
+| `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                               |
+| `notifications`  | none: reaches none        | What a page's `Notification`s reach (`HtmlNotifications`). `useHtmlNotifications()` is the desktop's. See below.                                                                 |
+| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.         |
+| `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                       |
+| `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.            |
+| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage`, IndexedDB and `caches` are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.   |
+| `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                          |
+| `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                                |
+| `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                               |
 
 **A script's time is its own code's.** `timeout` is how long a task — a
 script, a listener, a timer, and the microtasks it queues — may run the
@@ -1305,20 +1307,80 @@ as wptrunner runs a browser with fake devices, and what an application can
 hand a page to show a call working with no camera. A source makes frames
 only while something listens, and its timer keeps no process alive.
 
-**A service worker is a worker that is installed, and nothing more**
-(Service Workers 1), where `serviceWorkers` is on and the page is a secure
-context. `register()` checks the script's and the scope's origin and that
-the scope is under the script's directory, starts the script in a thread
-of its own, and resolves once it has run, with the registration whose
-`installing` it is; its global is a `ServiceWorkerGlobalScope` that hears
-`install` and `activate`, each kept alive by `waitUntil`, and messages
-from its page, whose `source` is the page's `Client`, and what it posts
-there arrives on `navigator.serviceWorker`. `getRegistration()`,
-`getRegistrations()`, `ready` and `unregister()` are the spec's, by scope.
-It intercepts none of the page's requests — there is no `fetch` event and
-no `caches`, and `controller` is null — which is why it is off by
-default: a site that finds `serviceWorker` in `navigator` registers one to
-work offline or to be pushed to, and is better served by finding none.
+**A service worker answers what its pages ask for** (Service Workers 1),
+where a secure page has `serviceWorkers`. A worker outlives the document that
+registered it, so what keeps them does too: one `HtmlServiceWorkers`, handed to
+every document a process shows and to the network that loads them, so that a
+navigation is the worker's to answer before there is a document to ask.
+
+```tsx
+const workers = new HtmlServiceWorkers({ store: profile?.serviceWorkers });
+const network = new HtmlNetwork({ serviceWorkers: workers });
+
+<Html
+  source={source}
+  baseUrl={url}
+  onResource={net.onResource}
+  scripts={{ serviceWorkers: workers, fetch: net.fetch }}
+/>;
+```
+
+`register()`, `update()` and `unregister()` are jobs, one at a time for a
+scope, as the specification queues them; a script is fetched with its
+`Service-Worker: script` header and held to a JavaScript type, a scope under its
+directory or its `Service-Worker-Allowed`, and no redirect; one that changed by
+a byte, or whose imports did, is a new worker. Each worker is a thread of its
+own that hears `install` and `activate`, kept alive by `waitUntil`, and waits
+for the pages of the one before it unless it calls `skipWaiting()`.
+
+Once active it hears a `fetch` event for every navigation its scope holds, and
+for what its clients ask for: a page's `fetch` and `XMLHttpRequest`, its
+scripts and module imports, its stylesheets, fonts and images, a frame's
+document, and what its dedicated and shared workers fetch. `respondWith` takes
+any `Response`, a stream's as it comes, and one that calls nothing falls through
+to the network; `navigationPreload`, `clients.get`, `matchAll`, `claim`,
+`postMessage` and `WindowClient.navigate` are there, and `controller`,
+`controllerchange` and `ready` go by the scope that holds the document. A
+document answered by a worker is at the address that was asked for, whatever
+URL its response came from, which is how an application's shell answers every
+route of it. A hard reload asks past the worker (`network.document`'s
+`serviceWorkers: 'bypass'`), and what it brings is uncontrolled. A worker's
+requests go to the network the host gave it and no worker hears them.
+
+**`caches` is every secure page's and every worker's**, whether or not it has
+service workers, and is what a worker usually answers from: `CacheStorage` and
+`Cache`, with `Vary`, `ignoreSearch`, `ignoreMethod` and `ignoreVary`, and an
+opaque response's body kept and handed back with no script reading it. What it
+keeps is `HtmlStorage.caches`: memory unless a host hands in a store, and the
+profile's in the example browser, where it and the registrations are a file of
+their own, `workers.sqlite`, and a page past 2 GB is told `QuotaExceededError`.
+
+**What keeps them decides how long they last.** In memory, a registration goes
+with the process. With `HtmlProfile.serviceWorkers` a registration, its
+worker's scripts and what it cached survive a restart, so the first navigation
+of the next run starts the worker from what was kept and is answered with the
+network off. A worker with nothing to do gives its thread up after `idleMs`, 30
+seconds by default, and starts again for the next thing it hears, so a site
+should keep nothing in its global, as the specification tells it not to.
+
+**A worker is a process's.** Each tab of the example browser is a process, so a
+site open in two tabs runs its worker twice, over the one store: what either
+keeps in `caches` and IndexedDB the other reads, a registration another tab
+changed is read as the next request asks about the scope, and `clients` lists
+the clients of the process and no others. A site that talks between tabs
+through its worker's `matchAll` finds only its own.
+
+**What is not here.** Push, Background Sync and Periodic Sync: `PushManager`,
+`SyncManager` and `PeriodicSyncManager` are not on `window`, and a registration
+has no `pushManager`, `sync` or `periodicSync`, which is what a site that
+feature-detects them looks for, and the answer it has from a browser with none.
+A `<video>`'s and an `<audio>`'s source is the player's to open, so a worker does
+not hear it. A navigation's redirects are followed by the network, so a worker
+hears the first request of one and not each hop. `clients.openWindow` and `focus`
+need a notification's click behind them, a frame with no document of its own
+(`about:blank`, `srcdoc`) is no client of its own, and a `Cache` a page holds
+reads nothing once `caches.delete()` has taken its name, where a browser keeps it
+until it is let go. A site whose scripts are switched off runs no worker either.
 
 **A page keeps its own session history** (HTML 7.4). `pushState`,
 `replaceState` and a navigation to a fragment are entries of the
