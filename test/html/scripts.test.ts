@@ -11631,6 +11631,50 @@ test('a box a script checked keeps its checkedness when its attribute changes, a
   );
 });
 
+test('a checkedness a script set before an input was a box is the box’s once it is one', async () => {
+  // Vue's `v-model` sets `checked` as it makes a radio, ahead of its `type`,
+  // so every radio on JSFiddle was unticked and its form sent none of them:
+  // the server turned down every Run
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function make(checked, value) {' +
+      '  var el = document.createElement("input");' +
+      '  el.checked = checked;' +
+      '  el.type = "radio"; el.name = "panel"; el.value = value;' +
+      '  return el; }' +
+      'var off = make(false, "0"), on = make(true, "1");' +
+      'r.push(off.checked, on.checked, on.hasAttribute("checked"));' +
+      'var form = document.createElement("form");' +
+      'form.append(off, on); document.body.append(form);' +
+      'r.push(on.checked, Array.from(new FormData(form).entries()).join());' +
+      'r.push(form.querySelector(":checked") === on);' +
+      'var box = document.createElement("input"); box.checked = true;' +
+      'box.setAttribute("type", "checkbox"); r.push(box.checked);' +
+      'var back = document.createElement("input");' +
+      'back.type = "checkbox"; back.checked = true;' +
+      'back.type = "text"; r.push(back.checked);' +
+      'back.type = "radio"; r.push(back.checked);' +
+      'var unset = document.createElement("input");' +
+      'unset.setAttribute("checked", ""); unset.type = "radio";' +
+      'r.push(unset.checked);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'false',
+    'true',
+    'false',
+    'true',
+    'panel,1',
+    'true',
+    'true',
+    'true',
+    'true',
+    'true',
+  ]);
+});
+
 test('a text field has a checkedness of its own, which is never its text', async () => {
   // React sets `checked` on every input it mounts (`initInput`), a text
   // field's included, and facebook.com's login fields showed `false`
