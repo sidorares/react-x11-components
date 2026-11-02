@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.3` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.3` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -857,6 +857,16 @@ it up. **The floor is a running one and moves often** — every move since
   behind the text a line by the twenty-fifth. A core before it reads no
   `lineHeight` on a field and sets it at its font's own, so the floor
   moves with the fix.
+- `^2.56.3` — a press moves the focus after its `mousedown`, and not where
+  a handler cancelled it (react-x11#1029, over #1028). Core moved it first,
+  so a page's `preventDefault()` kept nothing, and a click on Monaco, in
+  vscode.dev and the TS Playground, left the editor unfocused. `<Html>` and
+  `<RichTextEditor>` each cancelled a press for a reason of their own, and
+  stopped, since a press cancelled on this core moves no focus. A core
+  before it tells a page the focus has gone before it hears the press, so
+  the floor moves with the fix. 2.56.2 under it keeps pinned repairs apart
+  (#1022), so a sticky header over a sticky sidebar is no repaint of the
+  window at every scroll, which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
