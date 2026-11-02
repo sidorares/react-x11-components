@@ -46,6 +46,9 @@ import {
   tagOf,
   treeGeneration,
   treesChanged,
+  isRootElement,
+  isXmlDocument,
+  localNameOf,
 } from '../dom.js';
 import {
   BLOCK_AXIS,
@@ -434,6 +437,13 @@ interface PartRule {
 /** The user agent's rules' tree (`IndexedRule.scope`): every one. */
 const UA_SCOPE = -1;
 
+/** The name a rule for an element is filed under: a type selector's,
+ *  lower-cased, which in an XML document leaves the matcher to tell `DIV` from
+ *  `div` (`compoundKey`). */
+function bucketTag(el: Element): string {
+  return el.namespace === undefined ? tagOf(el) : localNameOf(el).toLowerCase();
+}
+
 /** A selector that says something of the edge of a shadow tree. */
 const SCOPING = /:host|::?(?:slotted|part)\(/i;
 
@@ -650,7 +660,7 @@ class RuleIndex {
    * and almost none of them has a rule in it.
    */
   reaches(el: Element): boolean {
-    if (this.universal.length || this.byTag.has(tagOf(el))) return true;
+    if (this.universal.length || this.byTag.has(bucketTag(el))) return true;
     return this.names(el);
   }
 
@@ -759,8 +769,18 @@ type PseudoElement =
   | 'selection'
   | 'placeholder'
   | 'scrollbar'
+  | 'slider-thumb'
+  | 'slider-track'
   | 'backdrop'
   | 'details-content';
+
+/** A widget's part's style (`Cascade._widgetPart`), and what it was worked
+ *  out from. */
+interface KeptPart {
+  from: ComputedStyle;
+  key: string;
+  style: ComputedStyle;
+}
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
  *  `::first-line`, `::marker`, `::selection`, `::placeholder`,
@@ -768,9 +788,19 @@ type PseudoElement =
  *  single-colon spelling of any of its first four. `::-webkit-input-
  *  placeholder` is `::placeholder` under the name WebKit gave it, which
  *  Chrome and Safari still take, and pages written before the standard
- *  name still use. */
+ *  name still use. `::-webkit-slider-thumb` and
+ *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
+ *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+
+/** The pseudo-elements WebKit named, under what their rules are kept by. */
+const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
+  '-webkit-input-placeholder': 'placeholder',
+  '-webkit-scrollbar': 'scrollbar',
+  '-webkit-slider-thumb': 'slider-thumb',
+  '-webkit-slider-runnable-track': 'slider-track',
+};
 
 /**
  * The name `::target-text`'s rules are kept under among the custom
@@ -935,11 +965,7 @@ function splitPseudoElement(rule: StyleRule): {
     };
   }
   return {
-    which: (name === '-webkit-input-placeholder'
-      ? 'placeholder'
-      : name === '-webkit-scrollbar'
-        ? 'scrollbar'
-        : name) as PseudoElement,
+    which: (VENDOR_PSEUDO_ELEMENTS[name] ?? name) as PseudoElement,
     rule: { ...rule, selector },
   };
 }
@@ -1910,6 +1936,9 @@ function compileSelector(
   /** Whether what it answers may be kept: not where the adapter's tree
    *  moves under it, as a `<use>`'s copy's does (`Cascade.shapeStyles`). */
   cache = true,
+  /** Whether names are matched as an XML document has them: with their
+   *  case, and an attribute's value too (Selectors 4, 3.10). */
+  xmlMode = false,
 ): (el: Element) => boolean {
   const keep =
     cache && KEEPS_ANSWERS.test(selector) && !STATE_PSEUDO.test(selector);
@@ -1924,7 +1953,7 @@ function compileSelector(
       (one, own) =>
         compile(one, {
           adapter,
-          xmlMode: false,
+          xmlMode,
           pseudos: own,
           cacheResults: keep,
         } as unknown as Parameters<typeof compile>[1]) as unknown as (
@@ -3986,6 +4015,8 @@ export class Cascade {
     selection: new RuleIndex(true),
     placeholder: new RuleIndex(true),
     scrollbar: new RuleIndex(true),
+    'slider-thumb': new RuleIndex(true),
+    'slider-track': new RuleIndex(true),
     backdrop: new RuleIndex(true),
     'details-content': new RuleIndex(true),
   };
@@ -4384,6 +4415,8 @@ export class Cascade {
   private _root: ComputedStyle | null = null;
   /** The constructor's `documentElement`, which is the root in its turn. */
   private readonly _documentElement: Element | null;
+  /** The constructor's `xml`. */
+  readonly xml: boolean;
   private _mapFamilies: ((list: string) => string) | undefined;
   /** Whether any declaration has a length in `lh` or `rlh`: only then is
    *  the line height settled ahead of the declarations that read it. */
@@ -4464,9 +4497,17 @@ export class Cascade {
      *  (`_noted`), and its indexes where it holds nothing that has gone
      *  (`_takeOver`). */
     before: Cascade | null = null,
+    /** Whether the document is an XML document (`XML_DOCUMENTS`): its names
+     *  are matched with their case, and only its HTML, SVG and MathML are
+     *  what the user agent's sheet says of them. */
+    xml = false,
   ) {
+    this.xml = xml;
     this._sheets = [...sheets, ...shadows.flatMap((tree) => tree.sheets)];
-    const takes = before !== null && before._stillHolds(sheets, shadows);
+    const takes =
+      before !== null &&
+      before.xml === xml &&
+      before._stillHolds(sheets, shadows);
     // What a rule says it tests is the same in every cascade it is in, and
     // reading that is most of what making one costs: a page that links five
     // sheets late read every rule of all of them for each, a second of
@@ -4566,6 +4607,7 @@ export class Cascade {
    *  and reaching what they ask through `_current`, not `this`. */
   private _makeMatchers(documentElement: Element | null): void {
     const now = this._current;
+    const xml = this.xml;
     // css-select has none of the focus's three, and a pseudo-class is
     // handed only the element, so they are closures of the cascade's own
     this._pseudos = {
@@ -4591,9 +4633,12 @@ export class Cascade {
       isTag,
       // a type selector sees `tagOf`'s name — XHTML's `<svg:svg>` is an
       // `svg` — asked only of a name that could be one: this runs for every
-      // type selector tried, and the parser has lowercased the rest
-      getName: (el: Element) =>
-        el.name.endsWith(':svg') ? tagOf(el) : el.name,
+      // type selector tried, and the parser has lowercased the rest. An XML
+      // document's are local names, of any namespace: `svg` with no
+      // `@namespace` is that name in all of them.
+      getName: xml
+        ? localNameOf
+        : (el: Element) => (el.name.endsWith(':svg') ? tagOf(el) : el.name),
       isHovered: (el: Element) => now.cascade._pointer.hovered.has(el),
       isActive: (el: Element) => now.cascade._pointer.active.has(el),
       isVisited: () => false,
@@ -4822,7 +4867,7 @@ export class Cascade {
       this._pseudo['first-letter'].hoverSensitive ||
       this._pseudo['first-line'].hoverSensitive ||
       this._pseudo.marker.hoverSensitive ||
-      this._pseudo.placeholder.hoverSensitive
+      this.widgetPartsFollow('hoverSensitive')
     );
   }
 
@@ -4840,7 +4885,7 @@ export class Cascade {
       this._pseudo['first-letter'].focusSensitive ||
       this._pseudo['first-line'].focusSensitive ||
       this._pseudo.marker.focusSensitive ||
-      this._pseudo.placeholder.focusSensitive
+      this.widgetPartsFollow('focusSensitive')
     );
   }
 
@@ -4887,8 +4932,8 @@ export class Cascade {
    * (`HOVER_PSEUDO_GENERATED`), whose boxes a move restyles where they are
    * as it does an element's; or a `::first-line`'s, a `::first-letter`'s
    * or a `::marker`'s (`HOVER_PSEUDO_OTHER`), which layout styles and a
-   * move cannot. A `::placeholder`'s is none of them: it is no box's
-   * (`placeholderFollows`).
+   * move cannot. A `::placeholder`'s is none of them, nor a range's thumb's
+   * or track's: each is no box's (`widgetPartsFollow`).
    */
   get hoverPseudo(): 0 | 1 | 2 {
     return this._pseudoRules('hoverSensitive');
@@ -5603,7 +5648,13 @@ export class Cascade {
           /:(?:hover|active|focus(?:-visible|-within)?)(?![\w-])/gi,
           ':is(*)',
         );
-        match = compileSelector(stateless, adapter, this._pseudos, false);
+        match = compileSelector(
+          stateless,
+          adapter,
+          this._pseudos,
+          false,
+          this.xml,
+        );
       } catch {
         match = null;
       }
@@ -5640,7 +5691,13 @@ export class Cascade {
    *  it, as a rule it refuses drops out of the cascade. */
   private _compile(selector: string): ((el: Element) => boolean) | null {
     try {
-      return compileSelector(selector, this._adapter, this._pseudos);
+      return compileSelector(
+        selector,
+        this._adapter,
+        this._pseudos,
+        true,
+        this.xml,
+      );
     } catch {
       return null;
     }
@@ -7226,7 +7283,9 @@ export class Cascade {
     }
     let key = `${parentKey}\u0001${inFlexContainer ? 1 : 0}`;
     const tag = tagOf(el);
-    key += `\u0001${tag.length}:${tag}`;
+    // a name in no language this knows is one to a rule all the same
+    const called = tag || `\u0002${el.name}`;
+    key += `\u0001${called.length}:${called}`;
     if (this._index.hoverSensitive) {
       if (this._pointer.hovered.has(el)) key += '\u0001:hover';
       if (this._pointer.active.has(el)) key += '\u0001:active';
@@ -7315,7 +7374,7 @@ export class Cascade {
   private _shareable(el: Element): boolean {
     const index = this._index;
     if (index.ownStyleEverywhere) return false;
-    if (index.ownStyleTags.size && index.ownStyleTags.has(tagOf(el))) {
+    if (index.ownStyleTags.size && index.ownStyleTags.has(bucketTag(el))) {
       return false;
     }
     if (index.ownStyleRoot && !elementParent(el)) return false;
@@ -7891,16 +7950,20 @@ export class Cascade {
   }
 
   /**
-   * Whether a rule for a `::placeholder` tests the pointer
-   * (`hoverSensitive`) or the focus (`focusSensitive`). A move of either
-   * restyles no box for it, where one for any other pseudo-element does
-   * (`hoverPseudo`): what it changes is a widget's, which is told the look
-   * again (`HtmlViewNode._reportControls`). `input:focus::placeholder {
-   * color: transparent }`, which takes the hint away as the field is
-   * typed into, is the one pages write.
+   * Whether a rule for a `::placeholder`, or a range's thumb or track, tests
+   * the pointer (`hoverSensitive`) or the focus (`focusSensitive`). A move of
+   * either restyles no box for it, where one for any other pseudo-element
+   * does (`hoverPseudo`): what it changes is a widget's, which is told the
+   * look again (`HtmlViewNode._reportControls`). `input:focus::placeholder
+   * { color: transparent }`, which takes the hint away as the field is typed
+   * into, is the one pages write.
    */
-  placeholderFollows(state: 'hoverSensitive' | 'focusSensitive'): boolean {
-    return this._pseudo.placeholder[state];
+  widgetPartsFollow(state: 'hoverSensitive' | 'focusSensitive'): boolean {
+    return (
+      this._pseudo.placeholder[state] ||
+      this._pseudo['slider-thumb'][state] ||
+      this._pseudo['slider-track'][state]
+    );
   }
 
   /**
@@ -7915,21 +7978,44 @@ export class Cascade {
    * changes which rules match asks again and comes to another answer.
    */
   placeholderStyle(el: Element, style: ComputedStyle): ComputedStyle | null {
-    const index = this._pseudo.placeholder;
+    return this._widgetPart(el, style, 'placeholder');
+  }
+
+  /**
+   * A range's `::-webkit-slider-thumb` or `::-webkit-slider-runnable-track`
+   * style, as `placeholderStyle` is a field's hint's, or null where no rule
+   * reaches it. Its parent here is the range, where Blink has the track and
+   * a box between them: neither takes anything a page sets on them that the
+   * range would not have handed on.
+   */
+  sliderStyle(
+    el: Element,
+    style: ComputedStyle,
+    part: 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null {
+    return this._widgetPart(el, style, part);
+  }
+
+  private _widgetPart(
+    el: Element,
+    style: ComputedStyle,
+    which: 'placeholder' | 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null {
+    const index = this._pseudo[which];
     const indexed = index.size > 0 && index.reaches(el);
-    const edges = this._scoped && this._scopedPseudos.has('placeholder');
+    const edges = this._scoped && this._scopedPseudos.has(which);
     if (!indexed && !edges) return null;
     const candidates: Candidate[] = [];
     const matched: number[] = [];
     if (indexed) this._matchInto(index, el, candidates, matched);
-    if (edges) this._scopedInto(el, 'placeholder', candidates, matched);
+    if (edges) this._scopedInto(el, which, candidates, matched);
     if (!candidates.length) return null;
     const key = matched.join(',');
-    const kept = this._placeholders.get(el);
+    const kept = this._widgetParts[which].get(el);
     if (kept?.from === style && kept.key === key) return kept.style;
     candidates.sort(byCascade);
     const out = this._computeStyle(el, style, false, candidates);
-    this._placeholders.set(el, { from: style, key, style: out });
+    this._widgetParts[which].set(el, { from: style, key, style: out });
     return out;
   }
 
@@ -7967,11 +8053,12 @@ export class Cascade {
     { from: ComputedStyle; key: string; hidden: { x: boolean; y: boolean } }
   >();
 
-  /** What `placeholderStyle` keeps, by element. */
-  private _placeholders = new WeakMap<
-    Element,
-    { from: ComputedStyle; key: string; style: ComputedStyle }
-  >();
+  /** What `_widgetPart` keeps, by element. */
+  private _widgetParts = {
+    placeholder: new WeakMap<Element, KeptPart>(),
+    'slider-thumb': new WeakMap<Element, KeptPart>(),
+    'slider-track': new WeakMap<Element, KeptPart>(),
+  };
 
   /**
    * An element's `::first-line` style, inheriting from its own, or null
@@ -8648,7 +8735,9 @@ export class Cascade {
     settleContainer(style);
     settleContentVisibility(style);
     // after the containment, which keeps a body's `overflow` its own
-    if (own && el.name.length === 4) propagateOverflow(el, style, parentStyle);
+    if (own && (el.name.length === 4 || isXmlDocument(el.parent))) {
+      propagateOverflow(el, style, parentStyle);
+    }
     // An element in its document's top layer is drawn over all of it
     // (`overlay`), positioned against the initial containing block or the
     // viewport whatever is around it, and out of the flow whatever it was
@@ -8666,7 +8755,10 @@ export class Cascade {
         style.position = 'absolute';
       }
     }
-    blockify(style, inFlexContainer);
+    // and the root element's is block-level, whatever it says (CSS Display 3,
+    // 2.7): an `<html>` has the user agent's sheet to say so, and in an XML
+    // document it is as likely to be a name nothing says anything of
+    blockify(style, inFlexContainer || (own && root));
     // no box of its own, so what it holds is the items of the box around it
     // (`holdsItems`), but in a `-webkit-box`, which blockifies nothing in a
     // browser and is a flex box here alone
@@ -9390,12 +9482,16 @@ export class Cascade {
       for (const name of needs) if (!above.has(name)) return false;
       return true;
     };
+    // the user agent's rules are for what it knows: in an XML document a
+    // `<div>` in no namespace is an inline box like any name nobody knows
+    const unknown = this.xml && tagOf(el) === '';
     const consider = (bucket: IndexedRule[] | undefined): void => {
       if (!bucket) return;
       for (const indexed of bucket) {
         if (scoped && indexed.scope !== scope && indexed.scope !== UA_SCOPE) {
           continue;
         }
+        if (unknown && indexed.rule.order < 0) continue;
         if (live !== undefined && !live(indexed)) continue;
         const rule = indexed.rule;
         if (
@@ -9451,6 +9547,7 @@ export class Cascade {
                 this._copyAdapter,
                 this._pseudos,
                 false,
+                this.xml,
               );
             } catch {
               indexed.inCopy = null;
@@ -9465,6 +9562,8 @@ export class Cascade {
                 rule.selector,
                 this._adapter,
                 this._pseudos,
+                true,
+                this.xml,
               );
             } catch {
               // A selector this matcher does not know (`::-moz-…`, a CSS4
@@ -9499,7 +9598,7 @@ export class Cascade {
         if (name) consider(index.byClass.get(name));
       }
     }
-    consider(index.byTag.get(tagOf(el)));
+    consider(index.byTag.get(bucketTag(el)));
     if (index.byAttr.size) {
       const attribs = el.attribs;
       for (const name in attribs) {
@@ -9757,8 +9856,11 @@ function asRoot(style: ComputedStyle): ComputedStyle {
  *  the flow at the top of every page. */
 const PSEUDOS = {
   ...CONTROL_PSEUDOS,
-  root: (el: Element) =>
-    el.name === 'html' && !(el.parent && isTag(el.parent as Element)),
+  root: (el: Element) => {
+    const parent = el.parent;
+    if (parent && isTag(parent as Element)) return false;
+    return el.name === 'html' || isXmlDocument(parent);
+  },
   // the top of a shadow tree, where `:host > .x`'s `.x` is (`readHost`)
   '-rx-top': (el: Element) => el.parent instanceof ShadowRoot,
   // the host, which nothing in its tree is: a `:host` this reads in a
@@ -10855,22 +10957,6 @@ function closestTable(el: Element): Element | null {
   return null;
 }
 
-/** Whether an element is the document's root, as `:root` has it: an `<html>`
- *  whose parent is the document, or which has none, as the one the cascade
- *  supplies where the markup has none — and not a shadow tree's, whose top is
- *  under its host. Taken for the root, the top of every tree was what a `rem`
- *  styled after it measured from, and GitHub's, sized in `rem`s, measured each
- *  build from the last. So were a fragment's elements and a `<body>` written
- *  alone, each of them the document's child: a `rem` came to the font size of
- *  the one styled before it, and in a restyle in place of the last there is. */
-export function isRootElement(el: Element): boolean {
-  const parent = el.parent;
-  return (
-    el.name === 'html' &&
-    (!parent || (parent.type === 'root' && !(parent instanceof ShadowRoot)))
-  );
-}
-
 /**
  * The `overflow` a document gives the box that scrolls it, on each axis, as
  * a viewport uses it: `visible` is `auto` there, and `clip` is `hidden`
@@ -10933,7 +11019,7 @@ function propagateOverflow(
   parentStyle: ComputedStyle,
 ): void {
   const tag = tagOf(el);
-  if (tag === 'html') {
+  if (tag === 'html' || isRootElement(el)) {
     if (!isRootElement(el)) return;
   } else if (tag === 'body') {
     // the root `<html>`'s, or one written with none, in the `<html>` the

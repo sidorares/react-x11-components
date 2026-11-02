@@ -14,6 +14,7 @@ import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
 import { addKeySecret } from './subtle.js';
+import { judgeScript } from './script-origin.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -314,9 +315,21 @@ const engine = new ScriptEngine(host.bridge, {
         { url, method: 'GET', headers: [], body: null },
         new AbortController().signal,
       );
-      return response.status >= 200 && response.status < 300
-        ? response.body
-        : null;
+      if (response.status < 200 || response.status >= 300) return null;
+      // a module's exports are its importer's to read, so another origin's
+      // has to say so, wherever its address came to
+      const judged = judgeScript(
+        {
+          text: response.body,
+          url: response.url || url,
+          headers: response.headers,
+        },
+        url,
+        host.origin,
+        'anonymous',
+        true,
+      );
+      return judged && judged.text;
     } catch {
       return null;
     }

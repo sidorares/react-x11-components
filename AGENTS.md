@@ -2040,6 +2040,31 @@ shuts a control's picker goes through `pickerChanged`**, or the menu and
 box, which is how `holdsOpen` tells, so they go on the `<Select>` itself
 and never on a box around it.
 
+**A range is core's `<Slider>` with its handlers taken** (`range.ts`). A
+`<Slider>` puts what it is handed over its own, so nothing can be said beside
+them, and HTML's range differs from an application's in every one: a press
+that was cancelled, or is on the thumb, or is of another button, moves nothing,
+a release tells `change` only where the value moved, and keys are Chrome's in
+each writing mode. So the pointer's, the keys' and the focus's handlers are all
+here, and `<Slider>` is the drawing, the accessible node and what an assistive
+technology sets. It runs only across, so one that runs down is composed in
+`range.ts` from the same tokens, and goes when core's can. Four things are
+load-bearing. **What a range holds is `rangeValue`'s**, in `controlValue`, read
+at each read since it moves with `min`, `max` and `step`, and what a read takes
+from it stays taken, as a browser's does as the attribute changes: anything new
+that sets it goes through `rangeValue`. **Anything new that changes what it
+holds with no render calls `ranges.get(el)`**, as a script's `value` does,
+since a value is no rect (`RangeLook.key` is what tells a report of a change to
+its attributes, and a reset is a render). A range is in `CHECKABLE`, so no
+`change` comes of a blur, and it is always `bare`, in its content box, the
+document drawing the rest, with a `hitSlop` out to its border box, which is
+where Chrome takes a press. And **what a page draws of one was read off
+Chromium and not off its sheet** (`rangeLook`, `ownThickness`): a thumb has no
+`appearance: inherit` to go by, which the first cut took from the sheet and which
+left a range at `appearance: none` with no thumb, and a range at `appearance:
+auto` draws no border or background of the page's (`themed` in `paint.ts`). Put
+a page beside Chromium's before changing either.
+
 **A `display: contents` element's `::before` and `::after` are items of the
 flex or grid box around it**, as its children are. A pseudo-element is styled
 from no more than its element's style, whose `display` says `contents`, so the
@@ -4505,6 +4530,25 @@ closes a way out a DOM binding opens by accident:
   another realm is an op on its number, refused on the host**, and a window
   moving between origins links or unlinks in `adopt`, so nothing keeps a global
   past it.
+- **What a resource of another origin hands a page is judged on the host, by
+  where it landed.** `script-origin.ts` says whether a script runs and whether
+  its errors are muted, and `fetch-hops.ts` what each hop of a page's request
+  owes. Three things are load-bearing. **Anything new that reads a response for
+  a page is told its final URL and its headers**: a redirect from the page's own
+  origin to another looks like the page's own otherwise, which is what
+  `ResourceResult`'s `url` is for. **What a muted script threw never enters the
+  realm** (`_mutedFault`, which reads a timeout off it with `ownData`): handed to
+  the facade to report, it passes through what a page replaced. And **what the
+  window's named properties run for a name is out of a page's hands**: every
+  name a script looks up that the window has not got reaches them, and a CSV is
+  all such names. So they use builtins taken as the realm starts, their handler
+  has no prototype, they answer nothing while a muted script runs
+  (`namesUnheard`), and a `Proxy` a page puts on the window's chain keeps such a
+  script from running (`namesWatched`), which is `ownData`'s shape again: told
+  from anything else without asking it. Anything new on that path keeps to all
+  of these. A page's request is made a hop at a time in `_fetchFor`, so **anything
+  new a request owes at a redirect goes in that loop**, and a preflight in
+  `_preflight`, whose cache is by the origin asked in.
 - **A sandbox is flags on the host, by the document** (`sandbox.ts`,
   `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
   goes by a document's origin holds. Six things are load-bearing. **`'null'` is
@@ -5505,6 +5549,66 @@ table stays in it; `<template>`'s modes past the first tag it holds and
 `colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
 quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
 which ends no written `<head>`.
+
+**A document served as XML is read by XML's rules, and being one is a fact
+about the document** (`contentType`, `HtmlSource.setXml`, `XML_DOCUMENTS`,
+`xml-prolog.ts`). `xmlTree` is the one XML reader in the package, for a top-level
+document, a frame's and `DOMParser`'s alike, and it is in `dom.ts` because a
+document with scripts off reads XML too. There is no `<tbody>`, no implied
+`<body>` and no `<head>` a document did not write, so what is true of the HTML
+parser's trees is not true here. Nine things are load-bearing.
+
+- **`tagOf` answers `''` for an element in no language this draws**, and an
+  element's local name, under any prefix, in HTML's, SVG's and MathML's. A
+  `<div>` in no namespace is no `<div>`, and nothing that goes by `tagOf` takes it
+  for one. So **anything new that asks what an element is asks `tagOf`, not
+  `el.name`**, which holds a prefix, and a rule's bucket asks `bucketTag`, since
+  a rule for a name reaches an element `tagOf` knows nothing of.
+- **What is the root is `isRootElement`, and never a name.** An XML document's
+  root is whatever it says, an `<svg>` or a `<feed>`. A check for `html` at the top
+  of a tree is a check for that, and it has to ask `isRootElement` or a drawing's
+  `rem`, canvas, overflow and stacking are nobody's. It asks `isXmlDocument`
+  only where the parent is the document, so it costs a box a string compare.
+- **The user agent's rules are for what it knows** (`_matchInto`'s `unknown`). An
+  author's `div {}` reaches a `<div>` in no namespace, as in a browser with no
+  `@namespace`, and the user agent's does not. A sharing key tells such a name
+  from a known one (`\u0002`).
+- **A selector's case is the document's.** `Cascade`'s `xml` compiles every
+  selector with `xmlMode`, whose `getName` is `localNameOf`, and a page's own
+  queries do the same (`XML_QUERY`, kept apart in `_xmlQueries`). Anything new
+  that compiles a selector for a document passes it through, or `DIV` is a `<div>`.
+- **Read whole, and read again where a script blocks** (`setXml`). What is wrong
+  with an XML document decides what it is, and that may be its last byte, so
+  nothing of one is read until `partial` is false, which is its default. Where a
+  host runs scripts and one blocks the parser, the text is parsed a second time,
+  and the parser pauses itself at each script (`XmlHandler.stops`,
+  `_readOnXml`), self-closed or not: `<script src="a.js"/>` has no end tag for
+  `pieceEnd` to cut at. What it makes is recorded as a stream's chunk is, so
+  it restyles what it reaches.
+- **A script is `isStyleOrScript`'s and its source `scriptUrlOf`'s.** XHTML's and
+  SVG's run, by `src` and by `href` or `xlink:href`. Anything new that hands over a
+  script reads those.
+- **A document that is not well-formed is one element**, `parserError()`, and runs
+  nothing: a script before the mistake does not run either, where a browser has
+  run it by then. A page in XML is rare and a half-run one is worse, and it is what
+  a frame's already did.
+- **`wellFormedSyntax` walks tags, and is the first thing a real document meets.**
+  An attribute's value is no name: `ATTRIBUTE` scanned one for `name =`, and a
+  CSS 2.1 test's `<meta content="… paragraph = 50px … paragraph = 50px …">` read as
+  a repeated attribute, which took the page. Anything new it refuses is tried on
+  the CSS 2.1 suite first, since a wrong refusal is an empty document.
+- **A drawing at the top is drawn in its window.** `svg:root` fills it, and
+  `drawingCut` cuts it to its box, since the overflow went to the viewport
+  (`propagateOverflow`). `SvgView` takes the viewport from `naturalWidth`, 300 by
+  150 where a root says nothing, and what a clip or a mask draws through is
+  cut to that, so `draw` sets it to the box: that is an old bug inline, and passed
+  a reftest only while both pages stopped at 150.
+
+**`<?xml-stylesheet?>` is a `<link>`** (`instructionSheets`): one element a
+processing instruction, in no children and with the document for its parent, so
+`compareDocumentPosition` has it before everything, and all that holds a script
+for a parser's sheet holds it for this one. `document.styleSheets` lists it, and
+its `ownerNode` is that `<link>` and not the instruction.
 
 **A `</body>` and an `</html>` close nothing, and say so** (`Handler.ended`):
 what comes after them goes back in the body, and a comment after one goes

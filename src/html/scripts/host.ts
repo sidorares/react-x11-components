@@ -22,21 +22,17 @@ import * as encodingCodecs from '../encoding-codecs.js';
 import type { LegacyDecoder } from '../encoding-codecs.js';
 import {
   adoptEncodings,
-  bomEncoding,
   decodeInEncoding,
   encodingOf,
   outputEncoding,
   sniffEncoding,
-  xmlEncoding,
+  sniffXmlEncoding,
 } from '../encoding.js';
 import * as DomUtils from 'domutils';
-import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
 import {
-  CDATA,
   Comment,
   Document,
-  DomHandler,
   Element,
   ProcessingInstruction,
   Text,
@@ -89,7 +85,6 @@ import {
   setPaused,
   markCustomized,
   setCustomStates,
-  markParsedRegistry,
   parsedNullRegistries,
   parsedWithNullRegistry,
   setModal,
@@ -102,6 +97,16 @@ import {
   treesChanged,
   isClassicScriptType,
   namespaceIn,
+  CDATA_SECTIONS,
+  XML_DOCUMENTS,
+  anyXmlDocuments,
+  instructionSheets,
+  isXmlType,
+  localNameOf,
+  markXmlDocument,
+  parserError,
+  tagOf,
+  xmlTree,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -154,7 +159,7 @@ import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
-import { readProlog, serializeXml } from './xml.js';
+import { serializeXml } from './xml.js';
 import {
   XAttr,
   compileXPath,
@@ -191,6 +196,17 @@ import { linkOpener, navigableFor } from './target.js';
 import { parseWindowFeatures } from '../popups.js';
 import type { HtmlPopup, HtmlPopups } from '../popups.js';
 import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
+import {
+  CorsError,
+  agentHeaders,
+  corsCheck,
+  forbiddenMethod,
+  headerOf,
+  nextHop,
+  redirectOf,
+  redirectTainted,
+} from './fetch-hops.js';
+import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
   SB_DOWNLOADS,
@@ -342,8 +358,18 @@ export interface FetchRequest {
    * held to, and its address the `Referer`. Absent, the page's.
    */
   client?: string;
+  /**
+   * Whether a redirect is followed, or answered as it is so that the host
+   * can take the next hop itself (`fetch-hops.ts`), which is how a page's
+   * request gets the CORS, the preflight and the credentials each hop owes.
+   * Absent, `follow`. A network that follows all the same says `redirected`,
+   * and what it answers is held to where it landed. The host asks for
+   * `manual` alone: `error` is a page's, kept for a worker's `fetch` event.
+   */
+  redirect?: 'follow' | 'error' | 'manual';
   /** Whether its `Origin` is `null`, whatever its client's is: a sandboxed
-   *  document's, whose address says nothing of who it is. */
+   *  document's, whose address says nothing of who it is, or one a redirect
+   *  through another origin tainted (`redirectTainted`). */
   opaqueOrigin?: boolean;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
@@ -434,7 +460,7 @@ export interface FetchResponse {
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
    *  origin's, `cors` another's that let it, `opaque` none of it, and
    *  `default` what a service worker made of nothing. */
-  type?: 'basic' | 'cors' | 'opaque' | 'default';
+  type?: 'basic' | 'cors' | 'opaque' | 'opaqueredirect' | 'default';
   /** The number an opaque response's body is held by here, which a realm
    *  hands back to keep it or to answer with it. */
   held?: number;
@@ -853,6 +879,18 @@ const OPAQUE_HEAD = {
   redirected: false,
 };
 
+/** All a page is told of a redirect it asked to see (Fetch 2.2.6, "an opaque-
+ *  redirect filtered response"): that there was one. */
+const OPAQUE_REDIRECT: FetchResponse = {
+  url: '',
+  status: 0,
+  statusText: '',
+  redirected: false,
+  headers: [],
+  body: '',
+  type: 'opaqueredirect',
+};
+
 /** How many opaque responses a document holds at once (`_opaques`). */
 const OPAQUE_HELD = 64;
 
@@ -1056,6 +1094,13 @@ const QUERY_ADAPTER = {
       : el.name.toLowerCase(),
 };
 
+/** What a query in an XML document differs by: names have their case, and
+ *  a type selector is of a local name, under any prefix. */
+const XML_QUERY = {
+  xmlMode: true,
+  adapter: { ...QUERY_ADAPTER, getName: localNameOf },
+};
+
 /** Whether an element the parser made stands in a drawing: the parser keeps
  *  a namespace only for what an HTML document reads otherwise, so what is
  *  around it says whose it is. A `<script>` is HTML's here, which is where
@@ -1109,20 +1154,6 @@ function titleOf(doc: ParentNode): Element | null {
 }
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
-function parserError(): Element {
-  const error = new Element('parsererror', {
-    xmlns: 'http://www.mozilla.org/newlayout/xml/parsererror.xml',
-  });
-  error.namespace = 'http://www.mozilla.org/newlayout/xml/parsererror.xml';
-  DomUtils.appendChild(error, new Text('XML Parsing Error: not well-formed'));
-  return error;
-}
-
-/** The texts a CDATA section made: a text to everything but a serializer. */
-const CDATA_SECTIONS = new WeakSet<AnyNode>();
-
-/** The content types a frame reads as XML (XML Media Types, 3). */
-const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
 /** A script element's types that are JavaScript, the empty one among them
  *  (HTML 4.12.1). */
 const JS_TYPES =
@@ -1140,13 +1171,6 @@ function hasScripts(doc: Document): boolean {
         (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
     doc.children,
   );
-}
-
-/** What `_xmlTree` reads of htmlparser2's parser beyond its typed surface:
- *  the names open, top first, and a tag's name. */
-interface XmlParserInternals {
-  readonly stack: string[];
-  getSlice(start: number, end: number): string;
 }
 
 /** The elements HTML's parser keeps in the head while no body content has
@@ -1251,10 +1275,6 @@ const escapeText = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 const escapeAttribute = (text: string): string =>
   escapeText(text).replace(/"/g, '&quot;');
-
-/** A request CORS refused, which the page sees as a failed fetch and the
- *  console tells why. */
-class CorsError extends Error {}
 
 /** A response's body, where it arrives a chunk at a time, let go unread: a
  *  `no-cors` answer's, one CORS refused, one the page no longer wants. */
@@ -1381,13 +1401,6 @@ function unsafeRequestHeaders(headers: [string, string][]): string[] {
   return [...names].sort();
 }
 
-/** A header's value, its last where there are several. */
-function headerOf(headers: [string, string][], name: string): string | null {
-  let value: string | null = null;
-  for (const [k, v] of headers) if (k.toLowerCase() === name) value = v;
-  return value;
-}
-
 /** A comma-separated list of tokens, lower-cased unless `fold` is false. */
 function listOf(value: string | null, fold = true): Set<string> {
   const out = new Set<string>();
@@ -1396,46 +1409,6 @@ function listOf(value: string | null, fold = true): Set<string> {
     if (token) out.add(fold ? token.toLowerCase() : token);
   }
   return out;
-}
-
-/** The CORS check (Fetch 4.10): whether an answer lets `page` read it.
- *  Throws why it does not. */
-function corsCheck(
-  headers: [string, string][],
-  credentials: string,
-  page: string,
-): void {
-  const allow = headerOf(headers, 'access-control-allow-origin');
-  if (allow === null) {
-    throw new CorsError(
-      "No 'Access-Control-Allow-Origin' header is present on the requested resource.",
-    );
-  }
-  if (allow.includes(',')) {
-    throw new CorsError(
-      `The 'Access-Control-Allow-Origin' header contains multiple values '${allow}', but only one is allowed.`,
-    );
-  }
-  const include = credentials === 'include';
-  if (allow === '*' && !include) return;
-  if (allow === '*') {
-    throw new CorsError(
-      "The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.",
-    );
-  }
-  if (allow !== page) {
-    throw new CorsError(
-      `The 'Access-Control-Allow-Origin' header has a value '${allow}' that is not equal to the supplied origin.`,
-    );
-  }
-  if (include) {
-    const credentialed = headerOf(headers, 'access-control-allow-credentials');
-    if (credentialed !== 'true') {
-      throw new CorsError(
-        `The value of the 'Access-Control-Allow-Credentials' header in the response is '${credentialed ?? ''}' which must be 'true' when the request's credentials mode is 'include'.`,
-      );
-    }
-  }
 }
 
 /** A declaration block as CSSOM serializes one (6.7.2), which is what a
@@ -1799,7 +1772,11 @@ export interface Entries {
   /** A worker's imported script, run in the page from inside its call
    *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
    *  `__thrown`. */
-  runNested?(code: string, url: string): 'ran' | 'threw' | null;
+  runNested?(
+    code: string,
+    url: string,
+    muted?: boolean,
+  ): 'ran' | 'threw' | null;
   /** A page's classic script, run as a script of its own with the element
    *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
    *  it ran to its end. */
@@ -1847,7 +1824,7 @@ export class DomShared {
   readonly sheetsChanged = new Set<Element>();
   sheetVersion = 0;
   readonly documents = new WeakSet<Document>();
-  readonly xml = new WeakMap<Document, string>();
+  readonly xml = XML_DOCUMENTS;
   readonly owners = new WeakMap<AnyNode, Document>();
   readonly doctypes = new WeakMap<AnyNode, [string, string, string]>();
   /** Changes made to documents nothing draws, counted (`_frameStyle`). */
@@ -2858,7 +2835,7 @@ export class DomHost {
     const type = this._xml.get(node as Document);
     if (this._isDocument(node)) {
       this._documents.add(clone as unknown as Document);
-      if (type) this._xml.set(clone as unknown as Document, type);
+      if (type) markXmlDocument(clone as unknown as Document, type);
     }
     return clone;
   }
@@ -3271,7 +3248,7 @@ export class DomHost {
       case 'newXml': {
         const doc = new Document([]);
         this._documents.add(doc);
-        this._xml.set(doc, text(a) || 'application/xml');
+        markXmlDocument(doc, text(a) || 'application/xml');
         return this.idOf(doc);
       }
       case 'insert':
@@ -3877,6 +3854,18 @@ export class DomHost {
       // --- markup
       case 'html': {
         const node = this._node(a);
+        // in an XML document it is XML (DOM Parsing 2.2)
+        if (anyXmlDocuments() && this._xml.has(this._ownerOf(node))) {
+          const writer = {
+            doctype: (n: AnyNode) => this._doctypeOf(n),
+            cdata: (n: Text) => CDATA_SECTIONS.has(n),
+          };
+          return b
+            ? serializeXml(node, writer)
+            : (node as ParentNode).children
+                .map((kid) => serializeXml(kid, writer))
+                .join('');
+        }
         // an attribute with no value written `=""`, as HTML's fragment
         // serialization writes every one (HTML 8.5.2)
         return b
@@ -4041,12 +4030,12 @@ export class DomHost {
         return namespaceFor(this._node(a), text(b));
       // XML, parsed and serialized, and XPath over the tree
       case 'parseXml': {
-        const xml = this._xmlTree(text(a));
+        const xml = xmlTree(text(a));
         const kids = xml.wellFormed ? xml.kids : [parserError()];
         const doc = new Document(kids);
         for (const kid of kids) kid.parent = doc;
         this._documents.add(doc);
-        this._xml.set(doc, text(b));
+        markXmlDocument(doc, text(b));
         return this.idOf(doc);
       }
       case 'serializeXml':
@@ -4204,9 +4193,17 @@ export class DomHost {
         return null;
       case 'importScript': {
         // fetched before this returns, and run as a script of its own
-        const code = this.workerScope?.importScript(text(a)) ?? null;
+        const url = text(a);
+        const code = this.workerScope?.importScript(url) ?? null;
         if (code === null) return null;
-        return this.entries?.runNested?.(code, text(a)) ?? null;
+        const own = /^(?:data|blob):/i.test(url);
+        return (
+          this.entries?.runNested?.(
+            code,
+            url,
+            !own && originOf(url) !== this._origin(),
+          ) ?? null
+        );
       }
       case 'workerErrorOut': {
         const [message, filename, line, column] = JSON.parse(text(a));
@@ -4425,16 +4422,20 @@ export class DomHost {
         return JSON.stringify(cssRulesOf(text(a)));
       // the document's sheets, in tree order: its `<style>`s and the
       // `<link>`s that are a stylesheet
-      case 'sheets':
-        return (
-          DomUtils.findAll(
+      case 'sheets': {
+        const root = a ? (this._node(a) as ParentNode) : this.document;
+        return [
+          ...(this._xml.has(root as Document)
+            ? instructionSheets(root as Document)
+            : []),
+          ...DomUtils.findAll(
             (el) =>
-              (el.name === 'style' && isStyleOrScript(el)) ||
-              (el.name === 'link' &&
+              (tagOf(el) === 'style' && isStyleOrScript(el)) ||
+              (tagOf(el) === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
                 !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
-            (a ? (this._node(a) as ParentNode) : this.document).children,
+            root.children,
           )
             // what a `<template>` holds is no part of the document
             .filter((el) => {
@@ -4443,10 +4444,11 @@ export class DomHost {
                   return false;
               }
               return true;
-            })
-            .map((el) => this.idOf(el))
-            .join(',')
-        );
+            }),
+        ]
+          .map((el) => this.idOf(el))
+          .join(',');
+      }
 
       // --- frames
       // whether a frame's document is its initial `about:blank`: one a
@@ -5401,6 +5403,7 @@ export class DomHost {
         return null;
       case 'image': {
         const el = this._node(a) as Element;
+        if (b === 'clean') return this._imageClean(el);
         const state = this._imageDrawn(el)?.imageState?.(el);
         // nothing draws it: as it would be with no image to wait for
         if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
@@ -6467,14 +6470,20 @@ export class DomHost {
    */
   private _query(selector: string, scope: AnyNode): (el: Element) => boolean {
     const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
-    const kept = keeps ? this._queries.get(selector) : undefined;
+    const xml = anyXmlDocuments() && this._xml.has(this._ownerOf(scope));
+    const queries = xml ? this._xmlQueries : this._queries;
+    const kept = keeps ? queries.get(selector) : undefined;
     if (kept) return kept;
     // an argument css-select takes as any text is the parser's to refuse, as
     // a sheet's is
     if (TAKES_AN_IDENT.test(selector) && !selectorList(selector)) {
       throw new Error('a pseudo-class given what it does not take');
     }
-    const options = { ...this._queryOptions(), cacheResults: !keeps };
+    const options = {
+      ...this._queryOptions(),
+      ...(xml && XML_QUERY),
+      cacheResults: !keeps,
+    };
     const query = compileHoisted(
       selector,
       options.pseudos,
@@ -6486,12 +6495,13 @@ export class DomHost {
         ) as unknown as (el: Element) => boolean,
     );
     if (keeps) {
-      if (this._queries.size >= KEPT_QUERIES) this._queries.clear();
-      this._queries.set(selector, query);
+      if (queries.size >= KEPT_QUERIES) queries.clear();
+      queries.set(selector, query);
     }
     return query;
   }
   private readonly _queries = new Map<string, (el: Element) => boolean>();
+  private readonly _xmlQueries = new Map<string, (el: Element) => boolean>();
 
   /** Whether a node is in a `<template>`'s content. */
   private _inTemplate(node: AnyNode): boolean {
@@ -7117,8 +7127,8 @@ export class DomHost {
         const { text, encoding } = this._frameText(response, type, frame);
         if (type === 'text/html') {
           doc = this._documentOf(text, true, !!this._seams.drawsFrames);
-        } else if (XML_TYPES.test(type)) {
-          const xml = this._xmlTree(text);
+        } else if (isXmlType(type)) {
+          const xml = xmlTree(text);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
           // byte UTF-8 has no character for
@@ -7126,7 +7136,7 @@ export class DomHost {
           doc = new Document(kids);
           for (const kid of kids) kid.parent = doc;
           this._documents.add(doc);
-          this._xml.set(doc, type);
+          markXmlDocument(doc, type);
           // a document that is not well-formed runs none of its scripts
           scripts = xml.wellFormed;
         } else {
@@ -7344,100 +7354,6 @@ export class DomHost {
     }
   }
 
-  /**
-   * XML parsed into nodes, each element in the namespace its `xmlns`
-   * attributes put it in (Namespaces in XML 1.0, 6), and whether it was
-   * well-formed: every end tag the one open, every element closed, one
-   * root, no character a decoder had to replace. htmlparser2 reads XML
-   * leniently, and a document that is not well-formed must run nothing —
-   * Acid3's second XHTML frame has a stray `</strong>`.
-   */
-  private _xmlTree(raw: string): { kids: ChildNode[]; wellFormed: boolean } {
-    const handler = new DomHandler(null, {
-      withStartIndices: false,
-      withEndIndices: false,
-    });
-    const prolog = readProlog(raw);
-    const { text, defaults } = prolog;
-    let wellFormed = prolog.wellFormed && !text.includes('\ufffd');
-    const parser = new (class extends Parser {
-      override onclosetag(start: number, endIndex: number): void {
-        const self = this as unknown as XmlParserInternals;
-        if (self.stack[0] !== self.getSlice(start, endIndex)) {
-          wellFormed = false;
-        }
-        super.onclosetag(start, endIndex);
-      }
-    })(handler, { xmlMode: true, decodeEntities: true });
-    parser.write(text);
-    if ((parser as unknown as XmlParserInternals).stack.length) {
-      wellFormed = false;
-    }
-    parser.end();
-    const kids = handler.root.children.filter(
-      // the prolog's declaration is no node (XML 1.0, 2.8)
-      (k) => !(k instanceof ProcessingInstruction && /^\?xml$/i.test(k.name)),
-    );
-    for (const kid of handler.root.children) kid.parent = null;
-    const fix = (parent: ParentNode, list: ChildNode[]): void => {
-      for (let i = 0; i < list.length; i += 1) {
-        const kid = list[i];
-        if (kid instanceof CDATA) {
-          // a CDATA section is one text, as the DOM has it
-          const text = new Text(DomUtils.textContent(kid));
-          CDATA_SECTIONS.add(text);
-          text.parent = parent === handler.root ? null : parent;
-          list[i] = text;
-        } else if (kid instanceof ProcessingInstruction) {
-          if (!kid.name.startsWith('!')) {
-            kid.data = kid.data
-              .slice(kid.name.length)
-              .replace(/\?$/, '')
-              .replace(/^\s+/, '');
-          }
-        } else if (kid instanceof Element) fix(kid, kid.children);
-      }
-    };
-    fix(handler.root, kids);
-    const roots = kids.filter((k) => k instanceof Element);
-    if (
-      roots.length !== 1 ||
-      kids.some((k) => k instanceof Text && /[^ \t\n\r]/.test(k.data))
-    ) {
-      wellFormed = false;
-    }
-    const resolve = (el: Element, scope: Map<string, string>): void => {
-      let own = scope;
-      for (const [name, value] of Object.entries(el.attribs)) {
-        if (name !== 'xmlns' && !name.startsWith('xmlns:')) continue;
-        if (own === scope) own = new Map(scope);
-        own.set(name === 'xmlns' ? '' : name.slice(6), value);
-      }
-      for (const [name, value] of defaults.get(el.name) ?? []) {
-        el.attribs[name] ??= value;
-      }
-      const colon = el.name.indexOf(':');
-      const prefix = colon < 0 ? '' : el.name.slice(0, colon);
-      if (prefix && !own.has(prefix)) wellFormed = false;
-      for (const name of Object.keys(el.attribs)) {
-        const at = name.indexOf(':');
-        const of = at < 0 ? '' : name.slice(0, at);
-        if (of && of !== 'xml' && of !== 'xmlns' && !own.has(of)) {
-          wellFormed = false;
-        }
-      }
-      el.namespace = own.get(prefix) ?? '';
-      // made, as the HTML parser makes one, of no registry where it says
-      // so, and so what it holds (HTML's scoped registries)
-      markParsedRegistry(el);
-      for (const kid of el.children) {
-        if (kid instanceof Element) resolve(kid, own);
-      }
-    };
-    for (const root of roots) resolve(root as Element, new Map());
-    return { kids, wellFormed };
-  }
-
   /** A document's content made again of markup, by the parser `<Html>`
    *  reads a document with, the document itself kept: `document.open`,
    *  `write` and `close`'s. */
@@ -7637,7 +7553,22 @@ export class DomHost {
         order += 1;
         sheets.push(sheet);
       }
-      const cascade = new Cascade(sheets, FRAME_LOOK, size.width, size.height);
+      const cascade = new Cascade(
+        sheets,
+        FRAME_LOOK,
+        size.width,
+        size.height,
+        1,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        [],
+        null,
+        this._xml.has(doc),
+      );
       kept = { key, cascade };
       this._frameStyles.set(doc, kept);
     }
@@ -7749,6 +7680,9 @@ export class DomHost {
     markup: string,
     declarative = false,
   ): ChildNode[] {
+    if (context && anyXmlDocuments() && this._xml.has(this._ownerOf(context))) {
+      return this._parseXml(context, markup);
+    }
     const name =
       context instanceof Element && !isForeign(context) ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
@@ -7764,6 +7698,44 @@ export class DomHost {
       declarative,
       context instanceof Element ? context : null,
     );
+  }
+
+  /**
+   * Markup as `innerHTML` reads it in an XML document (HTML 13.5.2): in an
+   * element that declares what is in scope around `context`, and a
+   * `SyntaxError` where that is not well-formed. Its scripts never run.
+   */
+  private _parseXml(context: AnyNode, markup: string): ChildNode[] {
+    const scope = new Map<string, string>();
+    for (let at: AnyNode | null = context; at; at = at.parent) {
+      if (!(at instanceof Element)) continue;
+      for (const name in at.attribs) {
+        if (name !== 'xmlns' && !name.startsWith('xmlns:')) continue;
+        if (!scope.has(name)) scope.set(name, at.attribs[name]);
+      }
+    }
+    if (context instanceof Element && context.namespace !== undefined) {
+      scope.set('xmlns', namespaceOf(context));
+    }
+    const declared = [...scope]
+      .map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`)
+      .join('');
+    const read = xmlTree(`<fragment${declared}>${markup}</fragment>`);
+    const held = read.kids.find((k): k is Element => k instanceof Element);
+    if (!read.wellFormed || !held) {
+      throw new DomError('SyntaxError', 'The markup is not well-formed XML.');
+    }
+    const kids = held.children.slice();
+    for (const kid of kids) DomUtils.removeElement(kid);
+    for (const el of DomUtils.findAll((e) => tagOf(e) === 'script', kids)) {
+      this.inert.add(el);
+    }
+    for (const kid of kids) {
+      if (kid instanceof Element && tagOf(kid) === 'script') {
+        this.inert.add(kid);
+      }
+    }
+    return kids;
   }
 
   /** Markup as `innerHTML` reads it in `context`, or `setHTMLUnsafe` with
@@ -7865,8 +7837,8 @@ export class DomHost {
       return { text: decodeInEncoding(bytes, 'utf-8'), encoding: 'UTF-8' };
     }
     const holder = documentHolding(frame);
-    const encoding = XML_TYPES.test(type)
-      ? (bomEncoding(bytes) ?? named ?? xmlEncoding(bytes) ?? 'UTF-8')
+    const encoding = isXmlType(type)
+      ? sniffXmlEncoding(bytes, named)
       : sniffEncoding(bytes, named, holder && this._encodingOf(holder));
     return { text: decodeInEncoding(bytes, encoding), encoding };
   }
@@ -8501,6 +8473,19 @@ export class DomHost {
     }
   }
 
+  /** Whether a page may read a canvas back once an image or a video was
+   *  drawn on it. It has its pixels in no case (`drawnPixels`), so one that
+   *  says it asked by CORS is taken at its word. */
+  private _imageClean(el: Element): boolean {
+    const url =
+      el.name === 'video'
+        ? this._resolve(el.attribs.src ?? '')
+        : String(this._imageDrawn(el)?.imageState?.(el)?.src ?? '');
+    if (!url || /^(?:data|blob):/i.test(url)) return true;
+    if (el.attribs.crossorigin !== undefined) return true;
+    return originOf(url) === this._origin();
+  }
+
   /** Whether a worker may run from an address: of this document's origin,
    *  which a blob this realm made is, and `blob:null` where that is opaque. */
   private _workerAllowed(url: string): boolean {
@@ -8544,18 +8529,21 @@ export class DomHost {
     let request: PageRequest;
     try {
       const raw = JSON.parse(json) as Partial<PageRequest>;
+      const method = String(raw.method ?? 'GET').toUpperCase();
+      // what a page may not set, which a browser drops (Fetch 2.2.2)
+      const headers = Array.isArray(raw.headers)
+        ? raw.headers
+            .map(([k, v]) => [String(k), String(v)] as [string, string])
+            .filter(([k]) => !forbiddenRequestHeader(k))
+        : [];
+      const agent = agentHeaders(raw.uaHeaders, method, headers);
       request = {
         url: this._resolve(String(raw.url ?? '')),
-        method: String(raw.method ?? 'GET').toUpperCase(),
-        // what a page may not set, which a browser drops (Fetch 2.2.2)
-        headers: Array.isArray(raw.headers)
-          ? raw.headers
-              .map(([k, v]) => [String(k), String(v)] as [string, string])
-              .filter(([k]) => !forbiddenRequestHeader(k))
-          : [],
+        method,
+        headers,
         body: typeof raw.body === 'string' ? raw.body : null,
         ...(raw.stream === true ? { stream: true } : {}),
-        ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
+        ...(agent ? { uaHeaders: agent } : {}),
         ...(raw.streamedBody === true ? { streamedBody: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
@@ -8573,7 +8561,10 @@ export class DomHost {
             ? raw.credentials
             : 'same-origin',
         cache: raw.cache,
-        redirect: raw.redirect,
+        redirect:
+          raw.redirect === 'error' || raw.redirect === 'manual'
+            ? raw.redirect
+            : 'follow',
         integrity: raw.integrity,
         referrerPolicy: raw.referrerPolicy,
         destination: raw.destination,
@@ -8750,13 +8741,14 @@ export class DomHost {
     signal: AbortSignalLike,
   ): Promise<FetchResponse> {
     const page = this._origin();
-    let target: string;
     try {
-      target = new URL(request.url).origin;
+      new URL(request.url);
     } catch {
       throw new TypeError('Failed to fetch');
     }
-    const own = target === page && page !== 'null';
+    if (forbiddenMethod(request.method)) {
+      throw new TypeError('Failed to fetch');
+    }
     // a controlled client's request goes to its worker before CORS asks
     // anything of it (Fetch 4.3, "HTTP fetch")
     if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
@@ -8766,61 +8758,128 @@ export class DomHost {
       );
       if (answered) return this._fromWorker(answered, request);
     }
-    const plain: FetchRequest = {
+    const urls: string[] = [];
+    let hop: Hop = {
       url: request.url,
       method: request.method,
       headers: request.headers,
       body: request.body,
       ...(request.bytes ? { bytes: request.bytes } : {}),
-      ...(request.stream ? { stream: true } : {}),
       ...(request.streamedBody ? { streamedBody: true } : {}),
-      // a document of no origin has no `same-origin` to go by, and says who
-      // it is as `null`, wherever its address is
-      credentials:
-        page === 'null' && request.credentials === 'same-origin'
-          ? 'omit'
-          : request.credentials,
-      ...(page === 'null' ? { opaqueOrigin: true } : {}),
     };
-    if (own) {
-      const response = await this._seams.fetch(plain, signal);
-      // a redirect to another origin is that origin's to let the page read
-      if (originOf(response.url) === page) {
-        return {
-          ...response,
-          headers: readable(response.headers),
-          type: 'basic',
-        };
-      }
-      if (request.mode === 'same-origin') {
-        release(response);
-        throw new CorsError('The request was redirected to another origin.');
-      }
-      return this._shared(response, request, page);
-    }
-    if (request.mode === 'same-origin') {
-      throw new TypeError(
-        `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
-      );
-    }
-    if (request.mode === 'no-cors') {
-      if (
-        !SIMPLE_METHODS.has(request.method) ||
-        !request.headers.every(([k, v]) => noCorsSafelisted(k, v))
-      ) {
+    let tainting: 'basic' | 'cors' | 'opaque' | null = null;
+    for (;;) {
+      const own = page !== 'null' && originOf(hop.url) === page;
+      if (own && (tainting === null || tainting === 'basic')) {
+        tainting = 'basic';
+      } else if (request.mode === 'same-origin') {
+        if (tainting) {
+          throw new CorsError('The request was redirected to another origin.');
+        }
         throw new TypeError(
-          `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
+          `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
         );
+      } else if (request.mode === 'no-cors') {
+        if (request.redirect !== 'follow') {
+          throw new TypeError('Failed to fetch');
+        }
+        if (
+          !tainting &&
+          (!SIMPLE_METHODS.has(hop.method) ||
+            !hop.headers.every(([k, v]) => noCorsSafelisted(k, v)))
+        ) {
+          throw new TypeError(
+            `'${hop.method}' or a header is not allowed in 'no-cors' mode.`,
+          );
+        }
+        tainting = 'opaque';
+      } else tainting = 'cors';
+      // asked of this hop, in whoever's name is left to it: a sandbox has
+      // none from the start, wherever its address is
+      const opaqueOrigin =
+        page === 'null' || redirectTainted([...urls, hop.url], page);
+      const origin = opaqueOrigin ? 'null' : page;
+      if (tainting === 'cors') {
+        const unsafe = unsafeRequestHeaders(
+          hop.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
+        );
+        if (!SIMPLE_METHODS.has(hop.method) || unsafe.length) {
+          await this._preflight(hop, request, unsafe, origin, signal);
+        }
       }
-      return this._opaque(await this._seams.fetch(plain, signal));
+      const response = await this._seams.fetch(
+        {
+          url: hop.url,
+          method: hop.method,
+          headers: hop.headers,
+          body: hop.body,
+          ...(hop.bytes ? { bytes: hop.bytes } : {}),
+          ...(request.stream ? { stream: true } : {}),
+          ...(hop.streamedBody ? { streamedBody: true } : {}),
+          // `same-origin`'s are a request's while it has not left its origin
+          // (Fetch 4.5): one that came back from another carries none
+          credentials:
+            request.credentials === 'include' ||
+            (request.credentials === 'same-origin' && tainting === 'basic')
+              ? 'include'
+              : 'omit',
+          redirect: 'manual',
+          ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
+        },
+        signal,
+      );
+      if (response.redirected && request.redirect === 'error') {
+        release(response);
+        throw new TypeError('Failed to fetch');
+      }
+      const location = redirectOf(response.status, response.headers);
+      if (location === null) {
+        const answer = {
+          ...response,
+          url: response.url || hop.url,
+          redirected: urls.length > 0 || response.redirected,
+        };
+        if (tainting === 'opaque') return this._opaque(answer);
+        // a network that followed the redirect itself: where it landed says
+        // whether the page's own origin answered
+        if (tainting === 'basic' && originOf(answer.url) === page) {
+          return {
+            ...answer,
+            headers: readable(answer.headers),
+            type: 'basic',
+          };
+        }
+        if (tainting === 'basic' && request.mode === 'same-origin') {
+          release(response);
+          throw new CorsError('The request was redirected to another origin.');
+        }
+        return this._shared(answer, request, origin);
+      }
+      // a redirect is a response, and another origin's has to let the page
+      // know of it (Fetch 4.3, "HTTP fetch")
+      if (tainting === 'cors') {
+        try {
+          corsCheck(response.headers, request.credentials, origin);
+        } catch (error) {
+          release(response);
+          throw error;
+        }
+      }
+      release(response);
+      if (request.redirect === 'error') throw new TypeError('Failed to fetch');
+      if (request.redirect === 'manual') return OPAQUE_REDIRECT;
+      const next = nextHop(
+        hop,
+        location,
+        response.status,
+        urls.length,
+        tainting === 'opaque'
+          ? null
+          : { origin: page, tainting: tainting === 'cors' },
+      );
+      urls.push(hop.url);
+      hop = next;
     }
-    const unsafe = unsafeRequestHeaders(
-      request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
-    );
-    if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
-      await this._preflight(request, unsafe, page, signal);
-    }
-    return this._shared(await this._seams.fetch(plain, signal), request, page);
   }
 
   /**
@@ -9055,10 +9114,10 @@ export class DomHost {
   private _shared(
     response: FetchResponse,
     request: PageRequest,
-    page: string,
+    origin: string,
   ): FetchResponse {
     try {
-      corsCheck(response.headers, request.credentials, page);
+      corsCheck(response.headers, request.credentials, origin);
     } catch (error) {
       release(response);
       throw error;
@@ -9083,21 +9142,22 @@ export class DomHost {
   /** Ask another origin whether a request that is not a simple one may be
    *  made (Fetch 4.9, "CORS-preflight fetch"), unless it said so lately. */
   private async _preflight(
+    hop: Hop,
     request: PageRequest,
     unsafe: string[],
-    page: string,
+    origin: string,
     signal: AbortSignalLike,
   ): Promise<void> {
     const include = request.credentials === 'include';
-    const key = `${request.url}\u0000${include}`;
+    const key = `${origin}\u0000${hop.url}\u0000${include}`;
     const kept = this._preflights.get(key);
     const allows = (entry: PreflightEntry): string | null => {
       if (
-        !SIMPLE_METHODS.has(request.method) &&
-        !entry.methods.has(request.method) &&
+        !SIMPLE_METHODS.has(hop.method) &&
+        !entry.methods.has(hop.method) &&
         !(entry.anyMethod && !include)
       ) {
-        return `Method ${request.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
+        return `Method ${hop.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
       }
       for (const name of unsafe) {
         if (entry.headers.has(name)) continue;
@@ -9108,7 +9168,7 @@ export class DomHost {
     };
     if (kept && kept.until > Date.now() && allows(kept) === null) return;
     const headers: [string, string][] = [
-      ['access-control-request-method', request.method],
+      ['access-control-request-method', hop.method],
     ];
     if (unsafe.length) {
       headers.push(['access-control-request-headers', unsafe.join(',')]);
@@ -9116,11 +9176,13 @@ export class DomHost {
     // a preflight carries no cookies (Fetch 4.9)
     const response = await this._seams.fetch(
       {
-        url: request.url,
+        url: hop.url,
         method: 'OPTIONS',
         headers,
         body: null,
         credentials: 'omit',
+        redirect: 'manual',
+        ...(origin === 'null' ? { opaqueOrigin: true } : {}),
       },
       signal,
     );
@@ -9131,7 +9193,7 @@ export class DomHost {
     if (response.redirected)
       throw failed('Redirect is not allowed for a preflight request.');
     try {
-      corsCheck(response.headers, request.credentials, page);
+      corsCheck(response.headers, request.credentials, origin);
     } catch (error) {
       throw failed((error as Error).message);
     }

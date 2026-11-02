@@ -34,6 +34,8 @@ import {
   shadowRootOf,
   tagOf,
   treeGeneration,
+  isRootElement,
+  isXmlDocument,
 } from '../dom.js';
 import {
   ShapeCopies,
@@ -67,6 +69,7 @@ import {
   firstLineParent,
   inherit,
   urlOf,
+  verticalMode,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { focusableElement } from '../focus.js';
@@ -608,6 +611,8 @@ export type ReplacedKind =
   | 'file'
   | 'checkbox'
   | 'radio'
+  /** An `<input type=range>`: a track and a thumb, and no text. */
+  | 'range'
   | 'hr'
   /** An `<iframe>`, `<video>`, `<embed>` or `<canvas>`: what it would
    *  show is never loaded or drawn, so it is a box of its size with nothing
@@ -635,8 +640,7 @@ function controlBaseline(
   style: ComputedStyle,
   options: BuildOptions,
 ): InlineDecoration | 'border' | null {
-  if (kind === 'checkbox' || kind === 'radio') return 'border';
-  if (kind === 'input' && (attr(el, 'type') ?? '').toLowerCase() === 'range') {
+  if (kind === 'checkbox' || kind === 'radio' || kind === 'range') {
     return 'border';
   }
   if (
@@ -3657,8 +3661,11 @@ class Builder {
     const styles = this._styles;
     cascade.stylesOf = (el) => styles.get(el)?.style;
     cascade.pageColorScheme = metaColorScheme(root);
-    const body = hasBody(root);
-    const html = hasHtml(root);
+    // what the HTML parser's documents have, written or implied: an XML
+    // document's root element is whatever it says, with nothing around it
+    const xml = isXmlDocument(root);
+    const body = xml || hasBody(root);
+    const html = xml || hasHtml(root);
     const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
       body,
       html,
@@ -3683,7 +3690,9 @@ class Builder {
     // the initial containing block's direction is the root element's (CSS
     // 2.1 10.1), which puts an `<html>` narrower than it at its right end
     if (body && html) {
-      const top = rootBox.children.find((b) => b.el && tagOf(b.el) === 'html');
+      const top = rootBox.children.find(
+        (b) => b.el && (tagOf(b.el) === 'html' || isRootElement(b.el)),
+      );
       if (top) rootStyle.direction = top.style.direction;
     }
     cascade.endSharing();
@@ -4694,9 +4703,14 @@ class Builder {
     }
 
     const size = this._options.controlSize(el, replaced, style);
+    // a range runs along its own lines, and a frame is laid out across
+    // what it draws down the page (`makeFrame`)
+    const across =
+      replaced === 'range' &&
+      verticalMode(style.writingMode) !== this._inOrthogonal(into);
     box.intrinsic = {
-      width: size.width,
-      height: size.height,
+      width: across ? size.height : size.width,
+      height: across ? size.width : size.height,
       missing: 0,
       ratio: 0,
     };
@@ -4706,6 +4720,16 @@ class Builder {
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
     // field, which no document viewer does.
+  }
+
+  /** Whether what is built in `into` goes in a frame: `_orthogonal` holds
+   *  each box that will have one, and what it holds has none yet. */
+  private _inOrthogonal(into: Box): boolean {
+    if (!this._orthogonal.length) return false;
+    for (let at: Box | null = into; at; at = at.parent) {
+      if (this._orthogonal.includes(at)) return true;
+    }
+    return false;
   }
 
   /**
@@ -5895,7 +5919,7 @@ function viewportOverflowOf(
   for (const child of childrenOf(root)) {
     if (!isElement(child)) continue;
     const tag = tagOf(child);
-    if (tag !== 'html' && tag !== 'body') continue;
+    if (tag !== 'html' && tag !== 'body' && !isRootElement(child)) continue;
     const given = overflowGivenToViewport(styles.get(child)?.style);
     if (given) return given;
     if (tag !== 'html') continue;
@@ -6426,6 +6450,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       const type = (attr(el, 'type') ?? 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
+      if (type === 'range') return 'range';
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';

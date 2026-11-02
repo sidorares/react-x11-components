@@ -598,6 +598,8 @@ export class ScriptEngine {
    *  waiting on it at the same time. */
   private readonly _modules = new Map<string, Promise<PageModule>>();
   private readonly _linked = new WeakMap<PageModule, Promise<void>>();
+  /** The proxies on the global's chain as the facade left it. */
+  private readonly _ownProxies = new WeakSet<object>();
   /** The document's import map (`importMap`), where it has one. */
   private _importMap: ImportMap | null = null;
   /** The link under way, which the next waits for (`_link`). */
@@ -656,6 +658,13 @@ export class ScriptEngine {
     run(INSTALL, FACADE);
     this._promises = run('Promise.prototype') as object;
     this._global = run('globalThis') as object;
+    for (
+      let at: object | null = this._global;
+      at;
+      at = Object.getPrototypeOf(at) as object | null
+    ) {
+      if (types.isProxy(at)) this._ownProxies.add(at);
+    }
     this._TypeError = run('TypeError') as new (message: string) => object;
     this._SyntaxError = run('SyntaxError') as new (message: string) => object;
     ENGINES.set(this._promises, this);
@@ -933,6 +942,42 @@ export class ScriptEngine {
   }
 
   /**
+   * What a script of another origin threw or failed to parse with, reported
+   * as HTML has it (8.1.4.6): that it did, and no more. The message of a
+   * `ReferenceError` is the text of the script, which is what a page points
+   * a `<script>` at another site's data to read. So what it threw stops here:
+   * the page is told nothing the facade could be made to show it, and only
+   * a timeout, read off it without running anything, is told apart.
+   */
+  private _mutedFault(error: unknown): void {
+    if (this._broken || this._disposed) return;
+    if (ownData(error, 'code') === TIMEOUT) {
+      this._cut();
+      return;
+    }
+    this.call('__muted', null);
+  }
+
+  /**
+   * Whether a proxy is among what the global inherits from, which hears every
+   * name a script looks up that the window has not got: what a CSV run as a
+   * script is, word by word. Nothing here can run a page's code, since a
+   * proxy is told from anything else without asking it. Browsers keep a
+   * proxy off the window's own chain by making it immutable; here a page can
+   * put one there, and a polyfill may add to any of it. The window's named
+   * properties are the facade's proxy, which hears nothing while such a
+   * script runs (`namesUnheard`).
+   */
+  namesWatched(): boolean {
+    let at: object | null = this._global;
+    while (at) {
+      if (types.isProxy(at) && !this._ownProxies.has(at)) return true;
+      at = Object.getPrototypeOf(at) as object | null;
+    }
+    return false;
+  }
+
+  /**
    * A `<script type="importmap">`'s JSON (HTML 8.1.5.6), its URLs against
    * `base`: what a bare specifier, `react`, resolves to from then on. A
    * second map's imports go under the first's, which keeps every key it
@@ -981,14 +1026,14 @@ export class ScriptEngine {
    * the microtasks it queued, which run as it ends. Whether it ran to its
    * end; what it threw, or why it did not parse, is reported in the page.
    */
-  exec(code: string, url: string, script: number): boolean {
+  exec(code: string, url: string, script: number, muted = false): boolean {
     if (this._broken || this._disposed) return false;
     if (this._held) {
-      this._held.push(() => void this.exec(code, url, script));
+      this._held.push(() => void this.exec(code, url, script, muted));
       return false;
     }
     // inside another script, which put this one in (`_prepareScript`)
-    this.call('__exec', [script, this._depth > 0]);
+    this.call('__exec', [script, this._depth > 0, muted]);
     let compiled: VmScript | null = null;
     try {
       compiled = new vm.Script(code, {
@@ -998,13 +1043,16 @@ export class ScriptEngine {
       });
     } catch (error) {
       // the runtime's `SyntaxError`, the host's, made the page's own
-      this._fault(
-        !isHostError(error)
-          ? error
-          : error.name === 'SyntaxError'
-            ? this._pageError(error.message, 'SyntaxError')
-            : this._pageError(messageOf(error)),
-      );
+      if (muted) this._mutedFault(error);
+      else {
+        this._fault(
+          !isHostError(error)
+            ? error
+            : error.name === 'SyntaxError'
+              ? this._pageError(error.message, 'SyntaxError')
+              : this._pageError(messageOf(error)),
+        );
+      }
     }
     let ran = false;
     if (compiled) {
@@ -1019,7 +1067,8 @@ export class ScriptEngine {
       } catch (error) {
         // the page's own exception, or the timeout: told apart and reported
         // without reading the page's object (`_fault`)
-        this._fault(error);
+        if (muted) this._mutedFault(error);
+        else this._fault(error);
       } finally {
         this._leave(mark);
       }
@@ -1041,9 +1090,13 @@ export class ScriptEngine {
    * of the task; a worker imports its scripts first, as a rule, with none
    * waiting. The outer call's timeout covers it.
    */
-  runNested(code: string, url: string): 'ran' | 'threw' | null {
+  runNested(code: string, url: string, muted = false): 'ran' | 'threw' | null {
     if (this._broken || this._disposed) return null;
     const context = this._context as Record<string, unknown>;
+    // what another origin's script threw is its own, and its text with it:
+    // the caller hears that it failed (HTML 8.1.4.6, "rethrow errors")
+    const thrown = (error: unknown): unknown =>
+      muted ? this._pageError('Script error.') : error;
     let compiled: VmScript;
     try {
       compiled = new vm.Script(code, {
@@ -1051,11 +1104,13 @@ export class ScriptEngine {
         importModuleDynamically: this._importer as never,
       });
     } catch (error) {
-      context.__thrown = !isHostError(error)
-        ? error
-        : error.name === 'SyntaxError'
-          ? this._pageError(error.message, 'SyntaxError')
-          : this._pageError(messageOf(error));
+      context.__thrown = thrown(
+        !isHostError(error)
+          ? error
+          : error.name === 'SyntaxError'
+            ? this._pageError(error.message, 'SyntaxError')
+            : this._pageError(messageOf(error)),
+      );
       return 'threw';
     }
     try {
@@ -1063,9 +1118,9 @@ export class ScriptEngine {
       return 'ran';
     } catch (error) {
       // the page's own exception, handed back unread
-      context.__thrown = isHostError(error)
-        ? this._pageError(messageOf(error))
-        : error;
+      context.__thrown = thrown(
+        isHostError(error) ? this._pageError(messageOf(error)) : error,
+      );
       return 'threw';
     }
   }

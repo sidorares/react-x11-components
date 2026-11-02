@@ -72,7 +72,7 @@ function reftests(dir: string): string[] {
         }
         walk(path);
       } else if (
-        /\.(html?|xht|xhtml)$/i.test(entry.name) &&
+        /\.(html?|xht|xhtml|svg|xml)$/i.test(entry.name) &&
         !/-(ref|notref)(\.|-|\d)/i.test(entry.name) &&
         /\brel\s*=\s*["']?(match|mismatch)\b/i.test(readFileSync(path, 'utf8'))
       ) {
