@@ -778,6 +778,49 @@ test('a script the parser meets runs there, and sees the document only as far as
   );
 });
 
+test('document.open starts a document again from nothing, and what a page builds in it stays through close', async () => {
+  // an analytics loader on tldraw makes a frame, and `open()`, an `<html>`,
+  // `appendChild` and `close()` in its document: the `<html>` about:blank
+  // came with was still there, so `appendChild` threw
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var n = f.contentDocument;' +
+      'n.open();' +
+      'r.push(n.childNodes.length, n.documentElement, n.body);' +
+      'var h = n.createElement("html");' +
+      'h.append(n.createElement("head"), n.createElement("body"));' +
+      'n.appendChild(h);' +
+      'r.push(n.childNodes.length, n.documentElement === h, n.head === h.firstChild);' +
+      'n.close();' +
+      'r.push(n.childNodes.length, n.documentElement === h);' +
+      'var g = document.createElement("iframe"); document.body.appendChild(g);' +
+      'var m = g.contentDocument; m.open(); m.close();' +
+      'r.push(m.childNodes.length, m.documentElement.outerHTML);' +
+      'var d = document.implementation.createHTMLDocument("t");' +
+      'r.push(d.childNodes.length); d.open(); r.push(d.childNodes.length);' +
+      'd.write("<b>x</b>"); d.close(); r.push(d.documentElement.outerHTML);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '',
+    '',
+    '1',
+    'true',
+    'true',
+    '1',
+    'true',
+    '1',
+    '<html><head></head><body></body></html>',
+    '2',
+    '0',
+    '<html><head></head><body><b>x</b></body></html>',
+  ]);
+});
+
 test('what document.write writes is parsed where the script is, before what follows it, and is there when write returns', async () => {
   const doc = await hosted(
     '<!doctype html><html id="root"><head><script>' +
