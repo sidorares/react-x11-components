@@ -7390,8 +7390,10 @@ Seven things are load-bearing.
   exposed. A test that only scrolls from whole offsets passes without this.
 - **What an engine cannot draw is asked for once** (`_failed`, `_noSurfaces`). The queue
   asks again for whatever is not there, so a page it cannot read, or a backend with no
-  `Surface`, is a loop as fast as it can refuse, which is silent and hangs a test rather
-  than failing it.
+  `Surface`, is a loop as fast as it can refuse, which is silent. **A fake engine answers
+  on a macrotask**, as a thread does: answered in a microtask, that loop holds the thread
+  from every timer, and the test hangs at 100% of a core where it should fail, with
+  children a killed runner leaves spinning.
 
 Everything `PdfViewNode` holds but `_handle` is about pages rather than PDFs, and the
 design for the next format moves it to a shared module when one arrives. Do not move it
