@@ -39,7 +39,8 @@ export function navigableFor(
   if (keyword === '_blank' || !document) return 'tab';
   return (
     DomUtils.findOne(
-      (el) => FRAMES.has(el.name) && el.attribs.name === target,
+      (el) =>
+        FRAMES.has(el.name) && el.attribs.name === target && !isForeign(el),
       document.children,
       true,
     ) ?? 'tab'

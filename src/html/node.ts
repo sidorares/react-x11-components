@@ -75,6 +75,7 @@ import {
   indicatedElement,
   isElement,
   isForeign,
+  isStyleOrScript,
   isInputButton,
   isText,
   loadsLazily,
@@ -11568,7 +11569,9 @@ export class HtmlViewNode extends Node {
       // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
       // rules into one as their components first render
       if (tagOf(parent) !== 'style') return false;
-      if (!this._sheetsKept(parent, scope)) scope.sheets = true;
+      if (isStyleOrScript(parent) && !this._sheetsKept(parent, scope)) {
+        scope.sheets = true;
+      }
     }
     if (change.type !== 'childList') return true;
     for (const nodes of [change.addedNodes, change.removedNodes]) {
@@ -17567,7 +17570,7 @@ function changesCascade(
 ): boolean {
   switch (tagOf(el)) {
     case 'style':
-      return name === 'media';
+      return name === 'media' && isStyleOrScript(el);
     case 'link':
       return (
         (name === 'rel' && !isForeign(el)) ||
@@ -17884,7 +17887,10 @@ function cascadeHeld(node: AnyNode): number {
     ) {
       return HELD_PRAGMA;
     }
-    if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
+    if (
+      (tag === 'style' && isStyleOrScript(el)) ||
+      (tag === 'link' && isSheetLink(el))
+    ) {
       held |= HELD_SHEET;
     }
     if (shadowRootOf(el)) held |= HELD_TREE;
