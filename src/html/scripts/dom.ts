@@ -32322,6 +32322,11 @@ export function installDom(
   );
   define('cancelIdleCallback', clearTimer);
   define('queueMicrotask', (fn: Any) => {
+    if (typeof fn !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'queueMicrotask': parameter 1 is not of type 'Function'.",
+      );
+    }
     Promise.resolve().then(() => {
       try {
         fn();
