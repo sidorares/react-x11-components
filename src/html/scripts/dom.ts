@@ -9034,7 +9034,8 @@ export function installDom(
           if (!group || !inGroup) walk(kid, inGroup || group);
         }
       }
-    }
+    };
+    walk(select, false);
     return options;
   };
   /** What a `<select>`'s list of options (HTML 4.10.7) does not go on into:
@@ -11075,6 +11076,10 @@ export function installDom(
 
   /** The white space a context's text takes for a space (HTML 4.12.5.1.8). */
   const TEXT_SPACES = /[\t\n\f\r]/g;
+  /** A width as a `font` writes it, among the words before its size: a
+   *  family called `condensed` is no width. */
+  const FONT_STRETCHES =
+    /^((?:(?!\S*px[\s/])\S+\s+)*?)(?:(?:ultra|extra|semi)-)?(?:condensed|expanded)\s+/;
 
   /** Pixels in each absolute unit of a context's spacing. */
   const SPACING_UNITS: Record<string, number> = {
@@ -11857,6 +11862,14 @@ export function installDom(
         CAPS_FEATURES[state.fontVariantCaps] ?? '',
       ].join(',');
     }
+    /** The font a string is set in: `font`, with the context's `fontStretch`
+     *  in it, which nothing else says to the text engine. A width `font` was
+     *  written with gives way to one set after it, as two in it are none. */
+    _textFont(): string {
+      const { font, fontStretch } = this._state;
+      if (fontStretch === 'normal') return font;
+      return `${fontStretch} ${font.replace(FONT_STRETCHES, '$1')}`;
+    }
     /** What a `font` comes to: null for no font. Where there is no text
      *  engine it is kept as written, with what size can be read off it. */
     _fontOf(value: string): Any {
@@ -11894,7 +11907,7 @@ export function installDom(
       const setting = this._textSetting(now.direction);
       const raster = canvasRaster(
         now.owner,
-        state.font,
+        this._textFont(),
         chars,
         size,
         stroke ? state.lineWidth * perUnit : 0,
@@ -11941,7 +11954,8 @@ export function installDom(
       const now = this._textNow();
       const setting = this._textSetting(now?.direction ?? 'ltr');
       const raw =
-        now && call('canvasMeasure', now.owner, state.font, chars, setting);
+        now &&
+        call('canvasMeasure', now.owner, this._textFont(), chars, setting);
       // where there is no text engine, a sans-serif's average character
       const lengths =
         typeof raw === 'string'
@@ -11976,7 +11990,7 @@ export function installDom(
           chars.trim() && now
             ? canvasRaster(
                 now.owner,
-                state.font,
+                this._textFont(),
                 chars,
                 fine,
                 0,
@@ -15866,18 +15880,33 @@ export function installDom(
     }
     set style(v: Any) {
       this._desc.style = str(v);
+      this._matchedBy();
     }
     get weight(): string {
       return this._desc.weight;
     }
     set weight(v: Any) {
       this._desc.weight = str(v);
+      this._matchedBy();
     }
     get stretch(): string {
       return this._desc.stretch;
     }
     set stretch(v: Any) {
       this._desc.stretch = str(v);
+      this._matchedBy();
+    }
+    /** What it is matched by is the host's, which went by what it was made
+     *  with: a width set after that left it the normal one. */
+    _matchedBy(): void {
+      if (!this._script) return;
+      const { style, weight, stretch } = this._desc;
+      call(
+        'fontFaceSet',
+        this._doc._id,
+        this._script,
+        JSON.stringify({ style, weight, stretch }),
+      );
     }
     get unicodeRange(): string {
       return this._desc.unicodeRange;

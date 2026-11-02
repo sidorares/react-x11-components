@@ -252,6 +252,7 @@ export class CanvasText {
     const covered = layout.coverage?.({ pad });
     if (!covered) return null;
     const lengths = this._lengths(fonts, style, size);
+    const advance = this._width(fonts, style, layout, text, size, setting);
     return {
       ...lengths,
       width: covered.width,
@@ -259,9 +260,12 @@ export class CanvasText {
       data: stroke
         ? strokeOf(covered.data, covered.width, covered.height, stroke)
         : covered.data,
-      x: pad,
+      // the spaces an engine leaves out of a line's width are at its end,
+      // which is the left of one set right to left: the string starts past
+      // them there, and a run drawn after another lost the space between
+      x: pad - (setting.direction === 'rtl' ? advance - layout.width : 0),
       y: pad + (layout.lines?.[0]?.baseline ?? lengths.ascent),
-      advance: this._width(fonts, style, layout, text, size, setting),
+      advance,
     };
   }
 }

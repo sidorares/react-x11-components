@@ -4730,6 +4730,11 @@ export class DomHost {
         );
         return true;
       }
+      case 'fontFaceSet':
+        this._fontsOf(a)
+          ?.scriptFonts?.()
+          ?.setFace(Number(b), JSON.parse(text(c)) as FontFaceInit);
+        return null;
       case 'fontFaceLoad': {
         const id = Number(b);
         const fonts = this._fontsOf(a)?.scriptFonts?.();

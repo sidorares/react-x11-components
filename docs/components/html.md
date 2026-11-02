@@ -810,8 +810,10 @@ the face says it has loaded. `document.fonts.add` puts a face among the
 document's, which styles the document again, as an `@font-face` in a sheet
 would; `delete` and `clear` take it out, and only what a script put there. A
 family or a descriptor that cannot be read is the `SyntaxError` `loaded`
-rejects with, and a font the engine cannot read a `NetworkError`. A
-descriptor set after a face is made reads back and changes nothing of it.
+rejects with, and a font the engine cannot read a `NetworkError`. A `style`,
+a `weight` or a `stretch` set after a face is made is what it is matched by
+from then on; any other descriptor set then reads back and changes nothing of
+it.
 
 ## Scripts
 
@@ -1247,7 +1249,8 @@ as WPT's tests make them, and to another peer the host can reach.
   speakers has silence; WPT's WebRTC tests make their audio from one.
 - **A canvas's text is drawn in the document's fonts**: `fillText`,
   `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
-  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  `direction`, `fontStretch`, `letterSpacing`, `wordSpacing` and `maxWidth`,
+  through every
   transform, clip and compositing operator a path goes through. A `font`
   names what the document's `@font-face` rules and `new FontFace` do, and a
   face not loaded yet is asked for and drawn in what the list has until it
