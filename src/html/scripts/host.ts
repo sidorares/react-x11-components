@@ -196,10 +196,17 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles } from '../form.js';
+import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
 import type { HtmlClipboard } from '../clipboard.js';
-import type { HtmlPermissions } from '../permissions.js';
+import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
+import { PERMISSION_NAMES, POLICY_FEATURES } from '../permissions.js';
+import type {
+  HtmlNotification,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from '../notifications.js';
 import * as ntk from 'react-x11/ntk';
 import { decodeGif } from '../gif.js';
 import { encodePng } from './png.js';
@@ -324,6 +331,8 @@ export interface PageWorkersLike {
   end(id: number): void;
   /** Tells a worker's thread of a data channel the page handed it. */
   rtc?(id: number, message: ChannelRelay): void;
+  /** A permission moved: a worker's copy of where each stands follows. */
+  permissionMoved?(name: string, state: string): void;
   /** Whether a worker has a connection open (`DomHost.connected`). */
   readonly connected?: boolean;
   /** How many threads have stopped for the back-forward cache. */
@@ -407,6 +416,8 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** Hand the host what a page asked to have saved: whether it takes it. */
+  download(request: HtmlDownloadRequest): boolean;
   /** A file input's dialog (`HtmlProps.onPickFiles`). */
   pickFiles(element: Element): void;
   /** Set what a file input holds, as a script's `files` does. */
@@ -700,6 +711,9 @@ export interface HostSeams {
   /** The clipboard a page's `copy`, `paste` and `navigator.clipboard` reach
    *  (`HtmlScripts`' `clipboard`). Absent, they reach none. */
   clipboard?: HtmlClipboard;
+  /** What a page's notifications reach (`HtmlScripts`' `notifications`).
+   *  Absent, a page's `Notification` is refused. */
+  notifications?: HtmlNotifications;
   /** What a page has been allowed (`HtmlScripts`' `permissions`). Absent,
    *  nothing has, and asking refuses. */
   permissions?: HtmlPermissions;
@@ -1087,6 +1101,15 @@ function release(response: FetchResponse): void {
 }
 
 /** Bytes as base64, which is how they cross to the page. */
+/** Take a notification down, whatever the host's hook makes of it. */
+function closeShown(shown: HtmlShownNotification | null | undefined): void {
+  try {
+    void Promise.resolve(shown?.close()).catch(() => {});
+  } catch {
+    // a page that has gone cannot hear it did not close
+  }
+}
+
 function base64Of(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     'base64',
@@ -1862,6 +1885,9 @@ export class DomHost {
     this._owners = shared.owners;
     this._doctypes = shared.doctypes;
     shared.drawn.set(document, _seams.handle);
+    this._unwatchPermissions =
+      _seams.permissions?.watch?.((name) => this._permissionMoved(name)) ??
+      null;
     shared.top ??= this.url;
     // what another document of the origin does to its storage, which this
     // one hears as a `storage` event
@@ -2033,7 +2059,19 @@ export class DomHost {
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
       clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
+      drag: event.drag && {
+        entries: event.drag.entries,
+        hasFiles: event.drag.hasFiles,
+        files: event.drag.files?.map((file) => this._toldFile(file)),
+        effectAllowed: event.drag.effectAllowed,
+        dropEffect: event.drag.dropEffect,
+      },
     });
+    // what a page left in the drag's store, for what the drag does next
+    if (event.drag && this._dragOut) {
+      Object.assign(event.drag, JSON.parse(this._dragOut));
+      this._dragOut = null;
+    }
     return answer !== false;
   }
 
@@ -2357,6 +2395,11 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    // a page's own notifications go with it (Notifications API, 2.4)
+    for (const shown of this._shown.values()) closeShown(shown);
+    this._shown.clear();
+    this._unwatchPermissions?.();
+    this._unwatchPermissions = null;
     for (const { key, end } of this._channels.values()) {
       closeChannel(key, end);
     }
@@ -5220,6 +5263,18 @@ export class DomHost {
         return this._fileList(this._element(a));
       case 'fileChunk':
         return this._fileChunk(Number(a), Number(b));
+      case 'download':
+        return (
+          this._seams.handle.download?.({
+            url: text(a),
+            filename: text(b),
+            ...(text(c) && { bytes: bytesOf(text(c)) }),
+            ...(text(d) && { type: text(d) }),
+          }) ?? false
+        );
+      case 'dragOut':
+        this._dragOut = text(a);
+        return null;
       case 'pickFiles':
         this._seams.handle.pickFiles?.(this._element(a));
         return null;
@@ -5229,9 +5284,15 @@ export class DomHost {
       case 'clipboard':
         return this._clipboardOp(text(a), b, text(c));
       case 'permission':
-        return (
-          this._seams.permissions?.state(text(a), this._origin()) ?? 'prompt'
-        );
+        return this._permissionState(text(a));
+      case 'permissionNames':
+        return JSON.stringify(PERMISSION_NAMES);
+      case 'permissionAsk':
+        this._permissionAsk(Number(a), text(b));
+        return null;
+      case 'notification':
+        this._notificationOp(text(a), Number(b), text(c));
+        return null;
       case 'featureAllowed':
         return this._featureAllowed(text(a));
       case 'fullyActive':
@@ -7139,16 +7200,19 @@ export class DomHost {
   /** What a file input holds, as a page's realm makes `File`s of. Nothing
    *  of a file's bytes crosses until the page reads them (`_fileChunk`). */
   private _fileList(el: Element): string {
-    return JSON.stringify(
-      chosenFiles(el).map((file) => ({
-        id: this._fileId(file),
-        name: file.name,
-        type: file.type,
-        lastModified: file.lastModified,
-        size: file.bytes.length,
-      })),
-    );
+    return JSON.stringify(chosenFiles(el).map((f) => this._toldFile(f)));
   }
+  private _toldFile(file: HtmlFile) {
+    return {
+      id: this._fileId(file),
+      name: file.name,
+      type: file.type,
+      lastModified: file.lastModified,
+      size: file.bytes.length,
+    };
+  }
+  /** What a page's `dataTransfer` came to at the event just told. */
+  private _dragOut: string | null = null;
   /** A piece of a file, from an offset: a string has a limit, and a file
    *  has none. */
   private _fileChunk(id: number, at: number): string {
@@ -7203,7 +7267,10 @@ export class DomHost {
       if (!asked) tell(true, 'denied');
       else {
         asked.then(
-          (state) => tell(true, state),
+          (state) => {
+            this._permissionMoved(payload);
+            tell(true, state);
+          },
           () => tell(true, 'denied'),
         );
       }
@@ -7234,6 +7301,125 @@ export class DomHost {
     return null;
   }
 
+  /**
+   * Where a permission really stands for this document: what asking would
+   * come to, not what a host has said so far. A powerful feature is a secure
+   * context's (Permissions 5.1), and what a frame's `allow` leaves out is
+   * refused whatever the host says (Permissions Policy 8.8). A host with no
+   * `permissions` has nobody to ask, so what it handed a seam for has that
+   * seam's answer, and anything else has been refused.
+   */
+  private _permissionState(name: string): HtmlPermissionState {
+    const seams = this._seams;
+    const origin = this._origin();
+    // a worker's is its page's, kept up to date from there
+    if (this.workerScope) {
+      return seams.permissions?.state(name, origin) ?? 'denied';
+    }
+    if (!this._secureContext()) return 'denied';
+    if (POLICY_FEATURES.has(name) && !this._featureAllowed(name)) {
+      return 'denied';
+    }
+    const media = name === 'camera' || name === 'microphone';
+    const device = media && seams.mediaDevices;
+    if (media && !device) return 'denied';
+    const asked =
+      (device ? device.permission?.(name, origin) : undefined) ??
+      seams.permissions?.state(name, origin);
+    if (asked) return asked;
+    if (device) return 'prompt';
+    if (name === 'notifications') {
+      return seams.notifications ? 'granted' : 'denied';
+    }
+    // a user's press is all a write needs (`clipboard.ts`)
+    if (name === 'clipboard-write' && seams.clipboard) return 'prompt';
+    return 'denied';
+  }
+
+  /** Ask the user, where there is one to ask and it is still a question. */
+  private _permissionAsk(id: number, name: string): void {
+    const tell = (): void => {
+      if (this._disposed) return;
+      this._permissionMoved(name);
+      this.entries?.call('__permissionAsked', [
+        id,
+        this._permissionState(name),
+      ]);
+    };
+    const asked =
+      this._permissionState(name) === 'prompt'
+        ? this._seams.permissions?.request(name, this._origin())
+        : undefined;
+    void (asked ?? Promise.resolve()).then(tell, tell);
+  }
+
+  /** Where each permission stands, for a worker to keep a copy of: a page's
+   *  answer is at once, and across a thread none is. */
+  permissionStates(): Record<string, string> {
+    return Object.fromEntries(
+      PERMISSION_NAMES.map((name) => [name, this._permissionState(name)]),
+    );
+  }
+
+  /** A permission moved: what listens to it hears, here and in workers. */
+  private _permissionMoved(name: string): void {
+    if (this._disposed) return;
+    this.entries?.call('__permission', name);
+    this.workers?.permissionMoved?.(name, this._permissionState(name));
+  }
+
+  private _unwatchPermissions: (() => void) | null = null;
+  /** The page's notifications showing, by the number it goes by. */
+  private _shown = new Map<number, HtmlShownNotification | null>();
+  /**
+   * What a page asks of a notification. Its text crosses as JSON, and the
+   * origin is added here: it is the one thing of it that is not the page's
+   * to say.
+   */
+  private _notificationOp(what: string, id: number, payload: string): void {
+    const seam = this._seams.notifications;
+    const tell = (told: string): void => {
+      if (!this._disposed) this.entries?.call('__notification', [id, told]);
+    };
+    if (what === 'focus') {
+      seam?.focus?.();
+    } else if (what === 'close') {
+      const shown = this._shown.get(id);
+      this._shown.delete(id);
+      closeShown(shown);
+    } else if (!seam) {
+      tell('error');
+    } else {
+      this._shown.set(id, null);
+      const notification = {
+        ...(JSON.parse(payload) as Omit<HtmlNotification, 'origin'>),
+        origin: this._origin(),
+      };
+      void seam
+        .show(notification, {
+          click: () => {
+            if (this._shown.has(id)) tell('click');
+          },
+          close: () => {
+            if (this._shown.delete(id)) tell('close');
+          },
+        })
+        .then(
+          (shown) => {
+            if (!this._shown.has(id)) {
+              closeShown(shown);
+              return;
+            }
+            this._shown.set(id, shown);
+            tell('show');
+          },
+          () => {
+            if (this._shown.delete(id)) tell('error');
+          },
+        );
+    }
+  }
+
   /** Whether a feature whose default allowlist is the document's own origin
    *  reaches this document (Permissions Policy 8.8): every document of the
    *  top's origin, and any other whose frame names it in `allow`. */
@@ -7251,7 +7437,7 @@ export class DomHost {
    *  frame has gone. */
   private _fullyActive(): boolean {
     const frame = this._frameOf.get(this.document);
-    return !frame || this._inDocument(frame);
+    return !frame || shadowIncludingRoot(frame) instanceof Document;
   }
 
   private _crypto: PageCrypto | null = null;

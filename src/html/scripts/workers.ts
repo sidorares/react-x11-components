@@ -34,6 +34,11 @@ import type { TransportAsk, TransportTell } from './transport-relay.js';
 import { SocketRelay } from './socket-relay.js';
 import type { SocketAsk, SocketTell } from './socket-relay.js';
 import type { HtmlWebSocket } from '../socket.js';
+import type {
+  HtmlNotification,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from '../notifications.js';
 import type { ChannelRelay } from './peers.js';
 
 declare const URL: UrlClass;
@@ -52,6 +57,11 @@ export interface PageWorkersSeams {
   /** What a worker's WebSockets are carried over: the page's own seam,
    *  read as each connection opens. */
   readonly webSocket?: HtmlWebSocket;
+  /** What a worker's `Notification`s reach: the page's own seam. */
+  readonly notifications?: HtmlNotifications;
+  /** Where each permission stands for the page, handed to a worker as it
+   *  starts. */
+  permissions?(): Record<string, string>;
   log(level: string, text: string): void;
   userAgent: string;
   language: string;
@@ -84,12 +94,20 @@ export interface WorkerThreadData {
    *  that counts the threads stopped for it (`PageWorkers.freeze`). */
   frozen: SharedArrayBuffer;
   stopped: SharedArrayBuffer;
+  /** Where each permission stands, which `permissionMoved` keeps current. */
+  permissions: Record<string, string>;
+  /** Whether the page has anything to show a notification with. */
+  notifies: boolean;
 }
 
 /** What the thread tells this side. */
 export type FromWorker =
   /** Its modules are in, and it can be terminated (`PageWorkers.end`). */
   | { kind: 'up' }
+  /** A worker's `Notification`, over the page's seam. */
+  | { kind: 'notification'; id: number; show: HtmlNotification }
+  | { kind: 'notification'; id: number; close: true }
+  | { kind: 'notification'; id: number; focus: true }
   | { kind: 'message'; data: string }
   | {
       kind: 'error';
@@ -109,6 +127,9 @@ export type FromWorker =
 /** What this side tells the thread. */
 export type ToWorker =
   | { kind: 'message'; data: string }
+  | { kind: 'permission'; name: string; state: string }
+  /** What became of a worker's notification. */
+  | { kind: 'notification'; id: number; told: string }
   | {
       kind: 'fetched';
       id: number;
@@ -160,6 +181,15 @@ function threadSource(): UrlLike | string {
   );
 }
 
+/** Take a notification down, whatever the host's hook makes of it. */
+function closeNotification(shown: HtmlShownNotification | null | undefined) {
+  try {
+    void Promise.resolve(shown?.close()).catch(() => {});
+  } catch {
+    // nothing is left to hear it did not close
+  }
+}
+
 interface Running {
   thread: WorkerLike;
   /** Whether its modules are in, as it said (`end`). */
@@ -171,6 +201,8 @@ interface Running {
   transports: TransportRelay | null;
   /** Its WebSockets, made the first time it opens one. */
   sockets: SocketRelay | null;
+  /** Its notifications that are showing. */
+  shown: Map<number, HtmlShownNotification | null>;
 }
 
 /** How many workers one page may have running at once. A page that spawns
@@ -223,6 +255,8 @@ export class PageWorkers implements PageWorkersLike {
       flag,
       frozen: this._frozen,
       stopped: this._stopped,
+      permissions: this._seams.permissions?.() ?? {},
+      notifies: !!this._seams.notifications,
     };
     const source = threadSource();
     const thread = new Thread(source, {
@@ -238,6 +272,7 @@ export class PageWorkers implements PageWorkersLike {
       url: init.url,
       sync: port1,
       fetches: new Map(),
+      shown: new Map(),
       transports: null,
       sockets: null,
     };
@@ -288,6 +323,7 @@ export class PageWorkers implements PageWorkersLike {
     for (const controller of running.fetches.values()) controller.abort();
     running.transports?.dispose();
     running.sockets?.dispose();
+    for (const shown of running.shown.values()) closeNotification(shown);
     if (running.up) void running.thread.terminate();
     else this._ending.add(running);
   }
@@ -295,6 +331,62 @@ export class PageWorkers implements PageWorkersLike {
   dispose(): void {
     this._disposed = true;
     for (const id of [...this._running.keys()]) this.end(id);
+  }
+
+  /** A permission moved: each thread's copy follows. */
+  permissionMoved(name: string, state: string): void {
+    for (const running of this._running.values()) {
+      running.thread.postMessage({ kind: 'permission', name, state });
+    }
+  }
+
+  /** A worker's `Notification`: the page's seam, told back across. */
+  private _notification(
+    id: number,
+    running: Running,
+    m: Extract<FromWorker, { kind: 'notification' }>,
+  ): void {
+    const seam = this._seams.notifications;
+    const told = (word: string): void => {
+      if (this._running.get(id) !== running) return;
+      running.thread.postMessage({
+        kind: 'notification',
+        id: m.id,
+        told: word,
+      });
+    };
+    if ('focus' in m) {
+      seam?.focus?.();
+    } else if ('close' in m) {
+      closeNotification(running.shown.get(m.id));
+      running.shown.delete(m.id);
+    } else if (!seam) {
+      told('error');
+    } else {
+      running.shown.set(m.id, null);
+      void seam
+        .show(m.show, {
+          click: () => {
+            if (running.shown.has(m.id)) told('click');
+          },
+          close: () => {
+            if (running.shown.delete(m.id)) told('close');
+          },
+        })
+        .then(
+          (shown) => {
+            if (!running.shown.has(m.id)) {
+              closeNotification(shown);
+              return;
+            }
+            running.shown.set(m.id, shown);
+            told('show');
+          },
+          () => {
+            if (running.shown.delete(m.id)) told('error');
+          },
+        );
+    }
   }
 
   /**
@@ -423,6 +515,9 @@ export class PageWorkers implements PageWorkersLike {
         return;
       case 'close':
         this.end(id);
+        return;
+      case 'notification':
+        this._notification(id, running, m);
         return;
       case 'abort':
         running.fetches.get(m.id)?.abort();

@@ -50,6 +50,7 @@ import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
 import type { HtmlClipboard, HtmlClipboardData } from '../clipboard.js';
+import type { HtmlNotifications } from '../notifications.js';
 import type { HtmlPermissions } from '../permissions.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
@@ -204,9 +205,17 @@ export interface HtmlScripts {
    */
   clipboard?: HtmlClipboard;
   /**
+   * What a page's `Notification`s reach (`HtmlNotifications`). Default: none,
+   * so `Notification.permission` is `denied` and one a page makes fires
+   * `error`. `useHtmlNotifications()` is the desktop's. A host that hands one
+   * and no `permissions` has decided, and a page is `granted`.
+   */
+  notifications?: HtmlNotifications;
+  /**
    * What a page has been allowed (`HtmlPermissions`): what
-   * `navigator.permissions.query()` answers and what guards a page's read of
-   * the clipboard. Default: nothing has, and asking refuses.
+   * `navigator.permissions.query()` and `Notification.permission` answer,
+   * and what guards a page's read of the clipboard. Default: nothing has,
+   * and asking refuses.
    */
   permissions?: HtmlPermissions;
   /**
@@ -491,6 +500,7 @@ export function useScriptedHtml(
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
     webSocket: config.webSocket ?? NO_WEBSOCKET,
     clipboard: config.clipboard,
+    notifications: config.notifications,
     permissions: config.permissions,
     webRTC: config.webRTC ?? NO_WEBRTC,
     mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,

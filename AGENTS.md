@@ -3514,6 +3514,17 @@ one-way. **A press on any of the control is the button**, since a page lays a
 transparent one over what it draws: the box beside the button has the same
 `onClick`.
 
+**What leaves a document as a file goes through a seam that does nothing by
+default** (`download.ts`, `onDownload`). A link's `download` is the realm's to
+read where scripts run (`downloadLink`), and `<Html>`'s where they do not
+(`followed`), with the same rule: another origin's says nothing. A `blob:`'s
+bytes cross with the request, since no host can read one. **`safeFilename` is
+what stands between a server's name and a path**: anything new that takes a name
+for a file goes through `downloadName` or `safeFilename`, never around them, and
+a host joins nothing else to a directory. `HtmlNetwork.document` hands over a
+second body with no limit on it (`whole`), lazily: **read `body` or `whole`,
+never both**, since both drain the one response.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
@@ -4639,6 +4650,50 @@ closes a way out a DOM binding opens by accident:
   has not said yes to is refused, whatever gesture is behind it**: with
   `scripts.permissions` absent, `request` answers `denied`, so a host that hands
   a page its clipboard does not hand it the clipboard's contents.
+- **A document's drag is a layer over core's, on one root** (`drag.ts`). The
+  root is core's one draggable and its one drop target; `onDragStart` cancels
+  every press that is on nothing a drag starts from, which leaves it ordinary
+  mouse events. Core arms a drag only from a press nothing cancelled, so a
+  press that starts no selection, as one past a text's end does, is declined
+  in `defaultMouseDown` and never cancelled. Core reads `dragData` before
+  `onDragStart`, so the root's is fixed, thunks that answer from `active`,
+  this process's drag. **A
+  `<Frame>` pane on a Mac has neither half of it**: no `attachDropTransport`,
+  so `_initDnd` makes no drop session and core takes every drag for one over
+  another application; and no `beginDrag`. `onDrag` answers what is inside the
+  document for it (`droppable`), and the host takes what comes from outside
+  (`dragOver`, `dropHere`). Both are worked around here, and the fix is core's:
+  when it lands, `droppable` goes. **A drag event's `dataTransfer` is new at
+  each event over one store**, as HTML has it, so what a page left comes back
+  through `dragOut` and `HtmlDomEvent.drag`, and `offeredEntries` is what makes
+  a store of what crossed. A store's entry can have no data: a `File` of
+  another application's, known to be there and unreadable until the drop.
+- **Where a permission stands has one answer, and it is what asking would come
+  to** (`DomHost._permissionState`). `Notification.permission`,
+  `navigator.permissions`, the clipboard's gates and a worker's copy all read it,
+  so anything new that a user has to agree to asks it, and its name goes in
+  `PERMISSION_NAMES` and, where a Permissions Policy feature decides it too, in
+  `POLICY_FEATURES`. **With no host to ask the answer is `denied`, not `prompt`**:
+  a page that reads `prompt` asks and is refused, and only what a host handed a
+  seam for has an answer without one. A `PermissionStatus` joins
+  `permissionsHeard` only once it has a listener, since nothing else can hear
+  it move, and that is what keeps a page that polls `query()` from holding every
+  status it ever made. **Anything that moves a permission calls
+  `_permissionMoved`**: a host's `watch`, and a `request` a page made. A worker
+  has no way to ask its page at once, so it reads a copy made as it starts
+  (`WorkerThreadData.permissions`), which `permissionMoved` keeps current.
+- **`Notification` is there with no seam, and a seam's origin is the host's**
+  (`notifications.ts` twice: the seam in `src/html/`, the page's in `scripts/`).
+  Leaving it out would send a page down a path no browser takes, so a host with
+  nothing to show one with is a user who said no. **What a page writes never
+  says who wrote it**: `_notificationOp` adds `origin` itself, and a test holds
+  that an `origin` in the options goes nowhere. `data` stays in the realm, and
+  what crosses is a JSON string of text and numbers. `useHtmlNotifications`
+  escapes a body for the rungs that read markup: `dbus` and `notify-send`, and
+  any rung it does not know yet. A worker's go through its page's seam
+  (`PageWorkers._notification`), in the same words. A registration's
+  (`showFor`, `listFor`) are listed by the realm, since a registration is no
+  more than a realm's here, and nothing is kept across a reload.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells

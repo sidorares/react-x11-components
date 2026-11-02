@@ -244,6 +244,10 @@ export class ScriptRunner {
             get webSocket() {
               return _options.webSocket;
             },
+            get notifications() {
+              return _options.notifications;
+            },
+            permissions: () => this.host.permissionStates(),
             log: (level, text) => this._options.log(level, text),
             get userAgent() {
               return _options.userAgent;

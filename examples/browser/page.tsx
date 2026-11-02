@@ -102,6 +102,8 @@ import {
   NetworkError,
   canPlayMedia,
   decodeText as decode,
+  dispositionOf,
+  downloadSource,
   linkTarget,
   navigableFor,
   preloadHtmlScripts,
@@ -112,6 +114,7 @@ import {
   sniffCharset,
   threadTransport,
   useHtmlClipboard,
+  useHtmlNotifications,
   useHtmlHandle,
   videoSource,
   gpuWebGL,
@@ -121,6 +124,12 @@ import type {
   DocumentResponse,
   Element,
   FormSubmission,
+  HtmlDownloadRequest,
+  HtmlNotifications,
+  HtmlPermissions,
+  HtmlPermissionState,
+  HtmlDownloadSource,
+  HtmlDrop,
   HtmlPickFiles,
   HtmlScripts,
   HtmlSessionEntry,
@@ -131,7 +140,10 @@ import type {
   ViewportOverflow,
 } from '../../src/html/index.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
+import { saveDownload } from './downloads.js';
+import type { DownloadState } from './downloads.js';
 import { openProfile } from './profile.js';
+import { unanswered } from './permissions.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
@@ -148,7 +160,6 @@ import {
   homePage,
   imagePage,
   textPage,
-  unsupportedPage,
 } from './pages.js';
 
 /** The keys a scroll pane moves its offset down or up with (core's
@@ -209,6 +220,20 @@ const DEFAULT_USER_AGENT = `Mozilla/5.0 (${
 /** The profile this process keeps its cookies and storage in, where the
  *  browser has one and the runtime has SQLite. */
 const profile = await openProfile();
+
+/** What a user said with no profile to keep it in: this tab's alone. */
+const unkeptPermissions = new Map<string, HtmlPermissionState>();
+
+/** Where a permission stands for an origin, for a page's `navigator.permissions`
+ *  and for what guards a feature: asked often, and read from the profile, where
+ *  another tab's process may have just kept an answer. */
+function sitePermission(name: string, origin: string): HtmlPermissionState {
+  return (
+    profile?.permissions.get(origin, name) ??
+    unkeptPermissions.get(`${origin} ${name}`) ??
+    unanswered(name, origin)
+  );
+}
 
 /** The cookies every tab shares, through the profile; the Public Suffix
  *  List where the optional `tldts` is installed. */
@@ -351,9 +376,33 @@ export interface PageProps {
    *  from, so the browser shows the dialog, and what was chosen comes back
    *  as `picked`, under `id`. */
   onPickFiles(id: number, multiple: boolean, accept: string[]): void;
+  /** A page asks its user something, which the browser puts to them. */
+  onAskPermission(id: number, origin: string, name: string): void;
+  /** The last answer to `onAskPermission`, where the user gave one. */
+  permissionAnswer?: { id: number; state: HtmlPermissionState | null } | null;
+  /** What moved in the profile, for every tab's pages to hear. */
+  permissionsMoved?: {
+    n: number;
+    origin: string;
+    names: string[];
+    /** Whether the user let the origin ask again. */
+    forgot?: boolean;
+  } | null;
+  /** Let this page's origin ask again. */
+  onForgetPermissions(origin: string): void;
+  /** Its notification was clicked: show the tab. */
+  onBringForward(): void;
+  /** A download's news: the browser draws its shelf from it. */
+  onDownloadState(state: DownloadState): void;
+  /** The downloads the shelf asked to have stopped, by id. */
+  cancelDownloads?: readonly string[];
   /** The last answer to `onPickFiles`: paths, or null where it was
    *  cancelled. */
   picked?: { id: number; paths: string[] | null } | null;
+  /** What another application is dragging over the page, or has dropped on
+   *  it: a pane has no window for one to land on, so the browser takes it
+   *  and says so here. Positions are the pane's own. */
+  dropped?: (HtmlDrop & { phase: 'over' | 'drop' }) | { phase: 'leave' } | null;
   /** An entry wants its document loaded, which this process does not have:
    *  a step to one it let go, the page's own reload, or the entry shown
    *  after a crash. `doc` is the document it was, whose POST to send. */
@@ -831,6 +880,7 @@ export default function Page(props: PageProps): ReactElement {
     const seq = loadSeq;
     const { loadHow: how, loadKey: key } = props;
     const controller = new AbortController();
+    let saving = false;
     void loadDocument(
       {
         seq,
@@ -853,10 +903,18 @@ export default function Page(props: PageProps): ReactElement {
         },
         progress: (next) => store(seq, next),
         finish: () => live.current.onFinish(seq),
+        // not a document after all: the tab stays on what it was showing,
+        // and the request goes on as a download, which only its shelf can
+        // stop now
+        download: (source) => {
+          saving = true;
+          live.current.onFinish(seq);
+          save(source, nextDownload(), controller);
+        },
       },
     );
     return () => {
-      controller.abort();
+      if (!saving) controller.abort();
       setDocs((all) => {
         const cut = all.get(seq);
         if (!cut?.partial) return all;
@@ -1230,6 +1288,115 @@ export default function Page(props: PageProps): ReactElement {
     picking.current.delete(answered.id);
   }, [answered]);
 
+  // What is saved is written here, where the response is being read, and
+  // each one is stopped by the shelf or by this process's end.
+  const saving = useRef(new Map<string, AbortController>());
+  const saved = useRef(0);
+  const save = (
+    source: HtmlDownloadSource | Promise<HtmlDownloadSource>,
+    id: string,
+    controller: AbortController,
+  ) => {
+    saving.current.set(id, controller);
+    void Promise.resolve(source)
+      .then((from) =>
+        saveDownload(id, from, controller.signal, (state) =>
+          live.current.onDownloadState(state),
+        ),
+      )
+      .catch((error: Error) =>
+        live.current.onDownloadState({
+          id,
+          name: '',
+          path: null,
+          received: 0,
+          size: null,
+          state: 'failed',
+          error: error.message,
+        }),
+      )
+      .finally(() => saving.current.delete(id));
+  };
+  const nextDownload = () => {
+    saved.current += 1;
+    return `${process.pid}.${saved.current}`;
+  };
+  // what a page asks its user is put to them in the browser's window, and
+  // comes back as a prop
+  const notifier = useHtmlNotifications();
+  const asking = useRef(
+    new Map<number, (state: HtmlPermissionState) => void>(),
+  );
+  const asked = useRef(0);
+  const permissionsHeard = useRef(new Set<(name: string) => void>());
+  const pagePermissions = useRef<HtmlPermissions>({
+    state: sitePermission,
+    request: (name, origin) =>
+      new Promise((resolve) => {
+        asked.current += 1;
+        const id = asked.current;
+        asking.current.set(id, (state) => {
+          if (state !== 'prompt') {
+            unkeptPermissions.set(`${origin} ${name}`, state);
+          }
+          resolve(sitePermission(name, origin));
+        });
+        live.current.onAskPermission(id, origin, name);
+      }),
+    watch: (listener) => {
+      permissionsHeard.current.add(listener);
+      return () => permissionsHeard.current.delete(listener);
+    },
+  }).current;
+  const pageNotifications = useMemo<HtmlNotifications>(
+    () => ({ ...notifier, focus: () => live.current.onBringForward() }),
+    [notifier],
+  );
+  const answer = props.permissionAnswer;
+  useEffect(() => {
+    if (!answer) return;
+    asking.current.get(answer.id)?.(answer.state ?? 'prompt');
+    asking.current.delete(answer.id);
+  }, [answer]);
+  const moved = props.permissionsMoved;
+  useEffect(() => {
+    if (!moved) return;
+    for (const name of moved.names) {
+      if (moved.forgot) unkeptPermissions.delete(`${moved.origin} ${name}`);
+      for (const heard of permissionsHeard.current) heard(name);
+    }
+  }, [moved]);
+  useEffect(
+    () => () => {
+      // nobody is left to answer for a page that went
+      for (const left of asking.current.values()) left('prompt');
+      asking.current.clear();
+    },
+    [],
+  );
+
+  const onDownload = (request: HtmlDownloadRequest) => {
+    const controller = new AbortController();
+    save(
+      network.download(request, controller.signal, session.current?.url),
+      nextDownload(),
+      controller,
+    );
+  };
+  const cancelled = props.cancelDownloads;
+  useEffect(() => {
+    for (const id of cancelled ?? []) saving.current.get(id)?.abort();
+  }, [cancelled]);
+
+  // what the browser took for the page, which has no window of its own
+  const dropped = props.dropped;
+  useEffect(() => {
+    if (!dropped) return;
+    if (dropped.phase === 'over') handle.dragOver(dropped);
+    else if (dropped.phase === 'leave') handle.dragLeave();
+    else void handle.dropHere(dropped);
+  }, [dropped, handle]);
+
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
     if (!/^(?:https?|file|data):/i.test(action)) {
@@ -1302,6 +1469,10 @@ export default function Page(props: PageProps): ReactElement {
       },
       // what a page puts on the machine's clipboard and reads off it
       clipboard: pageClipboard,
+      // what a page asks for goes to the bar above it, and what it is told
+      // stays in the profile; its notifications go to the desktop
+      permissions: pagePermissions,
+      notifications: pageNotifications,
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
       // and its WebGL, on the GPU where x11-dri can reach one
@@ -1372,6 +1543,12 @@ export default function Page(props: PageProps): ReactElement {
         key: 'reload',
         label: 'Reload',
         onSelect: () => live.current.onCommand('reload'),
+      },
+      {
+        key: 'forget-permissions',
+        label: 'Reset Site Permissions',
+        enabled: /^https?:/.test(url),
+        onSelect: () => live.current.onForgetPermissions(new URL(url).origin),
       },
       { key: 'history-rule', type: 'separator' },
       {
@@ -1625,6 +1802,8 @@ export default function Page(props: PageProps): ReactElement {
                   onLink={onLink}
                   onSubmit={onSubmit}
                   onPickFiles={pickFiles}
+                  onDropFiles={readHtmlFiles}
+                  onDownload={onDownload}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>
@@ -1753,6 +1932,8 @@ interface LoadCallbacks {
   commit(url: string, first: Doc, title: string | null, posted: boolean): void;
   progress(next: Doc): void;
   finish(): void;
+  /** It is to be saved, not shown. */
+  download(source: HtmlDownloadSource): void;
 }
 
 /**
@@ -1805,6 +1986,14 @@ async function loadDocument(
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
+  // what says it is a file, or is nothing this browser can show
+  if (
+    !viewSource &&
+    (kind === 'other' || dispositionOf(response.disposition).attachment)
+  ) {
+    on.download(downloadSource(response, ''));
+    return;
+  }
   if (kind !== 'html') {
     let bytes: Uint8Array;
     try {
@@ -1828,7 +2017,7 @@ async function loadDocument(
         posted,
       );
     }
-    return own(unsupportedPage(response.url, response.type), null, url, posted);
+    return own(errorPage(target, 'It cannot be shown.', 'ERR_FAILED'), null);
   }
 
   // HTML: stream it. The encoding is the response's, or the one a `<meta>`

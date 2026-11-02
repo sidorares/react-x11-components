@@ -45,6 +45,7 @@ import type { installGeometry } from './geometry.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installClipboard } from './clipboard.js';
+import type { installNotifications } from './notifications.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -83,6 +84,7 @@ export function installDom(
   webcrypto: typeof installWebCrypto,
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
+  notificationsApi: typeof installNotifications,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -7255,7 +7257,14 @@ export function installDom(
       this.setAttribute('accesskey', v);
     }
     get draggable(): boolean {
-      return this.getAttribute('draggable') === 'true';
+      const said = (this.getAttribute('draggable') ?? '').toLowerCase();
+      if (said === 'true') return true;
+      if (said === 'false') return false;
+      // HTML 6.11.6: `auto`, which an image and a link with an address are
+      return (
+        this.localName === 'img' ||
+        (this.localName === 'a' && this.hasAttribute('href'))
+      );
     }
     set draggable(v: Any) {
       this.setAttribute('draggable', v ? 'true' : 'false');
@@ -17870,6 +17879,13 @@ export function installDom(
     'copy',
     'cut',
     'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'input',
     'change',
     'select',
@@ -21949,6 +21965,8 @@ export function installDom(
     'DataTransferItem',
     'DataTransferItemList',
     'ClipboardEvent',
+    'DragEvent',
+    'FileSystemFileEntry',
     'Clipboard',
     'ClipboardItem',
     // WebRTC's and Media Capture's interfaces but the data channel's
@@ -22350,6 +22368,12 @@ export function installDom(
     update(): Promise<Any> {
       return Promise.resolve(this);
     }
+    showNotification(title: Any, options?: Any): Any {
+      return NOTE.showFor(this, title, options);
+    }
+    getNotifications(filter?: Any): Any {
+      return NOTE.listFor(this, filter);
+    }
     /** Service Workers 1, "Unregister": gone from the page's, and its
      *  workers ended. */
     unregister(): Promise<boolean> {
@@ -22357,6 +22381,7 @@ export function installDom(
         return Promise.resolve(false);
       }
       swRegistrations.delete(this._scope);
+      NOTE.forget(this);
       for (const worker of [this._installing, this._waiting, this._active]) {
         if (worker) swRedundant(worker);
       }
@@ -22364,6 +22389,11 @@ export function installDom(
     }
   }
   handlerProperty(ServiceWorkerRegistration.prototype, 'updatefound');
+  for (const name of ['showNotification', 'getNotifications']) {
+    Object.defineProperty(ServiceWorkerRegistration.prototype, name, {
+      enumerable: true,
+    });
+  }
   /** A worker that will do nothing more: its thread ended, its state
    *  `redundant`, and it is no registration's. */
   const swRedundant = (worker: Any): void => {
@@ -22607,6 +22637,25 @@ export function installDom(
       this._waits.push(Promise.resolve(promise));
     }
   }
+  class NotificationEvent extends ExtendableEvent {
+    _init: Any;
+    constructor(type: Any, init: Any) {
+      super(type, init);
+      if (typeof init?.notification !== 'object' || !init.notification) {
+        throw new TypeError(
+          "Failed to construct 'NotificationEvent': Required member is undefined.",
+        );
+      }
+      this._init = init;
+    }
+    get notification(): Any {
+      return this._init.notification;
+    }
+    get action(): string {
+      return `${this._init.action ?? ''}`;
+    }
+  }
+  idlAttributes(NotificationEvent);
   class ExtendableMessageEvent extends ExtendableEvent {
     _data: Any;
     _origin: string;
@@ -22795,6 +22844,7 @@ export function installDom(
   const TRANSFER = transfers({
     DOMException,
     Event,
+    MouseEvent,
     File,
     FileList,
     // what a store holds is no tree's, so no count says it moved
@@ -26531,41 +26581,18 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
-  /** The features a permission can name: each one Chrome's `PermissionName`
-   *  takes, since a name past them is a `TypeError` a page can tell a
-   *  missing feature by. */
-  const PERMISSION_NAMES = new Set([
-    'accelerometer',
-    'accessibility-events',
-    'ambient-light-sensor',
-    'background-fetch',
-    'background-sync',
-    'camera',
-    'clipboard-read',
-    'clipboard-write',
-    'display-capture',
-    'fullscreen',
-    'geolocation',
-    'gyroscope',
-    'idle-detection',
-    'local-fonts',
-    'magnetometer',
-    'microphone',
-    'midi',
-    'nfc',
-    'notifications',
-    'payment-handler',
-    'periodic-background-sync',
-    'persistent-storage',
-    'push',
-    'screen-wake-lock',
-    'speaker-selection',
-    'storage-access',
-    'system-wake-lock',
-    'top-level-storage-access',
-    'window-management',
-  ]);
+  /** The features a permission can name, which are the host's to list
+   *  (`permissions.ts`), asked once. */
+  let permissionNames: Set<string> | null = null;
+  const isPermissionName = (name: string): boolean =>
+    (permissionNames ??= new Set(
+      JSON.parse(str(call('permissionNames'))) as string[],
+    )).has(name);
   let makingPermissions = false;
+  /** Those a page listens to, and where each last stood, which is what a
+   *  move is told by. Only one with a listener can hear of a move, so it is
+   *  the only one that has to outlive the page's own reference to it. */
+  const permissionsHeard = new Map<Any, string>();
   class PermissionStatus extends EventTarget {
     _name = '';
     constructor() {
@@ -26578,9 +26605,34 @@ export function installDom(
     get state(): string {
       return permissionState(this._name);
     }
+    override addEventListener(type: Any, ...rest: Any[]): void {
+      super.addEventListener(type, ...(rest as [Any]));
+      if (`${type}` === 'change') hearPermission(this);
+    }
   }
+  const hearPermission = (status: Any): void => {
+    if (!permissionsHeard.has(status)) {
+      permissionsHeard.set(status, permissionState(status._name));
+    }
+  };
   idlAttributes(PermissionStatus);
   handlerProperty(PermissionStatus.prototype, 'change');
+  {
+    // a handler is a listener as well, which `addEventListener` is not told of
+    const handler = Object.getOwnPropertyDescriptor(
+      PermissionStatus.prototype,
+      'onchange',
+    ) as Any;
+    const set = function (this: Any, fn: Any): void {
+      handler.set.call(this, fn);
+      if (typeof fn === 'function') hearPermission(this);
+    };
+    Object.defineProperty(set, 'name', { value: 'set onchange' });
+    Object.defineProperty(PermissionStatus.prototype, 'onchange', {
+      ...handler,
+      set,
+    });
+  }
   class Permissions {
     constructor() {
       if (!makingPermissions) throw new TypeError('Illegal constructor');
@@ -26592,15 +26644,25 @@ export function installDom(
             "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'PermissionDescriptor'.",
           );
         }
-        if (descriptor.name === undefined) {
+        const named = descriptor.name;
+        if (named === undefined) {
           throw new TypeError(
             "Failed to execute 'query' on 'Permissions': Required member is undefined.",
           );
         }
-        const name = str(descriptor.name);
-        if (!PERMISSION_NAMES.has(name)) {
+        const name = str(named);
+        if (!isPermissionName(name)) {
           throw new TypeError(
             `Failed to execute 'query' on 'Permissions': The provided value '${name}' is not a valid enum value of type PermissionName.`,
+          );
+        }
+        // a descriptor of `midi`'s is its own type, read over again
+        // (Permissions 7.1, Web MIDI 11)
+        if (name === 'midi') void descriptor.name;
+        if (call('fullyActive') === false) {
+          throw new DOMException(
+            'The document is not fully active.',
+            'InvalidStateError',
           );
         }
         makingPermissions = true;
@@ -26614,11 +26676,10 @@ export function installDom(
       });
     }
   }
-  /** What a permission is for this document, as the host has it: `prompt`
-   *  where nothing has been granted or refused, which is the answer a
-   *  browser gives before it has asked. */
+  /** What a permission is for this document, as the host has it. */
   const permissionState = (name: string): string =>
-    str(call('permission', name) ?? 'prompt');
+    str(call('permission', name) ?? 'denied');
+  Object.defineProperty(Permissions.prototype, 'query', { enumerable: true });
   const madePermissions = (): Any => {
     makingPermissions = true;
     try {
@@ -26652,6 +26713,50 @@ export function installDom(
   });
   /** Whether the host handed this document a clipboard. */
   const hasClipboard = (): boolean => call('clipboard', 'on') === true;
+
+  // --- notifications ----------------------------------------------------------
+  //
+  // `notifications.ts`, what shows them the host's (`scripts.notifications`,
+  // the `notification` op and the `__notification` entry).
+  const notificationEntries: [string, () => Primitive][] = [];
+  const NOTE = notificationsApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      notificationEntries.push([name, fn]);
+    },
+    input: () => input(),
+    EventTarget,
+    Event,
+    idlAttributes,
+    handlerProperty,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+    report: (error: Any) => report(error),
+    resolve: (url: string) => {
+      try {
+        const base = workerLocation
+          ? str(workerLocation.href)
+          : str(document.baseURI);
+        return new URL(url, base).href;
+      } catch {
+        return null;
+      }
+    },
+    clone: (value: Any) => (G as Any).structuredClone(value),
+    hasTransientActivation: () => hasTransientActivation(),
+    inServiceWorker: () => serviceRealm !== null,
+    permission: () => permissionState('notifications'),
+    noWorker: (registration: Any) =>
+      !serviceRealm && !registration._active && !registration._waiting,
+    workerEvent: (type: string, notification: Any, action: string) => {
+      if (!serviceRealm) return false;
+      const ev = new NotificationEvent(type, { notification, action });
+      ev.isTrusted = true;
+      dispatch(windowTarget, ev);
+      return true;
+    },
+  });
 
   const navigator = {
     userAgent,
@@ -28091,9 +28196,8 @@ export function installDom(
    *  hyperlink"): `navigate` first, and the host follows it only where it
    *  goes to another document. False where the page kept it. */
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
-    if (!anchor.hasAttribute('href') || anchor.hasAttribute('download')) {
-      return true;
-    }
+    if (!anchor.hasAttribute('href')) return true;
+    if (anchor.hasAttribute('download')) return !downloadLink(anchor);
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
@@ -28126,6 +28230,35 @@ export function installDom(
       hostFollows: true,
     });
     return went === 'other';
+  };
+
+  /** A link that says to save what it names (HTML 4.6.5, "download the
+   *  hyperlink"), where the host saves things: a `blob:`'s bytes are this
+   *  realm's to hand over. Another origin's `download` says nothing, as a
+   *  browser takes it, or a link could name any file it likes. */
+  const downloadLink = (anchor: Any): boolean => {
+    const href = str(anchor.href);
+    let foreign = false;
+    try {
+      const url = new URL(href);
+      foreign =
+        url.protocol !== 'blob:' &&
+        url.protocol !== 'data:' &&
+        url.origin !== location.origin;
+    } catch {
+      return false;
+    }
+    if (foreign) return false;
+    const blob = blobUrls.get(href.replace(/#.*$/, ''));
+    return (
+      call(
+        'download',
+        href,
+        str(anchor.getAttribute('download') ?? ''),
+        blob instanceof Blob ? base64OfBytes(blob._bytes) : '',
+        blob instanceof Blob ? blob.type : '',
+      ) === true
+    );
   };
 
   /** A form's submission (HTML 4.10.21.3, "submit"), once its `submit`
@@ -31096,8 +31229,8 @@ export function installDom(
         type,
         data: new File(
           [bytesOfBase64(item.b)],
-          `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
-          { type },
+          item.n ?? `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
+          { type, ...(item.m !== undefined && { lastModified: item.m }) },
         ),
       };
     }
@@ -31130,7 +31263,11 @@ export function installDom(
   /** A paste no listener cancelled: into the field that has the focus, or
    *  at the selection of the host it is in. Text alone, and the structure of
    *  `text/html` is a listener's to use (5.3.1). */
-  const pasteInto = (at: Any, entries: Any[]): void => {
+  const pasteInto = (
+    at: Any,
+    entries: Any[],
+    inputType = 'insertFromPaste',
+  ): void => {
     let text = '';
     for (const held of entries) {
       if (held.kind === 'text' && held.type === 'text/plain') text = held.data;
@@ -31149,12 +31286,12 @@ export function installDom(
               (field.selectionEnd - field.selectionStart);
         value = value.slice(0, Math.max(0, room));
       }
-      if (value) editField(field, 'insertFromPaste', value);
+      if (value) editField(field, inputType, value);
       return;
     }
     const host = editingHostOf(at);
     if (host) {
-      edit(host, 'insertFromPaste', null, {
+      edit(host, inputType, null, {
         text,
         transfer: TRANSFER.made('read-only', entries),
       });
@@ -31230,6 +31367,94 @@ export function installDom(
       return false;
     }
     return true;
+  };
+
+  /** What a drag holds that a page added at its `dragstart`, as it crosses
+   *  to where the drag lands, which may be another realm. */
+  const dragWire = (transfer: Any): Any[] => {
+    const out = storeWire(transfer);
+    for (const held of TRANSFER.entriesOf(transfer) as Any[]) {
+      if (held.kind !== 'file' || !held.data) continue;
+      out[out.length] = {
+        t: held.type,
+        b: base64OfBytes(held.data._bytes),
+        n: held.data.name,
+        m: held.data.lastModified,
+      };
+    }
+    return out;
+  };
+
+  /**
+   * A drag's event (HTML 6.11.5), with a `DataTransfer` of its own over what
+   * the drag holds, in the mode the event has it: what a page wrote at
+   * `dragstart`, and what it answers at `dragover`, go back through
+   * `dragOut`. Whether it was not cancelled.
+   */
+  const dragEvent = (type: string, target: Any, e: Any, mods: Any): boolean => {
+    const told = e.drag ?? {};
+    const entries = offeredEntries(told.entries ?? []);
+    for (const file of told.files ?? []) {
+      const made = hostFile(file);
+      entries[entries.length] = { kind: 'file', type: made.type, data: made };
+    }
+    // known to be there, and nothing to read until it is dropped
+    if (told.hasFiles) {
+      entries[entries.length] = { kind: 'file', type: '', data: null };
+    }
+    const data = TRANSFER.made(
+      type === 'dragstart'
+        ? 'read/write'
+        : type === 'drop'
+          ? 'read-only'
+          : 'protected',
+      entries,
+    );
+    TRANSFER.setEffects(
+      data,
+      str(told.effectAllowed ?? 'uninitialized'),
+      str(told.dropEffect ?? 'none'),
+    );
+    const v = viewport();
+    const clientX = (e.x ?? 0) - v.scrollX;
+    const clientY = (e.y ?? 0) - v.scrollY;
+    const go = dispatch(
+      target,
+      trusted(
+        new (TRANSFER.interfaces.DragEvent as Any)(type, {
+          bubbles: true,
+          cancelable: type !== 'dragleave' && type !== 'dragend',
+          composed: true,
+          view: G,
+          clientX,
+          clientY,
+          button: 0,
+          buttons: type === 'dragend' ? 0 : 1,
+          dataTransfer: data,
+          relatedTarget: e.relatedTarget ? wrap(e.relatedTarget) : null,
+          ...mods,
+        }),
+      ),
+    );
+    const { allowed, effect } = TRANSFER.effectsOf(data);
+    call(
+      'dragOut',
+      JSON.stringify({
+        effectAllowed: allowed,
+        dropEffect: effect,
+        ...(type === 'dragstart' && { entries: dragWire(data) }),
+      }),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'drop' && go) {
+      const at = document.caretPositionFromPoint(clientX, clientY);
+      const host = editingHostOf(target);
+      if (host && at && host.contains(at.offsetNode)) {
+        selection.collapse(at.offsetNode, at.offset);
+      }
+      pasteInto(target, entries, 'insertFromDrop');
+    }
+    return go;
   };
 
   /** A clipboard command: `execCommand('copy')` under a user's gesture. */
@@ -31614,6 +31839,7 @@ export function installDom(
     XMLHttpRequestUpload,
     Permissions,
     PermissionStatus,
+    Notification: NOTE.Notification,
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
@@ -32354,6 +32580,13 @@ export function installDom(
     'copy',
     'cut',
     'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
@@ -32657,6 +32890,19 @@ export function installDom(
   for (const [name, fn] of transportEntries) entry(name, fn);
   for (const [name, fn] of cryptoEntries) entry(name, fn);
   for (const [name, fn] of clipboardEntries) entry(name, fn);
+  for (const [name, fn] of notificationEntries) entry(name, fn);
+  // a permission moved: each that listens is told, if it did for this page
+  entry('__permission', () => {
+    const name = str(input());
+    for (const [status, was] of [...permissionsHeard]) {
+      if (status._name !== name) continue;
+      const now = permissionState(name);
+      if (now === was) continue;
+      permissionsHeard.set(status, now);
+      status.dispatchEvent(new Event('change'));
+    }
+    return null;
+  });
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's
@@ -33161,6 +33407,34 @@ export function installDom(
       case 'cut':
       case 'paste':
         return clipboardEvent(e.type, target, e.clipboard, false);
+      case 'dragstart':
+      case 'drag':
+      case 'dragenter':
+      case 'dragover':
+      case 'dragleave':
+      case 'drop':
+      case 'dragend': {
+        const go = dragEvent(e.type, target, e, mods);
+        // the pointer is the drag's from here, and no release of it will be
+        // told (Pointer Events 3, 5.1.2)
+        if (e.type === 'dragstart' && go) {
+          const at = pointer.target ?? target;
+          for (const type of ['pointercancel', 'pointerout', 'pointerleave']) {
+            dispatch(
+              at,
+              trusted(
+                new PointerEvent(type, {
+                  bubbles: type !== 'pointerleave',
+                  composed: type !== 'pointerleave',
+                }),
+              ),
+            );
+          }
+          pointer.held = 0;
+          pointer.pending = null;
+        }
+        return go;
+      }
       case 'input':
         return dispatch(
           target,
@@ -33438,6 +33712,8 @@ export function installDom(
     };
     define('WorkerGlobalScope', scope('WorkerGlobalScope'));
     define('name', str(name));
+    // a window's alone: it asks the user, who is not in a worker
+    delete (NOTE.Notification as Any).requestPermission;
     if (shared) {
       // a shared worker's global hears connections, and posts on their
       // ports alone (HTML 10.2.1.3)
@@ -33473,6 +33749,7 @@ export function installDom(
       define('clients', new Clients());
       define('skipWaiting', () => Promise.resolve());
       const own = serviceRealm.scope;
+      define('NotificationEvent', NotificationEvent);
       define('registration', {
         scope: own,
         installing: null,
@@ -33483,6 +33760,12 @@ export function installDom(
         unregister: () => Promise.resolve(true),
         addEventListener() {},
         removeEventListener() {},
+        showNotification(title: Any, options?: Any) {
+          return NOTE.showFor(this, title, options);
+        },
+        getNotifications(filter?: Any) {
+          return NOTE.listFor(this, filter);
+        },
       });
       for (const type of [
         'install',
@@ -33490,6 +33773,8 @@ export function installDom(
         'message',
         'messageerror',
         'fetch',
+        'notificationclick',
+        'notificationclose',
       ]) {
         Object.defineProperty(G, `on${type}`, {
           get: () => windowTarget._handlers?.[type] ?? null,
