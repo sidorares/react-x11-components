@@ -3523,7 +3523,10 @@ what stands between a server's name and a path**: anything new that takes a name
 for a file goes through `downloadName` or `safeFilename`, never around them, and
 a host joins nothing else to a directory. `HtmlNetwork.document` hands over a
 second body with no limit on it (`whole`), lazily: **read `body` or `whole`,
-never both**, since both drain the one response.
+never both**, since both drain the one response. The clock on a stalled response
+runs from the request whether or not anyone reads it, so **anything new that
+keeps a response waiting calls `hold()`**, which the save dialog does, or
+it is given up as stalled while the user is choosing.
 
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
