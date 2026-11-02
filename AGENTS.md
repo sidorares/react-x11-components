@@ -1884,6 +1884,19 @@ selection goes through `Forms.setSelection`.** It keeps the selection for a
 widget not mounted yet, and it notes it as `seen`, so the user's next key
 is not told as `select` for the script's selection.
 
+**A focus told is owed until something takes it** (`Forms.owe`,
+`settleFocus`). A control has no widget until a render after it is laid out,
+and a script's `focus()` is told at once, as HTML has it (`told`), so the
+page goes by what it heard from there. It was asked of `<Html>` once more,
+16 ms later, and let go of with nothing told: on a page still loading,
+Monaco's textarea had no widget by then one load in five, and Monaco, told
+it had the focus, asked for nothing when it was pressed, so a click on it
+did nothing. The render that mounts a widget or a stop hands the focus on,
+and `activeElement` answers for it until then. **Wait for what takes it, as
+for a layout, and never for a count of turns.** Anything that moves the focus
+before then goes through `Forms.focused` or `letGo`, which take the debt
+back.
+
 **A control's state has one answer, which a rule and a page both ask for**
 (`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,
 `:user-valid`, `:user-invalid`, `:in-range`, `:out-of-range`,

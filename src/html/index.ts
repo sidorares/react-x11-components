@@ -1184,6 +1184,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
   live.current = { forms, stops, onLink };
+  // what a script focused before anything could take it takes it from the
+  // render that mounts a widget or a stop for it, however long that is: no
+  // count of turns is long enough on a page still loading
+  React.useEffect(() => interactive.settleFocus());
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,
@@ -1702,12 +1706,27 @@ function documentInteraction(
       }
       return took;
     },
-    told: (el) => live.current?.forms.focused(el, true),
+    told: (el) => {
+      const forms = live.current?.forms;
+      forms?.focused(el, true);
+      forms?.owe(el);
+    },
+    settleFocus: () => {
+      const now = live.current;
+      const el = now?.forms.owed();
+      if (el) void (now!.forms.focusControl(el) || now!.stops.focus(el));
+    },
     blur: () => {
+      const forms = live.current?.forms;
+      if (forms?.owed()) {
+        forms.letGo();
+        return;
+      }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
     },
-    activeElement: () => owner(focusedNode(view.current)),
+    activeElement: () =>
+      live.current?.forms.owed() ?? owner(focusedNode(view.current)),
     activate: (el) => {
       const node = view.current;
       const now = live.current;
