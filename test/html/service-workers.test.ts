@@ -549,3 +549,88 @@ test("another origin's image goes through a worker, into its cache and out again
   const again = await show(site.url('/page'), network, keeper);
   assert.equal(await again.text('out'), 'drawn 1');
 });
+
+test("a page cannot read another origin's opaque body by writing the number it is held by", async (t) => {
+  const images = await serve({ '/secret': ['text/plain', 'the secret'] }, t);
+  const other = images.url('/secret').replace('localhost', '127.0.0.1');
+  const site = await serve(
+    {
+      '/page': `<!doctype html><p id="out"></p><script>
+        var out = document.getElementById('out');
+        fetch(${JSON.stringify(other)}, { mode: 'no-cors' }).then(function (r) {
+          var forged = new Response('');
+          forged._held = r._held;
+          return caches.open('c').then(function (c) {
+            return c.put('/mine', forged).then(function () {
+              return c.match('/mine');
+            });
+          });
+        }).then(function (r) {
+          return r.text().then(function (text) {
+            out.textContent = r.type + ':' + text + ':' + r.status;
+          });
+        }).catch(function (e) { out.textContent = 'threw ' + e; });
+        </script>`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(await page.text('out'), 'opaque::0');
+});
+
+test('a second process finds what the first registered, in the same profile, and each runs its own worker', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/page': ANSWERED,
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        if (new URL(e.request.url).pathname === '/made') {
+          e.respondWith(caches.open('c').then(function (c) {
+            return c.match('/note');
+          }).then(function (hit) {
+            return hit || new Response('nothing kept');
+          }));
+        }
+      });
+      self.addEventListener('activate', function (e) {
+        e.waitUntil(caches.open('c').then(function (c) {
+          return c.put('/note', new Response('kept by the first'));
+        }));
+      });`,
+    },
+    t,
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'service-workers-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const open = async () => {
+    const profile = await HtmlProfile.open(dir);
+    if (!profile?.serviceWorkers) return null;
+    const keeper = new HtmlServiceWorkers({ store: profile.serviceWorkers });
+    const network = new HtmlNetwork({ serviceWorkers: keeper });
+    t.after(() => {
+      keeper.dispose();
+      profile.close();
+    });
+    return { profile, keeper, network };
+  };
+  const first = await open();
+  const second = await open();
+  if (!first || !second) {
+    t.skip('this runtime has no SQLite');
+    return;
+  }
+  const registering = await show(
+    site.url('/register'),
+    first.network,
+    first.keeper,
+    { storage: first.profile.storage },
+  );
+  await registering.text('state', (text) => text === 'ready');
+  cleanup();
+  const page = await show(site.url('/page'), second.network, second.keeper, {
+    storage: second.profile.storage,
+  });
+  assert.equal(await page.text('out'), 'kept by the first');
+});

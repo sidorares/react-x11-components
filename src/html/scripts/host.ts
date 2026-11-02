@@ -772,6 +772,16 @@ export interface HostSeams {
   drawsFrames?: boolean;
 }
 
+/** All a page is told of an opaque response. */
+const OPAQUE_HEAD = {
+  status: 0,
+  statusText: '',
+  headers: [] as [string, string][],
+  type: 'opaque',
+  url: '',
+  redirected: false,
+};
+
 /** How many opaque responses a document holds at once (`_opaques`). */
 const OPAQUE_HELD = 64;
 
@@ -8137,7 +8147,10 @@ export class DomHost {
     }
     const { held, ...rest } = m;
     void this._opaqueBytes(held).then((bytes) =>
-      scope.service!(JSON.stringify(rest), bytes ?? new Uint8Array(0)),
+      scope.service!(
+        JSON.stringify({ ...rest, head: OPAQUE_HEAD }),
+        bytes ?? new Uint8Array(0),
+      ),
     );
   }
 
@@ -8166,11 +8179,16 @@ export class DomHost {
           bytes: Uint8Array;
           base64?: string;
           held?: number;
+          response?: unknown;
         }[]) {
           if ('held' in step && step.held !== undefined) {
             step.bytes =
               (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
             delete step.held;
+            // what the number holds stays opaque whatever came with it:
+            // `_held` is a field a page can write, and a body it put under
+            // its own URL and a type of its own it could read back
+            step.response = OPAQUE_HEAD;
           } else if (typeof step.base64 === 'string') {
             step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
             delete step.base64;

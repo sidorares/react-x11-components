@@ -1484,6 +1484,19 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
           controller: this._workerView(client.controller),
         });
       case 'register':
+        // held here as well as in the realm, whose `URL` a page can reach
+        if (
+          originOf(m.script) !== client.origin ||
+          originOf(m.scope) !== client.origin
+        ) {
+          answer({
+            error: {
+              name: 'SecurityError',
+              message: 'Failed to register a ServiceWorker: another origin.',
+            },
+          });
+          return null;
+        }
         this._enqueue({
           kind: 'register',
           scope: m.scope,
@@ -1516,10 +1529,10 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         return null;
       }
       case 'post':
-        this._postTo(m.to, m.text, this._clientView(client));
+        this._postTo(m.to, m.text, this._clientView(client), client.origin);
         return null;
       default:
-        return this._common(m, answer);
+        return this._common(m, answer, client.origin);
     }
   }
 
@@ -1560,7 +1573,8 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         return;
       case 'postClient': {
         const client = this._clients.get(m.client);
-        client?.seams.tell(
+        if (client?.origin !== version.registration.origin) return;
+        client.seams.tell(
           JSON.stringify({
             message: true,
             from: this._workerView(version),
@@ -1570,7 +1584,12 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         return;
       }
       case 'post':
-        this._postTo(m.to, m.text, this._workerView(version));
+        this._postTo(
+          m.to,
+          m.text,
+          this._workerView(version),
+          version.registration.origin,
+        );
         return;
       case 'respond':
       case 'fallback':
@@ -1580,7 +1599,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         this._fetchSaid(version, m, bytes);
         return;
       default:
-        void this._common(m, answer);
+        void this._common(m, answer, version.registration.origin);
     }
   }
 
@@ -1588,10 +1607,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
   private _common(
     m: CommonAsk,
     answer: (fields: Record<string, unknown>) => void,
+    origin: string,
   ): null {
     switch (m.op) {
       case 'update': {
-        const registration = this._byId(m.registration);
+        const registration = this._byId(m.registration, origin);
         const newest =
           registration &&
           (registration.installing ??
@@ -1618,7 +1638,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         return null;
       }
       case 'unregister': {
-        const registration = this._byId(m.registration);
+        const registration = this._byId(m.registration, origin);
         if (!registration || registration.uninstalling) {
           answer({ value: false });
           return null;
@@ -1634,7 +1654,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         return null;
       }
       case 'preload': {
-        const registration = this._byId(m.registration);
+        const registration = this._byId(m.registration, origin);
         if (!registration || (m.what !== 'get' && !registration.active)) {
           answer({
             error: {
@@ -1655,9 +1675,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     return null;
   }
 
-  private _byId(id: string): Registration | null {
+  private _byId(id: string, origin: string): Registration | null {
     for (const registration of this._registrations.values()) {
-      if (registration.id === id) return registration;
+      if (registration.id === id && registration.origin === origin) {
+        return registration;
+      }
     }
     return null;
   }
@@ -1690,9 +1712,14 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
   }
 
   /** A message to a worker, which is started to hear it. */
-  private _postTo(to: string, text: string, from: unknown): void {
+  private _postTo(
+    to: string,
+    text: string,
+    from: unknown,
+    origin: string,
+  ): void {
     const version = this._versions.get(to);
-    if (!version) return;
+    if (version?.registration.origin !== origin) return;
     void this._extendable(version, 'message', { text, from });
   }
 
