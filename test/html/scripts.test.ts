@@ -10137,6 +10137,359 @@ test('a <link> or a <base> is what it was made as: the parser’s in a drawing i
   assert.equal(await answer(`fo.innerHTML='${BASE}'`), based);
 });
 
+/** What a script at the end of `markup` hands back as a JSON array. */
+async function reads(markup: string, run: string): Promise<unknown[]> {
+  const doc = await hosted(
+    `<!DOCTYPE html><html><head></head><body>${markup}<p id="out"></p>` +
+      `<script>var by=function(i){return document.getElementById(i)};` +
+      `var SVG="http://www.w3.org/2000/svg",MATH="http://www.w3.org/1998/Math/MathML",` +
+      `XHTML="http://www.w3.org/1999/xhtml";var ran=0;` +
+      `out=by("out");try{var r=(function(){${run}})();` +
+      `out.textContent=JSON.stringify(r)}catch(e){out.textContent="threw "+e}` +
+      `</script></body></html>`,
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  cleanup();
+  assert.ok(!text.startsWith('threw'), `${run}: ${text}`);
+  return JSON.parse(text) as unknown[];
+}
+
+test('a document’s title is the first of HTML’s, and a drawing’s only where the drawing is the document', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const DRAWN = '<svg id="s"><title id="t">drawn</title></svg>';
+  assert.deepEqual(await reads(DRAWN, 'return [document.title]'), ['']);
+  assert.deepEqual(
+    await reads(`${DRAWN}<title>real</title>`, 'return [document.title]'),
+    ['real'],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.title="x";var t=by("t");return [document.title,t.textContent,' +
+        'document.head.children.length,document.head.firstChild.localName]',
+    ),
+    ['x', 'drawn', 1, 'title'],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><foreignObject><title id="t">a</title></foreignObject></svg>',
+      'document.title="x";return [document.title,by("t").textContent,document.head.children.length]',
+    ),
+    ['x', 'x', 0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><title>m</title></math><math><mtext><title id="t">mt</title></mtext></math>',
+      'return [document.title]',
+    ),
+    ['mt'],
+  );
+  // what it was made as stays with it, wherever it goes and in each copy
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t"));return [document.title,by("t") instanceof HTMLElement]',
+    ),
+    ['', false],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t").cloneNode(true));return [document.title]',
+    ),
+    [''],
+  );
+  // what a script makes, by how it made it
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElement("title");t.textContent="made";by("s").appendChild(t);' +
+        'return [document.title,t.namespaceURI===XHTML,t instanceof HTMLElement]',
+    ),
+    ['made', true, true],
+  );
+  // and a copy of it is HTML's too, the first a page hears of it in a drawing
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'by("s").appendChild(document.createElement("title"));' +
+        'var c=by("s").cloneNode(true).firstChild;' +
+        'return [c.namespaceURI===XHTML,c instanceof HTMLElement]',
+    ),
+    [true, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElementNS(SVG,"title");t.textContent="made";' +
+        'by("s").appendChild(t);return [document.title]',
+    ),
+    [''],
+  );
+  // what `innerHTML` makes, by what it is read in
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg><math id="m"></math>' +
+        '<svg><foreignObject id="f"></foreignObject></svg>',
+      'by("s").innerHTML="<title>s</title>";by("m").innerHTML="<title>m</title>";' +
+        'var was=document.title;by("f").innerHTML="<title>f</title>";' +
+        'return [was,document.title]',
+    ),
+    ['', 'f'],
+  );
+  // a document of SVG's own
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(){return document.implementation.createDocument(SVG,"svg",null)};' +
+        'var d=made(),t=d.createElementNS(SVG,"title");t.textContent="x";d.documentElement.appendChild(t);' +
+        'var deep=made(),g=deep.createElementNS(SVG,"g"),u=deep.createElementNS(SVG,"title");' +
+        'u.textContent="x";g.appendChild(u);deep.documentElement.appendChild(g);' +
+        'var set=made();set.documentElement.appendChild(set.createElementNS(SVG,"g"));set.title="y";' +
+        'var has=set.documentElement.firstChild;' +
+        'return [d.title,deep.title,set.title,has.localName,has.namespaceURI===SVG]',
+    ),
+    ['x', '', 'y', 'title', true],
+  );
+  assert.deepEqual(
+    await reads(
+      '',
+      'var d=document.implementation.createDocument(SVG,"svg",null);' +
+        'var t=d.createElementNS(XHTML,"title");t.textContent="x";' +
+        'd.documentElement.appendChild(t);var was=d.title;' +
+        't=d.createElementNS(SVG,"title");t.textContent="y";' +
+        'd.documentElement.appendChild(t);return [was,d.title]',
+    ),
+    ['', 'y'],
+    'only a title of its own',
+  );
+  // and one of XML's, where a title of no language is none
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(ns){var d=document.implementation.createDocument(null,"r",null),' +
+        't=d.createElementNS(ns,"title");t.textContent="x";d.documentElement.appendChild(t);return d};' +
+        'return [made(XHTML).title,made(null).title]',
+    ),
+    ['x', ''],
+  );
+});
+
+test('a <script> or a <style> a <math> holds is only a name, wherever it goes, and one in SVG’s namespace is one, however it was made', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const SCRIPT = '<math><script id="c">ran=1</script></math>';
+  const blue = 'rgb(0, 0, 255)';
+  const painted = 'getComputedStyle(by("p")).color==="rgb(0, 0, 255)"';
+  const STYLE =
+    '<p id="p">p</p><math><style id="c">#p{color:rgb(0,0,255)}</style></math>';
+  assert.notEqual(blue, '');
+  assert.deepEqual(await reads(SCRIPT, 'return [ran]'), [0]);
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c"));return [ran,by("c") instanceof HTMLElement]',
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c").cloneNode(true));return [ran]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      `${SCRIPT}<script>1</script>`,
+      'return [document.scripts.length,document.getElementsByTagName("script").length]',
+    ),
+    [2, 3],
+    'document.scripts holds HTML’s and getElementsByTagName all of them',
+  );
+  const make = (name: string, ns: string, text: string) =>
+    `var c=document.createElementNS(${ns},"${name}");c.textContent=${JSON.stringify(text)};` +
+    `document.body.appendChild(c);`;
+  assert.deepEqual(
+    await reads('', `${make('script', 'SVG', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'XHTML', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'MATH', 'ran=1')}return [ran]`),
+    [0],
+  );
+  const RULE = '#p{color:rgb(0,0,255)}';
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'SVG', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'MATH', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(STYLE, `return [document.styleSheets.length,${painted}]`),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${STYLE}`,
+      `by("d").appendChild(by("c"));return [document.styleSheets.length,${painted},by("c").sheet===undefined]`,
+    ),
+    [0, false, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style id="c"></style></math>',
+      `by("c").textContent=${JSON.stringify(RULE)};return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style>a{}</style><style id="c">a{}</style></math>' +
+        '<svg><style id="s">#p{color:rgb(0,0,255)}</style></svg>',
+      `return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+    'a drawing’s is a sheet beside them',
+  );
+});
+
+test('what the parser made of an HTML name in a drawing or a <math> is no HTML element to a page', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<svg><object id="o" data="x"></object><input id="i" value="3" type="image">' +
+        '<video id="v" poster="x"></video><image id="g" href="x"></image></svg>',
+      'var o=by("o"),i=by("i"),v=by("v"),g=by("g");return [typeof o.data,typeof i.value,' +
+        'typeof i.form,o.getAttribute("data"),typeof v.play,typeof v.poster,' +
+        'o instanceof SVGElement,i instanceof SVGElement,v instanceof SVGElement,g instanceof SVGElement]',
+    ),
+    [
+      'undefined',
+      'undefined',
+      'undefined',
+      'x',
+      'undefined',
+      'undefined',
+      true,
+      true,
+      true,
+      true,
+    ],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><image id="g" src="x"></image></math>',
+      'var g=by("g");return [g.localName,g.namespaceURI===MATH,g.src===undefined]',
+    ),
+    ['image', true, true],
+  );
+  // what `innerHTML` reads an element's markup as, by what the element is
+  assert.deepEqual(
+    await reads(
+      '<svg><title id="t">a</title></svg>',
+      'var t=by("t");t.innerHTML="<b>x</b>";return [t.children.length,t.textContent]',
+    ),
+    [1, 'x'],
+  );
+  for (const name of ['title', 'style', 'script']) {
+    assert.deepEqual(
+      await reads(
+        `<math><${name} id="t">a</${name}></math>`,
+        'var t=by("t");t.innerHTML="<mi>x</mi>";return [t.children.length]',
+      ),
+      [1],
+      name,
+    );
+  }
+  // and a window names none of them
+  assert.deepEqual(
+    await reads(
+      '<svg><object name="nob"></object></svg><math><object name="mob"></object></math>',
+      'return [typeof window.nob,typeof window.mob]',
+    ),
+    ['undefined', 'undefined'],
+  );
+});
+
+test('a form owns no <input> a drawing or a <math> holds', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><input name="a" value="1">' +
+        '<svg><input name="b" value="2"></svg>' +
+        '<math><input name="c" value="3"></math>' +
+        '<svg><foreignObject><input name="d" value="4"></foreignObject></svg></form>',
+      'var f=by("f");return [f.elements.length,Array.from(new FormData(f).keys()).join(""),' +
+        'f.querySelectorAll("input").length]',
+    ),
+    [2, 'ad', 4],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><input form="f" name="a"></svg><form id="f"></form>',
+      'return [by("f").elements.length]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><svg><input required></svg></form>' +
+        '<form id="g"><input required></form>',
+      'var f=by("f"),g=by("g");return [f.matches(":invalid"),f.checkValidity(),' +
+        'g.matches(":invalid"),g.checkValidity()]',
+    ),
+    [false, true, true, false],
+  );
+});
+
+test('an <object> a drawing or a <math> holds loads nothing, as one a <foreignObject> holds does', async () => {
+  // what Chromium, Firefox and WebKit each ask for
+  const asked: string[] = [];
+  const files = new Proxy<Record<string, string>>(
+    {},
+    {
+      get(_, name) {
+        asked.push(String(name));
+        return `<p>${String(name)}</p>`;
+      },
+    },
+  );
+  await hostedFrames(
+    '<svg><object data="a.html"></object></svg>' +
+      '<math><object data="b.html"></object></math>' +
+      '<svg><foreignObject><object data="c.html"></object></foreignObject></svg>',
+    files,
+  );
+  await waitFor(() => assert.deepEqual(asked, ['c.html']));
+  await settle(30);
+  assert.deepEqual(asked, ['c.html']);
+});
+
+test('a frame’s document reads no sheet from a <style> a <math> holds', async () => {
+  // what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<iframe id="f"></iframe>',
+      'var d=by("f").contentDocument;' +
+        'd.body.innerHTML=\'<math><style>p{color:rgb(0,0,255)}</style></math><p id="p">p</p>\';' +
+        'return [d.defaultView.getComputedStyle(d.getElementById("p")).color==="rgb(0, 0, 255)"]',
+    ),
+    [false],
+  );
+});
+
 test('what a page reads of an element a drawing’s markup made, and what it writes into a drawing', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><svg id="s"><g id="g"><link id="l" rel="stylesheet" href="s.css"></g></svg>' +
@@ -11105,6 +11458,13 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
     true,
   );
   assert.equal(linkTarget(null, drawn.document), '');
+  // and a frame's name is no name of an element that is no frame
+  drawn.setSource(
+    '<svg><object name="side"></object></svg><math><iframe></iframe>' +
+      '<object name="side"></object></math>',
+    true,
+  );
+  assert.equal(navigableFor(drawn.document, 'side'), 'tab');
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {

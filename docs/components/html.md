@@ -4494,12 +4494,18 @@ included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
 — `.st0 { fill: #fff }` for `<path class="st0">`. A `<link>` or a `<base>`
 written there is neither a sheet nor the document's base, and asks
-`onResource` for nothing: HTML's parser makes an SVG element of each, and a
-MathML one under `<math>`, which it stays wherever a script moves or copies
-it. One in a `<foreignObject>`, in an SVG `<title>` or `<desc>`, or in
-MathML's `<mi>` and its kin is HTML's, and one a script or an application
-makes with `createElement` is a sheet wherever it is put, as in all three
-engines. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
+`onResource` for nothing, as neither an `<object>`, an `<input type="image">`
+nor a `<video>`'s poster does, and a `<title>` there is not the document's:
+HTML's parser makes an SVG element of each, and a MathML one under `<math>`,
+which it stays wherever a script moves or copies it. So a form owns no
+`<input>` there, and no window has an `<object>` there by its `name`. One in a
+`<foreignObject>`, in an SVG `<title>` or `<desc>`, or in MathML's `<mi>` and
+its kin is HTML's, and one a script or an application makes with
+`createElement` is what it would be anywhere, as in all three engines. A
+`<style>` in a drawing is a sheet and a `<script>` runs, since SVG has both,
+and in a `<math>` neither is. An `<svg>` in a `<math>` is MathML's and all it
+holds with it, unless an `<annotation-xml>` holds it, and a `<math>` in an
+`<svg>` is SVG's. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
 drawing there, and it and what comes after it stand after the drawing. Those
 properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
 no others: a rule's `transform` is not. A length in the drawing's
