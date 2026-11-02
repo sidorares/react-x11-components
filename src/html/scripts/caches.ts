@@ -220,31 +220,25 @@ export function installCaches(deps: CachesDeps): CachesInternals {
       } catch (e) {
         return rejected(e);
       }
-      const controller = new D.AbortController();
       const name = this._name;
       return P.all(
         list.map((made: Any) =>
-          fetch(new Request(made, { signal: controller.signal })).then(
-            (response: Any) => {
-              if (response.type === 'error') throw new TypeError('network');
-              // an opaque response has no status to read, and is taken as it
-              // is: a `no-cors` request an `addAll` was handed
-              if (!response.ok && response.type !== 'opaque') {
-                throw new TypeError(
-                  `Failed to execute 'addAll' on 'Cache': Request failed with status ${response.status}`,
-                );
-              }
-              const refused = refusal(response, 'addAll');
-              if (refused) throw new TypeError(refused);
-              return response;
-            },
-          ),
+          // by its own signal, which what is aborted is told through
+          fetch(made).then((response: Any) => {
+            if (response.type === 'error') throw new TypeError('network');
+            // an opaque response has no status to read, and is taken as it
+            // is: a `no-cors` request an `addAll` was handed
+            if (!response.ok && response.type !== 'opaque') {
+              throw new TypeError(
+                `Failed to execute 'addAll' on 'Cache': Request failed with status ${response.status}`,
+              );
+            }
+            const refused = refusal(response, 'addAll');
+            if (refused) throw new TypeError(refused);
+            return response;
+          }),
         ),
       )
-        .catch((error: Any) => {
-          controller.abort();
-          throw error;
-        })
         .then((responses: Any[]) =>
           P.all(responses.map((r: Any, i: number) => puttable(list[i], r))),
         )

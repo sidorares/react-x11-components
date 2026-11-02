@@ -1372,8 +1372,12 @@ through its worker's `matchAll` finds only its own.
 has no `pushManager`, `sync` or `periodicSync`, which is what a site that
 feature-detects them looks for, and the answer it has from a browser with none.
 A `<video>`'s and an `<audio>`'s source is the player's to open, so a worker does
-not hear it. `clients.openWindow` and `focus` need a notification's click behind
-them. A site whose scripts are switched off runs no worker either.
+not hear it. A navigation's redirects are followed by the network, so a worker
+hears the first request of one and not each hop. `clients.openWindow` and `focus`
+need a notification's click behind them, a frame with no document of its own
+(`about:blank`, `srcdoc`) is no client of its own, and a `Cache` a page holds
+reads nothing once `caches.delete()` has taken its name, where a browser keeps it
+until it is let go. A site whose scripts are switched off runs no worker either.
 
 **A page keeps its own session history** (HTML 7.4). `pushState`,
 `replaceState` and a navigation to a fragment are entries of the
