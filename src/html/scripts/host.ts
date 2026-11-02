@@ -22,21 +22,17 @@ import * as encodingCodecs from '../encoding-codecs.js';
 import type { LegacyDecoder } from '../encoding-codecs.js';
 import {
   adoptEncodings,
-  bomEncoding,
   decodeInEncoding,
   encodingOf,
   outputEncoding,
   sniffEncoding,
-  xmlEncoding,
+  sniffXmlEncoding,
 } from '../encoding.js';
 import * as DomUtils from 'domutils';
-import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
 import {
-  CDATA,
   Comment,
   Document,
-  DomHandler,
   Element,
   ProcessingInstruction,
   Text,
@@ -89,7 +85,6 @@ import {
   setPaused,
   markCustomized,
   setCustomStates,
-  markParsedRegistry,
   parsedNullRegistries,
   parsedWithNullRegistry,
   setModal,
@@ -102,6 +97,16 @@ import {
   treesChanged,
   isClassicScriptType,
   namespaceIn,
+  CDATA_SECTIONS,
+  XML_DOCUMENTS,
+  anyXmlDocuments,
+  instructionSheets,
+  isXmlType,
+  localNameOf,
+  markXmlDocument,
+  parserError,
+  tagOf,
+  xmlTree,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -154,7 +159,7 @@ import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
-import { readProlog, serializeXml } from './xml.js';
+import { serializeXml } from './xml.js';
 import {
   XAttr,
   compileXPath,
@@ -1089,6 +1094,13 @@ const QUERY_ADAPTER = {
       : el.name.toLowerCase(),
 };
 
+/** What a query in an XML document differs by: names have their case, and
+ *  a type selector is of a local name, under any prefix. */
+const XML_QUERY = {
+  xmlMode: true,
+  adapter: { ...QUERY_ADAPTER, getName: localNameOf },
+};
+
 /** Whether an element the parser made stands in a drawing: the parser keeps
  *  a namespace only for what an HTML document reads otherwise, so what is
  *  around it says whose it is. A `<script>` is HTML's here, which is where
@@ -1142,20 +1154,6 @@ function titleOf(doc: ParentNode): Element | null {
 }
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
-function parserError(): Element {
-  const error = new Element('parsererror', {
-    xmlns: 'http://www.mozilla.org/newlayout/xml/parsererror.xml',
-  });
-  error.namespace = 'http://www.mozilla.org/newlayout/xml/parsererror.xml';
-  DomUtils.appendChild(error, new Text('XML Parsing Error: not well-formed'));
-  return error;
-}
-
-/** The texts a CDATA section made: a text to everything but a serializer. */
-const CDATA_SECTIONS = new WeakSet<AnyNode>();
-
-/** The content types a frame reads as XML (XML Media Types, 3). */
-const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
 /** A script element's types that are JavaScript, the empty one among them
  *  (HTML 4.12.1). */
 const JS_TYPES =
@@ -1173,13 +1171,6 @@ function hasScripts(doc: Document): boolean {
         (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
     doc.children,
   );
-}
-
-/** What `_xmlTree` reads of htmlparser2's parser beyond its typed surface:
- *  the names open, top first, and a tag's name. */
-interface XmlParserInternals {
-  readonly stack: string[];
-  getSlice(start: number, end: number): string;
 }
 
 /** The elements HTML's parser keeps in the head while no body content has
@@ -1833,7 +1824,7 @@ export class DomShared {
   readonly sheetsChanged = new Set<Element>();
   sheetVersion = 0;
   readonly documents = new WeakSet<Document>();
-  readonly xml = new WeakMap<Document, string>();
+  readonly xml = XML_DOCUMENTS;
   readonly owners = new WeakMap<AnyNode, Document>();
   readonly doctypes = new WeakMap<AnyNode, [string, string, string]>();
   /** Changes made to documents nothing draws, counted (`_frameStyle`). */
@@ -2832,7 +2823,7 @@ export class DomHost {
     const type = this._xml.get(node as Document);
     if (this._isDocument(node)) {
       this._documents.add(clone as unknown as Document);
-      if (type) this._xml.set(clone as unknown as Document, type);
+      if (type) markXmlDocument(clone as unknown as Document, type);
     }
     return clone;
   }
@@ -3245,7 +3236,7 @@ export class DomHost {
       case 'newXml': {
         const doc = new Document([]);
         this._documents.add(doc);
-        this._xml.set(doc, text(a) || 'application/xml');
+        markXmlDocument(doc, text(a) || 'application/xml');
         return this.idOf(doc);
       }
       case 'insert':
@@ -3851,6 +3842,18 @@ export class DomHost {
       // --- markup
       case 'html': {
         const node = this._node(a);
+        // in an XML document it is XML (DOM Parsing 2.2)
+        if (anyXmlDocuments() && this._xml.has(this._ownerOf(node))) {
+          const writer = {
+            doctype: (n: AnyNode) => this._doctypeOf(n),
+            cdata: (n: Text) => CDATA_SECTIONS.has(n),
+          };
+          return b
+            ? serializeXml(node, writer)
+            : (node as ParentNode).children
+                .map((kid) => serializeXml(kid, writer))
+                .join('');
+        }
         // an attribute with no value written `=""`, as HTML's fragment
         // serialization writes every one (HTML 8.5.2)
         return b
@@ -4015,12 +4018,12 @@ export class DomHost {
         return namespaceFor(this._node(a), text(b));
       // XML, parsed and serialized, and XPath over the tree
       case 'parseXml': {
-        const xml = this._xmlTree(text(a));
+        const xml = xmlTree(text(a));
         const kids = xml.wellFormed ? xml.kids : [parserError()];
         const doc = new Document(kids);
         for (const kid of kids) kid.parent = doc;
         this._documents.add(doc);
-        this._xml.set(doc, text(b));
+        markXmlDocument(doc, text(b));
         return this.idOf(doc);
       }
       case 'serializeXml':
@@ -4407,16 +4410,20 @@ export class DomHost {
         return JSON.stringify(cssRulesOf(text(a)));
       // the document's sheets, in tree order: its `<style>`s and the
       // `<link>`s that are a stylesheet
-      case 'sheets':
-        return (
-          DomUtils.findAll(
+      case 'sheets': {
+        const root = a ? (this._node(a) as ParentNode) : this.document;
+        return [
+          ...(this._xml.has(root as Document)
+            ? instructionSheets(root as Document)
+            : []),
+          ...DomUtils.findAll(
             (el) =>
-              (el.name === 'style' && isStyleOrScript(el)) ||
-              (el.name === 'link' &&
+              (tagOf(el) === 'style' && isStyleOrScript(el)) ||
+              (tagOf(el) === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
                 !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
-            (a ? (this._node(a) as ParentNode) : this.document).children,
+            root.children,
           )
             // what a `<template>` holds is no part of the document
             .filter((el) => {
@@ -4425,10 +4432,11 @@ export class DomHost {
                   return false;
               }
               return true;
-            })
-            .map((el) => this.idOf(el))
-            .join(',')
-        );
+            }),
+        ]
+          .map((el) => this.idOf(el))
+          .join(',');
+      }
 
       // --- frames
       // whether a frame's document is its initial `about:blank`: one a
@@ -6447,14 +6455,20 @@ export class DomHost {
    */
   private _query(selector: string, scope: AnyNode): (el: Element) => boolean {
     const keeps = !QUERY_SCOPED.test(selector) && !KEEPS_ANSWERS.test(selector);
-    const kept = keeps ? this._queries.get(selector) : undefined;
+    const xml = anyXmlDocuments() && this._xml.has(this._ownerOf(scope));
+    const queries = xml ? this._xmlQueries : this._queries;
+    const kept = keeps ? queries.get(selector) : undefined;
     if (kept) return kept;
     // an argument css-select takes as any text is the parser's to refuse, as
     // a sheet's is
     if (TAKES_AN_IDENT.test(selector) && !selectorList(selector)) {
       throw new Error('a pseudo-class given what it does not take');
     }
-    const options = { ...this._queryOptions(), cacheResults: !keeps };
+    const options = {
+      ...this._queryOptions(),
+      ...(xml && XML_QUERY),
+      cacheResults: !keeps,
+    };
     const query = compileHoisted(
       selector,
       options.pseudos,
@@ -6466,12 +6480,13 @@ export class DomHost {
         ) as unknown as (el: Element) => boolean,
     );
     if (keeps) {
-      if (this._queries.size >= KEPT_QUERIES) this._queries.clear();
-      this._queries.set(selector, query);
+      if (queries.size >= KEPT_QUERIES) queries.clear();
+      queries.set(selector, query);
     }
     return query;
   }
   private readonly _queries = new Map<string, (el: Element) => boolean>();
+  private readonly _xmlQueries = new Map<string, (el: Element) => boolean>();
 
   /** Whether a node is in a `<template>`'s content. */
   private _inTemplate(node: AnyNode): boolean {
@@ -7097,8 +7112,8 @@ export class DomHost {
         const { text, encoding } = this._frameText(response, type, frame);
         if (type === 'text/html') {
           doc = this._documentOf(text, true, !!this._seams.drawsFrames);
-        } else if (XML_TYPES.test(type)) {
-          const xml = this._xmlTree(text);
+        } else if (isXmlType(type)) {
+          const xml = xmlTree(text);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
           // byte UTF-8 has no character for
@@ -7106,7 +7121,7 @@ export class DomHost {
           doc = new Document(kids);
           for (const kid of kids) kid.parent = doc;
           this._documents.add(doc);
-          this._xml.set(doc, type);
+          markXmlDocument(doc, type);
           // a document that is not well-formed runs none of its scripts
           scripts = xml.wellFormed;
         } else {
@@ -7324,100 +7339,6 @@ export class DomHost {
     }
   }
 
-  /**
-   * XML parsed into nodes, each element in the namespace its `xmlns`
-   * attributes put it in (Namespaces in XML 1.0, 6), and whether it was
-   * well-formed: every end tag the one open, every element closed, one
-   * root, no character a decoder had to replace. htmlparser2 reads XML
-   * leniently, and a document that is not well-formed must run nothing —
-   * Acid3's second XHTML frame has a stray `</strong>`.
-   */
-  private _xmlTree(raw: string): { kids: ChildNode[]; wellFormed: boolean } {
-    const handler = new DomHandler(null, {
-      withStartIndices: false,
-      withEndIndices: false,
-    });
-    const prolog = readProlog(raw);
-    const { text, defaults } = prolog;
-    let wellFormed = prolog.wellFormed && !text.includes('\ufffd');
-    const parser = new (class extends Parser {
-      override onclosetag(start: number, endIndex: number): void {
-        const self = this as unknown as XmlParserInternals;
-        if (self.stack[0] !== self.getSlice(start, endIndex)) {
-          wellFormed = false;
-        }
-        super.onclosetag(start, endIndex);
-      }
-    })(handler, { xmlMode: true, decodeEntities: true });
-    parser.write(text);
-    if ((parser as unknown as XmlParserInternals).stack.length) {
-      wellFormed = false;
-    }
-    parser.end();
-    const kids = handler.root.children.filter(
-      // the prolog's declaration is no node (XML 1.0, 2.8)
-      (k) => !(k instanceof ProcessingInstruction && /^\?xml$/i.test(k.name)),
-    );
-    for (const kid of handler.root.children) kid.parent = null;
-    const fix = (parent: ParentNode, list: ChildNode[]): void => {
-      for (let i = 0; i < list.length; i += 1) {
-        const kid = list[i];
-        if (kid instanceof CDATA) {
-          // a CDATA section is one text, as the DOM has it
-          const text = new Text(DomUtils.textContent(kid));
-          CDATA_SECTIONS.add(text);
-          text.parent = parent === handler.root ? null : parent;
-          list[i] = text;
-        } else if (kid instanceof ProcessingInstruction) {
-          if (!kid.name.startsWith('!')) {
-            kid.data = kid.data
-              .slice(kid.name.length)
-              .replace(/\?$/, '')
-              .replace(/^\s+/, '');
-          }
-        } else if (kid instanceof Element) fix(kid, kid.children);
-      }
-    };
-    fix(handler.root, kids);
-    const roots = kids.filter((k) => k instanceof Element);
-    if (
-      roots.length !== 1 ||
-      kids.some((k) => k instanceof Text && /[^ \t\n\r]/.test(k.data))
-    ) {
-      wellFormed = false;
-    }
-    const resolve = (el: Element, scope: Map<string, string>): void => {
-      let own = scope;
-      for (const [name, value] of Object.entries(el.attribs)) {
-        if (name !== 'xmlns' && !name.startsWith('xmlns:')) continue;
-        if (own === scope) own = new Map(scope);
-        own.set(name === 'xmlns' ? '' : name.slice(6), value);
-      }
-      for (const [name, value] of defaults.get(el.name) ?? []) {
-        el.attribs[name] ??= value;
-      }
-      const colon = el.name.indexOf(':');
-      const prefix = colon < 0 ? '' : el.name.slice(0, colon);
-      if (prefix && !own.has(prefix)) wellFormed = false;
-      for (const name of Object.keys(el.attribs)) {
-        const at = name.indexOf(':');
-        const of = at < 0 ? '' : name.slice(0, at);
-        if (of && of !== 'xml' && of !== 'xmlns' && !own.has(of)) {
-          wellFormed = false;
-        }
-      }
-      el.namespace = own.get(prefix) ?? '';
-      // made, as the HTML parser makes one, of no registry where it says
-      // so, and so what it holds (HTML's scoped registries)
-      markParsedRegistry(el);
-      for (const kid of el.children) {
-        if (kid instanceof Element) resolve(kid, own);
-      }
-    };
-    for (const root of roots) resolve(root as Element, new Map());
-    return { kids, wellFormed };
-  }
-
   /** A document's content made again of markup, by the parser `<Html>`
    *  reads a document with, the document itself kept: `document.open`,
    *  `write` and `close`'s. */
@@ -7617,7 +7538,22 @@ export class DomHost {
         order += 1;
         sheets.push(sheet);
       }
-      const cascade = new Cascade(sheets, FRAME_LOOK, size.width, size.height);
+      const cascade = new Cascade(
+        sheets,
+        FRAME_LOOK,
+        size.width,
+        size.height,
+        1,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        [],
+        null,
+        this._xml.has(doc),
+      );
       kept = { key, cascade };
       this._frameStyles.set(doc, kept);
     }
@@ -7729,6 +7665,9 @@ export class DomHost {
     markup: string,
     declarative = false,
   ): ChildNode[] {
+    if (context && anyXmlDocuments() && this._xml.has(this._ownerOf(context))) {
+      return this._parseXml(context, markup);
+    }
     const name =
       context instanceof Element && !isForeign(context) ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
@@ -7744,6 +7683,44 @@ export class DomHost {
       declarative,
       context instanceof Element ? context : null,
     );
+  }
+
+  /**
+   * Markup as `innerHTML` reads it in an XML document (HTML 13.5.2): in an
+   * element that declares what is in scope around `context`, and a
+   * `SyntaxError` where that is not well-formed. Its scripts never run.
+   */
+  private _parseXml(context: AnyNode, markup: string): ChildNode[] {
+    const scope = new Map<string, string>();
+    for (let at: AnyNode | null = context; at; at = at.parent) {
+      if (!(at instanceof Element)) continue;
+      for (const name in at.attribs) {
+        if (name !== 'xmlns' && !name.startsWith('xmlns:')) continue;
+        if (!scope.has(name)) scope.set(name, at.attribs[name]);
+      }
+    }
+    if (context instanceof Element && context.namespace !== undefined) {
+      scope.set('xmlns', namespaceOf(context));
+    }
+    const declared = [...scope]
+      .map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`)
+      .join('');
+    const read = xmlTree(`<fragment${declared}>${markup}</fragment>`);
+    const held = read.kids.find((k): k is Element => k instanceof Element);
+    if (!read.wellFormed || !held) {
+      throw new DomError('SyntaxError', 'The markup is not well-formed XML.');
+    }
+    const kids = held.children.slice();
+    for (const kid of kids) DomUtils.removeElement(kid);
+    for (const el of DomUtils.findAll((e) => tagOf(e) === 'script', kids)) {
+      this.inert.add(el);
+    }
+    for (const kid of kids) {
+      if (kid instanceof Element && tagOf(kid) === 'script') {
+        this.inert.add(kid);
+      }
+    }
+    return kids;
   }
 
   /** Markup as `innerHTML` reads it in `context`, or `setHTMLUnsafe` with
@@ -7845,8 +7822,8 @@ export class DomHost {
       return { text: decodeInEncoding(bytes, 'utf-8'), encoding: 'UTF-8' };
     }
     const holder = documentHolding(frame);
-    const encoding = XML_TYPES.test(type)
-      ? (bomEncoding(bytes) ?? named ?? xmlEncoding(bytes) ?? 'UTF-8')
+    const encoding = isXmlType(type)
+      ? sniffXmlEncoding(bytes, named)
       : sniffEncoding(bytes, named, holder && this._encodingOf(holder));
     return { text: decodeInEncoding(bytes, encoding), encoding };
   }

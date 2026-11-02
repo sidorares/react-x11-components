@@ -224,6 +224,20 @@ export function sniffEncoding(
   );
 }
 
+/** The same of an XML document: its declaration where HTML reads a `<meta>`,
+ *  and UTF-8 where it says nothing (XML 1.0, 4.3.3). */
+export function sniffXmlEncoding(
+  bytes: Uint8Array,
+  transport?: string | null,
+): string {
+  return (
+    bomEncoding(bytes) ??
+    (transport ? encodingOf(transport) : null) ??
+    xmlEncoding(bytes) ??
+    'UTF-8'
+  );
+}
+
 type Codecs = typeof import('./encoding-codecs.js');
 
 let codecs: Codecs | null = null;

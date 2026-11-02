@@ -746,14 +746,13 @@ export class SvgDrawing {
           foreign(FOREIGN_COPIES.get(node) ?? node, on, object);
       }
       if (!box) {
-        view.draw(
-          lent.ctx,
-          x,
-          y,
-          view.naturalWidth * scale * kx,
-          view.naturalHeight * scale * ky,
-          opts,
-        );
+        // the viewport it has here and not the one its attributes say, of
+        // 300 by 150 where they say nothing: what a clip or a mask draws
+        // through is cut to it, and a drawing that fills its window had
+        // everything so cut stop 150 down
+        view.naturalWidth = vw;
+        view.naturalHeight = vh;
+        view.draw(lent.ctx, x, y, vw * scale * kx, vh * scale * ky, opts);
       } else {
         const fit = (svgAttr(root, 'preserveAspectRatio') ?? '')
           .trim()

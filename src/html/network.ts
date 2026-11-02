@@ -54,6 +54,7 @@ import {
   metaEncoding,
   readyFor,
   sniffEncoding,
+  sniffXmlEncoding,
 } from './encoding.js';
 import type { CookieJar } from './cookies.js';
 import type { HtmlServiceWorkers } from './service-workers.js';
@@ -87,6 +88,7 @@ import type {
 } from './socket.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { nodeModule } from './scripts/platform.js';
+import { isXmlType } from './xml-prolog.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
@@ -1794,7 +1796,9 @@ export class HtmlNetwork {
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const bytes = concat(chunks);
-    const charset = sniffEncoding(bytes, response.charset);
+    const charset = isXmlType(response.type)
+      ? sniffXmlEncoding(bytes, response.charset)
+      : sniffEncoding(bytes, response.charset);
     await readyFor(charset);
     return {
       url: response.url,
@@ -2759,6 +2763,7 @@ const TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.htm': 'text/html',
   '.xhtml': 'application/xhtml+xml',
+  '.xht': 'application/xhtml+xml',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',

@@ -41,7 +41,15 @@ export type Viewer =
 export const MOST_PDF = 256 * 1024 * 1024;
 
 export function kindOf(type: string, url: string): DocumentKind {
-  if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
+  // a drawing a window goes to is a document, whose scripts run, as a
+  // browser's is, and no image: it answers `isXmlType`, and `<Html>` reads it
+  if (
+    type === 'text/html' ||
+    type === 'application/xhtml+xml' ||
+    type === 'image/svg+xml'
+  ) {
+    return 'html';
+  }
   if (type === 'application/pdf' || type === 'application/x-pdf') return 'pdf';
   if (type.startsWith('image/')) {
     return decodesImageType(type) ? 'image' : 'other';
@@ -88,6 +96,20 @@ export function readJson(text: string): Viewer | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether XML says how it is to look, and so is a document and no data for the
+ * tree viewer (as Chrome's, `HasNoStyleInformation`): something in a language a
+ * browser draws, or a style sheet of its own.
+ */
+export function drawsItself(text: string): boolean {
+  return (
+    /<\?xml-stylesheet\s/.test(text) ||
+    /\sxmlns(?::[\w.-]+)?\s*=\s*["']http:\/\/www\.w3\.org\/(?:1999\/xhtml|2000\/svg|1998\/Math\/MathML)["']/.test(
+      text,
+    )
+  );
 }
 
 /**

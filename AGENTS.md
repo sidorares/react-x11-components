@@ -5520,6 +5520,66 @@ table stays in it; `<template>`'s modes past the first tag it holds and
 quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
 which ends no written `<head>`.
 
+**A document served as XML is read by XML's rules, and being one is a fact
+about the document** (`contentType`, `HtmlSource.setXml`, `XML_DOCUMENTS`,
+`xml-prolog.ts`). `xmlTree` is the one XML reader in the package, for a top-level
+document, a frame's and `DOMParser`'s alike, and it is in `dom.ts` because a
+document with scripts off reads XML too. There is no `<tbody>`, no implied
+`<body>` and no `<head>` a document did not write, so what is true of the HTML
+parser's trees is not true here. Nine things are load-bearing.
+
+- **`tagOf` answers `''` for an element in no language this draws**, and an
+  element's local name, under any prefix, in HTML's, SVG's and MathML's. A
+  `<div>` in no namespace is no `<div>`, and nothing that goes by `tagOf` takes it
+  for one. So **anything new that asks what an element is asks `tagOf`, not
+  `el.name`**, which holds a prefix, and a rule's bucket asks `bucketTag`, since
+  a rule for a name reaches an element `tagOf` knows nothing of.
+- **What is the root is `isRootElement`, and never a name.** An XML document's
+  root is whatever it says, an `<svg>` or a `<feed>`. A check for `html` at the top
+  of a tree is a check for that, and it has to ask `isRootElement` or a drawing's
+  `rem`, canvas, overflow and stacking are nobody's. It asks `isXmlDocument`
+  only where the parent is the document, so it costs a box a string compare.
+- **The user agent's rules are for what it knows** (`_matchInto`'s `unknown`). An
+  author's `div {}` reaches a `<div>` in no namespace, as in a browser with no
+  `@namespace`, and the user agent's does not. A sharing key tells such a name
+  from a known one (`\u0002`).
+- **A selector's case is the document's.** `Cascade`'s `xml` compiles every
+  selector with `xmlMode`, whose `getName` is `localNameOf`, and a page's own
+  queries do the same (`XML_QUERY`, kept apart in `_xmlQueries`). Anything new
+  that compiles a selector for a document passes it through, or `DIV` is a `<div>`.
+- **Read whole, and read again where a script blocks** (`setXml`). What is wrong
+  with an XML document decides what it is, and that may be its last byte, so
+  nothing of one is read until `partial` is false, which is its default. Where a
+  host runs scripts and one blocks the parser, the text is parsed a second time,
+  and the parser pauses itself at each script (`XmlHandler.stops`,
+  `_readOnXml`), self-closed or not: `<script src="a.js"/>` has no end tag for
+  `pieceEnd` to cut at. What it makes is recorded as a stream's chunk is, so
+  it restyles what it reaches.
+- **A script is `isStyleOrScript`'s and its source `scriptUrlOf`'s.** XHTML's and
+  SVG's run, by `src` and by `href` or `xlink:href`. Anything new that hands over a
+  script reads those.
+- **A document that is not well-formed is one element**, `parserError()`, and runs
+  nothing: a script before the mistake does not run either, where a browser has
+  run it by then. A page in XML is rare and a half-run one is worse, and it is what
+  a frame's already did.
+- **`wellFormedSyntax` walks tags, and is the first thing a real document meets.**
+  An attribute's value is no name: `ATTRIBUTE` scanned one for `name =`, and a
+  CSS 2.1 test's `<meta content="… paragraph = 50px … paragraph = 50px …">` read as
+  a repeated attribute, which took the page. Anything new it refuses is tried on
+  the CSS 2.1 suite first, since a wrong refusal is an empty document.
+- **A drawing at the top is drawn in its window.** `svg:root` fills it, and
+  `drawingCut` cuts it to its box, since the overflow went to the viewport
+  (`propagateOverflow`). `SvgView` takes the viewport from `naturalWidth`, 300 by
+  150 where a root says nothing, and what a clip or a mask draws through is
+  cut to that, so `draw` sets it to the box: that is an old bug inline, and passed
+  a reftest only while both pages stopped at 150.
+
+**`<?xml-stylesheet?>` is a `<link>`** (`instructionSheets`): one element a
+processing instruction, in no children and with the document for its parent, so
+`compareDocumentPosition` has it before everything, and all that holds a script
+for a parser's sheet holds it for this one. `document.styleSheets` lists it, and
+its `ownerNode` is that `<link>` and not the instruction.
+
 **A `</body>` and an `</html>` close nothing, and say so** (`Handler.ended`):
 what comes after them goes back in the body, and a comment after one goes
 outside it, in the `<html>` and the document, which is the one thing the two
