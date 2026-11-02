@@ -60,6 +60,48 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.end('no cors');
         return;
+      case '/who':
+        res.writeHead(200, {
+          ...cors,
+          'access-control-allow-credentials': 'true',
+          'content-type': 'application/json',
+        });
+        res.end(JSON.stringify({ origin: req.headers.origin ?? '', cookie: req.headers.cookie ?? '' }));
+        return;
+      case '/frame':
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(
+          '<!doctype html><script>' +
+            'function ask(credentials) {' +
+            '  var x = new XMLHttpRequest(); x.open("GET", "/who", false);' +
+            '  x.withCredentials = credentials; x.send(); return x.responseText;' +
+            '}' +
+            'parent.postMessage([ask(false), ask(true), String(self.origin)].join("|"), "*");' +
+            '</script>',
+        );
+        return;
+      case '/hop': {
+        const open = !url.searchParams.has('closed');
+        const allow = open
+          ? {
+              ...cors,
+              'access-control-allow-methods': 'PUT',
+              'access-control-allow-headers': 'x-custom',
+            }
+          : {};
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, allow);
+          res.end();
+          return;
+        }
+        res.writeHead(307, { ...allow, location: url.searchParams.get('to') });
+        res.end();
+        return;
+      }
+      case '/refuses':
+        res.writeHead(req.method === 'OPTIONS' ? 204 : 200);
+        res.end('refused');
+        return;
       case '/preflight':
         if (req.method === 'OPTIONS') {
           res.writeHead(204, {
@@ -105,13 +147,14 @@ async function page(
     network?: HtmlNetwork;
     sync?: boolean;
     timeout?: number;
+    body?: string;
   },
 ): Promise<{ until(prefix: string): Promise<string> }> {
   const logs: string[] = [];
   const network = options.network ?? new HtmlNetwork();
   await renderX11(
     h(Html, {
-      source: `<!doctype html><html><body><script>${script}</script></body></html>`,
+      source: `<!doctype html><html><body>${options.body ?? ''}<script>${script}</script></body></html>`,
       partial: false,
       baseUrl: options.url,
       scripts: {
@@ -264,6 +307,67 @@ test('CORS holds as it does for any request: a preflight first, and a response t
   // what a preflight said is kept
   assert.equal(await p.until('seen|'), 'GET,OPTIONS,PUT,PUT');
   assert.equal(await p.until('refused|'), 'NetworkError');
+});
+
+test('a redirect is asked about at every hop: another preflight where it lands, and nothing sent where it is not let through', async (t) => {
+  const here = await server(t);
+  const first = (await server(t)).replace('127.0.0.1', 'localhost');
+  const second = await server(t);
+  const p = await page(
+    LOG +
+      'function name(fn) { try { fn(); return "none"; } catch (e) { return e.name; } }' +
+      'function put(url) { var x = new XMLHttpRequest(); x.open("PUT", url, false); x.setRequestHeader("x-custom", "1"); x.send("up"); return x; }' +
+      `var hopped = put("${first}/hop?to=${second}/preflight");` +
+      'log("hopped", hopped.status, hopped.responseText);' +
+      `var heard = JSON.parse(get("${second}/seen").responseText);` +
+      'log("heard", heard.map(function (s) { return s.method + " " + s.path + " " + s.headers.origin; }).join(","));' +
+      `log("refused", name(function () { put("${first}/hop?to=${second}/refuses"); }));` +
+      `var refused = JSON.parse(get("${second}/seen").responseText).filter(function (s) { return s.path === "/refuses"; });` +
+      'log("then", refused.map(function (s) { return s.method; }).join(","));' +
+      `log("closed", name(function () { get("${first}/hop?closed=1&to=${second}/text"); }));` +
+      `var landed = JSON.parse(get("${second}/seen").responseText).filter(function (s) { return s.path === "/text"; });` +
+      'log("reached", landed.length);',
+    { url: `${here}/page.html` },
+  );
+  assert.equal(await p.until('hopped|'), '200|PUT up');
+  // the first origin's preflight says nothing of the second, and a page's
+  // origin is no longer who is asking there
+  assert.equal(
+    await p.until('heard|'),
+    'OPTIONS /preflight null,PUT /preflight null',
+  );
+  assert.equal(await p.until('refused|'), 'NetworkError');
+  assert.equal(await p.until('then|'), 'OPTIONS');
+  assert.equal(await p.until('closed|'), 'NetworkError');
+  assert.equal(await p.until('reached|'), '0');
+});
+
+test('a sandboxed frame’s request is of no origin, and carries none of its address’s cookies', async (t) => {
+  const url = await server(t);
+  const jar = new CookieJar();
+  jar.store(`${url}/`, ['sid=abc; Path=/; SameSite=Lax'], {
+    http: true,
+    sameSite: true,
+  });
+  const network = new HtmlNetwork({ cookies: jar });
+  const p = await page(
+    LOG +
+      `var own = get("/who").responseText;` +
+      'log("page", own);' +
+      'addEventListener("message", function (e) { log("frame", e.data); });',
+    {
+      url: `${url}/page.html`,
+      network,
+      body: '<iframe sandbox="allow-scripts" src="/frame"></iframe>',
+    },
+  );
+  // the same request from the page itself, so that what follows says something
+  assert.equal(
+    await p.until('page|'),
+    `{"origin":"${url}","cookie":"sid=abc"}`,
+  );
+  const none = '{"origin":"null","cookie":""}';
+  assert.equal(await p.until('frame|'), `${none}|${none}|null`);
 });
 
 test('a request that takes too long fails before the watchdog would cut the task, and the page goes on', async (t) => {
