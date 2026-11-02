@@ -58,6 +58,7 @@ import {
   assignedSlot,
   isDefinedElement,
   isForeign,
+  isStyleOrScript,
   inActiveTransition,
   isModal,
   setActiveTransition,
@@ -828,10 +829,9 @@ function elementsIn(
  *  parent's tree. */
 let edits = 0;
 
-/** The names HTML and SVG both have, which the parser keeps no namespace
- *  for: what is around such an element says whose it is. */
+/** An `<a>` is a name HTML and SVG both have, which the parser keeps no
+ *  namespace for: what is around one says whose it is. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const HOMONYMS = new Set(['a', 'title']);
 const inDrawing = (el: Element): boolean => {
   for (let at = el.parent; at instanceof Element; at = at.parent) {
     const name = at.name.toLowerCase();
@@ -840,6 +840,31 @@ const inDrawing = (el: Element): boolean => {
   }
   return false;
 };
+
+/** A document's element where it is a drawing: a document of SVG's own, as
+ *  no document HTML's parser makes is. */
+function drawingRootOf(doc: ParentNode): Element | null {
+  const root = doc.children.find((k) => k instanceof Element) as
+    Element | undefined;
+  return root?.name === 'svg' && root.namespace === SVG_NS ? root : null;
+}
+
+/** The element a document's title is read from (HTML 3.1.3): the first
+ *  `<title>` of HTML's, wherever it stands, and in a drawing that is a
+ *  document, the first `<title>` of the drawing's own. */
+function titleOf(doc: ParentNode): Element | null {
+  const root = drawingRootOf(doc);
+  if (root) {
+    return (root.children.find(
+      (k) =>
+        k instanceof Element && k.name === 'title' && k.namespace === SVG_NS,
+    ) ?? null) as Element | null;
+  }
+  return DomUtils.findOne(
+    (el) => el.name === 'title' && !isForeign(el),
+    doc.children,
+  );
+}
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 function parserError(): Element {
@@ -2614,7 +2639,7 @@ export class DomHost {
           // for none
           const ns =
             node.namespace ??
-            (HOMONYMS.has(node.name) && inDrawing(node) ? SVG_NS : undefined);
+            (node.name === 'a' && inDrawing(node) ? SVG_NS : undefined);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
@@ -3912,7 +3937,7 @@ export class DomHost {
         return (
           DomUtils.findAll(
             (el) =>
-              el.name === 'style' ||
+              (el.name === 'style' && isStyleOrScript(el)) ||
               (el.name === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
@@ -4028,9 +4053,8 @@ export class DomHost {
         return null;
       }
       case 'title': {
-        const title = DomUtils.findOne(
-          (el) => el.name === 'title',
-          (a ? (this._node(a) as ParentNode) : this.document).children,
+        const title = titleOf(
+          a ? (this._node(a) as ParentNode) : this.document,
         );
         return title
           ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
@@ -4038,15 +4062,18 @@ export class DomHost {
       }
       case 'setTitle': {
         const doc = b ? (this._node(b) as ParentNode) : this.document;
-        let title = DomUtils.findOne((el) => el.name === 'title', doc.children);
+        let title = titleOf(doc);
         if (!title) {
+          const root = drawingRootOf(doc);
           const head =
+            root ??
             DomUtils.findOne((el) => el.name === 'head', doc.children) ??
             (doc.children.find((k) => k instanceof Element) as
               Element | undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
-          this._put(head, [title], null);
+          if (root) title.namespace = SVG_NS;
+          this._put(head, [title], root ? (root.children[0] ?? null) : null);
         }
         this._replaceAll(title, [new Text(text(a))]);
         if (doc === this.document) this._seams.title(text(a) || null);
@@ -5854,7 +5881,9 @@ export class DomHost {
     };
     for (const el of elementsIn(doc, () => true)) {
       add(el.attribs.id, el);
-      if (NAMED_BY_NAME.has(el.name)) add(el.attribs.name, el);
+      if (NAMED_BY_NAME.has(el.name) && !isForeign(el)) {
+        add(el.attribs.name, el);
+      }
     }
     this._names.set(doc, { at, names });
     return names;
@@ -6445,7 +6474,9 @@ export class DomHost {
   /** A frame put in, loaded where it is in the document and has no
    *  document yet. */
   private _frameIn(frame: Element): void {
-    if (frame.name === 'object' && !frame.attribs.data) return;
+    if (isForeign(frame) || (frame.name === 'object' && !frame.attribs.data)) {
+      return;
+    }
     if (!this._frames.has(frame) && this._inDocument(frame)) {
       this._frameDocument(frame);
     }
@@ -6494,7 +6525,7 @@ export class DomHost {
    */
   private _prepareScript(el: Element): void {
     const exec = this.entries?.exec;
-    if (!exec || this.inert.has(el) || el.namespace) return;
+    if (!exec || this.inert.has(el) || !isStyleOrScript(el)) return;
     if (!this._inDocument(el)) return;
     const { attribs } = el;
     const type = attribs.type ?? '';
@@ -6551,7 +6582,10 @@ export class DomHost {
     while (top.parent) top = top.parent;
     const doc = top as Document;
     if (!this._frameOf.has(doc)) return null;
-    const styles = DomUtils.findAll((e) => e.name === 'style', doc.children);
+    const styles = DomUtils.findAll(
+      (e) => e.name === 'style' && isStyleOrScript(e),
+      doc.children,
+    );
     const texts = styles.map((s) => DomUtils.textContent(s));
     // its viewport is the frame's content box, where the frame is drawn:
     // Acid3's media queries ask a frame of 0 by 0, then of 100 by 100
@@ -6680,7 +6714,8 @@ export class DomHost {
     markup: string,
     declarative = false,
   ): ChildNode[] {
-    const name = context instanceof Element ? context.name : '';
+    const name =
+      context instanceof Element && !isForeign(context) ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
     if (name === 'textarea' || name === 'title') {
       const held = parseFragment(`<${name}>${markup}</${name}>`).find(
