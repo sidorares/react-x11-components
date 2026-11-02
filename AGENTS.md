@@ -4552,6 +4552,31 @@ closes a way out a DOM binding opens by accident:
   another realm is an op on its number, refused on the host**, and a window
   moving between origins links or unlinks in `adopt`, so nothing keeps a global
   past it.
+- **A window leaves its group by being a new one** (`coop.ts`,
+  `WindowSlot.arrives`, docs/prd-popups.md). `Cross-Origin-Opener-Policy` is
+  decided on the host, in the runner's constructor, before the document has a
+  realm: the window goes on in a slot of a new group over a new `DomShared`, and
+  the slot it leaves is discarded to every window of the group, as a closed
+  window's is. That keeps a group and its tree one to one, which `adopt`,
+  `slotById`, `find` and `follow` stand on, and it is free, since a window leaves
+  as a document comes in, and that document has no node of the old tree. Four
+  things are load-bearing. **What a window shows is on its slot (`active`), and
+  never read from its runner**: a host may let one document go before it shows
+  the next, so `slot.runner` is null just as a decision is made. **A window's
+  number is the process's, not its group's**: a host mounts by `popup.id`, and a
+  window that left is still one of the host's. **Anything new that reaches a
+  window by a number goes through `reachable`**, or a document whose window left
+  goes on reaching what it left, for as long as the host takes to let it go. And
+  **anything new that a window has by its document, and a host has by its window,
+  is carried in `_sever`**: flags, a referrer owed. A document that runs nothing
+  has no runner to bring it in, so `<Html>` brings it (`arrivedBare`), and one a
+  window's flags turn down is never drawn (`refuses`). A local document has no
+  response, and goes by who sent the window there (`initiator`): anything new that
+  sends a window somewhere by a path the host cannot see calls `windowInitiates`
+  first. **A tab carries no sandboxing flags**, so a window that has flags to keep
+  is never handed to `navigate(url, 'tab')` by anything here: a frame of another
+  origin under `same-origin` opens one in a group of its own instead
+  (`opensNoOpener`), which is a window with no opener.
 - **What a resource of another origin hands a page is judged on the host, by
   where it landed.** `script-origin.ts` says whether a script runs and whether
   its errors are muted, and `fetch-hops.ts` what each hop of a page's request

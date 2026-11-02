@@ -318,6 +318,7 @@ export { threadTransport } from './thread-transport.js';
 export type { ThreadTransportOptions } from './thread-transport.js';
 export type {
   DocumentResponse,
+  HtmlDocumentHop,
   Fetched,
   HtmlNetworkActivity,
   HtmlNetworkOptions,

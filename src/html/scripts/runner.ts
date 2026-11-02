@@ -46,7 +46,7 @@ import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import type { ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
-import { DomHost, wholeBytes } from './host.js';
+import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
 import type { LoadedScript } from './script-origin.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
@@ -62,9 +62,10 @@ import type {
   WorkerInit,
 } from './host.js';
 import type { Popup } from './popups.js';
-import { liveSession } from './session.js';
+import { forgetKept, liveSession } from './session.js';
 import { slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
+import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
 import type {
   AbortSignalLike,
@@ -112,6 +113,8 @@ export interface ScriptsOptions extends Omit<
   /** The headers of the response the document came in
    *  (`HtmlScripts.headers`). */
   headers?: [string, string][];
+  /** The responses that redirected it here (`HtmlScripts.redirects`). */
+  redirects?: DocumentHop[];
   /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
   /** How long a script's own code may run in a task before it is
@@ -221,6 +224,9 @@ export class ScriptRunner {
   /** The window this document is shown in, where it has one of a group
    *  (`./popups.ts`). */
   slot: WindowSlot | null = null;
+  /** What this document asks of the windows around it (`./coop.ts`): a
+   *  top-level document's, and nothing in a frame. */
+  openerPolicy: OpenerPolicy = 'unsafe-none';
   private _seatsWatched: (() => void) | null = null;
   private _viewListeners = new Set<() => void>();
   private _viewsTold = false;
@@ -247,7 +253,20 @@ export class ScriptRunner {
     // its popup's: a host's `session` is what a tab's documents share, and
     // a frame's its element (`windowKey`)
     const popup = _options.popup as Popup | null | undefined;
-    const slot = popup?.slot ?? slotFor(this.windowKey);
+    const headers = _options.headers ?? [];
+    const found = popup?.slot ?? slotFor(this.windowKey);
+    // it may take the window out of its group, and this is where that is
+    // decided, on the host: a frame's document never does (HTML, "obtain a
+    // browsing context to use for a navigation response")
+    const slot =
+      found && !_link
+        ? found.arrives(url, headers, _options.redirects ?? [], this.windowKey)
+        : found;
+    if (slot !== found && _options.session) forgetKept(_options.session);
+    if (!_link) {
+      this.openerPolicy =
+        slot?.active?.value ?? openerPolicyOf(headers, trustworthy(url));
+    }
     this.host = new DomHost(
       document,
       _options,
@@ -257,14 +276,13 @@ export class ScriptRunner {
     );
     this.host.arrival = arrival;
     // before its realm is made, which asks what context it is as it starts
-    if (popup && url === 'about:blank') {
+    if (popup && slot?.auxiliary && url === 'about:blank') {
       this.host.creator = popup.creator;
       this.host.creatorOrigin = popup.creatorOrigin;
     }
     // a window's flags are every document's it shows, and a host says what a
     // document's own response said of itself
-    const sandbox =
-      (slot?.sandbox ?? 0) | sandboxOfPolicy(_options.headers ?? []);
+    const sandbox = (slot?.sandbox ?? 0) | sandboxOfPolicy(headers);
     if (sandbox) this.host.shared.sandboxes.set(document, sandbox);
     if (_link?.frame) this.host.frameParent = _link.parent.host;
     // the host's to know, and never the facade's: it decides what a realm is
@@ -396,6 +414,14 @@ export class ScriptRunner {
     return this._options;
   }
 
+  /** The document at the top of this one's frames, which is itself for a
+   *  top-level document. */
+  get topmost(): ScriptRunner {
+    let top: ScriptRunner = this;
+    while (top._link) top = top._link.parent;
+    return top;
+  }
+
   /** The frame's element, where this document is a frame's. */
   get frame(): Element | null {
     return this._link?.frame ?? null;
@@ -468,7 +494,11 @@ export class ScriptRunner {
         origin: () => this.host.origin,
         type: 'window',
         frameType: () =>
-          this._link ? 'nested' : popup ? 'auxiliary' : 'top-level',
+          this._link
+            ? 'nested'
+            : this.slot?.auxiliary
+              ? 'auxiliary'
+              : 'top-level',
         // a window has the focus here, and a frame where the page gave it
         focused: () =>
           this._link
@@ -1089,8 +1119,7 @@ export class ScriptRunner {
    *  one the cache drops, with the page it is in, which a frame's document
    *  is kept as a part of. It is told nothing (`dispose`). */
   private _letGo(): void {
-    let top: ScriptRunner = this;
-    while (top._link) top = top._link.parent;
+    const top = this.topmost;
     queueMicrotask(() => top.dispose());
   }
 

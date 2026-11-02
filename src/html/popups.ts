@@ -28,7 +28,7 @@ export interface HtmlPopupFeatures {
 /** A window a page opened, as its host is handed it: what it asked for, and
  *  what the host tells it of what the user did. */
 export interface HtmlPopup {
-  /** A number no other window of its group has: a key to mount it by. */
+  /** A number no other window of this process has: a key to mount it by. */
   readonly id: number;
   /** The address it goes to, absolute: `about:blank` where the page named
    *  none. A page may send its first document elsewhere before the host
@@ -47,7 +47,9 @@ export interface HtmlPopup {
     body: string | Uint8Array;
     contentType: string;
   } | null;
-  /** Whether it has closed, or is closing. */
+  /** Whether it has closed, or is closing. A document whose
+   *  `Cross-Origin-Opener-Policy` takes the window from its opener does not
+   *  close it: the opener reads it as closed, and it goes on here. */
   readonly closed: boolean;
   /** The user closed it: its document unloads, and the host stops showing
    *  it. */

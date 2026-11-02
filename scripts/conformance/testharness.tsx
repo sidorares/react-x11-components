@@ -74,6 +74,7 @@ import {
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
+  HtmlDocumentHop,
   FakeMediaDevices,
   HtmlClipboard,
   HtmlHandle,
@@ -354,6 +355,7 @@ interface Loaded {
   /** What the server sent it as. */
   contentType: string;
   headers?: [string, string][];
+  redirects?: HtmlDocumentHop[];
 }
 
 /**
@@ -589,10 +591,22 @@ function Tab(props: {
     number?: number,
     post?: { body: string | Uint8Array; contentType: string } | null,
   ) => {
-    void network
-      .html(url, {
-        post: post ? { ...post, from: session.current?.url ?? url } : null,
-      })
+    // a document of no response, as a browser makes one itself
+    const blank = {
+      source: '',
+      url,
+      type: 'text/html',
+      charset: 'utf-8',
+      headers: [],
+      redirects: [],
+    };
+    void (
+      url === 'about:blank'
+        ? Promise.resolve(blank)
+        : network.html(url, {
+            post: post ? { ...post, from: session.current?.url ?? url } : null,
+          })
+    )
       .then((doc) => {
         if (page !== current) return;
         // at the fragment it was asked for, which a fetch's answer drops
@@ -613,6 +627,7 @@ function Tab(props: {
                 charset: doc.charset,
                 contentType: doc.type,
                 headers: doc.headers,
+                redirects: doc.redirects,
               },
               number,
             },
@@ -665,6 +680,7 @@ function Tab(props: {
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
       headers: doc.headers,
+      redirects: doc.redirects,
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
@@ -1211,6 +1227,7 @@ async function render(
         charset: doc.charset,
         contentType: doc.type,
         headers: doc.headers,
+        redirects: doc.redirects,
       },
       network,
       page,
@@ -1373,6 +1390,8 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
         baseUrl: doc.url,
         charset: doc.charset,
         contentType: doc.type,
+        headers: doc.headers,
+        redirects: doc.redirects,
       },
       network,
       page,

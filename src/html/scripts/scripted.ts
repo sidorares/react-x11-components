@@ -22,7 +22,7 @@
 //
 // Light on purpose: `<Html>` imports it whether or not a document turns
 // scripts on, and the engine is loaded only once one does (`./hook.ts`).
-import React, { useCallback, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { HtmlSyncNetwork } from '../network.js';
 import type { ReactNode } from 'react';
 import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
@@ -64,6 +64,7 @@ import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
 import { throughWorker, useScripts } from './hook.js';
+import type { DocumentHop } from './coop.js';
 import type { FetchRequest, FetchResponse, FramePost } from './host.js';
 import type { AbortSignalLike } from './platform.js';
 import type { ScriptsOptions, ViewLink } from './runner.js';
@@ -73,6 +74,9 @@ import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
 
+const NO_HEADERS: [string, string][] = [];
+const NO_HOPS: DocumentHop[] = [];
+
 /** A window opened by a page, as an `<Html>` that draws its first document
  *  reads it (`./popups.ts`). */
 type OpenedWindow = HtmlPopup &
@@ -80,6 +84,16 @@ type OpenedWindow = HtmlPopup &
     initialDocument: Document | null;
     creator: string;
     sandbox: number;
+    refuses(
+      url: string,
+      headers: [string, string][],
+      redirects: readonly DocumentHop[],
+    ): boolean;
+    arrivedBare(
+      url: string,
+      headers: [string, string][],
+      redirects: readonly DocumentHop[],
+    ): void;
   };
 
 /** The pane a document is shown in, as its scripts measure it: its size
@@ -118,10 +132,18 @@ export interface HtmlScripts {
   /**
    * The headers of the response the document came in, for what it says of
    * itself to the engine: its `Content-Security-Policy`'s `sandbox`, which a
-   * frame's response is read for as it arrives. Default: none. `HtmlNetwork`'s
-   * `document` and `html` answer them.
+   * frame's response is read for as it arrives, and its
+   * `Cross-Origin-Opener-Policy`. Default: none. `HtmlNetwork`'s `document`
+   * and `html` answer them.
    */
   headers?: [string, string][];
+  /**
+   * The responses that redirected the document here, first first, with where
+   * each came from: a redirect's own `Cross-Origin-Opener-Policy` counts,
+   * whatever the document's says. Default: none. `HtmlNetwork`'s `document`
+   * and `html` answer them.
+   */
+  redirects?: DocumentHop[];
   /**
    * A script's source by its URL: a `<script src>`'s, with its element, and
    * a module's an import names. Default: asked of `onResource` as `kind:
@@ -570,6 +592,7 @@ export function useScriptedHtml(
       }),
     navigate: config.navigate ?? nothing,
     headers: config.headers,
+    redirects: config.redirects,
     popups: config.popups,
     popup: config.popup ?? null,
     close: config.close,
@@ -624,8 +647,21 @@ export function useScriptedHtml(
     url === 'about:blank' && popup?.initialDocument
       ? { document: popup.initialDocument, base: popup.creator }
       : null;
+  const headers = config.headers ?? NO_HEADERS;
+  const redirects = config.redirects ?? NO_HOPS;
+  // a response the window's flags turn down is a network error, so nothing of
+  // it is run or drawn (`refusedAt`)
+  const refused = !opening && !!popup?.refuses(url, headers, redirects);
+  const scripting = !(sandbox & SB_SCRIPTS) && !refused;
+  // no runner brings such a document in, and it may take its window out of
+  // its group all the same
+  useEffect(() => {
+    if (popup && !scripting && !opening) {
+      popup.arrivedBare(url, headers, redirects);
+    }
+  }, [popup, url, scripting]);
   const scripts = useScripts(
-    !(sandbox & SB_SCRIPTS),
+    scripting,
     handle,
     url,
     options,
@@ -854,6 +890,7 @@ export function useScriptedHtml(
 
   return {
     ...props,
+    ...(refused && { source: '' }),
     scripting: scripts.scripting,
     onResource,
     onDocument,

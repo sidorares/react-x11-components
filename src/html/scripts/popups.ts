@@ -24,14 +24,31 @@
 // navigates keeps its popups, which then reach its next document: a slot is
 // found again by what a window's documents share (`windowKey`) — the host's
 // session, or the element of a frame.
+//
+// **A window leaves its group by being a new one.** A document whose
+// `Cross-Origin-Opener-Policy` says so (`./coop.ts`) goes on in a slot of a
+// group of its own, over a tree of its own (`WindowSlot.arrives`), and the slot
+// it leaves behind is discarded to every window that had it. That keeps a group
+// and its tree one to one, which `adopt`, `slotById`, `find` and `follow` stand
+// on, and it asks nothing of a tree: a window leaves as a document comes in,
+// which has no node of the old one and has yet to be handed anything.
 import type { Document, Element } from 'domhandler';
 
 import type { HtmlPopup, HtmlPopupFeatures } from '../popups.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
 import type { ServiceClient } from './sw-registry.js';
 import { makeHtmlHandle } from '../index.js';
-import type { FramePost, DomShared } from './host.js';
+import {
+  leavesGroup,
+  openerPolicyOf,
+  refusedAt,
+  type DocumentHop,
+  type PolicyOf,
+} from './coop.js';
+import { DomShared, trustworthy } from './host.js';
+import type { FramePost } from './host.js';
 import type { RunnerSeams, ScriptRunner } from './runner.js';
+import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import type { SetTimeout, UrlClass } from './platform.js';
 
 declare const setTimeout: SetTimeout;
@@ -52,6 +69,13 @@ export interface WindowOps {
   named(name: string): void;
   /** This window's opener is none from now on (`opener = null`). */
   disown(): void;
+  /** A page wrote into this document, which ends its being the `about:blank`
+   *  the window opened with (HTML, "is initial about:blank"). */
+  wrote(): void;
+  /** This document sends a window somewhere by a path the host sees none of,
+   *  a same-origin window's `location`, or the top of its own frames for 0:
+   *  what a local document there takes from it (`WindowSlot.initiator`). */
+  initiates(id: number): void;
   /** A script of this document reached a window's document. */
   reached(id: number): void;
   /** A message to another realm, by what this one calls it: `name` is 0 for
@@ -85,11 +109,15 @@ export type MakeRunner = (
 /** What a window's documents share, and is found again by. */
 const SLOTS = new WeakMap<object, WindowSlot>();
 
+/** The next window's number: of the process and not of a group, since a host
+ *  mounts its windows by it, and a window that left its group is still one of
+ *  the host's. No realm can reach anything by it outside its own group. */
+let nextWindow = 1;
+
 /** A browsing context group: the windows that can reach each other, over
  *  one tree of nodes. */
 export class WindowGroup {
   readonly slots = new Set<WindowSlot>();
-  private _next = 1;
 
   constructor(readonly shared: DomShared) {
     shared.windows = this;
@@ -97,7 +125,7 @@ export class WindowGroup {
 
   /** The next window's number. */
   number(): number {
-    return this._next++;
+    return nextWindow++;
   }
 }
 
@@ -114,6 +142,24 @@ export class WindowSlot {
   closing = false;
   /** The next document to come in is the one it opened at. */
   blank = false;
+  /** A page opened it, and it has stayed in that group: `about:blank` here is
+   *  of what made it, and a service worker's clients say `auxiliary`. */
+  readonly auxiliary: boolean;
+  /** It shows the `about:blank` it opened with, as a page left it (HTML, "is
+   *  initial about:blank"). */
+  initial = false;
+  /** What the document it shows asks of the windows around it, and its
+   *  origin: kept here, since a host may let one document go before it shows
+   *  the next. None until its first document is in. */
+  active: PolicyOf | null = null;
+  /** Who is sending it somewhere, where that is not the document it shows:
+   *  what a local document there has its policy from. */
+  initiator: PolicyOf | null = null;
+  /** The window left its group through this slot, and goes on in another:
+   *  what the document it showed asks of the group reaches nothing. */
+  severed = false;
+  /** A document of this window has been shown. */
+  private _shown = false;
 
   constructor(
     readonly group: WindowGroup,
@@ -123,6 +169,7 @@ export class WindowSlot {
   ) {
     this.id = id;
     this.opener = opener;
+    this.auxiliary = !!opener;
     group.slots.add(this);
   }
 
@@ -150,7 +197,11 @@ export class WindowSlot {
           this.popup?.features.top ?? 0,
         ]) ?? this.name,
       ) || this.name;
-    if (this.popup && was) runner.host.referrer = this.popup.takeReferrer();
+    if (this.popup && this._shown) {
+      runner.host.referrer = this.popup.takeReferrer();
+    }
+    this._shown = true;
+    this.active = { value: runner.openerPolicy, origin: runner.host.origin };
     // a global is handed across only where the host knows the two are of
     // one origin. What a realm is handed its page has, however the facade
     // means to keep it, so another origin's window is a number there
@@ -214,6 +265,89 @@ export class WindowSlot {
     this.popup?.discarded();
   }
 
+  /** What a navigation's responses say of themselves, in the order they
+   *  came. A local document has no response to say anything: it goes by who
+   *  sent the window there, as WPT and every browser have it, where HTML's
+   *  text gives one no policy and enforces none. */
+  responses(
+    url: string,
+    headers: [string, string][],
+    redirects: readonly DocumentHop[],
+  ): PolicyOf[] {
+    if (LOCAL.test(url)) {
+      const from = this.initiator ?? this.active;
+      return from
+        ? [{ value: from.value, origin: originOfUrl(url, from.origin) }]
+        : [];
+    }
+    return [...redirects, { url, headers }].map((hop) => ({
+      value: openerPolicyOf(hop.headers, trustworthy(hop.url)),
+      origin:
+        (this.sandbox | sandboxOfPolicy(hop.headers)) & SB_ORIGIN
+          ? 'null'
+          : originOfUrl(hop.url),
+    }));
+  }
+
+  /**
+   * A top-level document comes to this window, and this is the slot it comes
+   * into: this one, or one of a group of its own, where its responses take
+   * the window out of this one (HTML, "obtain a browsing context to use for a
+   * navigation response"). `key` is what a tab's slot is found by.
+   */
+  arrives(
+    url: string,
+    headers: [string, string][],
+    redirects: readonly DocumentHop[],
+    key: object,
+  ): WindowSlot {
+    const active = this.active;
+    // its first document, which `open` says the policy of, or a window on its
+    // way out, which a new slot would bring back
+    if (!active || this.closing) return this;
+    const responses = this.responses(url, headers, redirects);
+    const refused = refusedAt(this.sandbox, responses);
+    const read = refused === null ? responses : responses.slice(0, refused + 1);
+    const leaves = leavesGroup(this.initial, active, read);
+    const last = read.at(-1) ?? active;
+    this.initial = false;
+    this.initiator = null;
+    const slot = leaves ? this._sever(key) : this;
+    slot.active = last;
+    return slot;
+  }
+
+  /** The window goes on in a slot of a new group, over a tree of its own, with
+   *  no opener and no name (`arrives`). To everything of this group this slot
+   *  is a window that was discarded, and what it had is nobody's. */
+  private _sever(key: object): WindowSlot {
+    const next = new WindowSlot(
+      new WindowGroup(new DomShared()),
+      null,
+      this.popup,
+    );
+    next.sandbox = this.sandbox;
+    next._shown = this._shown;
+    if (this.popup) this.popup.slot = next;
+    else SLOTS.set(key, next);
+    this.severed = true;
+    this.closing = true;
+    const was = this.runner;
+    this.runner = null;
+    this.group.slots.delete(this);
+    for (const slot of this.group.slots) {
+      if (slot.opener === this) slot.opener = null;
+      slot.runner?.engine.unlinkWindow(this.id, true);
+      was?.engine.unlinkWindow(slot.id, true);
+    }
+    // nothing else lets the document it opened with go: a view only binds it
+    if (this.blank) {
+      if (this.popup) this.popup.initial = null;
+      was?.dispose(null, true);
+    }
+    return next;
+  }
+
   /** It goes somewhere: its document's own navigation, which that document
    *  hears of first. */
   navigate(url: string, how: 'here' | 'replace', post: FramePost | null): void {
@@ -261,13 +395,30 @@ export function slotFor(key: object): WindowSlot | null {
   return SLOTS.get(key) ?? null;
 }
 
-/** The origin of an address, or `null` for none. */
-function originOfUrl(url: string): string {
+/** A document with no response of its own: `about:blank`, whatever comes
+ *  after it, and what a page made and named by a URL. */
+const LOCAL = /^(about:blank([?#]|$)|blob:)/i;
+
+/** The origin of an address, or `fallback` for none: `about:blank` has one
+ *  only by who sent the window there. */
+function originOfUrl(url: string, fallback = 'null'): string {
   try {
-    return new URL(url).origin;
+    const origin = new URL(url).origin;
+    return origin === 'null' ? fallback : origin;
   } catch {
-    return 'null';
+    return fallback;
   }
+}
+
+/** What a local document takes from a document that sends a window to it:
+ *  the policy of the top of its frames, where it is of that origin (HTML,
+ *  "creating a new browsing context"). */
+function policyFrom(runner: ScriptRunner): PolicyOf {
+  const top = runner.topmost;
+  return {
+    value: sameOrigin(runner, top) ? top.openerPolicy : 'unsafe-none',
+    origin: runner.host.origin,
+  };
 }
 
 /** A handle on no `<Html>`, which answers nothing: a window's until the host
@@ -334,6 +485,28 @@ export class Popup implements HtmlPopup {
   /** The sandboxing flags each document it shows has. */
   get sandbox(): number {
     return this.slot?.sandbox ?? 0;
+  }
+
+  /** Whether its flags turn a document down (`refusedAt`): a network error,
+   *  so nothing of it is run or drawn. */
+  refuses(
+    url: string,
+    headers: [string, string][],
+    redirects: readonly DocumentHop[],
+  ): boolean {
+    if (!this.slot?.sandbox || LOCAL.test(url)) return false;
+    const read = this.slot.responses(url, headers, redirects);
+    return refusedAt(this.slot.sandbox, read) !== null;
+  }
+
+  /** A document it shows runs nothing, so no runner brings it in: it may
+   *  take the window out of its group all the same. */
+  arrivedBare(
+    url: string,
+    headers: [string, string][],
+    redirects: readonly DocumentHop[],
+  ): void {
+    this.slot?.arrives(url, headers, redirects, this);
   }
 
   /** What the document it opened with is, for the `<Html>` that draws it:
@@ -423,6 +596,20 @@ export class Popup implements HtmlPopup {
   }
 }
 
+/** Whether a window this document opens has no opener: one of another origin
+ *  than the top of its frames, under a `same-origin` policy there (HTML, "the
+ *  rules for choosing a navigable"). HTML says the document's own policy, which
+ *  a frame has none of, and notes the rule as nested documents' "in the
+ *  presence of an opener policy": WPT and browsers read the top's. */
+function opensNoOpener(runner: ScriptRunner): boolean {
+  const top = runner.topmost;
+  return (
+    (top.openerPolicy === 'same-origin' ||
+      top.openerPolicy === 'same-origin-plus-coep') &&
+    !sameOrigin(runner, top)
+  );
+}
+
 /** What opens and reaches a document's windows (`DomHost.windows`). */
 export function windowOps(
   runner: ScriptRunner,
@@ -436,9 +623,13 @@ export function windowOps(
     post: FramePost | null,
   ): boolean;
 } {
+  /** The group this document can reach: none once its window has left it,
+   *  whatever is left of it while the host lets it go. */
+  const reachable = (): WindowGroup | null =>
+    runner.slot?.severed ? null : runner.host.shared.windows;
   const slotById = (id: number): WindowSlot | null => {
     if (!id) return slotOf(runner);
-    for (const slot of runner.host.shared.windows?.slots ?? []) {
+    for (const slot of reachable()?.slots ?? []) {
       if (slot.id === id) return slot;
     }
     return null;
@@ -460,7 +651,7 @@ export function windowOps(
     return runner.parentRealm;
   };
   const find = (name: string): WindowSlot | null => {
-    const group = runner.host.shared.windows;
+    const group = reachable();
     if (!name || !group) return null;
     for (const slot of group.slots) {
       if (!slot.closing && slot.runner && slot.name === name) return slot;
@@ -470,27 +661,47 @@ export function windowOps(
   const open = (ask: PopupAsk): number => {
     const popups = runner.seams.popups;
     if (!popups) return 0;
+    const alone = opensNoOpener(runner);
+    const flags = runner.host.popupSandbox;
+    // a tab is the host's, and carries no sandboxing flags, so a window that
+    // has to keep them stays here, in a group of its own
+    if (alone && !flags) {
+      runner.seams.navigate(ask.url, 'tab', ask.post ?? null, '');
+      return 0;
+    }
     const from = slotOf(runner);
-    const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
+    const popup = new Popup(
+      alone ? { ...ask, name: '' } : ask,
+      runner.host.url,
+      from.group.number(),
+      runner,
+    );
     popup.creatorOrigin = runner.host.opaqueOrigin;
     if (!popups.open(popup)) return 0;
-    const slot = new WindowSlot(from.group, from, popup, popup.id);
-    slot.name = ask.name;
+    const slot = alone
+      ? new WindowSlot(new WindowGroup(new DomShared()), null, popup, popup.id)
+      : new WindowSlot(from.group, from, popup, popup.id);
+    slot.name = popup.name;
     popup.slot = slot;
     slot.blank = true;
     // what the window's every document starts with, unless the page that
     // opened it lets it out (`allow-popups-to-escape-sandbox`)
-    slot.sandbox = runner.host.popupSandbox;
-    const blank = make(
-      runner.host.blankDocument(),
-      'about:blank',
-      popup.seams(runner.seams),
-    );
+    slot.sandbox = flags;
+    const document = runner.host.blankDocument();
+    slot.group.shared.documents.add(document);
+    const blank = make(document, 'about:blank', popup.seams(runner.seams));
     popup.initial = blank;
+    // its first document is what `arrives` holds the next to: HTML, "creating
+    // a new browsing context", and no document of a window with no opener
+    // made it
+    const value = alone ? 'unsafe-none' : policyFrom(runner).value;
+    blank.openerPolicy = value;
+    slot.active = { value, origin: blank.host.origin };
+    slot.initial = true;
     // nothing to wait for: `window.open` hands it back complete
     void blank.parsed();
     blank.loaded();
-    return slot.id;
+    return alone ? 0 : slot.id;
   };
   return {
     open,
@@ -506,6 +717,7 @@ export function windowOps(
     navigate(id, url, replace) {
       const slot = slotById(id);
       if (slot && maySend(runner, slot, url)) {
+        slot.initiator = policyFrom(runner);
         slot.navigate(url, replace ? 'replace' : 'here', null);
       }
     },
@@ -515,6 +727,13 @@ export function windowOps(
     },
     disown() {
       if (runner.slot) runner.slot.opener = null;
+    },
+    wrote() {
+      if (runner.slot) runner.slot.initial = false;
+    },
+    initiates(id) {
+      const slot = id ? slotById(id) : runner.topmost.slot;
+      if (slot) slot.initiator = policyFrom(runner);
     },
     reached(id) {
       const there = slotById(id)?.runner;
@@ -549,7 +768,10 @@ export function windowOps(
       if (!runner.seams.popups) return false;
       const there = find(target);
       if (there) {
-        if (maySend(runner, there, url)) there.navigate(url, 'here', post);
+        if (maySend(runner, there, url)) {
+          there.initiator = policyFrom(runner);
+          there.navigate(url, 'here', post);
+        }
         return true;
       }
       if (noopener) return false;
@@ -561,12 +783,14 @@ export function windowOps(
         return true;
       }
       const name = target.toLowerCase() === '_blank' ? '' : target;
-      return !!open({
+      const opened = open({
         url,
         name,
         features: { popup: false, noreferrer },
         post,
       });
+      // one with no opener has no number, and it has been seen to all the same
+      return !!opened || opensNoOpener(runner);
     },
   };
 }

@@ -30,10 +30,18 @@ import {
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
+  HtmlDocumentHop,
   HtmlPopup,
   HtmlPopups,
   HtmlScripts,
 } from '../../src/html/index.js';
+import {
+  itemToken,
+  leavesGroup,
+  openerPolicyOf,
+  requiresGroupSwitch,
+} from '../../src/html/scripts/coop.js';
+import type { OpenerPolicy, PolicyOf } from '../../src/html/scripts/coop.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { DomHost, DomShared } from '../../src/html/scripts/host.js';
 import type {
@@ -42,6 +50,12 @@ import type {
   FramePost,
   HostSeams,
 } from '../../src/html/scripts/host.js';
+import {
+  WindowGroup,
+  WindowSlot,
+  windowOps,
+} from '../../src/html/scripts/popups.js';
+import type { ScriptRunner } from '../../src/html/scripts/runner.js';
 import { FONTS, h } from './harness.js';
 
 afterEach(cleanup);
@@ -52,8 +66,19 @@ const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
 const APP = 'https://app.test/';
 const PROVIDER = 'https://provider.test/';
 
-/** What the fake network answers: a body, or where it redirects to. */
-type Answer = string | { redirect: string };
+type Headers = [string, string][];
+
+/** What the fake network answers: a body, or where it redirects to, and what
+ *  either says of itself. */
+type Answer =
+  | string
+  | { redirect: string; headers?: Headers }
+  | { body: string; headers: Headers };
+
+/** A response with this `Cross-Origin-Opener-Policy`. */
+const coop = (value: string): Headers => [
+  ['cross-origin-opener-policy', value],
+];
 
 interface Scene {
   logs: string[];
@@ -97,6 +122,8 @@ async function scene(
     refuse?: boolean;
     close?: (alone: boolean) => boolean | void;
     frames?: boolean;
+    /** What the first document's response said of itself. */
+    headers?: Headers;
   } = {},
 ): Promise<Scene> {
   const logs: string[] = [];
@@ -107,15 +134,34 @@ async function scene(
   let serial = 0;
   let pressAt: (() => Promise<void>) | null = null;
 
-  const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
+  const fetch = async (
+    request: FetchRequest,
+  ): Promise<FetchResponse & { redirects?: HtmlDocumentHop[] }> => {
     let url = request.url.split('#')[0];
     requests.push(`${request.method} ${url}`);
+    const redirects: HtmlDocumentHop[] = [];
     for (let hops = 0; hops < 5; hops += 1) {
       const answer = pages[url];
       if (answer === undefined) return respond(url, 'missing', 404);
       if (typeof answer === 'string') {
-        return { ...respond(url, answer), url, redirected: hops > 0 };
+        return {
+          ...respond(url, answer),
+          url,
+          redirected: hops > 0,
+          redirects,
+        };
       }
+      if ('body' in answer) {
+        const ok = respond(url, answer.body);
+        return {
+          ...ok,
+          url,
+          redirected: hops > 0,
+          headers: [...ok.headers, ...answer.headers],
+          redirects,
+        };
+      }
+      redirects.push({ url, headers: answer.headers ?? [] });
       url = new URL(answer.redirect, url).href;
     }
     throw new Error('too many redirects');
@@ -126,10 +172,17 @@ async function scene(
     const { popup } = props;
     const handle = useHtmlHandle();
     const [session] = useState(() => new HtmlSessionHistory());
-    const [doc, setDoc] = useState<{ n: number; url: string; body: string }>({
+    const [doc, setDoc] = useState<{
+      n: number;
+      url: string;
+      body: string;
+      headers?: Headers;
+      redirects?: HtmlDocumentHop[];
+    }>({
       n: 0,
       url: props.first ? APP : 'about:blank',
       body: props.first ?? '',
+      headers: props.first ? options.headers : undefined,
     });
     const id = useRef(++serial).current;
     useEffect(() => {
@@ -148,6 +201,8 @@ async function scene(
           n: was.n + 1,
           url: response.url,
           body: response.body as string,
+          headers: response.headers,
+          redirects: response.redirects,
         }));
       });
     };
@@ -169,6 +224,8 @@ async function scene(
     const scripts: HtmlScripts = {
       log: (level, text) => void logs.push(`${level}: ${text}`),
       fetch: (request) => fetch(request),
+      headers: doc.headers,
+      redirects: doc.redirects,
       session,
       ...(popup && { popup }),
       popups: seam,
@@ -898,7 +955,10 @@ test('a page that awaits a window hears it, with no task of its own to wake it',
 /** A page of a real address, which a worker can control: its host, a network
  *  and a keeper, and a window for each it opens, as a tab holds them. */
 async function controlled(
-  pages: Record<string, string>,
+  pages: Record<
+    string,
+    string | { status?: number; headers: Headers; body: string }
+  >,
   t: { after(fn: () => unknown): void },
 ): Promise<{
   url(path: string): string;
@@ -915,11 +975,17 @@ async function controlled(
   const server = createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
     asked.push(path);
-    const body = pages[path];
-    response.writeHead(body === undefined ? 404 : 200, {
+    const page = pages[path];
+    const {
+      status = 200,
+      headers = [],
+      body = 'none',
+    } = typeof page === 'string' ? { body: page } : (page ?? { status: 404 });
+    response.writeHead(status, {
       'content-type': path.endsWith('.js') ? 'text/javascript' : 'text/html',
+      ...Object.fromEntries(headers),
     });
-    response.end(body ?? 'none');
+    response.end(body);
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   t.after(
@@ -943,17 +1009,27 @@ async function controlled(
   function Win(props: { popup?: HtmlPopup; first?: string }) {
     const { popup } = props;
     const [session] = useState(() => new HtmlSessionHistory());
-    const [doc, setDoc] = useState({
+    const [doc, setDoc] = useState<{
+      n: number;
+      url: string;
+      body: string;
+      headers?: Headers;
+      redirects?: HtmlDocumentHop[];
+    }>({
       n: 0,
       url: props.first ? url('/opener') : 'about:blank',
       body: props.first ?? '',
     });
     const load = (to: string) =>
-      void network
-        .html(to)
-        .then((got) =>
-          setDoc((was) => ({ n: was.n + 1, url: got.url, body: got.source })),
-        );
+      void network.html(to).then((got) =>
+        setDoc((was) => ({
+          n: was.n + 1,
+          url: got.url,
+          body: got.source,
+          headers: got.headers,
+          redirects: got.redirects,
+        })),
+      );
     useEffect(() => {
       if (popup && popup.url !== 'about:blank') load(popup.url);
     }, []);
@@ -978,6 +1054,8 @@ async function controlled(
         log: (level: string, text: string) =>
           void logs.push(`${level}: ${text}`),
         fetch: fetcher,
+        headers: doc.headers,
+        redirects: doc.redirects,
         session,
         serviceWorkers: keeper,
         notifications: notes,
@@ -1006,7 +1084,7 @@ async function controlled(
       h(
         'box',
         { style: { flexDirection: 'column', height: 120 } },
-        h(Win, { first: pages['/opener'] }),
+        h(Win, { first: pages['/opener'] as string }),
       ),
       ...opened.map((popup) =>
         h(
@@ -1100,6 +1178,35 @@ test("a window is its opener worker's auxiliary client, and the worker answers w
     await s.until('clients'),
     '/opener top-level, /side auxiliary, blank auxiliary',
   );
+});
+
+test("a window that left is no worker's auxiliary client, and a redirect's policy took it there over a real network", async (t) => {
+  const s = await controlled(
+    {
+      '/opener': WORKER_OPENER(`self.w = window.open('/go', 'side');`),
+      // the redirect says what the last response does not
+      '/go': {
+        status: 302,
+        headers: [
+          ['location', '/side'],
+          ['cross-origin-opener-policy', 'same-origin'],
+        ],
+        body: '',
+      },
+      '/side': `<!doctype html><body><script>
+        const worker = navigator.serviceWorker;
+        console.log('side', worker.controller !== null, opener);
+        worker.onmessage = (e) => console.log('clients', e.data);
+        worker.controller.postMessage('list');
+        </script>`,
+      '/sw.js': LISTING_WORKER,
+    },
+    t,
+  );
+  await s.until('controlled');
+  await s.press();
+  assert.equal(await s.until('side'), 'true null');
+  assert.equal(await s.until('clients'), '/opener top-level, /side top-level');
 });
 
 test("a worker's clients.openWindow is a tab with no opener, whatever a page's windows do", async (t) => {
@@ -1551,6 +1658,1074 @@ test('the host refuses what reaches another origin, whatever the facade asks', (
   const same = hostAt(`${APP}again`, page.shared);
   page.bridge('handOver', 1);
   assert.equal(typeof same.bridge('takeNode'), 'number');
+});
+
+// --- Cross-Origin-Opener-Policy ---------------------------------------------
+
+/** A popup that says whether it has an opener, and an opener that keeps saying
+ *  what it reads of the popup, so that a test can read it after the fact. */
+const WATCHED = (url: string, name = '') =>
+  pressed(`
+    self.w = window.open('${url}', '${name}');
+    setInterval(() => console.log('state', w.closed, w.length), 5);
+  `);
+const SAYS = page(
+  `console.log('inside', opener !== null, JSON.stringify(name));`,
+);
+
+/** What the opener reads of the popup once the popup has come in. */
+async function openerRead(s: Scene): Promise<string> {
+  const lines = (): string[] =>
+    s.logs.filter((l) => l.startsWith('log: state'));
+  const before = lines().length;
+  await s.when(() => lines().length > before + 2, 'the opener went quiet');
+  return lines().at(-1)!.slice('log: state '.length);
+}
+
+test('a document with COOP takes its window from its opener: closed, no opener, no name, and nothing crosses', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}strict', 'named');
+      console.log('opened', w.closed, w.opener === window);
+      addEventListener('message', (e) => console.log('heard', e.data));
+      const timer = setInterval(() => {
+        if (!w.closed) return;
+        clearInterval(timer);
+        console.log('severed', w.closed, w.length, w.opener, w.name, w.document);
+        w.postMessage('to the popup', '*');
+        w.close();
+        // a name finds no window of another group, which it would go to
+        const again = window.open('', 'named');
+        console.log('found', again === w, again.closed);
+        setTimeout(() => console.log('waited'), 30);
+      }, 5);
+    `),
+    {
+      [`${APP}strict`]: {
+        body: page(`
+          console.log('inside', opener, JSON.stringify(name));
+          addEventListener('message', (e) => console.log('told', e.data));
+          setInterval(() => console.log('alive'), 10);
+        `),
+        headers: coop('same-origin'),
+      },
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  assert.equal(await s.until('opened'), 'false true');
+  assert.equal(await s.until('inside'), 'null ""');
+  assert.equal(await s.until('severed'), 'true 0 null undefined undefined');
+  assert.equal(await s.until('found'), 'false false');
+  await s.until('waited');
+  assert.ok(!s.logs.some((l) => l.startsWith('log: told')), s.logs.join('\n'));
+  // that is a window to its host still, which it did not close
+  assert.equal(s.popups[0].closed, false);
+  assert.equal(s.shown().length, 3);
+  await act(async () => s.popups[0].close());
+  await s.when(() => s.shown().length === 2, 'the window stayed');
+});
+
+for (const [opener, url, policy, kept] of [
+  [[], `${APP}side`, '', true],
+  [[], `${PROVIDER}side`, 'unsafe-none', true],
+  [[], `${APP}side`, 'same-origin', false],
+  [[], `${APP}side`, 'same-origin-allow-popups', false],
+  [coop('same-origin'), `${APP}side`, 'same-origin', true],
+  [coop('same-origin'), `${APP}side`, '', false],
+  [coop('same-origin'), `${APP}side`, 'same-origin-allow-popups', false],
+  [coop('same-origin'), `${PROVIDER}side`, 'same-origin', false],
+  [coop('same-origin-allow-popups'), `${APP}side`, '', true],
+  [coop('same-origin-allow-popups'), `${PROVIDER}side`, '', true],
+  [
+    coop('same-origin-allow-popups'),
+    `${APP}side`,
+    'same-origin-allow-popups',
+    true,
+  ],
+  [
+    coop('same-origin-allow-popups'),
+    `${PROVIDER}side`,
+    'same-origin-allow-popups',
+    false,
+  ],
+  [coop('same-origin-allow-popups'), `${APP}side`, 'same-origin', false],
+  [[], `${APP}side`, 'noopener-allow-popups', false],
+  [coop('noopener-allow-popups'), `${APP}side`, '', true],
+  [coop('noopener-allow-popups'), `${APP}side`, 'noopener-allow-popups', false],
+] as [Headers, string, string, boolean][]) {
+  const said = opener[0]?.[1] ?? 'none';
+  test(`an opener of ${said} ${kept ? 'keeps' : 'loses'} ${url.slice(8)} of ${policy || 'none'}`, async () => {
+    const s = await scene(
+      WATCHED(url),
+      { [url]: { body: SAYS, headers: policy ? coop(policy) : [] } },
+      { headers: opener },
+    );
+    await s.press();
+    assert.equal(await s.until('inside'), `${kept} ""`);
+    assert.equal(await openerRead(s), kept ? 'false 0' : 'true 0');
+  });
+}
+
+test('same-origin with an embedder policy is a policy of its own, which same-origin alone does not match', async () => {
+  const isolated: Headers = [
+    ...coop('same-origin'),
+    ['cross-origin-embedder-policy', 'require-corp'],
+  ];
+  for (const [popup, kept] of [
+    [isolated, true],
+    [coop('same-origin'), false],
+  ] as [Headers, boolean][]) {
+    const s = await scene(
+      WATCHED(`${APP}side`),
+      { [`${APP}side`]: { body: SAYS, headers: popup } },
+      { headers: isolated },
+    );
+    await s.press();
+    assert.equal(await s.until('inside'), `${kept} ""`);
+    await cleanup();
+  }
+});
+
+test('nothing here is isolated, whatever a document asks: its realm shares a process', async () => {
+  const s = await scene(
+    page(`
+      console.log('isolated', crossOriginIsolated);
+      crossOriginIsolated = true;
+      console.log('still', crossOriginIsolated);
+    `),
+    {},
+    {
+      headers: [
+        ...coop('same-origin'),
+        ['cross-origin-embedder-policy', 'require-corp'],
+      ],
+    },
+  );
+  assert.equal(await s.until('isolated'), 'false');
+  assert.equal(await s.until('still'), 'false');
+});
+
+test('a popup login comes home to a same-origin-allow-popups opener: another origin, a redirect, and the callback posts and closes', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}login', 'login', 'popup,width=400,height=300');
+      addEventListener('message', (e) => {
+        console.log('code', e.data.code, e.origin, e.source === w);
+        setTimeout(() => console.log('closed', w.closed), 40);
+      });
+    `),
+    {
+      [`${PROVIDER}login`]: page(
+        `console.log('provider', opener !== null, name);
+         location.href = '${PROVIDER}authorize';`,
+      ),
+      [`${PROVIDER}authorize`]: { redirect: `${APP}callback?code=abc` },
+      [`${APP}callback?code=abc`]: page(
+        `const code = new URLSearchParams(location.search).get('code');
+         window.opener.postMessage({ code }, window.origin);
+         window.close();`,
+      ),
+    },
+    { headers: coop('same-origin-allow-popups') },
+  );
+  await s.press();
+  assert.equal(await s.until('provider'), 'true login');
+  assert.equal(await s.until('code'), `abc ${APP.slice(0, -1)} true`);
+  assert.equal(await s.until('closed'), 'true');
+  await s.when(() => s.shown().length === 1, 'the popup still showed');
+});
+
+test('the opener polls through a same-origin-allow-popups login, and reads the popup once it is home', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}login');
+      const timer = setInterval(() => {
+        try {
+          const at = w.location.href;
+          if (at === 'about:blank') return;
+          clearInterval(timer);
+          console.log('home', at, w.document.title, w.closed);
+        } catch {}
+      }, 5);
+    `),
+    {
+      [`${PROVIDER}login`]: page(`location.href = '${APP}callback';`),
+      [`${APP}callback`]: `<!doctype html><title>done</title><body>done`,
+    },
+    { headers: coop('same-origin-allow-popups') },
+  );
+  await s.press();
+  assert.equal(await s.until('home'), `${APP}callback done false`);
+});
+
+test('a callback with a policy of its own ends the login, since a provider with none does not match it', async () => {
+  const s = await scene(
+    WATCHED(`${PROVIDER}login`),
+    {
+      [`${PROVIDER}login`]: page(`location.href = '${APP}callback';`),
+      [`${APP}callback`]: {
+        body: SAYS,
+        headers: coop('same-origin-allow-popups'),
+      },
+    },
+    { headers: coop('same-origin-allow-popups') },
+  );
+  await s.press();
+  assert.equal(await s.until('inside'), 'false ""');
+  assert.equal(await openerRead(s), 'true 0');
+});
+
+for (const [title, opener, redirect, last, kept] of [
+  [
+    'a redirect with the policy of both ends keeps the window',
+    coop('same-origin'),
+    { redirect: `${APP}side`, headers: coop('same-origin') },
+    coop('same-origin'),
+    true,
+  ],
+  [
+    'a redirect with no policy loses it, whatever the last response says',
+    coop('same-origin'),
+    { redirect: `${APP}side` },
+    coop('same-origin'),
+    false,
+  ],
+  [
+    'a redirect with a policy loses it, where the last response has none',
+    [],
+    { redirect: `${PROVIDER}side`, headers: coop('same-origin') },
+    [],
+    false,
+  ],
+  [
+    'same-origin-allow-popups lets a redirect through, and holds what it led to',
+    coop('same-origin-allow-popups'),
+    { redirect: `${APP}side` },
+    coop('same-origin-allow-popups'),
+    false,
+  ],
+  [
+    'what a redirect took a window out of, a last response that agrees with it does not put it back in',
+    [],
+    { redirect: `${APP}side`, headers: coop('same-origin') },
+    coop('same-origin'),
+    false,
+  ],
+] as [string, Headers, Answer, Headers, boolean][]) {
+  test(title, async () => {
+    const side =
+      typeof redirect === 'object' && 'redirect' in redirect
+        ? redirect.redirect
+        : '';
+    const s = await scene(
+      WATCHED(`${APP}go`),
+      { [`${APP}go`]: redirect, [side]: { body: SAYS, headers: last } },
+      { headers: opener },
+    );
+    await s.press();
+    assert.equal(await s.until('inside'), `${kept} ""`);
+    assert.equal(await openerRead(s), kept ? 'false 0' : 'true 0');
+  });
+}
+
+test('an opener that goes to a document with COOP leaves what it opened behind, and that goes on', async () => {
+  const s = await scene(
+    pressed(`
+      window.open('${APP}side');
+      addEventListener('message', () => { location.href = '${APP}strict'; });
+    `),
+    {
+      [`${APP}side`]: page(`
+        opener.postMessage('here', '*');
+        const timer = setInterval(() => {
+          if (opener) return;
+          clearInterval(timer);
+          console.log('alone', opener);
+        }, 5);
+      `),
+      [`${APP}strict`]: {
+        body: page(`console.log('arrived', opener, JSON.stringify(name));`),
+        headers: coop('same-origin'),
+      },
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('arrived'), 'null ""');
+  assert.equal(await s.until('alone'), 'null');
+  assert.equal(s.shown().length, 2);
+});
+
+test('an opener that left goes on in its new group through every document after, and reads what it opens', async () => {
+  const strict = (next: string, code: string): Answer => ({
+    body: page(`console.log('at', location.pathname); ${code} ${next}`),
+    headers: coop('same-origin'),
+  });
+  const s = await scene(
+    pressed(`
+      window.open('${APP}side', 'side');
+      addEventListener('message', () => { location.href = '${APP}two'; });
+    `),
+    {
+      [`${APP}side`]: page(`opener.postMessage('here', '*');`),
+      [`${APP}two`]: strict(`location.href = '${APP}three';`, ''),
+      // the second document since it left: a tab's slot is found by its session
+      [`${APP}three`]: strict(
+        '',
+        `const found = window.open('', 'side');
+         console.log('named', found.location.href);
+         const child = window.open('${APP}four', 'child');
+         console.log('child', child.document.readyState, child.opener === window);`,
+      ),
+      [`${APP}four`]: { body: SAYS, headers: coop('same-origin') },
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  assert.equal(await s.until('named'), 'about:blank');
+  assert.equal(await s.until('child'), 'complete true');
+  assert.equal(await s.until('inside'), 'true "child"');
+  // what it left is out of reach of the name it left by: a window of its own
+  assert.equal(s.popups.length, 3);
+});
+
+test('the about:blank a window left behind runs nothing from then on', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}strict');
+      w.setInterval(() => console.log('tick'), 2);
+    `),
+    { [`${APP}strict`]: { body: SAYS, headers: coop('same-origin') } },
+  );
+  await s.press();
+  await s.until('inside');
+  const ticks = () => s.logs.filter((l) => l === 'log: tick').length;
+  const was = ticks();
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  assert.equal(ticks(), was);
+});
+
+test('a window that left says who sent it there, as it would have', async () => {
+  const s = await scene(WATCHED(`${APP}strict`), {
+    [`${APP}strict`]: {
+      body: page(`console.log('referrer', document.referrer);`),
+      headers: coop('same-origin'),
+    },
+  });
+  await s.press();
+  assert.equal(await s.until('referrer'), APP);
+});
+
+test('a frame that opened a window keeps it as the frame goes on, whatever the page it is in asks of its windows', async () => {
+  const s = await scene(
+    page(`
+      const frame = document.createElement('iframe');
+      frame.src = '${APP}framed';
+      document.body.append(frame);
+    `),
+    {
+      [`${APP}framed`]: page(`
+        window.name = 'kept';
+        window.open('${APP}side', 'side');
+        addEventListener('message', () => { location.href = '${APP}again'; });
+      `),
+      [`${APP}again`]: page(`console.log('again');`),
+      [`${APP}side`]: {
+        body: page(`
+          opener.postMessage('here', '*');
+          setInterval(() => console.log('side', opener !== null), 5);
+        `),
+        headers: coop('same-origin'),
+      },
+    },
+    { headers: coop('same-origin'), popups: { unblocked: true } },
+  );
+  await s.when(
+    () => s.logs.some((l) => l.endsWith('again')),
+    'the frame never went on',
+  );
+  await act(() => new Promise((r) => setTimeout(r, 30)));
+  const said = s.logs.filter((l) => l.startsWith('log: side'));
+  assert.equal(said.at(-1), 'log: side true');
+});
+
+test('a window that left its group opens windows of its own, under numbers no other window has', async () => {
+  const s = await scene(
+    WATCHED(`${APP}strict`),
+    {
+      [`${APP}strict`]: {
+        body: page(`
+          const child = window.open('${APP}child', 'child');
+          addEventListener('message', (e) => console.log('heard', e.data, e.source === child));
+        `),
+        headers: coop('same-origin'),
+      },
+      [`${APP}child`]: {
+        body: page(`opener.postMessage(String(opener.closed), '*');`),
+        headers: coop('same-origin'),
+      },
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  assert.equal(await s.until('heard'), 'false true');
+  assert.equal(new Set(s.popups.map((p) => p.id)).size, 2);
+  assert.equal(await openerRead(s), 'true 0');
+});
+
+test('its history goes back with it: a document the window goes back to has no opener either', async () => {
+  const s = await scene(WATCHED(`${APP}one`), {
+    [`${APP}one`]: page(`
+        console.log('one', opener !== null, JSON.stringify(name));
+        if (!sessionStorage.seen) {
+          sessionStorage.seen = 1;
+          location.href = '${APP}strict';
+        }
+      `),
+    [`${APP}strict`]: {
+      body: page(`location.href = '${APP}one';`),
+      headers: coop('same-origin'),
+    },
+  });
+  await s.press();
+  assert.equal(await s.until('one'), 'true ""');
+  await s.when(
+    () => s.logs.filter((l) => l.startsWith('log: one')).length === 2,
+    'it never came back',
+  );
+  assert.equal(
+    s.logs.filter((l) => l.startsWith('log: one')).at(-1),
+    'log: one false ""',
+  );
+});
+
+test('a window that left is a window of no group: a same-origin opener gets nothing of it, whatever it replaces', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}side');
+      const timer = setInterval(() => {
+        if (!w.closed) return;
+        clearInterval(timer);
+        ${STEAL('self.w', 'console.log')}
+      }, 5);
+    `),
+    {
+      [`${APP}side`]: {
+        body: page(`${VICTIM}`),
+        headers: coop('same-origin'),
+      },
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('attacked'), 'true []');
+});
+
+test('a window that left is a window of no group: nor does it have anything of its opener', async () => {
+  const s = await scene(
+    pressed(`${VICTIM} self.w = window.open('${APP}side');`),
+    {
+      [`${APP}side`]: {
+        body: page(`
+          console.log('inside', opener);
+          ${STEAL('window.opener', 'console.log')}
+        `),
+        headers: coop('same-origin'),
+      },
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('inside'), 'null');
+  assert.match(await s.until('attacked'), / \[\]$/);
+});
+
+test('the host decides: a document whose window left reaches no window of its group by a number, and none reaches it', () => {
+  const group = new WindowGroup(new DomShared());
+  const told: string[] = [];
+  const window = (name: string, opener: WindowSlot | null) => {
+    const slot = new WindowSlot(group, opener, null);
+    const runner = {
+      slot,
+      host: { shared: group.shared, origin: 'https://app.test' },
+      seams: {},
+      engine: {
+        call: (entry: string) => told.push(`${name} ${entry}`),
+        unlinkWindow: (id: number, gone: boolean) =>
+          told.push(`${name} lost ${id === slot.id ? 'itself' : id} ${gone}`),
+      },
+    } as unknown as ScriptRunner;
+    slot.name = name;
+    slot.runner = runner;
+    slot.active = { value: 'unsafe-none', origin: 'https://app.test' };
+    return { slot, runner, ops: windowOps(runner, () => runner) };
+  };
+  const a = window('a', null);
+  const b = window('b', a.slot);
+  assert.equal(a.ops.find('b'), b.slot.id);
+  assert.equal(b.ops.openerOf(b.slot.id), a.slot.id);
+  told.length = 0;
+
+  const next = a.slot.arrives(`${APP}strict`, coop('same-origin'), [], {});
+
+  assert.notEqual(next, a.slot);
+  assert.equal(next.opener, null);
+  assert.equal(next.name, '');
+  assert.notEqual(next.group, group, 'a group of its own');
+  assert.notEqual(next.group.shared, group.shared, 'over a tree of its own');
+  assert.equal(next.group.shared.windows, next.group, 'and the two are one');
+  assert.notEqual(next.id, a.slot.id);
+  assert.equal(group.slots.has(a.slot), false);
+  assert.equal(a.slot.closing, true);
+  assert.equal(b.slot.opener, null, 'what it opened has no opener');
+  assert.deepEqual(told.sort(), [
+    `a lost ${b.slot.id} true`,
+    `b lost ${a.slot.id} true`,
+  ]);
+
+  // what is left of the document it showed, while the host lets it go
+  told.length = 0;
+  assert.equal(a.ops.find('b'), 0);
+  assert.equal(a.ops.openerOf(b.slot.id), 0);
+  a.ops.post(-b.slot.id, 'text', '*');
+  a.ops.wire(-b.slot.id, 'text');
+  // and what is left behind has lost it
+  assert.equal(b.ops.find('a'), 0);
+  assert.equal(b.ops.openerOf(a.slot.id), 0);
+  b.ops.post(-a.slot.id, 'text', '*');
+  assert.deepEqual(told, []);
+
+  // a window on its way out is not brought back by what comes to it
+  const c = window('c', null);
+  c.slot.closing = true;
+  assert.equal(
+    c.slot.arrives(`${APP}strict`, coop('same-origin'), [], {}),
+    c.slot,
+  );
+});
+
+test('a document in a frame says nothing to its window, whatever its policy', async () => {
+  const s = await scene(WATCHED(`${APP}side`), {
+    [`${APP}side`]: {
+      body: page(`
+          const frame = document.createElement('iframe');
+          frame.src = '${APP}framed';
+          document.body.append(frame);
+          console.log('inside', opener !== null, JSON.stringify(name));
+        `),
+      headers: coop('unsafe-none'),
+    },
+    [`${APP}framed`]: {
+      body: page(`console.log('framed', parent !== self);`),
+      headers: coop('same-origin'),
+    },
+  });
+  await s.press();
+  assert.equal(await s.until('inside'), 'true ""');
+  await s.when(
+    () => s.logs.some((l) => l.endsWith('framed true')),
+    'the frame never ran',
+  );
+  assert.equal(await openerRead(s), 'false 1');
+});
+
+test('over no secure context a policy says nothing', async () => {
+  const url = 'http://plain.test/side';
+  const s = await scene(WATCHED(url), {
+    [url]: { body: SAYS, headers: coop('same-origin') },
+  });
+  await s.press();
+  assert.equal(await s.until('inside'), 'true ""');
+  assert.equal(await openerRead(s), 'false 0');
+});
+
+test("a window of a same-origin opener's stays through its own about:blank, and has the opener's policy there", async () => {
+  const s = await scene(
+    WATCHED(`${APP}side`),
+    {
+      [`${APP}side`]: {
+        body: page(`location.href = 'about:blank';`),
+        headers: coop('same-origin'),
+      },
+      'about:blank': '',
+    },
+    { headers: coop('same-origin') },
+  );
+  await s.press();
+  await s.when(
+    () => s.requests.includes('GET about:blank'),
+    'it never went there',
+  );
+  assert.equal(await openerRead(s), 'false 0');
+});
+
+for (const [policy, frame, opened] of [
+  ['same-origin', PROVIDER, false],
+  ['same-origin', APP, true],
+  ['same-origin-allow-popups', PROVIDER, true],
+  ['', PROVIDER, true],
+] as [string, string, boolean][]) {
+  test(`a frame of ${frame.slice(8, -1)} in a page of ${policy || 'no policy'} ${opened ? 'opens a window' : 'opens one with no opener, and is handed none'}`, async () => {
+    const s = await scene(
+      page(`
+        const frame = document.createElement('iframe');
+        frame.src = '${frame}framed';
+        document.body.append(frame);
+      `),
+      {
+        [`${frame}framed`]: page(`
+          const w = window.open('${frame}side', 'asked');
+          console.log('handed', w === null);
+        `),
+        [`${frame}side`]: SAYS,
+      },
+      {
+        headers: policy ? coop(policy) : [],
+        popups: { unblocked: true },
+      },
+    );
+    await s.when(
+      () => s.logs.some((l) => l.includes('handed ')),
+      'the frame never opened it',
+    );
+    assert.ok(
+      s.logs.some((l) => l.endsWith(`handed ${!opened}`)),
+      s.logs.join('\n'),
+    );
+    assert.equal(s.popups.length, opened ? 1 : 0);
+    assert.deepEqual(s.tabs, opened ? [] : [`${frame}side`]);
+  });
+}
+
+test('a sandboxed frame in a page of same-origin keeps its flags on the window it opens, which has no opener and is no tab', async () => {
+  const s = await scene(
+    page(`
+      const frame = document.createElement('iframe');
+      frame.sandbox = 'allow-popups allow-scripts';
+      frame.srcdoc = \`<script>
+        console.log('handed', window.open('${APP}plain', 'asked') === null);
+      <\\/script>\`;
+      document.body.append(frame);
+    `),
+    {
+      [`${APP}plain`]: page(`
+        console.log('inside', opener, JSON.stringify(name), self.origin);
+      `),
+    },
+    { headers: coop('same-origin'), popups: { unblocked: true } },
+  );
+  assert.equal(await s.until('inside'), 'null "" null');
+  assert.ok(
+    s.logs.some((l) => l.endsWith('handed true')),
+    s.logs.join('\n'),
+  );
+  assert.equal(s.popups.length, 1);
+  assert.deepEqual(s.tabs, []);
+});
+
+test('a sandboxed frame in a page of same-origin opens no document with a policy, by a window or by a tab', async () => {
+  const s = await scene(
+    page(`
+      const frame = document.createElement('iframe');
+      frame.sandbox = 'allow-popups allow-scripts';
+      frame.srcdoc = \`<script>
+        window.open('${APP}strict');
+        const a = document.createElement('a');
+        a.href = '${APP}strict';
+        a.target = '_blank';
+        a.rel = 'opener';
+        document.body.append(a);
+        a.click();
+        setTimeout(() => console.log('clicked'), 20);
+      <\\/script>\`;
+      document.body.append(frame);
+    `),
+    {
+      [`${APP}strict`]: {
+        body: page(`console.log('ran');`),
+        headers: coop('same-origin'),
+      },
+    },
+    { headers: coop('same-origin'), popups: { unblocked: true } },
+  );
+  await s.when(
+    () => s.logs.some((l) => l.endsWith('clicked')),
+    'the frame never ran',
+  );
+  await act(() => new Promise((r) => setTimeout(r, 40)));
+  assert.ok(!s.logs.includes('log: ran'), s.logs.join('\n'));
+  assert.deepEqual(s.tabs, []);
+});
+
+test('a frame of another origin finds a window by its name all the same, and a link it follows has no opener', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}side', 'named');
+      const frame = document.createElement('iframe');
+      frame.src = '${PROVIDER}framed';
+      document.body.append(frame);
+    `),
+    {
+      [`${APP}side`]: { body: page(``), headers: coop('same-origin') },
+      [`${APP}again`]: { body: SAYS, headers: coop('same-origin') },
+      [`${PROVIDER}framed`]: page(`
+        console.log('found', window.open('', 'named') !== null);
+        const a = document.createElement('a');
+        a.href = '${PROVIDER}linked';
+        a.target = 'asked';
+        document.body.append(a);
+        a.click();
+        setTimeout(() => console.log('clicked'), 10);
+      `),
+    },
+    {
+      headers: coop('same-origin'),
+      popups: { unblocked: true },
+    },
+  );
+  await s.press();
+  await s.when(
+    () => s.logs.some((l) => l.endsWith('clicked')),
+    'the frame never ran',
+  );
+  assert.ok(
+    s.logs.some((l) => l.endsWith('found true')),
+    s.logs.join('\n'),
+  );
+  assert.equal(s.popups.length, 1, 'no window of its own');
+  assert.deepEqual(s.tabs, [`${PROVIDER}linked`]);
+});
+
+test('a local document goes by who sent the window there: another window, and the window itself', async () => {
+  for (const [who, kept] of [
+    ['opener', false],
+    ['itself', true],
+  ] as [string, boolean][]) {
+    const s = await scene(
+      pressed(`
+        self.w = window.open('${PROVIDER}side');
+        setInterval(() => console.log('state', w.closed, w.length), 5);
+        addEventListener('message', () => { w.location = 'about:blank'; });
+      `),
+      {
+        [`${PROVIDER}side`]: page(
+          who === 'opener'
+            ? `opener.postMessage('go', '*');`
+            : `location.href = 'about:blank';`,
+        ),
+        'about:blank': '',
+      },
+      { headers: coop('same-origin-allow-popups') },
+    );
+    await s.press();
+    await s.when(
+      () => s.requests.includes('GET about:blank'),
+      'it never went there',
+    );
+    await act(() => new Promise((r) => setTimeout(r, 30)));
+    assert.equal(await openerRead(s), kept ? 'false 0' : 'true 0', who);
+    await cleanup();
+  }
+});
+
+test('a window of this origin sent to a local document by its name goes by who sent it, which its location cannot say', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}side', 'named');
+      setInterval(() => console.log('state', w.closed, w.length), 5);
+      addEventListener('message', () => { window.open('about:blank', 'named'); });
+    `),
+    {
+      [`${APP}side`]: page(`opener.postMessage('go', '*');`),
+      'about:blank': '',
+    },
+    {
+      headers: coop('same-origin-allow-popups'),
+      popups: { unblocked: true },
+    },
+  );
+  await s.press();
+  await s.when(
+    () => s.requests.includes('GET about:blank'),
+    'it never went there',
+  );
+  await act(() => new Promise((r) => setTimeout(r, 30)));
+  assert.equal(await openerRead(s), 'true 0');
+});
+
+test('document.write ends a window being the one it opened with, so same-origin-allow-popups no longer lets it through', async () => {
+  for (const [write, kept] of [
+    ['', true],
+    [`w.document.write('<p>written</p>'); w.document.close();`, false],
+  ] as [string, boolean][]) {
+    const s = await scene(
+      pressed(`
+        self.w = window.open();
+        ${write}
+        setTimeout(() => { w.location = '${PROVIDER}side'; }, 10);
+        setInterval(() => console.log('state', w.closed, w.length), 5);
+      `),
+      { [`${PROVIDER}side`]: SAYS },
+      { headers: coop('same-origin-allow-popups') },
+    );
+    await s.press();
+    assert.equal(await s.until('inside'), `${kept} ""`);
+    assert.equal(await openerRead(s), kept ? 'false 0' : 'true 0');
+    await cleanup();
+  }
+});
+
+test('a window with sandboxing flags turns a document with a policy down: nothing of it runs or is drawn, and the window has gone', async () => {
+  const body = `<!doctype html><body style="margin:0;background:#ff0000"><script>console.log('ran');</script>`;
+  const s = await scene(
+    page(`
+      const frame = document.createElement('iframe');
+      frame.sandbox = 'allow-popups allow-scripts allow-same-origin';
+      frame.srcdoc = \`<script>
+        const w = window.open('${APP}strict');
+        setInterval(() => console.log('state', w.closed), 5);
+      <\\/script>\`;
+      document.body.append(frame);
+    `),
+    { [`${APP}strict`]: { body, headers: coop('same-origin') } },
+    { popups: { unblocked: true } },
+  );
+  await s.when(
+    () => s.logs.some((l) => l.endsWith('state true')),
+    'the window was still there',
+  );
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(!s.logs.includes('log: ran'), s.logs.join('\n'));
+  if (FONTS) {
+    await assert.rejects(
+      waitForPixel(s.ctx, 20, 300, '#ff0000', { timeout: 200 }),
+      'the document was drawn',
+    );
+  }
+});
+
+test("a window's flags let a document with no policy through", async () => {
+  const s = await scene(
+    page(`
+      const frame = document.createElement('iframe');
+      frame.sandbox = 'allow-popups allow-scripts';
+      frame.srcdoc = \`<script>window.open('${APP}plain');<\\/script>\`;
+      document.body.append(frame);
+    `),
+    { [`${APP}plain`]: SAYS },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until('inside'), 'true ""');
+});
+
+test("a document's own sandbox is no refusal: it loads, of an opaque origin, and that alone takes it from its opener", async () => {
+  const s = await scene(
+    WATCHED(`${APP}side`),
+    {
+      [`${APP}side`]: {
+        body: SAYS,
+        headers: [
+          ...coop('same-origin'),
+          ['content-security-policy', 'sandbox allow-scripts'],
+        ],
+      },
+    },
+    { headers: coop('same-origin') },
+  );
+  await s.press();
+  assert.equal(await s.until('inside'), 'false ""');
+  assert.equal(await openerRead(s), 'true 0');
+});
+
+test('a host that hands in no headers is a host of no policies', async () => {
+  const s = await scene(WATCHED(`${PROVIDER}side`), {
+    [`${PROVIDER}side`]: SAYS,
+  });
+  await s.press();
+  assert.equal(await s.until('inside'), 'true ""');
+});
+
+test('the header reads as a structured item, by the rules WPT holds three browsers to', () => {
+  for (const value of [
+    'same-origin',
+    ' same-origin',
+    'same-origin ',
+    '\tsame-origin',
+    'same-origin\t',
+    'same-origin;same-origin',
+    'same-origin; foo=bar',
+    'same-origin; report-to="endpoint"',
+    'same-origin; a=1; b=2.5; c=?1; d=:YWJj:; e="s\\"t"',
+  ]) {
+    assert.equal(itemToken(value), 'same-origin', JSON.stringify(value));
+  }
+  for (const value of [
+    'same-origin;',
+    '\vsame-origin\v',
+    '\fsame-origin\f',
+    '\rsame-origin\r',
+    'same-origin;\tfoo=bar',
+    'same-origin ;foo=bar',
+    'same-origin; foo=bar;',
+    '"same-origin"',
+    ':c2FtZS1vcmlnaW4=:',
+    '?1',
+    '1',
+    '$same-origin',
+    'same-origin same-origin',
+    'same-origin,same-origin',
+    'same-origin, same-origin',
+    'same-origin; é=1',
+    'sämé-origin',
+    '',
+  ]) {
+    assert.equal(itemToken(value), null, JSON.stringify(value));
+  }
+  assert.equal(itemToken('Same-origin'), 'Same-origin');
+  assert.equal(itemToken('*same-origin'), '*same-origin');
+});
+
+test('a policy is read from a response as HTML reads one', () => {
+  const read = (headers: Headers, secure = true): OpenerPolicy =>
+    openerPolicyOf(headers, secure);
+  assert.equal(read([]), 'unsafe-none');
+  assert.equal(read(coop('same-origin'), false), 'unsafe-none');
+  assert.equal(read(coop('same-origin')), 'same-origin');
+  assert.equal(read(coop('Same-origin')), 'unsafe-none');
+  assert.equal(read(coop('same-site')), 'unsafe-none');
+  assert.equal(read(coop('unsafe-none; report-to=x')), 'unsafe-none');
+  assert.equal(
+    read(coop('same-origin-allow-popups')),
+    'same-origin-allow-popups',
+  );
+  assert.equal(read(coop('noopener-allow-popups')), 'noopener-allow-popups');
+  // two lines of a header are a list, which is no item
+  assert.equal(
+    read([...coop('same-origin'), ...coop('same-origin')]),
+    'unsafe-none',
+  );
+  for (const coep of ['require-corp', 'credentialless']) {
+    assert.equal(
+      read([...coop('same-origin'), ['Cross-Origin-Embedder-Policy', coep]]),
+      'same-origin-plus-coep',
+    );
+  }
+  assert.equal(
+    read([...coop('same-origin'), ['cross-origin-embedder-policy', 'x']]),
+    'same-origin',
+  );
+  assert.equal(
+    read([
+      ...coop('same-origin-allow-popups'),
+      ['cross-origin-embedder-policy', 'require-corp'],
+    ]),
+    'same-origin-allow-popups',
+  );
+});
+
+test('what requires a browsing context group switch, as HTML has it', () => {
+  const at = (value: OpenerPolicy, origin = APP): PolicyOf => ({
+    value,
+    origin,
+  });
+  const other = 'https://other.test';
+  // the matching rule: both none, or one value in one origin
+  assert.equal(
+    requiresGroupSwitch(false, at('unsafe-none'), at('unsafe-none', other)),
+    false,
+  );
+  assert.equal(
+    requiresGroupSwitch(false, at('unsafe-none'), at('same-origin')),
+    true,
+  );
+  assert.equal(
+    requiresGroupSwitch(false, at('same-origin'), at('same-origin')),
+    false,
+  );
+  assert.equal(
+    requiresGroupSwitch(false, at('same-origin'), at('same-origin', other)),
+    true,
+  );
+  assert.equal(
+    requiresGroupSwitch(false, at('same-origin'), at('same-origin-plus-coep')),
+    true,
+  );
+  // an opaque origin is no other's
+  assert.equal(
+    requiresGroupSwitch(
+      false,
+      at('same-origin', 'null'),
+      at('same-origin', 'null'),
+    ),
+    true,
+  );
+  // what only a window's first document lets through
+  assert.equal(
+    requiresGroupSwitch(
+      true,
+      at('same-origin-allow-popups'),
+      at('unsafe-none', other),
+    ),
+    false,
+  );
+  assert.equal(
+    requiresGroupSwitch(
+      false,
+      at('same-origin-allow-popups'),
+      at('unsafe-none', other),
+    ),
+    true,
+  );
+  assert.equal(
+    requiresGroupSwitch(
+      true,
+      at('noopener-allow-popups'),
+      at('unsafe-none', other),
+    ),
+    false,
+  );
+  assert.equal(
+    requiresGroupSwitch(true, at('same-origin'), at('unsafe-none')),
+    true,
+  );
+  // noopener-allow-popups keeps no opener at all, and only at its first
+  assert.equal(
+    requiresGroupSwitch(
+      true,
+      at('noopener-allow-popups'),
+      at('noopener-allow-popups'),
+    ),
+    true,
+  );
+  assert.equal(
+    requiresGroupSwitch(
+      false,
+      at('noopener-allow-popups'),
+      at('noopener-allow-popups'),
+    ),
+    false,
+  );
+  // a chain is each held to the one before, and none puts a switch back
+  assert.equal(
+    leavesGroup(true, at('same-origin-allow-popups'), [
+      at('unsafe-none', other),
+      at('same-origin-allow-popups'),
+    ]),
+    true,
+  );
+  assert.equal(
+    leavesGroup(false, at('same-origin'), [
+      at('unsafe-none'),
+      at('same-origin'),
+    ]),
+    true,
+  );
+  assert.equal(
+    leavesGroup(false, at('unsafe-none'), [
+      at('same-origin'),
+      at('same-origin'),
+    ]),
+    true,
+  );
+  assert.equal(leavesGroup(false, at('unsafe-none'), []), false);
 });
 
 test('features read as HTML reads them', () => {

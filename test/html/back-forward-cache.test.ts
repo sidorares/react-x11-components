@@ -86,6 +86,8 @@ async function tab(
   fetch: (request: FetchRequest) => Promise<FetchResponse> = async () => {
     throw new Error('no network');
   },
+  /** What else a document's scripts are handed, by its address. */
+  more: (url: string) => Partial<ScriptsOptions> = () => ({}),
 ): Promise<Tab> {
   const session = new HtmlSessionHistory(undefined, {
     backForwardCache: cache,
@@ -132,6 +134,7 @@ async function tab(
       session,
       ...(webTransport && { webTransport }),
       ...(webSocket && { webSocket }),
+      ...more(doc.url),
     };
     const scripts = useScripts(true, handle, doc.url, seams);
     runners.set(doc.n, () => scripts.runner?.() ?? null);
@@ -403,6 +406,38 @@ test('a document left is kept, and a step back shows it again as it was, told pa
   assert.equal(doc.session.go(1), null);
   await until(doc, 'b pageshow true 1');
   assert.equal(logs.filter((l) => l.endsWith(' loaded')).length, 2);
+});
+
+test('what a session keeps goes as its window leaves its group, since a slot in that group is nothing to come back to', async () => {
+  for (const [policy, kept] of [
+    ['unsafe-none', 1],
+    ['same-origin', 0],
+  ] as [string, number][]) {
+    const doc = await tab(
+      { 'a.html': page('a'), 'b.html': page('b') },
+      `${SITE}a.html`,
+      3,
+      undefined,
+      undefined,
+      undefined,
+      (url) => ({
+        popups: { unblocked: true, open: () => true },
+        headers: url.endsWith('b.html')
+          ? [['cross-origin-opener-policy', policy]]
+          : [],
+      }),
+    );
+    await until(doc, 'a pageshow false 1');
+    // a slot, and no window left in its group to keep it from the cache
+    doc.run('window.open("about:blank").close();');
+    await settle();
+    doc.run('location.href = "b.html";');
+    await until(doc, 'b pageshow false 1');
+    await settle();
+    assert.equal(doc.session.kept.length, kept, policy);
+    assert.equal(doc.mounted().length, kept + 1, policy);
+    await cleanup();
+  }
 });
 
 test('what a kept document plays is paused, in its tree and out of it, and told so as it is shown again', async () => {
