@@ -635,7 +635,8 @@ export class HtmlNetwork {
           userAgent: this._userAgent,
           language: this._language,
           cookies: this._cookies,
-          site,
+          // no document of no origin is same-site with anything
+          site: request.origin === 'null' ? null : site,
           turns: this._socketTurns,
         });
       },
@@ -1637,7 +1638,7 @@ export class HtmlNetwork {
             credentials: request.credentials ?? 'same-origin',
             origin: request.opaqueOrigin ? 'null' : originOf(client),
             // no document of no origin is same-site with anything
-            site: request.opaqueOrigin ? 'about:blank' : page,
+            site: request.opaqueOrigin ? null : page,
             topLevel: false,
             initiator: null,
           },
@@ -2030,7 +2031,7 @@ function runtimeSocket(
     userAgent: string;
     language: string;
     cookies: CookieJar | null;
-    site: string;
+    site: string | null;
     turns: Map<string, Promise<void>>;
   },
 ): WebSocketConnectionLike {

@@ -27473,13 +27473,19 @@ export function installDom(
           });
         }
         const flags = `${ifAvailable ? 'i' : ''}${steal ? 's' : ''}`;
-        const asked = call(
-          'lockRequest',
-          id,
-          lockName,
-          mode === 'exclusive',
-          flags,
-        );
+        let asked: Any;
+        try {
+          asked = call(
+            'lockRequest',
+            id,
+            lockName,
+            mode === 'exclusive',
+            flags,
+          );
+        } catch (error) {
+          lockRequests.delete(id);
+          throw error;
+        }
         if (asked === false) {
           lockRequests.delete(id);
           new Promise((run) => run(callback(null))).then(resolve, reject);
@@ -27487,7 +27493,11 @@ export function installDom(
       });
     }
     query(): Any {
-      return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+      try {
+        return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
   }
   // `classes` says this of the rest: these two are defined where a context
@@ -32482,8 +32492,10 @@ export function installDom(
   const sessionArea = storage('session');
   // of an origin of none there is no store to hand over: the host refuses it
   // as well (`DomHost._storage`), and this is where HTML throws
+  let keeps: boolean | null = null;
   const area = (held: Any) => (): Any => {
-    if (!workerLocation && documentOrigin() === 'null') {
+    keeps ??= call('storage', 'local', 'allowed') === true;
+    if (!keeps) {
       throw new DOMException(
         "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
         'SecurityError',
