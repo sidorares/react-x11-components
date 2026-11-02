@@ -102,6 +102,8 @@ import {
   NetworkError,
   canPlayMedia,
   decodeText as decode,
+  dispositionOf,
+  downloadSource,
   linkTarget,
   navigableFor,
   preloadHtmlScripts,
@@ -121,6 +123,9 @@ import type {
   DocumentResponse,
   Element,
   FormSubmission,
+  HtmlDownloadRequest,
+  HtmlDownloadSource,
+  HtmlDrop,
   HtmlPickFiles,
   HtmlScripts,
   HtmlSessionEntry,
@@ -131,6 +136,8 @@ import type {
   ViewportOverflow,
 } from '../../src/html/index.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
+import { saveDownload } from './downloads.js';
+import type { DownloadState } from './downloads.js';
 import { openProfile } from './profile.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
@@ -148,7 +155,6 @@ import {
   homePage,
   imagePage,
   textPage,
-  unsupportedPage,
 } from './pages.js';
 
 /** The keys a scroll pane moves its offset down or up with (core's
@@ -351,9 +357,17 @@ export interface PageProps {
    *  from, so the browser shows the dialog, and what was chosen comes back
    *  as `picked`, under `id`. */
   onPickFiles(id: number, multiple: boolean, accept: string[]): void;
+  /** A download's news: the browser draws its shelf from it. */
+  onDownloadState(state: DownloadState): void;
+  /** The downloads the shelf asked to have stopped, by id. */
+  cancelDownloads?: readonly string[];
   /** The last answer to `onPickFiles`: paths, or null where it was
    *  cancelled. */
   picked?: { id: number; paths: string[] | null } | null;
+  /** What another application is dragging over the page, or has dropped on
+   *  it: a pane has no window for one to land on, so the browser takes it
+   *  and says so here. Positions are the pane's own. */
+  dropped?: (HtmlDrop & { phase: 'over' | 'drop' }) | { phase: 'leave' } | null;
   /** An entry wants its document loaded, which this process does not have:
    *  a step to one it let go, the page's own reload, or the entry shown
    *  after a crash. `doc` is the document it was, whose POST to send. */
@@ -831,6 +845,7 @@ export default function Page(props: PageProps): ReactElement {
     const seq = loadSeq;
     const { loadHow: how, loadKey: key } = props;
     const controller = new AbortController();
+    let saving = false;
     void loadDocument(
       {
         seq,
@@ -853,10 +868,18 @@ export default function Page(props: PageProps): ReactElement {
         },
         progress: (next) => store(seq, next),
         finish: () => live.current.onFinish(seq),
+        // not a document after all: the tab stays on what it was showing,
+        // and the request goes on as a download, which only its shelf can
+        // stop now
+        download: (source) => {
+          saving = true;
+          live.current.onFinish(seq);
+          save(source, nextDownload(), controller);
+        },
       },
     );
     return () => {
-      controller.abort();
+      if (!saving) controller.abort();
       setDocs((all) => {
         const cut = all.get(seq);
         if (!cut?.partial) return all;
@@ -1229,6 +1252,61 @@ export default function Page(props: PageProps): ReactElement {
     picking.current.get(answered.id)?.(answered.paths);
     picking.current.delete(answered.id);
   }, [answered]);
+
+  // What is saved is written here, where the response is being read, and
+  // each one is stopped by the shelf or by this process's end.
+  const saving = useRef(new Map<string, AbortController>());
+  const saved = useRef(0);
+  const save = (
+    source: HtmlDownloadSource | Promise<HtmlDownloadSource>,
+    id: string,
+    controller: AbortController,
+  ) => {
+    saving.current.set(id, controller);
+    void Promise.resolve(source)
+      .then((from) =>
+        saveDownload(id, from, controller.signal, (state) =>
+          live.current.onDownloadState(state),
+        ),
+      )
+      .catch((error: Error) =>
+        live.current.onDownloadState({
+          id,
+          name: '',
+          path: null,
+          received: 0,
+          size: null,
+          state: 'failed',
+          error: error.message,
+        }),
+      )
+      .finally(() => saving.current.delete(id));
+  };
+  const nextDownload = () => {
+    saved.current += 1;
+    return `${process.pid}.${saved.current}`;
+  };
+  const onDownload = (request: HtmlDownloadRequest) => {
+    const controller = new AbortController();
+    save(
+      network.download(request, controller.signal, session.current?.url),
+      nextDownload(),
+      controller,
+    );
+  };
+  const cancelled = props.cancelDownloads;
+  useEffect(() => {
+    for (const id of cancelled ?? []) saving.current.get(id)?.abort();
+  }, [cancelled]);
+
+  // what the browser took for the page, which has no window of its own
+  const dropped = props.dropped;
+  useEffect(() => {
+    if (!dropped) return;
+    if (dropped.phase === 'over') handle.dragOver(dropped);
+    else if (dropped.phase === 'leave') handle.dragLeave();
+    else void handle.dropHere(dropped);
+  }, [dropped, handle]);
 
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
@@ -1625,6 +1703,8 @@ export default function Page(props: PageProps): ReactElement {
                   onLink={onLink}
                   onSubmit={onSubmit}
                   onPickFiles={pickFiles}
+                  onDropFiles={readHtmlFiles}
+                  onDownload={onDownload}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>
@@ -1753,6 +1833,8 @@ interface LoadCallbacks {
   commit(url: string, first: Doc, title: string | null, posted: boolean): void;
   progress(next: Doc): void;
   finish(): void;
+  /** It is to be saved, not shown. */
+  download(source: HtmlDownloadSource): void;
 }
 
 /**
@@ -1805,6 +1887,14 @@ async function loadDocument(
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
+  // what says it is a file, or is nothing this browser can show
+  if (
+    !viewSource &&
+    (kind === 'other' || dispositionOf(response.disposition).attachment)
+  ) {
+    on.download(downloadSource(response, ''));
+    return;
+  }
   if (kind !== 'html') {
     let bytes: Uint8Array;
     try {
@@ -1828,7 +1918,7 @@ async function loadDocument(
         posted,
       );
     }
-    return own(unsupportedPage(response.url, response.type), null, url, posted);
+    return own(errorPage(target, 'It cannot be shown.', 'ERR_FAILED'), null);
   }
 
   // HTML: stream it. The encoding is the response's, or the one a `<meta>`

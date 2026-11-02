@@ -49,7 +49,7 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -94,6 +94,9 @@ import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
 import type { HtmlClipboardData } from './clipboard.js';
+import { useDocumentDrag } from './drag.js';
+import type { HtmlDownloadHandler, HtmlDownloadRequest } from './download.js';
+import type { HtmlDrop } from './drag.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
@@ -146,6 +149,7 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export { downloadSource } from './network.js';
 export {
   acceptFilters,
   fileTypeOf,
@@ -186,6 +190,13 @@ export type {
 export { NO_WEBSOCKET } from './socket.js';
 export { memoryClipboard, useHtmlClipboard } from './clipboard.js';
 export type { HtmlClipboard, HtmlClipboardData } from './clipboard.js';
+export type { HtmlDragData, HtmlDrop } from './drag.js';
+export { dispositionOf, downloadName, safeFilename } from './download.js';
+export type {
+  HtmlDownloadHandler,
+  HtmlDownloadRequest,
+  HtmlDownloadSource,
+} from './download.js';
 export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export type {
   HtmlWebSocket,
@@ -577,6 +588,20 @@ export interface HtmlProps {
    */
   onPickFiles?: HtmlPickFiles;
   /**
+   * A page asked to have something saved: an `<a download>` of its own
+   * origin, or of a `blob:` or `data:` URL it made. Default: none, and such a
+   * link is a link like any other, since a component that shows a page writes
+   * nothing to a disk for it. `HtmlNetwork.download` reads what it names.
+   */
+  onDownload?: HtmlDownloadHandler;
+  /**
+   * Read what another application dropped on the document, for a page's
+   * `drop`: `readHtmlFiles` is one. Default: none, and nothing from outside
+   * the process lands on it. A drag from one element of a document to another
+   * needs none of this.
+   */
+  onDropFiles?: (paths: string[]) => Promise<readonly HtmlFile[]>;
+  /**
    * How the document asks to be scrolled: the `overflow` its root element
    * gives the viewport, or its `<body>` where the root's is `visible` (CSS
    * Overflow 3, 3.3), as a viewport uses it — `visible` is `auto` there and
@@ -925,6 +950,16 @@ export interface HtmlHandle {
     end: number,
     direction?: FieldSelection['direction'],
   ): boolean;
+  /** What another application is dragging over the document, for a host
+   *  that takes drops for it, as one of a `<Frame>` pane does: whether what
+   *  is under it takes the drop. A drag from another application reaches the
+   *  document by itself where it has a window of its own. */
+  dragOver(drop: HtmlDrop): boolean;
+  /** It left. */
+  dragLeave(): void;
+  /** It was dropped, with its `paths` and its `text`, which the document
+   *  reads through `onDropFiles`: whether a page took it. */
+  dropHere(drop: HtmlDrop): Promise<boolean>;
   /**
    * Drop a control's picker, as a script's `showPicker()` does once it is
    * allowed to: a drop-down `<select>`'s menu, which its widget drops
@@ -1093,7 +1128,22 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // is drawn while the window has the keyboard
   const { caretBlink, caretBlinkMs } = useDesktopSettings();
   const windowFocused = useWindowState().focused;
-  const links = useLinkClicks(onLink);
+  // a link that says to save what it names, with no script to read it: the
+  // realm answers for one where a document's scripts run (`downloadLink`)
+  const onDownload = props.onDownload;
+  const followed = React.useMemo(() => {
+    if (!onLink || !onDownload || props.scripts) return onLink;
+    return (href: string, ev: X11MouseEvent<DrawnNode>) => {
+      const anchor = linkAround(viewNode.current?.elementAtPoint(ev.x, ev.y));
+      const name = anchor && attr(anchor, 'download');
+      if (name === undefined || name === null || !sameOriginAs(href, baseUrl)) {
+        onLink(href, ev);
+        return;
+      }
+      onDownload({ url: href, filename: name });
+    };
+  }, [onLink, onDownload, props.scripts, baseUrl]);
+  const links = useLinkClicks(followed);
   const menu = useSelectionMenu(selectable);
 
   // The element, for the document's base when a form is submitted, as well
@@ -1183,11 +1233,6 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const sounds = useSounds(viewNode);
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
-  live.current = { forms, stops, onLink };
-  // what a script focused before anything could take it takes it from the
-  // render that mounts a widget or a stop for it, however long that is: no
-  // count of turns is long enough on a page still loading
-  React.useEffect(() => interactive.settleFocus());
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,
@@ -1196,6 +1241,26 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     embedded,
     props._readClipboard,
   );
+  const drag = useDocumentDrag({
+    view: viewNode,
+    baseUrl,
+    onDomEvent,
+    embedded,
+    pressed: events.pressedElement,
+    controlOf: forms.controlOf,
+    onDropFiles: props.onDropFiles,
+  });
+  live.current = {
+    forms,
+    stops,
+    onLink,
+    onDownload: props.onDownload,
+    drag: drag.external,
+  };
+  // what a script focused before anything could take it takes it from the
+  // render that mounts a widget or a stop for it, however long that is: no
+  // count of turns is long enough on a page still loading
+  React.useEffect(() => interactive.settleFocus());
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)
@@ -1319,6 +1384,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       // selection per application. One element answers for every paragraph,
       // so there is nothing per-block to thread through.
       selectable,
+      // a document whose host hears what happens to it drags as a page does:
+      // core's drag, of what the press was on (`useDocumentDrag`)
+      ...(onDomEvent && drag.rootProps),
       // Where the document has stops of its own, Tab goes to them and not
       // to the surface they are on, which a press still focuses for the
       // selection's keys — and Tab from there goes on from the press.
@@ -1583,6 +1651,13 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.interactive?.showPicker(element) ?? false,
       pickFiles: (element: Element) =>
         nodeRef.current?.interactive?.pickFiles(element),
+      download: (request: HtmlDownloadRequest) =>
+        nodeRef.current?.interactive?.download(request) ?? false,
+      dragOver: (drop: HtmlDrop) =>
+        nodeRef.current?.interactive?.dragOver(drop) ?? false,
+      dragLeave: () => nodeRef.current?.interactive?.dragLeave(),
+      dropHere: (drop: HtmlDrop) =>
+        nodeRef.current?.interactive?.dropHere(drop) ?? Promise.resolve(false),
       setFiles: (element: Element, files: readonly HtmlFile[]) =>
         nodeRef.current?.interactive?.setFiles(element, files),
       focus: (element: Element) =>
@@ -1637,6 +1712,8 @@ interface Live {
   forms: ReturnType<typeof useForms>;
   stops: ReturnType<typeof useFocusStops>;
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  onDownload?: HtmlDownloadHandler;
+  drag: ReturnType<typeof useDocumentDrag>['external'];
 }
 
 /** The node core's window has focused, where the element is in a window. */
@@ -1672,6 +1749,14 @@ function documentInteraction(
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
     showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
+    download: (request) => {
+      const save = live.current?.onDownload;
+      save?.(request);
+      return !!save;
+    },
+    dragOver: (drop) => live.current?.drag.over(drop) ?? false,
+    dragLeave: () => live.current?.drag.leave(),
+    dropHere: (drop) => live.current?.drag.drop(drop) ?? Promise.resolve(false),
     pickFiles: (el) => live.current?.forms.pickFiles(el),
     setFiles: (el, files) => live.current?.forms.setFiles(el, files),
     focus: (el) => {
@@ -1923,6 +2008,8 @@ function useDocumentEvents(
     },
     /** Whether the press now under way is a scroll bar's. */
     onBar: () => barPress.current,
+    /** The element the press now under way was on. */
+    pressedElement: () => pressed.current,
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressed.current;
       const up = released.current;
@@ -1946,6 +2033,27 @@ function useDocumentEvents(
       return go;
     },
   };
+}
+
+/** The link an element is in, or null. */
+function linkAround(el: Element | null | undefined): Element | null {
+  for (let at = el ?? null; at; at = flatParentOf(at)) {
+    if (tagOf(at) === 'a' || tagOf(at) === 'area') return at;
+  }
+  return null;
+}
+
+declare const URL: new (url: string) => { origin: string };
+
+/** Whether an address is of a document's origin, or is one a page made: what
+ *  a link's `download` counts on (HTML 4.6.5). */
+function sameOriginAs(href: string, base: string | null | undefined): boolean {
+  if (/^(?:blob|data):/i.test(href)) return true;
+  try {
+    return new URL(href).origin === new URL(base ?? '').origin;
+  } catch {
+    return false;
+  }
 }
 
 /** The nearest element two are both in, themselves included. */

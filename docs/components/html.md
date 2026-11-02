@@ -50,6 +50,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                                                                                   |
+| `onDownload`         | `(request: HtmlDownloadRequest) => void`         | A page asked to have something saved — see [Downloads](#downloads). Absent, such a link is a link like any other: nothing is written anywhere.                                                                                                                                                      |
 | `onPickFiles`        | `(request) => Promise<HtmlFile[] \| null>`       | Ask the user for files, for an `<input type=file>` — see [File inputs](#file-inputs). `useHtmlFilePicker()` is core's file dialog. Absent, a file input opens nothing.                                                                                                                              |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                                                                                        |
 | `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).                                                                                |
@@ -2111,6 +2112,40 @@ Not here: `clipboardchange`, a paste whose `text/html` keeps its structure
 without a listener's help, and `navigator.clipboard` behaving as a detached
 frame's own where the frame has no realm of its own.
 
+### Drag and drop
+
+A press on what can be dragged, moved past core's threshold, is a drag as HTML
+has it: `dragstart`, `drag`, `dragenter`, `dragover`, `dragleave`, `drop` and
+`dragend`, each a `DragEvent` with a `dataTransfer` of its own over one store.
+What can be dragged is an element marked `draggable=true`, a link and an image.
+The store is read/write at `dragstart`, read-only at `drop` and protected in
+between, where a page sees its types and not its data. A target that takes a
+drop cancels `dragover`; a field or an editing host takes text with nothing
+said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+anything else, leaves the gesture what it was: a selection, or a drag of the
+page's own over pointer events. After `dragstart` the pointer is the drag's, so
+a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
+
+Text and files from another application land where the host hands
+`onDropFiles`, which is given the paths and answers with `HtmlFile`s:
+`readHtmlFiles` is one. Without it nothing from outside lands on a document. A
+page sees `Files` in `types` while the drag is over it, and the `File`s at the
+`drop`, as `dataTransfer.files` and through `webkitGetAsEntry()`, a file's
+entry: a folder dropped is no entry here.
+
+**A `<Frame>` pane is no window of its own, so its host takes drops for it.**
+A host puts `dropAccept` on the box around the `<Frame>`, and hands the page
+what it hears through `HtmlHandle.dragOver`, `dragLeave` and `dropHere`, as the
+example browser does; it accepts for the page, since no answer could come back
+across the process in time. On a Mac a pane also has no drop session of core's,
+so a drag inside the page is answered here, and **a page in a pane on a Mac
+cannot be dragged out to another application**, or to another tab: that needs
+`beginDrag` in the host. On X11 a pane's process drives XDND itself. `<Html>`
+in a window of its own can do both on every backend.
+
+Not here: a drag image (`setDragImage` is kept and nothing is drawn beside the
+cursor), dragging selected text, and a folder dropped as a directory entry.
+
 ### Cookies and storage
 
 ```js
@@ -2365,6 +2400,53 @@ is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
 and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
+
+### Downloads
+
+```jsx
+const network = useHtmlNetwork(url);
+
+<Html
+  source={page}
+  onDownload={async (request) => {
+    const source = await network.download(request, signal, url);
+    for await (const chunk of source.body) write(source.filename, chunk);
+  }}
+/>;
+```
+
+**Nothing is saved by construction.** An `<a download>` of the document's own
+origin, or of a `blob:` or `data:` URL a page made, is handed to `onDownload`,
+and with none it is a link like any other. That goes for one a script made and
+clicked with no document around it, which is how a page saves what it has
+built. Another origin's `download` says nothing, as in a browser: the link is
+followed, and it is the response that decides.
+
+`HtmlDownloadRequest` is the `url`, the `filename` the attribute said, and for
+a `blob:` the `bytes` and `type`, which no network could reach.
+`HtmlNetwork.download(request, signal, from)` answers with what to write:
+`filename`, `type`, `size` where the server said, and `body`, which arrives a
+chunk at a time and has none of a document's limit on it.
+
+A navigation can come to the same thing. `HtmlNetwork.document` answers with
+the response's `disposition`, `dispositionOf` reads it, and `size` and `whole`
+are there to save it with; `downloadSource(response, '')` makes the source. What
+to do about it is the host's: the example browser saves what says `attachment`
+and what is of a type it cannot show, and the tab stays on what it was showing.
+
+`downloadName` goes by the response's name, the attribute, the end of the URL
+and the type's extension, in that order, and `safeFilename` leaves a name that
+is safe to join to a directory: no path in it, no control characters, nothing
+that hides the file, whatever a server or a page said. `dispositionOf` reads
+RFC 6266, `filename*` over `filename`.
+
+The example browser writes into the user's Downloads folder, or
+`BROWSER_DOWNLOADS_DIR`, from the tab's own process, with a `.part` file until
+all of it has arrived, and draws a shelf along the bottom of its window with
+each one's progress and a Cancel and a Show in Folder. A tab closed with a
+download under way ends it, and the shelf says so. `showSaveFilePicker` is left
+out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
+`<a download>`.
 
 ### File inputs
 

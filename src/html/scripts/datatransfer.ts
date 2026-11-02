@@ -19,6 +19,7 @@
 export interface DataTransferDeps {
   DOMException: unknown;
   Event: unknown;
+  MouseEvent: unknown;
   File: unknown;
   FileList: unknown;
   /** A list of `Proto`'s holding what `read` answers now
@@ -48,6 +49,10 @@ export interface DataTransferInternals {
   setMode(transfer: unknown, mode: string): void;
   /** What a store holds, whatever its mode. */
   entriesOf(transfer: unknown): StoreEntry[];
+  /** Set what a drag allows and what is to happen, as the user agent does. */
+  setEffects(transfer: unknown, allowed: string, effect: string): void;
+  /** What a page left of them. */
+  effectsOf(transfer: unknown): { allowed: string; effect: string };
 }
 
 export function installDataTransfer(
@@ -58,6 +63,7 @@ export function installDataTransfer(
   const D: Any = deps;
   const DOMException: Any = D.DOMException;
   const Event: Any = D.Event;
+  const MouseEvent: Any = D.MouseEvent;
   const File: Any = D.File;
   const FileList: Any = D.FileList;
   const listOf: Any = D.listOf;
@@ -89,7 +95,7 @@ export function installDataTransfer(
   /** A name as HTML compares them (6.11.3.5, "ASCII lowercase"), with the
    *  two legacy names read as the types they stand for. */
   const formatOf = (format: Any): string => {
-    const name = apply(lower, `${format}`, []);
+    const name = apply(trim, apply(lower, `${format}`, []), []);
     return name === 'text'
       ? 'text/plain'
       : name === 'url'
@@ -116,6 +122,7 @@ export function installDataTransfer(
     for (const entry of store.entries) {
       if (!drop(entry)) kept[kept.length] = entry;
     }
+    if (kept.length === store.entries.length) return;
     store.entries = kept;
     store.generation += 1;
   };
@@ -162,7 +169,7 @@ export function installDataTransfer(
       if (callback === null || callback === undefined) return;
       const s = state(this);
       if (s.store.mode === 'protected' || s.store.mode === 'disabled') return;
-      if (s.entry.kind !== 'text') return;
+      if (s.entry.kind !== 'text' || !s.store.entries.includes(s.entry)) return;
       const text = s.entry.data;
       task(() => {
         apply(callback, undefined, [text]);
@@ -173,10 +180,52 @@ export function installDataTransfer(
       if (s.store.mode === 'protected' || s.store.mode === 'disabled') {
         return null;
       }
+      if (!s.store.entries.includes(s.entry)) return null;
       return s.entry.kind === 'file' ? s.entry.data : null;
+    }
+    /** A dropped file as an entry of the file system it is in (Entries API,
+     *  4.1): all a page that takes dropped folders asks of a file. A folder
+     *  is no entry here: what is dropped of one is the files in it. */
+    webkitGetAsEntry(): Any {
+      const s = state(this);
+      if (s.store.mode === 'disabled' || s.store.mode === 'protected') {
+        return null;
+      }
+      if (s.entry.kind !== 'file' || !s.entry.data) return null;
+      return made(new FileSystemFileEntry(ENTRY), { file: s.entry.data });
     }
   }
   idlAttributes(DataTransferItem);
+
+  const ENTRY = {};
+  /** A file of those dropped (Entries API, 6). */
+  class FileSystemFileEntry {
+    constructor(key?: Any) {
+      if (key !== ENTRY) throw new TypeError('Illegal constructor');
+    }
+    get isFile(): boolean {
+      return true;
+    }
+    get isDirectory(): boolean {
+      return false;
+    }
+    get name(): string {
+      return state(this).file.name;
+    }
+    get fullPath(): string {
+      return `/${state(this).file.name}`;
+    }
+    get filesystem(): Any {
+      return null;
+    }
+    file(success: Any): void {
+      const { file } = state(this);
+      task(() => {
+        apply(success, undefined, [file]);
+      });
+    }
+  }
+  idlAttributes(FileSystemFileEntry);
 
   const LIST = {};
   /** A store's entries (6.11.3.2), as a list a page reads by index. */
@@ -304,7 +353,7 @@ export function installDataTransfer(
     getData(format: Any): string {
       const { store } = state(this);
       if (store.mode === 'protected' || store.mode === 'disabled') return '';
-      const named = apply(lower, `${format}`, []);
+      const named = apply(trim, apply(lower, `${format}`, []), []);
       const entry = textEntry(store, formatOf(named));
       if (!entry) return '';
       return named === 'url' ? firstUrl(entry.data) : entry.data;
@@ -383,11 +432,28 @@ export function installDataTransfer(
   }
   idlAttributes(ClipboardEvent);
 
+  /** A drag's events (HTML 6.11.2). */
+  class DragEvent extends MouseEvent {
+    constructor(type: Any, init: Any = {}) {
+      super(type, init);
+      if (init?.dataTransfer !== undefined && init.dataTransfer !== null) {
+        state(init.dataTransfer);
+      }
+      made(this, { dataTransfer: init?.dataTransfer ?? null });
+    }
+    get dataTransfer(): Any {
+      return state(this).dataTransfer;
+    }
+  }
+  idlAttributes(DragEvent);
+
   const interfaces: Record<string, Any> = {
     DataTransfer,
     DataTransferItem,
     DataTransferItemList,
     ClipboardEvent,
+    DragEvent,
+    FileSystemFileEntry,
   };
   for (const name of Object.getOwnPropertyNames(interfaces)) {
     Object.defineProperty(interfaces[name].prototype, Symbol.toStringTag, {
@@ -405,5 +471,14 @@ export function installDataTransfer(
       store.mode = mode;
     },
     entriesOf: (transfer) => state(transfer).store.entries,
+    setEffects: (transfer, allowed, effect) => {
+      const s = state(transfer);
+      s.effectAllowed = allowed;
+      s.dropEffect = effect;
+    },
+    effectsOf: (transfer) => {
+      const s = state(transfer);
+      return { allowed: s.effectAllowed, effect: s.dropEffect };
+    },
   };
 }
