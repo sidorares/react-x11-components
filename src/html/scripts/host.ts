@@ -105,7 +105,7 @@ import {
   cssomShorthands,
   cssomStyle,
 } from '../computed.js';
-import { fontQuery } from '../css/style.js';
+import { declaredProperties, fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
 import type { FontFaceInit, Stylesheet } from '../css/parse.js';
@@ -4244,6 +4244,17 @@ export class DomHost {
         return r
           ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
           : '';
+      }
+      // every name a style has an attribute for, a computed style's list
+      // with what it leaves out
+      case 'styleProperties': {
+        const style = this._seams.handle.computedStyle(this._element(a), null);
+        if (!style) return '';
+        return [
+          ...Object.keys(style),
+          ...SHORTHAND_NAMES,
+          ...declaredProperties(),
+        ].join(',');
       }
       case 'computed': {
         this.flush();

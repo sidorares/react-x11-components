@@ -3912,7 +3912,11 @@ closes a way out a DOM binding opens by accident:
   **the host never reads what a page threw**: a module's error goes to the
   page through `__thrown` to be reported there, under the timeout.
 - **What a page feature-detects or assigns is the IDL's, not the facade's
-  reading of it.** A missing interface brings a polyfill: Next.js's
+  reading of it.** A property a style has answers `in`
+  (`isStyleProperty`, from `declaredProperties`): Vue 2 writes a name only
+  where it finds it there, so every `:style` binding on StackEdit came out
+  as `undefined: 44px`, and jQuery looks the same way. A missing interface
+  brings a polyfill: Next.js's
   IntersectionObserver polyfill re-measured every target at every
   mutation, because `IntersectionObserverEntry` was missing. A getter with
   no setter throws in strict code, as `contentEditable` did for

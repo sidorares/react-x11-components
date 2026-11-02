@@ -6147,6 +6147,20 @@ export function installDom(
    *  `float`, a word JavaScript once kept for itself. */
   const blockProperty = (key: string): string =>
     key === 'cssFloat' ? 'float' : cssName(kebab(key));
+  /** The names of the properties a style has, once a page looks for one. */
+  let styleProperties: Set<string> | null = null;
+  /** Whether a style has an attribute of a name, which a page asks with
+   *  `in`: Vue 2 writes `style[name]` only where it finds `name` there, or a
+   *  prefixed one, and jQuery the same, so a style that had none took every
+   *  `:style` binding for a property with no name. */
+  const isStyleProperty = (key: string): boolean => {
+    if (!styleProperties) {
+      const names = str(call('styleProperties', document.documentElement?._id));
+      if (!names) return false;
+      styleProperties = new Set(names.split(','));
+    }
+    return !key.startsWith('--') && styleProperties.has(blockProperty(key));
+  };
   /**
    * A declaration block a page may write, an element's or a rule's: its
    * names by index, and each property read and set as an attribute of its
@@ -6175,6 +6189,12 @@ export function installDom(
           '',
         );
         return true;
+      },
+      has(t, key) {
+        if (key in t) return true;
+        if (typeof key !== 'string') return false;
+        const at = index(key);
+        return at >= 0 ? at < block.names().length : isStyleProperty(key);
       },
       ownKeys(t) {
         return [
