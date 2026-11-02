@@ -20,6 +20,7 @@ import {
   XK_LEFT,
   XK_RETURN,
   XK_SHIFT_L,
+  XK_TAB,
 } from 'react-x11/keysyms';
 import { appendChild, findOne } from 'domutils';
 import { Element as DomElement } from 'domhandler';
@@ -140,6 +141,97 @@ test('a noscript the page shows again stays hidden where scripts run', async () 
 });
 
 // --- pointer events ----------------------------------------------------------
+
+/** A field with the focus, and what can be pressed beside it. Each test
+ *  asks of it what Chromium, Firefox and WebKit do. */
+const BESIDE_FIELD =
+  '<style>body{margin:0}input,a,button,label,p{display:block;width:150px;' +
+  'height:24px;margin:0}</style><input id="t"><input id="other">' +
+  '<a id="a" href="/next">a</a><button id="b">b</button>' +
+  '<label id="l" for="other">l</label><p id="p">p</p>';
+
+async function besideField() {
+  const doc = await hosted(BESIDE_FIELD);
+  await clickOn(doc.el, doc.byId('t'));
+  await act();
+  assert.strictEqual(doc.el.focusedElement, doc.byId('t'));
+  doc.events.length = 0;
+  return doc;
+}
+
+const FOCUS_ORDER = ['mousedown', 'focusout', 'focusin'];
+
+test('a press on a link is told before the focus goes, and follows the link', async () => {
+  const doc = await besideField();
+  await clickOn(doc.el, doc.byId('a'));
+  await act();
+  assert.deepStrictEqual(doc.told(FOCUS_ORDER), ['mousedown:a', 'focusout:t']);
+  assert.deepStrictEqual(doc.links, ['https://example.test/next']);
+});
+
+test('a press on a <button> is told before the focus goes, and clicks it', async () => {
+  const doc = await besideField();
+  await clickOn(doc.el, doc.byId('b'));
+  await act();
+  assert.deepStrictEqual(doc.told([...FOCUS_ORDER, 'click']), [
+    'mousedown:b',
+    'focusout:t',
+    'click:b',
+  ]);
+});
+
+test('a press on a label is told before the focus goes, and its control takes it at the click', async () => {
+  const doc = await besideField();
+  await clickOn(doc.el, doc.byId('l'));
+  await act();
+  assert.deepStrictEqual(doc.told(FOCUS_ORDER), [
+    'mousedown:l',
+    'focusout:t',
+    'focusin:other',
+  ]);
+  assert.strictEqual(doc.el.focusedElement, doc.byId('other'));
+});
+
+test('a press a page cancels on a link keeps the focus, and is still a click that follows it', async () => {
+  // only the press's own default is cancelled: the release still clicks
+  const doc = await besideField();
+  doc.state.cancel = (e) => e.type === 'mousedown';
+  await clickOn(doc.el, doc.byId('a'));
+  await act();
+  assert.deepStrictEqual(doc.told([...FOCUS_ORDER, 'click']), [
+    'mousedown:a',
+    'click:a',
+  ]);
+  assert.strictEqual(doc.el.focusedElement, doc.byId('t'));
+  assert.deepStrictEqual(doc.links, ['https://example.test/next']);
+});
+
+test('a press a page cancels on a field leaves it unfocused, with no caret put in it', async () => {
+  const doc = await besideField();
+  doc.state.cancel = (e) => e.type === 'mousedown';
+  await clickOn(doc.el, doc.byId('other'));
+  await act();
+  assert.deepStrictEqual(doc.told(FOCUS_ORDER), ['mousedown:other']);
+  assert.strictEqual(doc.el.focusedElement, doc.byId('t'));
+});
+
+test('a press a page cancels leaves the focus on a link Tab reached, as on a field', async () => {
+  const doc = await hosted(
+    '<style>body{margin:0}a,p{display:block;width:150px;height:24px;margin:0}' +
+      '</style><a id="a" href="/next">a</a><p id="p">p</p>',
+  );
+  await act(async () => fireEvent.key(XK_TAB, { target: doc.el as never }));
+  await act();
+  assert.strictEqual(doc.el.focusedElement, doc.byId('a'));
+  doc.state.cancel = (e) => e.type === 'mousedown';
+  await clickOn(doc.el, doc.byId('p'));
+  await act();
+  assert.strictEqual(doc.el.focusedElement, doc.byId('a'), 'the stop keeps it');
+  doc.state.cancel = () => false;
+  await clickOn(doc.el, doc.byId('p'), 0.7);
+  await act();
+  assert.strictEqual(doc.el.focusedElement, null, 'where nothing cancels it');
+});
 
 metric(
   'a click is told after its press and its release, and a cancelled one follows no link',

@@ -187,8 +187,6 @@ interface CoreDragEvent {
  *  hands it: a `<Frame>` pane has no window of its own for one to land on. */
 export function useDocumentDrag(options: DocumentDragOptions): {
   rootProps: Record<string, unknown>;
-  /** Whether the press under way is on what a drag can start from. */
-  pressCanDrag(): boolean;
   external: {
     over(drop: HtmlDrop): boolean;
     leave(): void;
@@ -430,9 +428,5 @@ export function useDocumentDrag(options: DocumentDragOptions): {
     },
   };
 
-  return {
-    rootProps,
-    pressCanDrag: () => draggableFrom(latest.current.pressed()) !== null,
-    external,
-  };
+  return { rootProps, external };
 }

@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.3` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.3` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -857,6 +857,16 @@ it up. **The floor is a running one and moves often** — every move since
   behind the text a line by the twenty-fifth. A core before it reads no
   `lineHeight` on a field and sets it at its font's own, so the floor
   moves with the fix.
+- `^2.56.3` — a press moves the focus after its `mousedown`, and not where
+  a handler cancelled it (react-x11#1029, over #1028). Core moved it first,
+  so a page's `preventDefault()` kept nothing, and a click on Monaco, in
+  vscode.dev and the TS Playground, left the editor unfocused. `<Html>` and
+  `<RichTextEditor>` each cancelled a press for a reason of their own, and
+  stopped, since a press cancelled on this core moves no focus. A core
+  before it tells a page the focus has gone before it hears the press, so
+  the floor moves with the fix. 2.56.2 under it keeps pinned repairs apart
+  (#1022), so a sticky header over a sticky sidebar is no repaint of the
+  window at every scroll, which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -3554,6 +3564,20 @@ the hooks' state through one object made once and a ref every render sets
 (`documentInteraction`), so a host calling it between renders is answered
 from the last one.
 
+**A press's focus is `mousedown`'s default action, and that is core's**
+(react-x11#1028). Core moved it before dispatching the press, so a page
+heard `mousedown` with the focus already gone and `preventDefault()` could
+keep nothing: Monaco cancels a press and asks for the focus only where it
+believes it has none, so a press on the editor took the focus for good.
+Nothing here could have put that right. The root's capture phase is inside
+core's dispatch, and an undo after it would have told the page `focusin`
+ahead of `mousedown`, and scrolled and rung as a `'script'` focus does.
+**So nothing of `<Html>`'s own cancels a press**: a `preventDefault()` here
+is a page's, and keeps the focus. What the document turns down of a press
+goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
+`user-select: none` starts no selection and moves the focus in all three
+engines.
+
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
 sheet, and everything it imports, has run (`_sheetsInForce`), not when the
@@ -4256,7 +4280,11 @@ closes a way out a DOM binding opens by accident:
   simulation of a dozen programs. It runs on `gpuWebGL`, a windowless
   x11-dri context per canvas, and it costs a read of the GPU's pixels, so
   **a frame is read as the document paints it** (`PageContexts.settle`, from
-  `DomHost.canvas`) rather than as it is drawn: read at each frame, a glow in
+  `DomHost.canvas`) rather than as it is drawn, **or as a page reads the
+  canvas as an image** (`canvasBitmap`, `WEBGL.pixels`), once a picture.
+  Anything new that reads a canvas's pixels goes through `canvasBitmap`, or
+  a WebGL canvas reads as nothing: jspaint draws its shapes on one nothing
+  shows and copies them, and a pencil left no mark. Read at each frame, a glow in
   a canvas scrolled out of view starved the page's downloads, and a clip's
   10-second load timer dropped the whole section to its fallback, one load
   in three. **The ways desktop GL is not WebGL fail with nothing drawn and no
@@ -4625,10 +4653,11 @@ closes a way out a DOM binding opens by accident:
 - **A document's drag is a layer over core's, on one root** (`drag.ts`). The
   root is core's one draggable and its one drop target; `onDragStart` cancels
   every press that is on nothing a drag starts from, which leaves it ordinary
-  mouse events, and `pressCanDrag` keeps a press on such an element from being
-  turned down before core can arm it, as a press past a text's end is
-  (`startsSelectionAt`). Core reads `dragData` before `onDragStart`, so the
-  root's is fixed, thunks that answer from `active`, this process's drag. **A
+  mouse events. Core arms a drag only from a press nothing cancelled, so a
+  press that starts no selection, as one past a text's end does, is declined
+  in `defaultMouseDown` and never cancelled. Core reads `dragData` before
+  `onDragStart`, so the root's is fixed, thunks that answer from `active`,
+  this process's drag. **A
   `<Frame>` pane on a Mac has neither half of it**: no `attachDropTransport`,
   so `_initDnd` makes no drop session and core takes every drag for one over
   another application; and no `beginDrag`. `onDrag` answers what is inside the
@@ -5081,24 +5110,84 @@ load-bearing.
   scope" gets wrong and the engines do not. So **anything new that opens a
   foreign element goes through `_openForeign`**, since `popElement` takes a
   frame off by the name alone (`FRAMED`), and **a tag's end decides anything
-  more through `_tagEnds`**, where the element is not made yet. HTML content is
-  still htmlparser2's, foreign elements open or not: `<span><div></span>` closes
-  the `<span>`, where HTML's stops at the `<div>`, a `<p>` is closed only from
-  the top of the stack, and nothing runs an adoption agency. So a nested `<a>`
-  is the one difference left of 2,124 generated documents the engines agree on
-  (105 before), and every chain to depth 5 of foreign and HTML elements, with
-  each end tag after it, is read as they read it (788,922 documents, but for
-  HTML's own `td` scope). A generator for this holds HTML well nested, or HTML's
-  rules drown what foreign content's do. Left, and nobody writes it: a foreign
-  `<form>` hides an HTML one from `emitOpenTag`, an `<mglyph>` under a point
-  holds what it holds as HTML (its `/>` does end it), and at the top of a
-  fragment what breaks out leaves the tokenizer in HTML until the next tag's name
-  is read, so a `<title>` there is RCDATA.
+  more through `_tagEnds`**, where the element is not made yet. Every chain to
+  depth 5 of foreign and HTML elements, with each end tag after it, is read as
+  the engines read it (788,922 documents). A generator for this holds HTML well
+  nested, or HTML's rules drown what foreign content's do. Left, and nobody
+  writes it: an `<mglyph>` under a point holds what it holds as HTML (its `/>`
+  does end it), and at the top of a fragment what breaks out leaves the tokenizer
+  in HTML until the next tag's name is read, so a `<title>` there is RCDATA.
 - **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
   `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
   path in the first, and a `clipPath` lost its capital. **Anything new that
   parses markup for an element hands the element over.** What breaks out of the
   context is HTML's until it closes, and the context is there again after it.
+
+**HTML's tags are closed by HTML's rules, read off the stack** (`_open`,
+`_implied`, `_tablePart`, `_closedBy`, `_endTag`). htmlparser2's parser keeps a
+table of what a start tag closes and asks only the top of the stack, and closes
+the nearest element of an end tag's name whatever stands between, so a `</span>`
+ended a block it was never in, the block's own end tag then ended an outer one,
+and `<button><input>` closed the button. `DocumentParser` keeps htmlparser2's
+tokenizer and opens every element itself: nothing calls `emitOpenTag`. A
+differential over 969,873 generated chains to depth 3 differs from all three
+engines in two, each a `<select>` that ended in a `<template>`, where it was 2,170
+in 16,002 and 3,225 in 18,981 at depth 2. Six things are load-bearing.
+
+- **Generate for one rule at a time.** Whole trees from a loose vocabulary drown
+  in foster parenting and the adoption agency. The rig's families leave out what
+  only foster-parents, and a marker after each tag says where the tag left the
+  parser, a `<style>` in a table.
+- **An end tag goes by a scope, and `_stopsAt` says which.** A block's and a
+  heading's go by default scope, a `</li>` stops at a list, a `</p>` at a button,
+  a table's at a table, and any other at what is `SPECIAL`, which is what keeps a
+  block open for its own end tag. `select` is in the default scope, which the
+  engines all have and an older reading of HTML does not. `html`, `head` and
+  `body` are in none of them: an ignored `<html>` stands on the stack for what it
+  would have closed (`_ignored`), and the real ones are at the bottom.
+- **Nothing a start tag implies closes a formatting element**, which is a stop
+  in every walk `_implied` makes (`TO_A_PARAGRAPH`, `IMPLYING`,
+  `SPECIAL_TO_AN_ITEM`). An engine brings one closed from under it back around
+  what comes after, from a list nothing here keeps, so `<p><a><div>` closed here
+  would have the block out of the link. The two together are the adoption agency
+  and belong together. A cell and a caption do close what is in them, since HTML
+  clears that list at each. Where a formatting element's end tag has a block
+  above it, the agency would move the block out; here it leaves the stack and the
+  block stays open (`_leaveOpen`), so the block's end tag closes the block and no
+  outer one.
+- **What takes an element off the middle of the stack goes through `_leaveOpen`**,
+  which tells the handler, since the two stacks have to stay in step from the
+  top. HTML's `</form>` is the other that does: `<form><div></form>x` has the `x`
+  in the `<div>`, after it generates implied end tags.
+- **The form pointer outlives the stack** (`Handler.form`). A `<form>` closed by
+  what held it still turns the next away, and between a table's parts one closes
+  as it opens, so the rows are not in it and each control after it has the form
+  through `PARSED_FORMS`. `formOwner` and a page's `form` both end there, after
+  what is around the control, so **anything new that asks a control's form asks
+  `parsedForm` last**. Old pages write `<table><form><tr>`, whose rows were in a
+  form in a table and laid out as nothing a browser draws.
+- **Every document pays for this, so the cost is kept off the path of a page with
+  no mistakes.** A start tag with nothing to do asks one `Set`, as htmlparser2 did;
+  `Handler.paragraphs` saves each block a walk of the stack to find there is no
+  `<p>`, which is O(n) at every level of a document of unclosed `<div>`s; and an
+  end tag that closes what is current goes no further than `onclosetag`. A 3 MB
+  document of plain HTML parses within 1% of what it did, and one all of SVG takes
+  2% more.
+  **And no walk with nothing foreign open goes past `MAX_DEPTH`** (`_walked`):
+  past what a tree holds it takes the name for what it finds, as htmlparser2 did,
+  since a page of unclosed elements and a tag for each that closes nothing would
+  otherwise cost the square of them. Unbounded, a 150 KB document of 20,000
+  `<span>`s took a hundred times as long as it did. Measure a change here on such
+  a document as well: no real page shows it.
+
+What is left, each against all three engines: the adoption agency and its list,
+so a formatting element closed from under what follows it is not brought back,
+and a nested `<a>` is not ended; foster parenting, so what is out of place in a
+table stays in it; `<template>`'s modes past the first tag it holds and
+`colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
+quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
+which ends no written `<head>`. A comment after `</body>` goes in the body, where
+HTML has it after it.
 
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
@@ -7277,6 +7366,74 @@ GBM/EGL, on Linux. Four things to keep:
   When a release fixes the declaration (GLMap/earstrip#1), delete the copy
   and import `earstrip` directly.
 
+## A PDF somebody else draws
+
+`src/pdf/` is the fourth element that draws a whole scene, after `<Flow>`,
+`<Html>` and `<Map>`, and it adds the case none of them has: **the scene arrives
+as pixels from an engine that draws better and faster than anything here could.**
+`docs/prd-office-documents.md` has the survey and every number, and it is where
+the formats after this one are designed.
+
+**Measure the floor before designing around a parser.** The design everybody would
+draw is pdf.js's operator list through the 2D context. PDFium in WebAssembly takes
+7 to 12 ms a page for finished pixels at 2x, where pdf.js takes 2 to 7 ms for a list
+of what to draw, and from there all of PDF's graphics model would be this package's
+to write and keep. So a page is tiles. `@embedpdf/pdfium` is the package because it
+is the C API and nothing else: `FPDF_RenderPageBitmapWithMatrix` draws part of a page
+into a buffer we name, and a friendlier wrapper hides exactly that. It is an optional
+peer, as `ondine` is, and its types are written out in `pdfium.ts`. The rule to carry
+to the next engine: a Rust or C engine in WebAssembly, on a thread, handing over
+pixels, is a real option for anything heavy, and it costs a `.wasm` file rather than
+a native build.
+
+**The engine is a thread away and the queue is on this side.** At most `IN_FLIGHT`
+tiles are at the engine, and what to ask for next is worked out from the view as each
+lands, so a flick leaves nothing behind it. A worker-side queue would have to be told
+to cancel, and would still be drawing what nobody will see. A tile comes back in a
+buffer moved rather than copied; the one copy is out of the WebAssembly heap, since a
+buffer that is the heap's cannot be moved.
+
+Seven things are load-bearing.
+
+- **The thread is ref'd only while an answer is due** (`ThreadEngine`). A listener
+  for `message` refs a `Worker` again, so an `unref` before it holds the process
+  open for good, idle, with nothing to say why; and one left unref'd lets a process
+  with nothing else to do end in the middle of an `await`. A suite run with
+  `--test-force-exit` shows neither, and on Node 20 from source there is no thread at
+  all: CI's other three jobs ran past 40 minutes. A process of its own is the test.
+- **`PdfEngine` crosses numbers and typed arrays only**, so an engine can be a thread
+  away, and it is public for the reason `ProcessHost` is. `test/fake-pdf.ts` drives it,
+  and its every pixel says where it is: a flat page cannot show a shift. The tests that
+  matter mount the view away from the window's corner, at `scale: 2` and at 1.5.
+- **Never keep a view of the heap.** It grows, and a grown heap is a new buffer: `_heap()`
+  asks each time.
+- **What PDFium reports is in the page's own space**, whose origin may be anywhere and
+  which `/Rotate` may turn. A box goes through `_shown`, the page's matrix asked of
+  `FPDF_PageToDevice` at three points. Worked out from the box and the rotation, a
+  selection lands beside the text on a turned page and every other page passes.
+- **Pages stay parsed** (`PAGES_KEPT`). A tile of a parsed page is 1.5 ms and parsing a
+  dense one is half a second, and two pages side by side in view ask in turn: with one
+  kept, each parsed the other away at every tile.
+- **A scroll stays on the device grid** (`_snap`). A zoom about a point leaves it
+  wherever the arithmetic came to, and a blit from a fraction does not meet the strip it
+  exposed. A test that only scrolls from whole offsets passes without this.
+- **What an engine cannot draw is asked for once** (`_failed`, `_noSurfaces`). The queue
+  asks again for whatever is not there, so a page it cannot read, or a backend with no
+  `Surface`, is a loop as fast as it can refuse, which is silent. **A fake engine answers
+  on a macrotask**, as a thread does: answered in a microtask, that loop holds the thread
+  from every timer, and the test hangs at 100% of a core where it should fail, with
+  children a killed runner leaves spinning.
+
+Everything `PdfViewNode` holds but `_handle` is about pages rather than PDFs, and the
+design for the next format moves it to a shared module when one arrives. Do not move it
+before that.
+
+One trap from measuring it. **`paintDamage()` is not the view**: a paint of the first tile
+to land has no other tile in it, so a metric that asks a paint whether anything was
+missing says the view is whole with most of it blank. `_wholeView` asks of the view. And
+`scripts/bench/pdf.tsx` sizes its window with `width` and `height`: with `style` the view
+gets no room, reports zoom 0.1 and asks for no tiles, which reads as a broken engine.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from
@@ -7378,9 +7535,12 @@ What to know before changing it:
   `toDOM` returns `remoteCaret`'s description (`collab.ts`); the view asks a
   text-less widget's `toDOM` once, cached by the widget's type, and a
   builder that reaches for `document` throws and is skipped.
-- **A press on the selection is left to core, so that it can arm a
-  drag.** The root is `draggable`; `mouseDown` claims every other press,
-  and `onDragStart` cancels a drag whose press was not on the selection.
+- **No press is cancelled**, since a cancelled press moves no focus, and
+  core's focus is the one a press wants: a `'script'` focus from a handler
+  would light a ring and scroll a tall editor to its top. So core arms a
+  drag from every press on the `draggable` root, and `onDragStart` cancels
+  one whose press was not on the selection (`dragCandidate`), after which
+  the gesture goes on as ordinary mouse events.
   An in-app drop reaches its target with no modifiers — core builds it
   with `buttons: 0` — so the copy modifier travels in the slice payload
   from the source's last `onDrag`; and an in-app drop must answer
@@ -7650,6 +7810,8 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | A StatusNotifierItem host                        | nowhere yet — but the _item_ side landed in core                                                    | **Still planned here**, as a sibling of `<TrayHost>` with its own issue. Shares intent with `<TrayHost>` and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`. Note the split — the **item** side (an app putting its own icon in a tray) shipped upstream in react-x11 as `useTray()`'s freedesktop rung (react-x11#353), on `src/statusnotifier.js` + the extracted `src/dbusmenuexport.js`. That is the same seam `<TrayHost>` sits on: core owns being _in_ a tray, this package owns _being_ one. A host here consumes `org.kde.StatusNotifierWatcher` and core's dbusmenu **client** half, which does not exist yet and is the real prerequisite. |
 | A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                                                                      | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)                                                    | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md).                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PDF                                              | new, here (`src/pdf/`)                                                                              | **Done.** `<Pdf>`: PDFium as WebAssembly on a thread, an optional peer, and one element compositing its tiles. Reading only. See "A PDF somebody else draws".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Word, PowerPoint, Excel                          | nowhere yet                                                                                         | **Designed, not built**: [docs/prd-office-documents.md](docs/prd-office-documents.md). `@silurus/ooxml` for docx and pptx, through an adapter that was proved on X11 and not yet on Cocoa, and `hucre` with `numfmt` for xlsx. Reading first: authoring is a contract this package has not taken on.                                                                                                                                                                                                                                                                                                                                                                          |
 | A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (IME tiers, inline widgets, images in text).                                                                                                                          |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
@@ -7780,6 +7942,15 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+One that comes from Node 20, and fails a long way from the cause:
+
+- **An `assert.ok` inside a `waitFor` has a message.** Without one, Node 20
+  builds the message by parsing the test's own source with acorn, and that
+  search is quadratic in the file: `waitFor`'s two-second budget ran for five
+  and eight minutes on `test/pdf.test.ts`, at a line or two of the file, and
+  the job failed after 28 with `'false == true'`. Node 22 and later do not
+  parse, so nothing shows locally. It looks like a hang at 100% of a core.
 
 One that comes from the test harness:
 

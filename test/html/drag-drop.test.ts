@@ -175,6 +175,17 @@ test('a draggable element is dragged to one that takes it, in HTML’s order, wi
   );
 });
 
+test('a press that starts no selection still drags: on what user-select keeps out of one, and past a text’s end', async () => {
+  const shown = await page(
+    `<div id=a draggable=true style="user-select:none">drag</div><div id=c draggable=true>x</div><div id=b>drop</div>${WATCH}`,
+  );
+  await shown.drag('a', 'b');
+  assert.ok(await shown.until('dragstart a'));
+  shown.logs.length = 0;
+  await shown.drag('c', 'b');
+  assert.ok(await shown.until('dragstart c'));
+});
+
 test('a target that does not cancel dragover takes no drop', async () => {
   const shown = await page(
     `<div id=a draggable=true>drag</div><div id=b>drop</div>${WATCH}<script>

@@ -14,11 +14,10 @@
 // Presses are the exception, and on purpose: a press lands on whatever is
 // under the pointer — a paragraph, a list marker, the gap between two blocks —
 // and core runs the default action of *that* node, not of the root. So the
-// component takes presses in an ordinary bubbling `onMouseDown` on the root
-// and `preventDefault()`s them, which also keeps core's drag-and-drop from
-// arming on a press that is placing a caret — all but a press on the
-// selection, which is left to core so that it can arm a drag of the
-// selection from the root (./drag.ts).
+// component takes presses in an ordinary bubbling `onMouseDown` on the root.
+// It cancels none of them: that would keep core from focusing the editor. So
+// core arms a drag from a press that is placing a caret as from one on the
+// selection, and `onDragStart` lets through only the second (./drag.ts).
 //
 // **`<richeditortext>`** is one textblock: `<richtext>` — its layout cache,
 // its run decoration, its four text accessors — plus a selection band and a
