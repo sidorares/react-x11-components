@@ -58,6 +58,18 @@ export interface ResourceRequest {
    *  for a font, the `<style>` or `<link>` whose sheet declared it; for a
    *  module a script imports, the document's root element. */
   element: Element;
+  /** Where a script is asked for by CORS, a module's or one with a
+   *  `crossorigin` attribute, in whose name and with whose credentials. A
+   *  host answers with `headers`, which the engine reads the answer by. */
+  cors?: ResourceCors;
+}
+
+/** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):
+ *  the requesting document's origin, and `use-credentials` where another
+ *  origin hears its cookies. */
+export interface ResourceCors {
+  origin: string;
+  mode: 'anonymous' | 'use-credentials';
 }
 
 /**
@@ -100,11 +112,23 @@ export type ResourceResult =
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number }
   | { kind: 'font'; bytes: Uint8Array }
-  | { kind: 'script'; text: string }
-  | { kind: 'script'; bytes: Uint8Array; charset?: string }
+  | ({ kind: 'script'; text: string } & ScriptOrigin)
+  | ({ kind: 'script'; bytes: Uint8Array; charset?: string } & ScriptOrigin)
   | { kind: 'document' }
   | VideoSource
   | AudioSource;
+
+/**
+ * Where a script came from, as a host that knows says: where it ended up
+ * after redirects, and its response's headers. A page reads what a script of
+ * its own origin throws, and of another's reads nothing, so one a host
+ * followed a redirect to is held to where it landed, which only the host
+ * knows. Absent, it is held to the address it was asked for.
+ */
+export interface ScriptOrigin {
+  url?: string;
+  headers?: [string, string][];
+}
 
 /** What a `<video>` plays: a host's answer to `kind: 'video'`. */
 export type VideoSource =

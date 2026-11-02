@@ -38,6 +38,7 @@ import type {
   ResourceResult,
   ScriptRequest,
 } from '../index.js';
+import type { ResourceCors } from '../resources.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
@@ -48,6 +49,7 @@ import type { HtmlWebGL } from '../webgl.js';
 import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
+import type { LoadedScript } from './script-origin.js';
 import { SB_FORMS, SB_SCRIPTS, sandboxOfPolicy } from './sandbox.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
@@ -124,7 +126,11 @@ export interface HtmlScripts {
    * a module's an import names. Default: asked of `onResource` as `kind:
    * 'script'`, the text or the bytes it answers decoded.
    */
-  load?: (url: string, element: Element | null) => Promise<string | null>;
+  load?: (
+    url: string,
+    element: Element | null,
+    cors?: ResourceCors,
+  ) => Promise<LoadedScript | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
    *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
    *  the form it goes with, where a form's `target` named this window, and
@@ -473,18 +479,34 @@ function runtimeLanguage(): string {
   }
 }
 
+/** A script's source from what `onResource` answered, with what the host
+ *  said of where it came from. */
+async function loadedScript(
+  result: unknown,
+  fallback: string | undefined,
+): Promise<LoadedScript | null> {
+  const r = result as ScriptAnswer | null | undefined;
+  if (!r || r.kind !== 'script') return null;
+  const text = await scriptText(r, fallback);
+  return text === null ? null : { text, url: r.url, headers: r.headers };
+}
+
+type ScriptAnswer = {
+  kind?: string;
+  text?: string;
+  bytes?: Uint8Array;
+  charset?: string;
+  url?: string;
+  headers?: [string, string][];
+};
+
 /** A script's text from what `onResource` answered: bytes in what the
  *  response names, then in what its element or its document does (HTML's
  *  "fetch a classic script"). */
 async function scriptText(
-  result: unknown,
+  r: ScriptAnswer,
   fallback: string | undefined,
 ): Promise<string | null> {
-  const r = result as
-    | { kind?: string; text?: string; bytes?: Uint8Array; charset?: string }
-    | null
-    | undefined;
-  if (!r || r.kind !== 'script') return null;
   if (typeof r.text === 'string') return r.text;
   if (!r.bytes) return null;
   const charset = r.charset ?? fallback;
@@ -553,12 +575,17 @@ export function useScriptedHtml(
     network: config.fetch !== undefined,
     load:
       config.load ??
-      (async (url, element) => {
+      (async (url, element, cors) => {
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
-        return scriptText(
-          await ask({ url, kind: 'script', element: owner }),
+        return loadedScript(
+          await ask({
+            url,
+            kind: 'script',
+            element: owner,
+            ...(cors ? { cors } : {}),
+          }),
           owner.attribs.charset || latest.current.props.charset,
         );
       }),

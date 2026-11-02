@@ -191,6 +191,17 @@ import { linkOpener, navigableFor } from './target.js';
 import { parseWindowFeatures } from '../popups.js';
 import type { HtmlPopup, HtmlPopups } from '../popups.js';
 import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
+import {
+  CorsError,
+  agentHeaders,
+  corsCheck,
+  forbiddenMethod,
+  headerOf,
+  nextHop,
+  redirectOf,
+  redirectTainted,
+} from './fetch-hops.js';
+import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
   SB_DOWNLOADS,
@@ -342,8 +353,18 @@ export interface FetchRequest {
    * held to, and its address the `Referer`. Absent, the page's.
    */
   client?: string;
+  /**
+   * Whether a redirect is followed, or answered as it is so that the host
+   * can take the next hop itself (`fetch-hops.ts`), which is how a page's
+   * request gets the CORS, the preflight and the credentials each hop owes.
+   * Absent, `follow`. A network that follows all the same says `redirected`,
+   * and what it answers is held to where it landed. The host asks for
+   * `manual` alone: `error` is a page's, kept for a worker's `fetch` event.
+   */
+  redirect?: 'follow' | 'error' | 'manual';
   /** Whether its `Origin` is `null`, whatever its client's is: a sandboxed
-   *  document's, whose address says nothing of who it is. */
+   *  document's, whose address says nothing of who it is, or one a redirect
+   *  through another origin tainted (`redirectTainted`). */
   opaqueOrigin?: boolean;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
@@ -434,7 +455,7 @@ export interface FetchResponse {
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
    *  origin's, `cors` another's that let it, `opaque` none of it, and
    *  `default` what a service worker made of nothing. */
-  type?: 'basic' | 'cors' | 'opaque' | 'default';
+  type?: 'basic' | 'cors' | 'opaque' | 'opaqueredirect' | 'default';
   /** The number an opaque response's body is held by here, which a realm
    *  hands back to keep it or to answer with it. */
   held?: number;
@@ -853,6 +874,18 @@ const OPAQUE_HEAD = {
   redirected: false,
 };
 
+/** All a page is told of a redirect it asked to see (Fetch 2.2.6, "an opaque-
+ *  redirect filtered response"): that there was one. */
+const OPAQUE_REDIRECT: FetchResponse = {
+  url: '',
+  status: 0,
+  statusText: '',
+  redirected: false,
+  headers: [],
+  body: '',
+  type: 'opaqueredirect',
+};
+
 /** How many opaque responses a document holds at once (`_opaques`). */
 const OPAQUE_HELD = 64;
 
@@ -1252,10 +1285,6 @@ const escapeText = (text: string): string =>
 const escapeAttribute = (text: string): string =>
   escapeText(text).replace(/"/g, '&quot;');
 
-/** A request CORS refused, which the page sees as a failed fetch and the
- *  console tells why. */
-class CorsError extends Error {}
-
 /** A response's body, where it arrives a chunk at a time, let go unread: a
  *  `no-cors` answer's, one CORS refused, one the page no longer wants. */
 function release(response: FetchResponse): void {
@@ -1381,13 +1410,6 @@ function unsafeRequestHeaders(headers: [string, string][]): string[] {
   return [...names].sort();
 }
 
-/** A header's value, its last where there are several. */
-function headerOf(headers: [string, string][], name: string): string | null {
-  let value: string | null = null;
-  for (const [k, v] of headers) if (k.toLowerCase() === name) value = v;
-  return value;
-}
-
 /** A comma-separated list of tokens, lower-cased unless `fold` is false. */
 function listOf(value: string | null, fold = true): Set<string> {
   const out = new Set<string>();
@@ -1396,46 +1418,6 @@ function listOf(value: string | null, fold = true): Set<string> {
     if (token) out.add(fold ? token.toLowerCase() : token);
   }
   return out;
-}
-
-/** The CORS check (Fetch 4.10): whether an answer lets `page` read it.
- *  Throws why it does not. */
-function corsCheck(
-  headers: [string, string][],
-  credentials: string,
-  page: string,
-): void {
-  const allow = headerOf(headers, 'access-control-allow-origin');
-  if (allow === null) {
-    throw new CorsError(
-      "No 'Access-Control-Allow-Origin' header is present on the requested resource.",
-    );
-  }
-  if (allow.includes(',')) {
-    throw new CorsError(
-      `The 'Access-Control-Allow-Origin' header contains multiple values '${allow}', but only one is allowed.`,
-    );
-  }
-  const include = credentials === 'include';
-  if (allow === '*' && !include) return;
-  if (allow === '*') {
-    throw new CorsError(
-      "The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.",
-    );
-  }
-  if (allow !== page) {
-    throw new CorsError(
-      `The 'Access-Control-Allow-Origin' header has a value '${allow}' that is not equal to the supplied origin.`,
-    );
-  }
-  if (include) {
-    const credentialed = headerOf(headers, 'access-control-allow-credentials');
-    if (credentialed !== 'true') {
-      throw new CorsError(
-        `The value of the 'Access-Control-Allow-Credentials' header in the response is '${credentialed ?? ''}' which must be 'true' when the request's credentials mode is 'include'.`,
-      );
-    }
-  }
 }
 
 /** A declaration block as CSSOM serializes one (6.7.2), which is what a
@@ -1799,7 +1781,11 @@ export interface Entries {
   /** A worker's imported script, run in the page from inside its call
    *  (`ScriptEngine.runNested`): whether it ran, or threw what is now at
    *  `__thrown`. */
-  runNested?(code: string, url: string): 'ran' | 'threw' | null;
+  runNested?(
+    code: string,
+    url: string,
+    muted?: boolean,
+  ): 'ran' | 'threw' | null;
   /** A page's classic script, run as a script of its own with the element
    *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
    *  it ran to its end. */
@@ -4192,9 +4178,17 @@ export class DomHost {
         return null;
       case 'importScript': {
         // fetched before this returns, and run as a script of its own
-        const code = this.workerScope?.importScript(text(a)) ?? null;
+        const url = text(a);
+        const code = this.workerScope?.importScript(url) ?? null;
         if (code === null) return null;
-        return this.entries?.runNested?.(code, text(a)) ?? null;
+        const own = /^(?:data|blob):/i.test(url);
+        return (
+          this.entries?.runNested?.(
+            code,
+            url,
+            !own && originOf(url) !== this._origin(),
+          ) ?? null
+        );
       }
       case 'workerErrorOut': {
         const [message, filename, line, column] = JSON.parse(text(a));
@@ -5389,6 +5383,7 @@ export class DomHost {
         return null;
       case 'image': {
         const el = this._node(a) as Element;
+        if (b === 'clean') return this._imageClean(el);
         const state = this._imageDrawn(el)?.imageState?.(el);
         // nothing draws it: as it would be with no image to wait for
         if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
@@ -8445,6 +8440,19 @@ export class DomHost {
     }
   }
 
+  /** Whether a page may read a canvas back once an image or a video was
+   *  drawn on it. It has its pixels in no case (`drawnPixels`), so one that
+   *  says it asked by CORS is taken at its word. */
+  private _imageClean(el: Element): boolean {
+    const url =
+      el.name === 'video'
+        ? this._resolve(el.attribs.src ?? '')
+        : String(this._imageDrawn(el)?.imageState?.(el)?.src ?? '');
+    if (!url || /^(?:data|blob):/i.test(url)) return true;
+    if (el.attribs.crossorigin !== undefined) return true;
+    return originOf(url) === this._origin();
+  }
+
   /** Whether a worker may run from an address: of this document's origin,
    *  which a blob this realm made is, and `blob:null` where that is opaque. */
   private _workerAllowed(url: string): boolean {
@@ -8488,18 +8496,21 @@ export class DomHost {
     let request: PageRequest;
     try {
       const raw = JSON.parse(json) as Partial<PageRequest>;
+      const method = String(raw.method ?? 'GET').toUpperCase();
+      // what a page may not set, which a browser drops (Fetch 2.2.2)
+      const headers = Array.isArray(raw.headers)
+        ? raw.headers
+            .map(([k, v]) => [String(k), String(v)] as [string, string])
+            .filter(([k]) => !forbiddenRequestHeader(k))
+        : [];
+      const agent = agentHeaders(raw.uaHeaders, method, headers);
       request = {
         url: this._resolve(String(raw.url ?? '')),
-        method: String(raw.method ?? 'GET').toUpperCase(),
-        // what a page may not set, which a browser drops (Fetch 2.2.2)
-        headers: Array.isArray(raw.headers)
-          ? raw.headers
-              .map(([k, v]) => [String(k), String(v)] as [string, string])
-              .filter(([k]) => !forbiddenRequestHeader(k))
-          : [],
+        method,
+        headers,
         body: typeof raw.body === 'string' ? raw.body : null,
         ...(raw.stream === true ? { stream: true } : {}),
-        ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
+        ...(agent ? { uaHeaders: agent } : {}),
         ...(raw.streamedBody === true ? { streamedBody: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
@@ -8517,7 +8528,10 @@ export class DomHost {
             ? raw.credentials
             : 'same-origin',
         cache: raw.cache,
-        redirect: raw.redirect,
+        redirect:
+          raw.redirect === 'error' || raw.redirect === 'manual'
+            ? raw.redirect
+            : 'follow',
         integrity: raw.integrity,
         referrerPolicy: raw.referrerPolicy,
         destination: raw.destination,
@@ -8694,13 +8708,14 @@ export class DomHost {
     signal: AbortSignalLike,
   ): Promise<FetchResponse> {
     const page = this._origin();
-    let target: string;
     try {
-      target = new URL(request.url).origin;
+      new URL(request.url);
     } catch {
       throw new TypeError('Failed to fetch');
     }
-    const own = target === page && page !== 'null';
+    if (forbiddenMethod(request.method)) {
+      throw new TypeError('Failed to fetch');
+    }
     // a controlled client's request goes to its worker before CORS asks
     // anything of it (Fetch 4.3, "HTTP fetch")
     if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
@@ -8710,61 +8725,128 @@ export class DomHost {
       );
       if (answered) return this._fromWorker(answered, request);
     }
-    const plain: FetchRequest = {
+    const urls: string[] = [];
+    let hop: Hop = {
       url: request.url,
       method: request.method,
       headers: request.headers,
       body: request.body,
       ...(request.bytes ? { bytes: request.bytes } : {}),
-      ...(request.stream ? { stream: true } : {}),
       ...(request.streamedBody ? { streamedBody: true } : {}),
-      // a document of no origin has no `same-origin` to go by, and says who
-      // it is as `null`, wherever its address is
-      credentials:
-        page === 'null' && request.credentials === 'same-origin'
-          ? 'omit'
-          : request.credentials,
-      ...(page === 'null' ? { opaqueOrigin: true } : {}),
     };
-    if (own) {
-      const response = await this._seams.fetch(plain, signal);
-      // a redirect to another origin is that origin's to let the page read
-      if (originOf(response.url) === page) {
-        return {
-          ...response,
-          headers: readable(response.headers),
-          type: 'basic',
-        };
-      }
-      if (request.mode === 'same-origin') {
-        release(response);
-        throw new CorsError('The request was redirected to another origin.');
-      }
-      return this._shared(response, request, page);
-    }
-    if (request.mode === 'same-origin') {
-      throw new TypeError(
-        `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
-      );
-    }
-    if (request.mode === 'no-cors') {
-      if (
-        !SIMPLE_METHODS.has(request.method) ||
-        !request.headers.every(([k, v]) => noCorsSafelisted(k, v))
-      ) {
+    let tainting: 'basic' | 'cors' | 'opaque' | null = null;
+    for (;;) {
+      const own = page !== 'null' && originOf(hop.url) === page;
+      if (own && (tainting === null || tainting === 'basic')) {
+        tainting = 'basic';
+      } else if (request.mode === 'same-origin') {
+        if (tainting) {
+          throw new CorsError('The request was redirected to another origin.');
+        }
         throw new TypeError(
-          `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
+          `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
         );
+      } else if (request.mode === 'no-cors') {
+        if (request.redirect !== 'follow') {
+          throw new TypeError('Failed to fetch');
+        }
+        if (
+          !tainting &&
+          (!SIMPLE_METHODS.has(hop.method) ||
+            !hop.headers.every(([k, v]) => noCorsSafelisted(k, v)))
+        ) {
+          throw new TypeError(
+            `'${hop.method}' or a header is not allowed in 'no-cors' mode.`,
+          );
+        }
+        tainting = 'opaque';
+      } else tainting = 'cors';
+      // asked of this hop, in whoever's name is left to it: a sandbox has
+      // none from the start, wherever its address is
+      const opaqueOrigin =
+        page === 'null' || redirectTainted([...urls, hop.url], page);
+      const origin = opaqueOrigin ? 'null' : page;
+      if (tainting === 'cors') {
+        const unsafe = unsafeRequestHeaders(
+          hop.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
+        );
+        if (!SIMPLE_METHODS.has(hop.method) || unsafe.length) {
+          await this._preflight(hop, request, unsafe, origin, signal);
+        }
       }
-      return this._opaque(await this._seams.fetch(plain, signal));
+      const response = await this._seams.fetch(
+        {
+          url: hop.url,
+          method: hop.method,
+          headers: hop.headers,
+          body: hop.body,
+          ...(hop.bytes ? { bytes: hop.bytes } : {}),
+          ...(request.stream ? { stream: true } : {}),
+          ...(hop.streamedBody ? { streamedBody: true } : {}),
+          // `same-origin`'s are a request's while it has not left its origin
+          // (Fetch 4.5): one that came back from another carries none
+          credentials:
+            request.credentials === 'include' ||
+            (request.credentials === 'same-origin' && tainting === 'basic')
+              ? 'include'
+              : 'omit',
+          redirect: 'manual',
+          ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
+        },
+        signal,
+      );
+      if (response.redirected && request.redirect === 'error') {
+        release(response);
+        throw new TypeError('Failed to fetch');
+      }
+      const location = redirectOf(response.status, response.headers);
+      if (location === null) {
+        const answer = {
+          ...response,
+          url: response.url || hop.url,
+          redirected: urls.length > 0 || response.redirected,
+        };
+        if (tainting === 'opaque') return this._opaque(answer);
+        // a network that followed the redirect itself: where it landed says
+        // whether the page's own origin answered
+        if (tainting === 'basic' && originOf(answer.url) === page) {
+          return {
+            ...answer,
+            headers: readable(answer.headers),
+            type: 'basic',
+          };
+        }
+        if (tainting === 'basic' && request.mode === 'same-origin') {
+          release(response);
+          throw new CorsError('The request was redirected to another origin.');
+        }
+        return this._shared(answer, request, origin);
+      }
+      // a redirect is a response, and another origin's has to let the page
+      // know of it (Fetch 4.3, "HTTP fetch")
+      if (tainting === 'cors') {
+        try {
+          corsCheck(response.headers, request.credentials, origin);
+        } catch (error) {
+          release(response);
+          throw error;
+        }
+      }
+      release(response);
+      if (request.redirect === 'error') throw new TypeError('Failed to fetch');
+      if (request.redirect === 'manual') return OPAQUE_REDIRECT;
+      const next = nextHop(
+        hop,
+        location,
+        response.status,
+        urls.length,
+        tainting === 'opaque'
+          ? null
+          : { origin: page, tainting: tainting === 'cors' },
+      );
+      urls.push(hop.url);
+      hop = next;
     }
-    const unsafe = unsafeRequestHeaders(
-      request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
-    );
-    if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
-      await this._preflight(request, unsafe, page, signal);
-    }
-    return this._shared(await this._seams.fetch(plain, signal), request, page);
   }
 
   /**
@@ -8999,10 +9081,10 @@ export class DomHost {
   private _shared(
     response: FetchResponse,
     request: PageRequest,
-    page: string,
+    origin: string,
   ): FetchResponse {
     try {
-      corsCheck(response.headers, request.credentials, page);
+      corsCheck(response.headers, request.credentials, origin);
     } catch (error) {
       release(response);
       throw error;
@@ -9027,21 +9109,22 @@ export class DomHost {
   /** Ask another origin whether a request that is not a simple one may be
    *  made (Fetch 4.9, "CORS-preflight fetch"), unless it said so lately. */
   private async _preflight(
+    hop: Hop,
     request: PageRequest,
     unsafe: string[],
-    page: string,
+    origin: string,
     signal: AbortSignalLike,
   ): Promise<void> {
     const include = request.credentials === 'include';
-    const key = `${request.url}\u0000${include}`;
+    const key = `${origin}\u0000${hop.url}\u0000${include}`;
     const kept = this._preflights.get(key);
     const allows = (entry: PreflightEntry): string | null => {
       if (
-        !SIMPLE_METHODS.has(request.method) &&
-        !entry.methods.has(request.method) &&
+        !SIMPLE_METHODS.has(hop.method) &&
+        !entry.methods.has(hop.method) &&
         !(entry.anyMethod && !include)
       ) {
-        return `Method ${request.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
+        return `Method ${hop.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
       }
       for (const name of unsafe) {
         if (entry.headers.has(name)) continue;
@@ -9052,7 +9135,7 @@ export class DomHost {
     };
     if (kept && kept.until > Date.now() && allows(kept) === null) return;
     const headers: [string, string][] = [
-      ['access-control-request-method', request.method],
+      ['access-control-request-method', hop.method],
     ];
     if (unsafe.length) {
       headers.push(['access-control-request-headers', unsafe.join(',')]);
@@ -9060,11 +9143,13 @@ export class DomHost {
     // a preflight carries no cookies (Fetch 4.9)
     const response = await this._seams.fetch(
       {
-        url: request.url,
+        url: hop.url,
         method: 'OPTIONS',
         headers,
         body: null,
         credentials: 'omit',
+        redirect: 'manual',
+        ...(origin === 'null' ? { opaqueOrigin: true } : {}),
       },
       signal,
     );
@@ -9075,7 +9160,7 @@ export class DomHost {
     if (response.redirected)
       throw failed('Redirect is not allowed for a preflight request.');
     try {
-      corsCheck(response.headers, request.credentials, page);
+      corsCheck(response.headers, request.credentials, origin);
     } catch (error) {
       throw failed((error as Error).message);
     }
