@@ -238,17 +238,23 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element) => {
+    load: async (src, element, cors) => {
       const answered = await workerResource(
         src,
         'script',
         element?.attribs.crossorigin !== undefined,
       );
-      if (answered === undefined) return latest.current.load(src, element);
+      if (answered === undefined) {
+        return latest.current.load(src, element, cors);
+      }
       if (answered?.kind !== 'script') return null;
       return 'text' in answered
-        ? answered.text
-        : decodeText(answered.bytes, answered.charset ?? null);
+        ? { text: answered.text, url: answered.url, headers: answered.headers }
+        : {
+            text: decodeText(answered.bytes, answered.charset ?? null),
+            url: answered.url,
+            headers: answered.headers,
+          };
     },
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,

@@ -851,7 +851,11 @@ of its own:
   `onResource` as `kind: 'script'`, beside the document's images and sheets,
   answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
 charset }` — the `<script>` is the request's `element`, and the root
-  element is a module's;
+  element is a module's. A host that knows says where it came from: `url`,
+  where a redirect took it, and `headers`, its response's. A module's request
+  and a `crossorigin` script's carry `cors`, the document's origin and whether
+  it sends credentials, and `HtmlNetwork` answers those with an `Origin` of
+  their own, kept apart in its cache;
 - a page's own requests — `fetch`, `XMLHttpRequest`, a frame's document, a
   worker's script — go through `scripts.fetch`, a request of any method and
   the response whatever its status, after the engine has held the page to
@@ -875,7 +879,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   is no secure context — is let go the same way; a secure page's `no-cors`
   answer is held for it a while, unread, since `caches` and a service
   worker can hand it on. `HtmlNetwork` answers so, and bounds only the
-  wait for the headers.
+  wait for the headers. A page's request is asked for a hop at a time
+  (`redirect: 'manual'`), since CORS, a preflight, its cookies and its
+  `Origin` are all asked again at a redirect; a host that follows it all the
+  same says `redirected`, and what it answers is held to where it landed, but
+  the hops between have gone unasked.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
@@ -2384,6 +2392,42 @@ nothing did — an address typed. A subresource carries its cookies; a page's
 itself, because a login's session is set on the redirect it answers with:
 each hop's `Set-Cookie` is stored and each hop's cookies sent, with Fetch's
 method rules and limit.
+
+**What a page may read of another origin is the host's to say**, wherever the
+page asks from, since the facade runs where a page can replace what it calls.
+
+- **A classic script of another origin runs, and tells the page nothing.** What
+  it throws or fails to parse with is `Script error.` with no file, line or
+  error (HTML 8.1.4.6), by where the script landed where the host says so. A
+  `ReferenceError`'s message is the script's text, which is how a page reads
+  another site's CSV by pointing a `<script>` at it, with that site's cookies.
+  While such a script runs, the window's named properties answer nothing, and
+  it does not run at all with a `Proxy` on what the window inherits, which would
+  hear each name. `importScripts` is held to the same, by its address.
+- **What says it is no script runs as none** (Fetch's MIME type check): `text/csv`,
+  an image, a video, or anything else under `nosniff`, and a module that does
+  not say it is JavaScript.
+- **A module is the page's to read, so another origin's needs its leave**, as
+  does a `crossorigin` script, which is then told in full. One that is refused
+  fires `error` and runs nothing. A host that says nothing of the headers leaves
+  a `crossorigin` script running muted, and a module of another origin refused.
+- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`,
+  `'error'` fails. Each hop to another origin is held to CORS, and preflighted
+  where the request needs one, so a `DELETE` one server lets through does not go
+  on to wherever that server sends it. A request that passed through a third
+  origin asks the next with `Origin: null`, and one that left the page's origin
+  carries none of its cookies back to it.
+- **A canvas keeps `origin-clean`.** `drawImage`, a pattern and a bitmap of
+  another origin's image taint what they reach, and `getImageData`, `toDataURL`,
+  `toBlob` and `convertToBlob` are a `SecurityError` until the canvas is sized
+  again. An `<img>` is drawn as nothing on a canvas in any case, so none of its
+  pixels reach a page: this is what a page is told, and an image with a
+  `crossorigin` attribute is taken at its word, with nothing fetched by CORS.
+- **Not held to any of this:** a stylesheet's, a font's and an image's own
+  `crossorigin` (a `<link>`'s sheet has no rules a script can read, of any
+  origin); a CORS script's redirects, which `HtmlNetwork` follows and only the
+  last of which is checked; what timing says, and a promise a script of another
+  origin leaves rejected.
 
 **A document's cookies are the jar's** (`scripts.cookies`):
 `document.cookie` reads the document's cookies but its `HttpOnly` ones and

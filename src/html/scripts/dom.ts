@@ -504,6 +504,37 @@ export function installDom(
     bridge('log', 'error', `Uncaught ${describe(error).text}`);
   };
 
+  /** Whether a script of another origin is running, as it starts: every name
+   *  it looks up that the window has not got comes to the window's named
+   *  properties, which is its text a word at a time, so none is asked about
+   *  (`ScriptEngine.exec`). */
+  let namesUnheard = false;
+  /** What another origin's script threw, told as HTML has it (8.1.4.6): that
+   *  something was, with nothing of it, which never reaches this realm. */
+  const reportMuted = (): void => {
+    let handled = false;
+    if (!reporting) {
+      reporting = true;
+      try {
+        handled = !dispatch(
+          windowTarget,
+          new ErrorEvent('error', {
+            message: 'Script error.',
+            filename: '',
+            lineno: 0,
+            colno: 0,
+            error: null,
+            cancelable: true,
+          }),
+        );
+      } catch {
+      } finally {
+        reporting = false;
+      }
+    }
+    if (!handled) bridge('log', 'error', 'Uncaught Script error.');
+  };
+
   // --- events ------------------------------------------------------------------
 
   interface Listener {
@@ -10775,8 +10806,16 @@ export function installDom(
      *  context's bitmap is its image's size, which only a new size of the
      *  canvas's sets back. */
     sized: string;
+    /** Whether something of another origin was drawn on it, its bitmap's
+     *  `origin-clean` flag let down (HTML 4.12.5.1.14). No pixel of such a
+     *  thing reaches this realm, which draws an image as nothing
+     *  (`drawnPixels`): this is what a page is told of it. */
+    tainted?: boolean;
   }
   const canvases = new WeakMap<object, CanvasState>();
+  /** The patterns made of what was not origin-clean, which taint what they
+   *  are drawn on. */
+  const TAINTED_PATTERNS = new WeakSet<object>();
   const dirtyCanvases = new Set<Any>();
   let canvasFlush = false;
   /** The `<canvas>`es that handed their control to an `OffscreenCanvas`
@@ -10846,8 +10885,36 @@ export function installDom(
     state.height = height;
     state.sized = `${width},${height}`;
     state.data = new Uint8ClampedArray(width * height * 4);
+    state.tainted = false;
     if (is2d(state.context)) state.context._reset();
     markCanvas(canvas, state, 0, 0, width, height);
+  };
+  /** Whether a source is the page's to read back once it is drawn: the host
+   *  says of an image or a video, whose address it knows. */
+  const originClean = (source: Any): boolean => {
+    if (source instanceof ImageBitmap) return !source._tainted;
+    if (
+      source instanceof HTMLCanvasElement ||
+      source instanceof OffscreenCanvas
+    ) {
+      return !canvases.get(source)?.tainted;
+    }
+    if (
+      source instanceof HTMLImageElement ||
+      source instanceof HTMLVideoElement
+    ) {
+      return call('image', source._id, 'clean') !== false;
+    }
+    return true;
+  };
+  /** What refuses a canvas's pixels to a page, once it has been tainted. */
+  const refuseTainted = (state: CanvasState, what: string): void => {
+    if (state.tainted) {
+      throw new DOMException(
+        `Failed to execute ${what}: Tainted canvases may not be exported.`,
+        'SecurityError',
+      );
+    }
   };
   /** Whether what a canvas draws is shown anywhere: a `<canvas>`, until it
    *  hands its control to an `OffscreenCanvas`; and an `OffscreenCanvas`
@@ -11428,6 +11495,10 @@ export function installDom(
       return new ImageData(a, b);
     }
     getImageData(sx: Any, sy: Any, sw: Any, sh: Any): Any {
+      refuseTainted(
+        canvasState(this._canvas),
+        "'getImageData' on 'CanvasRenderingContext2D'",
+      );
       let x = Math.trunc(Number(sx));
       let y = Math.trunc(Number(sy));
       let w = Math.trunc(Number(sw));
@@ -11525,6 +11596,7 @@ export function installDom(
       // `ImageData`'s pixels being no source: what this realm has the
       // pixels of
       const from = drawnPixels(source, this, 'drawImage');
+      if (!originClean(source)) canvasState(this._canvas).tainted = true;
       if (!from) return;
       let [sx, sy, sw, sh] = [0, 0, from.width, from.height];
       let dx: number;
@@ -11679,6 +11751,7 @@ export function installDom(
     /** How a fill or a stroke with a style is drawn, or null for a style
      *  that paints nothing. */
     _drawOf(style: Any): Any {
+      if (TAINTED_PATTERNS.has(style)) canvasState(this._canvas).tainted = true;
       const paint =
         typeof style === 'string'
           ? (() => {
@@ -12041,11 +12114,16 @@ export function installDom(
         );
       }
       const from = drawnPixels(source, this, 'createPattern');
-      if (!from) return null;
-      return RASTER.makePattern(
-        { data: from.data.slice(), width: from.width, height: from.height },
+      // an image is drawn as nothing, and a pattern of one is a pattern of
+      // nothing, which still says what it is of
+      const pattern = RASTER.makePattern(
+        from
+          ? { data: from.data.slice(), width: from.width, height: from.height }
+          : { data: new Uint8ClampedArray(4), width: 1, height: 1 },
         rep,
-      );
+      ) as Any;
+      if (!originClean(source)) TAINTED_PATTERNS.add(pattern);
+      return pattern;
     }
     drawFocusIfNeeded(): void {}
   }
@@ -12180,6 +12258,8 @@ export function installDom(
    * one; a 2d context draws it, and a `bitmaprenderer` context shows it.
    */
   class ImageBitmap {
+    /** Whether it holds what is not this origin's (`originClean`). */
+    _tainted = false;
     _width = 0;
     _height = 0;
     /** Its pixels, or null once it is detached. */
@@ -12488,7 +12568,9 @@ export function installDom(
         );
       }
       const bitmap = makeBitmap(state.width, state.height, state.data);
+      bitmap._tainted = !!state.tainted;
       state.data = new Uint8ClampedArray(state.width * state.height * 4);
+      state.tainted = false;
       markCanvas(this, state, 0, 0, state.width, state.height);
       return bitmap;
     }
@@ -12516,6 +12598,7 @@ export function installDom(
             'IndexSizeError',
           );
         }
+        refuseTainted(state, "'convertToBlob' on 'OffscreenCanvas'");
         const { width, height } = state;
         const data = state.data.slice();
         return new Promise((resolve, reject) => {
@@ -12778,7 +12861,11 @@ export function installDom(
         const cut = croppedPixels(from, crop, options);
         return new Promise((resolve) => {
           setTimer(
-            () => resolve(makeBitmap(cut.width, cut.height, cut.data)),
+            () => {
+              const bitmap = makeBitmap(cut.width, cut.height, cut.data);
+              bitmap._tainted = !originClean(image);
+              resolve(bitmap);
+            },
             0,
             [],
             false,
@@ -12994,6 +13081,7 @@ export function installDom(
         'Cannot read from a canvas that has transferred its control to offscreen.',
       );
       const state = canvasBitmap(this);
+      refuseTainted(canvasState(this), "'toDataURL' on 'HTMLCanvasElement'");
       const bytes = encodedBitmap(state.width, state.height, state.data);
       return bytes ? `data:image/png;base64,${base64OfBytes(bytes)}` : 'data:,';
     }
@@ -13012,6 +13100,7 @@ export function installDom(
         );
       }
       const state = canvasBitmap(this);
+      refuseTainted(canvasState(this), "'toBlob' on 'HTMLCanvasElement'");
       const { width, height } = state;
       const data = state.data.slice();
       setTimer(
@@ -19368,6 +19457,7 @@ export function installDom(
       // opaque one's is no script's
       if (
         this.type === 'opaque' ||
+        this.type === 'opaqueredirect' ||
         this.type === 'error' ||
         (this.type === 'default' && this._raw === null && this._body === '')
       ) {
@@ -21209,6 +21299,13 @@ export function installDom(
       if (!value._data) {
         throw new DOMException(
           'An ImageBitmap is detached and could not be cloned.',
+          'DataCloneError',
+        );
+      }
+      // nothing not of this origin leaves it (HTML 8.11.2)
+      if (value._tainted) {
+        throw new DOMException(
+          'An ImageBitmap that is not origin-clean could not be cloned.',
           'DataCloneError',
         );
       }
@@ -32495,6 +32592,7 @@ export function installDom(
   // a window where the runtime refuses the proxy (`namedAccessWorks`).
   if (namedAccess) {
     const lookup = (key: string | symbol, receiver: Any = G): Any => {
+      if (namesUnheard) return undefined;
       if (typeof key !== 'string' || !key || workerLocation) return undefined;
       // an index is a frame's window, ahead of any name, and only on the
       // window itself: on its prototype a number is a name (HTML 7.2.3.3)
@@ -32522,22 +32620,28 @@ export function installDom(
       }
       return found.length === 1 ? found[0] : collection(found);
     };
+    // what these touch runs for every name a script looks up that the window
+    // has not got, another origin's among them, so the builtins are this
+    // realm's as it starts, and a handler inherits no trap from
+    // `Object.prototype` (`namesUnheard`)
+    const { get: getOf, getOwnPropertyDescriptor: ownOf, has: hasIn } = Reflect;
     const named: Any = new Proxy(Object.create(Object.getPrototypeOf(G)), {
+      __proto__: null,
       has: (target: Any, key: string | symbol) =>
-        Reflect.has(target, key) || lookup(key) !== undefined,
+        hasIn(target, key) || lookup(key) !== undefined,
       get: (target: Any, key: string | symbol, receiver: Any) =>
-        Reflect.has(target, key)
-          ? Reflect.get(target, key, receiver)
+        hasIn(target, key)
+          ? getOf(target, key, receiver)
           : lookup(key, receiver),
       getOwnPropertyDescriptor: (target: Any, key: string | symbol) => {
-        const own = Reflect.getOwnPropertyDescriptor(target, key);
+        const own = ownOf(target, key);
         if (own) return own;
         const value = lookup(key);
         return value === undefined
           ? undefined
           : { value, writable: true, enumerable: false, configurable: true };
       },
-    });
+    } as Any);
     Object.setPrototypeOf(G, named);
   }
 
@@ -32807,15 +32911,24 @@ export function installDom(
   // as it goes in — puts the other's back as it ends; one that runs on
   // its own starts the list again, so what a cut left in it goes.
   const outerScripts: Any[] = [];
+  /** Whether each script running under this one muted (`namesUnheard`). */
+  const outerMuted: boolean[] = [];
   entry('__exec', () => {
-    const [script, nested] = input();
-    if (nested) outerScripts.push(document._current);
-    else outerScripts.length = 0;
+    const [script, nested, muted] = input();
+    if (nested) {
+      outerScripts.push(document._current);
+      outerMuted.push(namesUnheard);
+    } else {
+      outerScripts.length = 0;
+      outerMuted.length = 0;
+    }
     document._current = script ? wrap(script) : null;
+    namesUnheard = muted === true;
     return true;
   });
   entry('__ran', () => {
     document._current = outerScripts.length ? outerScripts.pop() : null;
+    namesUnheard = outerMuted.pop() ?? false;
     return true;
   });
   // a module is about to run, which a task is: it enters through nothing else
@@ -34471,6 +34584,11 @@ export function installDom(
     ev.isTrusted = true;
     if (!dispatch(windowTarget, ev)) return true;
     bridge('log', 'error', `Uncaught (in promise) ${describe(reason).text}`);
+    return true;
+  });
+
+  entry('__muted', () => {
+    reportMuted();
     return true;
   });
 

@@ -44,8 +44,11 @@ import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
+import type { ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, wholeBytes } from './host.js';
+import { corsSetting, judgeScript } from './script-origin.js';
+import type { LoadedScript } from './script-origin.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
 import type { ServiceClient } from './sw-registry.js';
@@ -97,7 +100,11 @@ export interface ScriptsOptions extends Omit<
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
    *  module's an import names, with none. */
-  load(url: string, element: Element | null): Promise<string | null>;
+  load(
+    url: string,
+    element: Element | null,
+    cors?: ResourceCors,
+  ): Promise<LoadedScript | null>;
   /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
   /** How long a script's own code may run in a task before it is
@@ -138,6 +145,9 @@ interface Queued {
   request: ScriptRequest;
   source: Promise<string | null>;
   module: boolean;
+  /** Whether what it throws is no business of the page's
+   *  (`judgeScript`), known once its source is here. */
+  muted: boolean;
 }
 
 /** A script in the in-order list, and its source once it is here. */
@@ -253,7 +263,8 @@ export class ScriptRunner {
       onTimeout: _options.onTimeout,
       log: _options.log,
       settled: () => this.host.settled(),
-      load: (url) => _options.load(url, null).catch(() => null),
+      // what a module imports is another origin's only by its leave
+      load: (url) => this._scriptFrom(url, null, true).then((s) => s && s.text),
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
@@ -668,12 +679,23 @@ export class ScriptRunner {
     if (!module && !isClassicScriptType(type)) return;
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)
     if (!module && request.element.attribs.nomodule !== undefined) return;
-    const source = request.src
-      ? request.src.startsWith('blob:')
+    const queued: Queued = {
+      request,
+      source: Promise.resolve(request.text),
+      module,
+      muted: false,
+    };
+    if (request.src) {
+      queued.source = request.src.startsWith('blob:')
         ? Promise.resolve(this._blobSource(request.src))
-        : this._options.load(request.src, request.element).catch(() => null)
-      : Promise.resolve(request.text);
-    const queued = { request, source, module };
+        : this._scriptFrom(request.src, request.element, module).then(
+            (judged) => {
+              queued.muted = judged?.muted ?? false;
+              return judged && judged.text;
+            },
+          );
+    }
+    const { source } = queued;
     // one a page's script put in and set `async` false on runs in the order
     // it went in, each once all before it have (`DomHost.inOrder`), and
     // waits for no parse
@@ -1172,14 +1194,37 @@ export class ScriptRunner {
         request.src &&
         (attribs.async !== undefined || attribs.defer !== undefined)
       );
+    // a script whose errors are the page's to read no more than the script
+    // is may not run where a name it looks up is the page's to read either
+    if (queued.muted && this.engine.namesWatched()) {
+      this._options.log('error', `Failed to load the script ${request.src}.`);
+      this.engine.call('__fire', [element, 'error']);
+      return;
+    }
     this.host.writing = writes ? request.element : null;
     try {
-      this.engine.exec(code, url, element);
+      this.engine.exec(code, url, element, queued.muted);
     } finally {
       this.host.writing = null;
     }
     // a loader waits for a script it put in on its `load`
     if (request.src) this.engine.call('__fire', [element, 'load']);
+  }
+
+  /** A script's source from the host, and what this document may have of
+   *  it: by CORS where it is a module's, or its element says so. */
+  private async _scriptFrom(
+    url: string,
+    element: Element | null,
+    module: boolean,
+  ): Promise<{ text: string; muted: boolean } | null> {
+    const origin = this.host.origin;
+    const set = corsSetting(element?.attribs.crossorigin);
+    const mode = module ? (set ?? 'anonymous') : set;
+    const loaded = await this._options
+      .load(url, element, mode ? { origin, mode } : undefined)
+      .catch(() => null);
+    return judgeScript(loaded, url, origin, mode, module);
   }
 
   private _advance(state: 'interactive' | 'complete'): void {

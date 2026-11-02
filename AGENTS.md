@@ -4406,6 +4406,25 @@ closes a way out a DOM binding opens by accident:
   another realm is an op on its number, refused on the host**, and a window
   moving between origins links or unlinks in `adopt`, so nothing keeps a global
   past it.
+- **What a resource of another origin hands a page is judged on the host, by
+  where it landed.** `script-origin.ts` says whether a script runs and whether
+  its errors are muted, and `fetch-hops.ts` what each hop of a page's request
+  owes. Three things are load-bearing. **Anything new that reads a response for
+  a page is told its final URL and its headers**: a redirect from the page's own
+  origin to another looks like the page's own otherwise, which is what
+  `ResourceResult`'s `url` is for. **What a muted script threw never enters the
+  realm** (`_mutedFault`, which reads a timeout off it with `ownData`): handed to
+  the facade to report, it passes through what a page replaced. And **what the
+  window's named properties run for a name is out of a page's hands**: every
+  name a script looks up that the window has not got reaches them, and a CSV is
+  all such names. So they use builtins taken as the realm starts, their handler
+  has no prototype, they answer nothing while a muted script runs
+  (`namesUnheard`), and a `Proxy` a page puts on the window's chain keeps such a
+  script from running (`namesWatched`), which is `ownData`'s shape again: told
+  from anything else without asking it. Anything new on that path keeps to all
+  of these. A page's request is made a hop at a time in `_fetchFor`, so **anything
+  new a request owes at a redirect goes in that loop**, and a preflight in
+  `_preflight`, whose cache is by the origin asked in.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
