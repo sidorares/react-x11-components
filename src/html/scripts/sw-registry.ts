@@ -1028,7 +1028,12 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       throw error;
     }
     registration.lastCheck = Date.now();
-    if (newest && newest.type === type && (await this._sameAs(newest, main))) {
+    if (
+      newest &&
+      newest.url === job.script &&
+      newest.type === type &&
+      (await this._sameAs(newest, main))
+    ) {
       this._persist(registration);
       this._resolve(job, registration);
       return;
@@ -1730,7 +1735,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
             client.controller !== version &&
             this._match(client.url) === registration
           ) {
+            const was = client.controller?.registration;
             this._control(client, version);
+            // the registration it leaves may have been waiting for it
+            if (was?.uninstalling) this._tryClear(was);
+            else if (was && was !== registration) void this._tryActivate(was);
           }
         }
         answer({});

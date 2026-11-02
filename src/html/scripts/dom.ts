@@ -22441,6 +22441,7 @@ export function installDom(
     setHandler: (target: Any, type: string, fn: Any) =>
       setHandler(target, type, fn),
     heard: (target: Any, type: string) => heard(target, type),
+    fullyActive: () => call('fullyActive') !== false,
     define: (name: string, value: Any) => define(name, value),
     base: () =>
       workerLocation ? str(workerLocation.href) : str(document.baseURI),

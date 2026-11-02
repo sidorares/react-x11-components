@@ -35,7 +35,7 @@ import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
 import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
-import type { ResourceResult } from '../resources.js';
+import type { ResourceRequest, ResourceResult } from '../resources.js';
 
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
@@ -133,6 +133,28 @@ export interface ScriptProps {
     kind: ResourceKind,
     cors: boolean,
   ) => Promise<ResourceResult | null | undefined>;
+}
+
+/**
+ * What `<Html>` asks for, where a service worker may control the document: its
+ * worker's answer, or, where that leaves it to the network, the host's. What a
+ * page draws is the worker's to answer in a frame as in a window.
+ */
+export async function throughWorker(
+  scripts: ScriptProps,
+  request: ResourceRequest,
+  host: ((request: ResourceRequest) => unknown) | undefined,
+): Promise<unknown> {
+  const { kind } = request;
+  if (kind === 'image' || kind === 'stylesheet' || kind === 'font') {
+    const answered = await scripts.workerResource?.(
+      request.url,
+      kind,
+      request.element?.attribs?.crossorigin !== undefined,
+    );
+    if (answered !== undefined) return answered;
+  }
+  return host?.(request) ?? null;
 }
 
 /** No sheet adopted: one array, so that a page that adopts none renders

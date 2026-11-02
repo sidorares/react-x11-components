@@ -57,7 +57,7 @@ import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
-import { useScripts } from './hook.js';
+import { throughWorker, useScripts } from './hook.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import type { AbortSignalLike } from './platform.js';
 import type { ScriptsOptions } from './runner.js';
@@ -615,16 +615,11 @@ export function useScriptedHtml(
   const onResource = useCallback(
     async (request: ResourceRequest) => {
       if (!request.url.startsWith('blob:')) {
-        const { kind } = request;
-        if (kind === 'image' || kind === 'stylesheet' || kind === 'font') {
-          const answered = await scripts.workerResource?.(
-            request.url,
-            kind,
-            request.element?.attribs?.crossorigin !== undefined,
-          );
-          if (answered !== undefined) return answered;
-        }
-        return latest.current.props.onResource?.(request) ?? null;
+        return throughWorker(
+          scripts,
+          request,
+          latest.current.props.onResource,
+        ) as Promise<ResourceResult | null>;
       }
       // a turn on, since this is asked from inside the page's own ops
       await Promise.resolve();

@@ -92,7 +92,7 @@ async function serve(
       response.end(body);
     },
   );
-  await new Promise<void>((done) => server.listen(0, 'localhost', done));
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   const port = (server.address() as AddressInfo).port;
   t.after(() => site.down());
   return site;
@@ -504,4 +504,48 @@ test("a frame the scope of a worker holds is that worker's client", async (t) =>
   await installed(site, keeper, network);
   const page = await show(site.url('/framed'), network, keeper);
   assert.equal(await page.text('out'), site.url('/sw.js'));
+});
+
+test("another origin's image goes through a worker, into its cache and out again, with no script reading a byte of it", async (t) => {
+  const pixel = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  const images = await serve({ '/pixel.png': ['image/png', pixel] }, t);
+  const other = images.url('/pixel.png').replace('localhost', '127.0.0.1');
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/page': `<!doctype html><p id="out"></p><script>
+        var i = new Image();
+        i.onload = function () { document.getElementById('out').textContent = 'drawn ' + i.naturalWidth; };
+        i.onerror = function () { document.getElementById('out').textContent = 'failed'; };
+        i.src = ${JSON.stringify(other)};
+        </script>`,
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        if (e.request.url.indexOf('pixel') < 0) return;
+        e.respondWith(caches.open('images').then(function (c) {
+          return c.match(e.request).then(function (hit) {
+            if (hit) return hit;
+            return fetch(e.request).then(function (r) {
+              self.seen = r.type + ' ' + r.status;
+              return c.put(e.request, r.clone()).then(function () { return r; });
+            });
+          });
+        }));
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(await page.text('out'), 'drawn 1');
+  cleanup();
+  await images.down();
+  const again = await show(site.url('/page'), network, keeper);
+  assert.equal(await again.text('out'), 'drawn 1');
 });

@@ -1895,6 +1895,8 @@ export class DomHost {
   /** This document as a service worker's client, where the host keeps
    *  service workers (`ScriptRunner`). */
   serviceClient: ServiceClient | null = null;
+  /** The frame a script last focused, which is a `WindowClient.focused`. */
+  focusedFrame: Element | null = null;
   /** Where the document is in the host's session across documents, where
    *  the host keeps one (`HtmlSessionHistory`): set before the page's
    *  realm is made, which reads it as it starts. */
@@ -4944,6 +4946,7 @@ export class DomHost {
       case 'focus': {
         this.flush();
         const el = this._element(a);
+        this.focusedFrame = el.name === 'iframe' ? el : null;
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
@@ -6613,8 +6616,7 @@ export class DomHost {
     // its `navigator` has to answer for it, and it can be claimed
     const realm =
       !!this._seams.drawsFrames &&
-      type === 'text/html' &&
-      (hasScripts(doc) ||
+      ((type === 'text/html' && hasScripts(doc)) ||
         (!!this._seams.serviceWorkers &&
           this._secureContext() &&
           this._sameOrigin(address)));
@@ -8025,7 +8027,13 @@ export class DomHost {
         };
       }
     }
-    return this._seams.fetch(request, signal);
+    const fetched = await this._seams.fetch(request, signal);
+    // the document is at the fragment it was asked for, which a response's
+    // address drops
+    const hash = request.url.indexOf('#');
+    return hash >= 0 && fetched.url && !fetched.url.includes('#')
+      ? { ...fetched, url: fetched.url + request.url.slice(hash) }
+      : fetched;
   }
 
   /** A request as a worker's `fetch` event reads it. */

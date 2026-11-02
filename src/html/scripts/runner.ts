@@ -332,7 +332,11 @@ export class ScriptRunner {
         url: () => this.host.url,
         type: 'window',
         frameType: () => (this._link ? 'nested' : 'top-level'),
-        focused: () => !this.engine.frozen && !this._disposed,
+        // a window has the focus here, and a frame where the page gave it
+        focused: () =>
+          this._link
+            ? this._link.parent.host.focusedFrame === this._link.frame
+            : !this.engine.frozen && !this._disposed,
         visibility: () => (this.engine.frozen ? 'hidden' : 'visible'),
         frozen: () => this.engine.frozen,
         tell: (text) => {

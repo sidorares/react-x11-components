@@ -40,6 +40,8 @@ export interface ServiceWorkerDeps {
   heard(target: unknown, type: string): boolean;
   /** Put a global on the realm. */
   define(name: string, value: unknown): void;
+  /** Whether the document is still in its frame. */
+  fullyActive(): boolean;
   /** Where a URL is resolved from: the document's, or a worker's script's. */
   base(): string;
   origin(): string;
@@ -358,6 +360,8 @@ export function installServiceWorkers(
       super();
     }
     get controller(): Any {
+      // a frame that left its document has no client to be controlled
+      if (!D.fullyActive()) return null;
       if (controller === undefined) {
         const said = send({ op: 'hello', n: 0 });
         controller = workerOf(said ? parse(`${said}`).controller : null);
@@ -930,6 +934,7 @@ export function installServiceWorkers(
         : undefined;
       preload?.catch(() => {});
       const ev = new FetchEvent('fetch', {
+        cancelable: true,
         request: D.requestFrom(m.request, controller.signal),
         clientId: m.clientId,
         resultingClientId: m.resultingClientId,
@@ -939,7 +944,9 @@ export function installServiceWorkers(
       fetchEvents.set(m.f, controller);
       void lifetime(ev, () => {
         if (ev._entered) return;
-        send({ op: 'fallback', f: m.f });
+        // a default prevented is a network error (Service Workers 1, "Handle
+        // Fetch"), and anything else goes on to the network
+        send({ op: ev.defaultPrevented ? 'refused' : 'fallback', f: m.f });
         ev._handledFailed(
           new DOMException('The event was not responded to.', 'NetworkError'),
         );
