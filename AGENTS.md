@@ -3805,6 +3805,18 @@ closes a way out a DOM binding opens by accident:
   the listeners already there off and hands them every rejection that is
   not a page's. A test needs no setting node:test's listener aside: that
   it fails no test is the check.
+- **XML is the host's and XPath is the host's** (`xml.ts`, `xpath.ts`). An
+  expression walks every node it can reach, and through the facade that would
+  be an op for each, so only the expression and the prefixes it names cross, a
+  page's resolver is asked as the expression is compiled, and an attribute,
+  which is no node of the tree, stands for itself as an `XAttr` and comes back
+  as its element and its name. `_xmlTree` is the one way XML reaches the tree:
+  htmlparser2 reads it leniently, so `readProlog` holds it to XML first, and a
+  CDATA section is a `Text` in `CDATA_SECTIONS`, a text to everything but a
+  serializer. A processing instruction and a doctype are both directives, so
+  **anything that asks whether a node is a doctype asks `isDoctype`**, never
+  `instanceof ProcessingInstruction`. **An attribute's name goes through
+  `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since

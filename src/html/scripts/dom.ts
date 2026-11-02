@@ -152,6 +152,7 @@ export function installDom(
         : new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
     if (mutatesHas.call(MUTATES, op)) {
+      opEdits += 1;
       mutated();
       // a scroll timeline's time is measured again at the next frame
       if (heldTimelines.size) wantFrame();
@@ -176,6 +177,9 @@ export function installDom(
    *  `getComputedStyle` calls, so each read moved the count, and the next
    *  read of the style read all of it again — 17.7 million ops in a load. */
   let opEpoch = 0;
+  /** Counts the ops that change a tree, which an XPath iterator is ended
+   *  by. */
+  let opEdits = 0;
   /** What a live list checks before it answers from what it read last
    *  (`itemsOf`), since a read of the host at every index would be a trip a
    *  page's `for` loop pays for each element: `treeEpoch` moves at any op
@@ -230,7 +234,12 @@ export function installDom(
     'named',
     'byId',
     'byTag',
+    'byTagNS',
     'byClass',
+    'lookupNamespace',
+    'serializeXml',
+    'xpath',
+    'xpathPrefixes',
     'color',
     'supports',
     'rect',
@@ -4936,6 +4945,7 @@ export function installDom(
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const XML_NS = 'http://www.w3.org/XML/1998/namespace';
   const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
   const wrappers = new Map<number, Any>();
 
@@ -4973,15 +4983,19 @@ export function installDom(
           ? XMLDocument
           : type === 3
             ? Text
-            : type === 8
-              ? Comment
-              : type === 9
-                ? Document
-                : type === 10
-                  ? DocumentType
-                  : name === '#shadow-root'
-                    ? ShadowRoot
-                    : DocumentFragment;
+            : type === 4
+              ? CDATASection
+              : type === 7
+                ? ProcessingInstruction
+                : type === 8
+                  ? Comment
+                  : type === 9
+                    ? Document
+                    : type === 10
+                      ? DocumentType
+                      : name === '#shadow-root'
+                        ? ShadowRoot
+                        : DocumentFragment;
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
@@ -5504,8 +5518,43 @@ export function installDom(
       };
       walk(this);
     }
-    lookupNamespaceURI(): null {
+    /** The element a namespace lookup starts at (DOM 4.4, "locate"). */
+    get _lookupElement(): Any {
+      return this.nodeType === 9
+        ? (this as Any).documentElement
+        : this.nodeType === 1
+          ? this
+          : this.parentElement;
+    }
+    lookupNamespaceURI(prefix: Any): string | null {
+      const at = this._lookupElement;
+      const name = prefix === null || prefix === undefined ? '' : str(prefix);
+      if (!at) return null;
+      if (at.prefix === (name || null) && at.namespaceURI) {
+        return at.namespaceURI;
+      }
+      const found = call('lookupNamespace', at._id, name);
+      return typeof found === 'string' && found ? found : null;
+    }
+    lookupPrefix(namespace: Any): string | null {
+      if (namespace === null || namespace === undefined || namespace === '') {
+        return null;
+      }
+      const uri = str(namespace);
+      for (let at = this._lookupElement; at; at = at.parentElement) {
+        if (at.namespaceURI === uri && at.prefix) return at.prefix;
+        for (const name of at.getAttributeNames()) {
+          if (name.startsWith('xmlns:') && at.getAttribute(name) === uri) {
+            return name.slice(6);
+          }
+        }
+      }
       return null;
+    }
+    isDefaultNamespace(namespace: Any): boolean {
+      const uri =
+        namespace === undefined || namespace === '' ? null : namespace;
+      return this.lookupNamespaceURI(null) === (uri === null ? null : str(uri));
     }
   }
   // the constants on every node too, as WebIDL puts them on the prototype
@@ -5584,6 +5633,13 @@ export function installDom(
       return liveCollection(
         () => wrapAll(call('byClass', this._id, classes)),
         true,
+      );
+    }
+    getElementsByTagNameNS(namespace: Any, name: Any): Any {
+      const ns = namespace === null ? '' : str(namespace);
+      const local = str(name);
+      return liveCollection(() =>
+        wrapAll(call('byTagNS', this._id, ns, local)),
       );
     }
   }
@@ -5723,10 +5779,16 @@ export function installDom(
   class CDATASection extends Text {}
   class ProcessingInstruction extends CharacterData {
     get target(): string {
-      return '';
+      return this._name;
     }
   }
   Object.defineProperty(Comment.prototype, 'nodeType', nodeTypeOf(8));
+  Object.defineProperty(CDATASection.prototype, 'nodeType', nodeTypeOf(4));
+  Object.defineProperty(
+    ProcessingInstruction.prototype,
+    'nodeType',
+    nodeTypeOf(7),
+  );
 
   class DocumentType extends Node {
     _ids(): string[] {
@@ -6500,11 +6562,12 @@ export function installDom(
       return namedNodeMapOf(this);
     }
     getAttributeNode(name: Any): Any {
-      const n = str(name).toLowerCase();
+      const n = this._attrName(name);
       return this.hasAttribute(n) ? attrOf(this, n) : null;
     }
-    getAttributeNodeNS(_ns: Any, name: Any): Any {
-      return this.getAttributeNode(name);
+    getAttributeNodeNS(ns: Any, name: Any): Any {
+      const key = this._attrNS(ns, name);
+      return key === null ? null : this.getAttributeNode(key);
     }
     setAttributeNode(attr: Any): Any {
       if (!(attr instanceof Attr)) {
@@ -6541,12 +6604,49 @@ export function installDom(
       const names = call('attrs', this._id);
       return typeof names === 'string' && names ? names.split('\u0000') : [];
     }
+    /** An attribute's name as it is kept: HTML's without case, and any
+     *  other as it is written (DOM 4.9). */
+    _attrName(name: Any): string {
+      const n = str(name);
+      return this._ns === undefined || this._ns === HTML_NS
+        ? n.toLowerCase()
+        : n;
+    }
     getAttribute(name: Any): string | null {
-      const v = call('attr', this._id, str(name).toLowerCase());
+      const v = call('attr', this._id, this._attrName(name));
       return typeof v === 'string' ? v : null;
     }
-    getAttributeNS(_ns: Any, name: Any): string | null {
-      return this.getAttribute(name);
+    /** The attribute a namespace and a local name say, by the name it is
+     *  kept under: its prefix is whatever it was written with. */
+    _attrNS(ns: Any, local: Any): string | null {
+      const name = str(local);
+      const held = this.getAttributeNames().includes(name) ? name : null;
+      if (ns === null || ns === undefined || ns === '') return held;
+      const uri = str(ns);
+      for (const key of this.getAttributeNames()) {
+        const colon = key.indexOf(':');
+        if (colon < 0 || key.slice(colon + 1) !== name) continue;
+        if (
+          this._attrSpaces?.get(key) === uri ||
+          this.lookupNamespaceURI(key.slice(0, colon)) === uri ||
+          (uri === XLINK_NS && key.startsWith('xlink:'))
+        ) {
+          return key;
+        }
+      }
+      // the tree keeps no namespace for an attribute with no prefix, so one
+      // of the name is the one a page set with this namespace
+      return held;
+    }
+    /** The namespaces `setAttributeNS` gave what the tree keeps none for. */
+    declare _attrSpaces: Map<string, string> | undefined;
+    getAttributeNS(ns: Any, name: Any): string | null {
+      const key = this._attrNS(ns, name);
+      const v = key === null ? null : call('attr', this._id, key);
+      return typeof v === 'string' ? v : null;
+    }
+    hasAttributeNS(ns: Any, name: Any): boolean {
+      return this._attrNS(ns, name) !== null;
     }
     hasAttribute(name: Any): boolean {
       return this.getAttribute(name) !== null;
@@ -6555,7 +6655,10 @@ export function installDom(
       return this.getAttributeNames().length > 0;
     }
     setAttribute(name: Any, value: Any): void {
-      const n = str(name).toLowerCase();
+      this._setAttr(this._attrName(name), value);
+    }
+    /** An attribute set by the name it is kept under. */
+    _setAttr(n: string, value: Any): void {
       if (!/^[^\s"'>/=\u0000-\u001f]+$/.test(n)) {
         throw new DOMException(
           `'${n}' is not a valid attribute name.`,
@@ -6574,11 +6677,21 @@ export function installDom(
         mediaLoad(this);
       }
     }
-    setAttributeNS(_ns: Any, name: Any, value: Any): void {
-      this.setAttribute(String(name).replace(/^.*:/, ''), value);
+    setAttributeNS(ns: Any, name: Any, value: Any): void {
+      const qualified = str(name);
+      const colon = qualified.indexOf(':');
+      // an existing attribute of the name, whatever its prefix, is the one
+      // set; a name without a namespace has no use for one
+      const held = this._attrNS(ns, qualified.slice(colon + 1));
+      const key = held ?? (ns ? qualified : qualified.slice(colon + 1));
+      if (ns && colon >= 0) (this._attrSpaces ??= new Map()).set(key, str(ns));
+      this._setAttr(key, value);
     }
     removeAttribute(name: Any): void {
-      const n = str(name).toLowerCase();
+      this._removeAttr(this._attrName(name));
+    }
+    /** An attribute taken away by the name it is kept under. */
+    _removeAttr(n: string): void {
       const attr = attrNodes.get(this)?.get(n);
       if (attr) detachAttr(attr);
       if (n.startsWith('on') && this.getAttribute(n) !== null) {
@@ -6586,8 +6699,9 @@ export function installDom(
       }
       call('delAttr', this._id, n);
     }
-    removeAttributeNS(_ns: Any, name: Any): void {
-      this.removeAttribute(name);
+    removeAttributeNS(ns: Any, name: Any): void {
+      const key = this._attrNS(ns, name);
+      if (key !== null) this._removeAttr(key);
     }
     toggleAttribute(name: Any, force?: boolean): boolean {
       const has = this.hasAttribute(name);
@@ -15604,6 +15718,9 @@ export function installDom(
     get contentType(): string {
       return this._type ?? 'text/html';
     }
+    get inputEncoding(): string {
+      return 'UTF-8';
+    }
     get compatMode(): string {
       return 'CSS1Compat';
     }
@@ -15821,6 +15938,51 @@ export function installDom(
     }
     createComment(data: Any): Any {
       return wrap(Number(call('create', 'comment', str(data), this._id)));
+    }
+    createCDATASection(data: Any): Any {
+      if (!this._type) {
+        throw new DOMException(
+          'This operation is not supported for HTML documents.',
+          'NotSupportedError',
+        );
+      }
+      if (str(data).includes(']]>')) {
+        throw new DOMException(
+          'String cannot contain "]]>" as part of a CDATASection.',
+          'InvalidCharacterError',
+        );
+      }
+      return wrap(Number(call('create', 'cdata', str(data), this._id)));
+    }
+    createProcessingInstruction(target: Any, data: Any): Any {
+      const name = str(target);
+      const text = str(data);
+      if (!/^[^\s\0/=>"']+$/.test(name) || text.includes('?>')) {
+        throw new DOMException(
+          `The target provided ('${name}') is not a valid name, or the data contains '?>'.`,
+          'InvalidCharacterError',
+        );
+      }
+      return wrap(Number(call('create', 'pi', `${name} ${text}`, this._id)));
+    }
+    createExpression(expression: Any, resolver?: Any): Any {
+      return madeExpression(str(expression), resolver);
+    }
+    createNSResolver(node: Any): Any {
+      return node;
+    }
+    evaluate(
+      expression: Any,
+      context: Any,
+      resolver?: Any,
+      type: Any = 0,
+      result?: Any,
+    ): Any {
+      return madeExpression(str(expression), resolver).evaluate(
+        context,
+        type,
+        result,
+      );
     }
     createDocumentFragment(): Any {
       return wrap(Number(call('create', 'fragment', '', this._id)));
@@ -19578,13 +19740,271 @@ export function installDom(
   class DOMParser {
     parseFromString(markup: Any, type: Any): Any {
       const kind = str(type);
-      if (kind !== 'text/html') {
+      if (kind === 'text/html') {
+        return wrap(Number(call('parseDocument', str(markup))));
+      }
+      if (
+        kind !== 'text/xml' &&
+        kind !== 'application/xml' &&
+        kind !== 'application/xhtml+xml' &&
+        kind !== 'image/svg+xml'
+      ) {
+        throw new TypeError(
+          `Failed to execute 'parseFromString' on 'DOMParser': The provided value '${kind}' is not a valid enum value of type DOMParserSupportedType.`,
+        );
+      }
+      const made = wrap(Number(call('parseXml', str(markup), kind)));
+      // what a parser makes is a `Document`: an `XMLDocument` is
+      // `createDocument`'s
+      Object.setPrototypeOf(made, Document.prototype);
+      return made;
+    }
+  }
+  /** `XMLSerializer` (DOM Parsing and Serialization, 3.2). */
+  class XMLSerializer {
+    serializeToString(node: Any): string {
+      if (!(node instanceof Node) && !(node instanceof Attr)) {
+        throw new TypeError(
+          "Failed to execute 'serializeToString' on 'XMLSerializer': parameter 1 is not of type 'Node'.",
+        );
+      }
+      return node instanceof Attr ? '' : str(call('serializeXml', node._id));
+    }
+  }
+
+  // --- XPath (DOM 8) -----------------------------------------------------------
+
+  let makingXPath = false;
+  class XPathResult {
+    static readonly ANY_TYPE = 0;
+    static readonly NUMBER_TYPE = 1;
+    static readonly STRING_TYPE = 2;
+    static readonly BOOLEAN_TYPE = 3;
+    static readonly UNORDERED_NODE_ITERATOR_TYPE = 4;
+    static readonly ORDERED_NODE_ITERATOR_TYPE = 5;
+    static readonly UNORDERED_NODE_SNAPSHOT_TYPE = 6;
+    static readonly ORDERED_NODE_SNAPSHOT_TYPE = 7;
+    static readonly ANY_UNORDERED_NODE_TYPE = 8;
+    static readonly FIRST_ORDERED_NODE_TYPE = 9;
+    _type = 0;
+    _value: Any = null;
+    _nodes: Any[] = [];
+    _at = 0;
+    /** What the tree was as an iterator was made: a change ends it. */
+    _epoch = 0;
+    constructor() {
+      if (!makingXPath) throw new TypeError('Illegal constructor');
+    }
+    get resultType(): number {
+      return this._type;
+    }
+    _wants(types: number[], what: string): void {
+      if (!types.includes(this._type)) {
+        throw new TypeError(
+          `The result is not of the type to read '${what}' from.`,
+        );
+      }
+    }
+    get numberValue(): number {
+      this._wants([1], 'numberValue');
+      return this._value;
+    }
+    get stringValue(): string {
+      this._wants([2], 'stringValue');
+      return this._value;
+    }
+    get booleanValue(): boolean {
+      this._wants([3], 'booleanValue');
+      return this._value;
+    }
+    get singleNodeValue(): Any {
+      this._wants([8, 9], 'singleNodeValue');
+      return this._nodes[0] ?? null;
+    }
+    get invalidIteratorState(): boolean {
+      return (this._type === 4 || this._type === 5) && this._epoch !== opEdits;
+    }
+    get snapshotLength(): number {
+      this._wants([6, 7], 'snapshotLength');
+      return this._nodes.length;
+    }
+    iterateNext(): Any {
+      this._wants([4, 5], 'iterateNext');
+      if (this.invalidIteratorState) {
         throw new DOMException(
-          `Only text/html is parsed here, not ${kind}.`,
+          'The document has mutated since the result was returned.',
+          'InvalidStateError',
+        );
+      }
+      return this._nodes[this._at++] ?? null;
+    }
+    snapshotItem(index: Any): Any {
+      this._wants([6, 7], 'snapshotItem');
+      return this._nodes[Number(index) >>> 0] ?? null;
+    }
+  }
+  idlAttributes(XPathResult);
+  for (const name of Object.getOwnPropertyNames(XPathResult)) {
+    if (!/^[A-Z_]+$/.test(name)) continue;
+    Object.defineProperty(XPathResult.prototype, name, {
+      value: (XPathResult as Any)[name],
+      enumerable: true,
+    });
+  }
+  /** The namespaces an expression's prefixes reach, each asked of what the
+   *  page gave, which may be a function or an object. */
+  const prefixMap = (
+    expression: string,
+    resolver: Any,
+  ): Record<string, string> => {
+    const prefixes: string[] = JSON.parse(
+      str(call('xpathPrefixes', expression)),
+    );
+    const out: Record<string, string> = {};
+    for (const prefix of prefixes) {
+      const answer =
+        typeof resolver === 'function'
+          ? resolver(prefix)
+          : resolver?.lookupNamespaceURI?.(prefix);
+      if (answer === null || answer === undefined) {
+        throw new DOMException(
+          `The string '${expression}' contains unresolvable namespaces.`,
+          'NamespaceError',
+        );
+      }
+      out[prefix] = str(answer);
+    }
+    return out;
+  };
+  class XPathExpression {
+    _text = '';
+    _namespaces: Record<string, string> = {};
+    constructor() {
+      if (!makingXPath) throw new TypeError('Illegal constructor');
+    }
+    evaluate(context: Any, type: Any = 0, _result?: Any): Any {
+      if (!(context instanceof Node) && !(context instanceof Attr)) {
+        throw new TypeError(
+          "Failed to execute 'evaluate' on 'XPathExpression': parameter 1 is not of type 'Node'.",
+        );
+      }
+      const asked = Number(type) >>> 0;
+      if (asked > 9) {
+        throw new TypeError(
+          `Failed to execute 'evaluate' on 'XPathExpression': The result type '${asked}' is not one.`,
+        );
+      }
+      const attr = context instanceof Attr;
+      if (attr && !context._el) {
+        throw new DOMException(
+          'The context attribute has no element.',
           'NotSupportedError',
         );
       }
-      return wrap(Number(call('parseDocument', str(markup))));
+      const value = JSON.parse(
+        str(
+          call(
+            'xpath',
+            this._text,
+            JSON.stringify({
+              node: attr ? context._el._id : context._id,
+              attr: attr ? context.name : null,
+              namespaces: this._namespaces,
+            }),
+          ),
+        ),
+      );
+      const isSet = Array.isArray(value);
+      makingXPath = true;
+      let result: Any;
+      try {
+        result = new XPathResult();
+      } finally {
+        makingXPath = false;
+      }
+      const type_ =
+        asked !== 0
+          ? asked
+          : isSet
+            ? 4
+            : typeof value === 'number'
+              ? 1
+              : typeof value === 'string'
+                ? 2
+                : 3;
+      result._type = type_;
+      if (type_ < 4) {
+        result._value =
+          type_ === 1
+            ? xpathNumber(value)
+            : type_ === 2
+              ? xpathString(value)
+              : xpathBoolean(value);
+        return result;
+      }
+      if (!isSet) {
+        throw new TypeError('The expression does not come to a node-set.');
+      }
+      result._nodes = value.map((n: Any) =>
+        typeof n === 'number' ? wrap(n) : wrap(n[0]).getAttributeNode(n[1]),
+      );
+      result._epoch = opEdits;
+      return result;
+    }
+  }
+  /** What a value that is no node-set comes to, where a page asked for
+   *  another type (XPath 1.0, 4.2 to 4.4). */
+  const xpathNumber = (v: Any): number =>
+    typeof v === 'number'
+      ? v
+      : typeof v === 'boolean'
+        ? Number(v)
+        : Array.isArray(v)
+          ? NaN
+          : /^\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(v)
+            ? Number(v)
+            : NaN;
+  const xpathString = (v: Any): string =>
+    Array.isArray(v) ? '' : typeof v === 'string' ? v : str(v);
+  const xpathBoolean = (v: Any): boolean =>
+    Array.isArray(v)
+      ? v.length > 0
+      : typeof v === 'string'
+        ? v.length > 0
+        : typeof v === 'number'
+          ? v !== 0 && !Number.isNaN(v)
+          : v;
+  const madeExpression = (text: string, resolver: Any): Any => {
+    const namespaces = prefixMap(text, resolver);
+    makingXPath = true;
+    try {
+      const made = new XPathExpression();
+      made._text = text;
+      made._namespaces = namespaces;
+      return made;
+    } finally {
+      makingXPath = false;
+    }
+  };
+  class XPathEvaluator {
+    createExpression(expression: Any, resolver?: Any): Any {
+      return madeExpression(str(expression), resolver);
+    }
+    createNSResolver(node: Any): Any {
+      return node;
+    }
+    evaluate(
+      expression: Any,
+      context: Any,
+      resolver?: Any,
+      type: Any = 0,
+      result?: Any,
+    ): Any {
+      return madeExpression(str(expression), resolver).evaluate(
+        context,
+        type,
+        result,
+      );
     }
   }
 
@@ -30103,6 +30523,10 @@ export function installDom(
     TreeWalker,
     NodeIterator,
     DOMParser,
+    XMLSerializer,
+    XPathResult,
+    XPathExpression,
+    XPathEvaluator,
     FontFace,
     FontFaceSet,
     FontFaceSetLoadEvent,
