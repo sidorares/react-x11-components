@@ -30,6 +30,7 @@ import {
   ProcessingInstruction,
   Text,
 } from 'domhandler';
+import { isTag } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
@@ -86,6 +87,7 @@ import {
   treeGeneration,
   treesChanged,
   isClassicScriptType,
+  namespaceIn,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -130,7 +132,7 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
-import { svgAnswer } from './svg-geometry.js';
+import { drawnWithin, svgAnswer } from './svg-geometry.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
@@ -435,6 +437,8 @@ export interface HandleInternals {
   scriptFontsChanged(id: number, added: boolean): void;
   /** What `svg-geometry.ts` asks of the document. */
   svgMeasure(): SvgMeasure | null;
+  /** Where what a `<foreignObject>` holds was laid out in it. */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -841,16 +845,43 @@ function elementsIn(
  *  parent's tree. */
 let edits = 0;
 
-/** An `<a>` is a name HTML and SVG both have, which the parser keeps no
- *  namespace for: what is around one says whose it is. */
+/** css-select's view of a tree for a page's own query. A selector's type is
+ *  lowercased and the parser keeps SVG's capitals, so without this
+ *  `querySelector('foreignObject')` and d3's `select` found nothing. */
+const QUERY_ADAPTER = {
+  ...DomUtils,
+  isTag,
+  getName: (el: Element): string =>
+    el.name.length < 6 || !/[A-Z]/.test(el.name)
+      ? el.name
+      : el.name.toLowerCase(),
+};
+
+/** Whether an element the parser made stands in a drawing: the parser keeps
+ *  a namespace only for what an HTML document reads otherwise, so what is
+ *  around it says whose it is. A `<script>` is HTML's here, which is where
+ *  a page's scripts are run from. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const inDrawing = (el: Element): boolean => {
-  for (let at = el.parent; at instanceof Element; at = at.parent) {
-    const name = at.name.toLowerCase();
-    if (name === 'svg') return true;
-    if (name === 'foreignobject') return false;
+const inDrawing = (el: Element): boolean =>
+  el.name !== 'script' &&
+  !MADE_AS_HTML.has(el) &&
+  namespaceIn(el.parent) === SVG_NS;
+
+/** What a page's `createElement` made, and each copy of it: HTML's, wherever
+ *  it goes, and in a drawing nothing else says so, as a copy first heard of
+ *  there is no wrapper that already knows. */
+const MADE_AS_HTML = new WeakSet<Element>();
+/** The same of a copy, which is a tree alike to what it copies. */
+const copyMadeAsHtml = (from: AnyNode, to: AnyNode): void => {
+  if (from instanceof Element && MADE_AS_HTML.has(from)) {
+    MADE_AS_HTML.add(to as Element);
   }
-  return false;
+  const kids = (from as ParentNode).children;
+  const copies = (to as ParentNode).children;
+  if (!kids || !copies) return;
+  for (let i = 0; i < copies.length; i += 1) {
+    copyMadeAsHtml(kids[i], copies[i]);
+  }
 };
 
 /** A document's element where it is a drawing: a document of SVG's own, as
@@ -2409,6 +2440,7 @@ export class DomHost {
   /** A copy of a node, its document's (DOM 4.5, "clone"). */
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
+    copyMadeAsHtml(node, clone);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
     const owner = this._ownerOf(node);
@@ -2428,6 +2460,7 @@ export class DomHost {
   private _copyOf(child: ChildNode, every: boolean): ChildNode {
     if (!every) return this._clone(child, true);
     const copy = child.cloneNode(true) as ChildNode;
+    copyMadeAsHtml(child, copy);
     this._cloneShadows(child, copy, true, true);
     this._copiedScripts(child, copy, true);
     return copy;
@@ -2655,9 +2688,7 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns =
-            node.namespace ??
-            (node.name === 'a' && inDrawing(node) ? SVG_NS : undefined);
+          const ns = node.namespace ?? (inDrawing(node) ? SVG_NS : undefined);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
@@ -2761,6 +2792,7 @@ export class DomHost {
         if (a === 'element') {
           const el = new Element(text(b), {}, []);
           if (typeof d === 'string' && d) el.namespace = d === '~' ? '' : d;
+          else MADE_AS_HTML.add(el);
           if (el.name === 'script') this._forceAsync.set(el, true);
           node = el;
         } else if (a === 'text') node = new Text(text(b));
@@ -4202,7 +4234,9 @@ export class DomHost {
       }
       case 'rect': {
         this.flush();
-        const rect = this._seams.handle.elementRect(this._element(a));
+        const element = this._element(a);
+        const rect =
+          this._seams.handle.elementRect(element) ?? this._foreignRect(element);
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
       // whether no scroll of the viewport moves an element: one fixed to
@@ -5656,10 +5690,12 @@ export class DomHost {
   /** The options a page's own query is compiled with (`_query`). */
   private _queryOptions(): ReturnType<DomHost['_selectOptions']> & {
     relativeSelector: false;
+    adapter: typeof QUERY_ADAPTER;
   } {
     return (this._queryOpts ??= {
       ...this._selectOptions(),
       relativeSelector: false,
+      adapter: QUERY_ADAPTER,
     });
   }
   private _queryOpts: ReturnType<DomHost['_queryOptions']> | null = null;
@@ -5731,6 +5767,16 @@ export class DomHost {
     void Promise.resolve().then(() => {
       if (!this._disposed) this.entries?.call('__fontFaceDone', [id, ok]);
     });
+  }
+
+  /** Where what a `<foreignObject>` holds is drawn, through what the drawing
+   *  does to the object: mermaid and d3 size their labels from this. */
+  private _foreignRect(element: Element): Rect | null {
+    const handle = this._drawing(element) as Partial<HandleInternals> | null;
+    const measure = handle?.svgMeasure?.();
+    const inside = handle?.foreignRect?.(element);
+    if (!measure || !inside) return null;
+    return drawnWithin(inside.object, inside.rect, measure);
   }
 
   private _fontsOf(id: Primitive): Partial<HandleInternals> | null {

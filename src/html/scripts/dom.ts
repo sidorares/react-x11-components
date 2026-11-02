@@ -14836,6 +14836,15 @@ export function installDom(
   for (const name of ['media', 'type']) {
     Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
   }
+  // an HTML element's `title` is every HTML element's
+  for (const name of ['media', 'type', 'title']) {
+    Object.defineProperty(SVGStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(
+    SVGStyleElement.prototype,
+    'sheet',
+    Object.getOwnPropertyDescriptor(HTMLStyleElement.prototype, 'sheet')!,
+  );
   Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
     get(this: Any): Any {
       return this.isConnected &&

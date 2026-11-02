@@ -3705,6 +3705,15 @@ the example browser's, which runs it behind the toolbar's JS switch, and
 which moved here so that a document's scripts are one prop. Each rule
 closes a way out a DOM binding opens by accident:
 
+- **An element is SVG's by what the parser's rule says of where it stands**
+  (`inDrawing`, over `namespaceIn`), not by a list of names. The facade's
+  list held some of SVG's names in lower case, where the parser keeps the
+  capitals, and HTML's classes were asked first, so `<style>`, `<clipPath>`
+  and `<foreignObject>` read as HTML's in a drawing, and DOMPurify removed
+  them as out of place: every mermaid diagram lost its colours and its
+  labels. A `<script>` stays HTML's, where scripts are run from, and what a
+  script made with `createElement` stays what it was made, since a wrapper
+  is made once.
 - **The facade is source text.** `installDom` (`dom.ts`) is handed to the
   context by `toString()` and closes over nothing, so every object a page
   touches is the context's. Anything new it needs comes over the bridge as
@@ -5108,6 +5117,14 @@ reaches the object in its order, its transforms, opacity, mask and clip
 already on the context (`ForeignPainter`, `paintForeign`). Five things are
 load-bearing:
 
+- **A page reads an element in an object through its object**
+  (`foreignRect`, `drawnWithin`): where it was laid out, from the object's
+  corner, through the matrix `svg-geometry.ts` works out for the object.
+  So an object of no size is laid out all the same: mermaid and d3 size one
+  from what it holds, which read as nothing, so every label came to 0 by 0
+  and hid its text. It goes by a walk of the object's tree, since
+  `_firstBoxesOf` keeps one tree's index and would be made again at each
+  read. `offsetWidth` and its kin are not there yet.
 - **`tree.foreign` is absent where the document has none, and every path
   asks it first** — the layout, the paint, the restyle, the scope of a
   change. A document with none takes the paths it took: keep any new
@@ -5167,7 +5184,9 @@ capital in its name.** The parser keeps SVG's camelCase (`foreignObject`,
 `getName` hands it the name as parsed. So SVG's UA rule for an object,
 `overflow: hidden`, is a presentation hint (`presentationHints`), under
 its own `overflow` attribute and every rule, where it is in no worse
-place.
+place. A page's own query folds the name (`QUERY_ADAPTER`), since d3 finds
+an object with `select('foreignObject')`; a sheet's rule still does not,
+which would need the rule index's type buckets to fold it as well.
 
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
