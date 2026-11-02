@@ -18290,7 +18290,10 @@ export function installDom(
   /** Where this realm's clock starts on the host's, which is the process's:
    *  a worker's, whose time is its own (`__becomeWorker`). */
   let clockFrom = 0;
-  const now = (): number => Number(bridge('now')) - clockFrom;
+  // read to five microseconds, as a browser coarsens what a page can time
+  // (HR Time 4.3), and each read here costs less than that
+  const now = (): number =>
+    Math.floor((Number(bridge('now')) - clockFrom) * 200) / 200;
 
   // --- viewports, as the rendering steps see them -------------------------
   //

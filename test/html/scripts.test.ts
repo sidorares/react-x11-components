@@ -2470,6 +2470,21 @@ test('queueMicrotask is a TypeError for what is no function, where it failed lat
   );
 });
 
+test('what a page reads of the time is coarsened to five microseconds', async () => {
+  // a read costs less than that, so two in a row told how long one took
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const reads = Array.from({ length: 200 }, () => performance.now());
+       performance.mark('m');
+       reads.push(performance.getEntriesByName('m')[0].startTime);
+       const off = reads.filter((t) => Math.abs(t * 200 - Math.round(t * 200)) > 1e-6);
+       document.getElementById('out').textContent = String(off.length);
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '0', doc.logs.join('\n'));
+});
+
 test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
   // pdf.js makes every request's signal with `any`
   const doc = await hosted(
