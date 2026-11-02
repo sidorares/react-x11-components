@@ -16,9 +16,11 @@
 //    element's `object-fit`.
 //
 // And after the port, where the document paints over the video — a play
-// button in its corner — a `<canvas>` it is painted on again
-// (`HtmlViewNode.paintCovers`), cut to the port: a sibling after the player
-// is over it, as the box is over the video in the document.
+// button in its corner, the controls fixed over it — a `<canvas>` it is
+// painted on again (`HtmlViewNode.paintCovers`), cut to the port: a sibling
+// after the player is over it, as the box is over the video in the document.
+// It draws at each repaint that reaches it, so a fade of what is on it needs
+// no telling.
 //
 // All of it in a box core keeps with a sticky box the viewport keeps, where
 // the video is in one (`MediaRect.held`, `keptMount` in `widgets.ts`).

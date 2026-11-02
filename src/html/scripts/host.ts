@@ -22,6 +22,7 @@ import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
 import {
+  CDATA,
   Comment,
   Document,
   DomHandler,
@@ -29,6 +30,7 @@ import {
   ProcessingInstruction,
   Text,
 } from 'domhandler';
+import { isTag } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
@@ -52,10 +54,14 @@ import type { AdoptedSheet } from '../dom.js';
 import {
   HtmlSource,
   ShadowRoot,
+  parsedForm,
   indicatedElement,
   isCustomized,
   assignedSlot,
   isDefinedElement,
+  isForeign,
+  isStyleOrScript,
+  isStylePreload,
   inActiveTransition,
   isModal,
   setActiveTransition,
@@ -83,6 +89,7 @@ import {
   treeGeneration,
   treesChanged,
   isClassicScriptType,
+  namespaceIn,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -102,22 +109,47 @@ import {
   cssomShorthands,
   cssomStyle,
 } from '../computed.js';
-import { fontQuery } from '../css/style.js';
+import { declaredProperties, fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
-import type { DocumentFontFace, FontMatch } from '../fonts.js';
-import type { Stylesheet } from '../css/parse.js';
+import type { CanvasText } from '../canvas-text.js';
+import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
+import type { FontFaceInit, Stylesheet } from '../css/parse.js';
 import {
   mediaMatches,
   parseDeclarations,
   parseMediaQuery,
   parseStylesheet,
+  scriptFontFace,
   selectorList,
   supportsCondition,
 } from '../css/parse.js';
 import { closeBrackets, hasVar } from '../css/vars.js';
+import {
+  PageZlib,
+  closeChannel,
+  openChannel,
+  postChannel,
+  queryLocks,
+  releaseClient,
+  releaseLock,
+  requestLock,
+} from './page-channels.js';
+import type { ChannelEnd } from './page-channels.js';
+import { drawnWithin, svgAnswer } from './svg-geometry.js';
+import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
+import { readProlog, serializeXml } from './xml.js';
+import {
+  XAttr,
+  compileXPath,
+  evaluateXPath,
+  namespaceFor,
+  namespaceOf,
+  prefixesIn,
+} from './xpath.js';
+import type { CompiledXPath, XNode } from './xpath.js';
 import {
   checkedDefault,
   controlChange,
@@ -132,6 +164,7 @@ import {
   validityError,
 } from '../form.js';
 import type { Bridge, Primitive } from './dom.js';
+import { PageCrypto, keySecrets } from './subtle.js';
 import {
   LiveRange,
   NodeIterators,
@@ -140,7 +173,10 @@ import {
   isDoctype,
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
-import { navigableFor } from './target.js';
+import { linkOpener, navigableFor } from './target.js';
+import { parseWindowFeatures } from '../popups.js';
+import type { HtmlPopup, HtmlPopups } from '../popups.js';
+import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
@@ -157,11 +193,34 @@ import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
+import { askCaches } from '../cache-storage.js';
+import type {
+  HtmlCacheAnswer,
+  HtmlCacheAsk,
+  HtmlCacheStore,
+} from '../cache-storage.js';
+import type {
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkers,
+} from '../service-workers.js';
+import type { ServiceClient } from './sw-registry.js';
 import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
+import { chosenFiles } from '../form.js';
+import type { HtmlDownloadRequest } from '../download.js';
+import type { HtmlFile } from '../files.js';
+import { clipboardOfWire, clipboardWire } from '../clipboard.js';
+import type { HtmlClipboard } from '../clipboard.js';
+import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
+import { PERMISSION_NAMES, POLICY_FEATURES } from '../permissions.js';
+import type {
+  HtmlNotification,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from '../notifications.js';
 import * as ntk from 'react-x11/ntk';
 import { decodeGif } from '../gif.js';
 import { encodePng } from './png.js';
@@ -181,6 +240,19 @@ declare const clearInterval: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const Buffer: BufferClass;
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+
+/** A context's setting of its text as it crosses: its direction, its
+ *  spacings in CSS pixels, its kerning and its capitals. */
+const textSetting = ([direction, letter, word, kerning, caps]: string[]) => ({
+  direction: direction === 'rtl' ? ('rtl' as const) : ('ltr' as const),
+  letterSpacing: Number(letter) || 0,
+  wordSpacing: Number(word) || 0,
+  kerning: kerning ?? 'auto',
+  caps: caps || null,
+});
+
 /** The runtime's Web Crypto and its clock, which Node and Bun both have. */
 declare const crypto: {
   getRandomValues(array: Uint8Array): Uint8Array;
@@ -253,13 +325,17 @@ export interface WorkerInit {
   name: string;
   source: string | null;
   origin: string;
+  /** Whether its owner is a secure context, which a worker is if that is
+   *  (HTML 8.1.3.5). */
+  secure: boolean;
+  /** What opens the keys its owner makes (`subtle.ts`). */
+  keySecrets: Uint8Array[];
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
-  /** A service worker's (Service Workers 1), with the scope it was
-   *  registered for and the address of the page that registered it, the
-   *  one client it has. */
-  service?: { scope: string; client: string };
+  /** A service worker's (Service Workers 1): the scope it was registered
+   *  for, and how its registry knows it and its registration. */
+  service?: { scope: string; worker: unknown; registration: unknown };
 }
 
 /** Where a page's workers run (`workers.ts`): each started, posted to and
@@ -270,6 +346,8 @@ export interface PageWorkersLike {
   end(id: number): void;
   /** Tells a worker's thread of a data channel the page handed it. */
   rtc?(id: number, message: ChannelRelay): void;
+  /** A permission moved: a worker's copy of where each stands follows. */
+  permissionMoved?(name: string, state: string): void;
   /** Whether a worker has a connection open (`DomHost.connected`). */
   readonly connected?: boolean;
   /** How many threads have stopped for the back-forward cache. */
@@ -286,6 +364,8 @@ export interface WorkerScope {
   error(message: string, filename: string, line: number, column: number): void;
   /** Asks the page process of a data channel the page handed over. */
   rtc?(message: ChannelRelay): void;
+  /** What a service worker's realm says to its registry. */
+  service?(text: string, bytes?: Uint8Array): void;
 }
 
 /** A frame a browser that draws frames mounts a view for (`frames`). */
@@ -300,7 +380,8 @@ export interface FrameShown {
 
 /** A form's POST into a frame its target names (`navigateFrame`). */
 export interface FramePost {
-  body: string;
+  /** Bytes where a file is in it. */
+  body: string | Uint8Array;
   contentType: string;
 }
 export interface FetchResponse {
@@ -321,8 +402,12 @@ export interface FetchResponse {
    *  does — a model's reply, a stream of events, a download that trickles. */
   chunks?: AsyncIterable<Uint8Array>;
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
-   *  origin's, `cors` another's that let it, `opaque` none of it. */
-  type?: 'basic' | 'cors' | 'opaque';
+   *  origin's, `cors` another's that let it, `opaque` none of it, and
+   *  `default` what a service worker made of nothing. */
+  type?: 'basic' | 'cors' | 'opaque' | 'default';
+  /** The number an opaque response's body is held by here, which a realm
+   *  hands back to keep it or to answer with it. */
+  held?: number;
 }
 
 /** A page's request as the facade hands it over, with what decides
@@ -330,6 +415,14 @@ export interface FetchResponse {
 interface PageRequest extends FetchRequest {
   mode: 'cors' | 'no-cors' | 'same-origin';
   credentials: 'omit' | 'same-origin' | 'include';
+  /** The headers the user agent set, of which CORS asks nothing. */
+  uaHeaders?: string[];
+  /** What a worker's `fetch` event reads of it. */
+  cache?: string;
+  redirect?: 'follow' | 'error' | 'manual';
+  integrity?: string;
+  referrerPolicy?: string;
+  destination?: string;
 }
 
 /** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
@@ -350,9 +443,18 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** Hand the host what a page asked to have saved: whether it takes it. */
+  download(request: HtmlDownloadRequest): boolean;
+  /** A file input's dialog (`HtmlProps.onPickFiles`). */
+  pickFiles(element: Element): void;
+  /** Set what a file input holds, as a script's `files` does. */
+  setFiles(element: Element, files: readonly HtmlFile[]): void;
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** What is selected in the document, as it is drawn: what a copy of it
+   *  puts on the clipboard. */
+  selectedText(): string;
   /** `document.write` from the script the parse waits at, into the input
    *  stream after it (`HtmlViewNode.parserWrite`): false where the parse
    *  waits at no such script. */
@@ -388,6 +490,16 @@ export interface HandleInternals {
   loadFonts(keys: readonly string[]): Promise<boolean[]>;
   /** Settles once no face is on its way (`HtmlViewNode.fontsSettled`). */
   fontsSettled(): Promise<void>;
+  /** The document's fonts, where a page's `new FontFace` goes. */
+  scriptFonts(): WebFonts | null;
+  /** A face a page's script made joined the document's, or left. */
+  scriptFontsChanged(id: number, added: boolean): void;
+  /** What `svg-geometry.ts` asks of the document. */
+  svgMeasure(): SvgMeasure | null;
+  /** What a canvas's context asks of the fonts. */
+  canvasText(): CanvasText | null;
+  /** Where what a `<foreignObject>` holds was laid out in it. */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -576,6 +688,9 @@ export interface HighlightRanges {
  *  where it goes, and what it may fetch. */
 export interface HostSeams {
   handle: HtmlHandle & Partial<HandleInternals>;
+  /** Whether this is a secure context, where it is not for the document's
+   *  address to say: a worker's. */
+  secureContext?: boolean;
   /** The pane the document is shown in, in CSS pixels — its size and its
    *  scroll — with the page's zoom and the device's scale, and where its
    *  top left is in the window, in logical pixels. */
@@ -590,8 +705,26 @@ export interface HostSeams {
     top: number;
   };
   scrollTo(x: number, y: number): void;
-  /** A navigation the page asked for: an address assigned, `open`. */
-  navigate(url: string, how: 'here' | 'replace' | 'tab'): void;
+  /** A navigation the page asked for: an address assigned, `open`. `post`
+   *  is the form a link's or a form's target sends it with, into a window
+   *  of the group; `name` what a tab is opened with. */
+  navigate(
+    url: string,
+    how: 'here' | 'replace' | 'tab',
+    post?: FramePost | null,
+    name?: string,
+  ): void;
+  /** What a page's `window.open` reaches (`HtmlPopups`). */
+  popups?: HtmlPopups;
+  /** The window this document is shown in, where a page opened it. */
+  popup?: HtmlPopup | null;
+  /** What the window this document is shown in goes by, where a host opened
+   *  it under a name. */
+  windowName?: string;
+  /** A page closed the window it is in, a tab of its host's: `alone` where
+   *  its history has one entry, which is what lets a page close a window no
+   *  script opened. Answers whether it closes. */
+  close?(alone: boolean): boolean | void;
   reload(): void;
   go(delta: number): void;
   /** A page that is being left asked to be confirmed first (HTML 7.4.2.4,
@@ -611,15 +744,27 @@ export interface HostSeams {
    *  fetches its source through it to know its duration and when it can
    *  play, and with none is ready as soon as it is asked. */
   network?: boolean;
-  /** Whether a page may register service workers (`HtmlScripts`'
-   *  `serviceWorkers`). */
-  serviceWorkers?: boolean;
+  /** What keeps a page's service workers (`HtmlScripts`' `serviceWorkers`).
+   *  Absent, a page has none. */
+  serviceWorkers?: HtmlServiceWorkers | null;
+  /** What a worker's `caches` ask, where its store is across a thread.
+   *  Absent, the store is `storage`'s. */
+  caches?(origin: string, ask: HtmlCacheAsk): Promise<HtmlCacheAnswer>;
   /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
    *  `webTransport`). Absent, every session fails, as with no network. */
   webTransport?: HtmlWebTransport;
   /** What a page's `WebSocket`s are carried over (`HtmlScripts`'
    *  `webSocket`). Absent, every socket fails, as with no network. */
   webSocket?: HtmlWebSocket;
+  /** The clipboard a page's `copy`, `paste` and `navigator.clipboard` reach
+   *  (`HtmlScripts`' `clipboard`). Absent, they reach none. */
+  clipboard?: HtmlClipboard;
+  /** What a page's notifications reach (`HtmlScripts`' `notifications`).
+   *  Absent, a page's `Notification` is refused. */
+  notifications?: HtmlNotifications;
+  /** What a page has been allowed (`HtmlScripts`' `permissions`). Absent,
+   *  nothing has, and asking refuses. */
+  permissions?: HtmlPermissions;
   /** What a page's `RTCPeerConnection`s are carried over (`HtmlScripts`'
    *  `webRTC`). Absent, no stack: an operation that needs one rejects. */
   webRTC?: HtmlWebRTC;
@@ -646,6 +791,42 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+}
+
+/** All a page is told of an opaque response. */
+const OPAQUE_HEAD = {
+  status: 0,
+  statusText: '',
+  headers: [] as [string, string][],
+  type: 'opaque',
+  url: '',
+  redirected: false,
+};
+
+/** How many opaque responses a document holds at once (`_opaques`). */
+const OPAQUE_HELD = 64;
+
+/** A response's body, all of it, read here. */
+export async function wholeBytes(response: FetchResponse): Promise<Uint8Array> {
+  if (!response.chunks) {
+    return response.bytes ?? new TextEncoder().encode(response.body ?? '');
+  }
+  const pieces: Uint8Array[] = [];
+  for await (const piece of response.chunks) pieces.push(piece);
+  return joinBytes(pieces);
+}
+
+/** Bytes as one piece. */
+function joinBytes(pieces: Uint8Array[]): Uint8Array {
+  let size = 0;
+  for (const piece of pieces) size += piece.length;
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const piece of pieces) {
+    whole.set(piece, at);
+    at += piece.length;
+  }
+  return whole;
 }
 
 /** Bytes as lowercase hex, two digits a byte. */
@@ -785,6 +966,70 @@ function elementsIn(
  *  parent's tree. */
 let edits = 0;
 
+/** css-select's view of a tree for a page's own query. A selector's type is
+ *  lowercased and the parser keeps SVG's capitals, so without this
+ *  `querySelector('foreignObject')` and d3's `select` found nothing. */
+const QUERY_ADAPTER = {
+  ...DomUtils,
+  isTag,
+  getName: (el: Element): string =>
+    el.name.length < 6 || !/[A-Z]/.test(el.name)
+      ? el.name
+      : el.name.toLowerCase(),
+};
+
+/** Whether an element the parser made stands in a drawing: the parser keeps
+ *  a namespace only for what an HTML document reads otherwise, so what is
+ *  around it says whose it is. A `<script>` is HTML's here, which is where
+ *  a page's scripts are run from. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const inDrawing = (el: Element): boolean =>
+  el.name !== 'script' &&
+  !MADE_AS_HTML.has(el) &&
+  namespaceIn(el.parent) === SVG_NS;
+
+/** What a page's `createElement` made, and each copy of it: HTML's, wherever
+ *  it goes, and in a drawing nothing else says so, as a copy first heard of
+ *  there is no wrapper that already knows. */
+const MADE_AS_HTML = new WeakSet<Element>();
+/** The same of a copy, which is a tree alike to what it copies. */
+const copyMadeAsHtml = (from: AnyNode, to: AnyNode): void => {
+  if (from instanceof Element && MADE_AS_HTML.has(from)) {
+    MADE_AS_HTML.add(to as Element);
+  }
+  const kids = (from as ParentNode).children;
+  const copies = (to as ParentNode).children;
+  if (!kids || !copies) return;
+  for (let i = 0; i < copies.length; i += 1) {
+    copyMadeAsHtml(kids[i], copies[i]);
+  }
+};
+
+/** A document's element where it is a drawing: a document of SVG's own, as
+ *  no document HTML's parser makes is. */
+function drawingRootOf(doc: ParentNode): Element | null {
+  const root = doc.children.find((k) => k instanceof Element) as
+    Element | undefined;
+  return root?.name === 'svg' && root.namespace === SVG_NS ? root : null;
+}
+
+/** The element a document's title is read from (HTML 3.1.3): the first
+ *  `<title>` of HTML's, wherever it stands, and in a drawing that is a
+ *  document, the first `<title>` of the drawing's own. */
+function titleOf(doc: ParentNode): Element | null {
+  const root = drawingRootOf(doc);
+  if (root) {
+    return (root.children.find(
+      (k) =>
+        k instanceof Element && k.name === 'title' && k.namespace === SVG_NS,
+    ) ?? null) as Element | null;
+  }
+  return DomUtils.findOne(
+    (el) => el.name === 'title' && !isForeign(el),
+    doc.children,
+  );
+}
+
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 function parserError(): Element {
   const error = new Element('parsererror', {
@@ -794,6 +1039,9 @@ function parserError(): Element {
   DomUtils.appendChild(error, new Text('XML Parsing Error: not well-formed'));
   return error;
 }
+
+/** The texts a CDATA section made: a text to everything but a serializer. */
+const CDATA_SECTIONS = new WeakSet<AnyNode>();
 
 /** The content types a frame reads as XML (XML Media Types, 3). */
 const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
@@ -937,10 +1185,27 @@ function release(response: FetchResponse): void {
 }
 
 /** Bytes as base64, which is how they cross to the page. */
+/** Take a notification down, whatever the host's hook makes of it. */
+function closeShown(shown: HtmlShownNotification | null | undefined): void {
+  try {
+    void Promise.resolve(shown?.close()).catch(() => {});
+  } catch {
+    // a page that has gone cannot hear it did not close
+  }
+}
+
 function base64Of(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     'base64',
   );
+}
+
+/** How much of a file crosses to a page at once. */
+const FILE_CHUNK = 6 * 2 ** 20;
+
+/** Bytes from what crossed as base64. */
+function bytesOf(text: string): Uint8Array {
+  return Buffer.from(text, 'base64');
 }
 
 /** The methods a request may have and be a simple one (Fetch 2.2.1). */
@@ -1216,6 +1481,27 @@ function shadowIncludingRoot(node: AnyNode): AnyNode {
   }
 }
 
+/**
+ * Whether a document at this URL is trustworthy (Secure Contexts, 3.1): an
+ * origin that is `https:`, `wss:`, `file:` or this machine, and a `blob:`
+ * URL's is the origin it names. A top-level `about:blank` and `data:` URL
+ * have an opaque origin and are not, as Chromium and Firefox have them, where
+ * 3.2 of the specification would have it otherwise.
+ */
+function trustworthy(url: string): boolean {
+  try {
+    const at = new URL(url);
+    if (at.protocol === 'blob:') return trustworthy(at.pathname);
+    if (/^(https|wss|file):$/.test(at.protocol)) return true;
+    if (at.protocol !== 'http:' && at.protocol !== 'ws:') return false;
+    return /^(127(\.\d+){3}|\[::1\]|localhost|.*\.localhost)$/i.test(
+      at.hostname,
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** A URL's origin, or '' where it is none. */
 function originOf(url: string): string {
   try {
@@ -1462,9 +1748,12 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
-  /** The top-level document's address: the page's, whose site is the site
-   *  for cookies of every frame in it. */
-  top: string | null = null;
+  /** The windows that can reach each other over this tree, once one has
+   *  opened another (`./popups.ts`). */
+  windows: WindowGroup | null = null;
+  /** A node one realm hands another (`handOver`), and that realm's origin:
+   *  another origin's takes nothing. */
+  handed: { node: AnyNode; origin: string } | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -1637,6 +1926,11 @@ export class DomHost {
   workers: PageWorkersLike | null = null;
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
+  /** This document as a service worker's client, where the host keeps
+   *  service workers (`ScriptRunner`). */
+  serviceClient: ServiceClient | null = null;
+  /** The frame a script last focused, which is a `WindowClient.focused`. */
+  focusedFrame: Element | null = null;
   /** Where the document is in the host's session across documents, where
    *  the host keeps one (`HtmlSessionHistory`): set before the page's
    *  realm is made, which reads it as it starts. */
@@ -1658,6 +1952,9 @@ export class DomHost {
     private readonly _seams: HostSeams,
     url: string,
     shared: DomShared = new DomShared(),
+    /** The top-level document's address: the page's, whose site is the site
+     *  for cookies of every frame in it. Its own, for a page. */
+    top: string | null = null,
   ) {
     // a fragment directive is the user agent's, and no part of the URL a
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
@@ -1683,7 +1980,10 @@ export class DomHost {
     this._owners = shared.owners;
     this._doctypes = shared.doctypes;
     shared.drawn.set(document, _seams.handle);
-    shared.top ??= this.url;
+    this._unwatchPermissions =
+      _seams.permissions?.watch?.((name) => this._permissionMoved(name)) ??
+      null;
+    this.top = top ?? this.url;
     // what another document of the origin does to its storage, which this
     // one hears as a `storage` event
     this._unwatchStorage =
@@ -1853,8 +2153,50 @@ export class DomHost {
       metaKey: event.metaKey,
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
+      clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
+      drag: event.drag && {
+        entries: event.drag.entries,
+        hasFiles: event.drag.hasFiles,
+        files: event.drag.files?.map((file) => this._toldFile(file)),
+        effectAllowed: event.drag.effectAllowed,
+        dropEffect: event.drag.dropEffect,
+      },
     });
+    // what a page left in the drag's store, for what the drag does next
+    if (event.drag && this._dragOut) {
+      Object.assign(event.drag, JSON.parse(this._dragOut));
+      this._dragOut = null;
+    }
     return answer !== false;
+  }
+
+  /** The address of the document this one's window is at the top of. */
+  readonly top: string;
+  /** A page's windows, where the host may open any (`./popups.ts`). */
+  windows: ReturnType<typeof windowOps> | null = null;
+  /** What made this document, where it is `about:blank`: its origin and its
+   *  base are that document's (HTML 7.1.1). */
+  creator: string | null = null;
+  /** What `document.referrer` reads. */
+  referrer = '';
+  /** Whether the document around this one's frame is of another origin:
+   *  what the frame's element is, and all it reaches, is refused it. */
+  foreignParent = false;
+
+  /** This document's origin. */
+  get origin(): string {
+    return this._origin();
+  }
+
+  /** The document a frame of this document shows, by the frame's id. */
+  frameDocumentAt(id: number): Document | null {
+    const frame = this._nodes.get(id);
+    return (frame && this._frames.get(frame as Element)) ?? null;
+  }
+
+  /** A document of nothing, `about:blank`'s, for a window's first. */
+  blankDocument(): Document {
+    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -2177,6 +2519,18 @@ export class DomHost {
 
   dispose(): void {
     this._disposed = true;
+    // a page's own notifications go with it (Notifications API, 2.4)
+    for (const shown of this._shown.values()) closeShown(shown);
+    this._shown.clear();
+    this._unwatchPermissions?.();
+    this._unwatchPermissions = null;
+    for (const { key, end } of this._channels.values()) {
+      closeChannel(key, end);
+    }
+    this._channels.clear();
+    for (const zlib of this._zlibs.values()) zlib.dispose();
+    this._zlibs.clear();
+    releaseClient(this._origin(), this._lockClient);
     this._unwatchStorage?.();
     this._unwatchStorage = null;
     this._transportsMade?.dispose();
@@ -2201,6 +2555,10 @@ export class DomHost {
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
+    for (const response of this._opaques.values()) release(response);
+    this._opaques.clear();
+    this.serviceClient?.detach();
+    this.serviceClient = null;
     this.entries = null;
   }
 
@@ -2279,6 +2637,7 @@ export class DomHost {
   /** A copy of a node, its document's (DOM 4.5, "clone"). */
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
+    copyMadeAsHtml(node, clone);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
     const owner = this._ownerOf(node);
@@ -2298,6 +2657,7 @@ export class DomHost {
   private _copyOf(child: ChildNode, every: boolean): ChildNode {
     if (!every) return this._clone(child, true);
     const copy = child.cloneNode(true) as ChildNode;
+    copyMadeAsHtml(child, copy);
     this._cloneShadows(child, copy, true, true);
     this._copiedScripts(child, copy, true);
     return copy;
@@ -2405,6 +2765,25 @@ export class DomHost {
     }
   }
 
+  /** An expression, compiled, or its `SyntaxError`. What is compiled is
+   *  kept, since a page runs one a great many times. */
+  private _xpaths = new Map<string, CompiledXPath>();
+  private _xpath(text: string): CompiledXPath {
+    let compiled = this._xpaths.get(text);
+    if (!compiled) {
+      try {
+        compiled = compileXPath(text);
+      } catch (error) {
+        throw new DomError(
+          'SyntaxError',
+          `The string '${text}' is not a valid XPath expression.`,
+        );
+      }
+      this._xpaths.set(text, compiled);
+    }
+    return compiled;
+  }
+
   /** A doctype's name, public id and system id: those it was made with,
    *  or what the markup it was parsed from says. */
   private _doctypeOf(node: AnyNode): [string, string, string] {
@@ -2506,12 +2885,17 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns = node.namespace;
+          const ns = node.namespace ?? (inDrawing(node) ? SVG_NS : undefined);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
         }
-        if (node instanceof Text) return '3|#text';
+        if (node instanceof Text) {
+          return CDATA_SECTIONS.has(node) ? '4|#cdata-section' : '3|#text';
+        }
+        if (node instanceof ProcessingInstruction && !isDoctype(node)) {
+          return `7|${node.name.slice(1)}`;
+        }
         if (node instanceof ShadowRoot) return '11|#shadow-root';
         if (node instanceof Comment) return '8|#comment';
         if (this._isDocument(node)) {
@@ -2580,11 +2964,16 @@ export class DomHost {
       case 'text': {
         const node = this._node(a);
         if (node instanceof Text || node instanceof Comment) return node.data;
+        if (node instanceof ProcessingInstruction) return node.data;
         if (node === this.document) return null;
         return DomUtils.textContent(node);
       }
       case 'setText': {
         const node = this._node(a);
+        if (node instanceof ProcessingInstruction) {
+          node.data = text(b);
+          return null;
+        }
         if (node instanceof Text || node instanceof Comment) {
           this._replaceData(node, 0, node.data.length, text(b));
           return null;
@@ -2600,10 +2989,21 @@ export class DomHost {
         if (a === 'element') {
           const el = new Element(text(b), {}, []);
           if (typeof d === 'string' && d) el.namespace = d === '~' ? '' : d;
+          else MADE_AS_HTML.add(el);
           if (el.name === 'script') this._forceAsync.set(el, true);
           node = el;
         } else if (a === 'text') node = new Text(text(b));
-        else if (a === 'comment') node = new Comment(text(b));
+        else if (a === 'cdata') {
+          node = new Text(text(b));
+          CDATA_SECTIONS.add(node);
+        } else if (a === 'pi') {
+          const data = text(b);
+          const space = data.indexOf(' ');
+          node = new ProcessingInstruction(
+            `?${data.slice(0, space)}`,
+            data.slice(space + 1),
+          );
+        } else if (a === 'comment') node = new Comment(text(b));
         else node = new Document([]);
         const doc = c ? this._node(c) : this.document;
         if (doc !== this.document && this._isDocument(doc)) {
@@ -3346,6 +3746,13 @@ export class DomHost {
           );
         }
       }
+      case 'parsedForm': {
+        const from = this._element(a);
+        const form = parsedForm(from);
+        return form && this._ownerOf(form) === this._ownerOf(from)
+          ? this.idOf(form)
+          : 0;
+      }
       case 'closest': {
         if (this._transitionSelector(text(b))) return 0;
         const selector = this._withoutHighlights(text(b));
@@ -3381,11 +3788,71 @@ export class DomHost {
           )[0],
         );
       case 'byTag': {
-        const tag = text(b).toLowerCase();
         const root = this._node(a) as ParentNode;
+        const xml = this._xml.has(this._ownerOf(root) as Document);
+        const tag = xml ? text(b) : text(b).toLowerCase();
         return elementsIn(root, (el) => tag === '*' || el.name === tag)
           .map((el) => this.idOf(el))
           .join(',');
+      }
+      case 'byTagNS': {
+        const root = this._node(a) as ParentNode;
+        const ns = text(b);
+        const name = text(c);
+        return elementsIn(
+          root,
+          (el) =>
+            (ns === '*' || namespaceOf(el) === ns) &&
+            (name === '*' || el.name.slice(el.name.indexOf(':') + 1) === name),
+        )
+          .map((el) => this.idOf(el))
+          .join(',');
+      }
+      // the namespace a prefix reaches at a node
+      case 'lookupNamespace':
+        return namespaceFor(this._node(a), text(b));
+      // XML, parsed and serialized, and XPath over the tree
+      case 'parseXml': {
+        const xml = this._xmlTree(text(a));
+        const kids = xml.wellFormed ? xml.kids : [parserError()];
+        const doc = new Document(kids);
+        for (const kid of kids) kid.parent = doc;
+        this._documents.add(doc);
+        this._xml.set(doc, text(b));
+        return this.idOf(doc);
+      }
+      case 'serializeXml':
+        return serializeXml(this._node(a), {
+          doctype: (node) => this._doctypeOf(node),
+          cdata: (node) => CDATA_SECTIONS.has(node),
+        });
+      case 'xpathPrefixes':
+        return JSON.stringify(prefixesIn(this._xpath(text(a))));
+      case 'xpath': {
+        const { node, attr, namespaces } = JSON.parse(text(b)) as {
+          node: number;
+          attr: string | null;
+          namespaces: Record<string, string>;
+        };
+        const context =
+          attr === null
+            ? this._node(node)
+            : new XAttr(this._element(node), attr);
+        const root = attr === null ? context : this._node(node);
+        const owner = this._isDocument(root as AnyNode)
+          ? (root as Document)
+          : this._ownerOf(root as AnyNode);
+        const value = evaluateXPath(this._xpath(text(a)), context as XNode, {
+          namespaces,
+          html: !this._xml.has(owner as Document),
+        });
+        return JSON.stringify(
+          Array.isArray(value)
+            ? value.map((n) =>
+                n instanceof XAttr ? [this.idOf(n.el), n.name] : this.idOf(n),
+              )
+            : value,
+        );
       }
       case 'byClass': {
         const wanted = text(b)
@@ -3482,6 +3949,8 @@ export class DomHost {
           ...init,
           source: typeof b === 'string' ? b : null,
           origin: this._origin(),
+          secure: this._secureContext(),
+          keySecrets: keySecrets(this._keySecret()),
         });
       }
       case 'workerPost':
@@ -3633,6 +4102,8 @@ export class DomHost {
             ])
           : '';
       }
+      case 'selectedText':
+        return this._seams.handle.selectedText?.() ?? null;
       // the page's selection, drawn as the reader's is
       case 'setDocumentSelection': {
         const points = text(a)
@@ -3722,8 +4193,9 @@ export class DomHost {
         return (
           DomUtils.findAll(
             (el) =>
-              el.name === 'style' ||
+              (el.name === 'style' && isStyleOrScript(el)) ||
               (el.name === 'link' &&
+                !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
                 !/(?:^|\s)alternate(?:\s|$)/i.test(el.attribs.rel ?? '')),
             (a ? (this._node(a) as ParentNode) : this.document).children,
@@ -3759,23 +4231,49 @@ export class DomHost {
         return doc ? this.idOf(doc) : 0;
       }
       case 'frameElement': {
-        const frame = this._frameOf.get(this._node(a) as Document);
-        return frame ? this.idOf(frame) : 0;
+        const doc = this._node(a) as Document;
+        const frame = this._frameOf.get(doc);
+        // of the document around this one, which is not this one's to reach
+        // where it is another origin's
+        if (!frame || (doc === this.document && this.foreignParent)) return 0;
+        return this.idOf(frame);
       }
-      // where a frame's document is from, another origin's as well: its
-      // window's `location`, which the page may set whoever's it is
+      // where a frame's document is from, read only of this one's origin: the
+      // page may set another origin's window's `location`, and not read it
       case 'frameLocation': {
         const frame = this._element(a);
         this._frameDocument(frame);
-        return this._frameAt.get(frame) ?? 'about:blank';
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        if (!this._sameOrigin(at)) {
+          throw new DomError(
+            'SecurityError',
+            "A frame of another origin's address is none of this document's.",
+          );
+        }
+        return at;
       }
       case 'frameNavigate':
         this.navigateFrame(this._element(a), text(b), null);
         return null;
-      // a frame's address changed by its own history, with no navigation
-      case 'setFrameLocation':
-        this._frameAt.set(this._element(a), text(b));
+      // a frame's address changed by its own history, with no navigation:
+      // never to or from another origin, since what the address says is what
+      // `frameDocument` hands a page a document by
+      case 'setFrameLocation': {
+        const frame = this._element(a);
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        const to = text(b);
+        if (
+          !this._sameOrigin(at) ||
+          !(this._sameOrigin(to) || originOf(to) === originOf(at))
+        ) {
+          throw new DomError(
+            'SecurityError',
+            "A frame's history stays in its origin.",
+          );
+        }
+        this._frameAt.set(frame, to);
         return null;
+      }
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
@@ -3837,9 +4335,8 @@ export class DomHost {
         return null;
       }
       case 'title': {
-        const title = DomUtils.findOne(
-          (el) => el.name === 'title',
-          (a ? (this._node(a) as ParentNode) : this.document).children,
+        const title = titleOf(
+          a ? (this._node(a) as ParentNode) : this.document,
         );
         return title
           ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
@@ -3847,15 +4344,18 @@ export class DomHost {
       }
       case 'setTitle': {
         const doc = b ? (this._node(b) as ParentNode) : this.document;
-        let title = DomUtils.findOne((el) => el.name === 'title', doc.children);
+        let title = titleOf(doc);
         if (!title) {
+          const root = drawingRootOf(doc);
           const head =
+            root ??
             DomUtils.findOne((el) => el.name === 'head', doc.children) ??
             (doc.children.find((k) => k instanceof Element) as
               Element | undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
-          this._put(head, [title], null);
+          if (root) title.namespace = SVG_NS;
+          this._put(head, [title], root ? (root.children[0] ?? null) : null);
         }
         this._replaceAll(title, [new Text(text(a))]);
         if (doc === this.document) this._seams.title(text(a) || null);
@@ -3964,7 +4464,9 @@ export class DomHost {
       }
       case 'rect': {
         this.flush();
-        const rect = this._seams.handle.elementRect(this._element(a));
+        const element = this._element(a);
+        const rect =
+          this._seams.handle.elementRect(element) ?? this._foreignRect(element);
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
       // whether no scroll of the viewport moves an element: one fixed to
@@ -4006,6 +4508,17 @@ export class DomHost {
         return r
           ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
           : '';
+      }
+      // every name a style has an attribute for, a computed style's list
+      // with what it leaves out
+      case 'styleProperties': {
+        const style = this._seams.handle.computedStyle(this._element(a), null);
+        if (!style) return '';
+        return [
+          ...Object.keys(style),
+          ...SHORTHAND_NAMES,
+          ...declaredProperties(),
+        ].join(',');
       }
       case 'computed': {
         this.flush();
@@ -4189,6 +4702,96 @@ export class DomHost {
         if (loading) loading.then(tell, () => tell(keys.map(() => false)));
         else tell(keys.map(() => false));
         return null;
+      }
+      // a face `new FontFace` made, from what a script handed over: whether
+      // its family, its descriptors and its source can be read
+      case 'fontFaceNew': {
+        const fonts = this._fontsOf(a)?.scriptFonts?.();
+        const doc = this._node(a) as Document;
+        const root = doc.children?.find((k) => k instanceof Element);
+        if (!fonts || !root) return true;
+        const id = Number(b);
+        const { family, src, init } = JSON.parse(text(c)) as {
+          family: string;
+          src: string | null;
+          init: FontFaceInit;
+        };
+        const rule = scriptFontFace(
+          family,
+          src,
+          typeof d === 'string' ? Buffer.from(d, 'base64') : null,
+          init,
+          this._seams.handle.base ?? this.url,
+        );
+        if (!rule) return false;
+        fonts.makeFace(id, rule, root as Element, (ok) =>
+          this._faceDone(id, ok),
+        );
+        return true;
+      }
+      case 'fontFaceLoad': {
+        const id = Number(b);
+        const fonts = this._fontsOf(a)?.scriptFonts?.();
+        if (!fonts) {
+          this._faceDone(id, false);
+          return null;
+        }
+        void fonts.loadFace(id).then(
+          (ok) => this._faceDone(id, ok),
+          () => this._faceDone(id, false),
+        );
+        return null;
+      }
+      case 'fontFaceAdd':
+        this._fontsOf(a)?.scriptFontsChanged?.(Number(b), c === true);
+        return null;
+      // what a canvas's context asks of the fonts (`canvas-text.ts`): each
+      // is null where there is no text engine, and the context makes do
+      case 'canvasFont': {
+        this.flush();
+        const fonts = this._canvasFonts(a);
+        if (!fonts) return null;
+        const font = fonts.font(text(b), this._canvasOf(a));
+        return font ? JSON.stringify(font) : '';
+      }
+      case 'canvasTextNow': {
+        const fonts = this._canvasFonts(a);
+        if (!fonts) return null;
+        return `${fonts.generation},${fonts.direction(this._canvasOf(a))}`;
+      }
+      case 'canvasMeasure': {
+        const answer = this._canvasFonts(a)?.measure(
+          text(b),
+          text(c),
+          textSetting(text(d).split(',')),
+        );
+        return answer ? JSON.stringify(answer) : null;
+      }
+      // the bytes as a string of one byte a character, which crosses
+      // uncopied, where base64 would be a third more to decode
+      case 'canvasRaster': {
+        const [size, stroke, ...setting] = text(d).split(',');
+        const raster = this._canvasFonts(a)?.raster(
+          text(b),
+          text(c),
+          Number(size),
+          textSetting(setting),
+          Number(stroke),
+        );
+        if (!raster) return null;
+        const { data, ...head } = raster;
+        const bytes = Buffer.from(data.buffer, data.byteOffset, data.length);
+        return `${JSON.stringify(head)}\n${bytes.toString('latin1')}`;
+      }
+      // where what an inline drawing holds is (`svg-geometry.ts`)
+      case 'svg': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        const answer = svgAnswer(text(b), el, measure, Number(c));
+        return answer ? answer.join(',') : '';
       }
       // the page told once none of the document's faces is on its way
       // (`__fontsSettled`), which `document.fonts.ready` waits for
@@ -4435,6 +5038,7 @@ export class DomHost {
       case 'focus': {
         this.flush();
         const el = this._element(a);
+        this.focusedFrame = el.name === 'iframe' ? el : null;
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
@@ -4531,7 +5135,16 @@ export class DomHost {
       case 'hasNetwork':
         return this._seams.network === true;
       case 'serviceWorkers':
-        return this._seams.serviceWorkers === true;
+        return !!this._seams.serviceWorkers;
+      // what a page's service worker objects ask of the registry, and what a
+      // worker's own realm says to it
+      case 'sw':
+        if (this.serviceClient) return this.serviceClient.heard(text(a));
+        this._serviceSaid(text(a));
+        return null;
+      case 'cache':
+        this._cacheOp(Number(a), text(b));
+        return null;
       case 'image': {
         const el = this._node(a) as Element;
         const state = this._imageDrawn(el)?.imageState?.(el);
@@ -4548,9 +5161,19 @@ export class DomHost {
         return this._seams.handle.base ?? this.url;
       case 'location':
         return this.url;
-      case 'setLocation':
-        this.url = text(a);
+      // the document's address changed by its own history. Never to another
+      // origin: this is what every check of a document's origin reads
+      case 'setLocation': {
+        const to = text(a);
+        if (originOf(to) !== originOf(this.url)) {
+          throw new DomError(
+            'SecurityError',
+            "A document's history stays in its origin.",
+          );
+        }
+        this.url = to;
         return null;
+      }
       case 'resolve':
         return this._resolve(text(a));
       case 'url':
@@ -4566,6 +5189,106 @@ export class DomHost {
       }
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
+        return null;
+      // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
+      case 'windowFeatures':
+        return JSON.stringify(parseWindowFeatures(text(a)));
+      case 'windowBase':
+        return this._seams.handle.base ?? this.creator ?? this.url;
+      case 'windowPopups':
+        return !this._seams.popups
+          ? 'none'
+          : this._seams.popups.unblocked
+            ? 'any'
+            : 'gesture';
+      case 'windowBlocked':
+        this._seams.popups?.blocked?.(text(a));
+        return null;
+      case 'windowOpen':
+        return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
+      case 'windowTab':
+        this._seams.navigate(
+          text(a),
+          'tab',
+          null,
+          /^_blank$/i.test(text(c)) ? '' : text(c),
+        );
+        return null;
+      case 'windowFind':
+        return this.windows?.find(text(a)) ?? 0;
+      case 'windowClose':
+        this.windows?.close(Number(a));
+        return null;
+      case 'windowFocus':
+        this.windows?.focus(Number(a));
+        return null;
+      case 'windowNavigate':
+        this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        return null;
+      case 'windowName':
+        this.windows?.named(text(a));
+        return null;
+      case 'windowDisown':
+        this.windows?.disown();
+        return null;
+      case 'windowReached':
+        this.windows?.reached(Number(a));
+        return null;
+      case 'windowOpener':
+        return this.windows?.openerOf(Number(a)) ?? 0;
+      case 'windowLength':
+        return this.windows?.lengthOf(Number(a)) ?? 0;
+      case 'windowFollow': {
+        const { noopener, noreferrer } = linkOpener(text(b), text(c));
+        const made = this.windows?.follow(
+          text(a),
+          text(b),
+          noopener,
+          noreferrer,
+          null,
+        );
+        return made ?? false;
+      }
+      // what a page writes into the `about:blank` a window opened with: read
+      // back as it is written, and the scripts in it run at the end
+      case 'writeWindow': {
+        const markup = text(a);
+        if (!b) this._fill(this.document, markup);
+        else if (/<script/i.test(markup)) {
+          this._replaceAll(this.document, this._htmlTree(markup, true));
+        }
+        return null;
+      }
+      case 'documentOrigin':
+        return this._origin();
+      case 'referrer':
+        return this.referrer;
+      case 'frameNamed': {
+        const frame = navigableFor(this.document, text(a));
+        return typeof frame === 'string' ? 0 : this.idOf(frame);
+      }
+      case 'handOver':
+        this._s.handed = { node: this._node(a), origin: this._origin() };
+        return null;
+      case 'takeNode': {
+        const handed = this._s.handed;
+        this._s.handed = null;
+        if (!handed) return 0;
+        if (handed.origin !== this._origin()) {
+          throw new DomError(
+            'SecurityError',
+            "A node of another origin's is none of this document's.",
+          );
+        }
+        return this.idOf(handed.node);
+      }
+      // what crosses to a realm of another origin, which this one holds
+      // nothing of (`ScriptEngine.link`)
+      case 'realmPost':
+        this.windows?.post(Number(a), text(b), text(c));
+        return null;
+      case 'realmWire':
+        this.windows?.wire(Number(a), text(b));
         return null;
       // `window.open`, to where its name says (`navigableFor`): a frame of
       // the page's, the page's own tab, or a new one
@@ -4713,8 +5436,150 @@ export class DomHost {
             new Uint8Array(Math.min(65536, Math.max(0, Number(a) || 0))),
           ),
         );
+      // a page's `BroadcastChannel`s, by origin and name
+      case 'bcOpen': {
+        const key = `${this._origin()} ${text(b)}`;
+        const end = { id: Number(a), tell: this._channelTold };
+        this._channels.set(Number(a), { key, end });
+        openChannel(key, end);
+        return null;
+      }
+      case 'bcPost': {
+        const channel = this._channels.get(Number(a));
+        if (channel) {
+          postChannel(channel.key, channel.end, text(b), (fn) =>
+            setTimeout(fn, 0),
+          );
+        }
+        return null;
+      }
+      case 'bcClose': {
+        const channel = this._channels.get(Number(a));
+        if (channel) closeChannel(channel.key, channel.end);
+        this._channels.delete(Number(a));
+        return null;
+      }
+      // a page's `navigator.locks` (`page-channels.ts`)
+      case 'lockRequest':
+        return requestLock(
+          this._origin(),
+          {
+            id: Number(a),
+            name: text(b),
+            exclusive: c === true,
+            client: this._lockClient,
+            granted: this._lockGranted,
+            stolen: this._lockStolen,
+          },
+          text(d).includes('i'),
+          text(d).includes('s'),
+        );
+      case 'lockRelease':
+        releaseLock(this._origin(), Number(a), this._lockClient);
+        return null;
+      case 'lockQuery':
+        return queryLocks(this._origin());
+      case 'lockClient':
+        return this._lockClient;
+      // a page's compression streams, on node's zlib
+      case 'zlibNew': {
+        const id = Number(a);
+        const tell = (kind: string, value: unknown): void => {
+          if (!this._disposed) this.entries?.call('__zlib', [id, kind, value]);
+        };
+        this._zlibs.set(
+          id,
+          new PageZlib(text(b), {
+            output: (chunks) => {
+              for (const chunk of chunks) tell('data', base64Of(chunk));
+            },
+            end: (ok) => {
+              this._zlibs.delete(id);
+              tell('end', ok);
+            },
+          }),
+        );
+        return null;
+      }
+      case 'zlibWrite': {
+        const id = Number(a);
+        this._zlibs.get(id)?.write(Buffer.from(text(b), 'base64'), () => {
+          if (!this._disposed) {
+            this.entries?.call('__zlib', [id, 'written', true]);
+          }
+        });
+        return null;
+      }
+      case 'zlibEnd':
+        this._zlibs.get(Number(a))?.end();
+        return null;
+      case 'zlibDrop':
+        this._zlibs.get(Number(a))?.dispose();
+        this._zlibs.delete(Number(a));
+        return null;
+      // where what an inline drawing holds is (`svg-geometry.ts`)
+      case 'svg': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        const answer = svgAnswer(text(b), el, measure, Number(c));
+        return answer ? answer.join(',') : '';
+      }
       case 'uuid':
         return crypto.randomUUID();
+      case 'secureContext':
+        return this._secureContext();
+      // a file input: which selection it holds, what is in it, a piece of
+      // one file's bytes, its picker, and what a script set
+      case 'fileList':
+        return this._fileList(this._element(a));
+      case 'fileChunk':
+        return this._fileChunk(Number(a), Number(b));
+      case 'download':
+        return (
+          this._seams.handle.download?.({
+            url: text(a),
+            filename: text(b),
+            ...(text(c) && { bytes: bytesOf(text(c)) }),
+            ...(text(d) && { type: text(d) }),
+          }) ?? false
+        );
+      case 'dragOut':
+        this._dragOut = text(a);
+        return null;
+      case 'pickFiles':
+        this._seams.handle.pickFiles?.(this._element(a));
+        return null;
+      case 'setFiles':
+        this._setFiles(this._element(a), text(b));
+        return null;
+      case 'clipboard':
+        return this._clipboardOp(text(a), b, text(c));
+      case 'permission':
+        return this._permissionState(text(a));
+      case 'permissionNames':
+        return JSON.stringify(PERMISSION_NAMES);
+      case 'permissionAsk':
+        this._permissionAsk(Number(a), text(b));
+        return null;
+      case 'notification':
+        this._notificationOp(text(a), Number(b), text(c));
+        return null;
+      case 'featureAllowed':
+        return this._featureAllowed(text(a));
+      case 'fullyActive':
+        return this._fullyActive();
+      // a page's `crypto.subtle` (`subtle.ts`): what it asks the runtime,
+      // whose errors are told, and what opens a key
+      case 'crypto':
+        try {
+          return this._subtle().op(text(a), b, c);
+        } catch (error) {
+          const e = error as Error;
+          throw new DomError(e.name, e.message);
+        }
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
@@ -4829,7 +5694,8 @@ export class DomHost {
       !doctype &&
       !(node instanceof Element) &&
       !(node instanceof Text) &&
-      !(node instanceof Comment)
+      !(node instanceof Comment) &&
+      !(node instanceof ProcessingInstruction)
     ) {
       throw hierarchy('That node cannot be inserted.');
     }
@@ -4991,7 +5857,7 @@ export class DomHost {
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
-    this._connected(nodes, false);
+    this._connected(nodes);
   }
 
   private _childList(
@@ -5242,10 +6108,12 @@ export class DomHost {
   /** The options a page's own query is compiled with (`_query`). */
   private _queryOptions(): ReturnType<DomHost['_selectOptions']> & {
     relativeSelector: false;
+    adapter: typeof QUERY_ADAPTER;
   } {
     return (this._queryOpts ??= {
       ...this._selectOptions(),
       relativeSelector: false,
+      adapter: QUERY_ADAPTER,
     });
   }
   private _queryOpts: ReturnType<DomHost['_queryOptions']> | null = null;
@@ -5311,6 +6179,37 @@ export class DomHost {
    *  a frame's document is drawn by; null where nothing draws it. */
   /** The view that draws the document a page's `document.fonts` is of,
    *  by the document's id. */
+  /** What came of a load of a face a page's script made, told a microtask
+   *  later: a source already here settles inside the op that asked. */
+  private _faceDone(id: number, ok: boolean): void {
+    void Promise.resolve().then(() => {
+      if (!this._disposed) this.entries?.call('__fontFaceDone', [id, ok]);
+    });
+  }
+
+  /** The fonts a canvas draws with: its document's, or the page's for one
+   *  in no document yet, which is where a chart measures its labels. */
+  private _canvasFonts(id: Primitive): CanvasText | null {
+    return (this._fontsOf(id) ?? this._seams.handle)?.canvasText?.() ?? null;
+  }
+
+  /** The canvas a context's id is, where it is one: an `OffscreenCanvas`'s
+   *  context goes by the document. */
+  private _canvasOf(id: Primitive): Element | null {
+    const node = this._node(id) as Element;
+    return node.attribs ? node : null;
+  }
+
+  /** Where what a `<foreignObject>` holds is drawn, through what the drawing
+   *  does to the object: mermaid and d3 size their labels from this. */
+  private _foreignRect(element: Element): Rect | null {
+    const handle = this._drawing(element) as Partial<HandleInternals> | null;
+    const measure = handle?.svgMeasure?.();
+    const inside = handle?.foreignRect?.(element);
+    if (!measure || !inside) return null;
+    return drawnWithin(inside.object, inside.rect, measure);
+  }
+
   private _fontsOf(id: Primitive): Partial<HandleInternals> | null {
     return this._drawing(this._node(id)) as Partial<HandleInternals> | null;
   }
@@ -5353,6 +6252,25 @@ export class DomHost {
     if (at === this.document) return this._seams.handle;
     return this._s.drawn.get(at as Document) ?? null;
   }
+
+  /** This realm's `BroadcastChannel`s, compression streams and what it
+   *  goes by among those holding locks. */
+  private _channels = new Map<number, { key: string; end: ChannelEnd }>();
+  private _zlibs = new Map<number, PageZlib>();
+  private _lockClient = crypto.randomUUID();
+  private _channelTold = (id: number, message: string): void => {
+    if (!this._disposed) this.entries?.call('__bcMessage', [id, message]);
+  };
+  /** Told in a task of its own: a lock held by a page that took its
+   *  request back in the same task is none. */
+  private _lockGranted = (id: number): void => {
+    setTimeout(() => {
+      if (!this._disposed) this.entries?.call('__lockGranted', [id]);
+    }, 0);
+  };
+  private _lockStolen = (id: number): void => {
+    if (!this._disposed) this.entries?.call('__lockStolen', [id]);
+  };
 
   /** The reader's selection as the page last heard of it or set it, as
    *  core's range (`documentSelection`). */
@@ -5481,7 +6399,9 @@ export class DomHost {
     };
     for (const el of elementsIn(doc, () => true)) {
       add(el.attribs.id, el);
-      if (NAMED_BY_NAME.has(el.name)) add(el.attribs.name, el);
+      if (NAMED_BY_NAME.has(el.name) && !isForeign(el)) {
+        add(el.attribs.name, el);
+      }
     }
     this._names.set(doc, { at, names });
     return names;
@@ -5778,18 +6698,19 @@ export class DomHost {
       }, 0);
       return;
     }
-    this._seams
-      .fetch(
-        post
-          ? {
-              url: src,
-              method: 'POST',
-              headers: [['content-type', post.contentType]],
-              body: post.body,
-            }
-          : { url: src, method: 'GET', headers: [], body: null },
-        new AbortController().signal,
-      )
+    this._navigationFetch(
+      post
+        ? {
+            url: src,
+            method: 'POST',
+            headers: [['content-type', post.contentType]],
+            ...(typeof post.body === 'string'
+              ? { body: post.body }
+              : { body: null, bytes: post.body }),
+          }
+        : { url: src, method: 'GET', headers: [], body: null },
+      new AbortController().signal,
+    )
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
         const type = (headerOf(response.headers, 'content-type') ?? '')
@@ -5825,8 +6746,9 @@ export class DomHost {
           );
           scripts = false;
         }
-        // another origin's scripts never run in this realm
-        if (foreign) scripts = false;
+        // another origin's scripts never run in this realm, where it was
+        // asked for or where it sent the frame
+        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
         this._frameLoaded(
           frame,
           doc,
@@ -5892,8 +6814,15 @@ export class DomHost {
     // document with none has no code to want globals of its own, and the
     // page's realm reaches into it at once, as Acid3's do into theirs,
     // where a realm would answer once React had mounted it
+    // — and where a service worker can have it for a client, which a secure
+    // page's frame of its own origin is, whether or not a scope holds it yet:
+    // its `navigator` has to answer for it, and it can be claimed
     const realm =
-      !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
+      !!this._seams.drawsFrames &&
+      ((type === 'text/html' && hasScripts(doc)) ||
+        (!!this._seams.serviceWorkers &&
+          this._secureContext() &&
+          this._sameOrigin(address)));
     if (realm) this._s.realms.add(doc);
     // the one it shows unloads first, while it is still the frame's
     this._unloadFrameDocument(frame);
@@ -5948,12 +6877,14 @@ export class DomHost {
    * leniently, and a document that is not well-formed must run nothing —
    * Acid3's second XHTML frame has a stray `</strong>`.
    */
-  private _xmlTree(text: string): { kids: ChildNode[]; wellFormed: boolean } {
+  private _xmlTree(raw: string): { kids: ChildNode[]; wellFormed: boolean } {
     const handler = new DomHandler(null, {
       withStartIndices: false,
       withEndIndices: false,
     });
-    let wellFormed = !text.includes('\ufffd');
+    const prolog = readProlog(raw);
+    const { text, defaults } = prolog;
+    let wellFormed = prolog.wellFormed && !text.includes('\ufffd');
     const parser = new (class extends Parser {
       override onclosetag(start: number, endIndex: number): void {
         const self = this as unknown as XmlParserInternals;
@@ -5968,8 +6899,31 @@ export class DomHost {
       wellFormed = false;
     }
     parser.end();
-    const kids = handler.root.children.slice();
-    for (const kid of kids) kid.parent = null;
+    const kids = handler.root.children.filter(
+      // the prolog's declaration is no node (XML 1.0, 2.8)
+      (k) => !(k instanceof ProcessingInstruction && /^\?xml$/i.test(k.name)),
+    );
+    for (const kid of handler.root.children) kid.parent = null;
+    const fix = (parent: ParentNode, list: ChildNode[]): void => {
+      for (let i = 0; i < list.length; i += 1) {
+        const kid = list[i];
+        if (kid instanceof CDATA) {
+          // a CDATA section is one text, as the DOM has it
+          const text = new Text(DomUtils.textContent(kid));
+          CDATA_SECTIONS.add(text);
+          text.parent = parent === handler.root ? null : parent;
+          list[i] = text;
+        } else if (kid instanceof ProcessingInstruction) {
+          if (!kid.name.startsWith('!')) {
+            kid.data = kid.data
+              .slice(kid.name.length)
+              .replace(/\?$/, '')
+              .replace(/^\s+/, '');
+          }
+        } else if (kid instanceof Element) fix(kid, kid.children);
+      }
+    };
+    fix(handler.root, kids);
     const roots = kids.filter((k) => k instanceof Element);
     if (
       roots.length !== 1 ||
@@ -5984,8 +6938,20 @@ export class DomHost {
         if (own === scope) own = new Map(scope);
         own.set(name === 'xmlns' ? '' : name.slice(6), value);
       }
+      for (const [name, value] of defaults.get(el.name) ?? []) {
+        el.attribs[name] ??= value;
+      }
       const colon = el.name.indexOf(':');
-      el.namespace = own.get(colon < 0 ? '' : el.name.slice(0, colon)) ?? '';
+      const prefix = colon < 0 ? '' : el.name.slice(0, colon);
+      if (prefix && !own.has(prefix)) wellFormed = false;
+      for (const name of Object.keys(el.attribs)) {
+        const at = name.indexOf(':');
+        const of = at < 0 ? '' : name.slice(0, at);
+        if (of && of !== 'xml' && of !== 'xmlns' && !own.has(of)) {
+          wellFormed = false;
+        }
+      }
+      el.namespace = own.get(prefix) ?? '';
       // made, as the HTML parser makes one, of no registry where it says
       // so, and so what it holds (HTML's scoped registries)
       markParsedRegistry(el);
@@ -6035,7 +7001,9 @@ export class DomHost {
   /** A frame put in, loaded where it is in the document and has no
    *  document yet. */
   private _frameIn(frame: Element): void {
-    if (frame.name === 'object' && !frame.attribs.data) return;
+    if (isForeign(frame) || (frame.name === 'object' && !frame.attribs.data)) {
+      return;
+    }
     if (!this._frames.has(frame) && this._inDocument(frame)) {
       this._frameDocument(frame);
     }
@@ -6043,18 +7011,53 @@ export class DomHost {
 
   /** What a page's script put into its tree, as HTML's post-connection
    *  steps take it (DOM 4.2.3, "insert"), in tree order once all of it is
-   *  in: a frame loaded, a script prepared. What replaces all a parent
-   *  holds loads no frame here (`frames`), as it never has. */
-  private _connected(nodes: readonly AnyNode[], frames = true): void {
+   *  in: a frame loaded, a script prepared. `innerHTML` and
+   *  `replaceChildren` insert as `appendChild` does: a video site's player
+   *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
+   *  once a page read its `contentWindow`, and was an empty box. */
+  private _connected(nodes: readonly AnyNode[]): void {
     const found = DomUtils.findAll(
-      (el) => el.name === 'script' || (frames && FRAME_TAGS.has(el.name)),
+      (el) =>
+        el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
     for (const el of found) {
       if (this._disposed) return;
       if (el.name === 'script') this._prepareScript(el);
+      else if (el.name === 'link') this._preloadLink(el);
       else this._frameIn(el);
     }
+  }
+
+  /**
+   * A `<link rel=preload>` or `modulepreload` a page's script put in, of
+   * anything but a sheet, whose `<Html>` holds to its own: asked for, so
+   * that it hears `load` or `error` (HTML 4.2.4), which is all it is for
+   * here. A page's loader can wait on it before it puts the script in, as
+   * Squoosh's does: with neither told, its editor never loaded.
+   */
+  private _preloadLink(el: Element): void {
+    const { rel, href } = el.attribs;
+    if (!rel || !href || isForeign(el) || isStylePreload(el)) return;
+    if (!/(?:^|\s)(?:preload|modulepreload)(?:\s|$)/i.test(rel)) return;
+    const id = this.idOf(el);
+    const tell = (type: string) => {
+      if (!this._disposed) this.entries?.call('__fire', [id, type]);
+    };
+    this._seams
+      .fetch(
+        { url: this._resolve(href), method: 'GET', headers: [], body: null },
+        new AbortController().signal,
+      )
+      .then(
+        (response) => {
+          release(response);
+          tell(
+            response.status >= 200 && response.status < 300 ? 'load' : 'error',
+          );
+        },
+        () => tell('error'),
+      );
   }
 
   /**
@@ -6082,7 +7085,7 @@ export class DomHost {
    */
   private _prepareScript(el: Element): void {
     const exec = this.entries?.exec;
-    if (!exec || this.inert.has(el) || el.namespace) return;
+    if (!exec || this.inert.has(el) || !isStyleOrScript(el)) return;
     if (!this._inDocument(el)) return;
     const { attribs } = el;
     const type = attribs.type ?? '';
@@ -6139,7 +7142,10 @@ export class DomHost {
     while (top.parent) top = top.parent;
     const doc = top as Document;
     if (!this._frameOf.has(doc)) return null;
-    const styles = DomUtils.findAll((e) => e.name === 'style', doc.children);
+    const styles = DomUtils.findAll(
+      (e) => e.name === 'style' && isStyleOrScript(e),
+      doc.children,
+    );
     const texts = styles.map((s) => DomUtils.textContent(s));
     // its viewport is the frame's content box, where the frame is drawn:
     // Acid3's media queries ask a frame of 0 by 0, then of 100 by 100
@@ -6268,7 +7274,8 @@ export class DomHost {
     markup: string,
     declarative = false,
   ): ChildNode[] {
-    const name = context instanceof Element ? context.name : '';
+    const name =
+      context instanceof Element && !isForeign(context) ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
     if (name === 'textarea' || name === 'title') {
       const held = parseFragment(`<${name}>${markup}</${name}>`).find(
@@ -6277,13 +7284,21 @@ export class DomHost {
       const data = held ? DomUtils.textContent(held) : '';
       return data ? [new Text(data)] : [];
     }
-    return this._parse(markup, declarative);
+    return this._parse(
+      markup,
+      declarative,
+      context instanceof Element ? context : null,
+    );
   }
 
-  /** Markup as `innerHTML` reads it, or `setHTMLUnsafe` with its
-   *  declarative shadow roots; its scripts never run. */
-  private _parse(html: string, declarative = false): ChildNode[] {
-    const kids = parseFragment(html, declarative);
+  /** Markup as `innerHTML` reads it in `context`, or `setHTMLUnsafe` with
+   *  its declarative shadow roots; its scripts never run. */
+  private _parse(
+    html: string,
+    declarative = false,
+    context: Element | null = null,
+  ): ChildNode[] {
+    const kids = parseFragment(html, declarative, context);
     for (const el of DomUtils.findAll((e) => e.name === 'script', kids)) {
       this.inert.add(el);
     }
@@ -6295,7 +7310,8 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.url).href;
+      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
+        .href;
     } catch {
       return url;
     }
@@ -6303,7 +7319,11 @@ export class DomHost {
 
   private _origin(): string {
     try {
-      return new URL(this.url).origin;
+      const origin = new URL(this.url).origin;
+      // `about:blank` alone is of what made it: `data:` has no origin to share
+      return this.creator && this.url.startsWith('about:')
+        ? new URL(this.creator).origin
+        : origin;
     } catch {
       return 'null';
     }
@@ -6437,6 +7457,302 @@ export class DomHost {
     return this._seams.storage ?? defaultStorage();
   }
 
+  /** Whether this is a secure context (HTML 8.1.3.5): by the document at
+   *  the top of its frames, and by its own where that came over a network
+   *  that is not one. A frame of no address of its own is its parent's. A
+   *  worker's is its owner's. */
+  /** Whether this is a secure context, which a service worker's clients
+   *  are. */
+  get secure(): boolean {
+    return this._secureContext();
+  }
+
+  /** What opens the keys this document makes, for a worker it starts. */
+  keySecretsOf(): Uint8Array[] {
+    return keySecrets(this._keySecret());
+  }
+
+  private _secureContext(): boolean {
+    if (this._seams.secureContext !== undefined) {
+      return this._seams.secureContext;
+    }
+    return (
+      trustworthy(this.creator ?? this.top) &&
+      (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
+    );
+  }
+
+  /** The files a page has been told of, by the number it reads them by. */
+  private _files: (HtmlFile | undefined)[] = [undefined];
+  private _fileIds = new Map<HtmlFile, number>();
+  private _fileId(file: HtmlFile): number {
+    let id = this._fileIds.get(file);
+    if (id === undefined) {
+      id = this._files.length;
+      this._files.push(file);
+      this._fileIds.set(file, id);
+    }
+    return id;
+  }
+  /** What a file input holds, as a page's realm makes `File`s of. Nothing
+   *  of a file's bytes crosses until the page reads them (`_fileChunk`). */
+  private _fileList(el: Element): string {
+    return JSON.stringify(chosenFiles(el).map((f) => this._toldFile(f)));
+  }
+  private _toldFile(file: HtmlFile) {
+    return {
+      id: this._fileId(file),
+      name: file.name,
+      type: file.type,
+      lastModified: file.lastModified,
+      size: file.bytes.length,
+    };
+  }
+  /** What a page's `dataTransfer` came to at the event just told. */
+  private _dragOut: string | null = null;
+  /** A piece of a file, from an offset: a string has a limit, and a file
+   *  has none. */
+  private _fileChunk(id: number, at: number): string {
+    const file = this._files[id];
+    return file ? base64Of(file.bytes.subarray(at, at + FILE_CHUNK)) : '';
+  }
+  /** What a page's `files` setter gave an input: files of the host's, by
+   *  their numbers, or of the page's, with their bytes. */
+  private _setFiles(el: Element, list: string): void {
+    const given = JSON.parse(list) as {
+      id?: number;
+      name?: string;
+      type?: string;
+      lastModified?: number;
+      b?: string;
+    }[];
+    const files: HtmlFile[] = [];
+    for (const file of given) {
+      const held = file.id ? this._files[file.id] : undefined;
+      files.push(
+        held ?? {
+          name: file.name ?? '',
+          type: file.type ?? '',
+          lastModified: file.lastModified ?? 0,
+          bytes: bytesOf(file.b ?? ''),
+        },
+      );
+    }
+    this._seams.handle.setFiles?.(el, files);
+  }
+
+  /**
+   * A page's clipboard: whether the host handed one, a read and a write of
+   * it, and a request for what guards the read. The answer comes as
+   * `__clipboard`, under the number the page asked with: a write told as 0
+   * is a `copy`'s, whose page has nothing waiting on it.
+   */
+  private _clipboardOp(
+    what: string,
+    id: Primitive,
+    payload: string,
+  ): Primitive {
+    const seam = this._seams.clipboard;
+    if (what === 'on') return seam !== undefined;
+    const tell = (ok: boolean, value?: string): void => {
+      if (!this._disposed && id) {
+        this.entries?.call('__clipboard', [id, ok, value ?? null]);
+      }
+    };
+    if (what === 'request') {
+      const asked = this._seams.permissions?.request(payload, this._origin());
+      if (!asked) tell(true, 'denied');
+      else {
+        asked.then(
+          (state) => {
+            this._permissionMoved(payload);
+            tell(true, state);
+          },
+          () => tell(true, 'denied'),
+        );
+      }
+      return null;
+    }
+    if (!seam) {
+      tell(false, 'There is no clipboard.');
+      return null;
+    }
+    const done =
+      what === 'read'
+        ? seam
+            .read()
+            .then((data) => JSON.stringify(clipboardWire(data, base64Of)))
+        : seam
+            .write(clipboardOfWire(JSON.parse(payload), bytesOf))
+            .then(() => undefined);
+    done.then(
+      (value) => tell(true, value),
+      () =>
+        tell(
+          false,
+          what === 'read'
+            ? 'Read permission denied.'
+            : 'Write permission denied.',
+        ),
+    );
+    return null;
+  }
+
+  /**
+   * Where a permission really stands for this document: what asking would
+   * come to, not what a host has said so far. A powerful feature is a secure
+   * context's (Permissions 5.1), and what a frame's `allow` leaves out is
+   * refused whatever the host says (Permissions Policy 8.8). A host with no
+   * `permissions` has nobody to ask, so what it handed a seam for has that
+   * seam's answer, and anything else has been refused.
+   */
+  private _permissionState(name: string): HtmlPermissionState {
+    const seams = this._seams;
+    const origin = this._origin();
+    // a worker's is its page's, kept up to date from there
+    if (this.workerScope) {
+      return seams.permissions?.state(name, origin) ?? 'denied';
+    }
+    if (!this._secureContext()) return 'denied';
+    if (POLICY_FEATURES.has(name) && !this._featureAllowed(name)) {
+      return 'denied';
+    }
+    const media = name === 'camera' || name === 'microphone';
+    const device = media && seams.mediaDevices;
+    if (media && !device) return 'denied';
+    const asked =
+      (device ? device.permission?.(name, origin) : undefined) ??
+      seams.permissions?.state(name, origin);
+    if (asked) return asked;
+    if (device) return 'prompt';
+    if (name === 'notifications') {
+      return seams.notifications ? 'granted' : 'denied';
+    }
+    // a user's press is all a write needs (`clipboard.ts`)
+    if (name === 'clipboard-write' && seams.clipboard) return 'prompt';
+    return 'denied';
+  }
+
+  /** Ask the user, where there is one to ask and it is still a question. */
+  private _permissionAsk(id: number, name: string): void {
+    const tell = (): void => {
+      if (this._disposed) return;
+      this._permissionMoved(name);
+      this.entries?.call('__permissionAsked', [
+        id,
+        this._permissionState(name),
+      ]);
+    };
+    const asked =
+      this._permissionState(name) === 'prompt'
+        ? this._seams.permissions?.request(name, this._origin())
+        : undefined;
+    void (asked ?? Promise.resolve()).then(tell, tell);
+  }
+
+  /** Where each permission stands, for a worker to keep a copy of: a page's
+   *  answer is at once, and across a thread none is. */
+  permissionStates(): Record<string, string> {
+    return Object.fromEntries(
+      PERMISSION_NAMES.map((name) => [name, this._permissionState(name)]),
+    );
+  }
+
+  /** A permission moved: what listens to it hears, here and in workers. */
+  private _permissionMoved(name: string): void {
+    if (this._disposed) return;
+    this.entries?.call('__permission', name);
+    this.workers?.permissionMoved?.(name, this._permissionState(name));
+  }
+
+  private _unwatchPermissions: (() => void) | null = null;
+  /** The page's notifications showing, by the number it goes by. */
+  private _shown = new Map<number, HtmlShownNotification | null>();
+  /**
+   * What a page asks of a notification. Its text crosses as JSON, and the
+   * origin is added here: it is the one thing of it that is not the page's
+   * to say.
+   */
+  private _notificationOp(what: string, id: number, payload: string): void {
+    const seam = this._seams.notifications;
+    const tell = (told: string): void => {
+      if (!this._disposed) this.entries?.call('__notification', [id, told]);
+    };
+    if (what === 'focus') {
+      seam?.focus?.();
+    } else if (what === 'close') {
+      const shown = this._shown.get(id);
+      this._shown.delete(id);
+      closeShown(shown);
+    } else if (!seam) {
+      tell('error');
+    } else {
+      this._shown.set(id, null);
+      const notification = {
+        ...(JSON.parse(payload) as Omit<HtmlNotification, 'origin'>),
+        origin: this._origin(),
+      };
+      void seam
+        .show(notification, {
+          click: () => {
+            if (this._shown.has(id)) tell('click');
+          },
+          close: () => {
+            if (this._shown.delete(id)) tell('close');
+          },
+        })
+        .then(
+          (shown) => {
+            if (!this._shown.has(id)) {
+              closeShown(shown);
+              return;
+            }
+            this._shown.set(id, shown);
+            tell('show');
+          },
+          () => {
+            if (this._shown.delete(id)) tell('error');
+          },
+        );
+    }
+  }
+
+  /** Whether a feature whose default allowlist is the document's own origin
+   *  reaches this document (Permissions Policy 8.8): every document of the
+   *  top's origin, and any other whose frame names it in `allow`. */
+  private _featureAllowed(feature: string): boolean {
+    const frame = this._frameOf.get(this.document);
+    if (!frame) return true;
+    if (originOf(this.top) === this._origin()) return true;
+    return (frame.attribs.allow ?? '')
+      .split(';')
+      .some((entry) => entry.trim().split(/\s+/)[0] === feature);
+  }
+
+  /** Whether the document is still where a user can see it: not one whose
+   *  frame has gone. */
+  private _fullyActive(): boolean {
+    const frame = this._frameOf.get(this.document);
+    return !frame || shadowIncludingRoot(frame) instanceof Document;
+  }
+
+  private _crypto: PageCrypto | null = null;
+  /** The host's half of `crypto.subtle`, made as it is first asked for: what
+   *  it tells is held with everything else of a frozen document's. */
+  private _subtle(): PageCrypto {
+    return (this._crypto ??= new PageCrypto(
+      this._keySecret(),
+      (id, ok, value) => {
+        if (!this._disposed) this.entries?.call('__crypto', [id, ok, value]);
+      },
+    ));
+  }
+  /** What this host's keys are sealed with: what the store a page's
+   *  databases are kept in has, so they open in the next process. */
+  private _keySecret(): Uint8Array | undefined {
+    return this._storageOf().indexedDB?.keySecret?.();
+  }
+
   /**
    * `localStorage` and `sessionStorage` (HTML 12.2), the origin's area in
    * the host's storage. A change that changed something is told to the
@@ -6526,7 +7842,7 @@ export class DomHost {
     if (op === 'enabled') return !!jar;
     const averse =
       !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
-    const top = this._s.top;
+    const { top } = this;
     switch (op) {
       case 'get':
         return averse ? '' : jar.documentCookie(url, top);
@@ -6623,6 +7939,7 @@ export class DomHost {
           : [],
         body: typeof raw.body === 'string' ? raw.body : null,
         ...(raw.stream === true ? { stream: true } : {}),
+        ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
         ...(raw.streamedBody === true ? { streamedBody: true } : {}),
         ...(typeof (raw as { base64?: unknown }).base64 === 'string'
           ? {
@@ -6639,6 +7956,11 @@ export class DomHost {
           raw.credentials === 'omit' || raw.credentials === 'include'
             ? raw.credentials
             : 'same-origin',
+        cache: raw.cache,
+        redirect: raw.redirect,
+        integrity: raw.integrity,
+        referrerPolicy: raw.referrerPolicy,
+        destination: raw.destination,
       };
     } catch {
       return;
@@ -6819,6 +8141,15 @@ export class DomHost {
       throw new TypeError('Failed to fetch');
     }
     const own = target === page && page !== 'null';
+    // a controlled client's request goes to its worker before CORS asks
+    // anything of it (Fetch 4.3, "HTTP fetch")
+    if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
+      const answered = await this.serviceClient.fetch(
+        this._forWorker(request),
+        signal,
+      );
+      if (answered) return this._fromWorker(answered, request);
+    }
     const plain: FetchRequest = {
       url: request.url,
       method: request.method,
@@ -6859,22 +8190,240 @@ export class DomHost {
           `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
         );
       }
-      release(await this._seams.fetch(plain, signal));
-      return {
-        url: '',
-        status: 0,
-        statusText: '',
-        redirected: false,
-        headers: [],
-        body: '',
-        type: 'opaque',
-      };
+      return this._opaque(await this._seams.fetch(plain, signal));
     }
-    const unsafe = unsafeRequestHeaders(request.headers);
+    const unsafe = unsafeRequestHeaders(
+      request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
+    );
     if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
       await this._preflight(request, unsafe, page, signal);
     }
     return this._shared(await this._seams.fetch(plain, signal), request, page);
+  }
+
+  /**
+   * A frame's document, which the worker whose scope holds its address hears
+   * of before the network does, whatever controls this document. Its body is
+   * read here, as the network's is for a frame.
+   */
+  private async _navigationFetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+  ): Promise<FetchResponse> {
+    const keeper = this._seams.serviceWorkers;
+    if (keeper?.controls(request.url)) {
+      const answered = await keeper.navigation(
+        {
+          ...request,
+          mode: 'navigate',
+          destination: 'iframe',
+          credentials: 'include',
+          referrer: this.url,
+          clientId: this.serviceClient?.id,
+        },
+        signal,
+      );
+      if (answered) {
+        const bytes = await wholeBytes(answered);
+        return {
+          ...answered,
+          url: answered.redirected ? answered.url : request.url,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
+    const fetched = await this._seams.fetch(request, signal);
+    // the document is at the fragment it was asked for, which a response's
+    // address drops
+    const hash = request.url.indexOf('#');
+    return hash >= 0 && fetched.url && !fetched.url.includes('#')
+      ? { ...fetched, url: fetched.url + request.url.slice(hash) }
+      : fetched;
+  }
+
+  /** A request as a worker's `fetch` event reads it. */
+  private _forWorker(request: PageRequest): HtmlServiceWorkerRequest {
+    return {
+      ...request,
+      referrer: this.url,
+      destination: request.destination ?? '',
+    };
+  }
+
+  /**
+   * What a worker answered with, held to what the request may take (Fetch
+   * 4.3, "HTTP fetch", the checks on a service worker's response): an opaque
+   * answer is no answer to a request that reads it, and a redirect's trail no
+   * answer to one that does not follow.
+   */
+  private _fromWorker(
+    response: FetchResponse,
+    request: PageRequest,
+  ): FetchResponse {
+    const type = response.type ?? 'default';
+    if (
+      (type === 'opaque' && request.mode !== 'no-cors') ||
+      (type === 'cors' && request.mode === 'same-origin') ||
+      (response.redirected && request.redirect && request.redirect !== 'follow')
+    ) {
+      release(response);
+      throw new TypeError('Failed to fetch');
+    }
+    if (type === 'opaque') return this._opaque(response);
+    return {
+      ...response,
+      url: response.url || request.url.split('#')[0],
+      type:
+        type !== 'default'
+          ? type
+          : originOf(request.url) === this._origin()
+            ? 'basic'
+            : 'cors',
+    };
+  }
+
+  /** The responses a page has been told of as opaque, by the number it hands
+   *  back to keep one or to answer with it. The oldest goes past
+   *  `OPAQUE_HELD`: a page that fetches and drops holds no more than that. */
+  private _opaques = new Map<number, FetchResponse>();
+  private _opaqueSeq = 0;
+
+  /** What a page sees of a `no-cors` response another origin answered:
+   *  nothing, and a number, in a realm that can do something with it. */
+  private _opaque(response: FetchResponse): FetchResponse {
+    const hidden: FetchResponse = {
+      url: '',
+      status: 0,
+      statusText: '',
+      redirected: false,
+      headers: [],
+      body: '',
+      type: 'opaque',
+    };
+    if (!this._secureContext()) {
+      release(response);
+      return hidden;
+    }
+    const held = ++this._opaqueSeq;
+    this._opaques.set(held, response);
+    for (const [key, oldest] of this._opaques) {
+      if (this._opaques.size <= OPAQUE_HELD) break;
+      this._opaques.delete(key);
+      release(oldest);
+    }
+    return { ...hidden, held };
+  }
+
+  /** An opaque response's bytes, read the first time they are asked for and
+   *  kept for a clone's: null where it has gone. */
+  private async _opaqueBytes(held: number): Promise<Uint8Array | null> {
+    const response = this._opaques.get(held);
+    if (!response) return null;
+    if (response.chunks) {
+      const pieces: Uint8Array[] = [];
+      for await (const piece of response.chunks) pieces.push(piece);
+      response.chunks = undefined;
+      response.bytes = joinBytes(pieces);
+    }
+    return (
+      response.bytes ?? new Uint8Array(Buffer.from(response.body, 'latin1'))
+    );
+  }
+
+  /** What a service worker's realm said to its registry: a body held here
+   *  goes as bytes, which no script has read. */
+  private _serviceSaid(said: string): void {
+    const scope = this.workerScope;
+    if (!scope?.service) return;
+    const m = JSON.parse(said) as { op: string; held?: number; f?: number };
+    if (m.op !== 'respond' || m.held === undefined) {
+      scope.service(said);
+      return;
+    }
+    const { held, ...rest } = m;
+    void this._opaqueBytes(held).then((bytes) =>
+      scope.service!(
+        JSON.stringify({ ...rest, head: OPAQUE_HEAD }),
+        bytes ?? new Uint8Array(0),
+      ),
+    );
+  }
+
+  /** The store a page's `caches` are kept in. */
+  private _cacheStore(): HtmlCacheStore {
+    return (
+      this._storageOf().caches ?? (defaultStorage().caches as HtmlCacheStore)
+    );
+  }
+
+  /** What a worker's `caches` ask, in this page's store. */
+  askCaches(origin: string, ask: HtmlCacheAsk): HtmlCacheAnswer {
+    return askCaches(this._cacheStore(), origin, ask);
+  }
+
+  /** A page's `caches`: bytes made of what crossed, the store asked, and what
+   *  it answers told back through `__cache`. An opaque response's body stays
+   *  here, as it did on the way in. */
+  private _cacheOp(n: number, json: string): void {
+    const run = async (): Promise<unknown> => {
+      const origin = this._origin();
+      if (origin === 'null') return { error: 'SecurityError' };
+      const ask = JSON.parse(json) as HtmlCacheAsk;
+      if (ask.op === 'batch') {
+        for (const step of ask.operations as unknown as {
+          bytes: Uint8Array;
+          base64?: string;
+          held?: number;
+          response?: unknown;
+        }[]) {
+          if ('held' in step && step.held !== undefined) {
+            step.bytes =
+              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
+            delete step.held;
+            // what the number holds stays opaque whatever came with it:
+            // `_held` is a field a page can write, and a body it put under
+            // its own URL and a type of its own it could read back
+            step.response = OPAQUE_HEAD;
+          } else if (typeof step.base64 === 'string') {
+            step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
+            delete step.base64;
+          }
+        }
+      }
+      const answer = this._seams.caches
+        ? await this._seams.caches(origin, ask)
+        : this.askCaches(origin, ask);
+      if (!answer.responses) return answer;
+      return {
+        ...answer,
+        responses: answer.responses.map(({ bytes, ...head }) => {
+          if (head.type !== 'opaque') {
+            return { ...head, base64: base64Of(bytes) };
+          }
+          const held = ++this._opaqueSeq;
+          this._opaques.set(held, {
+            url: '',
+            status: 0,
+            statusText: '',
+            redirected: false,
+            headers: [],
+            body: '',
+            bytes,
+          });
+          return { ...head, held };
+        }),
+      };
+    };
+    const told = (answer: unknown): void => {
+      if (!this._disposed) {
+        this.entries?.call('__cache', [n, JSON.stringify(answer)]);
+      }
+    };
+    run().then(told, (error: unknown) =>
+      told({ error: 'UnknownError', message: String(error) }),
+    );
   }
 
   /** Another origin's answer, where it lets the page read it (Fetch 4.10,

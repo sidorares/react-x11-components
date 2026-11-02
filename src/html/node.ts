@@ -74,6 +74,8 @@ import {
   imageUrlOf,
   indicatedElement,
   isElement,
+  isForeign,
+  isStyleOrScript,
   isInputButton,
   isText,
   loadsLazily,
@@ -89,6 +91,9 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
+import type { HtmlDownloadRequest } from './download.js';
+import type { HtmlDrop } from './drag.js';
+import type { HtmlFile } from './files.js';
 import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
@@ -192,7 +197,6 @@ import {
   buildSubtrees,
   canRebuild,
   inLightTree,
-  idIndex,
   tailFrom,
   containerBoxes,
   CONTENT_IMAGES,
@@ -371,8 +375,10 @@ import {
   inlineDecoration,
   lineHeightOf,
   runFor,
+  fontOf,
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
+import type { SvgMeasure } from './scripts/svg-geometry.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -471,14 +477,24 @@ import type {
 } from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges, SourceEnv } from './srcset.js';
-import { atDensity, forgetDrawings } from './svg.js';
 import {
+  atDensity,
+  drawingsNaming,
+  forgetDrawings,
+  namedBy,
+  namersOf,
+} from './svg.js';
+import {
+  around,
   askMedia,
   cutByFixed,
   embeddedRectsOf,
+  fixedCoversOf,
   FIXED_OVER,
   HELD_BY,
   HELD_OVER,
+  inPaintOrder,
+  MAX_COVERS,
   mediaRectsOf,
   sameSounds,
   videoCandidates,
@@ -496,6 +512,7 @@ import type {
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
+import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
@@ -732,12 +749,21 @@ export interface DocumentInteraction {
   controlSelection(el: Element): FieldSelection | null;
   setControlSelection(el: Element, selection: FieldSelection): boolean;
   showPicker(el: Element): boolean;
+  pickFiles(el: Element): void;
+  setFiles(el: Element, files: readonly HtmlFile[]): void;
+  download(request: HtmlDownloadRequest): boolean;
+  dragOver(drop: HtmlDrop): boolean;
+  dragLeave(): void;
+  dropHere(drop: HtmlDrop): Promise<boolean>;
   focus(el: Element): boolean;
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal
    *  dialog gave back to as it closed — as a script's `focus()` tells it
-   *  before it returns (HTML 6.6.3); `focus` gives it core's once it can. */
+   *  before it returns (HTML 6.6.3); `settleFocus` gives it core's. */
   told(el: Element): void;
+  /** Hand a focus the page was told of to what has come to take it, after
+   *  a render: a widget or a stop mounted in it. */
+  settleFocus(): void;
   blur(): void;
   activeElement(): Element | null;
   activate(el: Element): boolean;
@@ -1330,6 +1356,9 @@ export class HtmlViewNode extends Node {
   /** What the document paints over each player, as the last layout left
    *  it (`coversOf`, `paintCovers`). */
   private _covers = new Map<Element, Cover[]>();
+  /** The boxes fixed to the viewport painted over each player too, asked
+   *  as the players are told, at each paint (`fixedCoversOf`). */
+  private _fixedCovers = new Map<Element, Cover[]>();
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
@@ -3300,7 +3329,7 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => xHeightOf(fonts, face) : null,
         fonts ? (face) => zeroWidthOf(fonts, face) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
-        faces.length ? this._webFonts : null,
+        faces.length || this._webFonts.scripted ? this._webFonts : null,
         null,
         this._target,
         shadows,
@@ -4289,6 +4318,12 @@ export class HtmlViewNode extends Node {
     let follow = restyleOnly !== null && this._restyleFollows;
     this._restyleFollows = false;
     let crossing = false;
+    /** The drawings that draw from what the rules a sheet added or a
+     *  breakpoint turned on reached (`namersOf`). No seed is theirs: a sprite
+     *  is another element, and what a build keeps of a drawing is what the
+     *  rules gave it before. Asked once the build has made what they are
+     *  asked of. */
+    const askShapes = new Set<Element>();
     /** What a crossing, a `vw` or an image's new source restyles, added to
      *  what a change asked for, as `_sheetsAdded` adds what its rules
      *  reach: each its own subtree's to build (`seeds`) where the change
@@ -4341,6 +4376,7 @@ export class HtmlViewNode extends Node {
           always?.add(el);
         }
         follow = true;
+        namersOf(reached, this._source.facts().drawings, askShapes);
       } else restyleOnly = null;
     } else if (this._cascade.mediaBand(target, viewport) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
@@ -4363,6 +4399,7 @@ export class HtmlViewNode extends Node {
         // breakpoint turns on lays out otherwise what it matches, and
         // nothing a build makes of what is around them
         if (reached.size) seedWith(reached);
+        namersOf(reached, this._source.facts().drawings, askShapes);
       }
     }
 
@@ -4798,6 +4835,7 @@ export class HtmlViewNode extends Node {
       parsed = false;
     }
     this._stale = Stale.Nothing;
+    if (askShapes.size) this._askShapes(askShapes);
     if (!this._owed.size && this._measureOwed) {
       this._measureOwed = false;
       if (!this._measuring) {
@@ -4844,6 +4882,7 @@ export class HtmlViewNode extends Node {
       this._source.document,
       cascade.viewportHeight,
       viewport,
+      namedBy(this._source.facts().drawings),
     );
   }
 
@@ -5564,13 +5603,49 @@ export class HtmlViewNode extends Node {
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
     const rects = this._mediaLaid.map((laid) => {
-      const rect = this._viewportRect(laid, FIXED_OVER.get(laid) ?? fixed);
+      const over = FIXED_OVER.get(laid) ?? fixed;
+      const drawn = this._fixedOver(tree, laid, over);
+      const rect = this._viewportRect(
+        laid,
+        drawn?.cutting ?? over,
+        NO_BOXES,
+        drawn?.over,
+      );
       const asked = this._mediaAsked.get(rect.element);
       return asked ? { ...rect, ...asked } : rect;
     });
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
+  }
+
+  /** Which of the boxes fixed over a player are painted over it again
+   *  (`fixedCoversOf`), noted for `paintCovers`: where it paints over the
+   *  player with them, and what is left to cut it. Null where none is. */
+  private _fixedOver(
+    tree: BoxTree,
+    laid: MediaRect,
+    fixed: readonly Box[] | undefined,
+  ): { over: Rect; cutting: readonly Box[] } | null {
+    const el = laid.element;
+    this._fixedCovers.delete(el);
+    if (!fixed?.length || 'atViewport' in laid || laid.hidden) return null;
+    const { covers, cutting } = fixedCoversOf(
+      tree,
+      fixed,
+      laid.clip ?? laid,
+      this._fixedShift(),
+      this._viewportInDocument(),
+      this._scale,
+      MAX_COVERS - (this._covers.get(el)?.length ?? 0),
+    );
+    if (!covers.length) return null;
+    this._fixedCovers.set(el, covers);
+    const rects = covers.map((c) => c.rect);
+    return {
+      over: around(laid.over ? [...rects, laid.over] : rects),
+      cutting,
+    };
   }
 
   /** What a host mounts over the embedded elements, to `onEmbedded` where
@@ -5611,6 +5686,9 @@ export class HtmlViewNode extends Node {
     laid: R,
     fixed: readonly Box[] | undefined,
     held: readonly Box[] = NO_BOXES,
+    /** Where the document paints over a player with the boxes fixed over
+     *  it as well (`_fixedOver`). */
+    over: Rect | undefined = undefined,
   ): R {
     let r = laid;
     // one in a box fixed to the viewport goes where the viewport is, with
@@ -5630,6 +5708,7 @@ export class HtmlViewNode extends Node {
       if (cut === 'hidden') r = { ...laid, hidden: true };
       else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
     }
+    if (over) r = { ...r, over };
     // and in a sticky box the viewport keeps, where the flow has it, which
     // core moves it from with the box (`HELD_AT_VIEWPORT`)
     const by = HELD_BY.get(laid);
@@ -5681,7 +5760,9 @@ export class HtmlViewNode extends Node {
     at: { x: number; y: number },
   ): void {
     const tree = this._tree;
-    const covers = this._covers.get(element);
+    const laid = this._covers.get(element);
+    const fixed = this._fixedCovers.get(element);
+    const covers = fixed ? inPaintOrder([...(laid ?? []), ...fixed]) : laid;
     const c = ctx as PaintContext;
     if (!tree || !covers || !c.save || !c.beginPath || !c.rect || !c.clip) {
       return;
@@ -5691,6 +5772,15 @@ export class HtmlViewNode extends Node {
       originX: this.abs.x - at.x,
       originY: this.abs.y - at.y,
     };
+    // the context's origin is `at`, where a box fixed to the viewport is
+    // placed from the viewport (`atViewport`)
+    if (options.viewport) {
+      options.viewport = {
+        ...options.viewport,
+        x: options.viewport.x - at.x,
+        y: options.viewport.y - at.y,
+      };
+    }
     for (const { box, rect } of covers) {
       c.save();
       c.beginPath();
@@ -7064,6 +7154,36 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * Where an element a `<foreignObject>` holds was laid out, in the object's
+   * user units from its corner, with the object: null for one in no object.
+   * It is in no box of the document's, and what the drawing's matrices do
+   * to the object is `svg-geometry.ts`'s to say.
+   */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null {
+    this._settle();
+    const objects = this._tree?.foreign;
+    if (!objects) return null;
+    for (let at = elementParent(element); at; at = elementParent(at)) {
+      const object = objects.get(at);
+      if (!object) continue;
+      const box = boxFor(object.tree.root, element);
+      const rect = box && this._drawnRect(object.tree, box, false);
+      if (!rect) return null;
+      const unit = object.scale || 1;
+      return {
+        object: at,
+        rect: {
+          x: rect.x / unit,
+          y: rect.y / unit,
+          width: rect.width / unit,
+          height: rect.height / unit,
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
    * What an `IntersectionObserver` measures of its targets against its root
    * (Intersection Observer, 3.2.8), laid out first as `elementRect` is and
    * in its coordinates. The root's rectangle: its padding box where it
@@ -7234,6 +7354,90 @@ export class HtmlViewNode extends Node {
   /** Load faces by key, as `FontFace.load()` does (`WebFonts.load`). */
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
+  }
+
+  /** What a canvas's context asks of the fonts (`canvas-text.ts`). */
+  canvasText(): CanvasText {
+    // a face a script added is read with the sheets, and a page that waited
+    // for its `load()` draws in it at once
+    if (!this._cascade || this._sheetsRead === null) {
+      this._prepare(this.abs.width || 1);
+    }
+    this._canvasText ??= new CanvasText({
+      fonts: () => this._fonts(),
+      cascade: () => this._cascade,
+      styleOf: (element) => this._styleOf(element),
+      webFonts: this._webFonts,
+    });
+    return this._canvasText;
+  }
+
+  private _canvasText: CanvasText | null = null;
+
+  /** The document's fonts, where a page's `new FontFace` goes. */
+  scriptFonts(): WebFonts {
+    return this._webFonts;
+  }
+
+  /** A face a page's script made joined the document's, or left: as a
+   *  sheet with an `@font-face` is, it changes what every family reads. */
+  scriptFontsChanged(id: number, added: boolean): void {
+    if (!this._webFonts.addFace(id, added)) return;
+    this._sheetsRead = null;
+    this._invalidate(Stale.Everything);
+  }
+
+  /** What `svg-geometry.ts` asks of the document: an element's text and
+   *  where a drawing was laid out, in CSS pixels. */
+  svgMeasure(): SvgMeasure {
+    this._prepare(this.abs.width || 1);
+    const size = (el: Element): number => {
+      for (let at: AnyNode | null = el; at; at = at.parent) {
+        if (!isElement(at)) break;
+        const own = at.attribs['font-size'];
+        if (own !== undefined) {
+          const px = parseFloat(own);
+          if (Number.isFinite(px)) return px;
+        }
+        if (at.name.toLowerCase() === 'svg') break;
+      }
+      const style = this._styleOf(el);
+      return style ? style.fontSize / (this._scale * style.effectiveZoom) : 16;
+    };
+    return {
+      fontSize: size,
+      box: (svg) => this.elementRect(svg),
+      hidden: (el) => {
+        for (let at: AnyNode | null = el; at; at = at.parent) {
+          if (!isElement(at)) break;
+          if (at.attribs.display === 'none') return true;
+          if (this._styleOf(at)?.display === 'none') return true;
+          if (at.name.toLowerCase() === 'svg') break;
+        }
+        return false;
+      },
+      text: (el, text) => {
+        const em = size(el);
+        const fonts = this._fonts();
+        const style = this._styleOf(el);
+        if (!fonts || !style) {
+          // an em's proportions, as a drawing's text has on no engine
+          return {
+            width: text.length * em * 0.5,
+            ascent: em * 0.8,
+            descent: em * 0.2,
+          };
+        }
+        const face = { ...fontOf(style), size: em * this._scale };
+        const layout = fonts.layout([{ text, ...face }], face, {});
+        const metrics = fonts.match(face.family ?? '', face).metrics(face.size);
+        return {
+          width: layout.width / this._scale,
+          ascent: metrics.ascent / this._scale,
+          descent: metrics.descent / this._scale,
+        };
+      },
+    };
   }
 
   /** Settles once no face of the document's is on its way
@@ -8027,9 +8231,10 @@ export class HtmlViewNode extends Node {
    * Whether a press at a logical window point may start a selection: not
    * on text or a box `user-select: none` keeps out of one, which a
    * `::before` and an `::after` are unless a rule says otherwise (CSS UI 4,
-   * 6.1). The root turns such a press down, and the selection there was
-   * stays, as Blink keeps it (`CanStartSelection`): a toolbar's button
-   * pressed with a paragraph selected does not take the selection away.
+   * 6.1). Such a press starts none, and the selection there was stays, as
+   * Blink keeps it (`CanStartSelection`): a toolbar's button pressed with a
+   * paragraph selected does not take the selection away. It is no cancelled
+   * press: it moves the focus as any press does, in all three engines.
    */
   startsSelectionAt(x: number, y: number): boolean {
     this._followViewport();
@@ -11387,7 +11592,12 @@ export class HtmlViewNode extends Node {
    */
   touchDocument(changes: readonly HtmlChange[] | null = null): void {
     this._source.touch(!!changes);
-    if (changes) forgetDrawings(changes);
+    const named = new Set<Element>();
+    if (changes) {
+      // before what a change was in forgets what it names
+      drawingsNaming(changes, this._source.facts().drawings, named);
+      forgetDrawings(changes);
+    }
     this._updateBase();
     this._sweep();
     // a preload of what is here already settles as it is asked for, which
@@ -11399,6 +11609,11 @@ export class HtmlViewNode extends Node {
       this._invalidate(Stale.Style);
       return;
     }
+    for (const el of named) scope.drawings.add(el);
+    // a `<use>` copies what it names, and what its copy matched goes with it,
+    // for whichever drawing asks next: one that has read nothing since it
+    // changed is reached by nothing, and still matches what it names
+    if (scope.drawings.size) this._tree?.shapeCopies?.forget();
     this._restyleChanged(scope);
   }
 
@@ -11441,9 +11656,7 @@ export class HtmlViewNode extends Node {
     // a chunk brings an id, or writes into a drawing, every drawing is
     // drawn again. A build of the whole made every drawing anew.
     if (namesAnew(changes)) {
-      this._tree?.shapeCopies?.forget(
-        idIndex(this._source.document as unknown as Element),
-      );
+      this._tree?.shapeCopies?.forget();
       for (const el of this._source.facts().drawings) scope.drawings.add(el);
     }
     this._restyleChanged(scope);
@@ -11541,6 +11754,52 @@ export class HtmlViewNode extends Node {
     if (named) for (const el of this._source.facts().drawings) asks.add(el);
   }
 
+  /**
+   * What a change does to the cascade, into `scope`: a sheet's element, or
+   * what one holds, changed or put in or taken out, has the cascade made
+   * again before the build, which styles what the rules it adds can style
+   * besides what the change reaches (`_sheetsAdded`). False where it is a
+   * change to what every style reads, a `<meta>` or a `<base>`.
+   */
+  private _cascadeChanged(
+    change: Exclude<HtmlChange, { type: 'shadowRoot' }>,
+    scope: ChangeScope,
+  ): boolean {
+    if (change.type === 'attributes') {
+      const el = change.target;
+      const name = change.attributeName.toLowerCase();
+      if (!changesCascade(el, name, change.oldValue ?? null)) return true;
+      if (!SHEET_TAGS.has(tagOf(el))) return false;
+      if (!this._sheetsKept(el, scope)) scope.sheets = true;
+      return true;
+    }
+    const parent =
+      change.type === 'childList' ? change.target : change.target.parent;
+    if (parent && isElement(parent) && CASCADE_TAGS.has(tagOf(parent))) {
+      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
+      // rules into one as their components first render
+      if (tagOf(parent) !== 'style') return false;
+      if (isStyleOrScript(parent) && !this._sheetsKept(parent, scope)) {
+        scope.sheets = true;
+      }
+    }
+    if (change.type !== 'childList') return true;
+    for (const nodes of [change.addedNodes, change.removedNodes]) {
+      for (const node of nodes) {
+        const held = cascadeHeld(node);
+        if (held & HELD_PRAGMA) return false;
+        if (held & HELD_SHEET && !this._sheetsKept(change.target, scope)) {
+          scope.sheets = true;
+        }
+        // a shadow tree that came with it is bound as the sheets are read
+        if (held & HELD_TREE && nodes === change.addedNodes) {
+          scope.sheets = true;
+        }
+      }
+    }
+    return true;
+  }
+
   /** One change into `scope` (`_changeScope`); false where it cannot be
    *  said what the change reaches. */
   private _scopeOf(
@@ -11582,6 +11841,9 @@ export class HtmlViewNode extends Node {
       addFlatSubtree(host, scope.always);
       return true;
     }
+    // asked before anything goes by where the change is: a `<style>` is a
+    // sheet wherever it stands, one exported in a drawing among them
+    if (!this._cascadeChanged(change, scope)) return false;
     if (drawing) {
       if (change.type === 'childList') {
         for (const node of change.addedNodes) {
@@ -11640,16 +11902,6 @@ export class HtmlViewNode extends Node {
       const name = change.attributeName.toLowerCase();
       // an attribute nothing has is no box's
       if (!name.startsWith('-rx-')) scope.altered?.add(el);
-      if (
-        changesCascade(el, name, change.oldValue ?? null) &&
-        !(SHEET_TAGS.has(tagOf(el)) && this._sheetsKept(el, scope))
-      ) {
-        // a sheet's element: the cascade is made again before the build,
-        // which styles what the rules it adds can style besides what the
-        // change reaches (`_sheetsAdded`)
-        if (!SHEET_TAGS.has(tagOf(el))) return false;
-        scope.sheets = true;
-      }
       const reach = cascade.attributeChange(
         name,
         change.oldValue,
@@ -11712,31 +11964,11 @@ export class HtmlViewNode extends Node {
     const atTop = !!scope.tails && parent === this._source.document;
     if (!parent || (!root && !atTop && !isElement(parent))) return false;
     if (scope.tails && root) return false;
-    if (
-      !root &&
-      !atTop &&
-      CASCADE_TAGS.has(tagOf(parent as Element)) &&
-      !(tagOf(parent as Element) === 'style' && this._sheetsKept(parent, scope))
-    ) {
-      // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
-      // rules into one as their components first render
-      if (tagOf(parent as Element) !== 'style') return false;
-      scope.sheets = true;
-    }
     let drawn = false;
     if (change.type === 'childList') {
       let counted = false;
       for (const nodes of [change.addedNodes, change.removedNodes]) {
         for (const node of nodes) {
-          const held = cascadeHeld(node);
-          if (held & HELD_PRAGMA) return false;
-          if (held & HELD_SHEET && !this._sheetsKept(parent, scope)) {
-            scope.sheets = true;
-          }
-          // a shadow tree that came with it is bound as the sheets are read
-          if (held & HELD_TREE && nodes === change.addedNodes) {
-            scope.sheets = true;
-          }
           if (node.type !== 'comment') counted = true;
           if (
             !drawn &&
@@ -12416,10 +12648,12 @@ export class HtmlViewNode extends Node {
     const reached = this._cascade!.addedReach(
       added.rules,
       this._source.document,
-      !!tree.impliedHtml,
+      !!tree.impliedHtml || tree.impliedRoot,
+      namedBy(this._source.facts().drawings),
     );
     if (reached) {
       this._keptFor = this._cascade;
+      this._cascade!.keepsStylesOf(cascade);
       if (added.keyframes.size) runningAny(tree, added.keyframes, reached);
       for (const el of rebound) reached.add(el);
     }
@@ -12566,23 +12800,38 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * Inline drawings whose insides changed: what the rules give their
-   * shapes is asked again at their next paint, the surfaces kept around
-   * them are let go, and where nothing else is due to repaint the whole
-   * element, what they draw is repainted.
+   * Inline drawings whose insides changed, or what they name: what the
+   * rules give their shapes is asked again at their next paint, the
+   * surfaces kept around them are let go, and where nothing else is due to
+   * repaint the whole element, what they draw is repainted. One that shows
+   * what it draws past its box reaches as far as its shapes do now, which
+   * is asked here and not at its paint, or what grew past its ink is cut at
+   * the damage. The boxes around it go on as large as they grew, and a
+   * drawing a page animates a path at a time walks no more than those.
    */
   private _drawAgain(drawings: ReadonlySet<Element>): void {
     const tree = this._tree;
     if (!tree) return;
     const boxes = this._firstBoxesOf(tree);
     const inks: Rect[] = [];
+    const reaching: Box[] = [];
     for (const el of drawings) {
       const box = boxes.get(el);
       if (!box) continue;
       SHAPE_STYLES.delete(box);
       this._drawnOtherwise(box, inks);
+      if (drawingOverflows(box.style)) reaching.push(box);
     }
-    if (this._stale === Stale.Nothing) this._repaintInk(inks);
+    if (this._stale !== Stale.Nothing) return;
+    for (const box of reaching) tree.shapeStyler?.(box);
+    if (!reaching.every((box) => inkAfterMove(box, tree.movedInline))) {
+      computePaintBounds(tree.root, tree.movedInline);
+    }
+    for (const box of reaching) {
+      const ink = this._inkOf(box);
+      if (ink) inks.push(ink);
+    }
+    this._repaintInk(inks);
   }
 
   /** A drawing that draws something else now: the surfaces kept around it
@@ -12591,6 +12840,7 @@ export class HtmlViewNode extends Node {
     this._dropSprites(box, true);
     // a lifted box's pixels are its layer's, painted again in a frame
     if (this._lifted.size && this._insideLifted(box)) {
+      this._spriteGen += 1;
       this.spritesChanged();
       return;
     }
@@ -12600,7 +12850,8 @@ export class HtmlViewNode extends Node {
 
   /**
    * Inline drawings a change reached the shapes of from outside them
-   * (`_shapesReached`): what the rules give their shapes asked for again,
+   * (`_shapesReached`), or that draw from what a rule that came into force
+   * reached (`namersOf`): what the rules give their shapes asked for again,
    * and those with another answer drawn again, as a move's are in
    * `_restyleInPlace`. Most of what a selector can reach comes to what it
    * was, and a `<path>` a class's rule names for its `color` repaints
@@ -13973,11 +14224,13 @@ export class HtmlViewNode extends Node {
 
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
-   *  selection's. */
+   *  selection's, where it can start one (`startsSelectionAt`). */
   override defaultMouseDown(ev: X11MouseEvent): void {
     const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
     if (!hit) {
-      super.defaultMouseDown?.(ev);
+      if (ev.button !== 1 || this.startsSelectionAt(ev.x, ev.y)) {
+        super.defaultMouseDown?.(ev);
+      }
       return;
     }
     const local = this._toDocument(ev.x, ev.y);
@@ -17543,10 +17796,10 @@ function changesCascade(
 ): boolean {
   switch (tagOf(el)) {
     case 'style':
-      return name === 'media';
+      return name === 'media' && isStyleOrScript(el);
     case 'link':
       return (
-        name === 'rel' ||
+        (name === 'rel' && !isForeign(el)) ||
         ((name === 'href' || name === 'media') && isSheetLink(el))
       );
     case 'meta':
@@ -17557,7 +17810,7 @@ function changesCascade(
         pragmaMeta(el, name, (oldValue ?? '').trim().toLowerCase())
       );
     case 'base':
-      return name === 'href';
+      return name === 'href' && !isForeign(el);
     default:
       return false;
   }
@@ -17565,6 +17818,7 @@ function changesCascade(
 
 /** Whether a `<link>` is a sheet's, as `DocumentSource.facts` reads it. */
 function isSheetLink(el: Element): boolean {
+  if (isForeign(el)) return false;
   return (attr(el, 'rel') ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -17853,10 +18107,16 @@ function cascadeHeld(node: AnyNode): number {
   while (stack.length) {
     const el = stack.pop()!;
     const tag = tagOf(el);
-    if (tag === 'base' || (tag === 'meta' && pragmaMeta(el))) {
+    if (
+      (tag === 'base' && !isForeign(el)) ||
+      (tag === 'meta' && pragmaMeta(el))
+    ) {
       return HELD_PRAGMA;
     }
-    if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
+    if (
+      (tag === 'style' && isStyleOrScript(el)) ||
+      (tag === 'link' && isSheetLink(el))
+    ) {
       held |= HELD_SHEET;
     }
     if (shadowRootOf(el)) held |= HELD_TREE;
@@ -17929,10 +18189,15 @@ function undrawn(el: Element, tree: BoxTree): boolean {
   return true;
 }
 
-/** An element's style and those of everything in it, out of `styles`. */
+/** An element's style and those of everything in it, its shadow trees
+ *  included, out of `styles`: a build styles what is in a tree, and what
+ *  stays goes on being read, and inherited from through a slot. */
 function forgetStyles(el: Element, styles: Map<Element, unknown>): void {
   if (!styles.delete(el)) return;
   for (const child of el.children) {
+    if (isElement(child)) forgetStyles(child, styles);
+  }
+  for (const child of shadowRootOf(el)?.children ?? []) {
     if (isElement(child)) forgetStyles(child, styles);
   }
 }
@@ -18301,6 +18566,7 @@ const READS_FACE_AS_BUILT: ReadonlySet<string> = new Set([
   'textarea',
   'select',
   'button',
+  'file',
   'svg',
 ]);
 
@@ -18590,6 +18856,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'textarea',
   'select',
   'button',
+  'file',
   'checkbox',
   'radio',
 ]);

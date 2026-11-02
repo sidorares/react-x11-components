@@ -2947,8 +2947,8 @@ export function paintLiftedBox(
  * not as a box on a layer of its own is, `paintLiftedBox` — through its
  * matrix, at its opacity, through its filter, its mask and its clip path
  * (`paintPositioned`), on a context in the window's coordinates, as the
- * document's are. Nothing culls it, and nothing around it clips it but
- * what the caller has.
+ * document's are, and where the viewport is, where it is fixed to it.
+ * Nothing culls it, and nothing around it clips it but what the caller has.
  */
 export function paintCover(
   ctx: PaintContext,
@@ -2973,8 +2973,9 @@ export function paintCover(
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   };
-  if (turns(box)) paintTransformed(ctx, box, inner);
-  else paintBox(ctx, box, inner);
+  const placed = atViewport(box, inner);
+  if (turns(box)) paintTransformed(ctx, box, placed);
+  else paintBox(ctx, box, placed);
 }
 
 /** `paintPlaced` at full opacity: a box drawn on a surface of its own, which

@@ -30,6 +30,11 @@ export interface WebGLInstall {
   context(canvas: unknown, kind: 'webgl' | 'webgl2', options: unknown): unknown;
   /** The canvas took a new size, which is its drawing buffer's. */
   resized(context: unknown): void;
+  /** The drawing buffer as an image: top down and straight, or null where
+   *  no GL holds any. */
+  pixels(
+    context: unknown,
+  ): { width: number; height: number; data: Uint8ClampedArray } | null;
 }
 
 // the page's, as `dom.ts`'s are: this runs in its context
@@ -1370,7 +1375,10 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
     } else {
       s.queue[s.queue.length] = [name, ...args.map(written)];
     }
-    if (DRAWS.has(name) && s.params.FRAMEBUFFER_BINDING === null) s.drew = true;
+    if (DRAWS.has(name) && s.params.FRAMEBUFFER_BINDING === null) {
+      s.drew = true;
+      s.read = null;
+    }
     soon(s);
     return out;
   };
@@ -1490,11 +1498,42 @@ export function installWebGL(Event: unknown, host: WebGLHost): WebGLInstall {
         extensions: opened?.extensions ?? [],
         queue: [],
         drew: false,
+        read: null,
       });
       return gl;
     },
+    pixels(context: Any) {
+      const s = own(context);
+      const { width, height } = s.canvas;
+      if (!s.live || !width || !height) return null;
+      if (s.read) return s.read;
+      const bound = s.params.FRAMEBUFFER_BINDING;
+      const raw = new Uint8Array(width * height * 4);
+      context.bindFramebuffer(0x8d40, null);
+      context.readPixels(0, 0, width, height, 0x1908, 0x1401, raw);
+      context.bindFramebuffer(0x8d40, bound);
+      const data = new Uint8ClampedArray(raw.length);
+      const straighten = s.attributes.premultipliedAlpha;
+      const row = width * 4;
+      // GL's rows go up the picture, and a canvas's down it
+      for (let y = 0; y < height; y += 1) {
+        const from = (height - 1 - y) * row;
+        const to = y * row;
+        for (let x = 0; x < row; x += 4) {
+          const a = raw[from + x + 3];
+          const k = straighten && a > 0 && a < 255 ? 255 / a : 1;
+          data[to + x] = raw[from + x] * k;
+          data[to + x + 1] = raw[from + x + 1] * k;
+          data[to + x + 2] = raw[from + x + 2] * k;
+          data[to + x + 3] = a;
+        }
+      }
+      s.read = { width, height, data };
+      return s.read;
+    },
     resized(context: Any): void {
       const s = own(context);
+      s.read = null;
       s.params.VIEWPORT = [0, 0, s.canvas.width, s.canvas.height];
       s.params.SCISSOR_BOX = [0, 0, s.canvas.width, s.canvas.height];
       if (!s.live) return;

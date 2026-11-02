@@ -46,8 +46,11 @@ import {
   findById,
   h,
   metric,
+  paneOf,
+  pointIn,
   rebuilt,
   render,
+  renderScrolled,
   snapshot,
   treeOf,
   view,
@@ -155,6 +158,10 @@ function walkOf(cascade: IndexesOf): unknown {
 
 const byId = (el: HtmlViewNode, id: string) =>
   findById(el.document, id) as unknown as Element;
+
+/** A drawing's size, and a shape that fills it, for what writes one out. */
+const SIZE = 'width="24" height="24"';
+const RECT = `<rect id="r" ${SIZE}/>`;
 
 /** A class set on an element, with the record a `MutationObserver` keeps. */
 function setClass(target: Element, value: string): HtmlChange {
@@ -1006,6 +1013,82 @@ metric(
   },
 );
 
+/** A list of changes told, and what it drew held to a build. */
+async function toldAsBuilt(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  changes: HtmlChange[],
+  name: string,
+): Promise<void> {
+  const was = await snapshot(result, el);
+  el.touchDocument(changes);
+  const drawn = await snapshot(result, el);
+  assert.ok(bytesApart(drawn, was) > 0, `${name}: drawn as it was`);
+  assert.strictEqual(
+    bytesApart(drawn, await rebuilt(result, el)),
+    0,
+    `${name}: not as a build draws it`,
+  );
+}
+
+const set = (
+  target: Element,
+  attributeName: string,
+  value: string,
+): HtmlChange => {
+  const oldValue = target.attribs[attributeName] ?? null;
+  target.attribs[attributeName] = value;
+  return { type: 'attributes', target, attributeName, oldValue };
+};
+
+test('a drawing a change points at an id that moved with it finds what goes by it now', async () => {
+  // nothing named `there` as it moved, so no drawing was reached by it, and
+  // the `<use>` looked for it in the ids the build had
+  const { result, node } = await render(
+    '<style>body{margin:0} svg{display:block} .k{fill:#0000ff}</style>' +
+      '<svg style="display:none"><rect id="soon" class="k" width="24"' +
+      ' height="24"/><rect id="x" width="24" height="24"/></svg>' +
+      drawing('d', '<use id="u" href="#x"/>'),
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  await toldAsBuilt(
+    result,
+    el,
+    [
+      set(byId(el, 'soon'), 'id', 'there'),
+      set(byId(el, 'u'), 'href', '#there'),
+    ],
+    'moved',
+  );
+});
+
+test('a drawing a change is in is reached by what else the change does to what it names', async () => {
+  // told of what is in it, it forgot what it named before it was asked, and
+  // the copy of its `<use>` went on matching what it had
+  const { result, node } = await render(
+    '<style>body{margin:0} svg{display:block} .k{fill:#ff0000}' +
+      '.k.on{fill:#0000ff}</style>' +
+      '<svg style="display:none"><symbol id="s" viewBox="0 0 24 24">' +
+      '<rect id="in-s" class="k" width="24" height="24"/></symbol></svg>' +
+      drawing('d', '<rect id="r" width="12" height="24"/><use href="#s"/>'),
+    300,
+  );
+  const el = view(node);
+  await snapshot(result, el);
+  await snapshot(result, el);
+  await toldAsBuilt(
+    result,
+    el,
+    [
+      set(byId(el, 'r'), 'fill', '#00aa00'),
+      set(byId(el, 'in-s'), 'class', 'k on'),
+    ],
+    'both',
+  );
+});
+
 metric(
   'a shape a change reaches builds the boxes of a drawing with a <foreignObject>, whose HTML is styled from its elements down',
   async (t) => {
@@ -1251,6 +1334,348 @@ test('a change inside a drawing restyles what a :has() asking it can answer othe
   await act();
   assert.equal(el.computedStyle(card)?.['font-weight'], '700');
 });
+
+/** A node put at the end of `target`, with its record. */
+function appended(target: Element, node: ChildNode): HtmlChange {
+  appendChild(target, node);
+  return {
+    type: 'childList',
+    target,
+    addedNodes: [node],
+    removedNodes: [],
+  };
+}
+
+/** A node taken out of the tree, with its record. */
+function takenOut(node: ChildNode): HtmlChange {
+  const target = node.parent as unknown as Element;
+  removeNode(node);
+  return {
+    type: 'childList',
+    target,
+    addedNodes: [],
+    removedNodes: [node],
+  };
+}
+
+metric(
+  'a sheet in a drawing, put in, taken out, written to or given a media, draws what a refresh of everything draws',
+  async () => {
+    // a drawing exported from an editor keeps its colours in a `<style>` of
+    // its own, and what a script wrote to one waited for a refresh that
+    // said nothing: the rect stayed black
+    const BLUE = 'rect{fill:#0000ff}';
+    const onResource = (r: ResourceRequest) =>
+      r.kind === 'stylesheet' && r.url === 'blue.css'
+        ? { kind: 'stylesheet' as const, text: BLUE }
+        : null;
+    const linked = (_: HtmlViewNode, holder: Element) =>
+      appended(
+        holder,
+        createElement('link', {
+          id: 's',
+          rel: 'stylesheet',
+          href: 'blue.css',
+        }),
+      );
+    const black = '#000000';
+    const blue = '#0000ff';
+    const cases: {
+      name: string;
+      holds: string;
+      /** What a script does first, told and drawn. */
+      before?: (el: HtmlViewNode, holder: Element) => HtmlChange;
+      change: (el: HtmlViewNode, holder: Element) => HtmlChange;
+      ink: string;
+      /** Whether all it did is add rules (`_sheetsAdded`). */
+      adds: boolean;
+    }[] = [
+      {
+        name: 'a text put in a <style>',
+        holds: '<style id="s"></style>',
+        change: (el) => appended(byId(el, 's'), createText(BLUE)),
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> written on to',
+        holds: '<style id="s">/* ink */</style>',
+        change: (el) => {
+          const text = byId(el, 's').children[0] as unknown as { data: string };
+          text.data += BLUE;
+          return { type: 'characterData', target: text as never };
+        },
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> put in',
+        holds: '',
+        change: (_, holder) =>
+          appended(holder, createElement('style', {}, [createText(BLUE)])),
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <style> taken out',
+        holds: `<style id="s">${BLUE}</style>`,
+        change: (el) => takenOut(byId(el, 's') as unknown as ChildNode),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <style> no longer holds under',
+        holds: `<style id="s">${BLUE}</style>`,
+        change: (el) => setAttr(byId(el, 's'), 'media', 'print'),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <style> holds under again',
+        holds: `<style id="s" media="print">${BLUE}</style>`,
+        change: (el) => setAttr(byId(el, 's'), 'media', null),
+        ink: blue,
+        adds: true,
+      },
+      // one a script puts in, which Chromium, Firefox and WebKit read as a
+      // sheet: the parser makes a `<link>` it meets in a drawing an SVG
+      // element, which they do not
+      {
+        name: 'a <link> put in',
+        holds: '',
+        change: linked,
+        ink: blue,
+        adds: true,
+      },
+      {
+        name: 'a <link> taken out',
+        holds: '',
+        before: linked,
+        change: (el) => takenOut(byId(el, 's') as unknown as ChildNode),
+        ink: black,
+        adds: false,
+      },
+      {
+        name: 'a media a <link> no longer holds under',
+        holds: '',
+        before: linked,
+        change: (el) => setAttr(byId(el, 's'), 'media', 'print'),
+        ink: black,
+        adds: false,
+      },
+    ];
+    // where it stands: in a group, and at the root of the drawing, which a
+    // change to what the root holds reaches by another way
+    const stands: [string, (holds: string) => string][] = [
+      [
+        'a group',
+        (holds) => `<svg ${SIZE}><g id="h">${holds}</g>${RECT}</svg>`,
+      ],
+      ['the root', (holds) => `<svg id="h" ${SIZE}>${holds}${RECT}</svg>`],
+    ];
+    for (const { name, holds, before, change, ink, adds } of cases) {
+      for (const [where, drawing] of stands) {
+        const message = `${name} in ${where}`;
+        const { result, node } = await render(
+          '<style>body{margin:0}svg{display:block}</style>' +
+            `${drawing(holds)}<svg ${SIZE}>${RECT}</svg>`,
+          200,
+          { onResource },
+        );
+        const el = view(node);
+        await snapshot(result, el);
+        if (before) {
+          el.touchDocument([before(el, byId(el, 'h'))]);
+          await snapshot(result, el);
+        }
+        const internals = el as unknown as Record<
+          string,
+          (...a: unknown[]) => unknown
+        >;
+        const sheetsAdded = internals._sheetsAdded;
+        let answer: unknown;
+        internals._sheetsAdded = function (this: unknown, ...a: unknown[]) {
+          answer = sheetsAdded.apply(this, a);
+          return answer;
+        };
+        el.touchDocument([change(el, byId(el, 'h'))]);
+        const told = await snapshot(result, el);
+        delete internals._sheetsAdded;
+        assert.notStrictEqual(answer, undefined, `${message}: not read`);
+        assert.strictEqual(answer instanceof Set, adds, `${message}: reach`);
+        // what a sheet says is the document's: the drawing beside it too
+        await expectPixel(result.ctx, 12, 12, ink, { message });
+        await expectPixel(result.ctx, 12, 36, ink, { message });
+        el.touchDocument();
+        assert.strictEqual(
+          bytesApart(told, await snapshot(result, el)),
+          0,
+          message,
+        );
+        result.unmount();
+        cleanup();
+      }
+    }
+  },
+);
+
+metric(
+  'a rule written to a sheet in a drawing styles what it names, and a change to a shape beside the sheet costs the drawing and no more',
+  async () => {
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_, i) => `<p id="p${i}">Paragraph ${i}</p>`,
+    ).join('');
+    const { result, node } = await render(
+      '<!doctype html><html><head><style>body{margin:0} p{margin:0}</style>' +
+        `</head><body><svg ${SIZE}><style id="s"></style><g id="g"></g>` +
+        `${RECT}</svg>${paragraphs}</body></html>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const box = (id: string) =>
+      (el as unknown as { _firstBoxesOf(t: unknown): Map<Element, unknown> })
+        ._firstBoxesOf(treeOf(el))
+        .get(byId(el, id));
+    const tree = treeOf(el);
+    const cascade = cascadeOf(el);
+    // a shape changed, and one put in: the drawing is drawn again, and the
+    // sheets are as they were read
+    const changes = [
+      setAttr(byId(el, 'r'), 'width', '12'),
+      appended(
+        byId(el, 'g'),
+        createElement('rect', { width: '4', height: '4' }),
+      ),
+    ];
+    for (const change of changes) {
+      assert.strictEqual(sheetsOf(el, [change]), false);
+      assert.equal(scopeOf(el, [change])?.size, 0);
+      const damage = await damageOf(el, () => el.touchDocument([change]));
+      await act();
+      assert.ok(treeOf(el) === tree, 'built again');
+      assert.ok(cascadeOf(el) === cascade, 'the cascade was made again');
+      assert.ok(damage.length > 0 && !damage.includes(el), 'all of it drawn');
+    }
+    // a rule: the paragraph it names, and no other box
+    const far = box('p30');
+    const internals = el as unknown as Record<
+      string,
+      (...a: unknown[]) => unknown
+    >;
+    const sheetsAdded = internals._sheetsAdded;
+    let answer: unknown;
+    internals._sheetsAdded = function (this: unknown, ...a: unknown[]) {
+      answer = sheetsAdded.apply(this, a);
+      return answer;
+    };
+    el.touchDocument([
+      appended(byId(el, 's'), createText('#p7{color:#ff0000}')),
+    ]);
+    const told = await snapshot(result, el);
+    delete internals._sheetsAdded;
+    const reached = answer as Set<Element>;
+    assert.ok(reached instanceof Set, 'every element styled again');
+    assert.ok(reached.size === 1 && reached.has(byId(el, 'p7')));
+    assert.ok(box('p30') === far, 'what its rule does not style was built');
+    assert.strictEqual(
+      el.computedStyle(byId(el, 'p7'))?.color,
+      'rgb(255, 0, 0)',
+    );
+    el.touchDocument();
+    assert.strictEqual(bytesApart(told, await snapshot(result, el)), 0);
+  },
+);
+
+metric(
+  'a <meta> or a <base> in a drawing is a change to every style, as one anywhere is, and a sheet in a shadow tree’s drawing is its tree’s',
+  async () => {
+    const block = `style="display:block" ${SIZE}`;
+    const { result, node } = await render(
+      `<style>body{margin:0}</style><svg ${block}><g id="g"></g>${RECT}</svg>` +
+        '<div id="host"><template shadowrootmode="open">' +
+        `<svg ${block}><style></style>${RECT}</svg></template></div>`,
+      200,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    // each asked with the last change laid out, before which a scope is
+    // not asked
+    const g = byId(el, 'g');
+    const pragmas: [string, Record<string, string>][] = [
+      ['meta', { name: 'color-scheme', content: 'dark' }],
+      ['base', { href: 'https://a.test/' }],
+    ];
+    for (const [tag, attribs] of pragmas) {
+      assert.ok(scopeOf(el, []), 'the refresh of everything is still due');
+      const change = appended(g, createElement(tag, attribs));
+      assert.strictEqual(
+        scopeOf(el, [change]),
+        null,
+        `a <${tag}> reached some`,
+      );
+      el.touchDocument([change]);
+      await act();
+    }
+    const root = shadowRootOf(byId(el, 'host'))!;
+    const drawing = root.children.find(
+      (n) => (n as Element).name === 'svg',
+    ) as Element;
+    const style = drawing.children.find(
+      (n) => (n as Element).name === 'style',
+    ) as Element;
+    const written = appended(style, createText('rect{fill:#0000ff}'));
+    assert.ok(sheetsOf(el, [written]), 'a tree’s sheet was no sheet');
+    el.touchDocument([written]);
+    await snapshot(result, el);
+    await expectPixel(result.ctx, 12, 12, '#000000');
+    await expectPixel(result.ctx, 12, 36, '#0000ff');
+  },
+);
+
+metric(
+  'a sheet in a drawing that comes in chunks is read as it comes',
+  async () => {
+    const head =
+      '<!doctype html><html><head><style>body{margin:0}svg{display:block}' +
+      '</style></head><body>';
+    const documents = [
+      // cut inside the sheet's text
+      [`<svg ${SIZE}><style>rect{fi`, `ll:#0000ff}</style>${RECT}</svg>`],
+      // a sheet in a chunk of its own, after what it styles
+      [
+        `<svg ${SIZE}>${RECT}<g>`,
+        '<style>rect{fill:#0000ff}</style></g></svg>',
+      ],
+    ];
+    for (const parts of documents) {
+      const doc = (source: string) =>
+        h(
+          'box',
+          { style: { width: 200, flexDirection: 'column' } },
+          h(Html, { source, partial: true, 'data-testname': 'doc' }),
+        );
+      let source = head + parts[0];
+      const { result, node } = await render(source, 200, { partial: true });
+      const el = view(node);
+      await snapshot(result, el);
+      for (const part of parts.slice(1)) {
+        source += part;
+        await act(() => result.rerender(doc(source)));
+        await act();
+      }
+      const told = await snapshot(result, el);
+      await expectPixel(result.ctx, 12, 12, '#0000ff', {
+        message: JSON.stringify(parts),
+      });
+      el.touchDocument();
+      assert.strictEqual(bytesApart(told, await snapshot(result, el)), 0);
+      result.unmount();
+      cleanup();
+    }
+  },
+);
 
 test('a child coming or going reaches what a test of where its siblings sit can answer otherwise for, and not all its holder holds', async () => {
   // A webmail page hides a split button's separator by where the button
@@ -1515,6 +1940,110 @@ function setAttr(
   return { type: 'attributes', target, attributeName: name, oldValue };
 }
 
+test('what is told of a <link> or a <base> the parser made in a drawing is nothing to the cascade, wherever it went', async () => {
+  // it is SVG's in all three engines, and stays so when a script moves it
+  // out of the drawing, where a change to it is asked about as any is
+  const { node } = await render(
+    '<!doctype html><html><head></head><body><p id="p">p</p><div id="d"></div>' +
+      '<svg width="10" height="10">' +
+      '<link id="l" rel="stylesheet" href="s.css"><base id="b" href="/b/">' +
+      '</svg><div id="host"><template shadowrootmode="open"><div id="in"></div>' +
+      '<svg><link id="inner" rel="stylesheet" href="s.css"></svg>' +
+      '</template></div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const d = byId(el, 'd');
+  const base = byId(el, 'b');
+  appendChild(d, base as unknown as ChildNode);
+  appendChild(d, byId(el, 'l') as unknown as ChildNode);
+  assert.ok(
+    scopeOf(el, [setAttr(base, 'href', '/c/')]),
+    'its href was a refresh of everything',
+  );
+  const out: HtmlChange = {
+    type: 'childList',
+    target: d,
+    addedNodes: [],
+    removedNodes: [base as unknown as ChildNode],
+  };
+  removeNode(base as unknown as ChildNode);
+  assert.ok(scopeOf(el, [out]), 'taking it out was a refresh of everything');
+  // a sheet of the document's reads as the cascade read it whatever this
+  // says of it, so what says is seen in a shadow tree, whose sheets are
+  // taken as a change: only there is it asked of the element
+  const tree = shadowRootOf(byId(el, 'host'));
+  const inner = findById(tree, 'inner')!;
+  const holder = findById(tree, 'in')!;
+  appendChild(holder, inner as unknown as ChildNode);
+  assert.ok(
+    !sheetsOf(el, [setAttr(inner, 'rel', 'stylesheet icon')]),
+    'its rel was a sheet',
+  );
+  assert.ok(
+    !sheetsOf(el, [setAttr(inner, 'href', 'other.css')]),
+    'its href was a sheet',
+  );
+  removeNode(inner as unknown as ChildNode);
+  const gone: HtmlChange = {
+    type: 'childList',
+    target: holder,
+    addedNodes: [],
+    removedNodes: [inner as unknown as ChildNode],
+  };
+  assert.ok(!sheetsOf(el, [gone]), 'it was a sheet coming or going');
+});
+
+test('what is told of a <style> the parser made in a <math> is nothing to the cascade, as what is told of one in a drawing is', async () => {
+  // a sheet of the document's reads as the cascade read it whatever this
+  // says of it, so what says is seen in a shadow tree, whose sheets are taken
+  // as a change: only there is it asked of the element
+  const { node } = await render(
+    '<!doctype html><html><head></head><body><div id="host">' +
+      '<template shadowrootmode="open"><div id="in"></div>' +
+      '<math><style id="math">p{color:red}</style></math>' +
+      '<svg><style id="drawn">p{color:red}</style></svg>' +
+      '</template></div></body></html>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const tree = shadowRootOf(byId(el, 'host'));
+  const holder = findById(tree, 'in')!;
+  for (const [id, sheet] of [
+    ['math', false],
+    ['drawn', true],
+  ] as const) {
+    const style = findById(tree, id)!;
+    assert.strictEqual(
+      sheetsOf(el, [setAttr(style, 'media', 'print')]),
+      sheet,
+      `its media, of #${id}`,
+    );
+    const written: HtmlChange = {
+      type: 'childList',
+      target: style,
+      addedNodes: [createText('p{color:blue}') as unknown as ChildNode],
+      removedNodes: [],
+    };
+    assert.strictEqual(sheetsOf(el, [written]), sheet, `its text, of #${id}`);
+    appendChild(holder, style as unknown as ChildNode);
+    removeNode(style as unknown as ChildNode);
+    const gone: HtmlChange = {
+      type: 'childList',
+      target: holder,
+      addedNodes: [],
+      removedNodes: [style as unknown as ChildNode],
+    };
+    assert.strictEqual(
+      sheetsOf(el, [gone]),
+      sheet,
+      `its coming or going, of #${id}`,
+    );
+  }
+});
+
 test('a stylesheet prop made again with the sheets it held styles nothing again, and one with other sheets restyles everything', async () => {
   // what `<Html scripts>` hands down at every render where the page adopted
   // a sheet: the application's sheets and the page's, in an array made then
@@ -1672,6 +2201,350 @@ test('a sheet that comes late builds what its rules style, and keeps every other
     'rgb(0, 170, 0)',
   );
 });
+
+/** What each drawing is asked of the rules while `run` runs, whichever
+ *  cascade asks: a sheet that adds rules makes another. */
+async function drawingsAskedOfAny(run: () => unknown) {
+  const ask = Cascade.prototype.shapeStyles;
+  const asked: (string | undefined)[] = [];
+  Cascade.prototype.shapeStyles = function (this: Cascade, ...a) {
+    asked.push(a[0].attribs.id);
+    return ask.apply(this, a);
+  };
+  try {
+    await run();
+  } finally {
+    Cascade.prototype.shapeStyles = ask;
+  }
+  return asked;
+}
+
+/** Each block in a `<div>` of its own, with its `<html>` written, so that
+ *  what a build is for stays in its block. */
+const blocked = (css: string, ...blocks: string[]) =>
+  `<html><head><style id="css">body{margin:0} svg{display:block}${css}</style>` +
+  `</head><body>${blocks.map((b) => `<div>${b}</div>`).join('')}</body></html>`;
+
+/** Rules written on to the end of a `<style>`, and told. */
+function writeRules(el: HtmlViewNode, css: string): void {
+  const sheet = byId(el, 'css');
+  const text = createText(css);
+  appendChild(sheet, text);
+  el.touchDocument([
+    { type: 'childList', target: sheet, addedNodes: [text], removedNodes: [] },
+  ]);
+}
+
+const hidden = (inside: string) => `<svg style="display:none">${inside}</svg>`;
+const symbol = `<symbol id="s" viewBox="0 0 24 24">${shape}</symbol>`;
+const redStop =
+  '<linearGradient id="g"><stop stop-color="#ff0000"/></linearGradient>';
+const uses = (id = 's') => drawing('d', `<use href="#${id}"/>`);
+const paints = (id = 'g') =>
+  drawing('d', `<rect width="24" height="24" fill="url(#${id})"/>`);
+
+/** `#d` holds `colour` and draws what a refresh of everything draws: told by
+ *  the pixel as well, since a refresh that keeps the cascade agrees with a
+ *  sheet it has not read. */
+async function drawsAsRefreshed(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  colour: string,
+  message: string,
+): Promise<void> {
+  const drawn = await snapshot(result, el);
+  const [x, y] = pointIn(el, 'd');
+  await expectPixel(result.ctx, x, y, colour, { message });
+  el.touchDocument();
+  assert.strictEqual(
+    bytesApart(drawn, await snapshot(result, el)),
+    0,
+    `${message}: not as a refresh of everything draws it`,
+  );
+}
+
+metric(
+  'a rule a sheet adds reaches the drawings that draw what it styles, wherever they stand',
+  async () => {
+    // the shape has no box and the build keeps the block the drawing is in,
+    // so what its `<use>` was given stood until something built that block
+    const rows: [string, string[], string, string?][] = [
+      [
+        'a <use> of a drawing nothing draws',
+        [hidden(symbol), 'Other', uses()],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'a url() of a drawing nothing draws',
+        [hidden(redStop), 'Other', paints()],
+        'stop{stop-color:#0000ff}',
+        '#ff0000',
+      ],
+      [
+        'a <use> of a drawing that shows',
+        [drawing('sprite', symbol), 'Other', uses()],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'what is named, which its shapes inherit from',
+        [hidden(symbol), 'Other', uses()],
+        'symbol{fill:#0000ff}',
+      ],
+      [
+        'what is in a group in what is named',
+        [
+          hidden(
+            `<symbol id="s" viewBox="0 0 24 24"><g class="k">${shape}</g></symbol>`,
+          ),
+          uses(),
+        ],
+        '.k{fill:#0000ff}',
+      ],
+      [
+        'what what is named names in turn',
+        [
+          hidden(symbol),
+          hidden(
+            '<symbol id="t" viewBox="0 0 24 24"><use href="#s"/></symbol>',
+          ),
+          uses('t'),
+        ],
+        'rect{fill:#0000ff}',
+      ],
+      [
+        'a gradient another takes its stops from',
+        [
+          hidden(redStop),
+          hidden('<linearGradient id="h" href="#g"/>'),
+          paints('h'),
+        ],
+        'stop{stop-color:#0000ff}',
+        '#ff0000',
+      ],
+      [
+        'a rule that matches only as a <use> copies it',
+        [hidden(`<symbol id="a"/>${symbol}`), uses()],
+        'symbol:first-child rect{fill:#0000ff}',
+      ],
+      [
+        'a drawing in a box that turns',
+        [
+          hidden(symbol),
+          `<div style="width:24px;transform:rotate(90deg)">${uses()}</div>`,
+        ],
+        'rect{fill:#0000ff}',
+      ],
+    ];
+    for (const [name, blocks, css, from = '#000000'] of rows) {
+      const { result, node } = await render(blocked('', ...blocks), 300);
+      const el = view(node);
+      await snapshot(result, el);
+      const [x, y] = pointIn(el, 'd');
+      await expectPixel(result.ctx, x, y, from, {
+        message: `${name}: as it starts`,
+      });
+      writeRules(el, css);
+      await drawsAsRefreshed(result, el, '#0000ff', name);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'a sheet that comes late reaches the drawings that draw what its rules style',
+  async () => {
+    let arrive: (result: ResourceResult) => void = () => {};
+    const onResource = (r: ResourceRequest) =>
+      r.kind === 'stylesheet'
+        ? new Promise<ResourceResult>((resolve) => (arrive = resolve))
+        : null;
+    const { result, node } = await render(
+      blocked('', hidden(symbol), 'Other', uses()),
+      300,
+      { onResource },
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const body = byId(el, 'd').parent!.parent as Element;
+    const link = createElement('link', { rel: 'stylesheet', href: 'late.css' });
+    appendChild(body, link);
+    el.touchDocument([
+      { type: 'childList', target: body, addedNodes: [link], removedNodes: [] },
+    ]);
+    await act();
+    arrive({ kind: 'stylesheet', text: 'rect{fill:#0000ff}' });
+    await drawsAsRefreshed(result, el, '#0000ff', 'the sheet that came');
+  },
+);
+
+metric(
+  'a rule a breakpoint turns on or off reaches the drawings that draw what it styles',
+  async () => {
+    for (const [name, css, sprite] of [
+      ['where it stands', 'rect', symbol],
+      [
+        'as a <use> copies it',
+        'symbol:first-child rect',
+        `<symbol id="a"/>${symbol}`,
+      ],
+    ]) {
+      const { el, resize, result } = await renderScrolled(
+        blocked(
+          `@media (min-width:400px){${css}{fill:#0000ff}}`,
+          hidden(sprite),
+          'Other',
+          uses(),
+        ),
+        300,
+        300,
+      );
+      await snapshot(result, el);
+      await resize(300, 500);
+      await drawsAsRefreshed(result, el, '#0000ff', `${name}: turned on`);
+      await resize(300, 300);
+      await drawsAsRefreshed(result, el, '#000000', `${name}: turned off`);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'what a rule a sheet adds gives what is named reaches as far past a drawing as it draws',
+  async () => {
+    const { result, node } = await render(
+      blocked(
+        '#d{overflow:visible;margin:30px}',
+        hidden('<rect id="r" width="24" height="24"/>'),
+        uses('r'),
+      ),
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const ink = () =>
+      (el as unknown as { _inkOf(box: unknown): unknown })._inkOf(
+        boxOf(el, 'd'),
+      );
+    writeRules(el, 'rect{stroke:#0000ff;stroke-width:40}');
+    await snapshot(result, el);
+    const told = ink();
+    el.touchDocument();
+    await snapshot(result, el);
+    assert.deepStrictEqual(told, ink());
+  },
+);
+
+metric(
+  'a rule a sheet adds asks only the drawings that name what it reaches, and draws again only those it gives something else',
+  async () => {
+    const { result, node } = await render(
+      blocked(
+        '',
+        hidden(
+          `<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"` +
+            ` height="24"/></symbol>`,
+        ),
+        hidden('<rect id="alone" width="24" height="24"/>'),
+        '<p id="p">Paragraph</p>',
+        uses(),
+        drawing('e'),
+      ),
+      300,
+    );
+    const el = view(node);
+    const was = await snapshot(result, el);
+    const told = async (css: string, name: string) => {
+      const asked = await drawingsAskedOfAny(async () => {
+        writeRules(el, css);
+        await snapshot(result, el);
+      });
+      return {
+        asked,
+        moved: bytesApart(await snapshot(result, el), was),
+        name,
+      };
+    };
+    assert.deepStrictEqual(await told('#alone{fill:#0000ff}', 'alone'), {
+      asked: [],
+      moved: 0,
+      name: 'alone',
+    });
+    assert.deepStrictEqual(await told('#p{clip-rule:evenodd}', 'a paragraph'), {
+      asked: [],
+      moved: 0,
+      name: 'a paragraph',
+    });
+    // no rule of a copy's sees what is above what is named
+    assert.deepStrictEqual(
+      await told('svg #in-s{fill:#0000ff}', 'not copied'),
+      {
+        asked: ['d'],
+        moved: 0,
+        name: 'not copied',
+      },
+    );
+  },
+);
+
+metric(
+  'a change to the root of a drawing that draws nothing leaves it reached by what it names',
+  async () => {
+    // it read nothing after it, so what it had noted was gone for good
+    const named = hidden(
+      '<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"' +
+        ' height="24"/></symbol>',
+    );
+    const changes: [string, (el: HtmlViewNode) => void][] = [
+      ['a rule', (el) => writeRules(el, '#in-s{fill:#0000ff}')],
+      [
+        'a change to what it names',
+        (el) => el.touchDocument([set(byId(el, 'in-s'), 'fill', '#0000ff')]),
+      ],
+    ];
+    for (const [name, change] of changes) {
+      const { result, node } = await render(blocked('', named, uses()), 300);
+      const el = view(node);
+      await snapshot(result, el);
+      el.touchDocument([set(byId(el, 'd'), 'class', 'nothing-reads-it')]);
+      await snapshot(result, el);
+      change(el);
+      await drawsAsRefreshed(result, el, '#0000ff', name);
+      await cleanup();
+    }
+  },
+);
+
+metric(
+  'a drawing no paint reaches goes on being reached by what a rule adds to what it names',
+  async () => {
+    // an answer that comes to what it had paints nothing, so what the drawing
+    // noted is all there is to say the next rule reaches it
+    const { el, result } = await renderScrolled(
+      blocked(
+        '',
+        hidden(
+          '<symbol id="s" viewBox="0 0 24 24"><rect id="in-s" width="24"' +
+            ' height="24"/></symbol>',
+        ),
+        uses(),
+        '<div style="height:2000px"></div>',
+      ),
+      200,
+      300,
+    );
+    await snapshot(result, el);
+    const pane = paneOf(el);
+    pane.scrollTo({ y: 1500 });
+    await act();
+    for (const css of ['svg #in-s{fill:#0000ff}', '#in-s{fill:#00aa00}']) {
+      writeRules(el, css);
+      await snapshot(result, el);
+    }
+    pane.scrollTo({ y: 0 });
+    await act();
+    await drawsAsRefreshed(result, el, '#00aa00', 'scrolled back to');
+  },
+);
 
 test('an element that comes out drawn, or hidden, builds what holds it, or the end of a body', async () => {
   const { result, node } = await render(
@@ -3573,14 +4446,39 @@ function markupFor(
     }
     return `<${tag}${attrs}>${inner}</${tag}>`;
   };
-  let body = '';
+  let body = drawings ? spriteFor(next) : '';
   for (let i = 0; i < 4; i += 1) body += element(0);
   return body;
 }
 
+/** The most any byte of two pictures differs by: a raster is a level off
+ *  the paths it was set from at an edge of theirs. */
+function levelsApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let most = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    most = Math.max(most, Math.abs(a[i] - b[i]));
+  }
+  return most;
+}
+
+/** What a document's drawings name and draw none of themselves, in a drawing
+ *  with no box: a symbol, a gradient and the gradient that takes its stops. */
+function spriteFor(next: () => number): string {
+  const classes = () => {
+    const names = CLASSES.filter(() => next() < 0.3).join(' ');
+    return names ? ` class="${names}"` : '';
+  };
+  return (
+    '<svg style="display:none"><symbol id="sym" viewBox="0 0 9 9">' +
+    `<rect${classes()} width="9" height="9" fill="#00aa00"/></symbol>` +
+    `<linearGradient id="base"><stop${classes()} stop-color="#0000ff"/>` +
+    '</linearGradient><linearGradient id="grad" href="#base"/></svg>'
+  );
+}
+
 /** An inline drawing, with a gradient of its own that one of its shapes
- *  names. What another drawing names is left out: a change inside that is
- *  no change to the drawing that names it. */
+ *  names, and what it may name of `spriteFor`'s and of an earlier drawing's:
+ *  a change to one of those is one to every drawing that names it. */
 function drawingFor(next: () => number, id: number): string {
   const classes = () => {
     const names = CLASSES.filter(() => next() < 0.3).join(' ');
@@ -3590,11 +4488,21 @@ function drawingFor(next: () => number, id: number): string {
     next() < 0.5
       ? `<rect${classes()} width="9" height="9"/>`
       : `<circle${classes()} r="4" cx="4" cy="4"/>`;
+  let named = '';
+  if (next() < 0.5) named += '<use href="#sym" x="10" width="9" height="9"/>';
+  if (next() < 0.5) {
+    named += '<rect fill="url(#grad)" y="10" width="9" height="9"/>';
+  }
+  if (id > 0 && next() < 0.5) {
+    named +=
+      `<rect fill="url(#d${Math.floor(next() * id)})" x="10" y="10"` +
+      ' width="9" height="9"/>';
+  }
   return (
     `<svg${classes()} width="20" height="20">${shape()}<g${classes()}>` +
     `${shape()}</g><linearGradient id="d${id}"><stop${classes()}` +
     ` stop-color="#ff0000"/></linearGradient><rect fill="url(#d${id})"` +
-    ' width="9" height="9"/></svg>'
+    ` width="9" height="9"/>${named}</svg>`
   );
 }
 
@@ -3656,18 +4564,25 @@ function outsideDrawings(el: Element): boolean {
 }
 
 /** What the rules give the shapes of each drawing in `body`, which is what
- *  its next paint reads, or asks for where it never asked. */
+ *  its next paint reads, or asks for where it never asked. Not of one no
+ *  paint reaches, hidden or below the window `render` makes: it has read
+ *  nothing, so nothing says what it names, and it asks when it is shown. */
 function shapesOf(el: HtmlViewNode, body: Element): string[] {
   const view = el as unknown as {
     _tree: { shapeStyler(box: unknown): { key: string } | null };
-    _firstBoxesOf(tree: unknown): Map<Element, unknown>;
+    _firstBoxesOf(
+      tree: unknown,
+    ): Map<Element, { style: { visibility: string } }>;
   };
   const boxes = view._firstBoxesOf(view._tree);
   return elementsIn(body)
     .filter((e) => e.name === 'svg')
     .map((e, i) => {
       const box = boxes.get(e);
-      return `${i} ${box ? (view._tree.shapeStyler(box)?.key ?? '') : 'no box'}`;
+      if (!box) return `${i} no box`;
+      const shown =
+        box.style.visibility === 'visible' && el.elementRect(e)!.y < 600;
+      return `${i} ${shown ? (view._tree.shapeStyler(box)?.key ?? '') : 'unseen'}`;
     });
 }
 
@@ -3739,15 +4654,19 @@ function changeOne(
   forgetOld: boolean,
   parts = false,
 ): HtmlChange[] {
-  // a change to what a drawing names reaches no other drawing that names
-  // it yet, as a rule's reach from outside it does: what names one stays
-  // with it
-  const all = elementsIn(body).filter(
-    (e) => e.name !== 'linearGradient' && e.name !== 'stop' && !e.attribs.fill,
-  );
+  const all = elementsIn(body);
   const pick = <T>(list: readonly T[]): T =>
     list[Math.floor(next() * list.length)];
   const inside = all.slice(1);
+  // an attribute a shape draws with, which no selector need read
+  const paints = inside.filter((e) => e.attribs.fill || e.name === 'stop');
+  if (paints.length && next() < 0.25) {
+    const target = pick(paints);
+    const name = target.name === 'stop' ? 'stop-color' : 'fill';
+    const was = target.attribs[name] ?? null;
+    target.attribs[name] = pick(INKS);
+    return [{ type: 'attributes', target, attributeName: name, oldValue: was }];
+  }
   const kind = Math.floor(next() * 8);
   if (kind === 0 || kind === 1) {
     // a class toggled — where rules cross trees' edges, a host's or one of
@@ -4030,9 +4949,28 @@ function sheetChange(
     const ink = pick(['#aa0000', '#00aa00', '#0000aa', '#aaaa00']);
     return [
       ...rulesFor(next, true).split('\n').slice(0, 4),
+      ...drawingRulesFor(next).split('\n').slice(0, 2),
       `.a { outline-color: ${ink} }`,
       `.b::before { color: ${ink} }`,
+      // what reads the root, in an element and in a shape, and what moves it
+      `.${pick(CLASSES)} { padding-left: ${pick(['1rem', '.5rem', '1rlh'])} }`,
+      `rect { stroke-width: ${pick(['.25rem', '.1rlh'])} }`,
+      ...(next() < 0.25
+        ? [`html { font-size: ${pick(['23px', '29px'])} }`]
+        : []),
     ].join('\n');
+  };
+  // at the end of the body, before an element at its top, or in a drawing,
+  // at its root or in a group, which is a sheet like any
+  const place = (sheet: Element): void => {
+    const drawn = elementsIn(body).filter(
+      (e) => e.name === 'g' || e.name === 'svg',
+    );
+    const kids = body.children.filter((n) => (n as Element).attribs);
+    const at = next();
+    if (drawn.length && at < 0.35) appendChild(pick(drawn), sheet);
+    else if (kids.length && at < 0.6) DomUtils.prepend(pick(kids), sheet);
+    else appendChild(body, sheet);
   };
   const kind = sheets.length ? Math.floor(next() * 8) : 0;
   if (kind === 6 || kind === 7) {
@@ -4057,9 +4995,7 @@ function sheetChange(
           : `@layer ${name} {\n${rules()}\n}`,
       ),
     ]);
-    const kids = body.children.filter((n) => (n as Element).attribs);
-    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), layered);
-    else appendChild(body, layered);
+    place(layered);
     sheets.push(layered);
     return [
       {
@@ -4072,9 +5008,7 @@ function sheetChange(
   }
   if (kind === 0) {
     const style = createElement('style', {}, [createText(rules())]);
-    const kids = body.children.filter((n) => (n as Element).attribs);
-    if (kids.length && next() < 0.4) DomUtils.prepend(pick(kids), style);
-    else appendChild(body, style);
+    place(style);
     sheets.push(style);
     return [
       {
@@ -4140,10 +5074,14 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
     // what runs a `@keyframes` no sheet has yet, held half way through it
     const css =
       `${rulesFor(next, true)}\n.a { animation: k 1s paused -0.5s }\n` +
-      '.b::before { content: "*"; animation: k 1s paused -0.5s }';
+      '.b::before { content: "*"; animation: k 1s paused -0.5s }\n' +
+      // a root the initial style is not, under a `<body>` that hands none of
+      // it on: what a `rem` in a rule kept and in a rule added reads
+      'html { font-size: 19px; line-height: 2 }\nbody { font-size: 13px }\n' +
+      '.c { margin-left: 1rem }';
     // a document whose markup writes its `<html>`, and one the cascade
     // supplies one for, which a rule for the root reaches otherwise
-    const markup = markupFor(next, false, false);
+    const markup = markupFor(next, false, false, true);
     const full = seed % 2 === 0;
     const source = full
       ? `<!doctype html><html><head><style>body{margin:0}\n${css}</style></head><body>${markup}</body></html>`
@@ -4154,6 +5092,7 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
     const bodyEl = elementsIn(el.document as unknown as Element).find(
       (e) => e.name === 'body',
     )!;
+    shapesOf(el, bodyEl);
     const sheets: Element[] = [];
     const internals = el as unknown as Record<
       string,
@@ -4183,9 +5122,16 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
       if (answer instanceof Set) added += 1;
       else if (answer === null) whole += 1;
       const scoped = stylesOf(el, bodyEl);
+      const shapes = shapesOf(el, bodyEl);
       el.touchDocument();
       await act();
       const styled = stylesOf(el, bodyEl);
+      assert.deepStrictEqual(
+        shapes,
+        shapesOf(el, bodyEl),
+        `seed ${seed}, step ${step}: what a shape is given\n` +
+          `sheets\n${sheets.map((st) => DomUtils.textContent(st)).join('\n---\n')}`,
+      );
       const at = firstApart(scoped, styled);
       assert.ok(
         at < 0 && scoped.length === styled.length,
@@ -4225,6 +5171,319 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   assert.ok(whole > 5, `${whole} sheet changes restyled everything`);
   assert.ok(tookOver > 20, `${tookOver} cascades took over the one before`);
 });
+
+/** What `read` says and what is drawn, held to a refresh of everything,
+ *  which styles the root, where `rebuilt` keeps every style there is. */
+async function asRefreshed<T>(
+  result: Awaited<ReturnType<typeof render>>['result'],
+  el: HtmlViewNode,
+  read: () => T,
+  what: string,
+): Promise<T> {
+  await act();
+  const told = read();
+  const drawn = await snapshot(result, el);
+  el.touchDocument();
+  await act();
+  assert.deepStrictEqual(read(), told, `${what}: a refresh of everything`);
+  assert.strictEqual(
+    bytesApart(drawn, await snapshot(result, el)),
+    0,
+    `${what}: what it draws`,
+  );
+  return told;
+}
+
+/** The style a build gave an element, to tell one kept from one made. */
+const styleKept = (el: HtmlViewNode, id: string): unknown =>
+  (treeOf(el) as { styles: Map<Element, { style: unknown }> }).styles.get(
+    byId(el, id),
+  )?.style;
+
+/** A root a `rem` and an `rlh` do not come to from the initial style. */
+const SIZED_ROOT = 'html{font-size:32px;line-height:2} body{margin:0}';
+
+metric(
+  'a rem or an rlh in a rule a sheet adds is of the root the document has, not the initial one',
+  async () => {
+    const article = '<div id="b">x</div><div id="beside">y</div>';
+    const inHtml = (css: string) =>
+      `<html><head><style id="css">${css}</style></head><body>${article}</body></html>`;
+    const cases: [string, string, string, string, string][] = [
+      [
+        'a rem',
+        inHtml(SIZED_ROOT),
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      [
+        'an rlh',
+        inHtml(SIZED_ROOT),
+        '#b{margin-left:1rlh}',
+        'margin-left',
+        '64px',
+      ],
+      [
+        'a font size',
+        inHtml(SIZED_ROOT),
+        '#b{font-size:.5rem}',
+        'font-size',
+        '16px',
+      ],
+      // a rem is at the element's zoom, which a root's lengths are not
+      [
+        'a zoomed root',
+        inHtml(`${SIZED_ROOT} html{zoom:2}`),
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      // no `<html>`: a style the cascade makes up is the root, and a build of
+      // subtrees does not make it
+      [
+        'a <body> alone',
+        `<style id="css">${SIZED_ROOT}</style><body>${article}</body>`,
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+      [
+        'a fragment',
+        `<style id="css">${SIZED_ROOT}</style><section>${article}</section><p>z</p>`,
+        '#b{margin-left:1rem}',
+        'margin-left',
+        '32px',
+      ],
+    ];
+    for (const [what, source, rule, prop, value] of cases) {
+      const { result, node } = await render(source, 300);
+      const el = view(node);
+      await snapshot(result, el);
+      const held = styleKept(el, 'beside');
+      const cascade = cascadeOf(el);
+      writeRules(el, rule);
+      await act();
+      assert.notStrictEqual(cascadeOf(el), cascade, `${what}: a new cascade`);
+      assert.strictEqual(styleKept(el, 'beside'), held, `${what}: style kept`);
+      const read = () => el.computedStyle(byId(el, 'b'))?.[prop];
+      assert.strictEqual(
+        await asRefreshed(result, el, read, what),
+        value,
+        what,
+      );
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a rule a sheet adds for the root moves every rem, where no parent’s style hands it on',
+  async () => {
+    // a `<body>` with a size of its own keeps the root's from every element
+    // under it: all that says they read it is what the cascade noted
+    const css = 'html{font-size:32px} body{margin:0;font-size:16px}';
+    const held = '#a{margin-left:1rem}';
+    const article = '<div id="a">x</div><div id="b">y</div>';
+    const cases: [string, string, string, string[]][] = [
+      [
+        'a document with its <html>',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{font-size:40px}',
+        ['40px', '0px'],
+      ],
+      // which no element's rules are asked for, and an added rule reaches
+      [
+        'a <body> alone',
+        `<style id="css">${css}${held}</style><body>${article}</body>`,
+        'html{font-size:40px}',
+        ['40px', '0px'],
+      ],
+      // the rule for the root in the same sheet as one that reads it
+      [
+        'an added rem beside it',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{font-size:40px} #b{margin-left:.5rem}',
+        ['40px', '20px'],
+      ],
+      // what the rule sets of the root is not its font: what is read of it is
+      // the style the rule made, and a `rem` of the size that style has
+      [
+        'its colour alone',
+        `<html><head><style id="css">${css}${held}</style></head><body>${article}</body></html>`,
+        'html{color:#ff0000} #b{margin-left:.5rem}',
+        ['32px', '16px'],
+      ],
+    ];
+    for (const [what, source, rules, values] of cases) {
+      const { result, node } = await render(source, 300);
+      const el = view(node);
+      await snapshot(result, el);
+      writeRules(el, rules);
+      const read = () =>
+        ['a', 'b'].map((id) => el.computedStyle(byId(el, id))?.['margin-left']);
+      assert.deepStrictEqual(await asRefreshed(result, el, read, what), values);
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'the root stays with the styles through the changes after a sheet adds rules',
+  async () => {
+    const { result, node } = await render(
+      `<html id="root"><head><style id="css">${SIZED_ROOT} html.big{font-size:40px}` +
+        ' body{font-size:16px} #a{margin-left:1rem}</style></head>' +
+        '<body><div id="a">x</div><div id="b">y</div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    writeRules(el, '#b.on{padding-left:1rem} #b.on::before{content:"*"}');
+    await act();
+    const cascade = cascadeOf(el);
+    const read = (id: string, prop: string) => () =>
+      el.computedStyle(byId(el, id))?.[prop];
+    // a change told to the cascade the sheet made, which styles no root
+    el.touchDocument([setClass(byId(el, 'b'), 'on')]);
+    await act();
+    assert.strictEqual(cascadeOf(el), cascade, 'the same cascade');
+    assert.strictEqual(
+      await asRefreshed(result, el, read('b', 'padding-left'), 'a told change'),
+      '32px',
+    );
+    // and a second sheet's, made from that cascade and not from the first
+    writeRules(el, '#b{margin-left:2rem}');
+    await act();
+    assert.notStrictEqual(cascadeOf(el), cascade, 'a cascade after it');
+    assert.strictEqual(
+      await asRefreshed(result, el, read('b', 'margin-left'), 'a second sheet'),
+      '64px',
+    );
+    // and the root told to move, which a rem kept since the first build follows
+    el.touchDocument([setClass(byId(el, 'root'), 'big')]);
+    assert.strictEqual(
+      await asRefreshed(result, el, read('a', 'margin-left'), 'the root moved'),
+      '40px',
+    );
+  },
+);
+
+metric(
+  'a rem in a container query a sheet adds is of the root, not of the container',
+  async () => {
+    const { result, node } = await render(
+      `<html><head><style id="css">${SIZED_ROOT}` +
+        ' #c{container-type:inline-size;width:300px;font-size:10px}</style></head>' +
+        '<body><div id="c"><div id="b">x</div></div></body></html>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const was = el.computedStyle(byId(el, 'b'))?.color;
+    // 480px, wider than the container; 150px at the container's own size
+    writeRules(el, '@container (min-width: 15rem) { #b{color:#ff0000} }');
+    const read = () => el.computedStyle(byId(el, 'b'))?.color;
+    assert.strictEqual(await asRefreshed(result, el, read, 'a query'), was);
+  },
+);
+
+metric(
+  'a rem kept in a pseudo-element or a container query moves with a fluid root after a sheet adds rules',
+  async () => {
+    // Neither is in an element's own style, so only what the cascade noted
+    // says who reads the root, where a build would have styled them all:
+    // a rule that keeps off the root, and a `vw` of its own to have a resize
+    // ask. In a document of each: one that reads it from a pseudo-element
+    // is built at a new width, which styles the other as well.
+    const fluid = 'html{font-size:5vw} body{margin:0;font-size:16px}';
+    const cases: [string, string, (el: HtmlViewNode) => unknown, unknown][] = [
+      [
+        'a pseudo-element',
+        `${fluid} #a::before{content:"*";margin-left:1rem}`,
+        (el) => el.computedStyle(byId(el, 'a'), 'before')?.['margin-left'],
+        '40px',
+      ],
+      [
+        'a query',
+        `${fluid} #c{container-type:inline-size;width:300px}` +
+          ' @container (min-width:10rem){#b{color:#ff0000}}',
+        (el) => el.computedStyle(byId(el, 'b'))?.color === 'rgb(255, 0, 0)',
+        false,
+      ],
+    ];
+    for (const [what, css, read, value] of cases) {
+      const { el, resize, result } = await renderScrolled(
+        `<html><head><style id="css">${css}</style></head><body>` +
+          '<div id="a">x</div><div id="c"><div id="b">y</div></div>' +
+          '<div id="z">z</div></body></html>',
+        300,
+      );
+      await snapshot(result, el);
+      writeRules(el, '#z{width:1vw}');
+      await act();
+      await resize(300, 800);
+      assert.strictEqual(
+        await asRefreshed(result, el, () => read(el), what),
+        value,
+        what,
+      );
+      result.unmount();
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a rem in a rule a sheet adds for a shape, and in a drawing it draws again, is of the root',
+  async () => {
+    const drawing =
+      '<svg id="s" width="120" height="100">' +
+      '<rect x="30" y="30" width="60" height="60" fill="none" stroke="#ff0000"/>' +
+      '<rect id="g" x="0" y="0" width="2rem" height="8" fill="#0000ff"/></svg>';
+    const { result, node } = await render(
+      `<html><head><style id="css">${SIZED_ROOT}</style></head>` +
+        `<body id="body">${drawing}</body></html>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    // the shape's, and the box of the drawing that is built again for it
+    writeRules(el, 'rect{stroke-width:.5rem} svg{margin-top:0;display:block}');
+    const body = byId(el, 'body');
+    await asRefreshed(result, el, () => shapesOf(el, body), 'a shape');
+    // 8px either side of the edge at 30: three and a half at the initial size
+    await expectPixel(result.ctx, 24, 60, '#ff0000');
+    await expectPixel(result.ctx, 60, 4, '#0000ff');
+  },
+);
+
+metric(
+  'a rem in a rule that reaches a drawing through what it names is of the root',
+  async () => {
+    // asked once the build is over (`namersOf`), of a cascade that styled
+    // no root: 16px either side of the edge at 30, 3.5 at the initial size
+    const sprite =
+      '<symbol id="s" viewBox="0 0 100 100"><rect x="30" y="30" width="40"' +
+      ' height="40" fill="none" stroke="#ff0000"/></symbol>';
+    const { result, node } = await render(
+      blocked(
+        SIZED_ROOT,
+        hidden(sprite),
+        '<svg id="d" width="100" height="100"><use href="#s"/></svg>',
+      ),
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    writeRules(el, 'rect{stroke-width:.5rem}');
+    await asRefreshed(result, el, () => null, 'a named shape');
+    const [x, y] = pointIn(el, 'd');
+    await expectPixel(result.ctx, x - 26, y, '#ff0000');
+  },
+);
 
 metric(
   'a sheet that brings a @keyframes styles what runs its name, and nothing else',
@@ -4411,6 +5670,59 @@ test('in a document of drawings, a refresh told what changed gives their shapes 
     ways.shapes >= seeds,
     `${ways.shapes} changes reached a shape from outside its drawing`,
   );
+});
+
+test('what a told change moves into an inline drawing is styled there, shadow trees and all, where what was in a tree read the style it had', async () => {
+  // what is in a drawing has no box, so a read styles it down from the
+  // nearest element a build styled. Each line is what Chromium and Firefox
+  // read, a script's `getComputedStyle` of a host moved into a `<g>`: WebKit
+  // alone has a slot and what it takes inherit nothing there
+  const { node } = await render(
+    '<style>.scope svg .moved { visibility: hidden; color: #ff0000 }' +
+      '.scope svg .kid { color: #0000ff }</style>' +
+      '<div class="scope"><div id="from"><div id="moved" class="moved">' +
+      '<section><template shadowrootmode="open"><style>b { margin: 0 }</style>' +
+      '<b><i>in</i></b><slot></slot><div><template shadowrootmode="open">' +
+      '<u>deeper</u></template></div></template>' +
+      '<span class="kid">taken</span></section></div></div>' +
+      '<svg width="20" height="20"><g id="g"></g></svg></div>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const moved = byId(el, 'moved');
+  const from = byId(el, 'from');
+  const g = byId(el, 'g');
+  const read = (): string[] =>
+    elementsIn(moved).map((e) => {
+      const style = el.computedStyle(e)!;
+      return `${e.name} ${style.visibility} ${style.color}`;
+    });
+  const ink = read()[0].split(' ').slice(2).join(' ');
+  assert.deepStrictEqual(
+    read(),
+    ['div', 'section', 'span', 'style', 'b', 'i', 'slot', 'div', 'u'].map(
+      (tag) => `${tag} visible ${ink}`,
+    ),
+  );
+  removeNode(moved);
+  appendChild(g, moved);
+  el.touchDocument([
+    { type: 'childList', target: from, addedNodes: [], removedNodes: [moved] },
+    { type: 'childList', target: g, addedNodes: [moved], removedNodes: [] },
+  ]);
+  await act();
+  assert.deepStrictEqual(read(), [
+    'div hidden rgb(255, 0, 0)',
+    'section hidden rgb(255, 0, 0)',
+    'span hidden rgb(0, 0, 255)',
+    'style hidden rgb(255, 0, 0)',
+    'b hidden rgb(255, 0, 0)',
+    'i hidden rgb(255, 0, 0)',
+    'slot hidden rgb(255, 0, 0)',
+    'div hidden rgb(255, 0, 0)',
+    'u hidden rgb(255, 0, 0)',
+  ]);
 });
 
 test('in a document of :has()s that ask only of their children and of sibling combinators, a refresh told what changed comes to the same styles', async () => {
@@ -5679,7 +6991,15 @@ async function refreshesAgree(
     const bodyEl = el.document.children.find(
       (n) => (n as Element).name === 'body',
     ) as Element;
-    if (drawings) shapesOf(el, bodyEl);
+    // none where the changes left the document with no height
+    const picture = async (): Promise<Uint8ClampedArray> => {
+      await act();
+      return (el as unknown as { abs: { height: number } }).abs.height > 0
+        ? snapshot(result, el)
+        : new Uint8ClampedArray();
+    };
+    // painted, as what a drawing names is known of one that has been
+    if (drawings) await picture();
     for (let step = 0; step < 8; step += 1) {
       const changes: HtmlChange[] = [];
       const batch = 1 + Math.floor(next() * 3);
@@ -5718,14 +7038,21 @@ async function refreshesAgree(
       if (scope) ways[way] += 1;
       const scoped = stylesOf(el, bodyEl);
       const shapes = drawings ? shapesOf(el, bodyEl) : [];
+      const drawn = drawings ? await picture() : null;
       el.touchDocument();
       const whole = stylesOf(el, bodyEl);
+      const tagged = (n: unknown): string => {
+        const e = n as Element;
+        return `<${e.name} ${JSON.stringify(e.attribs)}>`;
+      };
       const told = (): string =>
         changes
           .map((c) =>
             c.type === 'attributes'
               ? `${c.attributeName} of <${c.target.name} ${JSON.stringify(c.target.attribs)}> was ${JSON.stringify(c.oldValue)}`
-              : c.type,
+              : c.type === 'childList'
+                ? `${c.addedNodes.map(tagged)} in and ${c.removedNodes.map(tagged)} out of ${tagged(c.target)}`
+                : c.type,
           )
           .join(', ') + ` (${way})`;
       if (drawings) {
@@ -5733,6 +7060,16 @@ async function refreshesAgree(
           shapes,
           shapesOf(el, bodyEl),
           `seed ${seed}, step ${step}: what a shape is given\nrules\n${css}\n` +
+            `changes ${told()}\nin ${source}`,
+        );
+        const after = await picture();
+        // as far as both reach: core takes the document's new height a pass
+        // after what is in it
+        const shared = Math.min(drawn!.length, after.length);
+        assert.ok(
+          levelsApart(drawn!.subarray(0, shared), after.subarray(0, shared)) <=
+            1,
+          `seed ${seed}, step ${step}: what is drawn\nrules\n${css}\n` +
             `changes ${told()}\nin ${source}`,
         );
       }

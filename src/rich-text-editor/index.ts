@@ -862,7 +862,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
   const onMouseDown = (ev: X11MouseEvent): void => {
     latest.current.onMouseDown?.(ev);
     if (ev.defaultPrevented || latest.current.disabled) return;
-    if (view.mouseDown(ev)) ev.preventDefault();
+    view.mouseDown(ev);
   };
 
   const setRoot = useCallback((node: unknown) => {
@@ -1143,9 +1143,9 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         ev.preventDefault();
       },
       // drag and drop (./drag.ts): the selection drags out, and a drop is
-      // read like a paste. A press on the selection is left to core, which
-      // arms the drag here; `onDragStart` cancels one that is not the
-      // selection's, and leaves a drag of something inside alone.
+      // read like a paste. Core arms a drag here from any press;
+      // `onDragStart` cancels one that is not the selection's, and leaves a
+      // drag of something inside alone.
       draggable: !disabled,
       dragData,
       dragActions: editable ? MOVE_OR_COPY : COPY_ONLY,

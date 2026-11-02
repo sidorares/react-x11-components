@@ -225,6 +225,56 @@ test('a negative size is no size, and the declaration goes', async () => {
   assert.deepStrictEqual([b.width, b.height], [30, 20]);
 });
 
+test("display's two words are the one keyword that says the same", async () => {
+  // CSS Display 3, 2.1: an outer display and an inner one in either order.
+  // pdf.js's toolbar is `inline flex` throughout, and each group in it was
+  // a block under the one before
+  const words = [
+    ['inline flex', 'inline-flex'],
+    ['flex inline', 'inline-flex'],
+    ['block flex', 'flex'],
+    ['inline grid', 'inline-grid'],
+    ['block grid', 'grid'],
+    ['inline flow-root', 'inline-block'],
+    ['block flow-root', 'flow-root'],
+    ['inline flow', 'inline'],
+    ['flow', 'block'],
+    ['block flow', 'block'],
+    ['inline table', 'inline-table'],
+    ['block table', 'table'],
+    ['flow list-item', 'list-item'],
+    ['block flow list-item', 'list-item'],
+    ['INLINE  FLEX', 'inline-flex'],
+  ];
+  // and two that are not one go, leaving what came before
+  const refused = ['flex grid', 'inline block', 'flow flow', 'none flex'];
+  const { node } = await render(
+    '<div id="row"><i id="a" style="width:10px;height:6px;display:inline flex">' +
+      '</i><i id="b" style="width:10px;height:6px;display:inline flex"></i></div>' +
+      words
+        .map(([w], i) => `<div id="w${i}" style="display:${w}"></div>`)
+        .join('') +
+      refused
+        .map((w, i) => `<div id="r${i}" style="display:${w}"></div>`)
+        .join(''),
+  );
+  const el = view(node);
+  const display = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!.display;
+  assert.strictEqual(
+    boxOf(el, 'b').y,
+    boxOf(el, 'a').y,
+    'two inline flex boxes stand on one line',
+  );
+  assert.ok(boxOf(el, 'b').x >= boxOf(el, 'a').x + 10);
+  words.forEach(([written, one], i) => {
+    assert.strictEqual(display(`w${i}`), one, written);
+  });
+  refused.forEach((written, i) => {
+    assert.strictEqual(display(`r${i}`), 'block', written);
+  });
+});
+
 test('calc() and its kin come down to pixels and a percentage of what layout knows', () => {
   const ctx = { em: 20, rem: 16, vw: 1000, vh: 500, scale: 1 };
   const len = (v: string) => parseLength(v, ctx);

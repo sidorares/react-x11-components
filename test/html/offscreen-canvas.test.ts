@@ -7,62 +7,19 @@
 import assert from 'node:assert/strict';
 import { afterEach, test as nodeTest } from 'node:test';
 import { PNG } from 'pngjs';
-import { act, cleanup, renderX11, waitForPixel } from 'react-x11/test';
+import { cleanup, waitForPixel } from 'react-x11/test';
 
-import { Html, preloadHtmlScripts } from '../../src/html/index.js';
+import { preloadHtmlScripts } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { encodePng } from '../../src/html/scripts/png.js';
-import { FONTS, RED_PNG, h } from './harness.js';
+import { FONTS, PAGE, RED_PNG, scriptedPage } from './harness.js';
 
 afterEach(cleanup);
 await preloadHtmlScripts();
 
 const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
 
-const PAGE = 'https://example.test/page.html';
-
-/** A page whose scripts run: what it logs, a wait for a log line that
- *  starts with a prefix, and the window it is drawn in. */
-async function page(
-  body: string,
-  ms = 5000,
-  /** What its images answer with, by the URL it asks for. */
-  images: Record<string, Uint8Array> = {},
-): Promise<{
-  logs: string[];
-  until(prefix: string): Promise<string>;
-  result: Awaited<ReturnType<typeof renderX11>>;
-}> {
-  const logs: string[] = [];
-  const result = await renderX11(
-    h(Html, {
-      source: `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}</body></html>`,
-      partial: false,
-      baseUrl: PAGE,
-      onResource: ({ url }: { url: string }) =>
-        images[url] ? { kind: 'image' as const, bytes: images[url] } : null,
-      scripts: {
-        log: (level: string, text: string) =>
-          void logs.push(`${level}: ${text}`),
-      },
-    }),
-    FONTS ? { width: 200, height: 120, fonts: FONTS } : { backend: 'mock' },
-  );
-  return {
-    logs,
-    result,
-    async until(prefix) {
-      const end = Date.now() + ms;
-      const found = () => logs.find((l) => l.startsWith(`log: ${prefix}`));
-      while (!found() && Date.now() < end) {
-        await act(() => new Promise((r) => setTimeout(r, 10)));
-      }
-      const line = found();
-      assert.ok(line, `no "${prefix}" in:\n${logs.join('\n')}`);
-      return line.slice(`log: ${prefix}`.length).trim();
-    },
-  };
-}
+const page = scriptedPage;
 
 const LOG =
   'function log() { console.log([].slice.call(arguments).join("|")); }' +

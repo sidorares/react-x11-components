@@ -29,11 +29,13 @@
 //     and every response's `Set-Cookie` is stored — on each redirect too,
 //     which is why such a network follows redirects itself. Without one
 //     nothing is stored between requests, as before.
-//   - **No downloads.** Anything that is not a document, an image, a
-//     stylesheet, a font or a script is not fetched at all — but a script's
+//   - **No download by itself.** Anything that is not a document, an image,
+//     a stylesheet, a font or a script is not fetched at all — but a script's
 //     own `fetch`, of the page's own origin, or of another where CORS lets
 //     the page read it (the engine keeps to that; this keeps the host's
-//     headers on it).
+//     headers on it). A host that saves files asks `download`, and a
+//     response that should be saved says so (`DocumentResponse.disposition`):
+//     what it does about it is the host's.
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
 //     POST from a forged one by them.
@@ -47,6 +49,9 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { CookieJar } from './cookies.js';
+import type { HtmlServiceWorkers } from './service-workers.js';
+import { downloadName } from './download.js';
+import type { HtmlDownloadRequest, HtmlDownloadSource } from './download.js';
 import {
   cachedResponse,
   conditionalHeaders,
@@ -145,9 +150,23 @@ export type HtmlTransport = (
 export interface HtmlNetworkOptions {
   /** The `User-Agent` every request carries. Default `HTML_USER_AGENT`. */
   userAgent?: string;
+  /**
+   * What keeps the service workers of the documents this network loads: a
+   * navigation the scope of one holds is that worker's to answer first. The
+   * same one goes to `<Html scripts={{ serviceWorkers }}>`. Default none.
+   */
+  serviceWorkers?: HtmlServiceWorkers;
   /** How many bytes the cache keeps in memory before it forgets the
    *  oldest. Default 256 MB. */
   cacheBytes?: number;
+  /**
+   * The largest body held whole: a script, a stylesheet, an image, a font,
+   * or a page's request for all of a response at once. Past it the request
+   * fails, with `ERR_FILE_TOO_BIG`, and no part of the body is handed on. A
+   * body a page reads as it arrives is not held here, and has no limit.
+   * Default 256 MB.
+   */
+  resourceBytes?: number;
   /**
    * Where the HTTP cache keeps responses past this network's memory, for
    * the next network that opens it to find: `HtmlProfile`'s `httpCache`,
@@ -354,13 +373,25 @@ export interface DocumentResponse {
   type: string;
   charset: string | null;
   body: AsyncIterable<Uint8Array>;
+  /** Its `Content-Disposition`, which may say it is to be saved, not shown. */
+  disposition?: string | null;
+  /** Its `Content-Length`, where it said. */
+  size?: number | null;
+  /** Its body with no limit on it, for a host that saves it: read this or
+   *  `body`, and never both. */
+  whole?: AsyncIterable<Uint8Array>;
+  /** Stop the clock on a stalled response, for a host that will not read it
+   *  yet: one asking its user where to save it. The clock starts again as
+   *  the body is first read. */
+  hold?: () => void;
 }
 
 /** What a form sends with a POST: its body as `<Html>` encoded it, the type
  *  that says how, and the page the form was on — which a server that
  *  checks where a POST came from reads as its `Origin` and `Referer`. */
 export interface PostData {
-  body: string;
+  /** Bytes where a file is in it. */
+  body: string | Uint8Array;
   contentType: string;
   from: string;
 }
@@ -376,7 +407,9 @@ export class NetworkError extends Error {
 }
 
 const MAX_DOCUMENT = 32 * 1024 * 1024;
-const MAX_RESOURCE = 16 * 1024 * 1024;
+/** vscode.dev's workbench is one script past 16 MiB, and an application
+ *  compiled to WebAssembly can be ten times that. */
+const MAX_RESOURCE = 256 * 1024 * 1024;
 const TIMEOUT = 30_000;
 
 /** What the network keeps of a resource in its memory. */
@@ -447,6 +480,7 @@ export class HtmlNetwork {
   private _sizes = new Map<string, number>();
   private _bytes = 0;
   private _limit: number;
+  private readonly _resourceLimit: number;
   private _running = 0;
   private _perHost = new Map<string, number>();
   private _queue: Queued[] = [];
@@ -463,6 +497,7 @@ export class HtmlNetwork {
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
   private readonly _cookies: CookieJar | null;
+  private readonly _serviceWorkers: HtmlServiceWorkers | null;
   /** Who is told of each request (`observe`), and the last id handed out. */
   private readonly _observers = new Set<
     (activity: HtmlNetworkActivity) => void
@@ -471,6 +506,7 @@ export class HtmlNetwork {
 
   constructor(options: HtmlNetworkOptions = {}) {
     this._limit = options.cacheBytes ?? 256 * 1024 * 1024;
+    this._resourceLimit = options.resourceBytes ?? MAX_RESOURCE;
     this._store = options.httpCache ?? null;
     this._language = acceptLanguage();
     this._userAgent = options.userAgent ?? HTML_USER_AGENT;
@@ -484,6 +520,23 @@ export class HtmlNetwork {
     this._webRTC = options.webRTC !== false;
     this._webSocket = options.webSocket !== false;
     this._cookies = options.cookies ?? null;
+    this._serviceWorkers = options.serviceWorkers ?? null;
+    if (this._serviceWorkers) {
+      const network = this;
+      this._serviceWorkers.network = {
+        fetch: (scope, request, signal) =>
+          network.fetcher(scope)(request, signal),
+        get userAgent() {
+          return network.userAgent;
+        },
+      };
+    }
+  }
+
+  /** What keeps the service workers of the documents this network loads, for
+   *  `<Html scripts={{ serviceWorkers }}>`, or null for none. */
+  get serviceWorkers(): HtmlServiceWorkers | null {
+    return this._serviceWorkers;
   }
 
   /** The cookie jar this network sends and stores cookies through, and a
@@ -1004,9 +1057,9 @@ export class HtmlNetwork {
       scheme === 'data'
         ? Promise.resolve({ fetched: readDataUrl(url) })
         : scheme === 'file'
-          ? this._paced(url, signal, () => readLocal(url, MAX_RESOURCE)).then(
-              (fetched) => ({ fetched }),
-            )
+          ? this._paced(url, signal, () =>
+              readLocal(url, this._resourceLimit),
+            ).then((fetched) => ({ fetched }))
           : this._http(
               key,
               url,
@@ -1164,7 +1217,7 @@ export class HtmlNetwork {
     const answer = await this._paced(url, signal, () =>
       this._fetch(url, {
         headers: { ...headers, ...validators, ...(reload ? RELOAD : null) },
-        limit: MAX_RESOURCE,
+        limit: this._resourceLimit,
         page,
         id,
       }),
@@ -1258,6 +1311,12 @@ export class HtmlNetwork {
        *  same-site with anything (6265bis 5.2.2). A form's POST is started
        *  by its `from`. */
       initiator?: string | null;
+      /** Whether a service worker hears it: not where the site's scripts
+       *  are off (`false`), and not on a hard reload (`'bypass'`), which
+       *  leaves the document it brings uncontrolled. */
+      serviceWorkers?: boolean | 'bypass';
+      /** Whether a reload asked for it, which a worker reads. */
+      reload?: boolean;
     } = {},
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
@@ -1285,6 +1344,31 @@ export class HtmlNetwork {
         `The ${scheme}: scheme is not something this browser opens.`,
         'ERR_UNKNOWN_URL_SCHEME',
       );
+    }
+    const workers = this._serviceWorkers;
+    if (workers && options.serviceWorkers !== false && workers.controls(url)) {
+      if (options.serviceWorkers === 'bypass') {
+        workers.bypassing.add(url.split('#')[0]);
+      } else {
+        const answered = await workers.navigation(
+          {
+            url,
+            method: post ? 'POST' : 'GET',
+            headers: post ? [['content-type', post.contentType]] : [],
+            body: typeof post?.body === 'string' ? post.body : null,
+            ...(post && typeof post.body !== 'string'
+              ? { bytes: post.body }
+              : {}),
+            mode: 'navigate',
+            destination: 'document',
+            credentials: 'include',
+            referrer: options.initiator ?? post?.from ?? '',
+            reload: !!options.reload,
+          },
+          signal,
+        );
+        if (answered) return this._fromWorker(answered, url, signal, options);
+      }
     }
     const stall = stallTimer(this._timeout);
     const headers: Record<string, string> = {
@@ -1347,8 +1431,81 @@ export class HtmlNetwork {
       status: response.status,
       type,
       charset,
+      disposition: response.headers.get('content-disposition'),
+      size: Number(response.headers.get('content-length')) || null,
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
+      whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
+      hold: stall.hold,
     };
+  }
+
+  /**
+   * A document a service worker answered with. It is at the address that was
+   * asked for, whatever URL the response was made from, which is how an
+   * application's shell answers every route of it; a redirect the worker
+   * handed back is followed as a server's is.
+   */
+  private async _fromWorker(
+    response: FetchResponse,
+    url: string,
+    signal: AbortSignalLike,
+    options: Parameters<HtmlNetwork['document']>[3],
+  ): Promise<DocumentResponse> {
+    const header = (name: string): string | null =>
+      response.headers.find(([k]) => k.toLowerCase() === name)?.[1] ?? null;
+    if (response.status >= 300 && response.status < 400) {
+      const location = header('location');
+      if (location) {
+        const moved = await this.document(
+          new URL(location, url).href,
+          signal,
+          null,
+          options,
+        );
+        return { ...moved, redirected: true };
+      }
+    }
+    const { type, charset } = contentType(header('content-type'));
+    const chunks =
+      response.chunks ??
+      once(response.bytes ?? new TextEncoder().encode(response.body ?? ''));
+    return {
+      url: response.redirected ? response.url : url,
+      redirected: response.redirected,
+      status: response.status,
+      type,
+      charset,
+      disposition: header('content-disposition'),
+      size: Number(header('content-length')) || null,
+      body: chunks,
+      whole: chunks,
+    };
+  }
+
+  /**
+   * What a page asked to have saved, as it arrives, for a host to write:
+   * from the bytes a page already has, or through the network as a document
+   * is, with the page's cookies. A document's limit is no limit here.
+   */
+  async download(
+    request: HtmlDownloadRequest,
+    signal: AbortSignalLike,
+    from: string | null = null,
+  ): Promise<HtmlDownloadSource> {
+    if (request.bytes) {
+      const type = request.type ?? '';
+      return {
+        url: request.url,
+        filename: downloadName(request.url, request.filename, null, type),
+        type,
+        size: request.bytes.length,
+        body: once(request.bytes),
+      };
+    }
+    const response = await this.document(request.url, signal, null, {
+      initiator: from,
+    });
+    return downloadSource(response, request.filename);
   }
 
   /**
@@ -1486,13 +1643,13 @@ export class HtmlNetwork {
       return {
         ...answer,
         bytes: new Uint8Array(0),
-        chunks: this._observed(id, bodyChunks(response, MAX_RESOURCE)),
+        chunks: this._observed(id, bodyChunks(response)),
       };
     }
     const chunks: Uint8Array[] = [];
     for await (const chunk of this._observed(
       id,
-      bodyOf(response, MAX_RESOURCE),
+      bodyOf(response, this._resourceLimit),
     )) {
       chunks.push(chunk);
     }
@@ -2255,7 +2412,12 @@ export function contentType(header: string | null): {
   return { type: type.trim().toLowerCase(), charset };
 }
 
-/** A response's body, a chunk at a time, cut off at `limit` bytes. */
+/**
+ * A response's body, a chunk at a time, for a caller that holds all of it.
+ * Past `limit` bytes it throws: part of a script is a `SyntaxError` at its
+ * end, far from the cause, and part of anything else is a body that says
+ * nothing of having been cut.
+ */
 async function* bodyOf(
   response: ResponseLike,
   limit: number,
@@ -2269,14 +2431,36 @@ async function* bodyOf(
       if (done || !value) return;
       total += value.length;
       if (total > limit) {
-        yield value.subarray(0, value.length - (total - limit));
-        return;
+        throw new NetworkError(
+          `The response is larger than ${limit} bytes.`,
+          'ERR_FILE_TOO_BIG',
+        );
       }
       yield value;
     }
   } finally {
     reader.cancel().catch(() => {});
   }
+}
+
+/** A response as a host saves it, called what it should be. */
+export function downloadSource(
+  response: DocumentResponse,
+  suggested: string,
+): HtmlDownloadSource {
+  return {
+    url: response.url,
+    filename: downloadName(
+      response.url,
+      suggested,
+      response.disposition,
+      response.type,
+    ),
+    type: response.type,
+    size: response.size ?? null,
+    body: response.whole ?? response.body,
+    hold: response.hold,
+  };
 }
 
 /**
@@ -2308,6 +2492,8 @@ export const stallClock = {
 function stallTimer(ms: number): {
   signal: InstanceType<typeof AbortController>['signal'];
   progress(): void;
+  /** Disarmed until the next `progress()`: nobody is reading. */
+  hold(): void;
   stop(): void;
 } {
   const controller = new AbortController();
@@ -2332,6 +2518,9 @@ function stallTimer(ms: number): {
       stallClock.disarm(timer);
       arm();
     },
+    hold() {
+      if (timer !== null) stallClock.disarm(timer);
+    },
     stop() {
       if (timer !== null) stallClock.disarm(timer);
       timer = null;
@@ -2346,6 +2535,7 @@ async function* arriving(
   stall: ReturnType<typeof stallTimer>,
 ): AsyncIterable<Uint8Array> {
   try {
+    stall.progress();
     for await (const chunk of body) {
       stall.progress();
       yield chunk;
@@ -2359,14 +2549,12 @@ async function* arriving(
  * A response's body as it arrives, for a caller that hands it on a chunk at
  * a time: `bodyOf`, but with its reader taken at once, so `return()` lets
  * the connection go whether or not a chunk was ever asked for — a no-cors
- * answer and one CORS refuses are dropped unread.
+ * answer and one CORS refuses are dropped unread. Nothing here holds what
+ * it hands on, so nothing bounds it: a stream of events goes on for as long
+ * as the server sends it.
  */
-function bodyChunks(
-  response: ResponseLike,
-  limit: number,
-): AsyncIterable<Uint8Array> {
+function bodyChunks(response: ResponseLike): AsyncIterable<Uint8Array> {
   const reader = response.body?.getReader() ?? null;
-  let total = 0;
   let done = !reader;
   const finish = (): void => {
     if (done) return;
@@ -2386,14 +2574,6 @@ function bodyChunks(
       if (read.done || !read.value) {
         done = true;
         return { done: true, value: undefined };
-      }
-      total += read.value.length;
-      if (total > limit) {
-        finish();
-        return {
-          done: false,
-          value: read.value.subarray(0, read.value.length - (total - limit)),
-        };
       }
       return { done: false, value: read.value };
     },
@@ -2464,8 +2644,27 @@ const TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.css': 'text/css',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/x-m4v',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.mkv': 'video/x-matroska',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.aif': 'audio/aiff',
+  '.aiff': 'audio/aiff',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
   '.woff2': 'font/woff2',
   '.woff': 'font/woff',
   '.ttf': 'font/ttf',
@@ -2479,8 +2678,6 @@ const TEXT = new Set([
   '.mjs',
   '.ts',
   '.tsx',
-  '.json',
-  '.xml',
   '.yml',
   '.yaml',
   '.sh',
@@ -2497,6 +2694,15 @@ interface FileSystem {
     size: number;
   }>;
   readFile(path: string): Promise<Uint8Array>;
+  open(path: string): Promise<{
+    read(
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: null,
+    ): Promise<{ bytesRead: number }>;
+    close(): Promise<void>;
+  }>;
   readdir(
     path: string,
     options: { withFileTypes: true },
@@ -2567,11 +2773,52 @@ async function localDocument(url: string): Promise<DocumentResponse> {
       body: once(new TextEncoder().encode(listing)),
     };
   }
-  const fetched = await readLocal(url, MAX_DOCUMENT);
-  if (!fetched) {
-    throw new NetworkError(`${path} is too large to open.`, 'ERR_FILE_TOO_BIG');
+  if (!info.isFile()) {
+    throw new NetworkError(`${path} is no file to open.`, 'ERR_FILE');
   }
-  return { ...fetched, redirected: false, body: once(fetched.bytes) };
+  return {
+    url,
+    redirected: false,
+    status: 200,
+    type: localType(path),
+    charset: null,
+    size: info.size,
+    body: localBody(path, MAX_DOCUMENT),
+    whole: localBody(path, Infinity),
+  };
+}
+
+/** How much of a file is read at a time. */
+const FILE_CHUNK = 256 * 1024;
+
+/**
+ * A file a piece at a time, read only as it is asked for: a video is not read
+ * here at all, since its player opens it, and one saved has no limit on it.
+ * Past `limit` bytes it throws, as `bodyOf` does for a response.
+ */
+async function* localBody(
+  path: string,
+  limit: number,
+): AsyncIterable<Uint8Array> {
+  const file = await (await fileSystem()).open(path);
+  try {
+    let total = 0;
+    for (;;) {
+      const chunk = new Uint8Array(FILE_CHUNK);
+      const { bytesRead } = await file.read(chunk, 0, FILE_CHUNK, null);
+      if (!bytesRead) return;
+      total += bytesRead;
+      if (total > limit) {
+        throw new NetworkError(
+          `${path} is too large to open.`,
+          'ERR_FILE_TOO_BIG',
+        );
+      }
+      yield chunk.subarray(0, bytesRead);
+    }
+  } finally {
+    await file.close();
+  }
 }
 
 async function* once(bytes: Uint8Array): AsyncIterable<Uint8Array> {

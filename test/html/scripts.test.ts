@@ -80,6 +80,7 @@ import {
   rebuilt,
   snapshot,
 } from './harness.js';
+import { mulberry32 } from '../mulberry32.js';
 import { animationClock, caretClock, owedClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
@@ -1609,6 +1610,8 @@ function bareWorkers(t: TestContext, limit?: number) {
       name: '',
       origin: new URL(PAGE).origin,
       source,
+      secure: true,
+      keySecrets: [],
     });
   const until = async (done: () => boolean) => {
     while (!done()) {
@@ -1707,14 +1710,16 @@ test('a service worker is registered for a scope, installed and activated in a t
     '    r.push(e.source === w, JSON.stringify(e.data)); res(); }); });' +
     '  w.postMessage({ hi: 1 });' +
     '  return Promise.all([heard, activated(w)]).then(function () {' +
-    '    return navigator.serviceWorker.ready; }).then(function (ready) {' +
-    '    r.push(ready === reg, reg.active === w, reg.installing);' +
+    '    r.push(reg.active === w, reg.installing);' +
     '    return navigator.serviceWorker.getRegistration("here/deeper");' +
     '  }).then(function (found) {' +
     '    r.push(found === reg);' +
     '    return reg.unregister();' +
     '  }).then(function (gone) {' +
-    '    r.push(gone, w.state);' +
+    '    r.push(gone);' +
+    '    return w.state === "redundant" ? null : new Promise(function (res) { w.addEventListener("statechange", res); });' +
+    '  }).then(function () {' +
+    '    r.push(w.state);' +
     '    return navigator.serviceWorker.register("sw.js", { scope: "../" }).catch(function (e) { r.push(e.name); });' +
     '  });' +
     '}).then(function () { document.getElementById("out").textContent = JSON.stringify(r); });' +
@@ -1742,7 +1747,6 @@ test('a service worker is registered for a scope, installed and activated in a t
       'installing',
       true,
       '{"got":1,"scope":true,"reg":"here/","post":"undefined","from":"page.html"}',
-      true,
       true,
       null,
       true,
@@ -2314,6 +2318,326 @@ metric(
   },
 );
 
+test('a drawing says where what it holds is: its boxes, its matrices and the length of its outlines', async () => {
+  // mermaid measures every label with `getBBox`, and svg-pan-zoom moves a
+  // drawing with `getCTM`, and neither is a thing any box stands for
+  const doc = await hosted(
+    `<p id=out></p>
+     <svg id=s width=200 height=100 viewBox="0 0 100 50" style="position: absolute; left: 30px; top: 40px">
+       <g id=g transform="translate(10 5)">
+         <rect id=r x=1 y=2 width=20 height=10 transform="scale(2)"/>
+         <circle id=c cx=50 cy=20 r=5 />
+       </g>
+       <path id=p d="M0 0 H10 V10 a5 5 0 0 0 10 0"/>
+       <a id=a href="#x"><text id=t x=5 y=20 font-size=10>hello</text></a>
+     </svg>
+     <script>
+       const $ = (id) => document.getElementById(id);
+       const box = (b) => [b.x, b.y, b.width, b.height].map((n) => Math.round(n * 100) / 100);
+       const m = (x) => [x.a, x.b, x.c, x.d, x.e, x.f];
+       const out = {
+         kinds: [
+           $('s') instanceof SVGSVGElement,
+           $('r') instanceof SVGRectElement,
+           $('r') instanceof SVGGeometryElement,
+           $('p') instanceof SVGPathElement,
+           $('g') instanceof SVGGElement,
+           $('a') instanceof SVGAElement,
+           $('t') instanceof SVGTextElement,
+           $('a') instanceof SVGGraphicsElement,
+         ],
+         bbox: [box($('r').getBBox()), box($('g').getBBox()), box($('p').getBBox())],
+         ctm: m($('r').getCTM()),
+         screen: m($('r').getScreenCTM()),
+         rect: box($('r').getBoundingClientRect()),
+         lengths: [$('r').getTotalLength(), Math.round($('c').getTotalLength())],
+         point: [$('r').getPointAtLength(25).x, $('r').getPointAtLength(25).y],
+         text: [$('t').getBBox().width > 0, $('t').getComputedTextLength() > 0],
+       };
+       const point = $('s').createSVGPoint();
+       point.x = 2;
+       point.y = 3;
+       const moved = point.matrixTransform($('s').createSVGMatrix().translate(10, 20).scale(2));
+       out.point2 = [moved.x, moved.y];
+       out.inverse = m($('s').getScreenCTM().inverse().multiply($('s').getScreenCTM()));
+       out.viewBox = box($('s').viewBox.baseVal);
+       out.owners = [
+         $('r').ownerSVGElement === $('s'),
+         $('s').ownerSVGElement,
+         $('g').viewportElement === $('s'),
+       ];
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    kinds: [true, true, true, true, true, true, true, true],
+    bbox: [
+      [1, 2, 20, 10],
+      [2, 4, 53, 21],
+      [0, 0, 20, 15],
+    ],
+    // scale(2), then the translate, then the viewBox's 2
+    ctm: [4, 0, 0, 4, 20, 10],
+    screen: [4, 0, 0, 4, 50, 50],
+    rect: [54, 58, 80, 40],
+    lengths: [60, 31],
+    point: [21, 7],
+    text: [true, true],
+    point2: [14, 26],
+    inverse: [1, 0, 0, 1, 0, 0],
+    viewBox: [0, 0, 100, 50],
+    owners: [true, null, true],
+  });
+});
+
+test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
+  // pdf.js makes every request's signal with `any`
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const a = new AbortController();
+       const b = new AbortController();
+       const any = AbortSignal.any([a.signal, b.signal]);
+       const nested = AbortSignal.any([any]);
+       const order = [];
+       a.signal.addEventListener('abort', () => order.push('a'));
+       any.onabort = () => order.push('any');
+       nested.addEventListener('abort', () => order.push('nested:' + nested.reason));
+       a.abort('why');
+       a.abort('again');
+       b.abort('later');
+       const out = {
+         order,
+         reasons: [any.aborted, any.reason, b.signal.reason],
+         done: AbortSignal.any([AbortSignal.abort('now')]).reason,
+         fields: ['aborted', 'reason', 'onabort'].filter((k) =>
+           Object.prototype.hasOwnProperty.call(any, k),
+         ),
+       };
+       for (const make of [
+         () => new AbortSignal(),
+         () => AbortSignal.any([1]),
+         () => AbortSignal.any(1),
+         () => AbortSignal.timeout(-1),
+       ]) {
+         try { make(); order.push('made'); }
+         catch (e) { order.push(e.name); }
+       }
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    order: [
+      'a',
+      'any',
+      'nested:why',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+    ],
+    reasons: [true, 'why', 'later'],
+    done: 'now',
+    fields: [],
+  });
+});
+
+test("scheduler.postTask runs each task in a turn of its own, by priority, and a controller's signal moves or cancels what it holds", async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const order = [];
+       const post = (id, options) =>
+         scheduler.postTask(() => { order.push(id); return id; }, options);
+       const controller = new TaskController({ priority: 'background' });
+       const tasks = [
+         post('moved', { signal: controller.signal }),
+         post('visible'),
+         post('blocking', { priority: 'user-blocking' }),
+       ];
+       // no sooner than it says, whatever else has run by then
+       const asked = performance.now();
+       tasks.push(
+         scheduler.postTask(() => performance.now() - asked >= 15, {
+           delay: 15,
+         }),
+       );
+       const gone = new TaskController();
+       const dropped = post('dropped', { signal: gone.signal });
+       const heard = [];
+       controller.signal.onprioritychange = (e) =>
+         heard.push(e.previousPriority, controller.signal.priority);
+       controller.setPriority('user-blocking');
+       gone.abort('no');
+       const caught = (p) => p.then(() => 'ran', (e) => e?.name ?? e);
+       Promise.all([
+         Promise.all(tasks),
+         caught(dropped),
+         caught(scheduler.postTask(() => {}, { priority: 'none' })),
+         caught(scheduler.postTask(() => { throw new RangeError('x'); })),
+         scheduler.yield().then(() => 'yielded'),
+       ]).then((results) => {
+         document.getElementById('out').textContent = JSON.stringify({
+           order,
+           heard,
+           waited: results[0].at(-1),
+           results: results.slice(1),
+           kinds: [
+             controller.signal instanceof TaskSignal,
+             controller.signal instanceof AbortSignal,
+             scheduler instanceof Scheduler,
+           ],
+         });
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''));
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    order: ['moved', 'blocking', 'visible'],
+    heard: ['background', 'user-blocking'],
+    waited: true,
+    results: ['no', 'TypeError', 'RangeError', 'yielded'],
+    kinds: [true, true, true],
+  });
+});
+
+test('navigator.permissions answers what a browser answers before it has asked, and refuses a name it does not know', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const name = (p) => p.then((s) => [s.name, s.state, s instanceof PermissionStatus, s.onchange], (e) => e.name);
+       Promise.all([
+         name(navigator.permissions.query({ name: 'notifications' })),
+         name(navigator.permissions.query({ name: 'nonsense' })),
+         name(navigator.permissions.query({})),
+         name(navigator.permissions.query()),
+       ]).then((a) => {
+         document.getElementById('out').textContent = JSON.stringify(a);
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''));
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    // nobody to ask, so nothing can be granted: `notification.test.ts`
+    ['notifications', 'denied', true, null],
+    'TypeError',
+    'TypeError',
+    'TypeError',
+  ]);
+});
+
+test("execCommand makes the edits a key makes, in an editing host and a text field, and says of the rest that it can't", async () => {
+  // Monaco's setup asks `queryCommandSupported` of `cut` and `copy`, and
+  // threw at the first line that did: a TS Playground with no editor
+  const doc = await hosted(
+    `<p id=out></p>
+     <div id=e contenteditable>ab</div>
+     <textarea id=t>xy</textarea>
+     <script>
+       const out = {
+         supported: ['insertText', 'INSERTTEXT', 'delete', 'selectAll', 'bold', 'copy']
+           .map((c) => document.queryCommandSupported(c)),
+         answers: [
+           document.queryCommandState('bold'),
+           document.queryCommandValue('bold'),
+           document.queryCommandIndeterminate('bold'),
+           document.execCommand('bold'),
+         ],
+         nothingToEdit: [
+           document.queryCommandEnabled('insertText'),
+           document.execCommand('insertText', false, 'x'),
+           document.queryCommandEnabled('selectAll'),
+         ],
+       };
+       const e = document.getElementById('e');
+       const told = [];
+       e.addEventListener('beforeinput', (ev) => told.push('before:' + ev.inputType + ':' + ev.data));
+       e.addEventListener('input', (ev) => told.push('input:' + ev.inputType));
+       getSelection().collapse(e.firstChild, 1);
+       out.inserted = document.execCommand('insertText', false, 'Z');
+       out.host = [e.textContent, told.slice()];
+       document.execCommand('delete');
+       document.execCommand('forwardDelete');
+       out.deleted = e.textContent;
+       document.execCommand('selectAll');
+       out.selected = getSelection().toString();
+       const t = document.getElementById('t');
+       t.focus();
+       t.setSelectionRange(1, 1);
+       const heard = [];
+       t.addEventListener('input', (ev) => heard.push(ev.inputType + ':' + ev.data));
+       document.execCommand('insertText', false, 'Q');
+       out.field = [t.value, t.selectionStart, heard];
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    supported: [true, true, true, true, false, false],
+    answers: [false, '', false, false],
+    nothingToEdit: [false, false, true],
+    inserted: true,
+    host: ['aZb', ['before:insertText:Z', 'input:insertText']],
+    deleted: 'a',
+    selected: 'a',
+    field: ['xQy', 2, ['insertText:Q']],
+  });
+});
+
+test('a click on an <a> in a drawing goes where it says, as one in the document does', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <svg><a id=a href="#there"></a></svg>
+     <script>
+       const a = document.getElementById('a');
+       navigation.onnavigate = (e) => {
+         e.preventDefault();
+         document.getElementById('out').textContent = [
+           new URL(e.destination.url).hash,
+           e.sourceElement === a,
+           a instanceof SVGAElement,
+         ].join();
+       };
+       a.dispatchEvent(new MouseEvent('click'));
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '#there,true,true');
+});
+
+test('an XMLHttpRequest and its upload are XMLHttpRequestEventTargets', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const x = new XMLHttpRequest();
+       const parent = Object.getPrototypeOf;
+       const make = (Kind) => { try { new Kind(); return 'made'; } catch (e) { return e.name; } };
+       x.upload.onload = () => {};
+       document.getElementById('out').textContent = JSON.stringify([
+         parent(XMLHttpRequest.prototype) === XMLHttpRequestEventTarget.prototype,
+         parent(XMLHttpRequestUpload.prototype) === XMLHttpRequestEventTarget.prototype,
+         parent(XMLHttpRequestEventTarget.prototype) === EventTarget.prototype,
+         x.upload instanceof XMLHttpRequestUpload,
+         typeof x.upload.onload,
+         make(XMLHttpRequestEventTarget),
+         make(XMLHttpRequestUpload),
+       ]);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    true,
+    true,
+    true,
+    true,
+    'function',
+    'TypeError',
+    'TypeError',
+  ]);
+});
+
 test('XMLHttpRequest is fetch with its states, its events and its headers', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -2372,6 +2696,213 @@ test('XMLHttpRequest is fetch with its states, its events and its headers', asyn
       ],
     ],
   );
+});
+
+test('an EventSource reads its stream, hears each event, and connects again with the last id', async () => {
+  const asked: (string | undefined)[] = [];
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const events = [];
+       const source = new EventSource('/stream');
+       events.push(source.readyState, source.url);
+       source.onopen = () => events.push('open:' + source.readyState);
+       source.onerror = () => events.push('error:' + source.readyState);
+       source.onmessage = (e) => {
+         events.push([e.data, e.lastEventId, e.origin].join('|'));
+         if (e.data === 'after') {
+           source.close();
+           document.getElementById('out').textContent = JSON.stringify(events);
+         }
+       };
+       source.addEventListener('named', (e) => events.push('named:' + e.data));
+     </script>`,
+    {
+      answer: (request) => {
+        const id = request.headers.find(
+          ([name]) => name.toLowerCase() === 'last-event-id',
+        )?.[1];
+        asked.push(id);
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: [['content-type', 'text/event-stream; charset=utf-8']],
+          url: request.url,
+          redirected: false,
+          body: id
+            ? 'data: after\n\n'
+            : ': comment\nretry: 5\nid: 7\ndata: a\ndata: b\n\nevent: named\r\ndata: c\r\n\r\n',
+        };
+      },
+    },
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  assert.deepEqual(asked, [undefined, '7']);
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    0,
+    'https://example.test/stream',
+    'open:1',
+    'a\nb|7|https://example.test',
+    'named:c',
+    'error:0',
+    'open:1',
+    'after|7|https://example.test',
+  ]);
+});
+
+test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker', async () => {
+  // pdf.js's font compiler calls it, in a worker
+  const asks = `
+    var s = Math.sumPrecise, r = [];
+    var at = function (a) { try { return s(a); } catch (e) { return e.name; } };
+    [[], [-0], [-0, -0], [0, -0], [1, 2, 3], [0.1, 0.2], [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+     [1, 1e100, 1, -1e100], [1e308, 1e308, -1e308], [1.7976931348623157e308, 1.7976931348623157e308],
+     [1.7976931348623157e308, Math.pow(2, 970)], [1.7976931348623157e308, Math.pow(2, 970) - Math.pow(2, 917)],
+     [5e-324, 5e-324], [1e-320, -1e-320], [1, 1.1102230246251565e-16], [1, 1.1102230246251568e-16],
+     [Infinity, 1], [-Infinity, 1], [Infinity, -Infinity], [NaN, 1], [Infinity, NaN],
+     [1, '2'], 5, null, undefined].forEach(function (a) {
+      var v = at(a); r.push(Object.is(v, -0) ? '-0' : String(v));
+    });
+    var closed = 0;
+    var numbers = { [Symbol.iterator]: function () { return {
+      next: function () { return { value: 'x', done: false }; },
+      return: function () { closed += 1; return {}; } }; } };
+    at(numbers);
+    r.push(closed, s.length, s.name, Object.keys(Math).indexOf('sumPrecise'));
+    try { new s([]); r.push('made'); } catch (e) { r.push(e.name); }
+    r.push(s(new Set([1, 2, 3])));
+    return r.join(' ');
+  `;
+  const doc = await hosted(
+    '<p id="out"></p><p id="thread"></p><script>' +
+      `document.getElementById("out").textContent = (function () {${asks}})();` +
+      `var src = ${JSON.stringify(`postMessage((function () {${asks}})());`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
+      '</script>',
+  );
+  // a worker takes most of `waitFor`'s two seconds to start on Node 20 and 22
+  await settled(doc, 'thread', (t) => t !== '', 15000);
+  const answers = [
+    '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
+    // half the last place past the largest double is the even way up, and
+    // a hair under it the largest double
+    'Infinity 1.7976931348623157e+308',
+    '1e-323 0 1 1.0000000000000002',
+    'Infinity -Infinity NaN NaN NaN',
+    'TypeError TypeError TypeError TypeError',
+    '1 1 sumPrecise -1 TypeError 6',
+  ].join(' ');
+  assert.strictEqual(doc.text('out'), answers);
+  assert.strictEqual(doc.text('thread'), answers);
+});
+
+test('Math.sumPrecise takes back what it added, at any size', async () => {
+  // a sum rounded along the way loses what is small beside what is large,
+  // and comes back other than it was
+  const random = mulberry32(1214);
+  const numbers = Array.from({ length: 300 }, () => {
+    const exponent = Math.floor(random() * 2000) - 1000;
+    return (random() - 0.5) * 2 ** exponent;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var n = ${JSON.stringify(numbers)}, bad = 0;` +
+      'for (var i = 0; i + 1 < n.length; i += 1) {' +
+      '  if (Math.sumPrecise([n[i], n[i + 1], -n[i]]) !== n[i + 1]) bad += 1;' +
+      '}' +
+      'document.getElementById("out").textContent = bad;' +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '0');
+});
+
+test('a CompressionStream and a DecompressionStream go through zlib, and corrupt input is a TypeError', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const through = async (stream, bytes) => {
+         const writer = stream.writable.getWriter();
+         writer.write(bytes).catch(() => {});
+         writer.close().catch(() => {});
+         const out = [];
+         const reader = stream.readable.getReader();
+         for (;;) {
+           const { done, value } = await reader.read();
+           if (done) break;
+           out.push(...value);
+         }
+         return new Uint8Array(out);
+       };
+       const text = new TextEncoder().encode('hello hello hello hello');
+       (async () => {
+         const out = {};
+         for (const format of ['gzip', 'deflate', 'deflate-raw']) {
+           const small = await through(new CompressionStream(format), text);
+           const back = await through(new DecompressionStream(format), small);
+           out[format] = new TextDecoder().decode(back);
+         }
+         out.corrupt = await through(new DecompressionStream('gzip'), new Uint8Array([1, 2, 3]))
+           .catch((e) => e.name);
+         out.format = (() => {
+           try { new CompressionStream('zip'); } catch (e) { return e.name; }
+         })();
+         out.parent = Object.getPrototypeOf(CompressionStream.prototype) === Object.prototype;
+         document.getElementById('out').textContent = JSON.stringify(out);
+       })();
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  const greeting = 'hello hello hello hello';
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    gzip: greeting,
+    deflate: greeting,
+    'deflate-raw': greeting,
+    corrupt: 'TypeError',
+    format: 'TypeError',
+    parent: true,
+  });
+});
+
+test('a BroadcastChannel reaches the other channels of its name, a frame among them, and navigator.locks holds one at a time', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const heard = [];
+       const a = new BroadcastChannel('x');
+       const b = new BroadcastChannel('x');
+       const other = new BroadcastChannel('y');
+       b.onmessage = (e) => heard.push(e.data.n + ':' + e.origin);
+       a.onmessage = () => heard.push('a heard itself');
+       other.onmessage = () => heard.push('y heard x');
+       a.postMessage({ n: 1 });
+       const order = [];
+       const hold = (id, ms) =>
+         navigator.locks.request('r', async (lock) => {
+           order.push(id + ':' + lock.mode);
+           await new Promise((go) => setTimeout(go, ms));
+         });
+       Promise.all([
+         hold('first', 5),
+         hold('second', 0),
+         navigator.locks.request('r', { ifAvailable: true }, (lock) => {
+           order.push('free:' + lock);
+         }),
+         navigator.locks.request('s', { mode: 'shared' }, async () => {
+           const seen = await navigator.locks.query();
+           order.push(seen.held.length + ':' + seen.pending.length);
+         }),
+       ]).then(() => {
+         a.close();
+         document.getElementById('out').textContent = JSON.stringify({ heard, order });
+       });
+     </script>`,
+  );
+  await waitFor(() => assert.notEqual(doc.text('out'), ''), { timeout: 2000 });
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    heard: ['1:https://example.test'],
+    order: ['free:null', 'first:exclusive', '2:1', 'second:exclusive'],
+  });
 });
 
 test('an XMLHttpRequest aborted while its body arrives fires abort, one whose body is lost fires error, and neither leaves a rejection', async () => {
@@ -3098,6 +3629,151 @@ test('URL.parse is the constructor answering null where it would throw, as URL.c
   );
 });
 
+test('DOMParser reads XML as XML, XMLSerializer writes it back, and what is not well-formed says so', async () => {
+  // draw.io holds a diagram as XML whose attributes have case
+  const doc = await hosted(
+    `<p id=out></p>
+     <script>
+       const parser = new DOMParser();
+       const xml = parser.parseFromString(
+         '<?xml version="1.0"?><!-- c --><mxGraphModel dx="1"><root><mxCell id="0" vertexLabel="a &amp; b"/><![CDATA[<raw>]]><?pi some data?></root></mxGraphModel>',
+         'text/xml',
+       );
+       const root = xml.documentElement;
+       const cell = xml.getElementsByTagName('mxCell')[0];
+       const holder = root.firstChild;
+       const out = {
+         kind: [xml.contentType, xml instanceof Document, xml instanceof XMLDocument],
+         names: [root.tagName, root.localName, root.namespaceURI, cell.nodeName],
+         case: [cell.getAttribute('vertexLabel'), cell.getAttribute('vertexlabel')],
+         tree: [...holder.childNodes].map((n) => n.nodeType + ':' + n.nodeName),
+         cdata: holder.childNodes[1].data,
+         pi: [holder.childNodes[2].target, holder.childNodes[2].data],
+       };
+       cell.setAttribute('edgeStyle', '1');
+       out.written = new XMLSerializer().serializeToString(root);
+       out.doc = new XMLSerializer().serializeToString(xml).slice(0, 8);
+       const ns = parser.parseFromString(
+         '<a:b xmlns:a="urn:a" xmlns="urn:d"><c x="1"/></a:b>',
+         'application/xml',
+       );
+       out.ns = [
+         ns.documentElement.namespaceURI,
+         ns.documentElement.localName,
+         ns.documentElement.prefix,
+         ns.documentElement.firstChild.namespaceURI,
+         ns.getElementsByTagNameNS('urn:d', 'c').length,
+         ns.documentElement.lookupNamespaceURI('a'),
+       ];
+       const bad = (text) =>
+         parser.parseFromString(text, 'text/xml').getElementsByTagName('parsererror').length;
+       out.bad = ['<a><b></a>', '<a b=c/>', '<a>&nbsp;</a>', '<x:a/>', 'text', '<a/><b/>'].map(bad);
+       out.good = bad('<!DOCTYPE a [<!ENTITY e "f">]><a>&e;</a>');
+       out.refused = (() => {
+         try { parser.parseFromString('', 'text/plain'); } catch (e) { return e.name; }
+       })();
+       const fresh = document.implementation.createDocument(null, 'r');
+       fresh.documentElement.appendChild(fresh.createCDATASection('x'));
+       fresh.documentElement.appendChild(fresh.createProcessingInstruction('t', 'd'));
+       out.made = new XMLSerializer().serializeToString(fresh);
+       out.htmlRefused = (() => {
+         try { document.createCDATASection('x'); } catch (e) { return e.name; }
+       })();
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    kind: ['text/xml', true, false],
+    names: ['mxGraphModel', 'mxGraphModel', null, 'mxCell'],
+    case: ['a & b', null],
+    tree: ['1:mxCell', '4:#cdata-section', '7:pi'],
+    cdata: '<raw>',
+    pi: ['pi', 'some data'],
+    written:
+      '<mxGraphModel dx="1"><root><mxCell id="0" vertexLabel="a &amp; b" edgeStyle="1"/><![CDATA[<raw>]]><?pi some data?></root></mxGraphModel>',
+    doc: '<!-- c -',
+    ns: ['urn:a', 'b', 'a', 'urn:d', 1, 'urn:a'],
+    bad: [1, 1, 1, 1, 1, 1],
+    good: 0,
+    refused: 'TypeError',
+    made: '<r><![CDATA[x]]><?t d?></r>',
+    htmlRefused: 'NotSupportedError',
+  });
+});
+
+test('document.evaluate reads a path, predicates and functions, over XML and HTML', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <ul id=l><li class=a>one</li><li>two</li><li class=a>three</li></ul>
+     <script>
+       const xml = new DOMParser().parseFromString(
+         '<r xmlns:n="urn:n"><a id="1" v="3"/><a id="2" v="4"><b>t</b></a><n:a/></r>',
+         'application/xml',
+       );
+       const all = (expr, root, resolver) => {
+         const it = xml.evaluate(expr, root ?? xml, resolver ?? null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE);
+         return Array.from({ length: it.snapshotLength }, (_, i) => it.snapshotItem(i).nodeName);
+       };
+       const one = (expr, type) => xml.evaluate(expr, xml, null, type);
+       const out = {
+         paths: [
+           all('/r/a'),
+           all('//a[@v > 3]/b'),
+           all('//a[last()]/@id'),
+           all('//*[count(*) = 1]'),
+           all('//b/ancestor::*'),
+           all('/r/n:a', xml, (p) => (p === 'n' ? 'urn:n' : null)),
+           all('//a | //b'),
+         ],
+         values: [
+           one('sum(//a/@v)', 1).numberValue,
+           one('string(//b)', 2).stringValue,
+           one('count(//a) = 2', 3).booleanValue,
+           one('concat("x", substring("hello", 2, 3), translate("abc", "ab", "AB"))', 2).stringValue,
+           one('normalize-space("  a   b ")', 2).stringValue,
+           one('floor(2.7) + ceiling(1.2) + round(2.5) + 7 mod 3 + 6 div 2', 1).numberValue,
+           one('/r/a[2]/@id', 8).singleNodeValue.value,
+           one('count(//@*)', 0).numberValue,
+           one('//a', 0).resultType,
+         ],
+         html: Array.from({ length: 2 }, (_, i) =>
+           document.evaluate('//LI[@class="a"]', document, null, 7).snapshotItem(i).textContent),
+       };
+       const walk = xml.evaluate('//a', xml, null, 4);
+       const first = walk.iterateNext();
+       out.iterator = [first.getAttribute('id'), walk.invalidIteratorState];
+       first.setAttribute('x', '1');
+       out.iterator.push(walk.invalidIteratorState);
+       out.errors = [
+         () => xml.evaluate('//[', xml),
+         () => xml.evaluate('//n:a', xml, null),
+         () => one('1', 1).stringValue,
+       ].map((f) => { try { f(); return 'fine'; } catch (e) { return e.name; } });
+       const evaluator = new XPathEvaluator();
+       out.evaluator = evaluator.createExpression('count(//a)').evaluate(xml).numberValue;
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    paths: [
+      ['a', 'a'],
+      ['b'],
+      ['id'],
+      ['a'],
+      ['r', 'a'],
+      ['n:a'],
+      ['a', 'a', 'b'],
+    ],
+    values: [7, 't', true, 'xellABc', 'a b', 2 + 2 + 3 + 1 + 3, '2', 4, 4],
+    html: ['one', 'three'],
+    iterator: ['1', false, true],
+    errors: ['SyntaxError', 'NamespaceError', 'TypeError'],
+    evaluator: 2,
+  });
+});
+
 test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
   const doc = await hosted(
     '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +
@@ -3690,6 +4366,65 @@ test('a body a page is slow to read comes in one chunk of all that arrived, wher
   );
 });
 
+test('a body with two reads waiting hands each byte over once and ends, where the second read was handed what the first had', async () => {
+  // a stream with no high-water mark pulls from inside `enqueue` while a
+  // read is left waiting, and that pull found what was being handed over
+  // still held: pdf.js's viewer read its PDF some 16 KB long and stalled.
+  // Nothing arrives until both reads wait, so nothing here turns on how
+  // long a task took
+  const pieces = Array.from({ length: 6 }, (_, i) =>
+    new Uint8Array(8).fill(i + 1),
+  );
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'fetch("/stream").then(function (r) {' +
+      '  var reader = r.body.getReader(), bytes = [];' +
+      '  var out = document.getElementById("out");' +
+      '  var pump = function () {' +
+      '    return reader.read().then(function (part) {' +
+      '      if (part.done) return;' +
+      '      bytes.push.apply(bytes, part.value);' +
+      '      return pump();' +
+      '    });' +
+      '  };' +
+      '  Promise.all([pump(), pump()]).then(function () {' +
+      '    out.textContent = JSON.stringify(bytes);' +
+      '  });' +
+      '  out.textContent = "reading";' +
+      '});' +
+      '</script>',
+    {
+      answer: () => ({
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        url: `${PAGE}stream`,
+        body: '',
+        chunks: {
+          async *[Symbol.asyncIterator]() {
+            await held;
+            for (const piece of pieces) yield piece;
+          },
+        },
+      }),
+    },
+  );
+  assert.equal(await settled(doc, 'out', (t) => t === 'reading'), 'reading');
+  release();
+  const text = await settled(doc, 'out', (t) => t.startsWith('['));
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(
+    JSON.parse(text) as number[],
+    pieces.flatMap((p) => [...p]),
+    'each byte once, in order, and both reads told it ended',
+  );
+});
+
 /** A GL that keeps what it was told and answers what a test says. */
 function fakeGL(answers: Record<string, unknown> = {}) {
   const calls: HtmlGLCommand[] = [];
@@ -3849,6 +4584,50 @@ test('a context with no alpha says its canvas lets nothing through', async () =>
   const host = doc.runner()?.host;
   assert.equal(host?.canvasOpaque(doc.byId('a')), true);
   assert.equal(host?.canvasOpaque(doc.byId('b')), false);
+});
+
+test('a canvas a WebGL context drew on is an image, whether or not the document shows it', async () => {
+  // jspaint draws its shapes on a canvas nothing shows and copies them with
+  // drawImage, and what the GL held was read in only for what is shown, so
+  // a pencil left no mark. GL's rows go up the picture, and this is premultiplied
+  const picture = [
+    // the bottom row, red and green, then the top, half a red and nothing
+    [255, 0, 0, 255, 0, 255, 0, 255],
+    [64, 0, 0, 128, 0, 0, 0, 0],
+  ].flat();
+  const gl = fakeGL({
+    readPixels: Buffer.from(picture).toString('base64'),
+    getError: 0,
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var c = document.createElement("canvas"); c.width = 2; c.height = 2;' +
+      'var g = c.getContext("webgl", { antialias: false });' +
+      'g.clearColor(1, 0, 0, 1); g.clear(g.COLOR_BUFFER_BIT);' +
+      'var d = document.createElement("canvas"); d.width = 2; d.height = 2;' +
+      'var x = d.getContext("2d");' +
+      'var f = g.createFramebuffer(); g.bindFramebuffer(g.FRAMEBUFFER, f);' +
+      'x.drawImage(c, 0, 0);' +
+      'var px = [].slice.call(x.getImageData(0, 0, 2, 2).data);' +
+      'var bound = g.getParameter(g.FRAMEBUFFER_BINDING) === f;' +
+      'x.drawImage(c, 0, 0); var url = c.toDataURL().slice(0, 15);' +
+      'g.bindFramebuffer(g.FRAMEBUFFER, null);' +
+      'g.clear(g.COLOR_BUFFER_BIT); x.drawImage(c, 0, 0);' +
+      'document.getElementById("out").textContent = JSON.stringify([px, bound, url]);' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  const [px, bound, url] = JSON.parse(text);
+  // the top row first, its half a red made straight
+  assert.deepEqual(px.slice(1, 8), [0, 0, 128, 0, 0, 0, 0]);
+  assert.ok(Math.abs(px[0] - 128) <= 1, `half a red, straight: ${px[0]}`);
+  assert.deepEqual(px.slice(8), [255, 0, 0, 255, 0, 255, 0, 255]);
+  assert.equal(bound, true, 'what the page had bound stays bound');
+  assert.equal(url, 'data:image/png;');
+  const reads = gl.calls.filter(([name]) => name === 'readPixels');
+  assert.equal(reads.length, 2, 'once a picture, however often it is copied');
 });
 
 test("a MediaSource's members answer as Chrome's do, and SourceBuffer takes only what a clip is", async () => {
@@ -5595,6 +6374,189 @@ test('getComputedStyle answers a shorthand by its name, in either spelling, and 
   ]);
 });
 
+test('a style has an attribute for each property a page can set, and says so to `in`', async () => {
+  // Vue 2 looks a name up with `in` and writes nothing it does not find, so
+  // every `:style` binding came out as `undefined: 44px`, and StackEdit's
+  // bars filled its window. jQuery looks the same way
+  const doc = await hosted(
+    `<!doctype html><style>p { color: red }</style><p id="p" style="color: red"></p>
+    <pre id="out"></pre><script>
+    var s = document.getElementById('p').style;
+    var rule = document.styleSheets[0].cssRules[0].style;
+    var has = function (of, names) {
+      return names.filter(function (n) { return n in of; });
+    };
+    var ask = ['height', 'width', 'fontSize', 'font', 'margin', 'transform',
+      'backgroundColor', 'background-color', 'cssFloat', 'float', 'display',
+      'webkitTransform', 'WebkitTransition', 'length', 'setProperty', 'cssText',
+      '0', 'bogus', 'HEIGHT', '--x', '1', 'mozBogus'];
+    var vue = document.createElement('div');
+    // Vue 2's own normalize, as its bundle has it
+    var norm = function (name) {
+      var empty = vue.style;
+      if (name in empty) return name;
+      var up = name.charAt(0).toUpperCase() + name.slice(1);
+      for (var v of ['Webkit', 'Moz', 'ms']) if (v + up in empty) return v + up;
+    };
+    var n = norm('height'); vue.style[n] = '44px';
+    document.getElementById('out').textContent = JSON.stringify({
+      element: has(s, ask),
+      rule: has(rule, ask),
+      computed: has(getComputedStyle(document.body), ['height', 'bogus']),
+      symbol: Symbol.iterator in s,
+      vue: [n, vue.getAttribute('style'), vue.style.height],
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const everywhere = [
+    'height',
+    'width',
+    'fontSize',
+    'font',
+    'margin',
+    'transform',
+    'backgroundColor',
+    'background-color',
+    'cssFloat',
+    'float',
+    'display',
+    'webkitTransform',
+    'WebkitTransition',
+    'length',
+    'setProperty',
+    'cssText',
+    '0',
+  ];
+  assert.deepStrictEqual(out, {
+    element: everywhere,
+    rule: everywhere,
+    computed: ['height'],
+    symbol: true,
+    vue: ['height', 'height: 44px;', '44px'],
+  });
+});
+
+test("what HTML's parser makes in a drawing is SVG's, whatever its name, and what an integration point holds is HTML's", async () => {
+  // DOMPurify removes what stands in the wrong namespace: mermaid sanitizes
+  // each diagram with it, and lost its <style> and its labels
+  const doc = await hosted(
+    `<!doctype html><pre id="out"></pre><script>
+    var read = function (root) {
+      var out = {};
+      root.querySelectorAll('*').forEach(function (e) {
+        out[e.localName] = [e.tagName, e.namespaceURI.slice(-3), e.constructor.name];
+      });
+      return out;
+    };
+    var d = new DOMParser().parseFromString(
+      '<svg><style>rect{}</style><defs><clipPath></clipPath><linearGradient></linearGradient>' +
+      '<marker></marker><filter><feBlend></feBlend></filter></defs><a><text>t</text></a>' +
+      '<foreignObject><div><span>y</span><svg><g></g></svg></div></foreignObject>' +
+      '<desc><b>d</b></desc></svg>', 'text/html');
+    var html = new DOMParser().parseFromString('<style></style><a></a><div></div>', 'text/html');
+    var made = document.createElement('style');
+    document.createElementNS('http://www.w3.org/2000/svg', 'svg').appendChild(made);
+    var host = document.createElement('div');
+    host.innerHTML = '<svg><style>rect{fill:#123456}</style><rect></rect></svg>';
+    document.body.appendChild(host);
+    var sheet = host.querySelector('style').sheet;
+    document.getElementById('out').textContent = JSON.stringify({
+      drawing: read(d),
+      html: read(html),
+      made: made.namespaceURI.slice(-5),
+      sheet: [sheet.cssRules.length, sheet.ownerNode === host.querySelector('style'), document.styleSheets.length],
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const svg = (name: string, kind: string) => [name, 'svg', kind];
+  const { html, head, body, ...drawing } = out.drawing;
+  assert.deepStrictEqual(drawing, {
+    svg: svg('svg', 'SVGSVGElement'),
+    style: svg('style', 'SVGStyleElement'),
+    defs: svg('defs', 'SVGDefsElement'),
+    clipPath: svg('clipPath', 'SVGClipPathElement'),
+    linearGradient: svg('linearGradient', 'SVGLinearGradientElement'),
+    marker: svg('marker', 'SVGMarkerElement'),
+    filter: svg('filter', 'SVGFilterElement'),
+    feBlend: svg('feBlend', 'SVGElement'),
+    a: svg('a', 'SVGAElement'),
+    text: svg('text', 'SVGTextElement'),
+    foreignObject: svg('foreignObject', 'SVGForeignObjectElement'),
+    div: ['DIV', 'tml', 'HTMLDivElement'],
+    span: ['SPAN', 'tml', 'HTMLSpanElement'],
+    g: svg('g', 'SVGGElement'),
+    desc: svg('desc', 'SVGDescElement'),
+    b: ['B', 'tml', 'HTMLElement'],
+  });
+  assert.deepStrictEqual(out.html.style, ['STYLE', 'tml', 'HTMLStyleElement']);
+  assert.deepStrictEqual(out.html.a, ['A', 'tml', 'HTMLAnchorElement']);
+  // what a script made as HTML's stays so, wherever it is put
+  assert.strictEqual(out.made, 'xhtml');
+  assert.deepStrictEqual(out.sheet, [1, true, 1]);
+});
+
+test("a page's selector finds a drawing's elements by the names they are written with", async () => {
+  // d3's `select('foreignObject')`, which the parser's capitals hid
+  const doc = await hosted(
+    `<!doctype html><svg><clipPath id="c"></clipPath><foreignObject id="f"><p id="p"></p></foreignObject>
+    <linearGradient id="l"></linearGradient></svg><pre id="out"></pre><script>
+    var q = function (s) { var e = document.querySelector(s); return e && e.id; };
+    var p = document.getElementById('p');
+    document.getElementById('out').textContent = JSON.stringify([
+      q('foreignObject'), q('clipPath'), q('svg linearGradient'), q('foreignObject > p'),
+      p.closest('foreignObject').id, document.getElementById('f').matches('foreignObject'),
+      document.querySelectorAll('svg clipPath, svg foreignObject').length, q('P'),
+    ]);
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  assert.deepStrictEqual(out, ['f', 'c', 'l', 'p', 'f', true, 2, 'p']);
+});
+
+test('what a foreignObject holds is measured where the drawing puts it, at any size of the object', async () => {
+  // mermaid sizes each object from the label it holds, which was laid out
+  // nowhere and read as nothing, so each came to 0 by 0 and hid its text
+  const doc = await hosted(
+    `<!doctype html><style>body { margin: 0 }</style>
+    <svg id="s" width="300" height="200" viewBox="0 0 150 100" style="display:block">
+      <g transform="translate(10, 5)"><foreignObject id="f">
+        <div id="i" style="display: table-cell; white-space: nowrap"><span id="t">Some words</span></div>
+      </foreignObject></g>
+      <foreignObject id="sized" x="20" y="30" width="50" height="40"><div id="d" style="width: 30px; height: 10px; margin: 2px 4px"></div></foreignObject>
+      <foreignObject id="turned" transform="rotate(90)" width="20" height="10"><div id="q" style="width: 20px; height: 10px"></div></foreignObject>
+    </svg><div id="out"></div><script>
+    var r = function (id) { var b = document.getElementById(id).getBoundingClientRect(); return [b.x, b.y, b.width, b.height]; };
+    var before = r('i'), inner = r('t');
+    var f = document.getElementById('f');
+    f.setAttribute('width', before[2] / 2); f.setAttribute('height', before[3] / 2);
+    document.getElementById('out').textContent = JSON.stringify({
+      before: before, inner: inner, after: r('i'), object: r('f'), sized: r('d'), turned: r('q'),
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  assert.ok(out.before[2] > 40, `as wide as its words: ${out.before}`);
+  assert.ok(out.before[3] > 0, `and as tall: ${out.before}`);
+  assert.deepStrictEqual(
+    out.before.slice(0, 2),
+    [20, 10],
+    'the viewBox and the group both reach it',
+  );
+  assert.deepStrictEqual(
+    out.after,
+    out.before,
+    'the size it asked for holds it',
+  );
+  assert.deepStrictEqual(out.object, out.before, 'and the object is that big');
+  assert.deepStrictEqual(out.inner.slice(0, 2), out.before.slice(0, 2));
+  // from the corner of an object at (20, 30), twice the size
+  assert.deepStrictEqual(out.sized, [48, 64, 60, 20]);
+  // a quarter turn about the origin, which is the drawing's corner
+  assert.deepStrictEqual(out.turned.map(Math.round), [-20, 0, 20, 40]);
+});
+
 test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
   // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
   // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),
@@ -6131,6 +7093,122 @@ test(':defined is false for a custom element no definition has upgraded, and res
   assert.equal(doc.view.computedStyle(doc.byId('late'))?.color, 'rgb(1, 2, 3)');
 });
 
+/** A document with a field that holds the focus, what can be pressed beside
+ *  it, and a log of what the page heard, each `mousedown` with what
+ *  `activeElement` said as it ran. What each test asks of it is what
+ *  Chromium, Firefox and WebKit do with this page. */
+const PRESS_PAGE =
+  '<!doctype html><html><head><style>body{margin:0;font:16px sans-serif}' +
+  'textarea,input{display:block;width:200px;height:30px}' +
+  'div{width:300px;height:30px;margin-top:6px}</style></head><body>' +
+  '<textarea id="t">text</textarea><input id="other">' +
+  '<div id="cancelled"></div><div id="plain"></div>' +
+  '<div id="unselectable" style="user-select:none">none</div>' +
+  '<div id="stop" tabindex="0"></div><div id="kept" tabindex="0"></div>' +
+  '<div id="sends"></div><pre id="out"></pre><script>' +
+  'var log = [], t = document.getElementById("t");' +
+  'function say(s) { log.push(s); document.getElementById("out").textContent = log.join(" | "); }' +
+  'function active() { var a = document.activeElement; return a.id || a.nodeName; }' +
+  'function name(n) { return n ? n.id || n.nodeName : "null"; }' +
+  'document.addEventListener("mousedown", function (e) { say("mousedown " + e.target.id + ", active " + active()); }, true);' +
+  'document.addEventListener("focusin", function (e) { say("focusin " + e.target.id + " from " + name(e.relatedTarget)); });' +
+  'document.addEventListener("focusout", function (e) { say("focusout " + e.target.id + " to " + name(e.relatedTarget)); });' +
+  'document.getElementById("cancelled").addEventListener("mousedown", function (e) { e.preventDefault(); });' +
+  'document.getElementById("kept").addEventListener("mousedown", function (e) { e.preventDefault(); });' +
+  'document.getElementById("sends").addEventListener("mousedown", function (e) { e.preventDefault(); document.getElementById("other").focus(); });' +
+  't.focus();</script></body></html>';
+
+/** Press and release in the middle of an element, through the server, so
+ *  that it comes through core's press as a user's does; what the page heard
+ *  from there on. */
+async function pressOn(doc: Hosted, id: string): Promise<string> {
+  await act(() => doc.run('log.length = 0'));
+  const node = doc.view as unknown as DrawnNode;
+  const rect = doc.view.elementRect(doc.byId(id))!;
+  const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+  const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+  await act(async () => {
+    fireEvent.mouseDown(node, { dx, dy });
+    fireEvent.mouseUp(node, { dx, dy });
+  });
+  await settle();
+  return doc.text('out');
+}
+
+/** Whom `activeElement` names, by id. */
+const activeIn = (doc: Hosted) => doc.handle.activeElement?.attribs.id ?? null;
+
+test('a press a page cancels leaves the focus where it was, which is where it still was as the page heard it, and keys go on landing there', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(activeIn(doc), 't', doc.logs.join('\n'));
+  assert.equal(
+    await pressOn(doc, 'cancelled'),
+    'mousedown cancelled, active t',
+  );
+  assert.equal(activeIn(doc), 't');
+  const node = doc.view as unknown as DrawnNode;
+  await act(async () => fireEvent.char('x', { target: node }));
+  await settle();
+  await act(() => doc.run('say(t.value)'));
+  assert.ok(doc.text('out').endsWith('textx'), doc.text('out'));
+});
+
+test('a press a page cancels on what takes the focus leaves it where it was as well', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(await pressOn(doc, 'kept'), 'mousedown kept, active t');
+  assert.equal(activeIn(doc), 't');
+});
+
+test('a press a page cancels and sends the focus somewhere itself leaves it there, told in the order it went', async () => {
+  // Monaco's press, on a textarea that does not have the focus yet
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'sends'),
+    'mousedown sends, active t | focusout t to other | focusin other from t',
+  );
+  assert.equal(activeIn(doc), 'other');
+});
+
+test('a press nothing cancels moves the focus after its mousedown, which has already been heard by then', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'plain'),
+    'mousedown plain, active t | focusout t to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press on a field moves the focus into it after its mousedown, the one leaving told first', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'other'),
+    'mousedown other, active t | focusout t to other | focusin other from t',
+  );
+  assert.equal(activeIn(doc), 'other');
+});
+
+test('a press on what user-select keeps out of a selection starts none, and moves the focus as any press does', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'unselectable'),
+    'mousedown unselectable, active t | focusout t to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press in the field that has the focus tells nothing of the focus', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  assert.equal(await pressOn(doc, 't'), 'mousedown t, active t');
+  assert.equal(activeIn(doc), 't');
+});
+
 test('a focus a script asks for is told before focus() returns: a control just put in, and what a modal dialog gives the focus back to', async () => {
   const doc = await hosted(
     '<dl><dt id="dt" contenteditable>x</dt><dialog id="d"></dialog></dl><p id="out"></p><script>' +
@@ -6153,6 +7231,87 @@ test('a focus a script asks for is told before focus() returns: a control just p
     ['in:b', 'focused b:true', 'in:dt', 'in:dt', 'back:true'],
     doc.logs.join('\n'),
   );
+});
+
+/** A page that can put a field in and focus it, and logs the focus. */
+const LATE_FIELD =
+  '<!doctype html><html><head><style>input{display:block;width:150px;height:30px}</style></head>' +
+  '<body><input id="here"><div id="box"></div><pre id="out"></pre><script>' +
+  'var log = [];' +
+  'function say(s) { log.push(s); document.getElementById("out").textContent = log.join(" | "); }' +
+  'function active() { var a = document.activeElement; return a.id || a.nodeName; }' +
+  'function late() { var i = document.createElement("input"); i.id = "late"; document.getElementById("box").appendChild(i); return i; }' +
+  'document.addEventListener("focusin", function (e) { say("in " + e.target.id); });' +
+  'document.addEventListener("focusout", function (e) { say("out " + e.target.id); });' +
+  '</script></body></html>';
+
+/** Run `code` in the page, and `after` a good while later, with nothing
+ *  rendered between them: `act` holds the render that would mount a widget,
+ *  past the turns the host asks again for and the frames of a page loading. */
+async function withWidgetHeld(
+  doc: Hosted,
+  code: string,
+  after = '',
+): Promise<void> {
+  await act(async () => {
+    doc.run(code);
+    await new Promise((r) => setTimeout(r, 60));
+    if (after) doc.run(after);
+  });
+  await settle();
+}
+
+test('a field a script focuses before its widget is mounted has the focus from then on, and the widget takes it however late it comes', async () => {
+  // Monaco's load: it believes it has the focus from then on, so a press on
+  // it asks for nothing, and a field that lost it here was never given it
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(doc, 'late().focus()', 'say("held " + active())');
+  assert.equal(doc.text('out'), 'in late | held late');
+  const field = screen.getAllByRole('textbox').find((n) => n.focused) as
+    DrawnNode | undefined;
+  assert.ok(field, 'its widget has the focus');
+  assert.equal(doc.handle.activeElement?.attribs.id, 'late');
+  await act(async () => fireEvent.char('x', { target: field }));
+  await settle();
+  await act(() => doc.run('say(document.getElementById("late").value)'));
+  assert.ok(doc.text('out').endsWith('| x'), doc.text('out'));
+});
+
+test('a focus that went elsewhere before the widget was mounted stays there, and the widget does not take it back', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'late().focus(); document.getElementById("here").focus()',
+    'say("held " + active())',
+  );
+  assert.equal(doc.text('out'), 'in late | out late | in here | held here');
+  assert.equal(doc.handle.activeElement?.attribs.id, 'here');
+});
+
+test('a focus a script takes back before the widget was mounted is gone, and told as gone', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.blur()',
+    'say("held " + active())',
+  );
+  assert.equal(doc.text('out'), 'in late | out late | held BODY');
+  assert.equal(doc.handle.activeElement, null);
+});
+
+test('a field taken out before its widget was mounted has nothing to come for it', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.remove()',
+    'say("held " + active())',
+  );
+  assert.ok(doc.text('out').endsWith('held BODY'), doc.text('out'));
+  assert.equal(doc.handle.activeElement, null);
 });
 
 test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
@@ -7893,7 +9052,7 @@ test('indexedDB keeps a page’s records for the document: stores, keys, indexes
       '  db.createObjectStore("events", { autoIncrement: true });' +
       '};' +
       'open.onsuccess = function () {' +
-      '  var db = open.result; r.push(db.version, db.objectStoreNames.join(","));' +
+      '  var db = open.result; r.push(db.version, Array.from(db.objectStoreNames).join(","));' +
       '  var tx = db.transaction(["things", "events"], "readwrite"); var things = tx.objectStore("things");' +
       '  things.put({ id: 2, tags: ["b", "c"], when: new Date(5) }); things.put({ id: 1, tags: ["a", "b"] });' +
       '  tx.objectStore("events").add({ e: "x" }); tx.objectStore("events").add({ e: "y" }).onsuccess = function (e) { r.push("key " + e.target.result); };' +
@@ -9369,6 +10528,495 @@ test('DOM Core as Acid3 asks it: constants, namespaces, documents of XML, doctyp
   );
 });
 
+test('a <link> or a <base> is what it was made as: the parser’s in a drawing is SVG’s, wherever it goes, and a script’s is HTML’s', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const SHEET = '#probe{color:rgb(0,0,255)}';
+  const blue = 'rgb(0, 0, 255)';
+  const SVG = 'http://www.w3.org/2000/svg';
+  const answer = async (run: string, markup = ''): Promise<string> => {
+    const doc = await hosted(
+      `<!DOCTYPE html><html><head></head><body><p id="probe">p</p>${markup}` +
+        `<svg><g id="g"></g><foreignObject id="fo"></foreignObject></svg>` +
+        `<p id="out"></p><script>var g=document.getElementById("g"),` +
+        `fo=document.getElementById("fo"),out=document.getElementById("out"),` +
+        `probe=document.getElementById("probe");` +
+        `var link=function(){var l=document.createElement("link");` +
+        `l.rel="stylesheet";l.href="s.css";return l};` +
+        `addEventListener("load",function(){${run};` +
+        `setTimeout(function(){out.textContent=[document.styleSheets.length,` +
+        `getComputedStyle(probe).color===${JSON.stringify(blue)},` +
+        `document.baseURI.replace(/.*\\/\\/[^/]*/,"")].join("|")},30)});` +
+        `</script></body></html>`,
+      { sheets: { 's.css': SHEET } },
+    );
+    const text = await settled(doc, 'out', (t) => t !== '');
+    cleanup();
+    return text;
+  };
+  const LINK = '<link id="l" rel="stylesheet" href="s.css">';
+  const unstyled = '0|false|/dir/page.html';
+  const styled = '1|true|/dir/page.html';
+  // the parser's, as it stands, moved, copied and given a rel
+  assert.equal(await answer('', `<svg><g>${LINK}</g></svg>`), unstyled);
+  const parsed = 'var made=document.getElementById("l");';
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made)`,
+      `<svg><g>${LINK}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made.cloneNode())`,
+      `<svg><g>${LINK}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer(
+      `${parsed}made.setAttribute("rel","stylesheet")`,
+      '<svg><g><link id="l" href="s.css"></g></svg>',
+    ),
+    unstyled,
+  );
+  // what a script's `innerHTML` makes, by what it is read in
+  assert.equal(await answer(`g.innerHTML='${LINK}'`), unstyled);
+  assert.equal(
+    await answer(`g.insertAdjacentHTML("beforeend",'${LINK}')`),
+    unstyled,
+  );
+  assert.equal(await answer(`fo.innerHTML='${LINK}'`), styled);
+  // what a script makes, wherever it goes
+  assert.equal(await answer('g.appendChild(link())'), styled);
+  assert.equal(await answer('fo.appendChild(link())'), styled);
+  assert.equal(
+    await answer(
+      `var l=document.createElementNS("${SVG}","link");` +
+        `l.setAttribute("rel","stylesheet");l.setAttribute("href","s.css");` +
+        `document.head.appendChild(l)`,
+    ),
+    unstyled,
+  );
+  // a `<base>` the same way
+  const BASE = '<base id="l" href="/b/">';
+  const based = '0|false|/b/';
+  assert.equal(await answer('', `<svg><g>${BASE}</g></svg>`), unstyled);
+  assert.equal(
+    await answer(
+      `${parsed}document.head.appendChild(made)`,
+      `<svg><g>${BASE}</g></svg>`,
+    ),
+    unstyled,
+  );
+  assert.equal(
+    await answer('', `<svg><foreignObject>${BASE}</foreignObject></svg>`),
+    based,
+  );
+  // by its attribute: `href` is no property of the facade's `<base>`
+  const made = (into: string) =>
+    `var b=document.createElement("base");b.setAttribute("href","/b/");` +
+    `${into}.appendChild(b)`;
+  assert.equal(await answer(made('g')), based);
+  assert.equal(await answer(made('fo')), based);
+  assert.equal(await answer(`fo.innerHTML='${BASE}'`), based);
+});
+
+/** What a script at the end of `markup` hands back as a JSON array. */
+async function reads(markup: string, run: string): Promise<unknown[]> {
+  const doc = await hosted(
+    `<!DOCTYPE html><html><head></head><body>${markup}<p id="out"></p>` +
+      `<script>var by=function(i){return document.getElementById(i)};` +
+      `var SVG="http://www.w3.org/2000/svg",MATH="http://www.w3.org/1998/Math/MathML",` +
+      `XHTML="http://www.w3.org/1999/xhtml";var ran=0;` +
+      `out=by("out");try{var r=(function(){${run}})();` +
+      `out.textContent=JSON.stringify(r)}catch(e){out.textContent="threw "+e}` +
+      `</script></body></html>`,
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  cleanup();
+  assert.ok(!text.startsWith('threw'), `${run}: ${text}`);
+  return JSON.parse(text) as unknown[];
+}
+
+test('a document’s title is the first of HTML’s, and a drawing’s only where the drawing is the document', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const DRAWN = '<svg id="s"><title id="t">drawn</title></svg>';
+  assert.deepEqual(await reads(DRAWN, 'return [document.title]'), ['']);
+  assert.deepEqual(
+    await reads(`${DRAWN}<title>real</title>`, 'return [document.title]'),
+    ['real'],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.title="x";var t=by("t");return [document.title,t.textContent,' +
+        'document.head.children.length,document.head.firstChild.localName]',
+    ),
+    ['x', 'drawn', 1, 'title'],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><foreignObject><title id="t">a</title></foreignObject></svg>',
+      'document.title="x";return [document.title,by("t").textContent,document.head.children.length]',
+    ),
+    ['x', 'x', 0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><title>m</title></math><math><mtext><title id="t">mt</title></mtext></math>',
+      'return [document.title]',
+    ),
+    ['mt'],
+  );
+  // what it was made as stays with it, wherever it goes and in each copy
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t"));return [document.title,by("t") instanceof HTMLElement]',
+    ),
+    ['', false],
+  );
+  assert.deepEqual(
+    await reads(
+      DRAWN,
+      'document.head.appendChild(by("t").cloneNode(true));return [document.title]',
+    ),
+    [''],
+  );
+  // what a script makes, by how it made it
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElement("title");t.textContent="made";by("s").appendChild(t);' +
+        'return [document.title,t.namespaceURI===XHTML,t instanceof HTMLElement]',
+    ),
+    ['made', true, true],
+  );
+  // and a copy of it is HTML's too, the first a page hears of it in a drawing
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'by("s").appendChild(document.createElement("title"));' +
+        'var c=by("s").cloneNode(true).firstChild;' +
+        'return [c.namespaceURI===XHTML,c instanceof HTMLElement]',
+    ),
+    [true, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg>',
+      'var t=document.createElementNS(SVG,"title");t.textContent="made";' +
+        'by("s").appendChild(t);return [document.title]',
+    ),
+    [''],
+  );
+  // what `innerHTML` makes, by what it is read in
+  assert.deepEqual(
+    await reads(
+      '<svg id="s"></svg><math id="m"></math>' +
+        '<svg><foreignObject id="f"></foreignObject></svg>',
+      'by("s").innerHTML="<title>s</title>";by("m").innerHTML="<title>m</title>";' +
+        'var was=document.title;by("f").innerHTML="<title>f</title>";' +
+        'return [was,document.title]',
+    ),
+    ['', 'f'],
+  );
+  // a document of SVG's own
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(){return document.implementation.createDocument(SVG,"svg",null)};' +
+        'var d=made(),t=d.createElementNS(SVG,"title");t.textContent="x";d.documentElement.appendChild(t);' +
+        'var deep=made(),g=deep.createElementNS(SVG,"g"),u=deep.createElementNS(SVG,"title");' +
+        'u.textContent="x";g.appendChild(u);deep.documentElement.appendChild(g);' +
+        'var set=made();set.documentElement.appendChild(set.createElementNS(SVG,"g"));set.title="y";' +
+        'var has=set.documentElement.firstChild;' +
+        'return [d.title,deep.title,set.title,has.localName,has.namespaceURI===SVG]',
+    ),
+    ['x', '', 'y', 'title', true],
+  );
+  assert.deepEqual(
+    await reads(
+      '',
+      'var d=document.implementation.createDocument(SVG,"svg",null);' +
+        'var t=d.createElementNS(XHTML,"title");t.textContent="x";' +
+        'd.documentElement.appendChild(t);var was=d.title;' +
+        't=d.createElementNS(SVG,"title");t.textContent="y";' +
+        'd.documentElement.appendChild(t);return [was,d.title]',
+    ),
+    ['', 'y'],
+    'only a title of its own',
+  );
+  // and one of XML's, where a title of no language is none
+  assert.deepEqual(
+    await reads(
+      '',
+      'var made=function(ns){var d=document.implementation.createDocument(null,"r",null),' +
+        't=d.createElementNS(ns,"title");t.textContent="x";d.documentElement.appendChild(t);return d};' +
+        'return [made(XHTML).title,made(null).title]',
+    ),
+    ['x', ''],
+  );
+});
+
+test('a <script> or a <style> a <math> holds is only a name, wherever it goes, and one in SVG’s namespace is one, however it was made', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  const SCRIPT = '<math><script id="c">ran=1</script></math>';
+  const blue = 'rgb(0, 0, 255)';
+  const painted = 'getComputedStyle(by("p")).color==="rgb(0, 0, 255)"';
+  const STYLE =
+    '<p id="p">p</p><math><style id="c">#p{color:rgb(0,0,255)}</style></math>';
+  assert.notEqual(blue, '');
+  assert.deepEqual(await reads(SCRIPT, 'return [ran]'), [0]);
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c"));return [ran,by("c") instanceof HTMLElement]',
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${SCRIPT}`,
+      'by("d").appendChild(by("c").cloneNode(true));return [ran]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      `${SCRIPT}<script>1</script>`,
+      'return [document.scripts.length,document.getElementsByTagName("script").length]',
+    ),
+    [2, 3],
+    'document.scripts holds HTML’s and getElementsByTagName all of them',
+  );
+  const make = (name: string, ns: string, text: string) =>
+    `var c=document.createElementNS(${ns},"${name}");c.textContent=${JSON.stringify(text)};` +
+    `document.body.appendChild(c);`;
+  assert.deepEqual(
+    await reads('', `${make('script', 'SVG', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'XHTML', 'ran=1')}return [ran]`),
+    [1],
+  );
+  assert.deepEqual(
+    await reads('', `${make('script', 'MATH', 'ran=1')}return [ran]`),
+    [0],
+  );
+  const RULE = '#p{color:rgb(0,0,255)}';
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'SVG', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p>',
+      `${make('style', 'MATH', RULE)}return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(STYLE, `return [document.styleSheets.length,${painted}]`),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      `<div id="d"></div>${STYLE}`,
+      `by("d").appendChild(by("c"));return [document.styleSheets.length,${painted},by("c").sheet===undefined]`,
+    ),
+    [0, false, true],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style id="c"></style></math>',
+      `by("c").textContent=${JSON.stringify(RULE)};return [document.styleSheets.length,${painted}]`,
+    ),
+    [0, false],
+  );
+  assert.deepEqual(
+    await reads(
+      '<p id="p">p</p><math><style>a{}</style><style id="c">a{}</style></math>' +
+        '<svg><style id="s">#p{color:rgb(0,0,255)}</style></svg>',
+      `return [document.styleSheets.length,${painted}]`,
+    ),
+    [1, true],
+    'a drawing’s is a sheet beside them',
+  );
+});
+
+test('a control has the form the parser gave it, and the form has the control', async () => {
+  // the row is no child of the form, which closed as it opened, as in all
+  // three engines
+  assert.deepEqual(
+    await reads(
+      '<table><form id="f"><tr><td><input id="i" name="n"></td></tr></form></table>',
+      'var f=by("f"),i=by("i");return [i.form===f,i.closest("form"),' +
+        'f.elements.length,f.elements[0]===i,f.children.length]',
+    ),
+    [true, null, 1, true, 0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<div><form id="f"></div><form id="g"><input id="i"></form>',
+      'return [by("i").form===by("f"),by("g")]',
+    ),
+    [true, null],
+    'the second form was turned away',
+  );
+});
+
+test('what the parser made of an HTML name in a drawing or a <math> is no HTML element to a page', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<svg><object id="o" data="x"></object><input id="i" value="3" type="image">' +
+        '<video id="v" poster="x"></video><image id="g" href="x"></image></svg>',
+      'var o=by("o"),i=by("i"),v=by("v"),g=by("g");return [typeof o.data,typeof i.value,' +
+        'typeof i.form,o.getAttribute("data"),typeof v.play,typeof v.poster,' +
+        'o instanceof SVGElement,i instanceof SVGElement,v instanceof SVGElement,g instanceof SVGElement]',
+    ),
+    [
+      'undefined',
+      'undefined',
+      'undefined',
+      'x',
+      'undefined',
+      'undefined',
+      true,
+      true,
+      true,
+      true,
+    ],
+  );
+  assert.deepEqual(
+    await reads(
+      '<math><image id="g" src="x"></image></math>',
+      'var g=by("g");return [g.localName,g.namespaceURI===MATH,g.src===undefined]',
+    ),
+    ['image', true, true],
+  );
+  // what `innerHTML` reads an element's markup as, by what the element is
+  assert.deepEqual(
+    await reads(
+      '<svg><title id="t">a</title></svg>',
+      'var t=by("t");t.innerHTML="<b>x</b>";return [t.children.length,t.textContent]',
+    ),
+    [1, 'x'],
+  );
+  for (const name of ['title', 'style', 'script']) {
+    assert.deepEqual(
+      await reads(
+        `<math><${name} id="t">a</${name}></math>`,
+        'var t=by("t");t.innerHTML="<mi>x</mi>";return [t.children.length]',
+      ),
+      [1],
+      name,
+    );
+  }
+  // and a window names none of them
+  assert.deepEqual(
+    await reads(
+      '<svg><object name="nob"></object></svg><math><object name="mob"></object></math>',
+      'return [typeof window.nob,typeof window.mob]',
+    ),
+    ['undefined', 'undefined'],
+  );
+});
+
+test('a form owns no <input> a drawing or a <math> holds', async () => {
+  // every value here is what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><input name="a" value="1">' +
+        '<svg><input name="b" value="2"></svg>' +
+        '<math><input name="c" value="3"></math>' +
+        '<svg><foreignObject><input name="d" value="4"></foreignObject></svg></form>',
+      'var f=by("f");return [f.elements.length,Array.from(new FormData(f).keys()).join(""),' +
+        'f.querySelectorAll("input").length]',
+    ),
+    [2, 'ad', 4],
+  );
+  assert.deepEqual(
+    await reads(
+      '<svg><input form="f" name="a"></svg><form id="f"></form>',
+      'return [by("f").elements.length]',
+    ),
+    [0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<form id="f"><svg><input required></svg></form>' +
+        '<form id="g"><input required></form>',
+      'var f=by("f"),g=by("g");return [f.matches(":invalid"),f.checkValidity(),' +
+        'g.matches(":invalid"),g.checkValidity()]',
+    ),
+    [false, true, true, false],
+  );
+});
+
+test('an <object> a drawing or a <math> holds loads nothing, as one a <foreignObject> holds does', async () => {
+  // what Chromium, Firefox and WebKit each ask for
+  const asked: string[] = [];
+  const files = new Proxy<Record<string, string>>(
+    {},
+    {
+      get(_, name) {
+        asked.push(String(name));
+        return `<p>${String(name)}</p>`;
+      },
+    },
+  );
+  await hostedFrames(
+    '<svg><object data="a.html"></object></svg>' +
+      '<math><object data="b.html"></object></math>' +
+      '<svg><foreignObject><object data="c.html"></object></foreignObject></svg>',
+    files,
+  );
+  await waitFor(() => assert.deepEqual(asked, ['c.html']));
+  await settle(30);
+  assert.deepEqual(asked, ['c.html']);
+});
+
+test('a frame’s document reads no sheet from a <style> a <math> holds', async () => {
+  // what Chromium, Firefox and WebKit each answer
+  assert.deepEqual(
+    await reads(
+      '<iframe id="f"></iframe>',
+      'var d=by("f").contentDocument;' +
+        'd.body.innerHTML=\'<math><style>p{color:rgb(0,0,255)}</style></math><p id="p">p</p>\';' +
+        'return [d.defaultView.getComputedStyle(d.getElementById("p")).color==="rgb(0, 0, 255)"]',
+    ),
+    [false],
+  );
+});
+
+test('what a page reads of an element a drawing’s markup made, and what it writes into a drawing', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><svg id="s"><g id="g"><link id="l" rel="stylesheet" href="s.css"></g></svg>' +
+      '<p id="out"></p><script>' +
+      'var l = document.getElementById("l"), g = document.getElementById("g"), r = [];' +
+      'r.push(l.namespaceURI === "http://www.w3.org/2000/svg", l instanceof HTMLElement,' +
+      '  l instanceof SVGElement, l.tagName, l.sheet === undefined,' +
+      '  document.querySelector("svg link") === l);' +
+      // an icon set writes its paths closed, and each stayed in the last
+      "g.innerHTML = \"<path d='M0 0'/><path d='M1 1'/><clipPath id='c'/>\";" +
+      'r.push(g.children.length, g.lastChild.localName);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|false|true|link|true|true|3|clipPath',
+    doc.logs.join('\n'),
+  );
+});
+
 test('tables, forms and the rest of HTML’s DOM Acid3 reads: rows and sections, controls by name, a submit button’s click', async () => {
   const doc = await hosted(
     '<form id="f" action="javascript:"><input id="i" type="HIDDEN"></form>' +
@@ -9654,6 +11302,99 @@ metric(
 );
 
 metric(
+  'new FontFace loads a font from a URL or from bytes, and sets text once document.fonts has it',
+  async () => {
+    // tldraw and Excalidraw make every face with `new FontFace`, and threw
+    // at the name
+    const sans = new Uint8Array(readFileSync(FONTS!.monospace));
+    const doc = await hosted(
+      `<p id=out></p><span id=probe style="font: 40px Fallback">MMMM</span>
+       <script>
+         const out = {};
+         const fonts = document.fonts;
+         const url = new FontFace('Brand', 'url(brand.ttf)', { weight: '400' });
+         out.url = [url.status, url.family, url.weight, url.style, url.unicodeRange];
+         out.members = [fonts.has(url), fonts.size];
+         out.notFont = (() => {
+           try { fonts.add({}); } catch (e) { return e.name; }
+         })();
+         const heard = [];
+         fonts.addEventListener('loading', () => heard.push('loading'));
+         fonts.addEventListener('loadingdone', (e) => heard.push('done:' + e.fontfaces.length));
+         window.go = async () => {
+           const bytes = await (await fetch('brand.bin')).arrayBuffer();
+           const made = new FontFace('Bytes', bytes);
+           out.bytes = made.status;
+           await made.loaded;
+           out.loaded = made.status;
+           const back = await url.load();
+           out.same = [back === url, url.status];
+           fonts.add(url);
+           fonts.add(url);
+           fonts.add(made);
+           out.added = [fonts.has(url), fonts.size, fonts.check('16px Brand'), fonts.check('16px Bytes')];
+           await fonts.load('16px Brand');
+           out.checked = fonts.check('16px Brand');
+           document.getElementById('probe').style.fontFamily = 'Brand';
+           out.heard = heard;
+           const bad = new FontFace('Bad', 'not a source');
+           out.bad = [bad.status, await bad.loaded.catch((e) => e.name)];
+           const worse = new FontFace('Worse', 'url(a.ttf)', { weight: 'heavy' });
+           out.worse = await worse.loaded.catch((e) => e.name);
+           const junk = new FontFace('Junk', new Uint8Array([1, 2, 3]));
+           out.junk = await junk.loaded.catch((e) => e.name);
+           fonts.delete(made);
+           out.deleted = [fonts.has(made), fonts.size, fonts.delete(made)];
+           document.getElementById('out').textContent = JSON.stringify(out);
+         };
+       </script>`,
+      {
+        fonts: { 'brand.ttf': sans },
+        answer: (request) =>
+          request.url.endsWith('brand.bin')
+            ? {
+                status: 200,
+                statusText: 'OK',
+                headers: [['content-type', 'font/ttf']],
+                url: request.url,
+                redirected: false,
+                body: '',
+                bytes: sans,
+              }
+            : null,
+      },
+    );
+    await settle();
+    const before = doc.view.elementRect(doc.byId('probe'))!.width;
+    doc.run('go()');
+    await waitFor(() => assert.notEqual(doc.text('out'), ''), {
+      timeout: 3000,
+    });
+    assert.deepEqual(JSON.parse(doc.text('out')), {
+      url: ['unloaded', 'Brand', '400', 'normal', 'U+0-10FFFF'],
+      members: [false, 0],
+      notFont: 'TypeError',
+      bytes: 'loading',
+      loaded: 'loaded',
+      same: [true, 'loaded'],
+      added: [true, 2, true, true],
+      checked: true,
+      heard: [],
+      bad: ['error', 'SyntaxError'],
+      worse: 'SyntaxError',
+      junk: 'NetworkError',
+      deleted: [false, 1, false],
+    });
+    await settle(40);
+    assert.notEqual(
+      doc.view.elementRect(doc.byId('probe'))!.width,
+      before,
+      'the text in it is set in it',
+    );
+  },
+);
+
+metric(
   "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
   async () => {
     // fontfaceobserver 2.x asks `load()` every 25 ms until it hands over a
@@ -9717,7 +11458,9 @@ test("a page reads an element's font, and draws on a canvas in it, as it would i
       });
       </script>`,
   );
-  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const { drawn, ...out } = JSON.parse(
+    await settled(doc, 'out', (t) => t !== ''),
+  );
   assert.deepStrictEqual(out, {
     font: 'italic 700 16px / 20px Inter, serif',
     property: 'italic 700 16px / 20px Inter, serif',
@@ -9726,9 +11469,10 @@ test("a page reads an element's font, and draws on a canvas in it, as it would i
     unkept: '13px "Helvetica Neue"',
     listed: -1,
     family: true,
-    // no font set leaves the one before, and the element's is the next
-    drawn: ['20px sans-serif', 22, 17.6],
   });
+  // no font set leaves the one before, and the element's is the next
+  assert.strictEqual(drawn[0], '20px sans-serif');
+  assert.ok(drawn[2] < drawn[1], `16px is narrower than 20px: ${drawn}`);
 });
 
 metric(
@@ -10216,6 +11960,20 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
   // a link's own target, else the document's `<base target>`
   assert.equal(linkTarget(by('own'), document), 'side');
   assert.equal(linkTarget(by('based'), document), '_top');
+  // which one in a drawing is not, in any of the three engines
+  const drawn = new HtmlSource();
+  drawn.setSource(
+    '<svg><g><base target="drawn"></g></svg><a id="x" href="x.html">x</a>',
+    true,
+  );
+  assert.equal(linkTarget(null, drawn.document), '');
+  // and a frame's name is no name of an element that is no frame
+  drawn.setSource(
+    '<svg><object name="side"></object></svg><math><iframe></iframe>' +
+      '<object name="side"></object></math>',
+    true,
+  );
+  assert.equal(navigableFor(drawn.document, 'side'), 'tab');
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {
@@ -10620,7 +12378,8 @@ test('a delete beside a line break takes the break, Delete on an empty last line
 for (const scale of [1, 2]) {
   metric(
     `an empty editing host draws its caret at the start of its content, in its text colour where its caret-color is auto, at ${scale}x`,
-    async () => {
+    async (t) => {
+      holdClock(t, caretClock);
       const doc = await hosted(
         '<div id="ed" contenteditable style="font: 20px monospace; margin: 0;' +
           ' padding: 10px 30px; height: 40px; color: rgb(0, 0, 255)"></div>' +
@@ -13331,12 +15090,13 @@ async function hostedFrames(
   return { text, logs, runner: page, result };
 }
 
-/** What `read` answers once `done` holds of it, or by three seconds. */
+/** What `read` answers once `done` holds of it, or by `ms`. */
 async function until(
   read: () => string,
   done: (text: string) => boolean,
+  ms = 3000,
 ): Promise<string> {
-  const end = Date.now() + 3000;
+  const end = Date.now() + ms;
   let text = read();
   while (!done(text) && Date.now() < end) {
     await settle(20);
@@ -13344,6 +15104,39 @@ async function until(
   }
   return text;
 }
+
+test('Math.sumPrecise is in the page, in a frame’s realm and in a worker, each its realm’s own and each a builtin to read', async () => {
+  // `math.test.ts` has what it answers; this has where it is
+  const read =
+    '[Math.sumPrecise([1e20, 0.1, -1e20]), Object.is(Math.sumPrecise([]), -0),' +
+    ' /native code/.test(String(Math.sumPrecise))].join(",")';
+  const frame =
+    '<!DOCTYPE html><p id="sum">-</p><script>' +
+    `document.getElementById("sum").textContent = ${read} + "," + (Math !== parent.Math);` +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe>' +
+      '<p id="page"></p><p id="worker"></p><script>' +
+      `document.getElementById("page").textContent = ${read};` +
+      `var src = ${JSON.stringify(`postMessage(${read} + "," + (typeof document));`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("worker").textContent = e.data; };' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const held = await until(
+    () =>
+      text('page', 'page') && text('page', 'worker') && text('f', 'sum') !== '-'
+        ? 'in'
+        : '',
+    (t) => t === 'in',
+    15000,
+  );
+  assert.equal(held, 'in', logs.join('\n'));
+  assert.equal(text('page', 'page'), '0.1,true,true');
+  assert.equal(text('f', 'sum'), '0.1,true,true,true');
+  assert.equal(text('page', 'worker'), '0.1,true,true,undefined');
+});
 
 test('a frame runs in a realm of its own, linked to the page: its window, its parent and messages both ways', async () => {
   const frame =
@@ -13395,6 +15188,79 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test('a frame loads however a script put it in: innerHTML and replaceChildren as appendChild, with nothing reading its window', async () => {
+  const frame = (name: string): string =>
+    `<!doctype html><script>parent.postMessage("${name}", "*")</script>`;
+  const { text, logs } = await hostedFrames(
+    '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
+      '<p id="out"></p><script>' +
+      'var heard = [];' +
+      'function by(id) { return document.getElementById(id); }' +
+      'addEventListener("message", function (e) {' +
+      '  heard.push(e.data); heard.sort();' +
+      '  by("out").textContent = heard.join(",");' +
+      '});' +
+      // after the parse, as a click is: what a script puts in while the
+      // parser runs is loaded with what the markup has (`loadFrames`)
+      'addEventListener("load", function () {' +
+      '  by("a").innerHTML = \'<iframe src="one.html"></iframe>\';' +
+      '  var two = document.createElement("iframe"); two.src = "two.html";' +
+      '  by("b").replaceChildren(two);' +
+      '  var three = document.createElement("iframe"); three.src = "three.html";' +
+      '  by("c").appendChild(three);' +
+      // put in nowhere, it loads as it goes in and not before
+      '  var held = document.createElement("div");' +
+      '  held.innerHTML = \'<iframe src="four.html"></iframe>\';' +
+      '  setTimeout(function () { by("d").appendChild(held); }, 0);' +
+      '});' +
+      '</script>',
+    {
+      'one.html': frame('one'),
+      'two.html': frame('two'),
+      'three.html': frame('three'),
+      'four.html': frame('four'),
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t.split(',').length === 4,
+  );
+  assert.equal(page, 'four,one,three,two', logs.join('\n'));
+});
+
+test("a key crosses to a frame's realm and back, and the frame's is the frame's", async () => {
+  const frame =
+    '<!doctype html><script>' +
+    'addEventListener("message", async function (e) {' +
+    '  var key = e.data;' +
+    '  var sign = await crypto.subtle.sign("HMAC", key, new Uint8Array(1));' +
+    '  parent.postMessage({ key: key, sign: sign, mine: key instanceof CryptoKey, ext: key.extractable }, "*");' +
+    '});' +
+    'parent.postMessage("ready", "*");' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f"), key;' +
+      'crypto.subtle.importKey("raw", new Uint8Array(32), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]).then(function (k) { key = k; });' +
+      'addEventListener("message", async function (e) {' +
+      '  if (e.data === "ready") { while (!key) await new Promise(function (r) { setTimeout(r, 5); }); f.contentWindow.postMessage(key, "*"); return; }' +
+      '  var d = e.data;' +
+      '  var fine = await crypto.subtle.verify("HMAC", key, d.sign, new Uint8Array(1));' +
+      '  document.getElementById("out").textContent = [d.mine, d.ext, d.key instanceof CryptoKey, d.key === key, fine].join(" ");' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.length > 0,
+    ),
+    'true false true false true',
+    logs.join('\n'),
+  );
 });
 
 test("a frame's window in a realm of its own hears what the page adds to it, by its methods or by EventTarget's", async () => {
@@ -14109,6 +15975,161 @@ metric(
     );
   },
 );
+
+test('a NodeList and an HTMLCollection are no arrays, and what a page slices of one is a plain array', async () => {
+  // StackEdit's `NodeList.prototype.cl_each` goes through
+  // `Array.prototype.slice.call`, and an `Array` subclass made another
+  // NodeList of that, whose `forEach` was `cl_each`, without end
+  const doc = await hosted(
+    `<p id=out></p><div id=r><i></i><b></b></div>
+     <script>
+       const q = document.querySelectorAll('#r > *');
+       const c = document.getElementById('r').children;
+       const out = {
+         isArray: [Array.isArray(q), Array.isArray(c)],
+         sliced: [
+           Array.isArray([].slice.call(q)),
+           [].slice.call(c).constructor === Array,
+         ],
+         parents: [
+           Object.getPrototypeOf(NodeList.prototype) === Object.prototype,
+           Object.getPrototypeOf(HTMLCollection.prototype) === Object.prototype,
+         ],
+         arrayMethods: ['map', 'filter', 'slice', 'push', 'includes', 'at']
+           .filter((m) => m in q || m in c),
+         missing: ['forEach', 'keys', 'values', 'entries', 'item', 'length']
+           .filter((m) => !(m in q))
+           .concat(['item', 'namedItem', 'length'].filter((m) => !(m in c))),
+         iterators: [
+           NodeList.prototype[Symbol.iterator] === Array.prototype.values,
+           HTMLCollection.prototype[Symbol.iterator] === Array.prototype.values,
+           NodeList.prototype.forEach === Array.prototype.forEach,
+         ],
+         collectionHasForEach: 'forEach' in c,
+         keys: Object.keys(q),
+         writable: Object.getOwnPropertyDescriptor(q, 0).writable,
+         tags: [...q].map((e) => e.localName),
+         tag: Object.prototype.toString.call(q),
+         kinds: [q instanceof NodeList, c instanceof HTMLCollection],
+       };
+       q[0] = 'x';
+       q.expando = 1;
+       out.written = [q[0].localName, q.expando];
+       out.illegal = (() => {
+         try { return Object.create(q).length; }
+         catch (e) { return e.name; }
+       })();
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    isArray: [false, false],
+    sliced: [true, true],
+    parents: [true, true],
+    arrayMethods: [],
+    missing: [],
+    iterators: [true, true, true],
+    collectionHasForEach: false,
+    keys: ['0', '1'],
+    writable: false,
+    tags: ['i', 'b'],
+    tag: '[object NodeList]',
+    kinds: [true, true],
+    written: ['i', 1],
+    illegal: 'TypeError',
+  });
+});
+
+test('a live list holds what the tree holds now, and querySelectorAll what it held', async () => {
+  const doc = await hosted(
+    `<p id=out></p><div id=r><b class=x></b><b></b></div>
+     <script>
+       const r = document.getElementById('r');
+       const kids = r.childNodes;
+       const out = { same: kids === r.childNodes && r.children === r.children };
+       const tags = document.getElementsByTagName('b');
+       const classes = document.getElementsByClassName('x');
+       const fixed = document.querySelectorAll('b');
+       const held = [tags.length, classes.length, fixed.length];
+       r.appendChild(document.createElement('b')).className = 'x';
+       out.grew = [held, [tags.length, classes.length, fixed.length]];
+       tags[1].className = 'x';
+       out.classed = classes.length;
+       tags[0].classList.remove('x');
+       out.unclassed = classes.length;
+       // a list that lost what it held is no loop without end
+       let turns = 0;
+       while (kids.length && turns < 10) { r.removeChild(kids[0]); turns += 1; }
+       out.emptied = [turns, tags.length, fixed.length];
+       document.getElementById('out').textContent = JSON.stringify(out);
+       window.italics = document.getElementsByTagName('i');
+       window.italicsThen = italics.length;
+     </script>
+     <i></i>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    same: true,
+    grew: [
+      [2, 1, 2],
+      [3, 2, 2],
+    ],
+    classed: 3,
+    unclassed: 2,
+    emptied: [3, 0, 2],
+  });
+  // what the parser made after the script ran no op of the page's said
+  doc.run(
+    `document.getElementById('out').textContent = [italicsThen, italics.length].join();`,
+  );
+  assert.equal(doc.text('out'), '0,1');
+});
+
+test("a select's options take a length and an option at an index, and a form's controls answer a name several go by", async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <select id=s><option>a</option><optgroup><option>b</option></optgroup></select>
+     <form id=f><input type=radio name=r value=1><input type=radio name=r value=2 checked></form>
+     <script>
+       const s = document.getElementById('s');
+       const o = s.options;
+       const out = { same: o === s.options, kind: String(o) };
+       o.length = 4;
+       out.grown = [o.length, s.children.length];
+       o[3] = new Option('d', 'd');
+       out.set = o[3].value;
+       o[4] = null;
+       o[0] = null;
+       out.removed = [...o].map((e) => e.textContent);
+       o.add(new Option('e', 'e'), 0);
+       s.remove(1);
+       out.added = [...o].map((e) => e.textContent);
+       out.refused = (() => {
+         try { o.add(document.createElement('div')); }
+         catch (e) { return e.name; }
+       })();
+       const f = document.getElementById('f');
+       const radios = f.elements.r;
+       out.radios = [String(radios), radios.length, radios.value];
+       radios.value = '1';
+       out.chosen = [radios.value, f.elements[0].checked];
+       document.getElementById('out').textContent = JSON.stringify(out);
+     </script>`,
+  );
+  await settle();
+  assert.deepEqual(JSON.parse(doc.text('out')), {
+    same: true,
+    kind: '[object HTMLOptionsCollection]',
+    grown: [4, 4],
+    set: 'd',
+    removed: ['b', '', 'd'],
+    added: ['e', '', 'd'],
+    refused: 'TypeError',
+    radios: ['[object RadioNodeList]', 2, '2'],
+    chosen: ['1', true],
+  });
+});
 
 test('children replaced all at once leave the tree whole, told once, and a live range where DOM puts it', async () => {
   // with no range or iterator live the children go at once

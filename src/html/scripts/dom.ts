@@ -42,6 +42,13 @@ import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
+import type { installWebCrypto } from './webcrypto.js';
+import type { installDataTransfer } from './datatransfer.js';
+import type { installClipboard } from './clipboard.js';
+import type { installNotifications } from './notifications.js';
+import type { installWindows, WindowInternals } from './windows.js';
+import type { installServiceWorkers } from './serviceworkers.js';
+import type { installCaches } from './caches.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -77,6 +84,13 @@ export function installDom(
   webaudio: typeof installWebAudio,
   mse: typeof installMse,
   geometry: typeof installGeometry,
+  webcrypto: typeof installWebCrypto,
+  transfers: typeof installDataTransfer,
+  clipboards: typeof installClipboard,
+  notificationsApi: typeof installNotifications,
+  windowing: typeof installWindows,
+  serviceWorkersApi: typeof installServiceWorkers,
+  cachesApi: typeof installCaches,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -124,21 +138,34 @@ export function installDom(
       op !== 'computedShorthands' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
+      op !== 'parsedForm' &&
       op !== 'selection' &&
       op !== 'fontFaces' &&
       op !== 'fontMatch' &&
       op !== 'encodeImage' &&
       op !== 'image' &&
+      op !== 'crypto' &&
+      op !== 'random' &&
+      op !== 'uuid' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
     }
+    if (!mutatesHas.call(KEEPS_LISTS, op)) {
+      if (op !== 'setAttr' && op !== 'delAttr') {
+        treeEpoch += 1;
+        attrEpoch += 1;
+      } else if (mutatesHas.call(LIST_ATTRIBUTES, b)) attrEpoch += 1;
+    }
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
-      throw new DOMException(parts[2] ?? '', parts[1] || 'Error');
+      throw parts[1] === 'QuotaExceededError'
+        ? new QuotaExceededError(parts[2] ?? '')
+        : new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
     if (mutatesHas.call(MUTATES, op)) {
+      opEdits += 1;
       mutated();
       // a scroll timeline's time is measured again at the next frame
       if (heldTimelines.size) wantFrame();
@@ -163,6 +190,130 @@ export function installDom(
    *  `getComputedStyle` calls, so each read moved the count, and the next
    *  read of the style read all of it again — 17.7 million ops in a load. */
   let opEpoch = 0;
+  /** Counts the ops that change a tree, which an XPath iterator is ended
+   *  by. */
+  let opEdits = 0;
+  /** What a live list checks before it answers from what it read last
+   *  (`itemsOf`), since a read of the host at every index would be a trip a
+   *  page's `for` loop pays for each element: `treeEpoch` moves at any op
+   *  that is not a read and at each task, and `attrEpoch` with it, and at
+   *  an attribute some list reads as well. A change only reaches the tree
+   *  through an op or between two tasks. */
+  let treeEpoch = 0;
+  let attrEpoch = 0;
+  /** The ops that change nothing a list holds. Anything else, an op added
+   *  later among them, reads the lists again, which costs a read and is
+   *  never wrong. Setting a style is here because a page's loop over a list
+   *  sets one on each element, and no list reads that attribute. */
+  const KEEPS_LISTS = new Set([
+    'info',
+    'parent',
+    'owner',
+    'doctype',
+    'kids',
+    'first',
+    'last',
+    'next',
+    'prev',
+    'connected',
+    'contains',
+    'equal',
+    'position',
+    'text',
+    'attr',
+    'attrs',
+    'style',
+    'stylePriority',
+    'styleNames',
+    'styleText',
+    'setStyle',
+    'blockValue',
+    'blockPriority',
+    'blockNames',
+    'blockText',
+    'shadowRoot',
+    'shadowHost',
+    'shadowFlags',
+    'assignedSlot',
+    'assignedNodes',
+    'shadowMode',
+    'shadowDelegates',
+    'html',
+    'getHTML',
+    'content',
+    'query',
+    'matches',
+    'closest',
+    'parsedForm',
+    'named',
+    'byId',
+    'byTag',
+    'byTagNS',
+    'byClass',
+    'lookupNamespace',
+    'serializeXml',
+    'xpath',
+    'xpathPrefixes',
+    'color',
+    'supports',
+    'rect',
+    'atViewport',
+    'scrollMoves',
+    'geometry',
+    'offset',
+    'computed',
+    'computedShorthands',
+    'customProperty',
+    'at',
+    'viewport',
+    'scrollState',
+    'clientBox',
+    'visible',
+    'value',
+    'validity',
+    'willValidate',
+    'selection',
+    'active',
+    'log',
+    'now',
+    'navigator',
+    'hasNetwork',
+    'image',
+    'canPlayType',
+    'base',
+    'location',
+    'resolve',
+    'url',
+    'random',
+    'uuid',
+    'timer',
+    'clearTimer',
+    'observe',
+    'disconnect',
+    'observed',
+    'takeRecords',
+    'rendering',
+    'intersections',
+    'fontFaces',
+    'fontMatch',
+    'sheets',
+  ]);
+  /** The attributes some list goes by (`readsAttributes` in `liveList`). */
+  const LIST_ATTRIBUTES = new Set([
+    'class',
+    'id',
+    'name',
+    'href',
+    'for',
+    'form',
+    'type',
+    'selected',
+    'multiple',
+    'size',
+    'disabled',
+    'rel',
+    'media',
+  ]);
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
@@ -266,6 +417,28 @@ export function installDom(
       Object.defineProperty(on, name, { value: i + 1, enumerable: true });
     }
   });
+
+  /** A quota run past (Web IDL 3.14.2): a `DOMException` of its own class,
+   *  which says what the quota was where that is known. */
+  class QuotaExceededError extends DOMException {
+    readonly quota: number | null;
+    readonly requested: number | null;
+    constructor(message: Any = '', options: Any = {}) {
+      super(str(message), 'QuotaExceededError');
+      const limit = options?.quota;
+      const asked = options?.requested;
+      for (const v of [limit, asked]) {
+        if (v !== undefined && (!Number.isFinite(+v) || +v < 0)) {
+          throw new RangeError('A quota is a non-negative number.');
+        }
+      }
+      if (limit !== undefined && asked !== undefined && +asked < +limit) {
+        throw new RangeError('What was requested is less than the quota.');
+      }
+      this.quota = limit === undefined ? null : +limit;
+      this.requested = asked === undefined ? null : +asked;
+    }
+  }
 
   /** A page's exception, reported as a browser reports one it caught: on
    *  the console, and as an `error` event at the window. */
@@ -665,11 +838,16 @@ export function installDom(
     readonly data: string | null;
     readonly inputType: string;
     readonly isComposing: boolean;
+    readonly dataTransfer: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.data = init.data ?? null;
       this.inputType = String(init.inputType ?? '');
       this.isComposing = !!init.isComposing;
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+    getTargetRanges(): Any[] {
+      return [];
     }
   }
   class SubmitEvent extends Event {
@@ -935,7 +1113,8 @@ export function installDom(
     const own = windowMethods.get(self ?? G);
     if (own !== undefined) return own;
     if (self._listeners !== undefined) return null;
-    const proxied = windowMethods.get(self.window);
+    const proxied =
+      windowMethods.get(self.window) ?? windowMethods.get(self.__global);
     if (proxied !== undefined) return proxied;
     throw new TypeError('Illegal invocation');
   };
@@ -1073,6 +1252,29 @@ export function installDom(
     return fn;
   };
 
+  /** An `on<type>` attribute of an interface (HTML 8.1.8.1). */
+  const handlerProperty = (proto: Any, type: string): void => {
+    const get = function (this: Any): Any {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      return this._handlers?.[type] ?? null;
+    };
+    const set = function (this: Any, fn: Any): void {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      setHandler(this, type, typeof fn === 'function' ? fn : null);
+    };
+    Object.defineProperty(get, 'name', { value: `get on${type}` });
+    Object.defineProperty(set, 'name', { value: `set on${type}` });
+    Object.defineProperty(proto, `on${type}`, {
+      get,
+      set,
+      configurable: true,
+      enumerable: true,
+    });
+  };
   /** Gives a target's `on<type>` handler its place among the target's
    *  listeners, where it has none, as it comes to be something other than
    *  null (HTML 8.1.8.1, "activate an event handler"): the end of the
@@ -4763,6 +4965,7 @@ export function installDom(
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const XML_NS = 'http://www.w3.org/XML/1998/namespace';
   const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+  const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
   const wrappers = new Map<number, Any>();
 
@@ -4800,15 +5003,19 @@ export function installDom(
           ? XMLDocument
           : type === 3
             ? Text
-            : type === 8
-              ? Comment
-              : type === 9
-                ? Document
-                : type === 10
-                  ? DocumentType
-                  : name === '#shadow-root'
-                    ? ShadowRoot
-                    : DocumentFragment;
+            : type === 4
+              ? CDATASection
+              : type === 7
+                ? ProcessingInstruction
+                : type === 8
+                  ? Comment
+                  : type === 9
+                    ? Document
+                    : type === 10
+                      ? DocumentType
+                      : name === '#shadow-root'
+                        ? ShadowRoot
+                        : DocumentFragment;
     node = Object.create(Kind.prototype);
     Object.assign(node, new EventTarget());
     node._id = id;
@@ -4833,36 +5040,342 @@ export function installDom(
     if (!node || typeof node._id !== 'number') {
       throw new TypeError(`${what} is not of type 'Node'.`);
     }
+    // a node of another realm of this group, whose id is that realm's: the
+    // host hands it across, as a same-origin frame's or popup's document
+    // takes a node a page made in its own (`handOver`)
+    if (!(node instanceof Node) && node.__handOver) {
+      node.__handOver();
+      return Number(call('takeNode'));
+    }
     return node._id;
   };
 
-  /** A list a page indexes and iterates, as a `NodeList` or an
-   *  `HTMLCollection` is — not live: a copy as it was asked for. */
-  class NodeList extends Array {}
-  class HTMLCollection extends Array {}
-  const list = (items: Any[]): Any => {
-    const out: Any = Object.setPrototypeOf(items.slice(), NodeList.prototype);
-    out.item = (i: number) => out[i] ?? null;
-    out.namedItem = (name: string) =>
-      items.find(
-        (n) =>
-          n.getAttribute?.('id') === name || n.getAttribute?.('name') === name,
-      ) ?? null;
-    return out;
+  /** Where a list keeps what it holds, on the object its proxy stands
+   *  over. No page reaches it: `ownKeys` leaves it out. */
+  const LIST = Symbol('list');
+
+  /** A property's name as an array index (Web IDL 2.5.6), or -1. */
+  const listIndex = (key: string): number => {
+    const first = key.charCodeAt(0);
+    if (!(first >= 48 && first <= 57)) return -1;
+    const n = +key;
+    return n >>> 0 === n && n !== 4294967295 && `${n}` === key ? n : -1;
   };
 
-  /** An `HTMLCollection` (DOM 4.2.10.2): a list whose members are also
-   *  its properties by id and by name, as `document.forms.form` and
-   *  `form.elements.first` read them. Not live: a copy as it was asked
-   *  for. */
-  const collection = (items: Any[]): Any => {
-    const out = list(items);
+  /** What a list holds now: what it read last, until something could have
+   *  changed that (`treeEpoch`, `attrEpoch`). */
+  const itemsOf = (state: Any): Any[] => {
+    if (
+      state.read &&
+      (state.unkept ||
+        state.at !== (state.readsAttributes ? attrEpoch : treeEpoch))
+    ) {
+      state.items = state.read();
+      state.at = state.readsAttributes ? attrEpoch : treeEpoch;
+    }
+    return state.items;
+  };
+
+  /** A list's supported property names (DOM 4.2.10.2), each the first
+   *  element in tree order that goes by it. */
+  const namesOf = (state: Any): Map<string, Any> => {
+    const items = itemsOf(state);
+    if (state.names && state.namesAt === attrEpoch) return state.names;
+    const names = new Map<string, Any>();
     for (const el of items) {
-      for (const key of [el.getAttribute?.('id'), el.getAttribute?.('name')]) {
-        if (key && !(key in out)) out[key] = el;
+      const id = call('attr', el._id, 'id');
+      if (typeof id === 'string' && id && !names.has(id)) names.set(id, el);
+      if (el.namespaceURI !== HTML_NS) continue;
+      const name = call('attr', el._id, 'name');
+      if (typeof name === 'string' && name && !names.has(name)) {
+        names.set(name, el);
       }
     }
-    return out;
+    state.names = names;
+    state.namesAt = attrEpoch;
+    return names;
+  };
+  /** What the proxy below is written in, as it was before any page code
+   *  ran: a page's own `Reflect.get` is no business of a list's. */
+  const REFLECT = {
+    get: Reflect.get,
+    has: Reflect.has,
+    getOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
+    defineProperty: Reflect.defineProperty,
+    set: Reflect.set,
+    deleteProperty: Reflect.deleteProperty,
+    ownKeys: Reflect.ownKeys,
+  };
+  const hasOwn = Object.prototype.hasOwnProperty;
+  /** A list's named property (Web IDL 3.9.1, "named property visibility"):
+   *  none that its own expandos or its prototypes have a property of. */
+  const visibleName = (target: Any, key: string): Any => {
+    const state = target[LIST];
+    if (!state.named || REFLECT.has(target, key)) return undefined;
+    return state.named(state, key) ?? undefined;
+  };
+  const NAMED = (state: Any, key: string): Any => namesOf(state).get(key);
+
+  /**
+   * A `NodeList` or an `HTMLCollection` is a legacy platform object (Web
+   * IDL 3.9), whose indices and names are its own properties read from what
+   * it holds now, none of which a page can set. Only a proxy does that, so
+   * every list is one, over a plain object that keeps a page's expandos,
+   * with this one handler. An `Array` subclass was the shape before, and
+   * `Array.prototype.slice.call(list)` made another list of it, on which
+   * StackEdit's `cl_each`, which goes through `slice`, called itself without
+   * end. A read is some 100 ns, less than the op a page does with what it
+   * read.
+   */
+  const LIST_PROXY: Any = {
+    get(target: Any, key: Any, receiver: Any): Any {
+      if (key === LIST) return target[LIST];
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          if (item !== undefined) return item;
+        } else {
+          const named = visibleName(target, key);
+          if (named !== undefined) return named;
+        }
+      }
+      return REFLECT.get(target, key, receiver);
+    },
+    has(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          if (index < itemsOf(target[LIST]).length) return true;
+        } else if (visibleName(target, key) !== undefined) return true;
+      }
+      return key !== LIST && REFLECT.has(target, key);
+    },
+    getOwnPropertyDescriptor(target: Any, key: Any): Any {
+      if (key === LIST) return undefined;
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          return item === undefined
+            ? undefined
+            : {
+                value: item,
+                writable: false,
+                enumerable: true,
+                configurable: true,
+              };
+        }
+        const named = visibleName(target, key);
+        if (named !== undefined) {
+          return {
+            value: named,
+            writable: false,
+            enumerable: false,
+            configurable: true,
+          };
+        }
+      }
+      return REFLECT.getOwnPropertyDescriptor(target, key);
+    },
+    defineProperty(target: Any, key: Any, desc: Any): boolean {
+      if (typeof key === 'string') {
+        if (listIndex(key) >= 0) return false;
+        const state = target[LIST];
+        if (
+          state.named &&
+          !hasOwn.call(target, key) &&
+          state.named(state, key)
+        ) {
+          return false;
+        }
+      }
+      return REFLECT.defineProperty(target, key, desc);
+    },
+    set(target: Any, key: Any, value: Any, receiver: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const state = target[LIST];
+          if (state.setItem && receiver === state.self) {
+            state.setItem(index, value);
+            return true;
+          }
+          if (index < itemsOf(state).length) return false;
+        }
+      }
+      return REFLECT.set(target, key, value, receiver);
+    },
+    deleteProperty(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) return index >= itemsOf(target[LIST]).length;
+        if (visibleName(target, key) !== undefined) return false;
+      }
+      return REFLECT.deleteProperty(target, key);
+    },
+    preventExtensions(): boolean {
+      return false;
+    },
+    ownKeys(target: Any): Any[] {
+      const state = target[LIST];
+      const keys: Any[] = [];
+      const items = itemsOf(state);
+      for (let i = 0; i < items.length; i += 1) keys[keys.length] = `${i}`;
+      if (state.named) {
+        for (const name of namesOf(state).keys()) {
+          if (visibleName(target, name) !== undefined) {
+            keys[keys.length] = name;
+          }
+        }
+      }
+      for (const key of REFLECT.ownKeys(target)) {
+        if (key !== LIST) keys[keys.length] = key;
+      }
+      return keys;
+    },
+  };
+
+  /** A list of `Proto`'s, holding `items`, or what `read` answers. */
+  const listMade = (
+    Proto: Any,
+    items: Any[],
+    read: (() => Any[]) | null,
+    readsAttributes: boolean,
+    named: ((state: Any, key: string) => Any) | null,
+  ): Any => {
+    const target = Object.create(Proto.prototype);
+    const self = new Proxy(target, LIST_PROXY);
+    target[LIST] = {
+      self,
+      items,
+      read,
+      readsAttributes,
+      // what no count ever is, so a live list reads at its first use
+      at: -1,
+      named,
+      names: null,
+      namesAt: -1,
+      setItem: null,
+    };
+    return self;
+  };
+  /** A list's state, for a method of its interface: `Object.create(list)`
+   *  has one on its prototype and is no list. */
+  const listState = (list: Any): Any => {
+    const state = list?.[LIST];
+    if (state?.self !== list) throw new TypeError('Illegal invocation');
+    return state;
+  };
+
+  class NodeList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+  }
+  class HTMLCollection {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+    namedItem(name: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return state.named(state, str(name)) ?? null;
+    }
+  }
+  /** `getClientRects()`'s (CSSOM View 7), which only a rectangle goes in. */
+  class DOMRectList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  /** An `<input type=file>`'s `files` (File API 5). */
+  class FileList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  // what an indexed getter and a `length` have, and `iterable<Node>` adds to
+  // (Web IDL 3.7.10): the array's own functions, not copies of them, each a
+  // page tells from `Array.prototype`'s by nothing
+  for (const Kind of [NodeList, HTMLCollection, DOMRectList, FileList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const name of ['entries', 'forEach', 'keys', 'values']) {
+    Object.defineProperty(NodeList.prototype, name, {
+      value: (Array.prototype as Any)[name],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  /** A `NodeList` that holds what it was made with (`querySelectorAll`). */
+  const list = (items: Any[]): Any =>
+    listMade(NodeList, items, null, false, null);
+  /** A `NodeList` that holds what `read` answers now (`childNodes`).
+   *  `readsAttributes` says that an attribute decides what is in it, and
+   *  each one that can is in `LIST_ATTRIBUTES`. */
+  const liveList = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = NodeList,
+  ): Any => listMade(Proto, [], read, readsAttributes, null);
+  /** An `HTMLCollection` that holds what it was made with. */
+  const collection = (items: Any[]): Any =>
+    listMade(HTMLCollection, items, null, false, NAMED);
+  /** An `HTMLCollection` that holds what `read` answers now. */
+  const liveCollection = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = HTMLCollection,
+    named: (state: Any, key: string) => Any = NAMED,
+  ): Any => listMade(Proto, [], read, readsAttributes, named);
+  /** A list an attribute of a node hands out, the same one each time
+   *  (`[SameObject]`, Web IDL 3.3.21). */
+  const heldList = (node: Any, key: string, make: () => Any): Any => {
+    const held = (node._lists ??= new Map());
+    let made = held.get(key);
+    if (!made) held.set(key, (made = make()));
+    return made;
   };
 
   /** A string a node is given: what a page passes, converted here. */
@@ -4920,7 +5433,9 @@ export function installDom(
       return p instanceof Element ? p : null;
     }
     get childNodes(): Any {
-      return list(wrapAll(call('kids', this._id)));
+      return heldList(this, 'childNodes', () =>
+        liveList(() => wrapAll(call('kids', this._id))),
+      );
     }
     get firstChild(): Any {
       return wrap(call('first', this._id));
@@ -5031,8 +5546,43 @@ export function installDom(
       };
       walk(this);
     }
-    lookupNamespaceURI(): null {
+    /** The element a namespace lookup starts at (DOM 4.4, "locate"). */
+    get _lookupElement(): Any {
+      return this.nodeType === 9
+        ? (this as Any).documentElement
+        : this.nodeType === 1
+          ? this
+          : this.parentElement;
+    }
+    lookupNamespaceURI(prefix: Any): string | null {
+      const at = this._lookupElement;
+      const name = prefix === null || prefix === undefined ? '' : str(prefix);
+      if (!at) return null;
+      if (at.prefix === (name || null) && at.namespaceURI) {
+        return at.namespaceURI;
+      }
+      const found = call('lookupNamespace', at._id, name);
+      return typeof found === 'string' && found ? found : null;
+    }
+    lookupPrefix(namespace: Any): string | null {
+      if (namespace === null || namespace === undefined || namespace === '') {
+        return null;
+      }
+      const uri = str(namespace);
+      for (let at = this._lookupElement; at; at = at.parentElement) {
+        if (at.namespaceURI === uri && at.prefix) return at.prefix;
+        for (const name of at.getAttributeNames()) {
+          if (name.startsWith('xmlns:') && at.getAttribute(name) === uri) {
+            return name.slice(6);
+          }
+        }
+      }
       return null;
+    }
+    isDefaultNamespace(namespace: Any): boolean {
+      const uri =
+        namespace === undefined || namespace === '' ? null : namespace;
+      return this.lookupNamespaceURI(null) === (uri === null ? null : str(uri));
     }
   }
   // the constants on every node too, as WebIDL puts them on the prototype
@@ -5068,7 +5618,9 @@ export function installDom(
    *  have of their children. */
   class ParentNode extends Node {
     get children(): Any {
-      return list(wrapAll(call('kids', this._id, 'elements')));
+      return heldList(this, 'children', () =>
+        liveCollection(() => wrapAll(call('kids', this._id, 'elements'))),
+      );
     }
     get childElementCount(): number {
       return idList(call('kids', this._id, 'elements')).length;
@@ -5101,10 +5653,22 @@ export function installDom(
       return list(wrapAll(call('query', this._id, str(selector), true)));
     }
     getElementsByTagName(tag: Any): Any {
-      return list(wrapAll(call('byTag', this._id, str(tag))));
+      const name = str(tag);
+      return liveCollection(() => wrapAll(call('byTag', this._id, name)));
     }
     getElementsByClassName(names: Any): Any {
-      return list(wrapAll(call('byClass', this._id, str(names))));
+      const classes = str(names);
+      return liveCollection(
+        () => wrapAll(call('byClass', this._id, classes)),
+        true,
+      );
+    }
+    getElementsByTagNameNS(namespace: Any, name: Any): Any {
+      const ns = namespace === null ? '' : str(namespace);
+      const local = str(name);
+      return liveCollection(() =>
+        wrapAll(call('byTagNS', this._id, ns, local)),
+      );
     }
   }
 
@@ -5243,10 +5807,16 @@ export function installDom(
   class CDATASection extends Text {}
   class ProcessingInstruction extends CharacterData {
     get target(): string {
-      return '';
+      return this._name;
     }
   }
   Object.defineProperty(Comment.prototype, 'nodeType', nodeTypeOf(8));
+  Object.defineProperty(CDATASection.prototype, 'nodeType', nodeTypeOf(4));
+  Object.defineProperty(
+    ProcessingInstruction.prototype,
+    'nodeType',
+    nodeTypeOf(7),
+  );
 
   class DocumentType extends Node {
     _ids(): string[] {
@@ -5595,6 +6165,20 @@ export function installDom(
    *  `float`, a word JavaScript once kept for itself. */
   const blockProperty = (key: string): string =>
     key === 'cssFloat' ? 'float' : cssName(kebab(key));
+  /** The names of the properties a style has, once a page looks for one. */
+  let styleProperties: Set<string> | null = null;
+  /** Whether a style has an attribute of a name, which a page asks with
+   *  `in`: Vue 2 writes `style[name]` only where it finds `name` there, or a
+   *  prefixed one, and jQuery the same, so a style that had none took every
+   *  `:style` binding for a property with no name. */
+  const isStyleProperty = (key: string): boolean => {
+    if (!styleProperties) {
+      const names = str(call('styleProperties', document.documentElement?._id));
+      if (!names) return false;
+      styleProperties = new Set(names.split(','));
+    }
+    return !key.startsWith('--') && styleProperties.has(blockProperty(key));
+  };
   /**
    * A declaration block a page may write, an element's or a rule's: its
    * names by index, and each property read and set as an attribute of its
@@ -5623,6 +6207,12 @@ export function installDom(
           '',
         );
         return true;
+      },
+      has(t, key) {
+        if (key in t) return true;
+        if (typeof key !== 'string') return false;
+        const at = index(key);
+        return at >= 0 ? at < block.names().length : isStyleProperty(key);
       },
       ownKeys(t) {
         return [
@@ -5720,6 +6310,8 @@ export function installDom(
   const GEOMETRY = geometry({ DOMException });
   const DOMRect: Any = GEOMETRY.classes.DOMRect;
   const DOMRectReadOnly: Any = GEOMETRY.classes.DOMRectReadOnly;
+  const DOMMatrix: Any = GEOMETRY.classes.DOMMatrix;
+  const DOMPoint: Any = GEOMETRY.classes.DOMPoint;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -6018,11 +6610,12 @@ export function installDom(
       return namedNodeMapOf(this);
     }
     getAttributeNode(name: Any): Any {
-      const n = str(name).toLowerCase();
+      const n = this._attrName(name);
       return this.hasAttribute(n) ? attrOf(this, n) : null;
     }
-    getAttributeNodeNS(_ns: Any, name: Any): Any {
-      return this.getAttributeNode(name);
+    getAttributeNodeNS(ns: Any, name: Any): Any {
+      const key = this._attrNS(ns, name);
+      return key === null ? null : this.getAttributeNode(key);
     }
     setAttributeNode(attr: Any): Any {
       if (!(attr instanceof Attr)) {
@@ -6059,12 +6652,49 @@ export function installDom(
       const names = call('attrs', this._id);
       return typeof names === 'string' && names ? names.split('\u0000') : [];
     }
+    /** An attribute's name as it is kept: HTML's without case, and any
+     *  other as it is written (DOM 4.9). */
+    _attrName(name: Any): string {
+      const n = str(name);
+      return this._ns === undefined || this._ns === HTML_NS
+        ? n.toLowerCase()
+        : n;
+    }
     getAttribute(name: Any): string | null {
-      const v = call('attr', this._id, str(name).toLowerCase());
+      const v = call('attr', this._id, this._attrName(name));
       return typeof v === 'string' ? v : null;
     }
-    getAttributeNS(_ns: Any, name: Any): string | null {
-      return this.getAttribute(name);
+    /** The attribute a namespace and a local name say, by the name it is
+     *  kept under: its prefix is whatever it was written with. */
+    _attrNS(ns: Any, local: Any): string | null {
+      const name = str(local);
+      const held = this.getAttributeNames().includes(name) ? name : null;
+      if (ns === null || ns === undefined || ns === '') return held;
+      const uri = str(ns);
+      for (const key of this.getAttributeNames()) {
+        const colon = key.indexOf(':');
+        if (colon < 0 || key.slice(colon + 1) !== name) continue;
+        if (
+          this._attrSpaces?.get(key) === uri ||
+          this.lookupNamespaceURI(key.slice(0, colon)) === uri ||
+          (uri === XLINK_NS && key.startsWith('xlink:'))
+        ) {
+          return key;
+        }
+      }
+      // the tree keeps no namespace for an attribute with no prefix, so one
+      // of the name is the one a page set with this namespace
+      return held;
+    }
+    /** The namespaces `setAttributeNS` gave what the tree keeps none for. */
+    declare _attrSpaces: Map<string, string> | undefined;
+    getAttributeNS(ns: Any, name: Any): string | null {
+      const key = this._attrNS(ns, name);
+      const v = key === null ? null : call('attr', this._id, key);
+      return typeof v === 'string' ? v : null;
+    }
+    hasAttributeNS(ns: Any, name: Any): boolean {
+      return this._attrNS(ns, name) !== null;
     }
     hasAttribute(name: Any): boolean {
       return this.getAttribute(name) !== null;
@@ -6073,7 +6703,10 @@ export function installDom(
       return this.getAttributeNames().length > 0;
     }
     setAttribute(name: Any, value: Any): void {
-      const n = str(name).toLowerCase();
+      this._setAttr(this._attrName(name), value);
+    }
+    /** An attribute set by the name it is kept under. */
+    _setAttr(n: string, value: Any): void {
       if (!/^[^\s"'>/=\u0000-\u001f]+$/.test(n)) {
         throw new DOMException(
           `'${n}' is not a valid attribute name.`,
@@ -6092,11 +6725,21 @@ export function installDom(
         mediaLoad(this);
       }
     }
-    setAttributeNS(_ns: Any, name: Any, value: Any): void {
-      this.setAttribute(String(name).replace(/^.*:/, ''), value);
+    setAttributeNS(ns: Any, name: Any, value: Any): void {
+      const qualified = str(name);
+      const colon = qualified.indexOf(':');
+      // an existing attribute of the name, whatever its prefix, is the one
+      // set; a name without a namespace has no use for one
+      const held = this._attrNS(ns, qualified.slice(colon + 1));
+      const key = held ?? (ns ? qualified : qualified.slice(colon + 1));
+      if (ns && colon >= 0) (this._attrSpaces ??= new Map()).set(key, str(ns));
+      this._setAttr(key, value);
     }
     removeAttribute(name: Any): void {
-      const n = str(name).toLowerCase();
+      this._removeAttr(this._attrName(name));
+    }
+    /** An attribute taken away by the name it is kept under. */
+    _removeAttr(n: string): void {
       const attr = attrNodes.get(this)?.get(n);
       if (attr) detachAttr(attr);
       if (n.startsWith('on') && this.getAttribute(n) !== null) {
@@ -6104,8 +6747,9 @@ export function installDom(
       }
       call('delAttr', this._id, n);
     }
-    removeAttributeNS(_ns: Any, name: Any): void {
-      this.removeAttribute(name);
+    removeAttributeNS(ns: Any, name: Any): void {
+      const key = this._attrNS(ns, name);
+      if (key !== null) this._removeAttr(key);
     }
     toggleAttribute(name: Any, force?: boolean): boolean {
       const has = this.hasAttribute(name);
@@ -6167,7 +6811,13 @@ export function installDom(
     }
     getClientRects(): Any {
       const r = docRect(this);
-      return list(r ? [this.getBoundingClientRect()] : []);
+      return listMade(
+        DOMRectList,
+        r ? [this.getBoundingClientRect()] : [],
+        null,
+        false,
+        null,
+      );
     }
     // CSSOM View 6.1: whether it has a box, in no `content-visibility:
     // hidden`, and, where the options ask, is faded to nothing nowhere up
@@ -6621,7 +7271,14 @@ export function installDom(
       this.setAttribute('accesskey', v);
     }
     get draggable(): boolean {
-      return this.getAttribute('draggable') === 'true';
+      const said = (this.getAttribute('draggable') ?? '').toLowerCase();
+      if (said === 'true') return true;
+      if (said === 'false') return false;
+      // HTML 6.11.6: `auto`, which an image and a link with an address are
+      return (
+        this.localName === 'img' ||
+        (this.localName === 'a' && this.hasAttribute('href'))
+      );
     }
     set draggable(v: Any) {
       this.setAttribute('draggable', v ? 'true' : 'false');
@@ -6712,6 +7369,18 @@ export function installDom(
     }
   }
   class SVGElement extends Element {
+    /** The `<svg>` around an element, past which what it says is drawn
+     *  (SVG 2, 4.6.2): d3 reads a point through this one's matrix. */
+    get ownerSVGElement(): Any {
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at instanceof SVGSVGElement) return at;
+        if (!(at instanceof SVGElement)) return null;
+      }
+      return null;
+    }
+    get viewportElement(): Any {
+      return this.ownerSVGElement;
+    }
     get style(): Any {
       return (this._style ??= styleOf(this));
     }
@@ -6764,41 +7433,270 @@ export function installDom(
       });
     }
   };
+  /** What the host works out of a drawing (`svg-geometry.ts`), as numbers,
+   *  or null where the element is in none that is laid out. */
+  const svgNumbers = (el: Any, question: string, at = 0): number[] | null => {
+    const raw = call('svg', el._id, question, at);
+    return typeof raw === 'string' && raw ? raw.split(',').map(Number) : null;
+  };
+  const matrixFrom = (n: number[] | null): Any =>
+    n ? new DOMMatrix([n[0], n[1], n[2], n[3], n[4], n[5]]) : null;
+  /** An attribute read as a reflected string (SVG 2, 4.6.8). */
+  const animatedString = (el: Any, name: string): Any => ({
+    get baseVal(): string {
+      return el.getAttribute(name) ?? '';
+    },
+    set baseVal(v: Any) {
+      el.setAttribute(name, str(v));
+    },
+    get animVal(): string {
+      return el.getAttribute(name) ?? '';
+    },
+  });
   class SVGGraphicsElement extends SVGElement {
+    get farthestViewportElement(): Any {
+      let last: Any = null;
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at.localName === 'svg') last = at;
+      }
+      return last;
+    }
+    get nearestViewportElement(): Any {
+      return this.closest('svg') === this
+        ? (this.parentElement?.closest('svg') ?? null)
+        : this.closest('svg');
+    }
     getBBox(): Any {
-      const r = this.getBoundingClientRect();
-      return new DOMRect(0, 0, r.width, r.height);
+      const n = svgNumbers(this, 'bbox');
+      return n ? new DOMRect(n[0], n[1], n[2], n[3]) : new DOMRect();
+    }
+    getCTM(): Any {
+      return matrixFrom(svgNumbers(this, 'ctm'));
+    }
+    getScreenCTM(): Any {
+      const n = svgNumbers(this, 'screenCtm');
+      if (!n) return null;
+      const v = viewport();
+      n[4] -= v.scrollX;
+      n[5] -= v.scrollY;
+      return matrixFrom(n);
+    }
+    /** What a drawing holds has no box of its own, and is where its
+     *  matrices draw it. The outermost `<svg>` is a replaced box. */
+    override getBoundingClientRect(): Any {
+      if (docRect(this)) return super.getBoundingClientRect();
+      const n = svgNumbers(this, 'drawn');
+      if (!n) return new DOMRect();
+      const v = viewport();
+      return new DOMRect(n[0] - v.scrollX, n[1] - v.scrollY, n[2], n[3]);
+    }
+    override getClientRects(): Any {
+      return docRect(this)
+        ? super.getClientRects()
+        : listMade(
+            DOMRectList,
+            svgNumbers(this, 'drawn') ? [this.getBoundingClientRect()] : [],
+            null,
+            false,
+            null,
+          );
     }
   }
-  class SVGSVGElement extends SVGGraphicsElement {}
+  /** A shape, whose outline is a length a page can walk (SVG 2, 8.3). */
+  class SVGGeometryElement extends SVGGraphicsElement {
+    getTotalLength(): number {
+      return svgNumbers(this, 'length')?.[0] ?? 0;
+    }
+    getPointAtLength(distance: Any): Any {
+      const n = svgNumbers(this, 'point', Number(distance));
+      return n ? new DOMPoint(n[0], n[1]) : new DOMPoint();
+    }
+  }
+  class SVGSVGElement extends SVGGraphicsElement {
+    /** A viewBox as a rectangle, read from the attribute each time. */
+    get viewBox(): Any {
+      const rect = (): Any => {
+        const n = (this.getAttribute('viewBox') ?? '')
+          .split(/[\s,]+/)
+          .filter(Boolean)
+          .map(Number);
+        return n.length === 4 && n.every(Number.isFinite)
+          ? new DOMRect(n[0], n[1], n[2], n[3])
+          : null;
+      };
+      return {
+        get baseVal(): Any {
+          return rect();
+        },
+        get animVal(): Any {
+          return rect();
+        },
+      };
+    }
+    declare _scale: number | undefined;
+    declare _translate: Any;
+    get currentScale(): number {
+      return this._scale ?? 1;
+    }
+    set currentScale(v: Any) {
+      const scale = Number(v);
+      if (!Number.isFinite(scale)) {
+        throw new TypeError(
+          "Failed to set the 'currentScale' property on 'SVGSVGElement': The provided float value is non-finite.",
+        );
+      }
+      if (!this.parentElement?.closest('svg')) this._scale = scale;
+    }
+    get currentTranslate(): Any {
+      return (this._translate ??= new DOMPoint());
+    }
+    createSVGMatrix(): Any {
+      return new DOMMatrix();
+    }
+    createSVGPoint(): Any {
+      return new DOMPoint();
+    }
+    createSVGRect(): Any {
+      return new DOMRect();
+    }
+    createSVGNumber(): Any {
+      return { value: 0 };
+    }
+    createSVGLength(): Any {
+      return {
+        value: 0,
+        valueInSpecifiedUnits: 0,
+        valueAsString: '0',
+        unitType: 1,
+      };
+    }
+    createSVGTransform(): Any {
+      return this.createSVGTransformFromMatrix(new DOMMatrix());
+    }
+    createSVGTransformFromMatrix(matrix: Any): Any {
+      return { type: 1, matrix: DOMMatrix.fromMatrix(matrix), angle: 0 };
+    }
+    getElementById(id: Any): Any {
+      return wrap(
+        Number(call('query', this._id, `#${cssEscape(str(id))}`, false)),
+      );
+    }
+    suspendRedraw(): number {
+      return 1;
+    }
+    unsuspendRedraw(_id: Any): void {}
+    unsuspendRedrawAll(): void {}
+    forceRedraw(): void {}
+    pauseAnimations(): void {}
+    unpauseAnimations(): void {}
+    animationsPaused(): boolean {
+      return false;
+    }
+    getCurrentTime(): number {
+      return 0;
+    }
+    setCurrentTime(_t: Any): void {}
+  }
   lengths(SVGSVGElement, ['x', 'y', 'width', 'height']);
-  class SVGRectElement extends SVGGraphicsElement {}
+  class SVGRectElement extends SVGGeometryElement {}
   lengths(SVGRectElement, ['x', 'y', 'width', 'height', 'rx', 'ry']);
-  class SVGCircleElement extends SVGGraphicsElement {}
+  class SVGCircleElement extends SVGGeometryElement {}
   lengths(SVGCircleElement, ['cx', 'cy', 'r']);
-  /** Text's: what it holds counted, and nothing measured, since no layout
-   *  here sets a drawing's text. */
+  class SVGEllipseElement extends SVGGeometryElement {}
+  lengths(SVGEllipseElement, ['cx', 'cy', 'rx', 'ry']);
+  class SVGLineElement extends SVGGeometryElement {}
+  lengths(SVGLineElement, ['x1', 'y1', 'x2', 'y2']);
+  class SVGPathElement extends SVGGeometryElement {}
+  class SVGPolylineElement extends SVGGeometryElement {}
+  class SVGPolygonElement extends SVGGeometryElement {}
+  class SVGGElement extends SVGGraphicsElement {}
+  class SVGDefsElement extends SVGGraphicsElement {}
+  class SVGSwitchElement extends SVGGraphicsElement {}
+  class SVGImageElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+  }
+  lengths(SVGImageElement, ['x', 'y', 'width', 'height']);
+  class SVGUseElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+  }
+  lengths(SVGUseElement, ['x', 'y', 'width', 'height']);
+  class SVGForeignObjectElement extends SVGGraphicsElement {}
+  lengths(SVGForeignObjectElement, ['x', 'y', 'width', 'height']);
+  class SVGAElement extends SVGGraphicsElement {
+    get href(): Any {
+      return animatedString(this, 'href');
+    }
+    get target(): Any {
+      return animatedString(this, 'target');
+    }
+  }
+  /** Text's: its length is its font's, in a run as it is written. */
   class SVGTextContentElement extends SVGGraphicsElement {
     getNumberOfChars(): number {
       return this.textContent.length;
     }
+    getComputedTextLength(): number {
+      return svgNumbers(this, 'textLength')?.[0] ?? 0;
+    }
   }
-  class SVGTextElement extends SVGTextContentElement {}
-  class SVGTSpanElement extends SVGTextContentElement {}
+  class SVGTextPositioningElement extends SVGTextContentElement {}
+  class SVGTextElement extends SVGTextPositioningElement {}
+  class SVGTSpanElement extends SVGTextPositioningElement {}
+  class SVGTextPathElement extends SVGTextContentElement {}
+  class SVGSymbolElement extends SVGGraphicsElement {}
+  class SVGClipPathElement extends SVGElement {}
+  class SVGMaskElement extends SVGElement {}
+  class SVGMarkerElement extends SVGElement {}
+  class SVGPatternElement extends SVGElement {}
+  class SVGFilterElement extends SVGElement {}
+  class SVGStopElement extends SVGElement {}
+  class SVGGradientElement extends SVGElement {}
+  class SVGLinearGradientElement extends SVGGradientElement {}
+  class SVGRadialGradientElement extends SVGGradientElement {}
+  class SVGDescElement extends SVGElement {}
+  class SVGTitleElement extends SVGElement {}
+  class SVGMetadataElement extends SVGElement {}
+  class SVGStyleElement extends SVGElement {}
+  class SVGScriptElement extends SVGElement {}
+  class SVGViewElement extends SVGElement {}
   const SVG_CLASSES: Record<string, Any> = {
     svg: SVGSVGElement,
     rect: SVGRectElement,
     circle: SVGCircleElement,
+    ellipse: SVGEllipseElement,
+    line: SVGLineElement,
+    path: SVGPathElement,
+    polyline: SVGPolylineElement,
+    polygon: SVGPolygonElement,
     text: SVGTextElement,
     tspan: SVGTSpanElement,
-    g: SVGGraphicsElement,
-    path: SVGGraphicsElement,
-    line: SVGGraphicsElement,
-    polyline: SVGGraphicsElement,
-    polygon: SVGGraphicsElement,
-    ellipse: SVGGraphicsElement,
-    use: SVGGraphicsElement,
-    image: SVGGraphicsElement,
+    textPath: SVGTextPathElement,
+    g: SVGGElement,
+    defs: SVGDefsElement,
+    switch: SVGSwitchElement,
+    use: SVGUseElement,
+    image: SVGImageElement,
+    a: SVGAElement,
+    foreignObject: SVGForeignObjectElement,
+    symbol: SVGSymbolElement,
+    clipPath: SVGClipPathElement,
+    mask: SVGMaskElement,
+    marker: SVGMarkerElement,
+    pattern: SVGPatternElement,
+    filter: SVGFilterElement,
+    stop: SVGStopElement,
+    linearGradient: SVGLinearGradientElement,
+    radialGradient: SVGRadialGradientElement,
+    desc: SVGDescElement,
+    title: SVGTitleElement,
+    metadata: SVGMetadataElement,
+    style: SVGStyleElement,
+    script: SVGScriptElement,
+    view: SVGViewElement,
   };
   const SVG_TAGS = new Set([
     'svg',
@@ -6888,11 +7786,11 @@ export function installDom(
   };
 
   /** The form a control is in: the one its `form` attribute names, or the
-   *  one around it. */
+   *  one around it, or the one the parser gave it. */
   const formOf = (el: Any): Any => {
     const named = el.getAttribute('form');
     if (named !== null) return document.getElementById(named);
-    return el.closest('form');
+    return el.closest('form') ?? wrap(call('parsedForm', el._id));
   };
 
   /** Where a URL is: its parts, as `location` and `a.pathname` read them. */
@@ -7517,13 +8415,24 @@ export function installDom(
       return formOf(this);
     }
     get labels(): Any {
-      const id = this.id;
-      const out: Any[] = id
-        ? Array.from(document.querySelectorAll(`label[for="${cssEscape(id)}"]`))
-        : [];
-      const around = this.closest('label');
-      if (around && !out.includes(around)) out.push(around);
-      return list(out);
+      return heldList(this, 'labels', () =>
+        liveList(() => {
+          const id = this.id;
+          const out: Any[] = id
+            ? wrapAll(
+                call(
+                  'query',
+                  document._id,
+                  `label[for="${cssEscape(id)}"]`,
+                  true,
+                ),
+              )
+            : [];
+          const around = this.closest('label');
+          if (around && !out.includes(around)) out.push(around);
+          return out;
+        }, true),
+      );
     }
     get willValidate(): boolean {
       return call('willValidate', this._id) === true;
@@ -7751,6 +8660,11 @@ export function installDom(
         'NotAllowedError',
       );
     }
+    if (el._name === 'input' && el.type === 'file') {
+      consumeActivation();
+      call('pickFiles', el._id);
+      return;
+    }
     if (call('showPicker', el._id) === 'unrendered') {
       throw refused(
         `${iface}::showPicker() requires the select is rendered.`,
@@ -7777,7 +8691,12 @@ export function installDom(
         return this.getAttribute('value') ?? 'on';
       }
       if (DEFAULT_MODE.has(type)) return this.getAttribute('value') ?? '';
-      if (type === 'file') return '';
+      // the first file's name behind a path no page can read anything from
+      // (HTML 4.10.5.4, "filename")
+      if (type === 'file') {
+        const first = this.files[0];
+        return first ? `C:\\fakepath\\${first.name}` : '';
+      }
       const v = controlValue(this);
       return typeof v === 'string' ? v : (this.getAttribute('value') ?? '');
     }
@@ -7785,7 +8704,15 @@ export function installDom(
       const type = this.type;
       if (type === 'checkbox' || type === 'radio' || DEFAULT_MODE.has(type)) {
         this.setAttribute('value', v === null ? '' : v);
-      } else if (type !== 'file') {
+      } else if (type === 'file') {
+        if (str(v === null ? '' : v) !== '') {
+          throw new DOMException(
+            "Failed to set the 'value' property on 'HTMLInputElement': This input element accepts a filename, which may only be programmatically set to the empty string.",
+            'InvalidStateError',
+          );
+        }
+        call('setFiles', this._id, '[]');
+      } else {
         const was = this.value;
         call('setValue', this._id, v === null ? '' : str(v));
         valueSet(this, was);
@@ -7835,8 +8762,42 @@ export function installDom(
     set indeterminate(v: Any) {
       call('indeterminate', this._id, !!v);
     }
+    /** The same list until what the input holds changes (HTML 4.10.5.4). */
+    _files: Any = null;
+    _filesAs = '';
     get files(): Any {
-      return list([]);
+      if (this.type !== 'file') return null;
+      const told = str(call('fileList', this._id));
+      if (!this._files || told !== this._filesAs) {
+        const made: Any[] = [];
+        for (const file of JSON.parse(told)) made.push(hostFile(file));
+        this._files = listMade(FileList, made, null, false, null);
+        this._filesAs = told;
+      }
+      return this._files;
+    }
+    set files(v: Any) {
+      if (this.type !== 'file' || v === null) return;
+      if (!(v instanceof FileList)) {
+        throw new TypeError(
+          "Failed to set the 'files' property on 'HTMLInputElement': The provided value is not of type 'FileList'.",
+        );
+      }
+      const given: Any[] = [];
+      for (const file of Array.from(v as Any) as Any[]) {
+        const id = hostIdOf(file);
+        given.push(
+          id
+            ? { id }
+            : {
+                name: file.name,
+                type: file.type,
+                lastModified: file.lastModified,
+                b: base64OfBytes(file._bytes),
+              },
+        );
+      }
+      call('setFiles', this._id, JSON.stringify(given));
     }
     select(): void {
       if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
@@ -8028,7 +8989,7 @@ export function installDom(
     get selected(): boolean {
       const select = this.closest('select');
       return select
-        ? select.selectedOptions.includes(this)
+        ? chosenOptions(select).includes(this)
         : this.hasAttribute('selected');
     }
     set selected(v: Any) {
@@ -8056,61 +9017,164 @@ export function installDom(
     flag('disabled'),
   );
 
+  /** A `<select>`'s options (HTML 4.10.7): those among its children, and
+   *  those among its groups' children, in tree order. */
+  const optionsIn = (select: Any): Any[] => {
+    const options: Any[] = [];
+    const inHtml = (el: Any, tag: string): boolean =>
+      el.localName === tag && el.namespaceURI === HTML_NS;
+    for (const kid of wrapAll(call('kids', select._id, 'elements'))) {
+      if (inHtml(kid, 'option')) options.push(kid);
+      else if (inHtml(kid, 'optgroup')) {
+        for (const inner of wrapAll(call('kids', kid._id, 'elements'))) {
+          if (inHtml(inner, 'option')) options.push(inner);
+        }
+      }
+    }
+    return options;
+  };
+  /** The options chosen: those `selected`, as `<Html>` keeps them, and in a
+   *  list of one the last of those, or else the first that can be (HTML
+   *  4.10.7, "selectedness setting algorithm"). */
+  const chosenOptions = (select: Any): Any[] => {
+    const options = optionsIn(select);
+    const marked = options.filter((o) => o.hasAttribute('selected'));
+    if (select.multiple) return marked;
+    const chosen =
+      marked[marked.length - 1] ??
+      (Number(select.getAttribute('size')) > 1
+        ? null
+        : options.find((o) => !o.disabled));
+    return chosen ? [chosen] : [];
+  };
+
+  /** A `<select>`'s `options` (HTML 2.6.2.3), which unlike any other
+   *  collection takes an option at an index, and a length. */
+  class HTMLOptionsCollection extends HTMLCollection {
+    override get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    override set length(v: Any) {
+      const { select } = listState(this);
+      const wanted = Number(v) >>> 0;
+      if (wanted > 100000) return;
+      const options = optionsIn(select);
+      for (let i = options.length; i < wanted; i += 1) {
+        select.appendChild(select.ownerDocument.createElement('option'));
+      }
+      for (let i = options.length - 1; i >= wanted; i -= 1) options[i].remove();
+    }
+    add(element: Any, before: Any = null): void {
+      const { select } = listState(this);
+      if (
+        !(element instanceof HTMLOptionElement) &&
+        !(element instanceof HTMLOptGroupElement)
+      ) {
+        throw new TypeError(
+          "The element to add is neither an 'option' nor an 'optgroup'.",
+        );
+      }
+      if (element.contains(select)) {
+        throw new DOMException(
+          'The element to add is an ancestor of the select.',
+          'HierarchyRequestError',
+        );
+      }
+      if (typeof before === 'object' && before && !select.contains(before)) {
+        throw new DOMException(
+          'The element to add before is not in the select.',
+          'NotFoundError',
+        );
+      }
+      if (element === before) return;
+      const reference =
+        typeof before === 'object'
+          ? before
+          : (optionsIn(select)[Number(before) | 0] ?? null);
+      (reference ? reference.parentNode : select).insertBefore(
+        element,
+        reference,
+      );
+    }
+    remove(index: Any): void {
+      optionsIn(listState(this).select)[Number(index) | 0]?.remove();
+    }
+    get selectedIndex(): number {
+      return listState(this).select.selectedIndex;
+    }
+    set selectedIndex(v: Any) {
+      listState(this).select.selectedIndex = v;
+    }
+  }
+
   class HTMLSelectElement extends FormControl {
     declare multiple: boolean;
     get type(): string {
       return this.hasAttribute('multiple') ? 'select-multiple' : 'select-one';
     }
     get options(): Any {
-      const options = Array.from(this.querySelectorAll('option'));
-      const out: Any = list(options);
-      out.selectedIndex = this.selectedIndex;
-      out.add = (option: Any, before?: Any) =>
-        this.insertBefore(option, before ?? null);
-      out.remove = (i: number) => (options[i] as Any)?.remove();
-      return out;
+      return heldList(this, 'options', () => {
+        const made = liveCollection(
+          () => optionsIn(this),
+          false,
+          HTMLOptionsCollection,
+        );
+        const state = made[LIST];
+        state.select = this;
+        state.setItem = (index: number, option: Any) => {
+          if (option === null) {
+            made.remove(index);
+            return;
+          }
+          const options = optionsIn(this);
+          for (let i = options.length; i < index; i += 1) {
+            this.appendChild(this.ownerDocument.createElement('option'));
+          }
+          if (index < options.length) {
+            options[index].parentNode.replaceChild(option, options[index]);
+          } else this.appendChild(option);
+        };
+        return made;
+      });
     }
     get length(): number {
       return this.options.length;
     }
+    set length(v: Any) {
+      this.options.length = v;
+    }
     get value(): string {
-      return this.selectedOptions[0]?.value ?? '';
+      return chosenOptions(this)[0]?.value ?? '';
     }
     set value(v: Any) {
       call('setValue', this._id, str(v));
     }
-    /** The options chosen: those `selected`, as `<Html>` keeps them, and
-     *  in a list of one the last of those, or else the first that can be
-     *  (HTML 4.10.7, "selectedness setting algorithm"). */
     get selectedOptions(): Any {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      const marked = options.filter((o) => o.hasAttribute('selected'));
-      if (this.multiple) return list(marked);
-      const chosen =
-        marked[marked.length - 1] ??
-        (Number(this.getAttribute('size')) > 1
-          ? null
-          : options.find((o) => !o.disabled));
-      return list(chosen ? [chosen] : []);
+      return heldList(this, 'selectedOptions', () =>
+        liveCollection(() => chosenOptions(this), true),
+      );
     }
     get selectedIndex(): number {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      return options.indexOf(this.selectedOptions[0]);
+      return optionsIn(this).indexOf(chosenOptions(this)[0]);
     }
     set selectedIndex(i: number) {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
+      const options = optionsIn(this);
       const option = options[i];
       if (option) this.value = option.value;
       else for (const o of options) o.removeAttribute('selected');
     }
     item(i: number): Any {
-      return this.options[i] ?? null;
+      return this.options.item(i);
+    }
+    namedItem(name: Any): Any {
+      return this.options.namedItem(name);
     }
     add(option: Any, before?: Any): void {
-      this.insertBefore(
-        option,
-        typeof before === 'number' ? this.options[before] : (before ?? null),
-      );
+      this.options.add(option, before ?? null);
+    }
+    override remove(index?: Any): void {
+      if (arguments.length) this.options.remove(index);
+      else super.remove();
     }
     showPicker(): void {
       showPicker(this, 'HTMLSelectElement');
@@ -8721,9 +9785,51 @@ export function installDom(
 
   class HTMLFieldSetElement extends FormControl {
     get elements(): Any {
-      return list(Array.from(this.querySelectorAll(CONTROLS)));
+      return heldList(this, 'elements', () =>
+        liveCollection(() => wrapAll(call('query', this._id, CONTROLS, true))),
+      );
     }
   }
+
+  /** What a form's `elements` answers for a name more than one control goes
+   *  by (HTML 2.6.2.2): a radio group, and its one chosen value. */
+  class RadioNodeList extends NodeList {
+    get value(): string {
+      for (const el of itemsOf(listState(this))) {
+        if (el.localName === 'input' && el.type === 'radio' && el.checked) {
+          return el.value;
+        }
+      }
+      return '';
+    }
+    set value(v: Any) {
+      const value = str(v);
+      for (const el of itemsOf(listState(this))) {
+        if (
+          el.localName === 'input' &&
+          el.type === 'radio' &&
+          el.value === value
+        ) {
+          el.checked = true;
+          return;
+        }
+      }
+    }
+  }
+  class HTMLFormControlsCollection extends HTMLCollection {}
+  /** The control a name reaches, or the controls where it reaches several. */
+  const CONTROL_NAMED = (state: Any, key: string): Any => {
+    if (!key) return null;
+    const going = (): Any[] =>
+      itemsOf(state).filter(
+        (el) =>
+          call('attr', el._id, 'id') === key ||
+          call('attr', el._id, 'name') === key,
+      );
+    const found = going();
+    if (found.length < 2) return found[0] ?? null;
+    return liveList(going, true, RadioNodeList);
+  };
 
   const CONTROLS = 'button,fieldset,input,object,output,select,textarea';
 
@@ -8732,16 +9838,23 @@ export function installDom(
      *  that name it by its `form` attribute, in tree order — an image
      *  button not among them (HTML 4.10.18.1). */
     get elements(): Any {
-      const root = this.getRootNode();
-      const scope = root.querySelectorAll ? root : this;
-      const own = (
-        Array.from(scope.querySelectorAll(CONTROLS)) as Any[]
-      ).filter(
-        (el) =>
-          el.form === this &&
-          !(el.localName === 'input' && el.type === 'image'),
+      return heldList(this, 'elements', () =>
+        liveCollection(
+          () => {
+            const root = this.getRootNode();
+            const scope = root.querySelectorAll ? root : this;
+            const controls = wrapAll(call('query', scope._id, CONTROLS, true));
+            return controls.filter(
+              (el) =>
+                el.form === this &&
+                !(el.localName === 'input' && el.type === 'image'),
+            );
+          },
+          true,
+          HTMLFormControlsCollection,
+          CONTROL_NAMED,
+        ),
       );
-      return collection(own);
     }
     get length(): number {
       return this.elements.length;
@@ -8781,7 +9894,9 @@ export function installDom(
       if (dispatch(this, ev)) call('reset', this._id);
     }
     checkValidity(): boolean {
-      return this.elements.every((el: Any) => el.checkValidity?.() ?? true);
+      return Array.from(this.elements as Any[]).every(
+        (el) => el.checkValidity?.() ?? true,
+      );
     }
     reportValidity(): boolean {
       return !!call('validate', this._id, 0);
@@ -8855,6 +9970,10 @@ export function installDom(
     'history',
     'navigation',
     'visualViewport',
+    'close',
+    'focus',
+    'blur',
+    'open',
     'scrollTo',
     'scroll',
     'scrollBy',
@@ -8875,6 +9994,15 @@ export function installDom(
       `Blocked a frame with origin "${location.origin}" from accessing a cross-origin frame.`,
       'SecurityError',
     );
+  /** The page's top-level windows (`./windows.ts`), made once what they
+   *  stand on is here. */
+  let WINDOWS: WindowInternals | null = null;
+  /** This window's origin: its address's, and `about:blank` is the origin of
+   *  what made it (HTML 7.1.1), which `location` does not say. */
+  const documentOrigin = (): string => {
+    const origin = str(G.location?.origin ?? location.origin);
+    return origin === 'null' ? str(call('documentOrigin')) : origin;
+  };
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
   const frameWindows = new WeakMap<object, Any>();
@@ -8926,6 +10054,8 @@ export function installDom(
     }
     return made;
   };
+  /** The window that sent each frame where it is, by the frame's name. */
+  const frameOpeners = new WeakMap<object, Any>();
   /** The window each frame's document was handed last, and whether that
    *  document is the frame's initial `about:blank` (`frameWindowOf`). */
   const keptFrameWindows = new WeakMap<
@@ -8996,10 +10126,9 @@ export function installDom(
       globalThis: () => proxy,
       parent: () => windowOfDocument(frame.ownerDocument) ?? proxy,
       top: () => G,
-      opener: () => null,
       frameElement: () => frame,
       document: () => current,
-      closed: () => false,
+      closed: () => !frame.isConnected,
       length: () => 0,
       innerWidth: () => size()[0],
       innerHeight: () => size()[1],
@@ -9011,6 +10140,8 @@ export function installDom(
       pageYOffset: () => 0,
       devicePixelRatio: () => viewport().dpr,
       visualViewport: () => visualOf(view),
+      crypto: () => crypto,
+      isSecureContext: () => call('secureContext') === true,
       // its own session history (`makeSession`), made as it is asked for
       history: () => frameSessionOf(frame, current, target).history,
       navigation: () => frameSessionOf(frame, current, target).navigation,
@@ -9022,6 +10153,24 @@ export function installDom(
         enumerable: false,
       });
     }
+    // what opened it, where a window of a name sent it here (HTML 7.2.2.2)
+    Object.defineProperty(win, 'opener', {
+      get: () => frameOpeners.get(frame) ?? null,
+      set(value: Any) {
+        if (value === null) frameOpeners.delete(frame);
+        else {
+          Object.defineProperty(win, 'opener', {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    WINDOWS?.bars(win, () => frame.isConnected);
     // `location` set is a navigation, as the page's is
     Object.defineProperty(win, 'location', {
       get: () => frameLocationOf(frame),
@@ -9070,6 +10219,13 @@ export function installDom(
       },
       postMessage: (message: Any, options?: Any, transfer?: Any) =>
         postTo(target, message, options, transfer),
+      // nothing of a frame's is the page's to close (HTML 7.2.2.3), and what
+      // it opens the page opens
+      close() {},
+      focus() {},
+      blur() {},
+      open: (url?: Any, target?: Any, features?: Any) =>
+        current._unloadCounter > 0 ? null : G.open(url, target, features),
       scrollTo() {},
       scroll() {},
       scrollBy() {},
@@ -9158,7 +10314,9 @@ export function installDom(
     },
     top: G,
     opener: null,
-    closed: false,
+    get closed() {
+      return !frame.isConnected;
+    },
     length: 0,
     close() {},
     focus() {},
@@ -9177,8 +10335,9 @@ export function installDom(
    * scripts write to.
    */
   const linkedFrames = new Map<number, Any>();
-  /** Where this realm is a frame's: the global of the realm it is in, the
-   *  window that stands for that here, and its frame's id there. */
+  /** Where this realm is a frame's: the global of the realm it is in, which
+   *  is null where that is another origin's, the window that stands for
+   *  that here, and its frame's id there. */
   let parentLink: { global: Any; window: Any; frame: number } | null = null;
   /** A message posted to another page realm's window (`__message`), where
    *  it is cloned and told with the window that stands for this one there:
@@ -9209,9 +10368,39 @@ export function installDom(
         }
       });
     };
+  /**
+   * A message to a realm of another origin, of which this one holds nothing
+   * but a number: `name` is 0 for this realm's parent, a frame's id here, or
+   * a window's number made negative. What it says is made a string here, as a
+   * worker's is, and the host hands that over and says who it is from, so
+   * neither its `origin` nor its `source` is this realm's to say, and holds it
+   * to the origin it is meant for, which it knows of both.
+   */
+  const postAcross =
+    (name: number) =>
+    (message: Any, options?: Any, transfer?: Any): void => {
+      const byOptions = options !== null && typeof options === 'object';
+      // an origin that is none is thrown here, as for any window
+      originAllowed(options, '');
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, undefined, {
+        across: realmAcross(name),
+        moving: transfersOf(transferListOf(byOptions ? options : transfer)),
+        later,
+      });
+      giveUp(byOptions ? options : transfer);
+      const target = byOptions
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : options;
+      call('realmPost', name, data, str(target));
+      for (const go of later) go();
+    };
   /** Another of the page's realms, as a port can be across it: `name` 0
-   *  for this realm's parent, else its frame's id here. What crosses is a
-   *  string, to that realm's `__wire`, which names this one back. */
+   *  for this realm's parent, else its frame's id here, or a window's number
+   *  made negative. What crosses is a string: to that realm's `__wire`, which
+   *  names this one back, or, of another origin, through the host. */
   const realmsAcross = new Map<number, Across>();
   const realmAcross = (name: number): Across => {
     let across = realmsAcross.get(name);
@@ -9219,8 +10408,13 @@ export function installDom(
       across = {
         key: `r${name}`,
         send: (text) => {
-          if (name === 0) parentLink?.global.__wire(parentLink.frame, text);
-          else linkedFrames.get(name)?.__wire(0, text);
+          const parent = parentLink?.global;
+          const frame = linkedFrames.get(name);
+          if (name < 0) WINDOWS?.send(-name, text);
+          else if (name === 0 && parent) {
+            parent.__wire(parentLink!.frame, text);
+          } else if (name > 0 && frame) frame.__wire(0, text);
+          else call('realmWire', name, text);
         },
       };
       realmsAcross.set(name, across);
@@ -9241,24 +10435,56 @@ export function installDom(
       return doc ? frameWindowOf(doc, frame) : null;
     };
     let cross: Any = null;
-    const across = (): Any => (cross ??= crossOriginWindow(frame, proxy));
+    proxy = windowProxy({
+      current,
+      across: () => (cross ??= crossOriginWindow(frame, proxy)),
+      post() {
+        const linked = linkedFrames.get(frame._id);
+        if (linked) return deliverInto(linked, 0, frame._id);
+        return crossLinked.has(frame._id) ? postAcross(frame._id) : null;
+      },
+      closed: () => !frame.isConnected,
+      seen: (_key, value) => value,
+      quiet: () => false,
+    });
+    frameProxies.set(frame, proxy);
+    proxiedFrames.set(proxy, frame);
+    return proxy;
+  };
+  /**
+   * A WindowProxy (HTML 7.2.3): the window `current` answers, where one of
+   * this origin's is there, and else what `across` says may be reached across
+   * origins, the rest of it a `SecurityError`. A frame's, and a window's of
+   * this one's group (`./windows.ts`).
+   */
+  const windowProxy = (spec: {
+    current(): Any;
+    across(): Any;
+    post(): Any;
+    closed(): boolean;
+    seen(key: PropertyKey, value: Any, win: Any): Any;
+    quiet(): boolean;
+  }): Any => {
+    const { current, across } = spec;
     // what a cross-origin window answers undefined to rather than throwing,
     // so that `await` and `instanceof` do not (HTML 7.2.3.3)
     const silent = (key: PropertyKey): boolean =>
+      spec.quiet() ||
       key === 'then' ||
       key === Symbol.toStringTag ||
       key === Symbol.hasInstance ||
       key === Symbol.isConcatSpreadable;
-    proxy = new Proxy(
+    const proxy: Any = new Proxy(
       {},
       {
         get(_t, key) {
-          const linked = linkedFrames.get(frame._id);
-          if (linked && key === 'postMessage') {
-            return deliverInto(linked, 0, frame._id);
+          if (key === 'postMessage') {
+            const post = spec.post();
+            if (post) return post;
           }
+          if (key === 'closed' && spec.closed()) return true;
           const win = current();
-          if (win) return Reflect.get(win, key, win);
+          if (win) return spec.seen(key, Reflect.get(win, key, win), win);
           const others = across();
           if (Object.prototype.hasOwnProperty.call(others, key)) {
             return others[key as string];
@@ -9331,8 +10557,6 @@ export function installDom(
       removeEventListener: forward('removeEventListener'),
       dispatchEvent: forward('dispatchEvent'),
     });
-    frameProxies.set(frame, proxy);
-    proxiedFrames.set(proxy, frame);
     return proxy;
   };
   /** Each frame's `location`: where its document is from, and a way to
@@ -9522,10 +10746,11 @@ export function installDom(
         const { width, height, data } = source;
         return { width, height, data: new Uint8Array(data.buffer) };
       }
-      const state = source instanceof HTMLCanvasElement && canvases.get(source);
-      if (!state || !state.data) return null;
-      const { width, height, data } = state;
-      return { width, height, data: new Uint8Array(data.buffer) };
+      if (!(source instanceof HTMLCanvasElement) || !canvases.has(source)) {
+        return null;
+      }
+      const { width, height, data } = canvasBitmap(source);
+      return data ? { width, height, data: new Uint8Array(data.buffer) } : null;
     },
   });
 
@@ -9594,6 +10819,15 @@ export function installDom(
       resetCanvas(canvas, state, width, height);
     }
     return state;
+  };
+  /** A canvas as an image, as `drawImage` and `toDataURL` read one. A WebGL
+   *  context's pixels are the GL's, and read in as the document paints the
+   *  canvas, so one the document does not show held none: jspaint draws its
+   *  shapes on such a canvas and copies them, and a pencil left no mark. */
+  const canvasBitmap = (canvas: Any): Any => {
+    const state = canvasState(canvas);
+    const gl = state.kind === 'webgl' || state.kind === 'webgl2';
+    return (gl && WEBGL.pixels(state.context)) || state;
   };
   /** Whether a context is a 2d one, a canvas's or an `OffscreenCanvas`'s. */
   const is2d = (context: Any): boolean =>
@@ -9767,9 +11001,216 @@ export function installDom(
     direction: 'inherit',
     letterSpacing: '0px',
     wordSpacing: '0px',
+    fontKerning: 'auto',
+    fontStretch: 'normal',
+    fontVariantCaps: 'normal',
+    textRendering: 'auto',
+    lang: 'inherit',
     filter: 'none',
     imageSmoothingEnabled: true,
     imageSmoothingQuality: 'low',
+  };
+
+  /** A context's font's size in pixels, kept beside `font` and no property. */
+  const FONT_SIZE = '_fontSize';
+
+  /** What each of a context's keywords may be: any other is ignored. */
+  const TEXT_KEYWORDS: Record<string, string[]> = {
+    textAlign: ['start', 'end', 'left', 'right', 'center'],
+    textBaseline: [
+      'top',
+      'hanging',
+      'middle',
+      'alphabetic',
+      'ideographic',
+      'bottom',
+    ],
+    direction: ['ltr', 'rtl', 'inherit'],
+    fontKerning: ['auto', 'normal', 'none'],
+    fontStretch: [
+      'ultra-condensed',
+      'extra-condensed',
+      'condensed',
+      'semi-condensed',
+      'normal',
+      'semi-expanded',
+      'expanded',
+      'extra-expanded',
+      'ultra-expanded',
+    ],
+    fontVariantCaps: [
+      'normal',
+      'small-caps',
+      'all-small-caps',
+      'petite-caps',
+      'all-petite-caps',
+      'unicase',
+      'titling-caps',
+    ],
+    textRendering: [
+      'auto',
+      'optimizeSpeed',
+      'optimizeLegibility',
+      'geometricPrecision',
+    ],
+  };
+
+  /** The OpenType feature each of a context's capitals asks for. */
+  const CAPS_FEATURES: Record<string, string> = {
+    'small-caps': 'smcp',
+    'all-small-caps': 'c2sc',
+    'petite-caps': 'pcap',
+    'all-petite-caps': 'c2pc',
+    unicase: 'unic',
+    'titling-caps': 'titl',
+  };
+
+  /** The white space a context's text takes for a space (HTML 4.12.5.1.8). */
+  const TEXT_SPACES = /[\t\n\f\r]/g;
+
+  /** Pixels in each absolute unit of a context's spacing. */
+  const SPACING_UNITS: Record<string, number> = {
+    px: 1,
+    pt: 4 / 3,
+    pc: 16,
+    in: 96,
+    cm: 96 / 2.54,
+    mm: 96 / 25.4,
+    q: 96 / 101.6,
+    rem: 16,
+    rlh: 19.2,
+  };
+
+  /** Em in each unit of a context's spacing that goes by its font, as near
+   *  as can be said with no face in hand. */
+  const SPACING_EMS: Record<string, number> = {
+    em: 1,
+    ic: 1,
+    ex: 0.5,
+    ch: 0.5,
+    cap: 0.7,
+    lh: 1.2,
+  };
+
+  /** A `letterSpacing` or a `wordSpacing` in pixels at a font's size: null
+   *  for what is no length. */
+  const spacingPixels = (value: string, em: number): number | null => {
+    const read = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]+)$/.exec(
+      value,
+    );
+    if (!read) return null;
+    const n = Number(read[1]);
+    const ems = SPACING_EMS[read[2]];
+    if (ems !== undefined) return n * ems * em;
+    const unit = SPACING_UNITS[read[2]];
+    return unit === undefined ? null : n * unit;
+  };
+
+  /** How many times finer than it is drawn a string is set: a quarter of a
+   *  pixel is as near as Skia places a glyph, and large text is smooth with
+   *  less. */
+  const textFineness = (device: number): number =>
+    device <= 48 ? 4 : device <= 128 ? 2 : 1;
+
+  /** The most pixels of coverage a string is set in, a side squared: a
+   *  heading the size of a window is no reason for gigabytes. */
+  const TEXT_RASTER_MOST = 16e6;
+
+  /** The strings this realm has set, by everything they were set from: a
+   *  chart draws the same labels at each frame, and pdf.js the same letters
+   *  on each line. */
+  const textRasters = new Map<string, Any>();
+  let textRasterBytes = 0;
+  const TEXT_RASTER_BYTES = 64 * 1024 * 1024;
+
+  /** A string's coverage from the host, with what of it anything covers:
+   *  null where there is no text engine, or it sets none. */
+  const canvasRaster = (
+    owner: number,
+    font: string,
+    chars: string,
+    size: number,
+    stroke: number,
+    setting: string,
+    generation: string,
+  ): Any => {
+    const key = `${generation}\0${font}\0${size}\0${stroke}\0${setting}\0${chars}`;
+    let raster = textRasters.get(key);
+    if (raster !== undefined) {
+      // the last used stays the longest
+      textRasters.delete(key);
+      textRasters.set(key, raster);
+      return raster;
+    }
+    const raw = call(
+      'canvasRaster',
+      owner,
+      font,
+      chars,
+      `${size},${stroke},${setting}`,
+    );
+    raster = null;
+    if (typeof raw === 'string') {
+      const end = raw.indexOf('\n');
+      raster = JSON.parse(raw.slice(0, end));
+      const { width, height } = raster;
+      const data = new Uint8Array(width * height);
+      let u0 = width;
+      let v0 = height;
+      let u1 = 0;
+      let v1 = 0;
+      for (let v = 0, i = 0; v < height; v += 1) {
+        for (let u = 0; u < width; u += 1, i += 1) {
+          const byte = raw.charCodeAt(end + 1 + i);
+          if (!byte) continue;
+          data[i] = byte;
+          if (u < u0) u0 = u;
+          if (u >= u1) u1 = u + 1;
+          if (v < v0) v0 = v;
+          v1 = v + 1;
+        }
+      }
+      raster.data = data;
+      raster.ink = u1 > u0 ? [u0, v0, u1, v1] : null;
+      textRasterBytes += data.length;
+    }
+    textRasters.set(key, raster);
+    while (textRasterBytes > TEXT_RASTER_BYTES) {
+      const oldest = textRasters.keys().next().value as string;
+      textRasterBytes -= textRasters.get(oldest)?.data.length ?? 0;
+      textRasters.delete(oldest);
+    }
+    return raster;
+  };
+
+  /** How far down from the alphabetic baseline a `textBaseline` is, so far
+   *  up the text is moved from `y`, in a raster's or a measure's pixels. */
+  const baselineOffset = (lengths: Any, baseline: string): number => {
+    switch (baseline) {
+      case 'top':
+        return lengths.emAscent;
+      case 'bottom':
+        return -lengths.emDescent;
+      case 'middle':
+        return (lengths.emAscent - lengths.emDescent) / 2;
+      case 'hanging':
+        return lengths.ascent * 0.8;
+      case 'ideographic':
+        return -lengths.descent;
+      default:
+        return 0;
+    }
+  };
+
+  /** How far left of its anchor a line of a width starts. */
+  const alignOffset = (
+    width: number,
+    align: string,
+    direction: string,
+  ): number => {
+    if (align === 'center') return width / 2;
+    const end = direction === 'rtl' ? 'start' : 'end';
+    return align === 'right' || align === end ? width : 0;
   };
 
   /**
@@ -9778,12 +11219,13 @@ export function installDom(
    * paths are filled, stroked and clipped to with colours, gradients and
    * patterns of another canvas, through every compositing operator
    * (`raster.ts`); and another canvas is drawn where the transform keeps a
-   * rectangle one. Text and an image are kept as state and drawn as
-   * nothing: a font's outlines and an image's pixels are the host's.
+   * rectangle one. Text is set by the host and painted here as any shape is
+   * (`canvasRaster`). An image is kept as state and drawn as nothing: its
+   * pixels are the host's.
    */
   class CanvasRenderingContext2D {
     _canvas: Any;
-    _state: Any = { ...CONTEXT_STATE };
+    _state: Any = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
     _stack: Any[] = [];
     _matrix: number[] = [1, 0, 0, 1, 0, 0];
     _dash: number[] = [];
@@ -9800,7 +11242,7 @@ export function installDom(
       return this._canvas;
     }
     _reset(): void {
-      this._state = { ...CONTEXT_STATE };
+      this._state = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
       this._stack = [];
       this._matrix = [1, 0, 0, 1, 0, 0];
       this._dash = [];
@@ -10368,24 +11810,191 @@ export function installDom(
         Number(b),
       );
     }
-    fillText(): void {}
-    strokeText(): void {}
-    /** A width as a sans-serif's average character, the text being drawn
-     *  as nothing yet. */
-    measureText(text: Any): Any {
-      const size = parseFloat(
-        /(\d+(?:\.\d+)?)px/.exec(this._state.font)?.[1] ?? '10',
+    fillText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], false);
+    }
+    strokeText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], true);
+    }
+    /** What the document's fonts are for this context, its id with them: a
+     *  canvas in a page, or the document for an `OffscreenCanvas`. Null in a
+     *  worker, which has none. Asked once a task, since a face landing or a
+     *  canvas's `dir` can change them between any two. */
+    _textNow(): Any {
+      if (this._textAsked === undefined) {
+        const owner = this._canvas._id ?? document._id;
+        const raw = call('canvasTextNow', owner);
+        const now = typeof raw === 'string' ? raw.split(',') : null;
+        this._textAsked = now && {
+          owner,
+          generation: now[0],
+          direction: now[1],
+        };
+        queueMicrotask(() => {
+          this._textAsked = undefined;
+        });
+      }
+      return this._textAsked;
+    }
+    _textAsked: Any;
+    /** A string's setting as it crosses, which `textSetting` reads. */
+    _textSetting(direction: string): string {
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      return [
+        state.direction === 'inherit' ? direction : state.direction,
+        spacingPixels(state.letterSpacing, size) ?? 0,
+        spacingPixels(state.wordSpacing, size) ?? 0,
+        state.fontKerning,
+        CAPS_FEATURES[state.fontVariantCaps] ?? '',
+      ].join(',');
+    }
+    /** What a `font` comes to: null for no font. Where there is no text
+     *  engine it is kept as written, with what size can be read off it. */
+    _fontOf(value: string): Any {
+      const raw = call('canvasFont', this._canvas._id ?? document._id, value);
+      if (typeof raw === 'string') return raw ? JSON.parse(raw) : null;
+      if (!value.trim()) return null;
+      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(value)?.[1] ?? '10');
+      return { text: value, size };
+    }
+    _drawText(text: Any, x: Any, y: Any, maxWidth: Any, stroke: boolean): void {
+      const left = Number(x);
+      const top = Number(y);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+      const most = maxWidth === undefined ? Infinity : Number(maxWidth);
+      if (!(most > 0)) return;
+      const state = this._state;
+      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const [a, b, c, d, e, f] = this._matrix;
+      const scale = Math.max(Math.hypot(a, b), Math.hypot(c, d));
+      const now = this._textNow();
+      if (!how || !now || !(scale > 0) || !chars.trim()) return;
+      const fontSize = state[FONT_SIZE];
+      const device = fontSize * scale;
+      const size = Math.max(
+        1,
+        Math.round(
+          Math.min(
+            device * textFineness(device),
+            Math.sqrt(TEXT_RASTER_MOST / chars.length),
+          ),
+        ),
       );
-      const width = str(text).length * size * 0.55;
-      return {
-        width,
-        actualBoundingBoxLeft: 0,
-        actualBoundingBoxRight: width,
-        actualBoundingBoxAscent: size * 0.8,
-        actualBoundingBoxDescent: size * 0.2,
-        fontBoundingBoxAscent: size * 0.9,
-        fontBoundingBoxDescent: size * 0.25,
+      const perUnit = size / fontSize;
+      const setting = this._textSetting(now.direction);
+      const raster = canvasRaster(
+        now.owner,
+        state.font,
+        chars,
+        size,
+        stroke ? state.lineWidth * perUnit : 0,
+        setting,
+        now.generation,
+      );
+      if (!raster?.ink) return;
+      // what a `maxWidth` is short of the text is taken off across it, and
+      // the anchor goes by the width it comes to
+      const width = raster.advance / perUnit;
+      const across = width > most ? most / width : 1;
+      const sx = across / perUnit;
+      const sy = 1 / perUnit;
+      const ux =
+        left -
+        alignOffset(width * across, state.textAlign, setting.split(',')[0]) -
+        raster.x * sx;
+      const uy =
+        top + baselineOffset(raster, state.textBaseline) * sy - raster.y * sy;
+      this._paint(
+        (target, paint) =>
+          RASTER.mask(
+            target,
+            raster.data,
+            raster.width,
+            raster.ink,
+            [
+              a * sx,
+              b * sx,
+              c * sy,
+              d * sy,
+              a * ux + c * uy + e,
+              b * ux + d * uy + f,
+            ],
+            paint,
+          ),
+        how,
+      );
+    }
+    measureText(text: Any): Any {
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      const now = this._textNow();
+      const setting = this._textSetting(now?.direction ?? 'ltr');
+      const raw =
+        now && call('canvasMeasure', now.owner, state.font, chars, setting);
+      // where there is no text engine, a sans-serif's average character
+      const lengths =
+        typeof raw === 'string'
+          ? JSON.parse(raw)
+          : {
+              width: chars.length * size * 0.55,
+              ascent: size * 0.9,
+              descent: size * 0.25,
+              emAscent: size * 0.8,
+              emDescent: size * 0.2,
+            };
+      const down = baselineOffset(lengths, state.textBaseline);
+      const across = alignOffset(
+        lengths.width,
+        state.textAlign,
+        setting.split(',')[0],
+      );
+      const metrics = new TextMetrics(CANVAS_KEY);
+      metrics._width = lengths.width;
+      metrics._font = [lengths.ascent - down, lengths.descent + down];
+      metrics._em = [lengths.emAscent - down, lengths.emDescent + down];
+      metrics._baselines = [
+        lengths.ascent * 0.8 - down,
+        -down,
+        -lengths.descent - down,
+      ];
+      // read off a raster only if a page asks: a page measures far more
+      // strings than it reads the ink of
+      metrics._read = (): number[] => {
+        const fine = Math.max(1, Math.round(size * 4));
+        const raster =
+          chars.trim() && now
+            ? canvasRaster(
+                now.owner,
+                state.font,
+                chars,
+                fine,
+                0,
+                setting,
+                now.generation,
+              )
+            : null;
+        const perUnit = fine / size;
+        const ink = raster?.ink;
+        return !raster
+          ? [
+              across,
+              lengths.width - across,
+              size * 0.8 - down,
+              size * 0.2 + down,
+            ]
+          : !ink
+            ? [0, 0, 0, 0]
+            : [
+                (raster.x - ink[0]) / perUnit + across,
+                (ink[2] - raster.x) / perUnit - across,
+                (raster.y - ink[1]) / perUnit - down,
+                (ink[3] - raster.y) / perUnit + down,
+              ];
       };
+      return metrics;
     }
     setLineDash(segments: Any): void {
       this._dash = Array.from(segments ?? [], Number);
@@ -10451,6 +12060,60 @@ export function installDom(
       }
       return n;
     });
+  /** What `measureText` answers (HTML 4.12.5.1.8), every length of it from
+   *  the context's anchor, as it was when the text was measured. */
+  class TextMetrics {
+    _width = 0;
+    _font = [0, 0];
+    _em = [0, 0];
+    _baselines = [0, 0, 0];
+    _read: () => number[] = () => [0, 0, 0, 0];
+    _ink: number[] | null = null;
+    constructor(key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+    }
+    get width(): number {
+      return this._width;
+    }
+    _inkAt(side: number): number {
+      this._ink ??= this._read();
+      return this._ink[side];
+    }
+    get actualBoundingBoxLeft(): number {
+      return this._inkAt(0);
+    }
+    get actualBoundingBoxRight(): number {
+      return this._inkAt(1);
+    }
+    get actualBoundingBoxAscent(): number {
+      return this._inkAt(2);
+    }
+    get actualBoundingBoxDescent(): number {
+      return this._inkAt(3);
+    }
+    get fontBoundingBoxAscent(): number {
+      return this._font[0];
+    }
+    get fontBoundingBoxDescent(): number {
+      return this._font[1];
+    }
+    get emHeightAscent(): number {
+      return this._em[0];
+    }
+    get emHeightDescent(): number {
+      return this._em[1];
+    }
+    get hangingBaseline(): number {
+      return this._baselines[0];
+    }
+    get alphabeticBaseline(): number {
+      return this._baselines[1];
+    }
+    get ideographicBaseline(): number {
+      return this._baselines[2];
+    }
+  }
+
   for (const name of Object.keys(CONTEXT_STATE)) {
     Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
       get(this: Any) {
@@ -10475,7 +12138,23 @@ export function installDom(
         }
         // as is no font, which is what `getComputedStyle(el).font` reads
         // where the shorthand cannot say the element's
-        if (name === 'font' && !str(v).trim()) return;
+        if (name === 'font') {
+          const font = this._fontOf(str(v));
+          if (font) {
+            this._state.font = font.text;
+            this._state[FONT_SIZE] = font.size;
+          }
+          return;
+        }
+        if (name in TEXT_KEYWORDS) {
+          if (TEXT_KEYWORDS[name].includes(str(v))) this._state[name] = str(v);
+          return;
+        }
+        if (name === 'letterSpacing' || name === 'wordSpacing') {
+          const length = str(v).trim().toLowerCase();
+          if (spacingPixels(length, 0) !== null) this._state[name] = length;
+          return;
+        }
         this._state[name] =
           typeof was === 'number'
             ? Number.isFinite(Number(v))
@@ -10573,7 +12252,7 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      from = canvasState(source);
+      from = canvasBitmap(source);
     } else {
       return null;
     }
@@ -11314,7 +12993,7 @@ export function installDom(
         "Failed to execute 'toDataURL'",
         'Cannot read from a canvas that has transferred its control to offscreen.',
       );
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const bytes = encodedBitmap(state.width, state.height, state.data);
       return bytes ? `data:image/png;base64,${base64OfBytes(bytes)}` : 'data:,';
     }
@@ -11332,7 +13011,7 @@ export function installDom(
           `${what} on 'HTMLCanvasElement': The callback provided as parameter 1 is not a function.`,
         );
       }
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const { width, height } = state;
       const data = state.data.slice();
       setTimer(
@@ -12373,7 +14052,7 @@ export function installDom(
 
   /** An element's HTML children of the names given. */
   const childrenNamed = (el: Any, names: string[]): Any[] =>
-    Array.from(el.children as Any[]).filter(
+    wrapAll(call('kids', el._id, 'elements')).filter(
       (k) => k.namespaceURI === HTML_NS && names.includes(k.localName),
     );
   const indexError = (index: number): DOMException =>
@@ -12482,7 +14161,9 @@ export function installDom(
       this.tFoot?.remove();
     }
     get tBodies(): Any {
-      return collection(childrenNamed(this, ['tbody']));
+      return heldList(this, 'tBodies', () =>
+        liveCollection(() => childrenNamed(this, ['tbody'])),
+      );
     }
     createTBody(): Any {
       const bodies = childrenNamed(this, ['tbody']);
@@ -12495,21 +14176,25 @@ export function installDom(
     /** The rows of the head, then the body's and the table's own, then
      *  the foot's, each in tree order. */
     get rows(): Any {
-      const kids = Array.from(this.children) as Any[];
-      const out: Any[] = [];
-      for (const k of kids) {
-        if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
-      }
-      for (const k of kids) {
-        if (k.localName === 'tr') out.push(k);
-        else if (k.localName === 'tbody') {
-          out.push(...childrenNamed(k, ['tr']));
-        }
-      }
-      for (const k of kids) {
-        if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
-      }
-      return collection(out);
+      return heldList(this, 'rows', () =>
+        liveCollection(() => {
+          const kids = wrapAll(call('kids', this._id, 'elements'));
+          const out: Any[] = [];
+          for (const k of kids) {
+            if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
+          }
+          for (const k of kids) {
+            if (k.localName === 'tr') out.push(k);
+            else if (k.localName === 'tbody') {
+              out.push(...childrenNamed(k, ['tr']));
+            }
+          }
+          for (const k of kids) {
+            if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
+          }
+          return out;
+        }),
+      );
     }
     insertRow(index?: Any): Any {
       const at = long(index, -1);
@@ -12535,7 +14220,9 @@ export function installDom(
   }
   class HTMLTableSectionElement extends HTMLElement {
     get rows(): Any {
-      return collection(childrenNamed(this, ['tr']));
+      return heldList(this, 'rows', () =>
+        liveCollection(() => childrenNamed(this, ['tr'])),
+      );
     }
     insertRow(index?: Any): Any {
       return insertAt(this, this.rows, long(index, -1), 'tr');
@@ -12562,10 +14249,12 @@ export function installDom(
       )) {
         return -1;
       }
-      return Array.from(parent.rows).indexOf(this);
+      return Array.prototype.indexOf.call(parent.rows, this);
     }
     get cells(): Any {
-      return collection(childrenNamed(this, ['td', 'th']));
+      return heldList(this, 'cells', () =>
+        liveCollection(() => childrenNamed(this, ['td', 'th'])),
+      );
     }
     insertCell(index?: Any): Any {
       return insertAt(this, this.cells, long(index, -1), 'td');
@@ -12612,15 +14301,34 @@ export function installDom(
   // not; a sheet a page constructs draws nothing, since nothing here
   // adopts one.
 
-  class CSSRuleList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class CSSRuleList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
   }
-  class StyleSheetList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class StyleSheetList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
     }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  for (const Kind of [CSSRuleList, StyleSheetList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
   }
 
   /** Where a rule's block opens: its first `{` that no backslash
@@ -13103,7 +14811,7 @@ export function installDom(
     sheet.deleteRule(at);
     sheet.insertRule(text, at);
     const list = sheet.cssRules;
-    if (list && list[at] !== rule) list[at] = rule;
+    if (list && list[at] !== rule) list[LIST].items[at] = rule;
   };
   /** A `@position-try` rule (CSS Anchor Positioning 1, 8.1): its name, and
    *  its declarations, which a page may set. */
@@ -13382,11 +15090,11 @@ export function installDom(
     return rule;
   };
   const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
-    const list = new CSSRuleList();
+    const rules: Any[] = [];
     for (const text of texts) {
-      if (!droppedRule(text)) list.push(ruleOf(text, sheet, parent));
+      if (!droppedRule(text)) rules.push(ruleOf(text, sheet, parent));
     }
-    return list;
+    return listMade(CSSRuleList, rules, null, false, null);
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
@@ -13514,7 +15222,11 @@ export function installDom(
       // rules before the edit: a library that inserts a rule and reads
       // `cssRules.length` for the next one reads no list again
       if (this._list && this._version === Number(answer.slice(0, first))) {
-        this._list.splice(at, 0, ruleOf(answer.slice(second + 1), this));
+        this._list[LIST].items.splice(
+          at,
+          0,
+          ruleOf(answer.slice(second + 1), this),
+        );
         this._version = Number(answer.slice(first + 1, second));
       }
       return at;
@@ -13536,7 +15248,7 @@ export function installDom(
       const answer = String(call('sheetDelete', this._owner._id, at));
       const cut = answer.indexOf('\u0000');
       if (this._list && this._version === Number(answer.slice(0, cut))) {
-        this._list.splice(at, 1);
+        this._list[LIST].items.splice(at, 1);
         this._version = Number(answer.slice(cut + 1));
       }
     }
@@ -13761,6 +15473,15 @@ export function installDom(
   for (const name of ['media', 'type']) {
     Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
   }
+  // an HTML element's `title` is every HTML element's
+  for (const name of ['media', 'type', 'title']) {
+    Object.defineProperty(SVGStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(
+    SVGStyleElement.prototype,
+    'sheet',
+    Object.getOwnPropertyDescriptor(HTMLStyleElement.prototype, 'sheet')!,
+  );
   Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
     get(this: Any): Any {
       return this.isConnected &&
@@ -13960,6 +15681,15 @@ export function installDom(
     }
     if (!go) return false;
     popoverActivation(target);
+    // a file input's picker, with a user's press or key behind it (HTML
+    // 6.5.5, "show the picker, if applicable"): what a page's own button
+    // calls `click()` for
+    if (input?.type === 'file') {
+      if (!isDisabled(input) && hasTransientActivation()) {
+        call('pickFiles', input._id);
+      }
+      return true;
+    }
     // a submit button submits its form and a reset button resets it
     // (HTML 4.10.6, 4.10.5.1.19): here, since a button the page made a
     // moment ago is none `<Html>` has drawn yet
@@ -13997,7 +15727,9 @@ export function installDom(
         break;
       }
       if (
-        (at instanceof HTMLAnchorElement || at instanceof HTMLAreaElement) &&
+        (at instanceof HTMLAnchorElement ||
+          at instanceof HTMLAreaElement ||
+          at instanceof SVGAElement) &&
         !followLink(at, false)
       ) {
         break;
@@ -14005,6 +15737,7 @@ export function installDom(
       if (call('activate', at._id)) break;
       if (
         at instanceof HTMLAnchorElement ||
+        at instanceof SVGAElement ||
         at instanceof HTMLButtonElement ||
         at instanceof HTMLInputElement
       ) {
@@ -14020,9 +15753,8 @@ export function installDom(
   // `@font-face` rules declare, which `<Html>` loads — where a style wants
   // one, or where `load()` asks — and tells the page of through
   // `__fontsLoaded` and `__fontsSettled`. A face a script makes with `new
-  // FontFace` is not among them: nothing hands its data to the document's
-  // fonts yet, so there is no `FontFace` to construct, and `add()` takes
-  // none.
+  // FontFace` is the host's too, by a number (`fontFaceNew`), and joins the
+  // document's with `document.fonts.add`.
 
   let fontSeq = 0;
   /** The `load()`s waiting on `<Html>`, by id. */
@@ -14031,6 +15763,8 @@ export function installDom(
   const fontSettles = new Map<number, () => void>();
   const NETWORK_ERROR = () =>
     new DOMException('A network error occurred.', 'NetworkError');
+  /** The faces `new FontFace` made, by the number the host has them by. */
+  const scriptFaces = new Map<number, Any>();
 
   /**
    * A face of the document's, as `document.fonts` hands it over (CSS Font
@@ -14038,26 +15772,80 @@ export function installDom(
    * `<Html>`'s. One object a face, for as long as the document declares it
    * as it does (`FontFaceSet._face`). A descriptor a page sets reads back,
    * and changes nothing of the document's face.
+   *
+   * Or a face a page's script made (2.1.1), whose status is its own, held
+   * here and told by the host (`__fontFaceDone`), and which is the
+   * document's once `document.fonts.add` has it.
    */
   class FontFace {
-    _set: Any;
-    _key: string;
-    _desc: Record<string, string>;
+    _set: Any = null;
+    _key = '';
+    _desc: Record<string, string> = {};
     /** Its `loaded`, made as it is first asked for. */
     _loaded: Any = null;
     _settle: [Any, Any] | null = null;
-    constructor(set: Any, key: string, desc: Record<string, string>) {
-      this._set = set;
-      this._key = key;
-      this._desc = {
-        display: 'auto',
-        featureSettings: 'normal',
-        variationSettings: 'normal',
-        ascentOverride: 'normal',
-        descentOverride: 'normal',
-        lineGapOverride: 'normal',
-        ...desc,
-      };
+    /** The number the host has a script's face by, 0 for a rule's. */
+    _script = 0;
+    _status = 'unloaded';
+    /** The document whose base its URLs are read against, and who loads
+     *  it. */
+    _doc: Any = null;
+    constructor(family: Any, source: Any, descriptors: Any = {}) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'FontFace': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const desc: Record<string, string> = { ...FACE_DEFAULTS };
+      const init: Record<string, string> = {};
+      for (const key of Object.keys(FACE_DEFAULTS)) {
+        const value = descriptors?.[key];
+        if (value === undefined) continue;
+        desc[key] = str(value);
+        init[key] = desc[key];
+      }
+      desc.family = str(family);
+      this._desc = desc;
+      this._script = fontSeq += 1;
+      this._doc = document;
+      scriptFaces.set(this._script, this);
+      // made here, and a rejection nobody asked for is no unhandled one
+      this._loaded = new Promise((resolve, reject) => {
+        this._settle = [resolve, reject];
+      });
+      this._loaded.catch(() => {});
+      const bytes = ArrayBuffer.isView(source)
+        ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+        : source instanceof ArrayBuffer
+          ? new Uint8Array(source)
+          : null;
+      const made = call(
+        'fontFaceNew',
+        this._doc._id,
+        this._script,
+        JSON.stringify({
+          family: desc.family,
+          src: bytes ? null : str(source),
+          init,
+        }),
+        bytes ? base64OfBytes(bytes) : null,
+      );
+      if (made !== true) {
+        this._status = 'error';
+        this._settle?.[1](
+          new DOMException(
+            "Failed to construct 'FontFace': The source or a descriptor could not be parsed.",
+            'SyntaxError',
+          ),
+        );
+        this._settle = null;
+      } else if (bytes) this._startLoad();
+    }
+    /** A script's face starts to load, once. */
+    _startLoad(): void {
+      this._status = 'loading';
+      this._set?._faceLoading(this);
+      call('fontFaceLoad', this._doc._id, this._script);
     }
     get family(): string {
       return this._desc.family;
@@ -14126,7 +15914,9 @@ export function installDom(
       this._desc.lineGapOverride = str(v);
     }
     get status(): string {
-      return this._set._statuses().get(this._key) ?? 'error';
+      return this._script
+        ? this._status
+        : (this._set._statuses().get(this._key) ?? 'error');
     }
     /** Settles once the face has loaded, or could not: pending while
      *  nothing has asked for it. */
@@ -14146,6 +15936,10 @@ export function installDom(
       return this._loaded;
     }
     load(): Any {
+      if (this._script) {
+        if (this._status === 'unloaded') this._startLoad();
+        return this._loaded;
+      }
       const loaded = this.loaded;
       if (this._settle) this._set._loadFaces([this]).catch(() => {});
       return loaded;
@@ -14155,8 +15949,46 @@ export function installDom(
       const settle = this._settle;
       if (!settle) return;
       this._settle = null;
+      if (this._script) this._status = ok ? 'loaded' : 'error';
       if (ok) settle[0](this);
       else settle[1](NETWORK_ERROR());
+      if (this._script) this._set?._faceDone(this, ok);
+    }
+  }
+  const FACE_DEFAULTS: Record<string, string> = {
+    style: 'normal',
+    weight: 'normal',
+    stretch: 'normal',
+    unicodeRange: 'U+0-10FFFF',
+    display: 'auto',
+    featureSettings: 'normal',
+    variationSettings: 'normal',
+    ascentOverride: 'normal',
+    descentOverride: 'normal',
+    lineGapOverride: 'normal',
+  };
+  /** A face of the document's own rules, for as long as it declares it. */
+  const ruleFace = (
+    set: Any,
+    key: string,
+    desc: Record<string, string>,
+  ): Any => {
+    const face = Object.create(FontFace.prototype);
+    face._set = set;
+    face._key = key;
+    face._desc = { ...FACE_DEFAULTS, ...desc };
+    face._loaded = null;
+    face._settle = null;
+    face._script = 0;
+    return face;
+  };
+
+  /** What a `document.fonts` event says loaded, or failed to (2.3). */
+  class FontFaceSetLoadEvent extends Event {
+    readonly fontfaces: readonly Any[];
+    constructor(type: Any, init: Any = {}) {
+      super(type, init);
+      this.fontfaces = Object.freeze(Array.from(init?.fontfaces ?? []));
     }
   }
 
@@ -14164,6 +15996,12 @@ export function installDom(
   class FontFaceSet extends EventTarget {
     _doc: Any;
     _faces = new Map<string, Any>();
+    /** The faces a script put here, in the order it did. */
+    _added = new Set<Any>();
+    /** What came of a script's faces since the set last started loading,
+     *  which `loadingdone` and `loadingerror` say. */
+    _came: Any[] = [];
+    _failed: Any[] = [];
     /** The `load()`s on their way to `<Html>` and back. */
     _loading = 0;
     /** What waits for the next of them to come back. */
@@ -14183,17 +16021,60 @@ export function installDom(
     _list(): Any[] {
       return JSON.parse(str(call('fontFaces', this._doc._id)) || '[]');
     }
-    /** The faces as objects, one a face. */
+    /** The faces as objects, one a face: the document's rules', then what
+     *  a script put here. */
     _all(): Any[] {
-      return this._list().map((d: Any) => this._face(d));
+      const rules = this._list()
+        .map((d: Any) => this._face(d))
+        .filter((face: Any) => !face._script);
+      return [...rules, ...this._added];
     }
     _face(desc: Any): Any {
+      if (desc.script) {
+        const made = scriptFaces.get(desc.script);
+        if (made) {
+          made._key = desc.key;
+          return made;
+        }
+      }
       let face = this._faces.get(desc.key);
       if (!face) {
         const { key, status: _status, ...rest } = desc;
-        this._faces.set(key, (face = new FontFace(this, key, rest)));
+        this._faces.set(key, (face = ruleFace(this, key, rest)));
       }
       return face;
+    }
+    /** A script's face here has started to load: the set is loading, and
+     *  says so where nothing here was (2.5, "switch the FontFaceSet to
+     *  loading"). */
+    _faceLoading(_face: Any): void {
+      if (!this._loading) {
+        dispatch(this, trusted(new FontFaceSetLoadEvent('loading')));
+      }
+      this._loading += 1;
+    }
+    /** A script's face here has loaded, or could not. */
+    _faceDone(face: Any, ok: boolean): void {
+      (ok ? this._came : this._failed).push(face);
+      this._loading -= 1;
+      for (const fn of this._afterLoad.splice(0)) fn();
+      if (this._loading) return;
+      const came = this._came;
+      const failed = this._failed;
+      this._came = [];
+      this._failed = [];
+      dispatch(
+        this,
+        trusted(new FontFaceSetLoadEvent('loadingdone', { fontfaces: came })),
+      );
+      if (failed.length) {
+        dispatch(
+          this,
+          trusted(
+            new FontFaceSetLoadEvent('loadingerror', { fontfaces: failed }),
+          ),
+        );
+      }
     }
     /** The keys of the faces a `font` matches, or null for a `font` that
      *  is none. */
@@ -14286,9 +16167,20 @@ export function installDom(
               );
               return;
             }
-            const all = new Map(this._all().map((f: Any) => [f._key, f]));
+            const all = new Map<string, Any>(
+              this._all().map((f: Any) => [f._key, f]),
+            );
             const faces = keys.map((k) => all.get(k)).filter(Boolean);
-            this._loadFaces(faces).then(resolve, reject);
+            // what a script handed over or asked for needs nothing of the
+            // host's: its own load settles it
+            const ownLoads = faces
+              .filter((f) => f._script)
+              .map((f) => f.load());
+            const rules = faces.filter((f) => !f._script);
+            Promise.all([this._loadFaces(rules), ...ownLoads]).then(
+              () => resolve(faces),
+              reject,
+            );
           } catch (error) {
             reject(error);
           }
@@ -14308,9 +16200,14 @@ export function installDom(
       return keys.every((k) => statuses.get(k) === 'loaded');
     }
     get size(): number {
-      return this._list().length;
+      return this._all().length;
     }
     has(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'has' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
       return this._all().includes(face);
     }
     forEach(fn: Any, thisArg?: Any): void {
@@ -14330,24 +16227,42 @@ export function installDom(
     [Symbol.iterator](): Any {
       return this.values();
     }
-    /** Every face here is its rule's, which a script cannot add again;
-     *  and one it makes is none of this document's yet (above). */
+    /** A face a script made joins the document's; a rule's is one already,
+     *  which a script cannot add again (2.5.1). */
     add(face: Any): Any {
-      if (face instanceof FontFace) {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!face._script) {
         throw new DOMException(
           "Failed to execute 'add' on 'FontFaceSet': Cannot add a CSS-connected FontFace.",
           'InvalidModificationError',
         );
       }
-      throw new TypeError(
-        "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
-      );
+      if (this._added.has(face)) return this;
+      this._added.add(face);
+      face._set = this;
+      call('fontFaceAdd', this._doc._id, face._script, true);
+      if (face._status === 'loading') this._faceLoading(face);
+      return this;
     }
-    /** A rule's face is not taken out by a script (2.5.1). */
-    delete(_face: Any): boolean {
-      return false;
+    /** Only what a script put here is taken out (2.5.1). */
+    delete(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'delete' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!this._added.delete(face)) return false;
+      face._set = null;
+      call('fontFaceAdd', this._doc._id, face._script, false);
+      return true;
     }
-    clear(): void {}
+    clear(): void {
+      for (const face of [...this._added]) this.delete(face);
+    }
   }
 
   // --- the document --------------------------------------------------------------
@@ -14428,12 +16343,15 @@ export function installDom(
       setAdopted(adoptedSheets, sheets, 'Document', adopt);
     }
     get styleSheets(): Any {
-      const list = new StyleSheetList();
-      const ids = String(call('sheets', this._id));
-      for (const id of ids ? ids.split(',') : []) {
-        list.push(sheetOf(wrap(Number(id))));
-      }
-      return list;
+      return heldList(this, 'styleSheets', () =>
+        listMade(
+          StyleSheetList,
+          [],
+          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
+          true,
+          null,
+        ),
+      );
     }
     get currentScript(): Any {
       return this._current;
@@ -14451,7 +16369,7 @@ export function installDom(
       location.href = v;
     }
     get referrer(): string {
-      return '';
+      return this === document ? str(call('referrer')) : '';
     }
     get domain(): string {
       return location.hostname;
@@ -14484,6 +16402,9 @@ export function installDom(
     }
     get contentType(): string {
       return this._type ?? 'text/html';
+    }
+    get inputEncoding(): string {
+      return 'UTF-8';
     }
     get compatMode(): string {
       return 'CSS1Compat';
@@ -14521,18 +16442,31 @@ export function installDom(
       return this.documentElement;
     }
     get forms(): Any {
-      return collection(Array.from(this.getElementsByTagName('form')));
+      return heldList(this, 'forms', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'form'))),
+      );
     }
     get images(): Any {
-      return collection(Array.from(this.getElementsByTagName('img')));
+      return heldList(this, 'images', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'img'))),
+      );
     }
     get links(): Any {
-      return collection(
-        Array.from(this.querySelectorAll('a[href],area[href]')),
+      return heldList(this, 'links', () =>
+        liveCollection(
+          () => wrapAll(call('query', this._id, 'a[href],area[href]', true)),
+          true,
+        ),
       );
     }
     get scripts(): Any {
-      return this.getElementsByTagName('script');
+      return heldList(this, 'scripts', () =>
+        liveCollection(() =>
+          wrapAll(call('byTag', this._id, 'script')).filter(
+            (el: Any) => el.namespaceURI === HTML_NS,
+          ),
+        ),
+      );
     }
     get doctype(): Any {
       for (const kid of this.childNodes) if (kid.nodeType === 10) return kid;
@@ -14551,8 +16485,41 @@ export function installDom(
     getElementById(id: Any): Any {
       return wrap(Number(call('byId', str(id), this._id)));
     }
+    execCommand(id: Any, _showUI?: Any, value: Any = ''): boolean {
+      if (this._type && this._type !== 'application/xhtml+xml') {
+        throw new DOMException(
+          "Failed to execute 'execCommand' on 'Document': execCommand is only supported on HTML documents.",
+          'InvalidStateError',
+        );
+      }
+      const name = commandName(id);
+      if (CLIPBOARD_COMMANDS.has(name)) return clipboardCommand(name);
+      if (!commandEnabled(name)) return false;
+      if (name === 'selectall') selectAllCommand();
+      else COMMANDS[name](commandTarget(), str(value));
+      return true;
+    }
+    queryCommandEnabled(id: Any): boolean {
+      return commandEnabled(commandName(id));
+    }
+    queryCommandIndeterminate(_id: Any): boolean {
+      return false;
+    }
+    queryCommandState(_id: Any): boolean {
+      return false;
+    }
+    queryCommandSupported(id: Any): boolean {
+      return commandSupported(commandName(id));
+    }
+    queryCommandValue(_id: Any): string {
+      return '';
+    }
     getElementsByName(name: Any): Any {
-      return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
+      const selector = `[name="${cssEscape(str(name))}"]`;
+      return liveList(
+        () => wrapAll(call('query', this._id, selector, true)),
+        true,
+      );
     }
     createElement(tag: Any, options?: Any): Any {
       // an XML document keeps the name's case, and makes it in no
@@ -14662,6 +16629,51 @@ export function installDom(
     createComment(data: Any): Any {
       return wrap(Number(call('create', 'comment', str(data), this._id)));
     }
+    createCDATASection(data: Any): Any {
+      if (!this._type) {
+        throw new DOMException(
+          'This operation is not supported for HTML documents.',
+          'NotSupportedError',
+        );
+      }
+      if (str(data).includes(']]>')) {
+        throw new DOMException(
+          'String cannot contain "]]>" as part of a CDATASection.',
+          'InvalidCharacterError',
+        );
+      }
+      return wrap(Number(call('create', 'cdata', str(data), this._id)));
+    }
+    createProcessingInstruction(target: Any, data: Any): Any {
+      const name = str(target);
+      const text = str(data);
+      if (!/^[^\s\0/=>"']+$/.test(name) || text.includes('?>')) {
+        throw new DOMException(
+          `The target provided ('${name}') is not a valid name, or the data contains '?>'.`,
+          'InvalidCharacterError',
+        );
+      }
+      return wrap(Number(call('create', 'pi', `${name} ${text}`, this._id)));
+    }
+    createExpression(expression: Any, resolver?: Any): Any {
+      return madeExpression(str(expression), resolver);
+    }
+    createNSResolver(node: Any): Any {
+      return node;
+    }
+    evaluate(
+      expression: Any,
+      context: Any,
+      resolver?: Any,
+      type: Any = 0,
+      result?: Any,
+    ): Any {
+      return madeExpression(str(expression), resolver).evaluate(
+        context,
+        type,
+        result,
+      );
+    }
     createDocumentFragment(): Any {
       return wrap(Number(call('create', 'fragment', '', this._id)));
     }
@@ -14761,6 +16773,10 @@ export function installDom(
      *  the document — it is refused. */
     write(...parts: Any[]): void {
       const text = parts.map((p) => str(p)).join('');
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.write(this, text);
+        return;
+      }
       if (this !== document) {
         // a document of the page's own, a frame's among them: what is
         // written since `open` is its markup at `close`, and a write to
@@ -14785,6 +16801,10 @@ export function installDom(
       return this;
     }
     close(): void {
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.wrote(this);
+        return;
+      }
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
@@ -14979,7 +16999,9 @@ export function installDom(
      *  document draws, the box of the element it is in. */
     getClientRects(): Any {
       const flat = String(call('rangeRects', this._id));
-      if (!flat) return list([this._elementRect()]);
+      if (!flat) {
+        return listMade(DOMRectList, [this._elementRect()], null, false, null);
+      }
       const n = flat.split(',').map(Number);
       const v = viewport();
       const out: Any[] = [];
@@ -14993,7 +17015,7 @@ export function installDom(
           ),
         );
       }
-      return list(out);
+      return listMade(DOMRectList, out, null, false, null);
     }
     getBoundingClientRect(): Any {
       const rects = Array.from(this.getClientRects() as Iterable<Any>);
@@ -15983,6 +18005,16 @@ export function installDom(
     'keydown',
     'keyup',
     'keypress',
+    'copy',
+    'cut',
+    'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'input',
     'change',
     'select',
@@ -17209,6 +19241,9 @@ export function installDom(
      *  image, a font, which no text decoding may pass through. */
     _raw: Uint8Array | null = null;
     bodyUsed = false;
+    /** The number an opaque response's body is held by in the host, which
+     *  no script reads (`caches.ts`). */
+    _held: number | null = null;
     constructor(body: Any = null, init: Any = {}) {
       this._body = '';
       const page = init.type === undefined;
@@ -17329,11 +19364,23 @@ export function installDom(
      *  it: what the app router of Next.js reads a server's payload with. */
     get body(): Any {
       if (this._stream) return this._stream;
+      // one made with none has none (Fetch 6.5, a response's body), and an
+      // opaque one's is no script's
+      if (
+        this.type === 'opaque' ||
+        this.type === 'error' ||
+        (this.type === 'default' && this._raw === null && this._body === '')
+      ) {
+        return null;
+      }
       const response = this;
       this._made = true;
       this._stream = new ReadableStream({
         pull(controller: Any) {
-          const bytes = response._bytes();
+          // read as a reader asks, which is what makes it used
+          response.bodyUsed = true;
+          const bytes =
+            response._raw ?? new TextEncoder().encode(response._body);
           if (bytes.length) controller.enqueue(new Uint8Array(bytes));
           controller.close();
         },
@@ -17358,7 +19405,9 @@ export function installDom(
         this._stream = mine;
         return new Response(theirs, init);
       }
-      return new Response(this._raw ?? this._body, init);
+      const copy = new Response(this._raw ?? this._body, init);
+      copy._held = this._held;
+      return copy;
     }
     static error(): Any {
       return new Response(null, { status: 0, type: 'error' });
@@ -17396,6 +19445,9 @@ export function installDom(
     }
   }
 
+  /** The entries of `serviceworkers.ts` and `caches.ts`, registered with the
+   *  rest, below. */
+  const serviceEntries: [string, () => Primitive][] = [];
   // `fetch`: the request is the host's, which keeps the browser's network
   // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
@@ -17421,19 +19473,22 @@ export function installDom(
     let closing = false;
     const hand = (): void => {
       wanted = false;
-      if (held.length === 1) controller.enqueue(held[0]);
+      // taken first: with a second read waiting, `enqueue` pulls from inside
+      // itself, and `pulled` must find nothing left to hand that read
+      const pieces = held;
+      held = [];
+      if (pieces.length === 1) controller.enqueue(pieces[0]);
       else {
         let size = 0;
-        for (const piece of held) size += piece.length;
+        for (const piece of pieces) size += piece.length;
         const whole = new Uint8Array(size);
         let at = 0;
-        for (const piece of held) {
+        for (const piece of pieces) {
           whole.set(piece, at);
           at += piece.length;
         }
         controller.enqueue(whole);
       }
-      held = [];
     };
     return {
       arrived(bytes: Uint8Array): void {
@@ -17596,6 +19651,10 @@ export function installDom(
     return new Uint8Array(out);
   };
 
+  /** The headers of a request the user agent makes, which a page's script
+   *  has no say in, so CORS asks nothing of them (`EventSource`). No page
+   *  has the key. */
+  const UA_HEADERS = Symbol('uaHeaders');
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
@@ -17621,7 +19680,7 @@ export function installDom(
       }
       // a blob URL is this realm's, read here
       if (url.startsWith('blob:')) {
-        const blob = blobUrls.get(url);
+        const blob = blobUrls.get(url.replace(/#.*$/, ''));
         const response = blob ? blobResponse(blob, url, headers) : null;
         if (response) resolve(response);
         else reject(new TypeError('Failed to fetch'));
@@ -17723,11 +19782,20 @@ export function installDom(
             ...(sourceless && bytes !== null ? { streamedBody: true } : {}),
             // the body is taken as it arrives
             stream: true,
+            ...(init[UA_HEADERS] ? { uaHeaders: init[UA_HEADERS] } : null),
             // what the host checks another origin's answer against
             mode,
             credentials: str(
               init.credentials ?? request?.credentials ?? 'same-origin',
             ),
+            // and what a worker's `fetch` event reads of it
+            cache: str(init.cache ?? request?.cache ?? 'default'),
+            redirect: str(init.redirect ?? request?.redirect ?? 'follow'),
+            integrity: str(init.integrity ?? request?.integrity ?? ''),
+            referrerPolicy: str(
+              init.referrerPolicy ?? request?.referrerPolicy ?? '',
+            ),
+            destination: str(request?.destination ?? ''),
           }),
         );
       };
@@ -17758,11 +19826,13 @@ export function installDom(
     readonly credentials: string;
     readonly cache: string;
     readonly redirect: string;
-    readonly referrer = 'about:client';
-    readonly referrerPolicy = '';
-    readonly integrity = '';
+    readonly referrer: string = 'about:client';
+    readonly referrerPolicy: string = '';
+    readonly integrity: string = '';
     readonly keepalive: boolean;
-    readonly destination = '';
+    readonly destination: string = '';
+    readonly isReloadNavigation: boolean = false;
+    readonly isHistoryNavigation: boolean = false;
     readonly duplex = 'half';
     /** The body's bytes, or the stream it is, or neither for none. */
     _raw: Uint8Array | null = null;
@@ -17774,10 +19844,31 @@ export function installDom(
       // `duplex` among them, whose being read a page feature-detects a
       // stream body by
       const duplex = init.duplex;
-      this.url = new URL(from ? from.url : str(input), location.href).href;
+      const parsed = new URL(
+        from ? from.url : str(input),
+        str(workerLocation?.href ?? location.href),
+      );
+      if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(parsed.href)) {
+        throw new TypeError(
+          `Failed to construct 'Request': Request cannot be constructed from a URL that includes credentials: ${parsed.href}`,
+        );
+      }
+      this.url = parsed.href;
       this.method = str(init.method ?? from?.method ?? 'GET').toUpperCase();
       this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
-      this.mode = str(init.mode ?? from?.mode ?? 'cors');
+      if (init.mode === 'navigate') {
+        throw new TypeError(
+          "Failed to construct 'Request': Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.",
+        );
+      }
+      // a navigation's request, made again by a worker, is the same origin's
+      // (Fetch 6.3, the `Request` constructor's step for a `navigate` mode)
+      this.mode = str(
+        init.mode ??
+          (from?.mode === 'navigate' && Object.keys(init).length
+            ? 'same-origin'
+            : (from?.mode ?? 'cors')),
+      );
       if (this.mode === 'no-cors' && !/^(GET|HEAD|POST)$/.test(this.method)) {
         throw new TypeError(
           `Failed to construct 'Request': '${this.method}' is unsupported in no-cors mode.`,
@@ -17793,6 +19884,16 @@ export function installDom(
       this.cache = str(init.cache ?? from?.cache ?? 'default');
       this.redirect = str(init.redirect ?? from?.redirect ?? 'follow');
       this.keepalive = !!(init.keepalive ?? from?.keepalive);
+      if (from) {
+        this.destination = from.destination;
+        this.referrer = from.referrer;
+        this.referrerPolicy = from.referrerPolicy;
+        this.integrity = from.integrity;
+      }
+      if (init.referrerPolicy !== undefined) {
+        this.referrerPolicy = str(init.referrerPolicy);
+      }
+      if (init.integrity !== undefined) this.integrity = str(init.integrity);
       const given = init.body !== undefined && init.body !== null;
       if (!given && from && from.bodyUsed) {
         throw new TypeError(
@@ -17903,7 +20004,41 @@ export function installDom(
    * timeout covers a wait on a socket. What `responseType` reads is text,
    * JSON or an `ArrayBuffer`; a `document` and a `Blob` are not here.
    */
-  class XMLHttpRequest extends EventTarget {
+  class XMLHttpRequestEventTarget extends EventTarget {
+    constructor() {
+      super();
+      if (new.target === XMLHttpRequestEventTarget) {
+        throw new TypeError('Illegal constructor');
+      }
+    }
+  }
+  for (const type of [
+    'loadstart',
+    'progress',
+    'abort',
+    'error',
+    'load',
+    'timeout',
+    'loadend',
+  ]) {
+    handlerProperty(XMLHttpRequestEventTarget.prototype, type);
+  }
+  let makingUpload = false;
+  class XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
+    constructor() {
+      super();
+      if (!makingUpload) throw new TypeError('Illegal constructor');
+    }
+  }
+  const madeUpload = (): Any => {
+    makingUpload = true;
+    try {
+      return new XMLHttpRequestUpload();
+    } finally {
+      makingUpload = false;
+    }
+  };
+  class XMLHttpRequest extends XMLHttpRequestEventTarget {
     static readonly UNSENT = 0;
     static readonly OPENED = 1;
     static readonly HEADERS_RECEIVED = 2;
@@ -17921,7 +20056,7 @@ export function installDom(
     responseType = '';
     timeout = 0;
     withCredentials = false;
-    readonly upload = new EventTarget();
+    readonly upload = madeUpload();
     _method = 'GET';
     _url = '';
     _headers = new Headers();
@@ -18145,26 +20280,7 @@ export function installDom(
       dispatch(this, ev);
     }
   }
-  for (const type of [
-    'readystatechange',
-    'loadstart',
-    'progress',
-    'load',
-    'error',
-    'abort',
-    'timeout',
-    'loadend',
-  ]) {
-    Object.defineProperty(XMLHttpRequest.prototype, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers[type] ?? null;
-      },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-    });
-  }
+  handlerProperty(XMLHttpRequest.prototype, 'readystatechange');
 
   // --- traversal (DOM 6) ---------------------------------------------------
 
@@ -18396,13 +20512,271 @@ export function installDom(
   class DOMParser {
     parseFromString(markup: Any, type: Any): Any {
       const kind = str(type);
-      if (kind !== 'text/html') {
+      if (kind === 'text/html') {
+        return wrap(Number(call('parseDocument', str(markup))));
+      }
+      if (
+        kind !== 'text/xml' &&
+        kind !== 'application/xml' &&
+        kind !== 'application/xhtml+xml' &&
+        kind !== 'image/svg+xml'
+      ) {
+        throw new TypeError(
+          `Failed to execute 'parseFromString' on 'DOMParser': The provided value '${kind}' is not a valid enum value of type DOMParserSupportedType.`,
+        );
+      }
+      const made = wrap(Number(call('parseXml', str(markup), kind)));
+      // what a parser makes is a `Document`: an `XMLDocument` is
+      // `createDocument`'s
+      Object.setPrototypeOf(made, Document.prototype);
+      return made;
+    }
+  }
+  /** `XMLSerializer` (DOM Parsing and Serialization, 3.2). */
+  class XMLSerializer {
+    serializeToString(node: Any): string {
+      if (!(node instanceof Node) && !(node instanceof Attr)) {
+        throw new TypeError(
+          "Failed to execute 'serializeToString' on 'XMLSerializer': parameter 1 is not of type 'Node'.",
+        );
+      }
+      return node instanceof Attr ? '' : str(call('serializeXml', node._id));
+    }
+  }
+
+  // --- XPath (DOM 8) -----------------------------------------------------------
+
+  let makingXPath = false;
+  class XPathResult {
+    static readonly ANY_TYPE = 0;
+    static readonly NUMBER_TYPE = 1;
+    static readonly STRING_TYPE = 2;
+    static readonly BOOLEAN_TYPE = 3;
+    static readonly UNORDERED_NODE_ITERATOR_TYPE = 4;
+    static readonly ORDERED_NODE_ITERATOR_TYPE = 5;
+    static readonly UNORDERED_NODE_SNAPSHOT_TYPE = 6;
+    static readonly ORDERED_NODE_SNAPSHOT_TYPE = 7;
+    static readonly ANY_UNORDERED_NODE_TYPE = 8;
+    static readonly FIRST_ORDERED_NODE_TYPE = 9;
+    _type = 0;
+    _value: Any = null;
+    _nodes: Any[] = [];
+    _at = 0;
+    /** What the tree was as an iterator was made: a change ends it. */
+    _epoch = 0;
+    constructor() {
+      if (!makingXPath) throw new TypeError('Illegal constructor');
+    }
+    get resultType(): number {
+      return this._type;
+    }
+    _wants(types: number[], what: string): void {
+      if (!types.includes(this._type)) {
+        throw new TypeError(
+          `The result is not of the type to read '${what}' from.`,
+        );
+      }
+    }
+    get numberValue(): number {
+      this._wants([1], 'numberValue');
+      return this._value;
+    }
+    get stringValue(): string {
+      this._wants([2], 'stringValue');
+      return this._value;
+    }
+    get booleanValue(): boolean {
+      this._wants([3], 'booleanValue');
+      return this._value;
+    }
+    get singleNodeValue(): Any {
+      this._wants([8, 9], 'singleNodeValue');
+      return this._nodes[0] ?? null;
+    }
+    get invalidIteratorState(): boolean {
+      return (this._type === 4 || this._type === 5) && this._epoch !== opEdits;
+    }
+    get snapshotLength(): number {
+      this._wants([6, 7], 'snapshotLength');
+      return this._nodes.length;
+    }
+    iterateNext(): Any {
+      this._wants([4, 5], 'iterateNext');
+      if (this.invalidIteratorState) {
         throw new DOMException(
-          `Only text/html is parsed here, not ${kind}.`,
+          'The document has mutated since the result was returned.',
+          'InvalidStateError',
+        );
+      }
+      return this._nodes[this._at++] ?? null;
+    }
+    snapshotItem(index: Any): Any {
+      this._wants([6, 7], 'snapshotItem');
+      return this._nodes[Number(index) >>> 0] ?? null;
+    }
+  }
+  idlAttributes(XPathResult);
+  for (const name of Object.getOwnPropertyNames(XPathResult)) {
+    if (!/^[A-Z_]+$/.test(name)) continue;
+    Object.defineProperty(XPathResult.prototype, name, {
+      value: (XPathResult as Any)[name],
+      enumerable: true,
+    });
+  }
+  /** The namespaces an expression's prefixes reach, each asked of what the
+   *  page gave, which may be a function or an object. */
+  const prefixMap = (
+    expression: string,
+    resolver: Any,
+  ): Record<string, string> => {
+    const prefixes: string[] = JSON.parse(
+      str(call('xpathPrefixes', expression)),
+    );
+    const out: Record<string, string> = {};
+    for (const prefix of prefixes) {
+      const answer =
+        typeof resolver === 'function'
+          ? resolver(prefix)
+          : resolver?.lookupNamespaceURI?.(prefix);
+      if (answer === null || answer === undefined) {
+        throw new DOMException(
+          `The string '${expression}' contains unresolvable namespaces.`,
+          'NamespaceError',
+        );
+      }
+      out[prefix] = str(answer);
+    }
+    return out;
+  };
+  class XPathExpression {
+    _text = '';
+    _namespaces: Record<string, string> = {};
+    constructor() {
+      if (!makingXPath) throw new TypeError('Illegal constructor');
+    }
+    evaluate(context: Any, type: Any = 0, _result?: Any): Any {
+      if (!(context instanceof Node) && !(context instanceof Attr)) {
+        throw new TypeError(
+          "Failed to execute 'evaluate' on 'XPathExpression': parameter 1 is not of type 'Node'.",
+        );
+      }
+      const asked = Number(type) >>> 0;
+      if (asked > 9) {
+        throw new TypeError(
+          `Failed to execute 'evaluate' on 'XPathExpression': The result type '${asked}' is not one.`,
+        );
+      }
+      const attr = context instanceof Attr;
+      if (attr && !context._el) {
+        throw new DOMException(
+          'The context attribute has no element.',
           'NotSupportedError',
         );
       }
-      return wrap(Number(call('parseDocument', str(markup))));
+      const value = JSON.parse(
+        str(
+          call(
+            'xpath',
+            this._text,
+            JSON.stringify({
+              node: attr ? context._el._id : context._id,
+              attr: attr ? context.name : null,
+              namespaces: this._namespaces,
+            }),
+          ),
+        ),
+      );
+      const isSet = Array.isArray(value);
+      makingXPath = true;
+      let result: Any;
+      try {
+        result = new XPathResult();
+      } finally {
+        makingXPath = false;
+      }
+      const type_ =
+        asked !== 0
+          ? asked
+          : isSet
+            ? 4
+            : typeof value === 'number'
+              ? 1
+              : typeof value === 'string'
+                ? 2
+                : 3;
+      result._type = type_;
+      if (type_ < 4) {
+        result._value =
+          type_ === 1
+            ? xpathNumber(value)
+            : type_ === 2
+              ? xpathString(value)
+              : xpathBoolean(value);
+        return result;
+      }
+      if (!isSet) {
+        throw new TypeError('The expression does not come to a node-set.');
+      }
+      result._nodes = value.map((n: Any) =>
+        typeof n === 'number' ? wrap(n) : wrap(n[0]).getAttributeNode(n[1]),
+      );
+      result._epoch = opEdits;
+      return result;
+    }
+  }
+  /** What a value that is no node-set comes to, where a page asked for
+   *  another type (XPath 1.0, 4.2 to 4.4). */
+  const xpathNumber = (v: Any): number =>
+    typeof v === 'number'
+      ? v
+      : typeof v === 'boolean'
+        ? Number(v)
+        : Array.isArray(v)
+          ? NaN
+          : /^\s*-?(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(v)
+            ? Number(v)
+            : NaN;
+  const xpathString = (v: Any): string =>
+    Array.isArray(v) ? '' : typeof v === 'string' ? v : str(v);
+  const xpathBoolean = (v: Any): boolean =>
+    Array.isArray(v)
+      ? v.length > 0
+      : typeof v === 'string'
+        ? v.length > 0
+        : typeof v === 'number'
+          ? v !== 0 && !Number.isNaN(v)
+          : v;
+  const madeExpression = (text: string, resolver: Any): Any => {
+    const namespaces = prefixMap(text, resolver);
+    makingXPath = true;
+    try {
+      const made = new XPathExpression();
+      made._text = text;
+      made._namespaces = namespaces;
+      return made;
+    } finally {
+      makingXPath = false;
+    }
+  };
+  class XPathEvaluator {
+    createExpression(expression: Any, resolver?: Any): Any {
+      return madeExpression(str(expression), resolver);
+    }
+    createNSResolver(node: Any): Any {
+      return node;
+    }
+    evaluate(
+      expression: Any,
+      context: Any,
+      resolver?: Any,
+      type: Any = 0,
+      result?: Any,
+    ): Any {
+      return madeExpression(str(expression), resolver).evaluate(
+        context,
+        type,
+        result,
+      );
     }
   }
 
@@ -18699,41 +21073,24 @@ export function installDom(
     }
   }
 
-  /** `crypto`, its randomness the host's: no `subtle`, which a page that
-   *  wants one asks for and does without. */
-  const crypto = {
-    getRandomValues(array: Any): Any {
-      if (
-        !ArrayBuffer.isView(array) ||
-        array instanceof Float32Array ||
-        array instanceof Float64Array ||
-        array instanceof DataView
-      ) {
-        throw new DOMException(
-          "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type 'Float32', which is not an integer array type.",
-          'TypeMismatchError',
-        );
-      }
-      if (array.byteLength > 65536) {
-        throw new DOMException(
-          `Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536).`,
-          'QuotaExceededError',
-        );
-      }
-      const hex = String(call('random', array.byteLength));
-      const bytes = new Uint8Array(
-        array.buffer,
-        array.byteOffset,
-        array.byteLength,
-      );
-      for (let i = 0; i < bytes.length; i += 1) {
-        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      }
-      return array;
+  // --- Web Cryptography ---------------------------------------------------------
+  //
+  // `webcrypto.ts`, its keys and what it computes the host's (`subtle.ts`,
+  // the `crypto` op and the `__crypto` entry).
+  const cryptoEntries: [string, () => Primitive][] = [];
+  const CRYPTO = webcrypto({
+    call: call as Any,
+    // its entries are registered with the rest, below
+    entry: (name: string, fn: () => Any) => {
+      cryptoEntries.push([name, fn]);
     },
-    randomUUID: (): string => String(call('uuid')),
-    subtle: undefined,
-  };
+    input: () => input(),
+    DOMException,
+    QuotaExceededError,
+    bytesOfBase64,
+    base64OfBytes,
+  });
+  const crypto = CRYPTO.crypto;
 
   /** `document.fragmentDirective` (WICG Scroll To Text Fragment): an
    *  object with nothing on it, which says that a URL's `#:~:text=…` is
@@ -18832,6 +21189,21 @@ export function installDom(
     const tag = Object.prototype.toString.call(value).slice(8, -1);
     let out: Any;
     if (value instanceof Blob) return value;
+    if (CRYPTO.isKey(value)) {
+      out = CRYPTO.copy(value);
+      seen.set(value, out);
+      return out;
+    }
+    // and so is an `ImageData`, which a page hands a worker to encode
+    if (value instanceof ImageData) {
+      out = new ImageData(
+        new Uint8ClampedArray(value.data),
+        value.width,
+        value.height,
+      );
+      seen.set(value, out);
+      return out;
+    }
     // an `ImageBitmap` is serializable, its pixels copied (HTML 8.11.2)
     if (value instanceof ImageBitmap) {
       if (!value._data) {
@@ -19216,8 +21588,27 @@ export function installDom(
       seen.set(v, index);
       const tag = Object.prototype.toString.call(v).slice(8, -1);
       if (v instanceof Blob) {
-        return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
+        return {
+          i: index,
+          t: 'L',
+          b: bytesOf(v._bytes),
+          y: v.type,
+          // a file stays one, with its name and its date
+          ...(v instanceof File && { fn: v.name, fm: v.lastModified }),
+        };
       }
+      if (v instanceof ImageData) {
+        return {
+          i: index,
+          t: 'Z',
+          w: v.width,
+          h: v.height,
+          b: bytesOf(
+            new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.length),
+          ),
+        };
+      }
+      if (CRYPTO.isKey(v)) return { i: index, t: 'Y', s: CRYPTO.sealedOf(v) };
       const shape = GEOMETRY.serialize(v);
       if (shape) {
         return { i: index, t: 'G', k: shape[0], v: shape[1].map(walk) };
@@ -19400,7 +21791,25 @@ export function installDom(
           out = byWire.get(str(v.w)) ?? null;
           break;
         case 'L':
-          out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          out =
+            v.fn === undefined
+              ? new Blob([bytesOfBase64(v.b)], { type: v.y })
+              : new File([bytesOfBase64(v.b)], str(v.fn), {
+                  type: v.y,
+                  lastModified: v.fm,
+                });
+          break;
+        case 'Z': {
+          const bytes = bytesOfBase64(v.b);
+          out = new ImageData(
+            new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length),
+            v.w,
+            v.h,
+          );
+          break;
+        }
+        case 'Y':
+          out = CRYPTO.fromSealed(str(v.s));
           break;
         case 'K':
           // a canvas the message transferred, whose frames go back across
@@ -19489,6 +21898,14 @@ export function installDom(
    *  where the message is told (`movePort`): its partner, or a wire's end
    *  where that is across a thread. */
   class MessagePort extends EventTarget {
+    /** One of any of the page's realms is one, since a page hands a frame's
+     *  worker a port it made itself. */
+    static override [Symbol.hasInstance](value: Any): boolean {
+      return !!value && value._isMessagePort === true;
+    }
+    get _isMessagePort(): boolean {
+      return true;
+    }
     /** What hears what this posts: its partner, or a wire's end. */
     _other: Any = null;
     _started = false;
@@ -19594,18 +22011,32 @@ export function installDom(
     }
   }
 
+  /** Line endings as this platform has them (File API 3.1, "convert line
+   *  endings to native"). */
+  const nativeEndings = (text: string): string =>
+    text.replace(/\r\n?|\n/g, '\n');
   /** The bytes of what a `Blob` is made of: a string as UTF-8, a buffer or
    *  a view as its bytes, a `Blob` as its own. */
-  const blobBytes = (parts: Any): Uint8Array => {
+  const blobBytes = (parts: Any, endings: string): Uint8Array => {
     const chunks: Uint8Array[] = [];
     for (const part of parts ?? []) {
       if (part instanceof Blob) chunks.push(part._bytes);
       else if (part instanceof ArrayBuffer) chunks.push(new Uint8Array(part));
       else if (ArrayBuffer.isView(part)) {
+        // a buffer sent elsewhere is empty, and a view of one cannot be made
+        if (part.buffer.byteLength) {
+          chunks.push(
+            new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          );
+        }
+      } else {
+        const text = str(part);
         chunks.push(
-          new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
+          new TextEncoder().encode(
+            endings === 'native' ? nativeEndings(text) : text,
+          ),
         );
-      } else chunks.push(new TextEncoder().encode(str(part)));
+      }
     }
     const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
     let at = 0;
@@ -19615,24 +22046,98 @@ export function installDom(
     }
     return out;
   };
+  /** A `Blob`'s type as File API has it: nothing past printable ASCII,
+   *  lowercase. */
+  const blobType = (type: string): string =>
+    /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+  /** A sequence of parts and a bag of options, each as Web IDL takes them
+   *  (File API 3.1): what is neither is a `TypeError`. */
+  const blobInit = (name: string, parts: Any, options: Any): Any => {
+    if (parts !== undefined) {
+      if (
+        parts === null ||
+        (typeof parts !== 'object' && typeof parts !== 'function') ||
+        typeof parts[Symbol.iterator] !== 'function'
+      ) {
+        throw new TypeError(
+          `Failed to construct '${name}': The provided value cannot be converted to a sequence.`,
+        );
+      }
+    }
+    if (
+      options !== undefined &&
+      options !== null &&
+      typeof options !== 'object' &&
+      typeof options !== 'function'
+    ) {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value is not of type '${name}PropertyBag'.`,
+      );
+    }
+    const list = parts === undefined ? [] : Array.from(parts as Any[]);
+    const endings =
+      options?.endings === undefined ? 'transparent' : str(options.endings);
+    if (endings !== 'transparent' && endings !== 'native') {
+      throw new TypeError(
+        `Failed to construct '${name}': The provided value '${endings}' is not a valid enum value of type EndingType.`,
+      );
+    }
+    return {
+      list,
+      endings,
+      type: options?.type === undefined ? '' : str(options.type),
+    };
+  };
   class Blob {
     _bytes: Uint8Array;
-    readonly type: string;
-    constructor(parts: Any = [], options: Any = {}) {
-      this._bytes = blobBytes(parts);
-      const type = str(options?.type ?? '');
-      this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
+    _type: string;
+    // a rest, since the interface's `length` is what it requires
+    constructor(...given: Any[]) {
+      const init = blobInit(
+        new.target === Blob ? 'Blob' : 'File',
+        given[0],
+        given[1],
+      );
+      this._bytes = blobBytes(init.list, init.endings);
+      this._type = blobType(init.type);
     }
+    get type(): string {
+      return this._type;
+    }
+    /** A file the host holds has a size before it has bytes here. */
+    _size?: number;
     get size(): number {
-      return this._bytes.length;
+      return this._size ?? this._bytes.length;
     }
     slice(start?: Any, end?: Any, type?: Any): Any {
-      const blob = new Blob([], { type: type ?? '' });
-      blob._bytes = this._bytes.slice(
-        start === undefined ? 0 : Number(start),
-        end === undefined ? this._bytes.length : Number(end),
-      );
+      const size = this.size;
+      const edge = (value: Any, otherwise: number): number => {
+        if (value === undefined) return otherwise;
+        const at = Math.trunc(Number(value)) || 0;
+        return at < 0 ? Math.max(size + at, 0) : Math.min(at, size);
+      };
+      const from = edge(start, 0);
+      const to = Math.max(edge(end, size), from);
+      const blob = new Blob([], { type: type === undefined ? '' : str(type) });
+      blob._bytes = this._bytes.slice(from, to);
       return blob;
+    }
+    stream(): Any {
+      const bytes = this._bytes;
+      let at = 0;
+      return new ReadableStream({
+        type: 'bytes',
+        pull(controller: Any): void {
+          if (at >= bytes.length) {
+            controller.close();
+            controller.byobRequest?.respond(0);
+            return;
+          }
+          const piece = bytes.slice(at, at + BLOB_CHUNK);
+          at += piece.length;
+          controller.enqueue(piece);
+        },
+      });
     }
     text(): Promise<string> {
       return Promise.resolve(new TextDecoder().decode(this._bytes));
@@ -19644,6 +22149,8 @@ export function installDom(
       return Promise.resolve(this._bytes.slice());
     }
   }
+  /** How much of a blob a read of its stream hands over at once. */
+  const BLOB_CHUNK = 65536;
   /** A worker's location (WorkerLocation, HTML 10.3.4), which `location`
    *  answers in a realm that is a worker's (`__becomeWorker`). */
   let workerLocation: Any = null;
@@ -19651,6 +22158,15 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone: a worker has no clipboard and nothing dragged to it
+    'DataTransfer',
+    'DataTransferItem',
+    'DataTransferItemList',
+    'ClipboardEvent',
+    'DragEvent',
+    'FileSystemFileEntry',
+    'Clipboard',
+    'ClipboardItem',
     // WebRTC's and Media Capture's interfaces but the data channel's
     // (`webrtc.ts`, `mediastream.ts`), which a worker can be handed
     'RTCPeerConnection',
@@ -19722,6 +22238,13 @@ export function installDom(
     'frameElement',
     'history',
     'navigation',
+    'BarProp',
+    'locationbar',
+    'menubar',
+    'personalbar',
+    'scrollbars',
+    'statusbar',
+    'toolbar',
     'localStorage',
     'sessionStorage',
     'customElements',
@@ -19969,481 +22492,247 @@ export function installDom(
     port._deliver(made.data, made.ports);
     return true;
   };
-  // --- service workers -------------------------------------------------------------
+  handlerProperty(FontFaceSet.prototype, 'loading');
+  handlerProperty(FontFaceSet.prototype, 'loadingdone');
+  handlerProperty(FontFaceSet.prototype, 'loadingerror');
+  // --- service workers and caches ----------------------------------------------
   //
-  // Service Workers 1, where the host lets a page have them (`serviceWorkers`)
-  // and the page is a secure context: a registration a scope, and its worker
-  // a thread of its own (`workers.ts`, `service`) whose global is a
-  // `ServiceWorkerGlobalScope`. Its lifecycle is the spec's — installing
-  // once its script has run, `install`, installed, `activate`, activated —
-  // told back as messages of its own (`{ sw }`), and what it posts to the
-  // page arrives on `navigator.serviceWorker` from it. It intercepts none
-  // of the page's requests: nothing controls the page, `controller` is null.
+  // `serviceworkers.ts` and `caches.ts`: what a page holds stands for what the
+  // host keeps (`sw-registry.ts`, `../cache-storage.ts`), reached through the
+  // `sw` and `cache` ops.
 
-  /** The page's registrations, by scope. */
-  const swRegistrations = new Map<string, Any>();
-  /** The page's service workers, by the thread each runs in. */
-  const swWorkers = new Map<number, Any>();
-  /** `ready`'s, kept until a registration has an active worker. */
-  let swReady: { promise: Promise<Any>; resolve: (r: Any) => void } | null =
-    null;
-  const handlerProperty = (proto: Any, type: string): void => {
-    Object.defineProperty(proto, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers?.[type] ?? null;
+  /** A request as a cache keeps it and a `fetch` event hears it. */
+  const requestWire = (request: Any): Any => ({
+    url: request.url,
+    method: request.method,
+    headers: Array.from(request.headers._map.entries()),
+    mode: request.mode,
+    credentials: request.credentials,
+    cache: request.cache,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    integrity: request.integrity,
+    destination: request.destination,
+  });
+  /** A `Request` made of one, its members what they were, a `navigate` mode
+   *  among them, which no page can give one, and its headers read-only. */
+  const requestFrom = (wire: Any, signal?: Any): Any => {
+    const request: Any = new Request(wire.url, {
+      method: wire.method,
+      headers: wire.headers,
+      ...(wire.base64
+        ? { body: bytesOfBase64(wire.base64), duplex: 'half' }
+        : {}),
+      credentials: wire.credentials,
+      cache: wire.cache,
+      redirect: wire.redirect,
+      ...(signal ? { signal } : {}),
+    });
+    request.mode = wire.mode ?? 'cors';
+    request.referrer = wire.referrer ?? '';
+    request.referrerPolicy = wire.referrerPolicy ?? '';
+    request.integrity = wire.integrity ?? '';
+    request.destination = wire.destination ?? '';
+    request.isReloadNavigation = !!wire.reload;
+    request.headers._guard = 'immutable';
+    return request;
+  };
+  /** A `Response` made of what the host holds of one, which nothing changes;
+   *  an opaque one's body stays there, under the number it is held by. */
+  const responseFrom = (head: Any, bytes: Uint8Array | null): Any => {
+    const response: Any = new Response(bytes, {
+      status: head.status,
+      statusText: head.statusText,
+      headers: head.headers,
+      url: head.url,
+      redirected: head.redirected,
+      type: head.type,
+      guard: 'immutable',
+    });
+    response._held = head.held ?? null;
+    return response;
+  };
+  const SW = serviceWorkersApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      serviceEntries.push([name, fn]);
+    },
+    input: () => input(),
+    Event,
+    EventTarget,
+    MessageEvent,
+    DOMException,
+    Response,
+    document,
+    windowTarget,
+    dispatch,
+    report: (error: Any) => report(error),
+    handlerProperty,
+    idlAttributes,
+    setHandler: (target: Any, type: string, fn: Any) =>
+      setHandler(target, type, fn),
+    heard: (target: Any, type: string) => heard(target, type),
+    fullyActive: () => call('fullyActive') !== false,
+    define: (name: string, value: Any) => define(name, value),
+    base: () =>
+      workerLocation ? str(workerLocation.href) : str(document.baseURI),
+    origin: () => str(workerLocation?.origin ?? location.origin),
+    bytesOfBase64,
+    base64OfBytes,
+    serializeClone: serializeClone as Any,
+    deserializeWith: deserializeWith as Any,
+    transfersOf,
+    transferListOf,
+    giveUp,
+    wireMessage: wireMessage as Any,
+    requestFrom,
+    responseFrom,
+    NOTE: () => NOTE,
+    get AbortController() {
+      return AbortController;
+    },
+    get URL() {
+      return URL;
+    },
+    MessagePort,
+  } as Any);
+  const CACHES = cachesApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      serviceEntries.push([name, fn]);
+    },
+    input: () => input(),
+    DOMException,
+    Request,
+    Response,
+    fetch,
+    bytesOfBase64,
+    base64OfBytes,
+    requestOf: requestWire,
+    // through its stream, which stays locked and read, as a page's read of
+    // it would leave it; a response with no body has nothing to use up
+    drain: (response: Any) => {
+      const body = response.body;
+      if (body === null) return Promise.resolve(new Uint8Array(0));
+      return drainStream(body, () => {
+        response.bodyUsed = true;
+      });
+    },
+    disturbed: (response: Any) =>
+      response.bodyUsed || !!response._stream?.locked,
+    responseFrom,
+    requestFrom,
+    idlAttributes,
+    get AbortController() {
+      return AbortController;
+    },
+  } as Any);
+  class File extends Blob {
+    _name: string;
+    _lastModified: number;
+    constructor(parts: Any, name: Any, options?: Any) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'File': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      super(parts, options);
+      this._name = str(name);
+      const when = options?.lastModified;
+      this._lastModified =
+        when === undefined ? Date.now() : Math.trunc(Number(when)) || 0;
+    }
+    get name(): string {
+      return this._name;
+    }
+    get lastModified(): number {
+      return this._lastModified;
+    }
+    get webkitRelativePath(): string {
+      return '';
+    }
+  }
+  idlAttributes(Blob);
+  idlAttributes(File);
+
+  /** The files of the host's this realm has been told of, by the number the
+   *  host knows each by, so that an input's next list has the same `File`s. */
+  const hostFiles = new Map<number, Any>();
+  /** The number the host knows a file by, 0 for one the page made. */
+  const hostIdOf = (file: Any): number => {
+    for (const [id, held] of hostFiles) if (held === file) return id;
+    return 0;
+  };
+  /** A file of the host's. Its bytes are read as a page asks for them: a
+   *  video chosen to be uploaded need never cross to the page at all. */
+  const hostFile = (told: Any): Any => {
+    let file = hostFiles.get(told.id);
+    if (file) return file;
+    file = new File([], told.name, {
+      type: told.type,
+      lastModified: told.lastModified,
+    });
+    file._size = told.size;
+    let bytes: Uint8Array | null = null;
+    Object.defineProperty(file, '_bytes', {
+      get(): Uint8Array {
+        if (bytes) return bytes;
+        bytes = new Uint8Array(told.size);
+        for (let at = 0; at < told.size;) {
+          const piece = bytesOfBase64(str(call('fileChunk', told.id, at)));
+          if (!piece.length) break;
+          bytes.set(piece, at);
+          at += piece.length;
+        }
+        return bytes;
       },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
+      set(value: Uint8Array) {
+        bytes = value;
       },
       configurable: true,
-      enumerable: true,
     });
+    hostFiles.set(told.id, file);
+    return file;
   };
-  class ServiceWorker extends EventTarget {
-    _id = 0;
-    _url = '';
-    _state = 'parsed';
-    _registration: Any = null;
-    /** `register()`'s promise, until the worker's script has run. */
-    _settle: { resolve(r: Any): void; reject(e: Any): void } | null = null;
-    get scriptURL(): string {
-      return this._url;
-    }
-    get state(): string {
-      return this._state;
-    }
-    postMessage(message: Any, transfer?: Any): void {
-      const later: Array<() => void> = [];
-      const data = serializeClone(message, undefined, {
-        across: threadAcross(this._id),
-        moving: transfersOf(transferListOf(transfer)),
-        later,
-      });
-      giveUp(transfer);
-      if (this._state === 'redundant') return;
-      call('workerPost', this._id, data);
-      for (const go of later) go();
-    }
-  }
-  handlerProperty(ServiceWorker.prototype, 'statechange');
-  handlerProperty(ServiceWorker.prototype, 'error');
-  class ServiceWorkerRegistration extends EventTarget {
-    _scope = '';
-    _installing: Any = null;
-    _waiting: Any = null;
-    _active: Any = null;
-    get scope(): string {
-      return this._scope;
-    }
-    get installing(): Any {
-      return this._installing;
-    }
-    get waiting(): Any {
-      return this._waiting;
-    }
-    get active(): Any {
-      return this._active;
-    }
-    get updateViaCache(): string {
-      return 'imports';
-    }
-    get navigationPreload(): Any {
-      return {
-        enable: () => Promise.resolve(),
-        disable: () => Promise.resolve(),
-        setHeaderValue: () => Promise.resolve(),
-        getState: () =>
-          Promise.resolve({ enabled: false, headerValue: 'true' }),
-      };
-    }
-    update(): Promise<Any> {
-      return Promise.resolve(this);
-    }
-    /** Service Workers 1, "Unregister": gone from the page's, and its
-     *  workers ended. */
-    unregister(): Promise<boolean> {
-      if (swRegistrations.get(this._scope) !== this) {
-        return Promise.resolve(false);
-      }
-      swRegistrations.delete(this._scope);
-      for (const worker of [this._installing, this._waiting, this._active]) {
-        if (worker) swRedundant(worker);
-      }
-      return Promise.resolve(true);
-    }
-  }
-  handlerProperty(ServiceWorkerRegistration.prototype, 'updatefound');
-  /** A worker that will do nothing more: its thread ended, its state
-   *  `redundant`, and it is no registration's. */
-  const swRedundant = (worker: Any): void => {
-    if (worker._state === 'redundant') return;
-    call('workerEnd', worker._id);
-    swWorkers.delete(worker._id);
-    const reg = worker._registration;
-    if (reg) {
-      if (reg._installing === worker) reg._installing = null;
-      if (reg._waiting === worker) reg._waiting = null;
-      if (reg._active === worker) reg._active = null;
-    }
-    swState(worker, 'redundant');
-  };
-  const swState = (worker: Any, state: string): void => {
-    worker._state = state;
-    const ev = new Event('statechange');
-    ev.isTrusted = true;
-    dispatch(worker, ev);
-  };
-  /** Where a URL's path is a scope's: the longest scope it starts with. */
-  const swMatch = (url: string): Any => {
-    let best: Any;
-    for (const [scope, reg] of swRegistrations) {
-      if (
-        url.startsWith(scope) &&
-        (!best || scope.length > best._scope.length)
-      ) {
-        best = reg;
-      }
-    }
-    return best;
-  };
-  class ServiceWorkerContainer extends EventTarget {
-    get controller(): Any {
-      return null;
-    }
-    get ready(): Promise<Any> {
-      const active = [...swRegistrations.values()].find((r) => r._active);
-      if (active) return Promise.resolve(active);
-      if (!swReady) {
-        let resolve!: (r: Any) => void;
-        const promise = new Promise<Any>((r) => (resolve = r));
-        swReady = { promise, resolve };
-      }
-      return swReady.promise;
-    }
-    /** Service Workers 1, "Start Register": the script and the scope the
-     *  page's origin's, the scope under the script's directory, and a
-     *  worker started for it — the promise kept once its script has run,
-     *  with the registration whose `installing` it is. */
-    register(url: Any, options: Any = {}): Promise<Any> {
-      let script: URL;
-      let scope: URL;
-      try {
-        script = new URL(str(url), location.href);
-        scope = new URL(
-          options?.scope === undefined ? './' : str(options.scope),
-          options?.scope === undefined ? script.href : location.href,
-        );
-      } catch {
-        return Promise.reject(
-          new TypeError(
-            "Failed to execute 'register' on 'ServiceWorkerContainer': Invalid URL",
-          ),
-        );
-      }
-      if (!/^https?:$/.test(script.protocol)) {
-        return Promise.reject(
-          new TypeError(
-            `Failed to register a ServiceWorker: The URL protocol of the script ('${script.href}') is not supported.`,
-          ),
-        );
-      }
-      if (
-        script.origin !== location.origin ||
-        scope.origin !== location.origin
-      ) {
-        return Promise.reject(
-          new DOMException(
-            `Failed to register a ServiceWorker: The origin of the provided scriptURL ('${script.origin}') does not match the current origin ('${location.origin}').`,
-            'SecurityError',
-          ),
-        );
-      }
-      const directory = script.pathname.replace(/[^/]*$/, '');
-      if (!scope.pathname.startsWith(directory)) {
-        return Promise.reject(
-          new DOMException(
-            `Failed to register a ServiceWorker: The path of the provided scope ('${scope.pathname}') is not under the max scope allowed ('${directory}').`,
-            'SecurityError',
-          ),
-        );
-      }
-      scope.hash = '';
-      const key = scope.href;
-      const had = swRegistrations.get(key);
-      const current = had?._active ?? had?._waiting ?? had?._installing;
-      if (current && current._url === script.href) {
-        return Promise.resolve(had);
-      }
-      const reg = had ?? new ServiceWorkerRegistration();
-      reg._scope = key;
-      swRegistrations.set(key, reg);
-      const worker = new ServiceWorker();
-      worker._url = script.href;
-      worker._registration = reg;
-      try {
-        worker._id = Number(
-          call(
-            'workerStart',
-            JSON.stringify({
-              url: script.href,
-              type: options?.type === 'module' ? 'module' : 'classic',
-              name: '',
-              service: { scope: key, client: location.href },
-            }),
-            null,
-          ),
-        );
-      } catch (e) {
-        if (!had) swRegistrations.delete(key);
-        return Promise.reject(e);
-      }
-      swWorkers.set(worker._id, worker);
-      return new Promise((resolve, reject) => {
-        worker._settle = { resolve, reject };
-      });
-    }
-    getRegistration(url: Any = ''): Promise<Any> {
-      return Promise.resolve(swMatch(new URL(str(url), location.href).href));
-    }
-    getRegistrations(): Promise<Any[]> {
-      return Promise.resolve([...swRegistrations.values()]);
-    }
-    startMessages(): void {}
-  }
-  handlerProperty(ServiceWorkerContainer.prototype, 'controllerchange');
-  handlerProperty(ServiceWorkerContainer.prototype, 'message');
-  handlerProperty(ServiceWorkerContainer.prototype, 'messageerror');
-  const serviceWorkerContainer = new ServiceWorkerContainer();
-  /**
-   * What a page's service worker said: a step of its lifecycle, or a
-   * message, which arrives on `navigator.serviceWorker` from it (Service
-   * Workers 1, "Client.postMessage"). False where it is none of the page's.
-   */
-  const swHeard = (id: number, text: string): boolean => {
-    const worker = swWorkers.get(id);
-    if (!worker) return false;
-    let wrapper: Any;
-    try {
-      wrapper = JSON.parse(text);
-    } catch {
-      return true;
-    }
-    const reg = worker._registration;
-    if (typeof wrapper?.sw === 'string') {
-      const state = wrapper.sw;
-      if (state === 'failed') {
-        worker._settle?.reject(
-          new TypeError(
-            `Failed to register a ServiceWorker for scope ('${reg._scope}') with script ('${worker._url}'): ServiceWorker script evaluation failed`,
-          ),
-        );
-        worker._settle = null;
-        if (swRegistrations.get(reg._scope) === reg && !reg._active) {
-          swRegistrations.delete(reg._scope);
-        }
-        swRedundant(worker);
-        return true;
-      }
-      if (state === 'installing') {
-        // the one it replaces gives way
-        const was = reg._installing;
-        if (was && was !== worker) swRedundant(was);
-        reg._installing = worker;
-        worker._state = 'installing';
-        const found = new Event('updatefound');
-        found.isTrusted = true;
-        dispatch(reg, found);
-        worker._settle?.resolve(reg);
-        worker._settle = null;
-        return true;
-      }
-      if (state === 'installed') {
-        if (reg._installing === worker) reg._installing = null;
-        const was = reg._waiting;
-        if (was && was !== worker) swRedundant(was);
-        reg._waiting = worker;
-      } else if (state === 'activating') {
-        if (reg._waiting === worker) reg._waiting = null;
-        const was = reg._active;
-        if (was && was !== worker) swRedundant(was);
-        reg._active = worker;
-      } else if (state === 'activated' && swReady) {
-        swReady.resolve(reg);
-        swReady = null;
-      } else if (state === 'redundant') {
-        swRedundant(worker);
-        return true;
-      }
-      swState(worker, state);
-      return true;
-    }
-    let made: Any;
-    try {
-      made = deserializeWith(str(wrapper?.d), threadAcross(id));
-    } catch {
-      const ev = new MessageEvent('messageerror', { source: worker });
-      ev.isTrusted = true;
-      dispatch(serviceWorkerContainer, ev);
-      return true;
-    }
-    const ev = new MessageEvent('message', {
-      data: made.data,
-      origin: location.origin,
-      source: worker,
-      ports: made.ports,
-    });
-    ev.isTrusted = true;
-    dispatch(serviceWorkerContainer, ev);
-    return true;
-  };
-  // a service worker's global (`__becomeWorker`): what it is installed and
-  // messaged with, and the one client it has, the page that registered it
-  /** Where this realm is a service worker's: its scope and its client's
-   *  address. */
-  let serviceRealm: { scope: string; client: string } | null = null;
-  /** Service Workers 1, 4.4: an event a worker may keep alive with
-   *  `waitUntil`, until whatever it was handed settles. */
-  class ExtendableEvent extends Event {
-    _waits: Promise<Any>[] = [];
-    _open = true;
-    waitUntil(promise: Any): void {
-      if (!this.isTrusted || !this._open) {
-        throw new DOMException(
-          "Failed to execute 'waitUntil' on 'ExtendableEvent': The event handler is already finished.",
-          'InvalidStateError',
-        );
-      }
-      this._waits.push(Promise.resolve(promise));
-    }
-  }
-  class ExtendableMessageEvent extends ExtendableEvent {
-    _data: Any;
-    _origin: string;
-    _lastEventId: string;
-    _source: Any;
-    _ports: readonly Any[];
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this._data = init?.data ?? null;
-      this._origin = str(init?.origin ?? '');
-      this._lastEventId = str(init?.lastEventId ?? '');
-      this._source = init?.source ?? null;
-      this._ports = Object.freeze([...(init?.ports ?? [])]);
-    }
-    get data(): Any {
-      return this._data;
-    }
-    get origin(): string {
-      return this._origin;
-    }
-    get lastEventId(): string {
-      return this._lastEventId;
-    }
-    get source(): Any {
-      return this._source;
-    }
-    get ports(): readonly Any[] {
-      return this._ports;
-    }
-  }
-  /** Service Workers 1, 4.2: the page a worker hears from, which it posts
-   *  to. */
-  class Client {
-    _url = '';
-    _id = '';
-    get url(): string {
-      return this._url;
-    }
-    get id(): string {
-      return this._id;
-    }
-    get type(): string {
-      return 'window';
-    }
-    get frameType(): string {
-      return 'top-level';
-    }
-    postMessage(message: Any, transfer?: Any): void {
-      const later: Array<() => void> = [];
-      const d = serializeClone(message, undefined, {
-        across: UP,
-        moving: transfersOf(transferListOf(transfer)),
-        later,
-      });
-      giveUp(transfer);
-      call('workerPostOut', JSON.stringify({ d }));
-      for (const go of later) go();
-    }
-  }
-  class WindowClient extends Client {
-    get focused(): boolean {
-      return false;
-    }
-    get visibilityState(): string {
-      return 'visible';
-    }
-    focus(): Promise<Any> {
-      return Promise.reject(
-        new DOMException(
-          'Not allowed to focus a window.',
-          'InvalidAccessError',
-        ),
-      );
-    }
-    navigate(): Promise<Any> {
-      return Promise.reject(
-        new TypeError('Cannot navigate a client this worker does not control.'),
-      );
-    }
-  }
-  let theClient: Any = null;
-  const clientOf = (): Any => {
-    if (!theClient && serviceRealm) {
-      theClient = new WindowClient();
-      theClient._url = serviceRealm.client;
-      theClient._id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    }
-    return theClient;
-  };
-  /** Service Workers 1, 4.3: the worker's clients — the page, which it
-   *  does not control, so only `includeUncontrolled` lists it. */
-  class Clients {
-    get(id: Any): Promise<Any> {
-      const client = clientOf();
-      return Promise.resolve(
-        client && client.id === str(id) ? client : undefined,
-      );
-    }
-    matchAll(options: Any = {}): Promise<Any[]> {
-      const client = clientOf();
-      return Promise.resolve(
-        options?.includeUncontrolled && client ? [client] : [],
-      );
-    }
-    openWindow(): Promise<Any> {
-      return Promise.reject(
-        new DOMException('Not allowed to open a window.', 'InvalidAccessError'),
-      );
-    }
-    claim(): Promise<void> {
-      return Promise.resolve();
-    }
-  }
-  class File extends Blob {
-    readonly name: string;
-    readonly lastModified: number;
-    constructor(parts: Any, name: Any, options: Any = {}) {
-      super(parts, options);
-      this.name = str(name);
-      this.lastModified = Number(options?.lastModified ?? Date.now());
-    }
-  }
+
+  // --- what a clipboard and a drag carry -----------------------------------------
+  //
+  // `datatransfer.ts`: the data store, its mode what the event carrying it
+  // says, and the events.
+  const TRANSFER = transfers({
+    DOMException,
+    Event,
+    MouseEvent,
+    File,
+    FileList,
+    // what a store holds is no tree's, so no count says it moved
+    listOf: (Proto: Any, read: () => Any[]) => {
+      const list = listMade(Proto, [], read, false, null);
+      listState(list).unkept = true;
+      return list;
+    },
+    idlAttributes,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+  });
 
   /** A blob's bytes as text in the encoding a label names, else its
    *  type's charset, else UTF-8 (File API 6.6, "package data"). */
   const blobText = (blob: Any, label: Any): string => {
     const charset = /;\s*charset=([^;]+)/i.exec(blob.type)?.[1];
-    for (const name of [label, charset]) {
+    // a byte order mark says more than anything else does (Encoding 6)
+    const b = blob._bytes;
+    const marked =
+      b[0] === 0xfe && b[1] === 0xff
+        ? 'utf-16be'
+        : b[0] === 0xff && b[1] === 0xfe
+          ? 'utf-16le'
+          : b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf
+            ? 'utf-8'
+            : null;
+    for (const name of [marked, label, charset]) {
       if (name === undefined || name === null) continue;
       try {
         return new TextDecoder(str(name)).decode(blob._bytes);
@@ -20538,6 +22827,10 @@ export function installDom(
         this.readyState = 2;
         this.result = result();
         this._progress('load', size, size);
+      });
+      // in a task of its own: what a `load` listener queued runs before it,
+      // as a browser checks for microtasks between one listener and the next
+      step(() => {
         if (this.readyState !== 1) this._progress('loadend', size, size);
       });
     }
@@ -20593,6 +22886,16 @@ export function installDom(
         const type = el instanceof HTMLInputElement ? (el as Any).type : '';
         if (type === 'checkbox' || type === 'radio') {
           if ((el as Any).checked) this.append(name, (el as Any).value || 'on');
+        } else if (type === 'file') {
+          const files = Array.from((el as Any).files) as Any[];
+          for (const file of files) this.append(name, file);
+          // none is one file with no name and no bytes (HTML 4.10.21.4)
+          if (!files.length) {
+            this.append(
+              name,
+              new File([], '', { type: 'application/octet-stream' }),
+            );
+          }
         } else if (
           !['submit', 'reset', 'button', 'image', 'file'].includes(type) &&
           !(el instanceof HTMLButtonElement)
@@ -20683,6 +22986,117 @@ export function installDom(
     ByteLengthQueuingStrategy,
     CountQueuingStrategy,
   } = STREAMS.classes as Record<string, Any>;
+
+  // --- compression (Compression Standard) ---------------------------------
+
+  let zlibSeq = 0;
+  /** A running compression stream's listeners, by the number the host has
+   *  it by. */
+  const zlibs = new Map<number, Any>();
+  const COMPRESSION_FORMATS = ['gzip', 'deflate', 'deflate-raw', 'brotli'];
+  /** A chunk's bytes, or its `TypeError`: a `BufferSource` and nothing
+   *  else, and no shared memory. */
+  const chunkBytes = (chunk: Any): Uint8Array => {
+    const view = ArrayBuffer.isView(chunk)
+      ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      : chunk instanceof ArrayBuffer
+        ? new Uint8Array(chunk)
+        : null;
+    if (
+      !view ||
+      (typeof SharedArrayBuffer === 'function' &&
+        view.buffer instanceof SharedArrayBuffer)
+    ) {
+      throw new TypeError('The chunk is not a BufferSource.');
+    }
+    return view;
+  };
+  /** The transform of both streams: each chunk through the host's zlib, and
+   *  what it came to enqueued before the next is taken. */
+  const zlibTransform = (kind: string, format: Any, on: string): Any => {
+    const name = str(format);
+    if (!COMPRESSION_FORMATS.includes(name)) {
+      throw new TypeError(
+        `Failed to construct '${on}': Unsupported compression format: '${name}'`,
+      );
+    }
+    const id = (zlibSeq += 1);
+    let started = false;
+    const open = (controller: Any): Any => {
+      const state = {
+        controller,
+        written: null as Any,
+        ended: null as Any,
+        failed: false,
+      };
+      zlibs.set(id, state);
+      started = true;
+      call('zlibNew', id, `${kind} ${name}`);
+      return state;
+    };
+    return {
+      transform(chunk: Any, controller: Any): Any {
+        const bytes = chunkBytes(chunk);
+        const state = started ? zlibs.get(id) : open(controller);
+        if (!state) return undefined;
+        return new Promise((resolve, reject) => {
+          state.written = { resolve, reject };
+          call('zlibWrite', id, base64OfBytes(bytes));
+        });
+      },
+      flush(controller: Any): Any {
+        const state = started ? zlibs.get(id) : open(controller);
+        if (!state) return undefined;
+        return new Promise((resolve, reject) => {
+          state.ended = { resolve, reject };
+          call('zlibEnd', id);
+        });
+      },
+      cancel(): void {
+        if (zlibs.delete(id)) call('zlibDrop', id);
+      },
+    };
+  };
+  class CompressionStream {
+    _stream: Any;
+    constructor(format: Any) {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'CompressionStream': 1 argument required, but only 0 present.",
+        );
+      }
+      this._stream = new TransformStream(
+        zlibTransform('compress', format, 'CompressionStream'),
+      );
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  class DecompressionStream {
+    _stream: Any;
+    constructor(format: Any) {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'DecompressionStream': 1 argument required, but only 0 present.",
+        );
+      }
+      this._stream = new TransformStream(
+        zlibTransform('decompress', format, 'DecompressionStream'),
+      );
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  idlAttributes(CompressionStream);
+  idlAttributes(DecompressionStream);
 
   class TextDecoderStream extends TransformStream {
     readonly encoding: string;
@@ -20904,19 +23318,27 @@ export function installDom(
   const inRange = (range: Any, key: Any): boolean =>
     !range || range.includes(key);
 
-  class DOMStringList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class DOMStringList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
     contains(name: Any): boolean {
-      return this.includes(str(name));
+      return itemsOf(listState(this)).includes(str(name));
     }
   }
-  const stringList = (names: Iterable<string>): Any => {
-    const list = new DOMStringList();
-    for (const name of [...names].sort()) list.push(name);
-    return list;
-  };
+  Object.defineProperty(DOMStringList.prototype, Symbol.iterator, {
+    value: Array.prototype.values,
+    writable: true,
+    configurable: true,
+  });
+  const stringList = (names: Iterable<string>): Any =>
+    listMade(DOMStringList, [...names].sort(), null, false, null);
 
   class IDBVersionChangeEvent extends Event {
     readonly oldVersion: number;
@@ -22610,59 +25032,400 @@ export function installDom(
     },
   };
 
+  /** What only the steps below make: a page's `new` is refused (DOM 3.1). */
+  let makingSignal = false;
   class AbortSignal extends EventTarget {
-    aborted = false;
-    reason: Any = undefined;
-    onabort: Any = null;
-    static abort(reason?: Any): Any {
-      const c = new AbortController();
-      c.abort(reason);
-      return c.signal;
+    _aborted = false;
+    _reason: Any = undefined;
+    /** Whether it follows other signals (`any`), and which, and which
+     *  follow it (DOM 3.1, "source signals", "dependent signals"). Kept by
+     *  reference and let go as a signal aborts: one a page dropped may
+     *  still have a listener that has to hear. */
+    _dependent = false;
+    _sources: Any[] = [];
+    _dependents = new Set<Any>();
+    /** What is told as it aborts, ahead of the event ("abort algorithms"). */
+    _algorithms: (() => void)[] = [];
+    constructor() {
+      super();
+      if (!makingSignal) throw new TypeError('Illegal constructor');
     }
-    static timeout(ms: number): Any {
-      const c = new AbortController();
+    get aborted(): boolean {
+      return this._aborted;
+    }
+    get reason(): Any {
+      return this._reason;
+    }
+    static abort(reason?: Any): Any {
+      const signal = madeSignal(this);
+      signal._aborted = true;
+      signal._reason = abortReason(reason);
+      return signal;
+    }
+    static timeout(ms: Any): Any {
+      const delay = enforcedRange(ms, 'AbortSignal', 'timeout');
+      const signal = madeSignal(this);
       setTimer(
-        () => c.abort(new DOMException('signal timed out', 'TimeoutError')),
-        ms,
+        () =>
+          signalAbort(
+            signal,
+            new DOMException('signal timed out', 'TimeoutError'),
+          ),
+        delay,
         [],
         false,
       );
-      return c.signal;
+      return signal;
+    }
+    static any(signals: Any): Any {
+      return dependentSignal(signalsFrom(signals), this);
     }
     throwIfAborted(): void {
-      if (this.aborted) throw this.reason;
+      if (this._aborted) throw this._reason;
     }
   }
+  idlAttributes(AbortSignal);
+  /** A signal of `Kind`, with nothing asked of the page's `new`. */
+  const madeSignal = (Kind: Any): Any => {
+    makingSignal = true;
+    try {
+      return new Kind();
+    } finally {
+      makingSignal = false;
+    }
+  };
+  /** A `[EnforceRange] unsigned long long` (Web IDL 3.2.4). */
+  const enforcedRange = (v: Any, on: string, member: string): number => {
+    const n = Math.trunc(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError(
+        `Failed to execute '${member}' on '${on}': Value is outside the 'unsigned long long' value range.`,
+      );
+    }
+    return n;
+  };
+  /** Only a reason left out is the default one: `abort(null)` aborts with
+   *  null. */
+  const abortReason = (reason: Any): Any =>
+    reason === undefined
+      ? new DOMException('signal is aborted without reason', 'AbortError')
+      : reason;
+  /** "Run the abort steps" (DOM 3.1). */
+  const abortSteps = (signal: Any): void => {
+    for (const source of signal._sources) source._dependents.delete(signal);
+    signal._sources = [];
+    const algorithms = signal._algorithms;
+    signal._algorithms = [];
+    for (const algorithm of algorithms) algorithm();
+    dispatch(signal, trusted(new Event('abort')));
+  };
+  /** "Signal abort": what follows it aborts with it, each after it. */
+  const signalAbort = (signal: Any, reason: Any): void => {
+    if (signal._aborted) return;
+    signal._aborted = true;
+    signal._reason = abortReason(reason);
+    const following: Any[] = [];
+    for (const dependent of signal._dependents) {
+      if (dependent._aborted) continue;
+      dependent._aborted = true;
+      dependent._reason = signal._reason;
+      following.push(dependent);
+    }
+    signal._dependents.clear();
+    abortSteps(signal);
+    for (const dependent of following) abortSteps(dependent);
+  };
+  /** A `sequence<AbortSignal>` from what a page passed (Web IDL 3.2.19). */
+  const signalsFrom = (signals: Any): Any[] => {
+    if (typeof signals?.[Symbol.iterator] !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'any' on 'AbortSignal': The provided value cannot be converted to a sequence.",
+      );
+    }
+    const out = Array.from(signals as Any[]);
+    for (const signal of out) {
+      if (!(signal instanceof AbortSignal)) {
+        throw new TypeError(
+          "Failed to execute 'any' on 'AbortSignal': Failed to convert value to 'AbortSignal'.",
+        );
+      }
+    }
+    return out;
+  };
+  /** "Create a dependent abort signal" (DOM 3.1): one that follows signals
+   *  no signal follows, so that a chain of them holds no chain of signals. */
+  const dependentSignal = (signals: Any[], Kind: Any): Any => {
+    const result = madeSignal(Kind);
+    for (const signal of signals) {
+      if (signal._aborted) {
+        result._aborted = true;
+        result._reason = signal._reason;
+        return result;
+      }
+    }
+    result._dependent = true;
+    for (const signal of signals) {
+      for (const source of signal._dependent ? signal._sources : [signal]) {
+        if (result._sources.includes(source)) continue;
+        result._sources.push(source);
+        source._dependents.add(result);
+      }
+    }
+    return result;
+  };
   class AbortController {
-    readonly signal: Any = Object.create(AbortSignal.prototype);
-    constructor() {
-      Object.assign(this.signal, new EventTarget(), {
-        aborted: false,
-        reason: undefined,
-        onabort: null,
-      });
+    _signal: Any = madeSignal(AbortSignal);
+    get signal(): Any {
+      return this._signal;
     }
     abort(reason?: Any): void {
-      const s = this.signal;
-      if (s.aborted) return;
-      s.aborted = true;
-      // only a reason left out is the default one: `abort(null)` aborts
-      // with null
-      s.reason =
-        reason === undefined
-          ? new DOMException('signal is aborted without reason', 'AbortError')
-          : reason;
-      const ev = new Event('abort');
-      if (typeof s.onabort === 'function') {
-        try {
-          s.onabort(ev);
-        } catch (e) {
-          report(e);
-        }
-      }
-      dispatch(s, ev);
+      signalAbort(this._signal, reason);
     }
   }
+  idlAttributes(AbortController);
+
+  // --- prioritized task scheduling (WICG Scheduling APIs) --------------------
+
+  const PRIORITIES = ['user-blocking', 'user-visible', 'background'];
+  const priorityFrom = (v: Any, on: string): string => {
+    const priority = str(v);
+    if (!PRIORITIES.includes(priority)) {
+      throw new TypeError(
+        `Failed to execute '${on}': The provided value '${priority}' is not a valid enum value of type TaskPriority.`,
+      );
+    }
+    return priority;
+  };
+  class TaskPriorityChangeEvent extends Event {
+    readonly previousPriority: string;
+    constructor(type: Any, init: Any) {
+      super(type, init);
+      if (init?.previousPriority === undefined) {
+        throw new TypeError(
+          "Failed to construct 'TaskPriorityChangeEvent': required member previousPriority is undefined.",
+        );
+      }
+      this.previousPriority = priorityFrom(
+        init.previousPriority,
+        'TaskPriorityChangeEvent',
+      );
+    }
+  }
+  class TaskSignal extends AbortSignal {
+    _priority = 'user-visible';
+    _changing = false;
+    /** A priority that follows another signal's: what follows this one, and
+     *  whether it has one at all ("has fixed priority"). */
+    _priorityFollowers: Any[] = [];
+    _fixed = false;
+    get priority(): string {
+      return this._priority;
+    }
+    static override any(signals: Any, init: Any = {}): Any {
+      const result = dependentSignal(signalsFrom(signals), this);
+      const from = init?.priority ?? 'user-visible';
+      if (from instanceof TaskSignal) {
+        result._priority = from._priority;
+        if (from._fixed) result._fixed = true;
+        else from._priorityFollowers.push(result);
+      } else {
+        result._priority = priorityFrom(from, 'any');
+        result._fixed = true;
+      }
+      return result;
+    }
+  }
+  idlAttributes(TaskSignal);
+  handlerProperty(AbortSignal.prototype, 'abort');
+  handlerProperty(TaskSignal.prototype, 'prioritychange');
+  /** "Signal priority change". */
+  const signalPriority = (signal: Any, priority: string): void => {
+    if (signal._changing) {
+      throw new DOMException(
+        "Failed to execute 'setPriority' on 'TaskController': Cannot change the priority of a signal while it is changing.",
+        'NotAllowedError',
+      );
+    }
+    if (signal._priority === priority) return;
+    signal._changing = true;
+    const previousPriority = signal._priority;
+    signal._priority = priority;
+    dispatch(
+      signal,
+      trusted(
+        new TaskPriorityChangeEvent('prioritychange', { previousPriority }),
+      ),
+    );
+    for (const follower of signal._priorityFollowers) {
+      signalPriority(follower, priority);
+    }
+    signal._changing = false;
+  };
+  class TaskController extends AbortController {
+    constructor(init: Any = {}) {
+      super();
+      const priority =
+        init?.priority === undefined
+          ? 'user-visible'
+          : priorityFrom(init.priority, 'TaskController');
+      this._signal = madeSignal(TaskSignal);
+      this._signal._priority = priority;
+    }
+    setPriority(priority: Any): void {
+      signalPriority(this._signal, priorityFrom(priority, 'setPriority'));
+    }
+  }
+  /** One task of `postTask` or `yield`, in the order it was queued. */
+  interface ScheduledTask {
+    run(): void;
+    priority(): string;
+    continuation: boolean;
+    order: number;
+  }
+  const scheduledTasks: ScheduledTask[] = [];
+  let scheduledOrder = 0;
+  let taskQueued = false;
+  /** What the running task inherits to a `yield`, its priority and signal. */
+  let schedulingState: { priority: () => string; signal: Any } | null = null;
+  /** The next task: of the highest priority, a continuation ahead of a task
+   *  of the same one, the oldest of those (Scheduling APIs, "select the next
+   *  scheduler task queue"). */
+  const nextScheduled = (): ScheduledTask | undefined => {
+    let best: ScheduledTask | undefined;
+    let bestRank = Infinity;
+    for (const task of scheduledTasks) {
+      const rank =
+        PRIORITIES.indexOf(task.priority()) * 2 + (task.continuation ? 0 : 1);
+      if (rank < bestRank) {
+        best = task;
+        bestRank = rank;
+      }
+    }
+    return best;
+  };
+  /** One task to a turn, so that what a page queued from one runs after
+   *  anything of a higher priority it queued. */
+  const queueScheduled = (): void => {
+    if (taskQueued || !scheduledTasks.length) return;
+    taskQueued = true;
+    setTimer(
+      () => {
+        taskQueued = false;
+        const task = nextScheduled();
+        if (task) {
+          scheduledTasks.splice(scheduledTasks.indexOf(task), 1);
+          task.run();
+        }
+        queueScheduled();
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  const schedule = (task: Omit<ScheduledTask, 'order'>): (() => void) => {
+    const queued = { ...task, order: (scheduledOrder += 1) };
+    scheduledTasks.push(queued);
+    queueScheduled();
+    return () => {
+      const at = scheduledTasks.indexOf(queued);
+      if (at >= 0) scheduledTasks.splice(at, 1);
+    };
+  };
+  let makingScheduler = false;
+  class Scheduler {
+    constructor() {
+      if (!makingScheduler) throw new TypeError('Illegal constructor');
+    }
+    postTask(callback: Any, options: Any = {}): Any {
+      return new Promise((resolve, reject) => {
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': parameter 1 is not of type 'Function'.",
+          );
+        }
+        const signal = options?.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': member signal is not of type AbortSignal.",
+          );
+        }
+        const fixed =
+          options?.priority === undefined
+            ? null
+            : priorityFrom(options.priority, 'postTask');
+        const delay =
+          options?.delay === undefined
+            ? 0
+            : enforcedRange(options.delay, 'Scheduler', 'postTask');
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const priority = (): string =>
+          fixed ??
+          (signal instanceof TaskSignal ? signal._priority : 'user-visible');
+        const state = { priority, signal };
+        let cancel: () => void = () => {};
+        const enqueue = (): void => {
+          cancel = schedule({
+            priority,
+            continuation: false,
+            run() {
+              const was = schedulingState;
+              schedulingState = state;
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              } finally {
+                schedulingState = was;
+              }
+            },
+          });
+        };
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+        if (delay > 0) {
+          const timer = setTimer(enqueue, delay, [], false);
+          cancel = () => clearTimer(timer);
+        } else enqueue();
+      });
+    }
+    yield(): Any {
+      return new Promise((resolve, reject) => {
+        const state = schedulingState;
+        const signal = state?.signal;
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const cancel = schedule({
+          priority: state?.priority ?? (() => 'user-visible'),
+          continuation: true,
+          run: () => resolve(undefined),
+        });
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+      });
+    }
+  }
+  const madeScheduler = (): Any => {
+    makingScheduler = true;
+    try {
+      return new Scheduler();
+    } finally {
+      makingScheduler = false;
+    }
+  };
 
   /** `matchMedia`: a list answered by the host from `<Html>`'s own media
    *  queries, each time `matches` is read, and told of a change by the
@@ -23677,6 +26440,177 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
+  /** The features a permission can name, which are the host's to list
+   *  (`permissions.ts`), asked once. */
+  let permissionNames: Set<string> | null = null;
+  const isPermissionName = (name: string): boolean =>
+    (permissionNames ??= new Set(
+      JSON.parse(str(call('permissionNames'))) as string[],
+    )).has(name);
+  let makingPermissions = false;
+  /** Those a page listens to, and where each last stood, which is what a
+   *  move is told by. Only one with a listener can hear of a move, so it is
+   *  the only one that has to outlive the page's own reference to it. */
+  const permissionsHeard = new Map<Any, string>();
+  class PermissionStatus extends EventTarget {
+    _name = '';
+    constructor() {
+      super();
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    get name(): string {
+      return this._name;
+    }
+    get state(): string {
+      return permissionState(this._name);
+    }
+    override addEventListener(type: Any, ...rest: Any[]): void {
+      super.addEventListener(type, ...(rest as [Any]));
+      if (`${type}` === 'change') hearPermission(this);
+    }
+  }
+  const hearPermission = (status: Any): void => {
+    if (!permissionsHeard.has(status)) {
+      permissionsHeard.set(status, permissionState(status._name));
+    }
+  };
+  idlAttributes(PermissionStatus);
+  handlerProperty(PermissionStatus.prototype, 'change');
+  {
+    // a handler is a listener as well, which `addEventListener` is not told of
+    const handler = Object.getOwnPropertyDescriptor(
+      PermissionStatus.prototype,
+      'onchange',
+    ) as Any;
+    const set = function (this: Any, fn: Any): void {
+      handler.set.call(this, fn);
+      if (typeof fn === 'function') hearPermission(this);
+    };
+    Object.defineProperty(set, 'name', { value: 'set onchange' });
+    Object.defineProperty(PermissionStatus.prototype, 'onchange', {
+      ...handler,
+      set,
+    });
+  }
+  class Permissions {
+    constructor() {
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    query(descriptor: Any): Any {
+      return new Promise((resolve) => {
+        if (typeof descriptor !== 'object' || descriptor === null) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'PermissionDescriptor'.",
+          );
+        }
+        const named = descriptor.name;
+        if (named === undefined) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': Required member is undefined.",
+          );
+        }
+        const name = str(named);
+        if (!isPermissionName(name)) {
+          throw new TypeError(
+            `Failed to execute 'query' on 'Permissions': The provided value '${name}' is not a valid enum value of type PermissionName.`,
+          );
+        }
+        // a descriptor of `midi`'s is its own type, read over again
+        // (Permissions 7.1, Web MIDI 11)
+        if (name === 'midi') void descriptor.name;
+        if (call('fullyActive') === false) {
+          throw new DOMException(
+            'The document is not fully active.',
+            'InvalidStateError',
+          );
+        }
+        makingPermissions = true;
+        try {
+          const status = new PermissionStatus();
+          status._name = name;
+          resolve(status);
+        } finally {
+          makingPermissions = false;
+        }
+      });
+    }
+  }
+  /** What a permission is for this document, as the host has it. */
+  const permissionState = (name: string): string =>
+    str(call('permission', name) ?? 'denied');
+  Object.defineProperty(Permissions.prototype, 'query', { enumerable: true });
+  const madePermissions = (): Any => {
+    makingPermissions = true;
+    try {
+      return new Permissions();
+    } finally {
+      makingPermissions = false;
+    }
+  };
+  // --- the Async Clipboard API ---------------------------------------------------
+  //
+  // `clipboard.ts`, what it reads and writes the host's (`scripts.clipboard`,
+  // the `clipboard` op and the `__clipboard` entry).
+  const clipboardEntries: [string, () => Primitive][] = [];
+  const CLIP = clipboards({
+    call: call as Any,
+    // its entries are registered with the rest, below
+    entry: (name: string, fn: () => Any) => {
+      clipboardEntries.push([name, fn]);
+    },
+    input: () => input(),
+    DOMException,
+    EventTarget,
+    Blob,
+    bytesOfBase64,
+    base64OfBytes,
+    textOf: (bytes: Uint8Array) => new TextDecoder().decode(bytes),
+    hasTransientActivation: () => hasTransientActivation(),
+    allowed: (feature: string) => call('featureAllowed', feature) === true,
+    fullyActive: () => call('fullyActive') !== false,
+    sanitize: (html: string) => sanitizedHtml(html),
+  });
+  /** Whether the host handed this document a clipboard. */
+  const hasClipboard = (): boolean => call('clipboard', 'on') === true;
+
+  // --- notifications ----------------------------------------------------------
+  //
+  // `notifications.ts`, what shows them the host's (`scripts.notifications`,
+  // the `notification` op and the `__notification` entry).
+  const notificationEntries: [string, () => Primitive][] = [];
+  const NOTE = notificationsApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      notificationEntries.push([name, fn]);
+    },
+    input: () => input(),
+    EventTarget,
+    Event,
+    idlAttributes,
+    handlerProperty,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+    report: (error: Any) => report(error),
+    resolve: (url: string) => {
+      try {
+        const base = workerLocation
+          ? str(workerLocation.href)
+          : str(document.baseURI);
+        return new URL(url, base).href;
+      } catch {
+        return null;
+      }
+    },
+    clone: (value: Any) => (G as Any).structuredClone(value),
+    hasTransientActivation: () => hasTransientActivation(),
+    inServiceWorker: () => SW.inWorker(),
+    permission: () => permissionState('notifications'),
+    noWorker: (registration: Any) => SW.noWorker(registration),
+    workerEvent: (type: string, notification: Any, action: string) =>
+      SW.workerEvent(type, notification, action),
+  });
+
   const navigator = {
     userAgent,
     appName: 'Netscape',
@@ -23703,18 +26637,469 @@ export function installDom(
     sendBeacon: () => false,
     javaEnabled: () => false,
     userActivation: new UserActivation(ACTIVATION_KEY),
+    permissions: madePermissions(),
   };
-  // a page's service workers, where the host lets it have them and it is a
-  // secure context; left out otherwise, as `clipboard` is
-  const serviceWorkersOn =
-    location.protocol === 'https:' && call('serviceWorkers') === true;
-  if (serviceWorkersOn) {
-    Object.defineProperty(navigator, 'serviceWorker', {
-      get: () => serviceWorkerContainer,
+  // a secure context's alone, and only where the host has one to give
+  if (call('secureContext') === true && hasClipboard()) {
+    Object.defineProperty(navigator, 'clipboard', {
+      get: () => CLIP.clipboard,
       enumerable: true,
       configurable: true,
     });
   }
+  // a page's service workers, where the host lets it have them and it is a
+  // secure context; left out otherwise, as `clipboard` is. A window's
+  // `about:blank` is of what opened it, and under the same worker
+  const serviceWorkersOn =
+    (/^https?:$/.test(location.protocol) ||
+      (location.protocol === 'about:' && /^https?:/.test(documentOrigin()))) &&
+    call('secureContext') === true &&
+    call('serviceWorkers') === true;
+  if (serviceWorkersOn) {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      get: () => SW.container,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  // --- Server-Sent Events (HTML 9.2) -----------------------------------------
+
+  const SSE_RETRY_MS = 3000;
+  class EventSource extends EventTarget {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSED = 2;
+    _url: string;
+    _withCredentials: boolean;
+    _state = 0;
+    _lastId = '';
+    _retry = SSE_RETRY_MS;
+    _controller: Any = null;
+    _timer = 0;
+    constructor(url: Any, init: Any = {}) {
+      super();
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'EventSource': 1 argument required, but only 0 present.",
+        );
+      }
+      let parsed: Any;
+      try {
+        parsed = new URL(str(url), str(document.baseURI));
+      } catch {
+        throw new DOMException(
+          `Failed to construct 'EventSource': Cannot open an EventSource to '${str(url)}'. The URL is invalid.`,
+          'SyntaxError',
+        );
+      }
+      this._url = parsed.href;
+      this._withCredentials = !!init?.withCredentials;
+      this._connect();
+    }
+    get url(): string {
+      return this._url;
+    }
+    get withCredentials(): boolean {
+      return this._withCredentials;
+    }
+    get readyState(): number {
+      return this._state;
+    }
+    close(): void {
+      this._state = 2;
+      this._controller?.abort();
+      this._controller = null;
+      if (this._timer) clearTimer(this._timer);
+      this._timer = 0;
+    }
+    /** A request, with the `Last-Event-ID` of the stream so far. */
+    _connect(): void {
+      const controller = new AbortController();
+      this._controller = controller;
+      const headers: Record<string, string> = {
+        accept: 'text/event-stream',
+        'cache-control': 'no-cache',
+      };
+      // the id's UTF-8, each byte a code unit, as a header holds it
+      if (this._lastId) {
+        headers['last-event-id'] = String.fromCharCode(
+          ...new TextEncoder().encode(this._lastId),
+        );
+      }
+      fetch(this._url, {
+        headers,
+        mode: 'cors',
+        credentials: this._withCredentials ? 'include' : 'same-origin',
+        signal: controller.signal,
+        cache: 'no-store',
+        [UA_HEADERS]: ['cache-control', 'last-event-id'],
+      }).then(
+        (response: Any) => this._opened(response, controller),
+        () => {
+          if (this._controller !== controller) return;
+          // a request nothing here can make is never made again
+          if (/^https?:/i.test(this._url)) this._reconnect();
+          else this._fail();
+        },
+      );
+    }
+    /** The connection is over, and says so (HTML 9.2.4, "fail the
+     *  connection"). */
+    _fail(): void {
+      this._state = 2;
+      this._controller = null;
+      dispatch(this, trusted(new Event('error')));
+    }
+    /** What a response says of the stream (HTML 9.2.3): one that is no
+     *  event stream ends it, and one that ends is connected to again. */
+    _opened(response: Any, controller: Any): void {
+      if (this._controller !== controller) return;
+      const type = str(response.headers.get('content-type') ?? '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      if (response.status !== 200 || type !== 'text/event-stream') {
+        this._fail();
+        return;
+      }
+      this._state = 1;
+      dispatch(this, trusted(new Event('open')));
+      if (this._state === 2) return;
+      const origin = new URL(response.url || this._url).origin;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      const parse = sseParser(this, origin);
+      const read = (): void => {
+        reader.read().then(
+          ({ done, value }: Any) => {
+            if (this._controller !== controller) return;
+            if (done) {
+              this._reconnect();
+              return;
+            }
+            parse(decoder.decode(value, { stream: true }));
+            read();
+          },
+          () => {
+            if (this._controller === controller) this._reconnect();
+          },
+        );
+      };
+      read();
+    }
+    _reconnect(): void {
+      this._controller = null;
+      if (this._state === 2) return;
+      this._state = 0;
+      dispatch(this, trusted(new Event('error')));
+      if (this._state === 2) return;
+      this._timer = setTimer(
+        () => {
+          this._timer = 0;
+          if (this._state === 0) this._connect();
+        },
+        this._retry,
+        [],
+        false,
+      );
+    }
+  }
+  /** The event stream's interpretation (HTML 9.2.5): text as it arrives,
+   *  each line a field, and a blank one the event they make. */
+  const sseParser = (source: Any, origin: string): ((text: string) => void) => {
+    let rest = '';
+    let data = '';
+    let type = '';
+    let lastId = source._lastId;
+    let skippedCR = false;
+    const line = (text: string): void => {
+      if (text === '') {
+        source._lastId = lastId;
+        if (data !== '') {
+          const event = new MessageEvent(type || 'message', {
+            data: data.slice(0, -1),
+            origin,
+            lastEventId: source._lastId,
+          });
+          data = '';
+          type = '';
+          if (source._state !== 2) dispatch(source, trusted(event));
+        } else type = '';
+        return;
+      }
+      if (text[0] === ':') return;
+      const colon = text.indexOf(':');
+      const field = colon < 0 ? text : text.slice(0, colon);
+      let value = colon < 0 ? '' : text.slice(colon + 1);
+      if (value[0] === ' ') value = value.slice(1);
+      if (field === 'event') type = value;
+      else if (field === 'data') data += `${value}\n`;
+      else if (field === 'id') {
+        if (!value.includes('\0')) lastId = value;
+      } else if (field === 'retry' && /^[0-9]+$/.test(value)) {
+        source._retry = Number(value);
+      }
+    };
+    return (text: string) => {
+      let from = 0;
+      let buffer = rest + text;
+      // a CR at the end of a chunk has its LF, if any, at the start of the
+      // next
+      if (skippedCR && buffer[0] === '\n') buffer = buffer.slice(1);
+      skippedCR = false;
+      for (let i = 0; i < buffer.length; i += 1) {
+        const c = buffer[i];
+        if (c !== '\n' && c !== '\r') continue;
+        line(buffer.slice(from, i));
+        if (c === '\r') {
+          if (i + 1 === buffer.length) skippedCR = true;
+          else if (buffer[i + 1] === '\n') i += 1;
+        }
+        from = i + 1;
+      }
+      rest = buffer.slice(from);
+    };
+  };
+  idlAttributes(EventSource);
+  for (const type of ['open', 'message', 'error']) {
+    handlerProperty(EventSource.prototype, type);
+  }
+  for (const [name, value] of [
+    ['CONNECTING', 0],
+    ['OPEN', 1],
+    ['CLOSED', 2],
+  ] as const) {
+    Object.defineProperty(EventSource.prototype, name, {
+      value,
+      enumerable: true,
+    });
+  }
+
+  // --- BroadcastChannel (HTML 9.5) -------------------------------------------
+
+  let channelSeq = 0;
+  const channelsOpen = new Map<number, Any>();
+  class BroadcastChannel extends EventTarget {
+    _name: string;
+    _id: number;
+    _closed = false;
+    constructor(name: Any) {
+      super();
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.",
+        );
+      }
+      this._name = str(name);
+      this._id = channelSeq += 1;
+      channelsOpen.set(this._id, this);
+      call('bcOpen', this._id, this._name);
+    }
+    get name(): string {
+      return this._name;
+    }
+    postMessage(message: Any): void {
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to execute 'postMessage' on 'BroadcastChannel': 1 argument required, but only 0 present.",
+        );
+      }
+      if (this._closed) {
+        throw new DOMException(
+          "Failed to execute 'postMessage' on 'BroadcastChannel': Channel is closed",
+          'InvalidStateError',
+        );
+      }
+      call('bcPost', this._id, serializeClone(message));
+    }
+    close(): void {
+      if (this._closed) return;
+      this._closed = true;
+      channelsOpen.delete(this._id);
+      call('bcClose', this._id);
+    }
+    _receive(text: string): void {
+      let data: Any;
+      try {
+        data = deserializeClone(text);
+      } catch {
+        dispatch(this, trusted(new MessageEvent('messageerror', {})));
+        return;
+      }
+      const origin = str(location.origin);
+      dispatch(this, trusted(new MessageEvent('message', { data, origin })));
+    }
+  }
+  idlAttributes(BroadcastChannel);
+  handlerProperty(BroadcastChannel.prototype, 'message');
+  handlerProperty(BroadcastChannel.prototype, 'messageerror');
+
+  // --- Web Locks ---------------------------------------------------------------
+
+  let lockSeq = 0;
+  /** What waits on the host, by request. */
+  const lockRequests = new Map<number, { granted(): void; stolen(): void }>();
+  let makingLock = false;
+  class Lock {
+    _name = '';
+    _mode = '';
+    constructor() {
+      if (!makingLock) throw new TypeError('Illegal constructor');
+    }
+    get name(): string {
+      return this._name;
+    }
+    get mode(): string {
+      return this._mode;
+    }
+  }
+  idlAttributes(Lock);
+  const lockOf = (name: string, mode: string): Any => {
+    makingLock = true;
+    try {
+      const lock = new Lock();
+      lock._name = name;
+      lock._mode = mode;
+      return lock;
+    } finally {
+      makingLock = false;
+    }
+  };
+  class LockManager {
+    constructor() {
+      if (!makingLock) throw new TypeError('Illegal constructor');
+    }
+    request(name: Any, second: Any, third?: Any): Any {
+      return new Promise((resolve, reject) => {
+        const callback = third === undefined ? second : third;
+        const options = third === undefined ? {} : (second ?? {});
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'request' on 'LockManager': parameter 2 is not of type 'LockGrantedCallback'.",
+          );
+        }
+        const lockName = str(name);
+        const mode =
+          options.mode === undefined ? 'exclusive' : str(options.mode);
+        if (mode !== 'exclusive' && mode !== 'shared') {
+          throw new TypeError(
+            `Failed to execute 'request' on 'LockManager': The provided value '${mode}' is not a valid enum value of type LockMode.`,
+          );
+        }
+        const steal = !!options.steal;
+        const ifAvailable = !!options.ifAvailable;
+        const signal = options.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new TypeError(
+            "Failed to execute 'request' on 'LockManager': member signal is not of type AbortSignal.",
+          );
+        }
+        const refused = (why: string): Any =>
+          new DOMException(
+            `Failed to execute 'request' on 'LockManager': ${why}`,
+            'NotSupportedError',
+          );
+        if (lockName.startsWith('-')) {
+          throw refused("Names cannot start with '-'.");
+        }
+        if (steal && ifAvailable) {
+          throw refused(
+            "The 'steal' and 'ifAvailable' options cannot be used together.",
+          );
+        }
+        if (steal && mode !== 'exclusive') {
+          throw refused(
+            "The 'steal' option may only be used with 'exclusive' locks.",
+          );
+        }
+        if (signal && (steal || ifAvailable)) {
+          throw refused(
+            "The 'signal' and 'steal' or 'ifAvailable' options cannot be used together.",
+          );
+        }
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        const id = (lockSeq += 1);
+        let held = false;
+        let stolen = false;
+        const release = (): void => {
+          lockRequests.delete(id);
+          call('lockRelease', id);
+        };
+        lockRequests.set(id, {
+          granted() {
+            held = true;
+            let result: Any;
+            try {
+              result = Promise.resolve(callback(lockOf(lockName, mode)));
+            } catch (error) {
+              result = Promise.reject(error);
+            }
+            result.then(
+              (value: Any) => {
+                if (stolen) return;
+                release();
+                resolve(value);
+              },
+              (error: Any) => {
+                if (stolen) return;
+                release();
+                reject(error);
+              },
+            );
+          },
+          stolen() {
+            stolen = true;
+            lockRequests.delete(id);
+            reject(
+              new DOMException('The lock request was aborted.', 'AbortError'),
+            );
+          },
+        });
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            if (held) return;
+            release();
+            reject(signal.reason);
+          });
+        }
+        const flags = `${ifAvailable ? 'i' : ''}${steal ? 's' : ''}`;
+        const asked = call(
+          'lockRequest',
+          id,
+          lockName,
+          mode === 'exclusive',
+          flags,
+        );
+        if (asked === false) {
+          lockRequests.delete(id);
+          new Promise((run) => run(callback(null))).then(resolve, reject);
+        }
+      });
+    }
+    query(): Any {
+      return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+    }
+  }
+  // `classes` says this of the rest: these two are defined where a context
+  // is secure (`secureGlobals`)
+  for (const Kind of [Lock, LockManager]) {
+    Object.defineProperty(Kind.prototype, Symbol.toStringTag, {
+      value: Kind.name,
+      configurable: true,
+    });
+  }
+  const madeLocks = (): Any => {
+    makingLock = true;
+    try {
+      return new LockManager();
+    } finally {
+      makingLock = false;
+    }
+  };
 
   // --- session history and the Navigation API (HTML 7.4 and 7.2.6) ------------
   //
@@ -23837,8 +27222,8 @@ export function installDom(
   }
   const sessionEntry = (url: string, key?: string): SessionEntry => ({
     url,
-    key: key ?? crypto.randomUUID(),
-    id: crypto.randomUUID(),
+    key: key ?? CRYPTO.uuid(),
+    id: CRYPTO.uuid(),
     state: null,
     navState: undefined,
     api: null,
@@ -24646,6 +28031,9 @@ export function installDom(
    * of its own navigates in that realm. Null for a keyword, or a name no
    * frame here has.
    */
+  /** The frames a window's `length` and its indices count, in tree order. */
+  const windowFrames = (): Any[] =>
+    Array.from(document.querySelectorAll('iframe, frame'));
   const namedFrame = (name: string): { frame: Any; session: Any } | null => {
     if (!name || name.startsWith('_')) return null;
     for (const frame of Array.from(
@@ -24668,16 +28056,28 @@ export function installDom(
    *  hyperlink"): `navigate` first, and the host follows it only where it
    *  goes to another document. False where the page kept it. */
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
-    if (!anchor.hasAttribute('href') || anchor.hasAttribute('download')) {
-      return true;
-    }
+    if (!anchor.hasAttribute('href')) return true;
+    if (anchor.hasAttribute('download')) return !downloadLink(anchor);
+    // an `<a>` in a drawing has its `href` as an animated string
+    const address = (): string =>
+      anchor instanceof SVGAElement
+        ? new URL(anchor.href.baseVal, str(document.baseURI)).href
+        : anchor.href;
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
-      // own navigation; any other window is the host's to choose
+      // own navigation; a window of its group goes where it is sent, and
+      // any other is the host's to choose
       const framed = namedFrame(target);
-      if (!framed) return true;
-      const href = anchor.href;
+      if (!framed) {
+        return !WINDOWS!.follow(
+          address(),
+          target,
+          anchor.getAttribute('rel') ?? '',
+          userInitiated,
+        );
+      }
+      const href = address();
       navigateTo(
         framed.session,
         href,
@@ -24691,13 +28091,42 @@ export function installDom(
       return false;
     }
     const s = pageSession.session;
-    const href = anchor.href;
+    const href = address();
     const went = navigateTo(s, href, pushOrReplace(s, href, false), {
       userInitiated,
       sourceElement: anchor,
       hostFollows: true,
     });
     return went === 'other';
+  };
+
+  /** A link that says to save what it names (HTML 4.6.5, "download the
+   *  hyperlink"), where the host saves things: a `blob:`'s bytes are this
+   *  realm's to hand over. Another origin's `download` says nothing, as a
+   *  browser takes it, or a link could name any file it likes. */
+  const downloadLink = (anchor: Any): boolean => {
+    const href = str(anchor.href);
+    let foreign = false;
+    try {
+      const url = new URL(href);
+      foreign =
+        url.protocol !== 'blob:' &&
+        url.protocol !== 'data:' &&
+        url.origin !== location.origin;
+    } catch {
+      return false;
+    }
+    if (foreign) return false;
+    const blob = blobUrls.get(href.replace(/#.*$/, ''));
+    return (
+      call(
+        'download',
+        href,
+        str(anchor.getAttribute('download') ?? ''),
+        blob instanceof Blob ? base64OfBytes(blob._bytes) : '',
+        blob instanceof Blob ? blob.type : '',
+      ) === true
+    );
   };
 
   /** A form's submission (HTML 4.10.21.3, "submit"), once its `submit`
@@ -24746,7 +28175,12 @@ export function installDom(
       const hash = url.indexOf('#');
       const fragment = hash < 0 ? '' : url.slice(hash);
       const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
-      url = `${base}?${new URLSearchParams(formData as Any)}${fragment}`;
+      // what is a file in the entry list is its name in a query
+      const query = new URLSearchParams();
+      for (const [name, value] of (formData as Any)._entries) {
+        query.append(name, value instanceof File ? value.name : value);
+      }
+      url = `${base}?${query}${fragment}`;
     }
     // replaced where it is made while the document loads, unless a user
     // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
@@ -27364,6 +30798,9 @@ export function installDom(
     return !before || breaksLine(before, keeps) ? after : null;
   };
 
+  /** Where text goes from one line to the next. */
+  const LINE_BREAK = /\r\n?|\n/;
+
   /** Put a line break in at a boundary point: a `<br>`, or a line feed
    *  where the host keeps them. The point after it. */
   const putBreak = (
@@ -27421,7 +30858,12 @@ export function installDom(
    * cancelled, and told as an `input`. Whether anything was told: false
    * where the selection is in no editing host.
    */
-  const edit = (host: Any, inputType: string, data: string | null): void => {
+  const edit = (
+    host: Any,
+    inputType: string,
+    data: string | null,
+    pasted: { text: string; transfer: Any } | null = null,
+  ): void => {
     const range = editRange(host);
     if (!range) return;
     const init = {
@@ -27431,6 +30873,7 @@ export function installDom(
       view: G,
       inputType,
       data,
+      dataTransfer: pasted?.transfer ?? null,
     };
     if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
     const back = inputType === 'deleteContentBackward';
@@ -27463,7 +30906,29 @@ export function installDom(
       if (!range.collapsed) range.deleteContents();
       const node = range.startContainer;
       const offset = range.startOffset;
-      if (inputType === 'insertText' && data !== null) {
+      if (pasted) {
+        const held = placeholderAfter(host, keeps, node, offset);
+        if (held) dropUnit(held);
+        const lines = keeps ? [pasted.text] : pasted.text.split(LINE_BREAK);
+        let n = node;
+        let o = offset;
+        lines.forEach((line, i) => {
+          if (i) [n, o] = putBreak(keeps, n, o);
+          if (!line) return;
+          const [text, at] = textAt(n, o);
+          text.insertData(at, line);
+          n = text;
+          o = at + line.length;
+        });
+        if (
+          lines.length > 1 &&
+          !lines[lines.length - 1] &&
+          !unitBeside(host, keeps, n, o, false, true)
+        ) {
+          putBreak(keeps, n, o);
+        }
+        selection.collapse(n, o);
+      } else if (inputType === 'insertText' && data !== null) {
         // what is typed on a line a placeholder holds takes its place
         const held = placeholderAfter(host, keeps, node, offset);
         if (held) dropUnit(held);
@@ -27483,6 +30948,418 @@ export function installDom(
       host,
       trusted(new InputEvent('input', { ...init, cancelable: false })),
     );
+  };
+
+  /** What a command edits: the focused text field, or the editing host the
+   *  selection is in. */
+  const commandTarget = (): Any => {
+    const active = document.activeElement;
+    if (
+      (active?.localName === 'textarea' ||
+        (active?.localName === 'input' && selects(active))) &&
+      !active.readOnly &&
+      !active.disabled
+    ) {
+      return active;
+    }
+    const node = selection.anchorNode;
+    return node ? editingHostOf(node) : null;
+  };
+  /** A field's edit, as `edit` is a host's, by what it holds and where its
+   *  selection is. */
+  const editField = (
+    field: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data,
+    };
+    if (!dispatch(field, trusted(new InputEvent('beforeinput', init)))) return;
+    let from = field.selectionStart;
+    let to = field.selectionEnd;
+    if (from === to) {
+      if (inputType === 'deleteContentBackward') from = Math.max(0, from - 1);
+      else if (inputType === 'deleteContentForward') to += 1;
+    }
+    field.setRangeText(data ?? '', from, to, 'end');
+    dispatch(
+      field,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+  };
+  /** An edit a command makes, with a line of text a paragraph or a break as
+   *  a key would make it. */
+  const commandEdit = (
+    target: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    if (target instanceof HTMLElement && 'selectionStart' in target) {
+      editField(target, inputType, data);
+    } else edit(target, inputType, data);
+  };
+  /**
+   * What `execCommand` does (W3C execCommand, not a standard yet): the
+   * commands that are edits this page already makes for a key, and no
+   * other. `queryCommandSupported` says which, so a page that can do
+   * without `bold` is not told it has it: formatting commands, `undo` and
+   * `copy` answer false until something here can do them.
+   */
+  const COMMANDS: Record<string, (target: Any, value: string) => void> = {
+    delete: (target) => commandEdit(target, 'deleteContentBackward', null),
+    forwarddelete: (target) =>
+      commandEdit(target, 'deleteContentForward', null),
+    insertlinebreak: (target) => commandEdit(target, 'insertLineBreak', null),
+    insertparagraph: (target) => commandEdit(target, 'insertParagraph', null),
+    inserttext(target, value) {
+      const field = target instanceof HTMLElement && 'selectionStart' in target;
+      const lines = field ? [value] : value.split('\n');
+      lines.forEach((line, i) => {
+        if (i) commandEdit(target, 'insertParagraph', null);
+        if (line) commandEdit(target, 'insertText', line);
+      });
+    },
+  };
+  const selectAllCommand = (): void => {
+    const target = commandTarget();
+    if (target && 'selectionStart' in target) target.select();
+    else selection.selectAllChildren(target ?? document.body);
+  };
+  /** The name a page gave a command, as it is compared (ASCII caseless). */
+  const commandName = (id: Any): string => str(id).toLowerCase();
+  const commandSupported = (name: string): boolean =>
+    name === 'selectall' ||
+    (CLIPBOARD_COMMANDS.has(name) && hasClipboard()) ||
+    Object.prototype.hasOwnProperty.call(COMMANDS, name);
+  const commandEnabled = (name: string): boolean =>
+    name === 'selectall' ||
+    (CLIPBOARD_COMMANDS.has(name)
+      ? hasClipboard() && hasTransientActivation()
+      : commandSupported(name) && commandTarget() !== null);
+
+  // --- copy, cut and paste ---------------------------------------------------------
+  //
+  // Clipboard API and events, 5: the chord, or `execCommand`, is told as an
+  // event a page may cancel, with a data store the page writes to or reads
+  // from. Its text goes to the clipboard or comes off it through the host's
+  // `scripts.clipboard`; with none, a `copy` a page cancelled reaches nothing
+  // and a `paste` is told empty, and what the chord does in a field is core's
+  // as it always was.
+
+  /** `document.execCommand`'s, a user's gesture behind each. A page cannot
+   *  ask for a paste (Clipboard API and events, 11, "paste"). */
+  const CLIPBOARD_COMMANDS = new Set(['copy', 'cut']);
+
+  /** A field whose text a user can edit. */
+  const editableField = (el: Any): Any =>
+    (el?.localName === 'textarea' ||
+      (el?.localName === 'input' && selects(el))) &&
+    !el.readOnly &&
+    !el.disabled
+      ? el
+      : null;
+
+  /** What a clipboard event is fired at (5.3.2): what has the focus where it
+   *  is an element of the document's own, else what the selection starts
+   *  in, else the body. */
+  const clipboardTargetOf = (told: Any): Any => {
+    if (told && told !== document.body) return told;
+    const range = selection._range;
+    if (range && !range.collapsed) {
+      const node = range.startContainer;
+      return node.nodeType === 1 ? node : node.parentNode;
+    }
+    return document.body ?? document.documentElement;
+  };
+
+  /** What was offered as the entries of a store: text as it is, and what is
+   *  no text as a file, which is how a pasted picture reaches a page. */
+  const offeredEntries = (offered: Any): Any[] => {
+    const entries: Any[] = [];
+    for (const item of offered) {
+      if (item.b === undefined) {
+        entries[entries.length] = {
+          kind: 'text',
+          type: item.t,
+          data: item.s ?? '',
+        };
+        continue;
+      }
+      const type = str(item.t);
+      entries[entries.length] = {
+        kind: 'file',
+        type,
+        data: new File(
+          [bytesOfBase64(item.b)],
+          item.n ?? `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
+          { type, ...(item.m !== undefined && { lastModified: item.m }) },
+        ),
+      };
+    }
+    return entries;
+  };
+  /** A store's text as it crosses to the clipboard. */
+  const storeWire = (transfer: Any): Any[] => {
+    const out: Any[] = [];
+    for (const held of TRANSFER.entriesOf(transfer)) {
+      if (held.kind === 'text') {
+        out[out.length] = { t: held.type, s: held.data };
+      }
+    }
+    return out;
+  };
+
+  /** What is selected where an element has the focus, as text: as it is
+   *  drawn, white space collapsed and lines broken, since that is what a
+   *  user selected and what a copy of it is (5.3.1). */
+  const selectedTextIn = (at: Any): string => {
+    const field = at?.localName === 'textarea' || at?.localName === 'input';
+    if (field && selects(at)) {
+      return at.value.slice(at.selectionStart ?? 0, at.selectionEnd ?? 0);
+    }
+    // `_range` first: it tells the host of a selection this realm made
+    if (!selection._range) return '';
+    return str(call('selectedText') ?? '') || selection.toString();
+  };
+
+  /** A paste no listener cancelled: into the field that has the focus, or
+   *  at the selection of the host it is in. Text alone, and the structure of
+   *  `text/html` is a listener's to use (5.3.1). */
+  const pasteInto = (
+    at: Any,
+    entries: Any[],
+    inputType = 'insertFromPaste',
+  ): void => {
+    let text = '';
+    for (const held of entries) {
+      if (held.kind === 'text' && held.type === 'text/plain') text = held.data;
+    }
+    if (!text) return;
+    const field = editableField(at);
+    if (field) {
+      let value = text;
+      if (field.localName === 'input') {
+        value = value.replace(/\r\n?|\n/g, ' ');
+        const room =
+          field.maxLength < 0
+            ? Infinity
+            : field.maxLength -
+              field.value.length +
+              (field.selectionEnd - field.selectionStart);
+        value = value.slice(0, Math.max(0, room));
+      }
+      if (value) editField(field, inputType, value);
+      return;
+    }
+    const host = editingHostOf(at);
+    if (host) {
+      edit(host, inputType, null, {
+        text,
+        transfer: TRANSFER.made('read-only', entries),
+      });
+    }
+  };
+
+  /**
+   * A cut no listener cancelled, where the document does it: what is
+   * selected goes to the clipboard and out of the field or the host.
+   */
+  const cutFrom = (at: Any): boolean => {
+    const field = editableField(at);
+    if (field && field.selectionStart === field.selectionEnd) return false;
+    const host = field ? null : editingHostOf(at);
+    if (!field && (!host || editRange(host).collapsed)) return false;
+    CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
+    if (field) editField(field, 'deleteByCut', null);
+    else edit(host, 'deleteByCut', null);
+    return true;
+  };
+
+  /**
+   * `copy`, `cut` or `paste`, told at what has the focus, with a store
+   * that holds what is on the clipboard for a paste and takes what a page
+   * means to put there for the others. Whether the host's own default goes
+   * on: core's, on a chord, which puts a selection on the clipboard and
+   * edits a field. `offered` is what was on the clipboard, where the host
+   * has one: that paste is this realm's, since core's was stopped before the
+   * read. `own` is a command, which has no core behind it.
+   */
+  const clipboardEvent = (
+    type: string,
+    told: Any,
+    offered: Any,
+    own: boolean,
+  ): boolean => {
+    const at = clipboardTargetOf(told);
+    const entries = offered ? offeredEntries(offered) : [];
+    const data = TRANSFER.made(
+      type === 'paste' ? 'read-only' : 'read/write',
+      entries,
+    );
+    const go = dispatch(
+      at,
+      trusted(
+        new (TRANSFER.interfaces.ClipboardEvent as Any)(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clipboardData: data,
+        }),
+      ),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'paste') {
+      if (!offered) return go;
+      if (go) pasteInto(at, entries);
+      return false;
+    }
+    if (!go) {
+      const written = storeWire(data);
+      if (written.length) CLIP.write(written);
+      return false;
+    }
+    const editable = !!editableField(at) || !!editingHostOf(at);
+    if (type === 'cut' && editable && (own || !editableField(at))) {
+      if (hasClipboard()) cutFrom(at);
+      return false;
+    }
+    if (own) {
+      const text = selectedTextIn(at);
+      if (text) CLIP.write([{ t: 'text/plain', s: text }]);
+      return false;
+    }
+    return true;
+  };
+
+  /** What a drag holds that a page added at its `dragstart`, as it crosses
+   *  to where the drag lands, which may be another realm. */
+  const dragWire = (transfer: Any): Any[] => {
+    const out = storeWire(transfer);
+    for (const held of TRANSFER.entriesOf(transfer) as Any[]) {
+      if (held.kind !== 'file' || !held.data) continue;
+      out[out.length] = {
+        t: held.type,
+        b: base64OfBytes(held.data._bytes),
+        n: held.data.name,
+        m: held.data.lastModified,
+      };
+    }
+    return out;
+  };
+
+  /**
+   * A drag's event (HTML 6.11.5), with a `DataTransfer` of its own over what
+   * the drag holds, in the mode the event has it: what a page wrote at
+   * `dragstart`, and what it answers at `dragover`, go back through
+   * `dragOut`. Whether it was not cancelled.
+   */
+  const dragEvent = (type: string, target: Any, e: Any, mods: Any): boolean => {
+    const told = e.drag ?? {};
+    const entries = offeredEntries(told.entries ?? []);
+    for (const file of told.files ?? []) {
+      const made = hostFile(file);
+      entries[entries.length] = { kind: 'file', type: made.type, data: made };
+    }
+    // known to be there, and nothing to read until it is dropped
+    if (told.hasFiles) {
+      entries[entries.length] = { kind: 'file', type: '', data: null };
+    }
+    const data = TRANSFER.made(
+      type === 'dragstart'
+        ? 'read/write'
+        : type === 'drop'
+          ? 'read-only'
+          : 'protected',
+      entries,
+    );
+    TRANSFER.setEffects(
+      data,
+      str(told.effectAllowed ?? 'uninitialized'),
+      str(told.dropEffect ?? 'none'),
+    );
+    const v = viewport();
+    const clientX = (e.x ?? 0) - v.scrollX;
+    const clientY = (e.y ?? 0) - v.scrollY;
+    const go = dispatch(
+      target,
+      trusted(
+        new (TRANSFER.interfaces.DragEvent as Any)(type, {
+          bubbles: true,
+          cancelable: type !== 'dragleave' && type !== 'dragend',
+          composed: true,
+          view: G,
+          clientX,
+          clientY,
+          button: 0,
+          buttons: type === 'dragend' ? 0 : 1,
+          dataTransfer: data,
+          relatedTarget: e.relatedTarget ? wrap(e.relatedTarget) : null,
+          ...mods,
+        }),
+      ),
+    );
+    const { allowed, effect } = TRANSFER.effectsOf(data);
+    call(
+      'dragOut',
+      JSON.stringify({
+        effectAllowed: allowed,
+        dropEffect: effect,
+        ...(type === 'dragstart' && { entries: dragWire(data) }),
+      }),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'drop' && go) {
+      const at = document.caretPositionFromPoint(clientX, clientY);
+      const host = editingHostOf(target);
+      if (host && at && host.contains(at.offsetNode)) {
+        selection.collapse(at.offsetNode, at.offset);
+      }
+      pasteInto(target, entries, 'insertFromDrop');
+    }
+    return go;
+  };
+
+  /** A clipboard command: `execCommand('copy')` under a user's gesture. */
+  const clipboardCommand = (name: string): boolean => {
+    if (!commandEnabled(name)) return false;
+    clipboardEvent(name, document.activeElement, undefined, true);
+    return true;
+  };
+
+  /** Markup with what would run, or load, taken out: what a page reads of
+   *  `text/html` off the clipboard, which any application may have put
+   *  there (7.2.3.1). A second pass takes what the first turned into
+   *  something, since a serialized tree may parse into another. */
+  const sanitizedHtml = (html: string): string => {
+    let out = html;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const parsed = new DOMParser().parseFromString(out, 'text/html');
+      for (const el of parsed.querySelectorAll(
+        'script,iframe,object,embed,link,meta,base,noscript,xmp,noembed,noframes,plaintext,template,math,svg',
+      )) {
+        el.remove();
+      }
+      for (const el of parsed.querySelectorAll('*')) {
+        for (const name of el.getAttributeNames()) {
+          if (
+            /^on/i.test(name) ||
+            /^\s*(?:javascript|data|vbscript):/i.test(el.getAttribute(name))
+          ) {
+            el.removeAttribute(name);
+          }
+        }
+      }
+      const next = parsed.body?.innerHTML ?? '';
+      if (next === out) break;
+      out = next;
+    }
+    return out;
   };
 
   /** What a key not cancelled does in an editing host: the edit it is, if
@@ -27613,6 +31490,7 @@ export function installDom(
 
   const classes: Record<string, Any> = {
     DOMException,
+    QuotaExceededError,
     Event,
     UIEvent,
     FocusEvent,
@@ -27694,6 +31572,37 @@ export function installDom(
     SVGGraphicsElement,
     SVGSVGElement,
     SVGRectElement,
+    SVGGeometryElement,
+    SVGEllipseElement,
+    SVGLineElement,
+    SVGPathElement,
+    SVGPolylineElement,
+    SVGPolygonElement,
+    SVGGElement,
+    SVGDefsElement,
+    SVGSwitchElement,
+    SVGImageElement,
+    SVGUseElement,
+    SVGForeignObjectElement,
+    SVGAElement,
+    SVGTextPositioningElement,
+    SVGTextPathElement,
+    SVGSymbolElement,
+    SVGClipPathElement,
+    SVGMaskElement,
+    SVGMarkerElement,
+    SVGPatternElement,
+    SVGFilterElement,
+    SVGStopElement,
+    SVGGradientElement,
+    SVGLinearGradientElement,
+    SVGRadialGradientElement,
+    SVGDescElement,
+    SVGTitleElement,
+    SVGMetadataElement,
+    SVGStyleElement,
+    SVGScriptElement,
+    SVGViewElement,
     SVGCircleElement,
     SVGTextContentElement,
     SVGTextElement,
@@ -27766,7 +31675,12 @@ export function installDom(
     DOMStringMap,
     ...GEOMETRY.classes,
     NodeList,
+    RadioNodeList,
     HTMLCollection,
+    HTMLOptionsCollection,
+    HTMLFormControlsCollection,
+    DOMRectList,
+    FileList,
     URL,
     URLSearchParams,
     Headers,
@@ -27775,6 +31689,7 @@ export function installDom(
     SharedWorker,
     ImageData,
     CanvasRenderingContext2D,
+    TextMetrics,
     OffscreenCanvas,
     OffscreenCanvasRenderingContext2D,
     ImageBitmap,
@@ -27784,6 +31699,15 @@ export function installDom(
     Response,
     AbortController,
     AbortSignal,
+    TaskController,
+    TaskSignal,
+    TaskPriorityChangeEvent,
+    Scheduler,
+    XMLHttpRequestEventTarget,
+    XMLHttpRequestUpload,
+    Permissions,
+    PermissionStatus,
+    Notification: NOTE.Notification,
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
@@ -27806,6 +31730,13 @@ export function installDom(
     TreeWalker,
     NodeIterator,
     DOMParser,
+    XMLSerializer,
+    XPathResult,
+    XPathExpression,
+    XPathEvaluator,
+    FontFace,
+    FontFaceSet,
+    FontFaceSetLoadEvent,
     PerformanceObserver,
     MessageEvent,
     MessageChannel,
@@ -27842,6 +31773,10 @@ export function installDom(
     WritableStreamDefaultWriter,
     WritableStreamDefaultController,
     TransformStream,
+    CompressionStream,
+    DecompressionStream,
+    EventSource,
+    BroadcastChannel,
     TransformStreamDefaultController,
     TextDecoderStream,
     TextEncoderStream,
@@ -27868,13 +31803,7 @@ export function installDom(
     CSSPositionTryDescriptors,
   };
   // and their interfaces with it, which a page tells a service worker by
-  if (serviceWorkersOn) {
-    Object.assign(classes, {
-      ServiceWorker,
-      ServiceWorkerRegistration,
-      ServiceWorkerContainer,
-    });
-  }
+  if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
   for (const [name, value] of Object.entries(classes)) {
     // an interface's prototype says its name to `Object.prototype.toString`
     // (Web IDL 3.7.3), so a `<div>` is `[object HTMLDivElement]`
@@ -27914,6 +31843,35 @@ export function installDom(
   define('history', history);
   define('navigation', navigation);
   define('navigator', navigator);
+  /** What only a secure context has, which a worker asks again of its own
+   *  address (`[SecureContext]`, Web IDL 3.3.17). */
+  const secureGlobals = (secure: boolean): void => {
+    delete (navigator as Any).locks;
+    delete G.Lock;
+    delete G.LockManager;
+    delete G.caches;
+    delete G.Cache;
+    delete G.CacheStorage;
+    if (!secure) return;
+    define('Cache', CACHES.Cache);
+    define('CacheStorage', CACHES.CacheStorage);
+    define('caches', CACHES.caches);
+    define('Lock', Lock);
+    define('LockManager', LockManager);
+    Object.defineProperty(navigator, 'locks', {
+      value: madeLocks(),
+      enumerable: true,
+      configurable: true,
+    });
+  };
+  secureGlobals(call('secureContext') === true);
+  // `[Replaceable]`: a page's own `scheduler` takes its place
+  Object.defineProperty(G, 'scheduler', {
+    value: madeScheduler(),
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   // Bun's context has a `console` of its own that no definition on the
   // global replaces — a page reads it whatever this defines — but whose
   // methods are its to set: they are set where there is one, as they are
@@ -28174,8 +32132,8 @@ export function installDom(
   getter('pageXOffset', () => viewport(true).scrollX);
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
-  getter('isSecureContext', () => location.protocol === 'https:');
-  getter('origin', () => location.origin);
+  getter('isSecureContext', () => call('secureContext') === true);
+  getter('origin', () => documentOrigin());
   // The window's own strings, made strings as they are set, as a
   // browser's are: a classic script's `var name = 1` sets the window's
   // name, and `typeof name` is a string after it, as it is there.
@@ -28185,6 +32143,7 @@ export function installDom(
     get: () => windowName,
     set: (v: Any) => {
       windowName = str(v);
+      WINDOWS?.named(windowName);
     },
     configurable: true,
     enumerable: false,
@@ -28197,14 +32156,39 @@ export function installDom(
     configurable: true,
     enumerable: false,
   });
-  getter('closed', () => false);
-  // no frames, which is what `length` counts
-  getter('length', () => 0);
+  getter('closed', () => WINDOWS?.closed() ?? false);
+  // the document's frames, which is what `length` counts
+  getter('length', () => windowFrames().length);
+  // where a window's features put it, there being no screen to read
   for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
-    getter(at, () => 0);
+    getter(at, () => WINDOWS?.screen(at.endsWith('X') || at.endsWith('Left')));
   }
   define('visualViewport', visualOf(ownViewport));
-  define('crypto', crypto);
+  // no check of its receiver: what a call on the global hands a getter is
+  // the runtime's to say, and on Bun it is nothing a check could tell
+  Object.defineProperty(G, 'crypto', {
+    get: Object.getOwnPropertyDescriptor(
+      {
+        get crypto(): Any {
+          return crypto;
+        },
+      },
+      'crypto',
+    )!.get,
+    configurable: true,
+    enumerable: true,
+  });
+  for (const name of Object.getOwnPropertyNames(CRYPTO.interfaces)) {
+    define(name, CRYPTO.interfaces[name]);
+  }
+  for (const name of Object.getOwnPropertyNames(TRANSFER.interfaces)) {
+    define(name, TRANSFER.interfaces[name]);
+  }
+  if (call('secureContext') === true && hasClipboard()) {
+    for (const name of Object.getOwnPropertyNames(CLIP.interfaces)) {
+      define(name, CLIP.interfaces[name]);
+    }
+  }
   // `new Image()`, `new Option()` and `new Audio()`: the elements, made
   // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
   const Image = function (width?: Any, height?: Any): Any {
@@ -28320,15 +32304,22 @@ export function installDom(
     );
     return null;
   });
-  // to where its name says, a new tab where it names none (HTML 7.2.2.1)
-  define('open', (url?: Any, target?: Any) => {
-    const name = target === undefined || target === '' ? '_blank' : str(target);
-    // a frame of this document's that the name names: navigated as its own
-    // session has it, and its window handed back (HTML 7.2.2.1)
+  // to where its name says, and a new window where it names none (HTML
+  // 7.2.2.1, `./windows.ts`)
+  define('open', (url?: Any, target?: Any, features?: Any) =>
+    WINDOWS!.open(url, target, features),
+  );
+  /** A frame of this document's that a name names: navigated as its own
+   *  session has it, and its window handed back (HTML 7.2.2.1). */
+  const openInFrame = (
+    name: string,
+    href: string | null,
+    noopener: boolean,
+  ): Any => {
     const framed = namedFrame(name);
     if (framed) {
-      if (url) {
-        const href = String(call('resolve', str(url)));
+      if (href) {
+        if (!noopener) frameOpeners.set(framed.frame, G);
         navigateTo(
           framed.session,
           href,
@@ -28342,23 +32333,25 @@ export function installDom(
       }
       return frameProxyOf(framed.frame);
     }
-    // this window: a navigation of its own, which the page hears first
-    if (/^_self$/i.test(name) && url) {
-      const s = pageSession.session;
-      const href = String(call('resolve', str(url)));
-      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
-        userInitiated: false,
-        sourceElement: null,
-        hostFollows: true,
-      });
-      if (went === 'other') call('open', href, name);
-      return G;
-    }
-    if (url) call('open', String(call('resolve', str(url))), name);
-    return null;
-  });
-  define('close', () => {});
-  define('focus', () => {});
+    // one that runs in a realm of its own, which that realm navigates
+    const id = Number(call('frameNamed', name));
+    if (!id) return null;
+    const frame = wrap(id);
+    if (href) call('frameNavigate', id, href);
+    return frameProxyOf(frame);
+  };
+  /** This window: a navigation of its own, which the page hears first. */
+  const openHere = (href: string, name: string): void => {
+    const s = pageSession.session;
+    const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+      userInitiated: false,
+      sourceElement: null,
+      hostFollows: true,
+    });
+    if (went === 'other') call('open', href, name);
+  };
+  define('close', () => WINDOWS!.close());
+  define('focus', () => WINDOWS!.focus());
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
@@ -28463,6 +32456,16 @@ export function installDom(
     'blur',
     'keydown',
     'click',
+    'copy',
+    'cut',
+    'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
@@ -28491,8 +32494,20 @@ export function installDom(
   // shadows it, as in a browser. A worker's global has none, and nor does
   // a window where the runtime refuses the proxy (`namedAccessWorks`).
   if (namedAccess) {
-    const lookup = (key: string | symbol): Any => {
+    const lookup = (key: string | symbol, receiver: Any = G): Any => {
       if (typeof key !== 'string' || !key || workerLocation) return undefined;
+      // an index is a frame's window, ahead of any name, and only on the
+      // window itself: on its prototype a number is a name (HTML 7.2.3.3)
+      const first = key.charCodeAt(0);
+      if (
+        first >= 48 &&
+        first <= 57 &&
+        receiver !== named &&
+        `${+key}` === key
+      ) {
+        const frame = windowFrames()[+key];
+        if (frame) return frame.contentWindow;
+      }
       const found = idList(call('named', key, document._id)).map(wrap);
       if (!found.length) return undefined;
       for (const el of found) {
@@ -28507,13 +32522,13 @@ export function installDom(
       }
       return found.length === 1 ? found[0] : collection(found);
     };
-    const named = new Proxy(Object.create(Object.getPrototypeOf(G)), {
+    const named: Any = new Proxy(Object.create(Object.getPrototypeOf(G)), {
       has: (target: Any, key: string | symbol) =>
         Reflect.has(target, key) || lookup(key) !== undefined,
       get: (target: Any, key: string | symbol, receiver: Any) =>
         Reflect.has(target, key)
           ? Reflect.get(target, key, receiver)
-          : lookup(key),
+          : lookup(key, receiver),
       getOwnPropertyDescriptor: (target: Any, key: string | symbol) => {
         const own = Reflect.getOwnPropertyDescriptor(target, key);
         if (own) return own;
@@ -28557,11 +32572,7 @@ export function installDom(
       bytesOfBase64,
       base64OfBytes,
     });
-    const protocol = str(location.protocol);
-    const loopback = /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(
-      str(location.hostname),
-    );
-    if (protocol !== 'http:' || loopback) {
+    if (call('secureContext') === true) {
       for (const name of Object.getOwnPropertyNames(interfaces)) {
         define(name, interfaces[name]);
       }
@@ -28751,6 +32762,8 @@ export function installDom(
     Object.defineProperty(G, name, {
       value: () => {
         taskEpoch += 1;
+        treeEpoch += 1;
+        attrEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();
@@ -28766,6 +32779,22 @@ export function installDom(
     });
   };
   for (const [name, fn] of transportEntries) entry(name, fn);
+  for (const [name, fn] of cryptoEntries) entry(name, fn);
+  for (const [name, fn] of clipboardEntries) entry(name, fn);
+  for (const [name, fn] of notificationEntries) entry(name, fn);
+  for (const [name, fn] of serviceEntries) entry(name, fn);
+  // a permission moved: each that listens is told, if it did for this page
+  entry('__permission', () => {
+    const name = str(input());
+    for (const [status, was] of [...permissionsHeard]) {
+      if (status._name !== name) continue;
+      const now = permissionState(name);
+      if (now === was) continue;
+      permissionsHeard.set(status, now);
+      status.dispatchEvent(new Event('change'));
+    }
+    return null;
+  });
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's
@@ -28789,6 +32818,8 @@ export function installDom(
     document._current = outerScripts.length ? outerScripts.pop() : null;
     return true;
   });
+  // a module is about to run, which a task is: it enters through nothing else
+  entry('__task', () => true);
   // the parser put nodes in the document since a script ran — the host
   // has noted them for the page's observers (`parserInserted`), and the
   // entry has run what its custom elements owe. A `<body>` among them set
@@ -29264,6 +33295,38 @@ export function installDom(
         if (go && e.type === 'keydown' && editForKey(target, e)) return false;
         return go;
       }
+      case 'copy':
+      case 'cut':
+      case 'paste':
+        return clipboardEvent(e.type, target, e.clipboard, false);
+      case 'dragstart':
+      case 'drag':
+      case 'dragenter':
+      case 'dragover':
+      case 'dragleave':
+      case 'drop':
+      case 'dragend': {
+        const go = dragEvent(e.type, target, e, mods);
+        // the pointer is the drag's from here, and no release of it will be
+        // told (Pointer Events 3, 5.1.2)
+        if (e.type === 'dragstart' && go) {
+          const at = pointer.target ?? target;
+          for (const type of ['pointercancel', 'pointerout', 'pointerleave']) {
+            dispatch(
+              at,
+              trusted(
+                new PointerEvent(type, {
+                  bubbles: type !== 'pointerleave',
+                  composed: type !== 'pointerleave',
+                }),
+              ),
+            );
+          }
+          pointer.held = 0;
+          pointer.pending = null;
+        }
+        return go;
+      }
       case 'input':
         return dispatch(
           target,
@@ -29332,6 +33395,11 @@ export function installDom(
         );
       case 'toggle':
         return dispatch(target, trusted(new Event('toggle')));
+      case 'cancel':
+        return dispatch(
+          target,
+          trusted(new Event('cancel', { bubbles: true })),
+        );
       // a `<link>`'s sheet applied, or not to be had, or what an `<img>`
       // came to: neither bubbles
       case 'load':
@@ -29368,32 +33436,6 @@ export function installDom(
     if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
       return sharedMessage(str(text), across);
     }
-    // a service worker's, its lifecycle or to the page's container
-    if (swWorkers.has(id)) return swHeard(id, str(text));
-    // and in a service worker, from its client (Service Workers 1, 4.2.7)
-    if (id === 0 && serviceRealm) {
-      let made: Any;
-      try {
-        made = deserializeWith(str(text), across);
-      } catch {
-        const ev = new ExtendableMessageEvent('messageerror', {
-          source: clientOf(),
-        });
-        ev.isTrusted = true;
-        dispatch(windowTarget, ev);
-        return true;
-      }
-      const ev = new ExtendableMessageEvent('message', {
-        data: made.data,
-        origin: new URL(serviceRealm.client).origin,
-        source: clientOf(),
-        ports: made.ports,
-      });
-      ev.isTrusted = true;
-      dispatch(windowTarget, ev);
-      ev._open = false;
-      return true;
-    }
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
     let made: Any;
@@ -29415,53 +33457,18 @@ export function installDom(
     return true;
   });
 
-  // a service worker's script has run, or failed to (Service Workers 1,
-  // "Install"): the page told it is installing, `install`, and once what
-  // it waited on settles, installed, activating, `activate` and activated
-  entry('__serviceInstall', () => {
+  // a service worker's script has run, or failed to: its registry is told,
+  // with whether it listens for `fetch`
+  entry('__serviceStarted', () => {
     const [ran] = input();
-    if (!serviceRealm) return false;
-    const tell = (sw: string): void => {
-      call('workerPostOut', JSON.stringify({ sw }));
-    };
-    if (!ran) {
-      tell('failed');
-      return true;
-    }
-    tell('installing');
-    const lifetime = (type: string): Promise<boolean> => {
-      const ev = new ExtendableEvent(type);
-      ev.isTrusted = true;
-      dispatch(windowTarget, ev);
-      return Promise.all(ev._waits).then(
-        () => {
-          ev._open = false;
-          return true;
-        },
-        () => {
-          ev._open = false;
-          return false;
-        },
-      );
-    };
-    void lifetime('install').then((installed) => {
-      if (!installed) {
-        tell('redundant');
-        return undefined;
-      }
-      tell('installed');
-      tell('activating');
-      return lifetime('activate').then(() => tell('activated'));
-    });
+    SW.started(!!ran);
     return true;
   });
 
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
     const [id, message, filename, lineno, colno] = input();
-    const targets = sharedWorkersOf.get(id) ?? [
-      workers.get(id) ?? swWorkers.get(id),
-    ];
+    const targets = sharedWorkersOf.get(id) ?? [workers.get(id)];
     let told = false;
     for (const target of targets) {
       if (!target) continue;
@@ -29523,6 +33530,7 @@ export function installDom(
       hash: here.hash,
       toString: () => here.href,
     };
+    secureGlobals(call('secureContext') === true);
     const scope = (label: string): Any => {
       const fn: Any = function () {
         throw new TypeError('Illegal constructor');
@@ -29535,6 +33543,8 @@ export function installDom(
     };
     define('WorkerGlobalScope', scope('WorkerGlobalScope'));
     define('name', str(name));
+    // a window's alone: it asks the user, who is not in a worker
+    delete (NOTE.Notification as Any).requestPermission;
     if (shared) {
       // a shared worker's global hears connections, and posts on their
       // ports alone (HTML 10.2.1.3)
@@ -29555,51 +33565,12 @@ export function installDom(
         configurable: true,
       });
     } else if (service) {
-      // a service worker's global is installed and activated, hears its
-      // client, and posts to it alone (Service Workers 1, 4.1)
-      serviceRealm = { scope: str(service.scope), client: str(service.client) };
+      // a service worker's global hears its registry, and posts to its
+      // clients alone (Service Workers 1, 4.1)
       try {
         delete (G as Any).postMessage;
       } catch {}
-      define('ServiceWorkerGlobalScope', scope('ServiceWorkerGlobalScope'));
-      define('ExtendableEvent', ExtendableEvent);
-      define('ExtendableMessageEvent', ExtendableMessageEvent);
-      define('Client', Client);
-      define('WindowClient', WindowClient);
-      define('Clients', Clients);
-      define('clients', new Clients());
-      define('skipWaiting', () => Promise.resolve());
-      const own = serviceRealm.scope;
-      define('registration', {
-        scope: own,
-        installing: null,
-        waiting: null,
-        active: null,
-        updateViaCache: 'imports',
-        update: () => Promise.resolve(),
-        unregister: () => Promise.resolve(true),
-        addEventListener() {},
-        removeEventListener() {},
-      });
-      for (const type of [
-        'install',
-        'activate',
-        'message',
-        'messageerror',
-        'fetch',
-      ]) {
-        Object.defineProperty(G, `on${type}`, {
-          get: () => windowTarget._handlers?.[type] ?? null,
-          set: (fn: Any) => {
-            setHandler(
-              windowTarget,
-              type,
-              typeof fn === 'function' ? fn : null,
-            );
-          },
-          configurable: true,
-        });
-      }
+      SW.become(service);
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
       // a dedicated worker's animation frames (HTML 8.10), which a worker
@@ -29727,6 +33698,13 @@ export function installDom(
     done(Array.isArray(loaded) ? loaded : []);
     return true;
   });
+  entry('__fontFaceDone', () => {
+    const [id, ok] = input();
+    const face = scriptFaces.get(id);
+    if (!face) return false;
+    face._done(ok === true);
+    return true;
+  });
   entry('__fontsSettled', () => {
     const [id] = input();
     const done = fontSettles.get(id);
@@ -29736,6 +33714,45 @@ export function installDom(
     return true;
   });
 
+  // what a compression stream's zlib came to
+  entry('__zlib', () => {
+    const [id, kind, value] = input();
+    const state = zlibs.get(id);
+    if (!state) return false;
+    if (kind === 'data') state.controller.enqueue(bytesOfBase64(str(value)));
+    else if (kind === 'written') {
+      state.written?.resolve();
+      state.written = null;
+    } else {
+      zlibs.delete(id);
+      const error = new TypeError('The compressed data was not valid.');
+      if (value === true) state.ended?.resolve();
+      else {
+        state.written?.reject(error);
+        state.ended?.reject(error);
+        if (!state.written && !state.ended) state.controller.error(error);
+      }
+    }
+    return true;
+  });
+  // what another realm of the origin posted to a channel
+  entry('__bcMessage', () => {
+    const [id, message] = input();
+    const channel = channelsOpen.get(id);
+    if (channel && !channel._closed) channel._receive(str(message));
+    return true;
+  });
+  // what became of a lock
+  entry('__lockGranted', () => {
+    const [id] = input();
+    lockRequests.get(id)?.granted();
+    return true;
+  });
+  entry('__lockStolen', () => {
+    const [id] = input();
+    lockRequests.get(id)?.stolen();
+    return true;
+  });
   // what came of a `fetch`
   entry('__fetched', () => {
     const [id, answer] = input();
@@ -29782,6 +33799,7 @@ export function installDom(
       if (typeof answer.base64 === 'string') {
         response._raw = bytesOfBase64(answer.base64);
       }
+      response._held = answer.held ?? null;
       pending.resolve(response);
     }
     return true;
@@ -30063,13 +34081,49 @@ export function installDom(
     G.__handed = undefined;
     return value;
   };
+  // a node of this realm's, for another realm's op to take (`idOf`)
+  Object.defineProperty(Node.prototype, '__handOver', {
+    value(this: Any) {
+      call('handOver', this._id);
+    },
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  WINDOWS = windowing({
+    G,
+    call,
+    entry,
+    input,
+    handed,
+    str,
+    DOMException,
+    hasTransientActivation,
+    consumeActivation,
+    deliverInto,
+    postAcross,
+    windowProxy,
+    openInFrame,
+    openHere,
+    unloading: () => !!document._unloaded || document._unloadCounter > 0,
+    windowTarget,
+    windowName: () => windowName,
+    setWindowName(name) {
+      windowName = name;
+    },
+    setTimer,
+  });
   // a frame of this page's runs in its own realm: its window here is that
   // realm's global from now on
   entry('__linkFrame', () => {
     const [id, cross] = input();
-    linkedFrames.set(Number(id), handed());
-    if (cross) crossLinked.add(Number(id));
-    else crossLinked.delete(Number(id));
+    if (cross) {
+      linkedFrames.delete(Number(id));
+      crossLinked.add(Number(id));
+    } else {
+      linkedFrames.set(Number(id), handed());
+      crossLinked.delete(Number(id));
+    }
     return true;
   });
   entry('__unlinkFrame', () => {
@@ -30082,7 +34136,6 @@ export function installDom(
   // a window that posts to it with this one as the source
   entry('__linkParent', () => {
     const [id, cross] = input();
-    const global = handed();
     const frame = Number(id);
     if (cross) {
       // a parent of another origin's: what crosses origins and no more
@@ -30093,7 +34146,7 @@ export function installDom(
           'SecurityError',
         );
       const allowed: Any = {
-        postMessage: deliverInto(global, frame, 0),
+        postMessage: postAcross(0),
         closed: false,
         length: 0,
         opener: null,
@@ -30157,7 +34210,7 @@ export function installDom(
         },
       );
       proxiedFrames.set(window, null);
-      parentLink = { global, window, frame };
+      parentLink = { global: null, window, frame };
       define('parent', window);
       define('top', window);
       Object.defineProperty(G, 'frameElement', {
@@ -30166,6 +34219,7 @@ export function installDom(
       });
       return true;
     }
+    const global = handed();
     const window: Any = new Proxy(
       {},
       {
@@ -30203,6 +34257,53 @@ export function installDom(
     });
     return true;
   });
+  /** A message of another realm's told here, as a task of its own: `from`
+   *  is what this realm calls that one. */
+  const tellMessage = (
+    data: Any,
+    origin: string,
+    from: number,
+    ports: Any[],
+  ): void => {
+    const source =
+      from < 0
+        ? WINDOWS!.proxyOf(-from)
+        : from === 0
+          ? (parentLink?.window ?? null)
+          : frameProxyOf(wrap(from));
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', { data, origin, source, ports });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  // A message from a realm of another origin, which the host hands over and
+  // says the origin and the source of (`postAcross`): a string made again
+  // here, the ports in it each at the end of a wire back to that realm
+  entry('__messageAcross', () => {
+    const [text, origin, from] = input();
+    const made = deserializeWith(str(text), realmAcross(Number(from)));
+    tellMessage(made.data, str(origin), Number(from), made.ports);
+    return true;
+  });
+  // and a port's along a wire from one, or a frame of a canvas it shows
+  entry('__wireAcross', () => {
+    const [text, from] = input();
+    const across = realmAcross(Number(from));
+    const said = str(text);
+    setTimer(
+      () => wireMessage(across, said) || canvasFrame(across, said),
+      0,
+      [],
+      false,
+    );
+    return true;
+  });
   // A message from another realm of this page: cloned here, as it is
   // posted, and told as a task of its own, its source the window that
   // stands for the realm it came from — `from` 0 for this realm's parent,
@@ -30229,24 +34330,7 @@ export function installDom(
           ports.push(port);
         });
       }
-      const data = structuredCopy(message, seen);
-      const source =
-        from === 0 ? (parentLink?.window ?? null) : frameProxyOf(wrap(from));
-      setTimer(
-        () => {
-          const ev = new MessageEvent('message', {
-            data,
-            origin: str(origin),
-            source,
-            ports,
-          });
-          ev.isTrusted = true;
-          dispatch(windowTarget, ev);
-        },
-        0,
-        [],
-        false,
-      );
+      tellMessage(structuredCopy(message, seen), str(origin), from, ports);
     },
     writable: false,
     configurable: false,
@@ -30268,7 +34352,7 @@ export function installDom(
   // this realm's origin, which a message posted to it from another realm
   // is held to (`deliverInto`)
   Object.defineProperty(G, '__origin', {
-    value: () => str(G.location?.origin ?? location.origin),
+    value: () => documentOrigin(),
     writable: false,
     configurable: false,
     enumerable: false,
@@ -30288,6 +34372,14 @@ export function installDom(
     const [url] = input();
     const blob = blobUrls.get(str(url));
     return blob instanceof Blob ? blobText(blob, null) : null;
+  });
+
+  // and the bytes of one, as base64, for an image, a sheet or a font whose
+  // URL names it: what shows a page's own `File` before it is uploaded
+  entry('__blobBytes', () => {
+    const [url] = input();
+    const blob = blobUrls.get(str(url));
+    return blob instanceof Blob ? base64OfBytes(blob._bytes) : null;
   });
 
   // a plain event at an element: a script's `load` or `error`
@@ -30526,7 +34618,6 @@ export function installDom(
     // and the interfaces no global names, reached through a getter alone:
     // `document.fonts`'s, and the faces it hands over
     markFn(FontFaceSet, 8);
-    markFn(FontFace, 8);
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {

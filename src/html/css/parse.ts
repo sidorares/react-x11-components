@@ -252,7 +252,9 @@ export interface FontFaceRule {
 export type FontFaceSource =
   | { url: string; format: string | null }
   /** `local(Arial)`: a face the system has, by name and unquoted. */
-  | { local: string };
+  | { local: string }
+  /** The font itself, which only a `new FontFace` hands over. */
+  | { bytes: Uint8Array };
 
 /** The tests this evaluates live, all of which must hold: bounds on the
  *  width, the height, the resolution and the aspect ratio, a colour
@@ -2697,6 +2699,32 @@ function parseFontFace(
     }
   }
   if (!family || src === null) return null;
+  const sources = faceSources(src, base);
+  if (!sources.length) return null;
+  return {
+    family,
+    sources,
+    weight,
+    style,
+    stretch,
+    unicodeRange,
+    media,
+    ...(metrics.sizeAdjust !== undefined &&
+      metrics.sizeAdjust !== 1 && { sizeAdjust: metrics.sizeAdjust }),
+    ...(metrics.ascentOverride !== undefined && {
+      ascentOverride: metrics.ascentOverride,
+    }),
+    ...(metrics.descentOverride !== undefined && {
+      descentOverride: metrics.descentOverride,
+    }),
+    ...(metrics.lineGapOverride !== undefined && {
+      lineGapOverride: metrics.lineGapOverride,
+    }),
+  };
+}
+
+/** The entries of a `src`, those that are none left out. */
+function faceSources(src: string, base: string | null): FontFaceSource[] {
   const sources: FontFaceSource[] = [];
   for (const part of splitTopLevel(src, ',')) {
     const item = part.trim();
@@ -2720,26 +2748,54 @@ function parseFontFace(
     const format = hint ? (hint[1] ?? hint[2] ?? hint[3]).toLowerCase() : null;
     sources.push({ url: resolveUrl(url, base), format });
   }
+  return sources;
+}
+
+/** What `new FontFace` is handed, as strings a descriptor reads. */
+export interface FontFaceInit {
+  style?: string;
+  weight?: string;
+  stretch?: string;
+  unicodeRange?: string;
+}
+
+/**
+ * The face `new FontFace` makes (CSS Font Loading 3, 2.1), or null where
+ * its family or a descriptor is no value of its kind, or `src` has no
+ * source: a rule's bad descriptor is dropped where a script's is its
+ * `SyntaxError`. `bytes` is the font where a page handed one over.
+ */
+export function scriptFontFace(
+  name: string,
+  src: string | null,
+  bytes: Uint8Array | null,
+  init: FontFaceInit,
+  base: string | null,
+): FontFaceRule | null {
+  const family = faceFamily(name);
+  if (!family) return null;
+  const sources: FontFaceSource[] = bytes
+    ? [{ bytes }]
+    : faceSources(src ?? '', base);
   if (!sources.length) return null;
+  const weight = faceWeight(init.weight ?? 'normal');
+  const stretch = init.stretch === undefined ? null : faceStretch(init.stretch);
+  const slant = (init.style ?? 'normal').trim().toLowerCase();
+  if (!weight || stretch === undefined) return null;
+  if (slant !== 'normal' && slant !== 'italic' && !/^oblique\b/.test(slant)) {
+    return null;
+  }
+  const unicodeRange =
+    init.unicodeRange === undefined ? null : unicodeRanges(init.unicodeRange);
+  if (init.unicodeRange !== undefined && !unicodeRange) return null;
   return {
     family,
     sources,
     weight,
-    style,
+    style: slant === 'normal' ? 'normal' : 'italic',
     stretch,
     unicodeRange,
-    media,
-    ...(metrics.sizeAdjust !== undefined &&
-      metrics.sizeAdjust !== 1 && { sizeAdjust: metrics.sizeAdjust }),
-    ...(metrics.ascentOverride !== undefined && {
-      ascentOverride: metrics.ascentOverride,
-    }),
-    ...(metrics.descentOverride !== undefined && {
-      descentOverride: metrics.descentOverride,
-    }),
-    ...(metrics.lineGapOverride !== undefined && {
-      lineGapOverride: metrics.lineGapOverride,
-    }),
+    media: null,
   };
 }
 

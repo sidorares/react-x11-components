@@ -2484,6 +2484,30 @@ test('a part is painted again only where what it holds changed: a build a frame 
   assert.strictEqual(claims.mock.callCount(), 0, 'no hole repainted');
 });
 
+metric(
+  'a lifted part is painted again for a told change to what a drawing in it names',
+  async (t) => {
+    const doc = await running(
+      t,
+      '<style>@keyframes fade { from { opacity: .2 } to { opacity: 1 } }' +
+        '#a { animation: fade 160ms linear infinite; width: 40px; height: 20px }' +
+        '</style><svg style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+        '<rect id="in-s" width="5" height="10"/></symbol></svg><div id="a">' +
+        '<svg width="40" height="20"><use href="#s"/></svg></div>',
+    );
+    await doc.at(16);
+    const [part] = doc.el.sprites()!;
+    doc.el.spritesLifted(new Set([part.key]));
+    const shape = findById(doc.el.document, 'in-s')!;
+    shape.attribs.fill = '#00aa00';
+    doc.el.touchDocument([
+      { type: 'attributes', target: shape, attributeName: 'fill' },
+    ]);
+    const [again] = doc.el.sprites()!;
+    assert.notStrictEqual(again.version, part.version, 'painted as it was');
+  },
+);
+
 test('the frames of a lifted part are kept through a build a frame makes beside it, which keeps its style', async (t) => {
   const doc = await running(
     t,

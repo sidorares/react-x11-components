@@ -15,8 +15,12 @@ import {
 } from 'react-x11/test';
 import { createVideoFrames, useApp } from 'react-x11';
 import type { DrawnNode, NtkApp, VideoFrames } from 'react-x11';
-import { Html } from '../../src/html/index.js';
-import type { ResourceRequest, ResourceResult } from '../../src/html/index.js';
+import { Html, useHtmlHandle } from '../../src/html/index.js';
+import type {
+  HtmlHandle,
+  ResourceRequest,
+  ResourceResult,
+} from '../../src/html/index.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import type { Element } from '../../src/html/dom.js';
 import { videoCandidates } from '../../src/html/media.js';
@@ -47,6 +51,7 @@ async function renderVideo(
     asked = [],
     wrap = (doc) => doc,
     canvasOpaque,
+    handleTo,
   }: {
     width?: number;
     height?: number;
@@ -54,15 +59,20 @@ async function renderVideo(
     asked?: ResourceRequest[];
     wrap?: (doc: ReturnType<typeof h>) => ReturnType<typeof h>;
     canvasOpaque?: () => boolean;
+    /** Told the document's handle. */
+    handleTo?: (handle: HtmlHandle) => void;
   } = {},
 ) {
   function Host() {
     const app = useApp();
+    const handle = useHtmlHandle();
+    handleTo?.(handle);
     return h(Html, {
       source,
       partial: false,
       'data-testname': 'doc',
       canvasOpaque,
+      ref: handle.ref,
       onResource: (request: ResourceRequest) => {
         if (request.kind !== 'video') return null;
         asked.push(request);
@@ -1144,6 +1154,186 @@ test('a box fixed to the viewport cuts the player where the scroll brings it ove
   });
   assert.strictEqual(videos()[0], video, 'the same player');
   assert.strictEqual(boxOf(el, 'v').height, 50);
+});
+
+/** A green video 100 by 60 at the document's corner, with `over` in the
+ *  document after it, and what its rect says. */
+async function fixedOverVideo(
+  over: string,
+  options: Parameters<typeof renderVideo>[2] = {},
+) {
+  const out = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      '<video src="a.mp4" style="display:block;width:100px;height:60px">' +
+      '</video>' +
+      over,
+    // of the box's shape, which `contain` fills
+    (_, app) => ({ kind: 'video', frames: solid(app, 10, 6, [0, 255, 0]) }),
+    options,
+  );
+  await waitFor(() => assert.equal(videos().length, 1));
+  await act();
+  const rect = () =>
+    (out.el as unknown as { _media: MediaRectLike[] })._media[0];
+  return { ...out, rect };
+}
+
+const FIXED = 'position:fixed;left:40px;top:20px;width:20px;height:20px;';
+
+test('a box fixed to the viewport in the middle of a video is painted over the player, and the video goes on showing', async () => {
+  for (const scale of [1, 2]) {
+    const { result, rect } = await fixedOverVideo(
+      `<div style="${FIXED}background:#f00"></div>`,
+      { scale },
+    );
+    assert.equal(rect().hidden, undefined, 'it was hidden for it');
+    await expectPixel(result.ctx, 10 * scale, 10 * scale, '#00ff00', {
+      message: 'the video around it',
+    });
+    await expectPixel(result.ctx, 50 * scale, 30 * scale, '#ff0000', {
+      message: 'and the box, over the player',
+    });
+    cleanup();
+  }
+});
+
+test('a translucent box fixed over all of a video lets it show, where it was cut to nothing', async () => {
+  const { result, rect } = await fixedOverVideo(
+    '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5)"></div>',
+  );
+  assert.equal(rect().hidden, undefined);
+  assert.ok(rect().over, 'it is painted over the player');
+  const clip = (rect() as { clip?: { height: number } }).clip;
+  assert.equal(clip, undefined, 'and takes nothing off it');
+  await expectPixel(result.ctx, 50, 30, '#008000', {
+    message: 'the video, through it',
+    tolerance: 2,
+  });
+  await expectPixel(result.ctx, 50, 100, '#808080', {
+    message: 'and the page past it',
+    tolerance: 2,
+  });
+});
+
+test('a fixed overlay that fades in over a video, with nothing laid out, is drawn over the player as it goes', async () => {
+  let handle: HtmlHandle | null = null;
+  const { result, rect } = await fixedOverVideo(
+    `<div id="o" style="${FIXED}opacity:0;background:#f00"></div>`,
+    { handleTo: (given) => void (handle = given) },
+  );
+  await expectPixel(result.ctx, 50, 30, '#00ff00', {
+    message: 'nothing of it to start with',
+  });
+  assert.equal(rect().over, undefined);
+  const style = async (value: string): Promise<void> => {
+    const box = findById(handle!.document, 'o')!;
+    box.attribs.style = `${FIXED}${value}background:#f00`;
+    await act(() =>
+      handle!.refresh([
+        { type: 'attributes', target: box, attributeName: 'style' },
+      ]),
+    );
+    await act();
+  };
+  await style('opacity:0.5;');
+  assert.equal(rect().hidden, undefined);
+  await expectPixel(result.ctx, 50, 30, '#808000', {
+    message: 'half way, over the video',
+    tolerance: 2,
+  });
+  // the same rect, so nothing tells the canvas over the player to draw again
+  await style('opacity:0.25;');
+  await expectPixel(result.ctx, 50, 30, '#40bf00', {
+    message: 'and at each step of the fade',
+    tolerance: 2,
+  });
+  await style('opacity:0;');
+  await expectPixel(result.ctx, 50, 30, '#00ff00', { message: 'and gone' });
+  assert.equal(rect().over, undefined);
+});
+
+test('what is fixed over a video and what is not are painted over the player in the order the document paints them', async () => {
+  const fixed = `<div style="${FIXED}z-index:1;background:#f00"></div>`;
+  const button =
+    '<div style="position:absolute;left:40px;top:20px;width:20px;' +
+    'height:20px;z-index:2;background:#00f"></div>';
+  for (const [source, colour] of [
+    [fixed + button, '#0000ff'],
+    [button.replace('z-index:2', 'z-index:0') + fixed, '#ff0000'],
+  ]) {
+    const { result } = await fixedOverVideo(source);
+    await expectPixel(result.ctx, 50, 30, colour);
+    await expectPixel(result.ctx, 10, 10, '#00ff00');
+    cleanup();
+  }
+});
+
+test('a box fixed over a video the pane has scrolled is painted over the player where the viewport has it, at 1x and 2x', async () => {
+  for (const scale of [1, 2]) {
+    const pane = { current: null as null | { scrollTo(y: number): void } };
+    const { result } = await renderVideo(
+      '<style>body{margin:0;background:#fff}</style>' +
+        '<div style="height:80px"></div>' +
+        '<video src="a.mp4" style="display:block;width:100px;height:60px">' +
+        '</video><div style="height:600px"></div>' +
+        '<div style="position:fixed;left:40px;top:20px;width:20px;height:20px;' +
+        'background:#f00"></div>',
+      (_, app) => ({ kind: 'video', frames: solid(app, 10, 6, [0, 255, 0]) }),
+      {
+        height: 200,
+        scale,
+        wrap: (doc) =>
+          h(
+            'box',
+            {
+              style: { flexGrow: 1, overflow: 'scroll' },
+              ref: (node: unknown) => {
+                pane.current = node as typeof pane.current;
+              },
+            },
+            doc,
+          ),
+      },
+    );
+    await waitFor(() => assert.equal(videos().length, 1));
+    await act(async () => pane.current!.scrollTo(70));
+    await act();
+    await waitForPixel(result.ctx, 10 * scale, 30 * scale, '#00ff00', {
+      message: 'the video, 10px down the viewport now',
+    });
+    await waitForPixel(result.ctx, 50 * scale, 30 * scale, '#ff0000', {
+      message: 'and the box, where the viewport has it',
+    });
+    cleanup();
+  }
+});
+
+test('a solid band fixed across a side of a video cuts the player, and is not painted over it', async () => {
+  const { rect } = await fixedOverVideo(
+    '<div style="position:fixed;left:0;right:0;top:0;height:20px;' +
+      'background:#00f"></div>',
+  );
+  await waitFor(() => assert.ok((rect() as { clip?: unknown }).clip));
+  assert.equal(rect().over, undefined);
+});
+
+test('a box fixed over a video that cannot be painted over the player hides it, as a box too many does', async () => {
+  const hides = async (over: string): Promise<void> => {
+    const { rect } = await fixedOverVideo(over);
+    await waitFor(() => assert.equal(rect().hidden, true));
+    cleanup();
+  };
+  // faded with what is around it, which a sibling over the player is not
+  await hides(
+    `<div style="opacity:0.5"><div style="${FIXED}background:#f00"></div></div>`,
+  );
+  let many = '';
+  for (let i = 0; i < 5; i += 1) {
+    many +=
+      `<div style="position:fixed;left:${10 + i * 15}px;top:20px;` +
+      'width:10px;height:20px;background:#f00"></div>';
+  }
+  await hides(many);
 });
 
 test('a frame the host pushes is drawn where the video is', async () => {

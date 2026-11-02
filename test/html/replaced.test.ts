@@ -3941,6 +3941,447 @@ metric(
   },
 );
 
+metric(
+  'a told change to what an inline drawing names shows, with nothing else asking for a paint',
+  async (t) => {
+    // The drawing a change was in was drawn again, and that was all: a told
+    // `fill` on a shape in a hidden sprite moved no pixel, and the icons that
+    // `<use>` it stayed as they were until some other paint reached them.
+    // Each case is three drawings alike, the third of which is copied from a
+    // raster and read for nothing but its key, and then one set in a box that
+    // turns, which text puts on a surface kept for the box.
+    const box = 'width="60" height="24"';
+    const defs =
+      '<svg style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+      '<rect id="in-s" class="k" width="5" height="10"/></symbol>' +
+      '<symbol id="chain" viewBox="0 0 10 10"><use href="#s" width="10"' +
+      ' height="10"/></symbol><linearGradient id="base"><stop id="stop" stop-color="#ff0000"/>' +
+      '</linearGradient><linearGradient id="g" href="#base"/></svg>';
+    const taken = (el: Element): HtmlChange[] => {
+      const target = el.parent!;
+      removeElement(el);
+      return [
+        { type: 'childList', target, addedNodes: [], removedNodes: [el] },
+      ];
+    };
+    const painted = `<rect ${box} fill="url(#g)"/>`;
+    const cases: {
+      name: string;
+      inside: string;
+      outside?: string;
+      style?: string;
+      change: (by: (id: string) => Element) => HtmlChange[];
+    }[] = [
+      {
+        name: "a shape in a sprite's symbol",
+        inside: '<use href="#s"/>',
+        change: (by) => [setAttribute(by('in-s'), 'fill', '#00aa00')],
+      },
+      {
+        name: 'a symbol, by way of another it uses',
+        inside: '<use href="#chain"/>',
+        change: (by) => [setAttribute(by('in-s'), 'fill', '#00aa00')],
+      },
+      {
+        name: 'a stop of a gradient, by way of the one that takes it',
+        inside: painted,
+        change: (by) => [setAttribute(by('stop'), 'stop-color', '#00aa00')],
+      },
+      {
+        name: 'a gradient only a rule names',
+        inside: `<rect ${box}/>`,
+        style: '.d rect{fill:url(#g)}',
+        change: (by) => [setAttribute(by('stop'), 'stop-color', '#00aa00')],
+      },
+      {
+        name: 'the class of a shape in a symbol, which its copy is matched by',
+        inside: '<use href="#s"/>',
+        style: '.k{fill:#ff0000}.k.on{fill:#00aa00}',
+        change: (by) => [setAttribute(by('in-s'), 'class', 'k on')],
+      },
+      {
+        name: 'an id taken from what it names',
+        inside: painted,
+        change: (by) => [setAttribute(by('g'), 'id', 'other')],
+      },
+      {
+        name: 'an id given to what it named and did not find',
+        inside: '<use href="#late"/>',
+        outside:
+          '<svg style="display:none"><rect id="soon" width="30" height="24"' +
+          ' fill="#ff0000"/></svg>',
+        change: (by) => [setAttribute(by('soon'), 'id', 'late')],
+      },
+      {
+        name: 'a child put in a symbol',
+        inside: '<use href="#s"/>',
+        change: (by) => {
+          const made = parseDocument(
+            '<rect x="5" width="5" height="10" fill="#00aa00"/>',
+          ).children[0] as Element;
+          delete (made as { parent?: unknown }).parent;
+          appendChild(by('s'), made);
+          return [cameBack(by('s'), made)];
+        },
+      },
+      {
+        name: 'what it names taken out, with what holds it',
+        inside: '<use href="#s"/>',
+        change: (by) => taken(by('s').parent as Element),
+      },
+      {
+        name: 'what it names, out and back under another id',
+        inside: '<use href="#s"/>',
+        change: (by) => {
+          const symbol = by('s');
+          const holder = symbol.parent as Element;
+          const out = taken(symbol);
+          // told to nobody, as a change to what is in no document is
+          symbol.attribs.id = 'other';
+          appendChild(holder, symbol);
+          return [...out, cameBack(holder, symbol)];
+        },
+      },
+      {
+        name: 'a child put in a drawing, with an id it named and did not find',
+        inside: '<use href="#late"/>',
+        outside: '<svg id="holder" style="display:none"></svg>',
+        change: (by) => {
+          const made = parseDocument(
+            '<rect id="late" width="30" height="24" fill="#ff0000"/>',
+          ).children[0] as Element;
+          delete (made as { parent?: unknown }).parent;
+          appendChild(by('holder'), made);
+          return [cameBack(by('holder'), made)];
+        },
+      },
+      {
+        // what a change at its root takes from it is what it reads, and a
+        // restyle sees nothing here to draw it again for
+        name: 'what it names, told beside its own root',
+        inside: '<use href="#s"/>',
+        change: (by) => [
+          setAttribute(by('d'), 'data-seen', '1'),
+          setAttribute(by('in-s'), 'fill', '#00aa00'),
+        ],
+      },
+      {
+        name: 'a text in what it names',
+        inside: '<use href="#titled"/>',
+        outside:
+          '<svg style="display:none"><text id="titled" y="16">one</text></svg>',
+        change: (by) => {
+          const text = by('titled').children[0] as unknown as { data: string };
+          text.data = 'an other word';
+          return [{ type: 'characterData', target: text as never }];
+        },
+      },
+      {
+        name: 'what it names of what no drawing holds',
+        inside: '<use href="#free"/>',
+        outside:
+          '<div style="display:none"><rect id="free" width="30" height="24"' +
+          ' fill="#ff0000"/></div>',
+        change: (by) => [setAttribute(by('free'), 'fill', '#00aa00')],
+      },
+      {
+        name: 'what it names, grown past the box it shows its overflow from',
+        inside: '<use href="#free"/>',
+        outside:
+          '<svg style="display:none"><rect id="free" width="10" height="24"' +
+          ' fill="#ff0000"/></svg>',
+        // a turned box goes on growing to its left, which needs room
+        style: '.d{overflow:visible}div{margin-left:200px}',
+        change: (by) => [setAttribute(by('free'), 'width', '200')],
+      },
+      {
+        name: 'what it names, grown from where no paint of it has been',
+        inside: '<use href="#free"/>',
+        outside:
+          '<svg style="display:none"><rect id="free" width="60" height="24"' +
+          ' fill="#ff0000"/></svg>',
+        style:
+          '.d{overflow:visible;position:absolute;left:0;top:-100px}' +
+          'body{height:200px}',
+        change: (by) => [setAttribute(by('free'), 'height', '200')],
+      },
+      {
+        name: 'a shape of its own, grown past that box',
+        inside: '<rect id="own" width="10" height="24" fill="#ff0000"/>',
+        style: '.d{overflow:visible}',
+        change: (by) => [setAttribute(by('own'), 'width', '200')],
+      },
+      {
+        name: 'what it names, grown past a drawing on a line',
+        inside: '<use href="#free"/>',
+        outside:
+          '<svg style="display:none"><rect id="free" width="10" height="24"' +
+          ' fill="#ff0000"/></svg>',
+        style: 'svg.d{display:inline;overflow:visible}',
+        change: (by) => [setAttribute(by('free'), 'width', '200')],
+      },
+      {
+        name: 'a shape of its own, past that box by the stroke a rule gives it',
+        inside: '<rect id="own" width="10" height="24"/>',
+        style: '.d{overflow:visible}.d rect{stroke:#ff0000;stroke-width:60}',
+        change: (by) => [setAttribute(by('own'), 'x', '50')],
+      },
+      {
+        name: "a drawing's own, named by another",
+        inside: '<use href="#kin"/>',
+        outside: `<svg ${box}><rect id="kin" ${box} fill="#ff0000"/></svg>`,
+        change: (by) => [setAttribute(by('kin'), 'fill', '#00aa00')],
+      },
+    ];
+    for (const { name, inside, outside, style, change } of cases) {
+      for (const turns of [false, true]) {
+        const drawing = (own: string) =>
+          `<svg id="d" class="d" ${box}>${own}</svg>`;
+        const drawings = turns
+          ? '<div style="transform:rotate(180deg);width:60px">' +
+            `${drawing(`${inside}<text y="16">A</text>`)}</div>`
+          : drawing(inside).repeat(3);
+        const { result, node } = await render(
+          `<style>body{margin:0}svg{display:block}${style ?? ''}</style>` +
+            `${defs}${outside ?? ''}${drawings}`,
+          300,
+        );
+        const el = view(node);
+        const { repaint } = repaints(t, result, el);
+        await repaint();
+        await repaint();
+        const was = (await repaint()).pixels;
+        const by = (id: string) => findById(el.document, id)!;
+        const where = `${name}${turns ? ', in a box that turns' : ''}`;
+        el.touchDocument(change(by));
+        await act();
+        const told = await snapshot(result, el);
+        assert.ok(bytesApart(told, was) > 0, `${where}: drawn as it was`);
+        el.touchDocument();
+        await act();
+        const whole = await snapshot(result, el);
+        assert.ok(levelsApart(told, whole) <= 1, `${where}: not what it reads`);
+        cleanup();
+      }
+    }
+  },
+);
+
+metric(
+  'a told change draws again the drawings that name what it reached, and no other',
+  async (t) => {
+    // A page of sprite icons would otherwise pay for a repaint of all of them
+    // at each change: what is asked is what each read outside itself.
+    const shape = '<rect width="9" height="9"/>';
+    const { result, node } = await render(
+      '<html><style>body{margin:0}svg{display:block}</style><body>' +
+        '<div id="free"><i id="spare"></i></div>' +
+        '<svg id="sprite" style="display:none">' +
+        `<symbol id="a" viewBox="0 0 9 9">${shape}</symbol>` +
+        `<symbol id="b" viewBox="0 0 9 9">${shape}</symbol></svg>` +
+        '<svg id="uses-a" width="24" height="24"><use id="u" href="#a"/></svg>' +
+        '<svg id="uses-b" width="24" height="24"><use href="#b"/></svg>' +
+        `<svg id="plain" width="24" height="24">${shape}</svg></body></html>`,
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const by = (id: string) => findById(el.document, id)!;
+    const drawn = t.mock.method(
+      el as unknown as { _drawAgain(drawings: Set<Element>): void },
+      '_drawAgain',
+    );
+    /** The ids of what a list of changes draws again. */
+    const told = (changes: HtmlChange[]): string[] => {
+      drawn.mock.resetCalls();
+      el.touchDocument(changes);
+      return drawn.mock.calls
+        .flatMap((call) => [...call.arguments[0]])
+        .map((drawing) => drawing.attribs.id)
+        .sort();
+    };
+    const inA = () => by('a').children[0] as Element;
+    assert.deepStrictEqual(
+      told([setAttribute(inA(), 'fill', '#ff0000')]),
+      ['sprite', 'uses-a'],
+      'what names it, and the drawing it is in',
+    );
+    await repaint();
+    assert.deepStrictEqual(
+      told([setAttribute(inA(), 'fill', '#00aa00')]),
+      ['sprite', 'uses-a'],
+      'and again, once it has been read again',
+    );
+    await repaint();
+    const own = by('plain').children[0] as Element;
+    assert.deepStrictEqual(
+      told([setAttribute(own, 'fill', '#ff0000')]),
+      ['plain'],
+      'a shape nothing names',
+    );
+    await repaint();
+    assert.deepStrictEqual(
+      told([setAttribute(by('free'), 'class', 'on')]),
+      [],
+      'a change in no drawing',
+    );
+    assert.deepStrictEqual(
+      told([setAttribute(by('free'), 'id', 'other')]),
+      [],
+      'an id nothing names',
+    );
+    const free = by('other');
+    const made = parseDocument('<i id="fresh"></i>').children[0] as Element;
+    delete (made as { parent?: unknown }).parent;
+    appendChild(free, made);
+    assert.deepStrictEqual(
+      told([cameBack(free, made)]),
+      [],
+      'a child put in with an id nothing names',
+    );
+    const spare = by('spare');
+    removeElement(spare);
+    assert.deepStrictEqual(
+      told([
+        {
+          type: 'childList',
+          target: free,
+          addedNodes: [],
+          removedNodes: [spare],
+        },
+      ]),
+      [],
+      'an element taken out that nothing names',
+    );
+    await repaint();
+
+    // what it has stopped naming is no more to do with it
+    assert.deepStrictEqual(
+      told([setAttribute(by('u'), 'href', '#b')]),
+      ['uses-a'],
+      'a drawing that names something else',
+    );
+    await repaint();
+    assert.deepStrictEqual(
+      told([setAttribute(inA(), 'fill', '#0000ff')]),
+      ['sprite'],
+      'leaves what it named',
+    );
+    await repaint();
+
+    // told nothing, it may name anything now, and what it reads says so
+    by('u').attribs.href = '#a';
+    el.touchDocument();
+    await repaint();
+    by('u').attribs.href = '#b';
+    el.touchDocument();
+    await repaint();
+    assert.deepStrictEqual(
+      told([setAttribute(inA(), 'fill', '#00aa00')]),
+      ['sprite'],
+      'what it named before a refresh told nothing',
+    );
+    await repaint();
+
+    // what is gone reaches what named it once, and nothing draws it again
+    // here to say what it names now
+    const sprite = by('sprite');
+    const body = sprite.parent!;
+    removeElement(sprite);
+    assert.deepStrictEqual(
+      told([
+        {
+          type: 'childList',
+          target: body,
+          addedNodes: [],
+          removedNodes: [sprite],
+        },
+      ]),
+      ['uses-a', 'uses-b'],
+      'taken out',
+    );
+    const fresh = by('fresh');
+    const holder = fresh.parent!;
+    removeElement(fresh);
+    assert.deepStrictEqual(
+      told([
+        {
+          type: 'childList',
+          target: holder,
+          addedNodes: [],
+          removedNodes: [fresh],
+        },
+      ]),
+      [],
+      'and no more than once',
+    );
+  },
+);
+
+metric(
+  'what a <use> copies is matched anew for a drawing that nothing reached',
+  async (t) => {
+    // A change in it takes what it read, and before it is read again what it
+    // names changes: no name reaches it, and its next paint asks what its
+    // copy matched
+    const { result, node } = await render(
+      '<style>body{margin:0}svg{display:block}.k{fill:#ff0000}' +
+        '.k.on{fill:#00aa00}</style>' +
+        '<svg style="display:none"><symbol id="s" viewBox="0 0 10 10">' +
+        '<rect id="in-s" class="k" width="5" height="10"/></symbol></svg>' +
+        '<svg width="60" height="24"><use href="#s"/><path id="own"' +
+        ' d="M0 0h1v1z"/></svg>',
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const by = (id: string) => findById(el.document, id)!;
+    el.touchDocument([setAttribute(by('own'), 'd', 'M0 0h2v2z')]);
+    el.touchDocument([setAttribute(by('in-s'), 'class', 'k on')]);
+    await act();
+    const told = await snapshot(result, el);
+    el.touchDocument();
+    await act();
+    const whole = await snapshot(result, el);
+    assert.ok(levelsApart(told, whole) <= 1, 'as its copy matched before');
+  },
+);
+
+metric(
+  'a told change reaches a drawing in a shadow tree that names what is in it',
+  async (t) => {
+    // A name is looked for in the tree its drawing is in, and a document's
+    // list of its drawings passed over those in shadow trees
+    const { result, node } = await render(
+      '<style>body{margin:0}</style><div id="host"><template' +
+        ' shadowrootmode="open"><style>svg{display:block}</style>' +
+        '<svg style="display:none"><symbol id="s" viewBox="0 0 10 10"><rect' +
+        ' id="in-s" width="5" height="10"/></symbol></svg>' +
+        '<svg width="60" height="24"><use href="#s"/></svg></template></div>',
+      300,
+    );
+    const el = view(node);
+    const { repaint } = repaints(t, result, el);
+    await repaint();
+    await repaint();
+    const was = (await repaint()).pixels;
+    const tree = shadowRootOf(findById(el.document, 'host')!)!;
+    const shape = findById(tree, 'in-s')!;
+    el.touchDocument([setAttribute(shape, 'fill', '#00aa00')]);
+    await act();
+    const told = await snapshot(result, el);
+    assert.ok(bytesApart(told, was) > 0, 'drawn as it was');
+    el.touchDocument();
+    await act();
+    const whole = await snapshot(result, el);
+    assert.ok(levelsApart(told, whole) <= 1, 'what it reads now');
+  },
+);
+
 test('what an inline drawing reaches past its box follows what it names', () => {
   // Asked of a drawing no paint has reached: the ink of one off screen
   const doc = parseDocument(
@@ -4054,11 +4495,9 @@ metric(
         `<linearGradient id="g"><stop id="stop" stop-color="${colour()}"/>` +
         '</linearGradient></svg>';
       for (let i = 0; i < count; i += 1) {
-        // no text in a box that turns, which is drawn on a surface kept for
-        // the box, and a told change to what it names leaves that as it was
         const turns = next() < 0.25;
         const own = parts
-          .filter((part) => next() < 0.5 && !(turns && part.includes('<text')))
+          .filter(() => next() < 0.5)
           .join('')
           .replaceAll('@', String(i));
         const svg =
@@ -4069,16 +4508,16 @@ metric(
       }
       const { result, node } = await render(html, 300);
       const el = view(node);
-      const repaint = async () => {
+      // what a step has to let go of is there to let go of: the rasters take
+      // a second paint, and the surfaces around what turns are kept from it
+      for (let paint = 0; paint < 2; paint += 1) {
         (
           el as unknown as {
             invalidate(all: boolean, by: unknown, why: string): void;
           }
         ).invalidate(false, el, 'layout');
-        return snapshot(result, el);
-      };
-      await repaint();
-      await repaint();
+        await snapshot(result, el);
+      }
       const by = (id: string) => findById(el.document, id);
       const made = (text: string) => {
         const node = parseDocument(text).children[0] as Element;
@@ -4153,11 +4592,11 @@ metric(
       for (let step = 0; step < 8; step += 1) {
         el.touchDocument(steps[below(steps.length)]());
         await act();
-        const told = await repaint();
+        const told = await snapshot(result, el);
         if (next() < 0.5) continue;
         el.touchDocument();
         await act();
-        const whole = await repaint();
+        const whole = await snapshot(result, el);
         assert.ok(
           levelsApart(told, whole) <= 1,
           `seed ${seed}, step ${step}: drawn otherwise than a whole refresh`,

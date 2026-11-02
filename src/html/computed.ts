@@ -601,6 +601,12 @@ function fontFamilyText(style: ComputedStyle): string {
   return text;
 }
 
+/** A canvas's `font` as its context reads it back, whose style is in CSS
+ *  pixels (`Cascade.canvasFont`). */
+export function canvasFontText(style: ComputedStyle): string {
+  return fontText(style, px(style.fontSize, 1), fontFamilyText(style), 1);
+}
+
 /**
  * `font` as the longhands it is set from come to, in the order Chrome, Firefox
  * and WebKit all write them: '' where one has a value the shorthand has no way

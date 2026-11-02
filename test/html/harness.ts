@@ -49,6 +49,55 @@ export const FONTS = found
   ? { 'sans-serif': found[0], monospace: found[1] }
   : null;
 
+export const PAGE = 'https://example.test/page.html';
+
+/** A page whose scripts run: what it logs, a wait for a log line that
+ *  starts with a prefix, and the window it is drawn in. */
+export async function scriptedPage(
+  body: string,
+  ms = 5000,
+  /** What its images answer with, by the URL it asks for. */
+  images: Record<string, Uint8Array> = {},
+  /** The display's scale. */
+  scale = 1,
+): Promise<{
+  logs: string[];
+  until(prefix: string): Promise<string>;
+  result: Awaited<ReturnType<typeof renderX11>>;
+}> {
+  const logs: string[] = [];
+  const result = await renderX11(
+    h(Html, {
+      source: `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}</body></html>`,
+      partial: false,
+      baseUrl: PAGE,
+      onResource: ({ url }: { url: string }) =>
+        images[url] ? { kind: 'image' as const, bytes: images[url] } : null,
+      scripts: {
+        log: (level: string, text: string) =>
+          void logs.push(`${level}: ${text}`),
+      },
+    }),
+    FONTS
+      ? { width: 200, height: 120, fonts: FONTS, scale }
+      : { backend: 'mock' },
+  );
+  return {
+    logs,
+    result,
+    async until(prefix) {
+      const end = Date.now() + ms;
+      const found = () => logs.find((l) => l.startsWith(`log: ${prefix}`));
+      while (!found() && Date.now() < end) {
+        await act(() => new Promise((r) => setTimeout(r, 10)));
+      }
+      const line = found();
+      assert.ok(line, `no "${prefix}" in:\n${logs.join('\n')}`);
+      return line.slice(`log: ${prefix}`.length).trim();
+    },
+  };
+}
+
 export function view(node: DrawnNode): HtmlViewNode {
   return (node as unknown as { children: HtmlViewNode[] }).children[0];
 }
@@ -1597,6 +1646,18 @@ export function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
 /** The box tree, to tell a restyle in place from a document built again. */
 export const treeOf = (el: HtmlViewNode) =>
   (el as unknown as { _tree: unknown })._tree;
+
+/** The pane a document scrolls in. */
+export function paneOf(node: unknown): {
+  scrollY: number;
+  scrollTo(to: { y: number }): void;
+} {
+  type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
+  let at = (node as Up).parent;
+  while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
+  assert.ok(at, 'a pane');
+  return at as unknown as ReturnType<typeof paneOf>;
+}
 
 /** A logical window point inside an element of the document. */
 export function pointIn(el: HtmlViewNode, id: string): [number, number] {

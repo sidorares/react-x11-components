@@ -50,6 +50,8 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                                                                                   |
+| `onDownload`         | `(request: HtmlDownloadRequest) => void`         | A page asked to have something saved — see [Downloads](#downloads). Absent, such a link is a link like any other: nothing is written anywhere.                                                                                                                                                      |
+| `onPickFiles`        | `(request) => Promise<HtmlFile[] \| null>`       | Ask the user for files, for an `<input type=file>` — see [File inputs](#file-inputs). `useHtmlFilePicker()` is core's file dialog. Absent, a file input opens nothing.                                                                                                                              |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                                                                                        |
 | `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).                                                                                |
 | `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                                                                                  |
@@ -799,10 +801,17 @@ with them once they are in; `check()` says whether they are, and `ready`
 waits for every face on its way. A loader such as FontFaceObserver polls
 `load()` until it hands a face over, and gives up at its timeout:
 facebook.com draws its login QR code only once Instagram Sans Condensed is
-in, and an answer of no faces left the code blank. A face a script makes
-with `new FontFace` is not among them, since nothing hands its data to the
-document's fonts yet: there is no `FontFace` to construct, and `add()` takes
-none.
+in, and an answer of no faces left the code blank.
+
+**`new FontFace(family, source, descriptors)` goes through the same path.**
+A `url()` source is asked for through `onResource`, a buffer is handed over,
+and either is opened by the engine, WOFF2 rebuilt where it has to be, before
+the face says it has loaded. `document.fonts.add` puts a face among the
+document's, which styles the document again, as an `@font-face` in a sheet
+would; `delete` and `clear` take it out, and only what a script put there. A
+family or a descriptor that cannot be read is the `SyntaxError` `loaded`
+rejects with, and a font the engine cannot read a `NetworkError`. A
+descriptor set after a face is made reads back and changes nothing of it.
 
 ## Scripts
 
@@ -862,9 +871,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   `res.body` reads each chunk as it comes — a model's reply, a stream of
   events. A host that answers whole is answered whole. The page aborting,
   or cancelling the body, calls the iterator's `return()`, and a body
-  nothing will read — a `no-cors` answer, one CORS refuses — is let go the
-  same way. `HtmlNetwork` answers so, and bounds only the wait for the
-  headers.
+  nothing will read — one CORS refuses, a `no-cors` answer on a page that
+  is no secure context — is let go the same way; a secure page's `no-cors`
+  answer is held for it a while, unread, since `caches` and a service
+  worker can hand it on. `HtmlNetwork` answers so, and bounds only the
+  wait for the headers.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
@@ -893,6 +904,14 @@ it is used, and the next request for each goes with `Cache-Control:
 no-cache`. A document, a page's own `fetch` and a redirect are not kept;
 where a redirect led is, under its own URL. The `log` option says `cached`
 for a response the cache answered and `revalidated` for a 304.
+
+**A body the network holds whole has a limit, `resourceBytes`** (256 MB by
+default): a script, a stylesheet, an image, a font, or a page's request for
+all of a response at once. Past it the request fails with
+`ERR_FILE_TOO_BIG`, and no part of the body is handed on, so a `<script>`
+hears `error` rather than parsing what came and throwing at its last line. A
+body a page reads as it arrives is handed on as it comes and has no limit,
+since a stream of events goes on for as long as the server sends it.
 
 **`observe(listener)` tells of each request as it goes**, for a
 developer's tools to draw a network log from (`HtmlNetworkActivity`): a
@@ -941,35 +960,41 @@ frame's box for a pane (see [Embedded content](#embedded-content)).
 **What leaves the document is handed back**, and goes nowhere by default,
 since this component navigates nowhere by itself:
 
-| Seam             | Default                   | What it is                                                                                                                                                                   |
-| ---------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                 |
-| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
-| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
-| `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
-| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names. |
-| `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                  |
-| `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                  |
-| `title`          | nothing                   | `document.title` was set.                                                                                                                                                    |
-| `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                      |
-| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                 |
-| `onTimeout`      | nothing                   | One was.                                                                                                                                                                     |
-| `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither. |
-| `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                        |
-| `canPlayType`    | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                   |
-| `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                      |
-| `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.              |
-| `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: each registration's worker a thread, installed and activated, messaging its page. It intercepts no request. See below.           |
-| `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                     |
-| `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.            |
-| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
-| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
-| `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
-| `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
-| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
-| `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                      |
-| `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                            |
-| `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                           |
+| Seam             | Default                   | What it is                                                                                                                                                                       |
+| ---------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                     |
+| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                          |
+| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
+| `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
+| `popup`          | none                      | The window this document is shown in, where a page opened it.                                                                                                                    |
+| `close`          | nothing                   | A page closed the tab it is in, with `window.close()`.                                                                                                                           |
+| `reload`         | nothing                   | `location.reload()`.                                                                                                                                                             |
+| `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names.     |
+| `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                      |
+| `promptToUnload` | leave                     | A page being left asked to be confirmed — its `beforeunload` canceled or given a `returnValue`, after the user pressed or typed in it: whether to leave it.                      |
+| `title`          | nothing                   | `document.title` was set.                                                                                                                                                        |
+| `log`            | nowhere                   | The page's console, and what the engine says went wrong: an uncaught error, a script that did not load.                                                                          |
+| `timeout`        | 2000                      | Milliseconds a script's own code may run in a task — a script, a listener, a timer — the host's time in what it asks of the document not counted. See below.                     |
+| `onTimeout`      | nothing                   | One was.                                                                                                                                                                         |
+| `userAgent`      | `HTML_USER_AGENT`         | `navigator.userAgent`: what `HtmlNetwork` sends. `navigator.platform` is the one it names, in Chrome's words: `MacIntel`, `Win32`, or `Linux x86_64` where it names neither.     |
+| `language`       | the runtime's locale      | `navigator.language`.                                                                                                                                                            |
+| `canPlayType`    | none: `''` for every type | What a media element's `canPlayType` answers: whether what plays the page's `<video>` plays a MIME type. `canPlayMedia` answers for the platform's player.                       |
+| `frames`         | true                      | Load a frame's document, draw it over its box and run it in a realm linked to the page's. Off, a frame is an empty box.                                                          |
+| `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.                  |
+| `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: an `HtmlServiceWorkers`, the one its `HtmlNetwork` was made with, or `true` for one of its own. A worker answers `fetch`. See below. |
+| `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                         |
+| `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.                |
+| `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                     |
+| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                             |
+| `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                               |
+| `notifications`  | none: reaches none        | What a page's `Notification`s reach (`HtmlNotifications`). `useHtmlNotifications()` is the desktop's. See below.                                                                 |
+| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.         |
+| `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                       |
+| `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.            |
+| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage`, IndexedDB and `caches` are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.   |
+| `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                          |
+| `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                                |
+| `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                               |
 
 **A script's time is its own code's.** `timeout` is how long a task — a
 script, a listener, a timer, and the microtasks it queues — may run the
@@ -984,6 +1009,24 @@ page's next task runs. Nothing is begun in the last stretch before that
 ceiling, as long as `timeout`, so a forced layout is not cut half way
 through, and one cut anyway has the document styled and laid out again from
 nothing.
+
+**`EventSource` is built on the page's own requests**, so a stream is held to
+CORS and to the document's network as a `fetch` is, and it connects again after
+`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
+on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
+and `brotli`.
+
+**`BroadcastChannel` and `navigator.locks` reach as far as a tab's realms**: the
+page and its frames. A worker's thread keeps its own, and so does each tab, which
+is a process of its own, so a channel does not cross to a worker and a lock
+excludes nothing in another tab.
+
+**`Math.sumPrecise` is the realm's where the runtime has none**, in a page, a
+frame's realm and a worker, and a runtime's own is left alone: Node has none yet
+and Bun has its own. It is the exact sum, rounded once, so a sum that overflows
+on the way and comes back is still a number. What a page sets on `Math`, `Number`
+or `BigInt` afterwards does not change its answer. pdf.js's worker adds up the
+tables of each font it rebuilds with it.
 
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
@@ -1040,6 +1083,29 @@ no `WebSocket`, and there every socket fails as with no network.
 `webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
+
+**A page has the Web Cryptography API, and its keys are out of its reach**
+(`Crypto`, `SubtleCrypto`, `CryptoKey`). `crypto.subtle` is the runtime's own,
+behind this realm's conversions and errors, so what a page can use is what its
+runtime has: SHA-1 to SHA-512, HMAC, AES-CBC, CTR, GCM and KW, PBKDF2, HKDF,
+ECDSA, ECDH, the RSA schemes, Ed25519 and X25519 everywhere, and where the
+runtime has them SHA-3, AES-OCB, ChaCha20-Poly1305, KMAC, Argon2, Ed448, X448,
+ML-DSA and ML-KEM, with `getPublicKey`, the encapsulation methods and
+`SubtleCrypto.supports`. It needs no seam and no network, and a document with
+scripts off has none of it.
+
+`subtle`, `SubtleCrypto`, `CryptoKey` and `randomUUID` are a secure context's
+alone, and absent elsewhere: `https:`, `file:` and this machine are secure, and
+**a document with no `baseUrl`, which is `about:blank`, is not**, as in Chromium
+and Firefox, so one that wants `crypto.subtle` names an address.
+
+A `CryptoKey` crosses `postMessage`, `structuredClone`, `history.state` and
+IndexedDB, into frames and every kind of worker. A key's bytes stay on the
+host's side of the bridge: a page holds a sealed string it can neither read nor
+change. An `HtmlProfile` keeps what opens them, so a key kept in IndexedDB works
+after a restart. An `HtmlIndexedDB` of an application's own answers `keySecret()`
+to do the same; with none, a key in it lasts as long as the process.
+docs/prd-webcrypto.md has the design.
 
 **A page's WebTransport is the host's to carry** (W3C WebTransport). The
 page has the whole API — `WebTransport` with `ready`, `closed`, `draining`,
@@ -1173,11 +1239,23 @@ as WPT's tests make them, and to another peer the host can reach.
   `MediaStreamAudioDestinationNode`, whose track is a host source that
   renders the oscillators and constant sources reaching it through gains.
   Nothing else on a path is rendered, an analyser hears silence,
-  `decodeAudioData` rejects with the `EncodingError` a browser gives what
-  it cannot decode, and nothing is heard, since core has no audio output.
+  `decodeAudioData` reads WAV and gives anything else the `EncodingError` a
+  browser gives what it cannot decode, and nothing is heard, since core has
+  no audio output.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
+- **A canvas's text is drawn in the document's fonts**: `fillText`,
+  `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
+  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  transform, clip and compositing operator a path goes through. A `font`
+  names what the document's `@font-face` rules and `new FontFace` do, and a
+  face not loaded yet is asked for and drawn in what the list has until it
+  lands, as a browser draws it. `strokeText` is a band along the glyphs'
+  edges, so its joins are round and it draws no dash, and a worker has no
+  fonts, so an `OffscreenCanvas` there draws no text and measures it as a
+  guess. The tentative parts of `TextMetrics`, `getSelectionRects` and its
+  kin, are not there.
 - **WebGL draws where the host hands it a GL**, `scripts.webgl`, an
   `HtmlWebGL`. With none a context keeps the state a page sets and reads
   back and draws nothing, so a page written for a context still runs.
@@ -1229,20 +1307,80 @@ as wptrunner runs a browser with fake devices, and what an application can
 hand a page to show a call working with no camera. A source makes frames
 only while something listens, and its timer keeps no process alive.
 
-**A service worker is a worker that is installed, and nothing more**
-(Service Workers 1), where `serviceWorkers` is on and the page is a secure
-context. `register()` checks the script's and the scope's origin and that
-the scope is under the script's directory, starts the script in a thread
-of its own, and resolves once it has run, with the registration whose
-`installing` it is; its global is a `ServiceWorkerGlobalScope` that hears
-`install` and `activate`, each kept alive by `waitUntil`, and messages
-from its page, whose `source` is the page's `Client`, and what it posts
-there arrives on `navigator.serviceWorker`. `getRegistration()`,
-`getRegistrations()`, `ready` and `unregister()` are the spec's, by scope.
-It intercepts none of the page's requests — there is no `fetch` event and
-no `caches`, and `controller` is null — which is why it is off by
-default: a site that finds `serviceWorker` in `navigator` registers one to
-work offline or to be pushed to, and is better served by finding none.
+**A service worker answers what its pages ask for** (Service Workers 1),
+where a secure page has `serviceWorkers`. A worker outlives the document that
+registered it, so what keeps them does too: one `HtmlServiceWorkers`, handed to
+every document a process shows and to the network that loads them, so that a
+navigation is the worker's to answer before there is a document to ask.
+
+```tsx
+const workers = new HtmlServiceWorkers({ store: profile?.serviceWorkers });
+const network = new HtmlNetwork({ serviceWorkers: workers });
+
+<Html
+  source={source}
+  baseUrl={url}
+  onResource={net.onResource}
+  scripts={{ serviceWorkers: workers, fetch: net.fetch }}
+/>;
+```
+
+`register()`, `update()` and `unregister()` are jobs, one at a time for a
+scope, as the specification queues them; a script is fetched with its
+`Service-Worker: script` header and held to a JavaScript type, a scope under its
+directory or its `Service-Worker-Allowed`, and no redirect; one that changed by
+a byte, or whose imports did, is a new worker. Each worker is a thread of its
+own that hears `install` and `activate`, kept alive by `waitUntil`, and waits
+for the pages of the one before it unless it calls `skipWaiting()`.
+
+Once active it hears a `fetch` event for every navigation its scope holds, and
+for what its clients ask for: a page's `fetch` and `XMLHttpRequest`, its
+scripts and module imports, its stylesheets, fonts and images, a frame's
+document, and what its dedicated and shared workers fetch. `respondWith` takes
+any `Response`, a stream's as it comes, and one that calls nothing falls through
+to the network; `navigationPreload`, `clients.get`, `matchAll`, `claim`,
+`postMessage` and `WindowClient.navigate` are there, and `controller`,
+`controllerchange` and `ready` go by the scope that holds the document. A
+document answered by a worker is at the address that was asked for, whatever
+URL its response came from, which is how an application's shell answers every
+route of it. A hard reload asks past the worker (`network.document`'s
+`serviceWorkers: 'bypass'`), and what it brings is uncontrolled. A worker's
+requests go to the network the host gave it and no worker hears them.
+
+**`caches` is every secure page's and every worker's**, whether or not it has
+service workers, and is what a worker usually answers from: `CacheStorage` and
+`Cache`, with `Vary`, `ignoreSearch`, `ignoreMethod` and `ignoreVary`, and an
+opaque response's body kept and handed back with no script reading it. What it
+keeps is `HtmlStorage.caches`: memory unless a host hands in a store, and the
+profile's in the example browser, where it and the registrations are a file of
+their own, `workers.sqlite`, and a page past 2 GB is told `QuotaExceededError`.
+
+**What keeps them decides how long they last.** In memory, a registration goes
+with the process. With `HtmlProfile.serviceWorkers` a registration, its
+worker's scripts and what it cached survive a restart, so the first navigation
+of the next run starts the worker from what was kept and is answered with the
+network off. A worker with nothing to do gives its thread up after `idleMs`, 30
+seconds by default, and starts again for the next thing it hears, so a site
+should keep nothing in its global, as the specification tells it not to.
+
+**A worker is a process's.** Each tab of the example browser is a process, so a
+site open in two tabs runs its worker twice, over the one store: what either
+keeps in `caches` and IndexedDB the other reads, a registration another tab
+changed is read as the next request asks about the scope, and `clients` lists
+the clients of the process and no others. A site that talks between tabs
+through its worker's `matchAll` finds only its own.
+
+**What is not here.** Push, Background Sync and Periodic Sync: `PushManager`,
+`SyncManager` and `PeriodicSyncManager` are not on `window`, and a registration
+has no `pushManager`, `sync` or `periodicSync`, which is what a site that
+feature-detects them looks for, and the answer it has from a browser with none.
+A `<video>`'s and an `<audio>`'s source is the player's to open, so a worker does
+not hear it. A navigation's redirects are followed by the network, so a worker
+hears the first request of one and not each hop. `clients.openWindow` and `focus`
+need a notification's click behind them, a frame with no document of its own
+(`about:blank`, `srcdoc`) is no client of its own, and a `Cache` a page holds
+reads nothing once `caches.delete()` has taken its name, where a browser keeps it
+until it is let go. A site whose scripts are switched off runs no worker either.
 
 **A page keeps its own session history** (HTML 7.4). `pushState`,
 `replaceState` and a navigation to a fragment are entries of the
@@ -1633,6 +1771,18 @@ than going on a layer of the render server's, since a layer's frames are
 sampled ahead from a cycle that a page's script may seek, pause or cancel
 at any time.
 
+**A page's XML is read as XML.** `DOMParser` takes `text/xml`, `application/xml`,
+`application/xhtml+xml` and `image/svg+xml`; what is not well-formed is a
+document holding a `parsererror`. An element's attributes keep their case
+outside HTML, `getElementsByTagName` matches as it is written, an internal
+subset's entities and `<!ATTLIST>` defaults are read, and CDATA sections and
+processing instructions are nodes. `XMLSerializer` writes a node back, declaring
+what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
+`XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
+with the page's resolver asked for each prefix as the expression is compiled, not
+as it runs. `innerHTML` still reads and writes HTML in an XML document, and
+XSLT is not here.
+
 **The page's selection is the reader's** (Selection API 2). What the
 reader selects in the document — a press and a drag, a double click, Ctrl+A
 — is what `getSelection()` answers the next time the page reads it, as a
@@ -1714,6 +1864,17 @@ until its animations are over, when it is finished.
 - **Not yet.** Rendering held while the update runs, and transitions across
   documents.
 
+**A list is live, as the DOM has it.** `childNodes`, `children`,
+`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
+form's `elements`, a select's `options` and `selectedOptions`, a table's
+`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
+the tree holds when they are read, and an attribute hands out the same list
+each time. `querySelectorAll` holds what it found. None of them is an array:
+`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
+a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
+`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
+properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another
@@ -1760,9 +1921,8 @@ HTML 4.13.4).
 - **`customelementregistry`.** An element the parser makes with the
   attribute has no registry, and so does what it holds. That holds for the
   HTML parser, and for the XML parser that reads a frame's XHTML.
-- **What doesn't work yet:**
-  - a window `window.open()` opens, which a page gets no handle to;
-  - a top-level XHTML document, which `<Html>` parses as HTML.
+- **What doesn't work yet:** a top-level XHTML document, which `<Html>`
+  parses as HTML.
 
 `setHTMLUnsafe()` parses declarative shadow roots, as the document's
 parser does, where `innerHTML` doesn't. An element of an HTML name no
@@ -1938,6 +2098,235 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**`execCommand` makes the edits a key makes, and no others**: `insertText`,
+`delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
+`selectAll`, in an editing host or a focused text field, each told as a
+`beforeinput` and an `input`. `queryCommandSupported` says which, so a
+formatting command and `undo` answer false rather than pretending, and
+`queryCommandState` and `queryCommandValue` have nothing to report. `copy` and
+`cut` are there where the host handed a clipboard, under a user's press or
+key, and `paste` is not for a page to ask for.
+
+**`navigator.permissions` answers what asking would come to**: see
+[Notifications and permissions](#notifications-and-permissions). A name it does
+not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
+`TaskController`
+are the Prioritized Task Scheduling API: one task to a turn, the highest
+priority first, a continuation ahead of a task of the same one.
+**A drawing's geometry is worked out from its attributes.** No box stands for
+what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
+`getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
+are read from `transform`, `viewBox` and each shape's own attributes
+(`src/html/scripts/svg-geometry.ts`), and a run of text is measured in the
+element's font. Each element has its interface, `createSVGMatrix` and
+`createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
+not count, since its matrices are read from the attribute.
+
+### Windows
+
+```js
+const [windows, setWindows] = useState([]);
+
+<Html
+  source={source}
+  baseUrl={url}
+  scripts={{
+    ...network,
+    popups: {
+      open(popup) {
+        setWindows((all) => [...all, popup]);
+        return true;
+      },
+    },
+  }}
+/>;
+{
+  windows.map((popup) => <Popup key={popup.id} popup={popup} />);
+}
+```
+
+A page's `window.open` reaches `scripts.popups`. With none it answers null and
+hands the address to `navigate` as `'tab'`, so nothing opens by construction.
+
+**A window with an opener runs in its opener's process**, as a realm of its own
+linked to it, whatever its origin. A same-origin page reads `popup.document` in
+the call that opened it, which no process boundary could answer
+([the design](../prd-popups.md)). Being in one process gives a page no more of
+another origin: its realm is handed nothing of that window but a number, and the
+host carries what crosses origins. So a host shows one by mounting `<Html>` in
+that process, for each document it goes to, with `scripts.popup` set to what it
+was handed:
+
+```js
+function Popup({ popup }) {
+  const [doc, setDoc] = useState({ source: '', baseUrl: 'about:blank' });
+  const load = (url) =>
+    network.html(url).then((d) => setDoc({ source: d.source, baseUrl: d.url }));
+  useEffect(() => {
+    if (popup.url !== 'about:blank') void load(popup.url);
+    return popup.onClose(() => removeWindow(popup));
+  }, []);
+  return (
+    <Html
+      key={doc.baseUrl}
+      source={doc.source}
+      baseUrl={doc.baseUrl}
+      scripts={{ ...network, popup, navigate: load }}
+    />
+  );
+}
+```
+
+The first `<Html>` is `source=""` at `about:blank`, which draws the document
+`window.open` made as it was called: a page may write it or listen on it before
+React has heard of the window. A `session` makes the window's documents one
+history, as a tab's, and keeps its `opener` across them.
+
+| `HtmlPopup`   | What it is                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `id`          | A key to mount it by.                                                                         |
+| `url`         | Where it goes, absolute, or `about:blank`. Read it as you load: a page may send it elsewhere. |
+| `name`        | What a later `window.open` or a `target` finds it by.                                         |
+| `features`    | `popup`, HTML's "is a popup window requested", and `width`, `height`, `left`, `top`.          |
+| `referrer`    | The address of what opened it, or null with `noreferrer`.                                     |
+| `post`        | The form to post, where a form's `target` opened it.                                          |
+| `closed`      | Whether it has closed or is closing.                                                          |
+| `close()`     | The user closed it: its document unloads, and the page's `closed` reads true.                 |
+| `onClose(fn)` | The page closed it. Stop showing it.                                                          |
+| `onFocus(fn)` | A script asked for it to come to the front.                                                   |
+
+**What has no opener is a tab.** `noopener`, `noreferrer` and a plain
+`target=_blank` go to `navigate(url, 'tab')` or `onLink`, and `window.open`
+answers null. A `target` that is a name, or `_blank` with `rel=opener`, has an
+opener, so `<a target=side>` opens a window as `window.open(url, 'side')` does,
+and a form's `target` carries its POST there (`navigate`'s third argument).
+
+**A name finds the window it names**: this window, `_parent`, `_top`, a frame of
+the document, then any window of its group, by `window.name`. It never reaches
+another tab. With `noopener` a name still finds its window and sends it there,
+and `window.open` answers null, which is what WPT holds.
+
+**A window needs a press or a key behind it**, read from the page's activation.
+One press opens one window, and with none `window.open` answers null and
+`popups.blocked(url)` is told. `popups.unblocked` lets everything through, as
+wptrunner runs a browser.
+
+**What a reference answers** is what HTML has it answer. Of the page's own origin
+it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
+`location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
+from one to the other as the window navigates, so one object stands for a window
+through a popup login. `closed` is true from the moment `close()` is called, and
+the window goes in a task after it: `opener` reads null then, and a name no longer
+finds it.
+
+An opener that navigates keeps its popups, and they reach its next document, where
+the host shows a tab's documents with one `session`. A popup that is the first of a
+page's to be opened keeps a document out of the back-forward cache, as Chrome does,
+for as long as its group has another window in it.
+
+A window is a service worker's `auxiliary` client, and the worker of its opener's
+origin hears what it asks for. Its `about:blank` is under its opener's worker, and
+`clients.openWindow` is a tab with no opener, through `navigate`, whichever window
+it is told through.
+
+`window.close()` in a window no page opened goes to `scripts.close(alone)`, `alone`
+where its history has one entry, which is what lets a page close a window no script
+opened; a host knows the rest, and answers true where it closes, which `closed` then
+reads. A tab a host opened under a name, the fourth argument of `navigate`, goes by it
+through `scripts.windowName`.
+
+Not done: `Cross-Origin-Opener-Policy`, `sandbox`'s `allow-popups`, `moveTo` and
+`resizeTo` ([the design](../prd-popups.md#left-out)).
+
+### The clipboard
+
+```js
+const clipboard = useHtmlClipboard();
+const permissions = useMemo(() => myPermissionPrompts(), []);
+
+<Html source={source} scripts={{ clipboard, permissions }} />;
+```
+
+**The user's own copy and paste need no seam.** Ctrl+C on a selection and
+Ctrl+C, Ctrl+X and Ctrl+V in a text field are core's, on Cmd on a Mac, and work
+in a bare `<Html scripts>`, where a page hears `copy`, `cut` and `paste` with
+empty data and may cancel them. What `scripts.clipboard` adds is the page's
+part: what a `copy` listener wrote goes on the clipboard, what is on the
+clipboard is in a `paste`'s `clipboardData`, a paste no listener cancels is
+made by the page's realm, as `insertFromPaste` with a `beforeinput` and an
+`input`, into the field or at the selection of the editing host, and
+`navigator.clipboard` is there, in a secure context. Without one a page reaches
+no clipboard, and `'clipboard' in navigator` says so.
+
+A chord is told after its `keydown`, if that was not cancelled, at the field or
+the editing host that has the focus, else at what the selection starts in,
+else at the body. A `paste` waits for the read, since an event is told at once
+and a read of the clipboard is not, so it comes a turn after its key. Its
+`clipboardData` is read-only and a `copy`'s is read/write, and each is
+protected once its event is over: a page keeps no `DataTransfer` to read what
+was pasted later. What is not text on the clipboard reaches a paste as a file,
+so a picture is `clipboardData.files[0]`, `image.png`. A paste into a field or
+a host is the text alone, and what `text/html` means for the page is a
+listener's to decide.
+
+`navigator.clipboard` has its gates here rather than in the seam. A write needs
+a press or a key behind it that is recent, or `clipboard-write` granted, and
+never one denied. A read needs `clipboard-read` granted, or, where it is
+`prompt`, a press or a key and `scripts.permissions.request` saying so: a page
+that reads the clipboard after any click reads what was copied in every other
+application. With no `permissions` nothing can be granted, so a page cannot
+read the clipboard at all, though a `paste` the user made still reaches it. A
+frame of another origin has neither without an `allow` naming the feature. What
+a read hands back of `text/html` has what would run, or load, taken out, and
+`read({ unsanitized: ['text/html'] })` asks for it as it is. A write takes
+`text/plain`, `text/html`, `text/uri-list`, `image/png`, `image/svg+xml` and
+`web ` types, one `ClipboardItem` at a time, as Chrome does, and a refusal is
+the page's own `NotAllowedError`, whatever the host threw.
+
+`HtmlClipboard` is `read()` and `write(data)`, each a map of MIME type to text
+or bytes. `useHtmlClipboard()` is core's `useClipboard()`, on every backend:
+X11's selections, NSPasteboard and the Windows clipboard. It holds in a
+`<Frame>` pane as well, since NSPasteboard asks nothing of the process's
+NSApplication. `memoryClipboard()` is one that reaches no machine, for a test.
+
+Not here: `clipboardchange`, a paste whose `text/html` keeps its structure
+without a listener's help, and `navigator.clipboard` behaving as a detached
+frame's own where the frame has no realm of its own.
+
+### Drag and drop
+
+A press on what can be dragged, moved past core's threshold, is a drag as HTML
+has it: `dragstart`, `drag`, `dragenter`, `dragover`, `dragleave`, `drop` and
+`dragend`, each a `DragEvent` with a `dataTransfer` of its own over one store.
+What can be dragged is an element marked `draggable=true`, a link and an image.
+The store is read/write at `dragstart`, read-only at `drop` and protected in
+between, where a page sees its types and not its data. A target that takes a
+drop cancels `dragover`; a field or an editing host takes text with nothing
+said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+anything else, leaves the gesture what it was: a selection, or a drag of the
+page's own over pointer events. After `dragstart` the pointer is the drag's, so
+a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
+
+Text and files from another application land where the host hands
+`onDropFiles`, which is given the paths and answers with `HtmlFile`s:
+`readHtmlFiles` is one. Without it nothing from outside lands on a document. A
+page sees `Files` in `types` while the drag is over it, and the `File`s at the
+`drop`, as `dataTransfer.files` and through `webkitGetAsEntry()`, a file's
+entry: a folder dropped is no entry here.
+
+**A `<Frame>` pane is no window of its own, so its host takes drops for it.**
+A host puts `dropAccept` on the box around the `<Frame>`, and hands the page
+what it hears through `HtmlHandle.dragOver`, `dragLeave` and `dropHere`, as the
+example browser does; it accepts for the page, since no answer could come back
+across the process in time. On a Mac a pane also has no drop session of core's,
+so a drag inside the page is answered here, and **a page in a pane on a Mac
+cannot be dragged out to another application**, or to another tab: that needs
+`beginDrag` in the host. On X11 a pane's process drives XDND itself. `<Html>`
+in a window of its own can do both on every backend.
+
+Not here: a drag image (`setDragImage` is kept and nothing is drawn beside the
+cursor), dragging selected text, and a folder dropped as a directory entry.
+
 ### Cookies and storage
 
 ```js
@@ -2064,7 +2453,7 @@ anywhere is the host's to decide, as whether an image loads is. Without
 | `url`         | The `action`, resolved as `onLink`'s `href` is — against the document's base, and an empty one is the document's own URL. A GET's has the entries as its query, so a GET is a link to exactly this. |
 | `enctype`     | `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain`.                                                                                                                         |
 | `entries`     | The `[name, value]` pairs, in tree order, unencoded.                                                                                                                                                |
-| `body`        | A POST's body, encoded as `enctype` says; null for a GET.                                                                                                                                           |
+| `body`        | A POST's body, encoded as `enctype` says: bytes where a file is in it; null for a GET.                                                                                                              |
 | `contentType` | The `Content-Type` for the body — `multipart/form-data`'s names its boundary; null for a GET.                                                                                                       |
 | `target`      | `formtarget`, `target` or `<base target>`: `'_blank'` asks for a new browsing context, empty for this one.                                                                                          |
 
@@ -2192,6 +2581,197 @@ is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
 and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
+
+### Notifications and permissions
+
+```tsx
+import { useHtmlNotifications } from '@react-x11/components/html';
+
+const notifications = useHtmlNotifications();
+<Html source={source} scripts={{ notifications }} />;
+```
+
+A page does not reach the desktop by itself. With no `scripts.notifications` it
+finds `Notification` all the same, as it does in a browser whose user said no:
+`Notification.permission` is `denied`, and one it makes fires `error`. A host
+that hands one and no `permissions` has decided, and a page is `granted`; one
+with a user to ask hands both.
+
+`useHtmlNotifications()` is core's `useNotifier()`, so a banner lands on
+whatever the machine has, and **what comes back depends on where it lands**:
+
+| Where it lands                                | Shown | `click` and `close`         |
+| --------------------------------------------- | ----- | --------------------------- |
+| The desktop's daemon over D-Bus, on Linux     | Yes   | Yes                         |
+| `notify-send`, on Linux with no bus transport | Yes   | No                          |
+| The system's centre, in a signed app on a Mac | Yes   | Yes                         |
+| `osascript`, on a Mac otherwise               | Yes   | No, and no `close()` either |
+
+A page hears `show` on all of them. An unbundled `node` process, which the
+example browser is, lands on `osascript`, in a `<Frame>` pane as much as out of
+one, and that banner is posted as Script Editor's.
+
+**The origin goes with the notification.** `HtmlNotification.origin` is the
+host's and not the page's: a page writes the title and the body, so what says
+who wrote them cannot be something else it writes. `useHtmlNotifications()`
+shows it as the subtitle and the application's name. Its `body` is escaped where
+the daemon reads markup, since a page's `<img>` there would be a request nobody
+made. An `icon` is handed over as a URL and asked for by nothing.
+
+`Notification.requestPermission()` asks `scripts.permissions` only with a press
+or a key behind it. Without one a page hears what it had, as Firefox and Safari
+have it, where Chrome asks with a smaller prompt: a page that can ask on load
+asks every reader before they have done anything. A `tag` replaces the document's
+last one of that tag, and a page's notifications go with it, as a closed tab's do
+in Chrome. A `click` the page does not cancel calls `HtmlNotifications.focus`.
+`ServiceWorkerRegistration.showNotification()` and `getNotifications()` are
+there, with `actions`, and `notificationclick` and `notificationclose` reach a
+service worker that showed its own. They last as long as the document's
+registration, so a reload forgets them, and a click on one the window showed
+calls `focus` rather than waking its worker. A worker's notifications go through
+its page's seam.
+
+**`navigator.permissions` answers what asking would come to**, in this order,
+which is `DomHost._permissionState`:
+
+1. Anything in a document that is not a secure context is `denied`.
+2. A feature a frame's `allow` leaves out is `denied`, whatever a host says.
+3. `camera` and `microphone` are `scripts.mediaDevices.permission`'s.
+4. Anything else is what `scripts.permissions.state` says.
+5. With no `permissions`, what a host handed a seam for has that seam's answer:
+   `notifications` is `granted` beside a `notifications` seam, and
+   `clipboard-write` is `prompt` beside a `clipboard`, since a press is all a
+   write needs. Everything else is `denied`, since there is nobody to ask.
+
+A `PermissionStatus` with a listener hears `change` when a state moves, which a
+host says through `HtmlPermissions.watch`, and a page's own `requestPermission()`
+says for itself. A worker has a copy of its page's answers, kept up to date, since
+a read is at once and an answer across a thread cannot be.
+
+The example browser asks in a bar above the tab, in its own process, since a
+pane draws the page and nothing around it. What is said is kept in the profile
+(`HtmlProfile.permissions`), which every tab's process reads for itself, and
+**Reset Site Permissions** in the page's menu lets an origin ask again. It can
+ask for `notifications` and `clipboard-read`, and anything else it has no feature
+behind is `denied`.
+
+`memoryNotifications()` reaches nothing, for a test: what is showing is its
+`shown`, each with its `click()` and `close()`.
+
+### Downloads
+
+```jsx
+const network = useHtmlNetwork(url);
+
+<Html
+  source={page}
+  onDownload={async (request) => {
+    const source = await network.download(request, signal, url);
+    for await (const chunk of source.body) write(source.filename, chunk);
+  }}
+/>;
+```
+
+**Nothing is saved by construction.** An `<a download>` of the document's own
+origin, or of a `blob:` or `data:` URL a page made, is handed to `onDownload`,
+and with none it is a link like any other. That goes for one a script made and
+clicked with no document around it, which is how a page saves what it has
+built. Another origin's `download` says nothing, as in a browser: the link is
+followed, and it is the response that decides.
+
+`HtmlDownloadRequest` is the `url`, the `filename` the attribute said, and for
+a `blob:` the `bytes` and `type`, which no network could reach.
+`HtmlNetwork.download(request, signal, from)` answers with what to write:
+`filename`, `type`, `size` where the server said, and `body`, which arrives a
+chunk at a time and has none of a document's limit on it.
+
+A navigation can come to the same thing. `HtmlNetwork.document` answers with
+the response's `disposition`, `dispositionOf` reads it, and `size` and `whole`
+are there to save it with; `downloadSource(response, '')` makes the source. What
+to do about it is the host's: the example browser saves what says `attachment`
+and what is of a type it cannot show, and the tab stays on what it was showing.
+
+A source's `hold()` is for a host that will not read it yet, as one asking its
+user where to save it will not: the clock on a stalled response runs from the
+request, so without it a dialog left open for 30 seconds ends the download. The
+clock starts again as the body is first read. `file:` responses are read as
+they are asked for, so a large one is held to a document's limit only by what
+holds it.
+
+`downloadName` goes by the response's name, the attribute, the end of the URL
+and the type's extension, in that order, and `safeFilename` leaves a name that
+is safe to join to a directory: no path in it, no control characters, nothing
+that hides the file or disguises it, whatever a server or a page said. A
+right-to-left override and a slash that is only like one are taken out with the
+rest. `dispositionOf` reads RFC 6266, `filename*` over `filename`.
+
+The example browser asks where each file goes: a save dialog, shown by the
+browser's process, opens on the user's Downloads folder, or
+`BROWSER_DOWNLOADS_DIR`, starting on the cleaned name, numbered so that accepting
+it replaces nothing. A server's name is only that suggestion, nothing of the
+response is read until the dialog answers, and a dialog dismissed leaves no
+trace. Four asks may wait at once, and a page asking for more is refused.
+
+The tab's own process writes to the path chosen, with a `.part` file until all
+of it has arrived, so a file the user chose to replace stands until there is all
+of what replaces it. The browser draws a shelf along the bottom of its window
+with each one's progress and a Cancel and a Show in Folder. A tab closed with a
+download under way ends it, and the shelf says so. `showSaveFilePicker` is left
+out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
+`<a download>`.
+
+### File inputs
+
+```jsx
+const onPickFiles = useHtmlFilePicker();
+
+<Html source={page} onPickFiles={onPickFiles} onSubmit={post} />;
+```
+
+An `<input type=file>` is a button and what it holds, as wide as Blink's, and a
+press anywhere on it asks `onPickFiles`, so one a page makes transparent over
+what it draws works as it does in a browser. So does a press on its `<label>`,
+and a page's `click()` or `showPicker()` under a user's press or key, which is
+how a page's own button opens one that is hidden: such an input needs no box.
+Without `onPickFiles` it opens nothing: a component that shows a page does not
+open a dialog for it.
+
+`onPickFiles` is handed the element, `multiple` and what `accept` names, and
+answers with files or, for a dialog dismissed, null. What comes back is told as
+`input` and `change`; a dialog dismissed, or one that changed nothing, as
+`cancel`. A page's `click` that it cancelled asks nothing.
+
+| `HtmlFile`     |                               |
+| -------------- | ----------------------------- |
+| `name`         | Its name, with no path.       |
+| `type`         | Its MIME type, or `''`.       |
+| `lastModified` | Milliseconds since the epoch. |
+| `bytes`        | What it holds.                |
+
+`useHtmlFilePicker()` is core's file dialog, on the best rung the machine has,
+with `accept` as its filters, and `readHtmlFiles(paths)` reads what it answers
+with; `fileTypeOf(name)` is the type a file goes by, by its extension, since
+nothing on a disk says. **A host whose documents are in a `<Frame>` pane shows
+the dialog itself**: a pane has no NSApplication on a Mac to show a panel from.
+It hands the pane the paths, `acceptFilters(accept)` being the dialog's filters,
+and the pane calls `readHtmlFiles`, as the example browser does, so that nothing
+of a file passes through the host.
+
+A form with files in it posts them: `multipart/form-data` has each with its
+name, its type and its bytes, and `body` is then a `Uint8Array`, which a host's
+`post` hands on as it does text; the other two encodings send the file's name.
+An input with nothing in it goes as HTML has it, one file with no name.
+`required` is satisfied by a file, and a reset empties the input.
+
+A page's `input.files` is a `FileList` of `File`s, the same list until what the
+input holds changes, and a `File`'s bytes cross as the page reads them, so a
+video chosen to be uploaded need never reach the page at all. `value` reads
+`C:\\fakepath\\name`, and takes nothing but `''`. `files` takes another
+input's list, or a `DataTransfer`'s, and tells no event. `new FormData(form)`
+holds the files, and `URL.createObjectURL(file)` shows one in an `<img>` before
+anything is uploaded. Not here: `webkitdirectory`, `capture`, and
+`showOpenFilePicker`, which is left out rather than half there, since a page
+that finds it goes on to `showSaveFilePicker` and handles it can write to.
 
 ## Video
 
@@ -2331,15 +2911,20 @@ rest keep their posters:
   under a scale. On macOS a player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
-- **A box fixed to the viewport is asked about as the pane scrolls**: a
-  header that comes over a playing video cuts the player where it reaches
-  it, and one that reaches into its middle hides it for as long as it is
-  there, the poster showing in its place and the video playing on. Only one
-  the document paints after the video is over it: a fixed box before it in
-  the paint order is under it wherever the scroll has it. The same holds of
-  a frame, which is hidden whole by what it cannot be cut around —
-  joshwcomeau.com's floating like button, fixed beside its article and
-  before its playgrounds in the tree, hid each playground's result.
+- **A box fixed to the viewport is asked about as the pane scrolls**, and
+  at each paint, since a fade changes what it draws and lays nothing out. A
+  solid band that comes over a playing video, a header, cuts the player
+  where it reaches it. What lets the video show, or stands in its middle, is
+  painted over the player with the boxes above, and counts among the four:
+  YouTube's embed fixes its controls over the whole player and fades them
+  in, translucent, over the video. One that cannot be painted there hides
+  the player for as long as it is there, the poster showing in its place and
+  the video playing on. Only one the document paints after the video is over
+  it: a fixed box before it in the paint order is under it wherever the
+  scroll has it. A frame has nothing painted over it, so it is hidden whole
+  by what it cannot be cut around — joshwcomeau.com's floating like button,
+  fixed beside its article and before its playgrounds in the tree, hid each
+  playground's result.
 - **What a rectangle cannot follow** — a transform that turns or scales the
   video or a box around it, a `clip-path` or a mask, a video fixed to the
   viewport, or corners of its own, or of a box around it that cuts it, that
@@ -2656,6 +3241,14 @@ no listeners, since nothing runs in it. A host that has some — a script
 engine over the DOM, as the browser example's is, or an application wiring
 behaviour onto a document with `domutils` — dispatches them, and answers.
 
+**A press moves the focus after its `mousedown`**, as its default action,
+which is the order all three engines have. The host hears the press with
+`activeElement` where it was, then `focusout` and `focusin`, and a `false`
+leaves the focus where it is. That is what lets a toolbar keep the caret in
+a field, and what keeps Monaco's editor focused when it is pressed. A press
+on what `user-select: none` keeps out of a selection starts none and still
+moves the focus, since nothing cancelled it.
+
 | `type`                 | When                                                                                                     | Cancelling it                                    |
 | ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
@@ -2824,6 +3417,14 @@ parsed before its scripts ran: a frame's classic scripts run after its parse,
 in order, and what one writes goes in after it, parsed as a fragment. And an
 inline script that `document.write` writes runs once the script that wrote
 it has ended, where a browser runs it inside the `write`.
+
+**What a script focuses has the focus from then on, whenever its widget
+comes.** A control has no widget until the render after it is put in, or
+after a page still loading is laid out, so `focus()` tells `focusin` and
+`activeElement` answers for the element at once, as a browser's does, and
+the first render that mounts a widget for it hands the focus over. A focus
+sent elsewhere first, or a `blur()`, takes that back. A page goes by what it
+was told: Monaco, told it had the focus, asks for nothing when it is pressed.
 
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
@@ -4391,8 +4992,22 @@ and `font-weight` — `text { font: 10px/1 Ahem }` — and a gradient stop's
 `style` attribute, as the cascade orders them, `!important` and `var()`
 included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
-— `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
-ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
+— `.st0 { fill: #fff }` for `<path class="st0">`. A `<link>` or a `<base>`
+written there is neither a sheet nor the document's base, and asks
+`onResource` for nothing, as neither an `<object>`, an `<input type="image">`
+nor a `<video>`'s poster does, and a `<title>` there is not the document's:
+HTML's parser makes an SVG element of each, and a MathML one under `<math>`,
+which it stays wherever a script moves or copies it. So a form owns no
+`<input>` there, and no window has an `<object>` there by its `name`. One in a
+`<foreignObject>`, in an SVG `<title>` or `<desc>`, or in MathML's `<mi>` and
+its kin is HTML's, and one a script or an application makes with
+`createElement` is what it would be anywhere, as in all three engines. A
+`<style>` in a drawing is a sheet and a `<script>` runs, since SVG has both,
+and in a `<math>` neither is. An `<svg>` in a `<math>` is MathML's and all it
+holds with it, unless an `<annotation-xml>` holds it, and a `<math>` in an
+`<svg>` is SVG's. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
+drawing there, and it and what comes after it stand after the drawing. Those
+properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
 no others: a rule's `transform` is not. A length in the drawing's
 geometry is worked out as CSS has it, where ntk's `SvgView` would read it
 as the number before its unit: `x2="2.5em"` is of the element's font
@@ -6371,6 +6986,35 @@ script's walk of the tree found another tree than a browser's. They go on
 the parser's own stack, so its end tags close them — a `</tbody>` in a cell
 ends the cell and the row, as Acid3's table has it.
 
+**SVG and MathML are read as HTML's parser reads them.** A `</p>`, a `</br>`
+and a `<font>` with a `color`, a `face` or a `size` end foreign content as a
+`<div>` does. An integration point is one in its own language only: `<svg><mi>`
+is SVG's and `<math><title>` MathML's, and an `<annotation-xml>` holds HTML only
+where its `encoding` says so. A name means nothing else it means in HTML there,
+so an `<input>` holds what comes after it, a `<td>` in a `<td>` nests and an
+`<html>` is an element like any. An end tag closes as all three engines have
+it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
+`</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
+table's scope stops at no integration point.
+
+**Mis-nested HTML is read as a browser reads it, but for formatting.** An end
+tag goes by HTML's scopes: a `</span>` over a `<div>` is ignored, so that the
+`<div>`'s own end tag closes the `<div>` and no outer one, a `</li>` stops at a
+list, and any heading's end tag ends a heading. A start tag closes what HTML has
+it close, from under whatever is open: a `<div>` or an `<li>` ends a `<p>`, an
+`<li>` ends the one before it, and a `<button>` holds an `<input>`, as a
+`<select>` holds a `<button>`. A part of a table outside one is ignored, and in
+one closes what cannot hold it. A `</form>` leaves what the form holds open, a
+second `<form>` is turned away for as long as the parser points at the first,
+and between a table's parts a `<form>` closes as it opens and owns the controls
+that come after it, which is why a page reads `input.form` where `closest('form')`
+finds nothing. What is left differs from a browser: there is no adoption agency,
+so nothing closes a formatting element from under what it holds and nothing brings
+one back, and `<p><a><div>` stays in the `<p>`; a nested `<a>` is not ended; and
+there is no foster parenting, so what is out of place in a table stays in it. A
+`<table>` ends a `<p>` in a source of any kind, as it does in a document with no
+quirks.
+
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once
 the head is behind it, as it ignores a second `<body>`: the attributes of
@@ -6449,6 +7093,9 @@ operations that are easy to get wrong (`appendChild`, `removeNode`,
 `replaceNode`, and `createHtmlElement`/`createText`/`parseHtmlFragment` to
 build nodes), because a domhandler node carries `parent`, `prev`, `next` and
 `children` and a splice has to keep all four straight.
+`parseHtmlFragment(html, false, element)` reads the markup as what `element`
+holds, as its `innerHTML` does: in a drawing a `<path/>` closes itself and a
+`clipPath` keeps its capital.
 
 After mutating, call `handle.refresh()`. That is explicit on purpose:
 observing a plain object graph would cost a proxy per node and tax the static

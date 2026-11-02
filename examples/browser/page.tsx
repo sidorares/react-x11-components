@@ -64,6 +64,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { ReactElement } from 'react';
 import * as DomUtils from 'domutils';
@@ -98,18 +99,25 @@ import {
   CookieJar,
   Html,
   HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
   NetworkError,
   canPlayMedia,
   decodeText as decode,
+  dispositionOf,
+  downloadName,
+  downloadSource,
   linkTarget,
   navigableFor,
   preloadHtmlScripts,
   publicSuffixList,
+  readHtmlFiles,
   resourceResult,
   schemeOf,
   sniffCharset,
   threadTransport,
+  useHtmlClipboard,
+  useHtmlNotifications,
   useHtmlHandle,
   videoSource,
   gpuWebGL,
@@ -119,6 +127,15 @@ import type {
   DocumentResponse,
   Element,
   FormSubmission,
+  HtmlDownloadRequest,
+  HtmlNotifications,
+  HtmlPermissions,
+  HtmlPermissionState,
+  HtmlDownloadSource,
+  HtmlDrop,
+  HtmlPickFiles,
+  HtmlPopup,
+  HtmlPopups,
   HtmlScripts,
   HtmlSessionEntry,
   PostData,
@@ -128,11 +145,17 @@ import type {
   ViewportOverflow,
 } from '../../src/html/index.js';
 import { guessing } from '../../src/html/layout/guess.js';
+import { MOST_PDF, kindOf, readAll, readJson, readXml } from './documents.js';
+import type { Viewer } from './documents.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
+import { saveDownload } from './downloads.js';
+import type { DownloadState } from './downloads.js';
 import { openProfile } from './profile.js';
+import { unanswered } from './permissions.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
+import { PopupWindow, PopupWindows } from './popup-window.js';
 import { Dock, Highlight } from './devtools/dock.js';
 import { ConsoleLog, Inspection, levelOf } from './devtools/model.js';
 import { NetworkLog } from './devtools/network-log.js';
@@ -146,7 +169,6 @@ import {
   homePage,
   imagePage,
   textPage,
-  unsupportedPage,
 } from './pages.js';
 
 /** The keys a scroll pane moves its offset down or up with (core's
@@ -172,6 +194,14 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
 /** The developer tools' panels, loaded the first time a tab opens them:
  *  a tab that never does loads none of what they are made of. */
 const DevTools = lazy(() => import('./devtools/index.js'));
+
+/** What shows a document `<Html>` does not, loaded the first time a tab
+ *  shows one. */
+const DocumentViewer = lazy(() => import('./viewers.js'));
+
+/** How many downloads may wait for the user to say where they go, before a
+ *  page asking for more is refused: each is a dialog of its own. */
+const MOST_UNPLACED = 4;
 
 /** What a secondary press was on, which the page's menu is about. */
 interface MenuTarget {
@@ -212,11 +242,32 @@ const DEFAULT_USER_AGENT = `Mozilla/5.0 (${
  *  browser has one and the runtime has SQLite. */
 const profile = await openProfile();
 
+/** What a user said with no profile to keep it in: this tab's alone. */
+const unkeptPermissions = new Map<string, HtmlPermissionState>();
+
+/** Where a permission stands for an origin, for a page's `navigator.permissions`
+ *  and for what guards a feature: asked often, and read from the profile, where
+ *  another tab's process may have just kept an answer. */
+function sitePermission(name: string, origin: string): HtmlPermissionState {
+  return (
+    profile?.permissions.get(origin, name) ??
+    unkeptPermissions.get(`${origin} ${name}`) ??
+    unanswered(name, origin)
+  );
+}
+
 /** The cookies every tab shares, through the profile; the Public Suffix
  *  List where the optional `tldts` is installed. */
 const cookies = new CookieJar({ store: profile?.cookies });
 void publicSuffixList().then((list) => {
   if (list) cookies.publicSuffix = list;
+});
+
+/** The service workers of the pages this process shows, whose registrations
+ *  and scripts every tab shares through the profile, each tab running its
+ *  own thread of a worker. */
+const serviceWorkers = new HtmlServiceWorkers({
+  store: profile?.serviceWorkers ?? undefined,
 });
 
 /** One process's network: a tab's own memory, where each tab is a process,
@@ -230,6 +281,7 @@ const network = new HtmlNetwork({
   userAgent: DEFAULT_USER_AGENT,
   cookies,
   httpCache: profile?.httpCache ?? undefined,
+  serviceWorkers,
   // on a thread of its own: a page that keeps this one busy laying itself
   // out and running its scripts holds back no download — the 2.3 MB
   // script a playground's frame on joshwcomeau.com waits for came in
@@ -349,6 +401,44 @@ export interface PageProps {
   ): void;
   /** A link followed, or a form submitted: with `post`, a POST of it. */
   onLink(url: string, target: LinkTarget, post: PostData | null): void;
+  /** A file input asked for files. A pane has no AppKit to show a panel
+   *  from, so the browser shows the dialog, and what was chosen comes back
+   *  as `picked`, under `id`. */
+  onPickFiles(id: number, multiple: boolean, accept: string[]): void;
+  /** A page asks its user something, which the browser puts to them. */
+  onAskPermission(id: number, origin: string, name: string): void;
+  /** The last answer to `onAskPermission`, where the user gave one. */
+  permissionAnswer?: { id: number; state: HtmlPermissionState | null } | null;
+  /** What moved in the profile, for every tab's pages to hear. */
+  permissionsMoved?: {
+    n: number;
+    origin: string;
+    names: string[];
+    /** Whether the user let the origin ask again. */
+    forgot?: boolean;
+  } | null;
+  /** Let this page's origin ask again. */
+  onForgetPermissions(origin: string): void;
+  /** Its notification was clicked: show the tab. */
+  onBringForward(): void;
+  /** A download wants a place. A pane has no AppKit to show a panel from,
+   *  so the browser shows the save dialog, starting on `name`, and where the
+   *  user said comes back as `savePath`, under `id`. */
+  onSaveFile(id: string, name: string): void;
+  /** The last answer to `onSaveFile`: the path chosen, or null where the
+   *  dialog was dismissed. */
+  savePath?: { id: string; path: string | null } | null;
+  /** A download's news: the browser draws its shelf from it. */
+  onDownloadState(state: DownloadState): void;
+  /** The downloads the shelf asked to have stopped, by id. */
+  cancelDownloads?: readonly string[];
+  /** The last answer to `onPickFiles`: paths, or null where it was
+   *  cancelled. */
+  picked?: { id: number; paths: string[] | null } | null;
+  /** What another application is dragging over the page, or has dropped on
+   *  it: a pane has no window for one to land on, so the browser takes it
+   *  and says so here. Positions are the pane's own. */
+  dropped?: (HtmlDrop & { phase: 'over' | 'drop' }) | { phase: 'leave' } | null;
   /** An entry wants its document loaded, which this process does not have:
    *  a step to one it let go, the page's own reload, or the entry shown
    *  after a crash. `doc` is the document it was, whose POST to send. */
@@ -356,7 +446,40 @@ export interface PageProps {
   /** One of the browser's own chords, pressed while this page had the key
    *  (`keys.ts`). */
   onCommand(command: Command): void;
+  /** The window a page opened that this page is, in a `<popup>` of the
+   *  process of the tab that opened it (`popup-window.tsx`). */
+  popup?: HtmlPopup;
+  /** And the windows of that tab, which a page in one of them adds to. */
+  windows?: PopupWindows;
 }
+
+/** The navigation number of the `about:blank` a window opened with, which no
+ *  load made. */
+const OPENED_SEQ = -1;
+
+/** The document of a window a page opened, as it opens. */
+const OPENED_DOC: Doc = {
+  source: '',
+  partial: false,
+  baseUrl: 'about:blank',
+  url: 'about:blank',
+};
+
+/** What it shows, which `<Html scripts>` made as `window.open` was called,
+ *  and which no session has: number 0 is no entry's. */
+const OPENED_VIEWS: Views = {
+  views: [
+    {
+      n: 0,
+      seq: OPENED_SEQ,
+      url: 'about:blank',
+      scripted: true,
+      zoom: 1,
+      number: 0,
+    },
+  ],
+  shown: 0,
+};
 
 /** What `<Html>` is given for one document. */
 interface Doc {
@@ -369,6 +492,10 @@ interface Doc {
   baseUrl: string | null;
   /** Where it was loaded from, where a redirect ended. */
   url: string;
+  /** What shows it where `<Html>` does not (`viewers.tsx`), and what to call
+   *  it where it is saved from there. */
+  viewer?: Viewer;
+  filename?: string;
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -633,7 +760,13 @@ export default function Page(props: PageProps): ReactElement {
   const cocoa = useSupports('nativeControls');
   // whether a page's `<video>` is handed to the platform's player
   const plays = useSupports('mediaPlayback');
-  const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(new Map());
+  const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(
+    () => new Map(props.popup ? [[OPENED_SEQ, OPENED_DOC]] : []),
+  );
+  // the windows this tab's pages opened, drawn by the tab's: a window a popup
+  // opened outlives the popup, as it does in a browser
+  const [windows] = useState(() => props.windows ?? new PopupWindows());
+  const opened = useSyncExternalStore(windows.watch, windows.list);
   const docsNow = useRef(docs);
   docsNow.current = docs;
   // The tab's history, and which navigation's document each of its
@@ -645,10 +778,9 @@ export default function Page(props: PageProps): ReactElement {
   // takes the place of. One state, changed only by updaters: the session
   // tells of a change a microtask on, which may be before React has drawn
   // a document just added.
-  const [{ views, shown: shownN }, setViews] = useState<Views>({
-    views: [],
-    shown: 0,
-  });
+  const [{ views, shown: shownN }, setViews] = useState<Views>(
+    props.popup ? OPENED_VIEWS : { views: [], shown: 0 },
+  );
   const shown = views.find((v) => v.n === shownN) ?? null;
   const shownNow = useRef(shown);
   shownNow.current = shown;
@@ -658,6 +790,8 @@ export default function Page(props: PageProps): ReactElement {
   const doc = shown?.seq ?? 0;
   const url = shown?.url ?? '';
   const page = docs.get(doc) ?? null;
+  const viewer = page?.viewer ?? null;
+  const tree = viewer?.kind === 'json' || viewer?.kind === 'xml';
   const handle = useHtmlHandle();
   const scroller = useRef<ScrollableNode | null>(null);
   const [hoverLink, setHoverLink] = useState<string | null>(null);
@@ -665,6 +799,7 @@ export default function Page(props: PageProps): ReactElement {
   // what a secondary press was on, which the context menu is about
   const [menuAt, setMenuAt] = useState<MenuTarget | null>(null);
   const clipboard = useClipboard();
+  const pageClipboard = useHtmlClipboard();
   // the tab's developer tools: what they inspect, and what its pages wrote
   // to their console, kept from the start
   const [inspection] = useState(() => new Inspection());
@@ -825,11 +960,14 @@ export default function Page(props: PageProps): ReactElement {
     const seq = loadSeq;
     const { loadHow: how, loadKey: key } = props;
     const controller = new AbortController();
+    let saving = false;
     void loadDocument(
       {
         seq,
         url: props.loadUrl,
         fresh: props.loadFresh,
+        scripts: props.scripts,
+        reload: how === 'reload' || how === 'pageReload',
         post: props.loadPost,
         // a link or a script's navigation is the document's, whose site
         // decides which cookies go with it; the browser's own are
@@ -847,10 +985,18 @@ export default function Page(props: PageProps): ReactElement {
         },
         progress: (next) => store(seq, next),
         finish: () => live.current.onFinish(seq),
+        // not a document after all: the tab stays on what it was showing,
+        // and the request goes on as a download, which only its shelf can
+        // stop now
+        download: (source) => {
+          saving = true;
+          live.current.onFinish(seq);
+          save(source, nextDownload(), controller);
+        },
       },
     );
     return () => {
-      controller.abort();
+      if (!saving) controller.abort();
       setDocs((all) => {
         const cut = all.get(seq);
         if (!cut?.partial) return all;
@@ -1203,6 +1349,192 @@ export default function Page(props: PageProps): ReactElement {
   // scripts>` loads before this is called, and nothing does without them.
   // The tab stays where it is either way, as Chrome's does when Facebook's
   // pixel posts into its hidden frame.
+  // What a file input is given: the browser shows the dialog, since a pane
+  // has no AppKit to show one from, and this process reads what was chosen,
+  // so nothing of a file passes through the browser.
+  const pickFiles = useMemo<HtmlPickFiles>(() => {
+    let next = 1;
+    return (request) =>
+      new Promise<string[] | null>((resolve) => {
+        const id = next;
+        next += 1;
+        picking.current.set(id, resolve);
+        live.current.onPickFiles(id, request.multiple, request.accept);
+      }).then((paths) => (paths ? readHtmlFiles(paths) : null));
+  }, []);
+  const picking = useRef(new Map<number, (paths: string[] | null) => void>());
+  const answered = props.picked;
+  useEffect(() => {
+    if (!answered) return;
+    picking.current.get(answered.id)?.(answered.paths);
+    picking.current.delete(answered.id);
+  }, [answered]);
+
+  // What is saved is written here, where the response is being read, and
+  // each one is stopped by the shelf or by this process's end.
+  const saving = useRef(new Map<string, AbortController>());
+  const saved = useRef(0);
+  // what is waiting for the user to say where it goes, and how many, counting
+  // those whose response has not come
+  const placing = useRef(new Map<string, (path: string | null) => void>());
+  const unplaced = useRef(0);
+  const placeOf = (id: string, name: string) =>
+    new Promise<string | null>((resolve) => {
+      placing.current.set(id, resolve);
+      live.current.onSaveFile(id, name);
+    });
+  const save = (
+    source: HtmlDownloadSource | Promise<HtmlDownloadSource>,
+    id: string,
+    controller: AbortController,
+  ) => {
+    if (unplaced.current >= MOST_UNPLACED) {
+      controller.abort();
+      void Promise.resolve(source).catch(() => {});
+      setNotice('This page asked to save more files than can be answered.');
+      return;
+    }
+    unplaced.current += 1;
+    let placed = false;
+    const place = () => {
+      if (!placed) unplaced.current -= 1;
+      placed = true;
+    };
+    saving.current.set(id, controller);
+    void Promise.resolve(source)
+      .then(async (from) => {
+        // nothing is read until there is somewhere for it to go, and the
+        // user may take longer about that than a response may stall
+        from.hold?.();
+        const path = await placeOf(id, from.filename);
+        place();
+        // dismissed: the request goes, and nothing has been written
+        if (path === null) return controller.abort();
+        await saveDownload(id, from, path, controller.signal, (state) =>
+          live.current.onDownloadState(state),
+        );
+      })
+      .catch((error: Error) =>
+        live.current.onDownloadState({
+          id,
+          name: '',
+          path: null,
+          received: 0,
+          size: null,
+          state: 'failed',
+          error: error.message,
+        }),
+      )
+      .finally(() => {
+        place();
+        saving.current.delete(id);
+      });
+  };
+  const savePath = props.savePath;
+  useEffect(() => {
+    if (!savePath) return;
+    placing.current.get(savePath.id)?.(savePath.path);
+    placing.current.delete(savePath.id);
+  }, [savePath]);
+  useEffect(
+    () => () => {
+      // nobody is left to answer for a page that went
+      for (const left of placing.current.values()) left(null);
+      placing.current.clear();
+    },
+    [],
+  );
+  const nextDownload = () => {
+    saved.current += 1;
+    return `${process.pid}.${saved.current}`;
+  };
+  // what a page asks its user is put to them in the browser's window, and
+  // comes back as a prop
+  const notifier = useHtmlNotifications();
+  const asking = useRef(
+    new Map<number, (state: HtmlPermissionState) => void>(),
+  );
+  const asked = useRef(0);
+  const permissionsHeard = useRef(new Set<(name: string) => void>());
+  const pagePermissions = useRef<HtmlPermissions>({
+    state: sitePermission,
+    request: (name, origin) =>
+      new Promise((resolve) => {
+        asked.current += 1;
+        const id = asked.current;
+        asking.current.set(id, (state) => {
+          if (state !== 'prompt') {
+            unkeptPermissions.set(`${origin} ${name}`, state);
+          }
+          resolve(sitePermission(name, origin));
+        });
+        live.current.onAskPermission(id, origin, name);
+      }),
+    watch: (listener) => {
+      permissionsHeard.current.add(listener);
+      return () => permissionsHeard.current.delete(listener);
+    },
+  }).current;
+  const pageNotifications = useMemo<HtmlNotifications>(
+    () => ({ ...notifier, focus: () => live.current.onBringForward() }),
+    [notifier],
+  );
+  const answer = props.permissionAnswer;
+  useEffect(() => {
+    if (!answer) return;
+    asking.current.get(answer.id)?.(answer.state ?? 'prompt');
+    asking.current.delete(answer.id);
+  }, [answer]);
+  const moved = props.permissionsMoved;
+  useEffect(() => {
+    if (!moved) return;
+    for (const name of moved.names) {
+      if (moved.forgot) unkeptPermissions.delete(`${moved.origin} ${name}`);
+      for (const heard of permissionsHeard.current) heard(name);
+    }
+  }, [moved]);
+  useEffect(
+    () => () => {
+      // nobody is left to answer for a page that went
+      for (const left of asking.current.values()) left('prompt');
+      asking.current.clear();
+    },
+    [],
+  );
+
+  const onDownload = (request: HtmlDownloadRequest) => {
+    const controller = new AbortController();
+    save(
+      network.download(request, controller.signal, session.current?.url),
+      nextDownload(),
+      controller,
+    );
+  };
+  /** Save what the tab shows, as it was served: the bytes of a PDF it has,
+   *  and anything else from the network again, with the page's cookies. */
+  const saveShown = () =>
+    onDownload({
+      url: withoutHash(url),
+      filename: page?.filename ?? '',
+      ...(viewer?.kind === 'pdf' && {
+        bytes: viewer.bytes,
+        type: 'application/pdf',
+      }),
+    });
+  const cancelled = props.cancelDownloads;
+  useEffect(() => {
+    for (const id of cancelled ?? []) saving.current.get(id)?.abort();
+  }, [cancelled]);
+
+  // what the browser took for the page, which has no window of its own
+  const dropped = props.dropped;
+  useEffect(() => {
+    if (!dropped) return;
+    if (dropped.phase === 'over') handle.dragOver(dropped);
+    else if (dropped.phase === 'leave') handle.dragLeave();
+    else void handle.dropHere(dropped);
+  }, [dropped, handle]);
+
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
     if (!/^(?:https?|file|data):/i.test(action)) {
@@ -1233,12 +1565,25 @@ export default function Page(props: PageProps): ReactElement {
       // playlist among it, which a page with no `MediaSource` hands it
       canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
       session,
-      navigate: (to, how) => {
+      navigate: (to, how, post) => {
         if (how === 'tab') return live.current.onLink(to, 'tab', null);
         // a fragment the document went to itself, which its engine has
         // written to the history already
         if (to.includes('#') && session.current?.url === to) return;
-        live.current.onLink(to, 'here', null);
+        live.current.onLink(
+          to,
+          'here',
+          post ? { ...post, from: view.url } : null,
+        );
+      },
+      // a window with an opener, drawn in this process: every one asked
+      // for, behind a press or a key, and what has none is said so
+      popups: windowsAnswer,
+      ...(props.popup && { popup: props.popup }),
+      // a page may close a tab with nothing to go back to
+      close: (alone) => {
+        if (alone) live.current.onCommand('closeTab');
+        return alone;
       },
       reload: () => {
         const current = session.current;
@@ -1266,6 +1611,9 @@ export default function Page(props: PageProps): ReactElement {
       // the profile's, where there is one, shared with every tab
       cookies,
       storage: profile?.storage,
+      // and what a page's worker answers and keeps, the navigations of its
+      // scope and what its pages ask for, as a browser's does
+      serviceWorkers,
       // a page's WebTransport sessions, over quico where it is installed
       webTransport: network.webTransport,
       // and its WebSockets, over the runtime's own, with the tab's cookies
@@ -1273,6 +1621,12 @@ export default function Page(props: PageProps): ReactElement {
         connect: (request, events) =>
           network.webSockets(withoutHash(view.url)).connect(request, events),
       },
+      // what a page puts on the machine's clipboard and reads off it
+      clipboard: pageClipboard,
+      // what a page asks for goes to the bar above it, and what it is told
+      // stays in the profile; its notifications go to the desktop
+      permissions: pagePermissions,
+      notifications: pageNotifications,
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
       // and its WebGL, on the GPU where x11-dri can reach one
@@ -1287,6 +1641,14 @@ export default function Page(props: PageProps): ReactElement {
           (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
           /^F(?:5|6|12)$/.test(event.key ?? '')),
     };
+
+  const windowsAnswer = useMemo<HtmlPopups>(
+    () => ({
+      open: windows.add,
+      blocked: () => setNotice('A pop-up window was blocked.'),
+    }),
+    [windows],
+  );
 
   // The page's menu: a link's items where the press was on one, Copy where
   // something is selected, the history, and the tools — Inspect opens them
@@ -1344,6 +1706,12 @@ export default function Page(props: PageProps): ReactElement {
         label: 'Reload',
         onSelect: () => live.current.onCommand('reload'),
       },
+      {
+        key: 'forget-permissions',
+        label: 'Reset Site Permissions',
+        enabled: /^https?:/.test(url),
+        onSelect: () => live.current.onForgetPermissions(new URL(url).origin),
+      },
       { key: 'history-rule', type: 'separator' },
       {
         key: 'select-all',
@@ -1352,9 +1720,20 @@ export default function Page(props: PageProps): ReactElement {
         onSelect: () => surface?.selectAll(),
       },
       {
+        key: 'save-as',
+        label: 'Save As…',
+        enabled: /^(?:https?|file):/.test(url),
+        onSelect: saveShown,
+      },
+      {
         key: 'source',
         label: 'View Page Source',
-        enabled: /^(?:https?|file):/.test(url),
+        // a PDF's or a player's source is bytes, and no reading of it
+        enabled:
+          /^(?:https?|file):/.test(url) &&
+          viewer?.kind !== 'pdf' &&
+          viewer?.kind !== 'video' &&
+          viewer?.kind !== 'audio',
         onSelect: () =>
           live.current.onLink(`view-source:${withoutHash(url)}`, 'tab', null),
       },
@@ -1370,7 +1749,7 @@ export default function Page(props: PageProps): ReactElement {
       },
     );
     return items;
-  }, [menuAt, clipboard, url]);
+  }, [menuAt, clipboard, url, viewer]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1467,6 +1846,9 @@ export default function Page(props: PageProps): ReactElement {
             flexGrow: 1,
             flexShrink: 1,
             minHeight: 0,
+            // what shows a viewer's document is beside the pane, and scrolls
+            // itself: in it, each would be as tall as all it holds
+            ...(viewer && { display: 'none' }),
           }}
           // A document whose root or body is `overflow: hidden` gave that to
           // the viewport, and the reader is not to scroll it: no bar, no wheel,
@@ -1547,7 +1929,7 @@ export default function Page(props: PageProps): ReactElement {
         >
           {views.map((view) => {
             const source = docs.get(view.seq);
-            if (!source) return null;
+            if (!source || source.viewer) return null;
             // one the session keeps is laid out, drawn and handed nothing
             // while it is hidden, and the handle is the document shown's
             const visible = view.n === shownN;
@@ -1595,6 +1977,9 @@ export default function Page(props: PageProps): ReactElement {
                   onResource={onResourceOf(view)}
                   onLink={onLink}
                   onSubmit={onSubmit}
+                  onPickFiles={pickFiles}
+                  onDropFiles={readHtmlFiles}
+                  onDownload={onDownload}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>
@@ -1613,6 +1998,34 @@ export default function Page(props: PageProps): ReactElement {
           {/* over the document, in the pane that scrolls it */}
           <Highlight handle={handle} inspection={inspection} />
         </box>
+        {shown && viewer ? (
+          // A node's scale is its life's, so a tree at a new zoom is a new
+          // tree. A PDF takes the browser's zoom itself and keeps its place,
+          // and a player scales its own bar, or a zoom would start it again.
+          <box
+            key={tree ? `${shown.n}@${shown.zoom}` : shown.n}
+            scale={tree ? shown.zoom : 1}
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+          >
+            <Suspense fallback={null}>
+              <DocumentViewer
+                viewer={viewer}
+                zoom={zoom}
+                onSave={saveShown}
+                onLink={(to) => {
+                  // a document's link goes where a stranger's would, and
+                  // one from a file is no way to reach this machine's files
+                  if (/^https?:/i.test(to)) {
+                    live.current.onLink(to, 'here', null);
+                  }
+                }}
+                onTitle={(title) =>
+                  live.current.onMeta(shown.seq, title, undefined)
+                }
+              />
+            </Suspense>
+          </box>
+        ) : null}
       </ContextMenu>
       {status ? (
         <box
@@ -1646,7 +2059,7 @@ export default function Page(props: PageProps): ReactElement {
     </box>
   );
 
-  return (
+  const dock = (
     <Dock
       page={pageBox}
       side={props.devtoolsDock}
@@ -1682,6 +2095,21 @@ export default function Page(props: PageProps): ReactElement {
       }
     />
   );
+  if (props.popup) return dock;
+  return (
+    <>
+      {dock}
+      {opened.map((popup) => (
+        <PopupWindow
+          key={popup.id}
+          popup={popup}
+          page={props}
+          windows={windows}
+          Page={Page}
+        />
+      ))}
+    </>
+  );
 }
 
 const withoutHash = (url: string): string => url.split('#')[0];
@@ -1712,6 +2140,11 @@ interface Navigation {
   seq: number;
   url: string;
   fresh: boolean;
+  /** Whether the site's scripts run: where they do not, neither does its
+   *  worker. */
+  scripts: boolean;
+  /** Whether a reload asked for it, which a worker reads. */
+  reload: boolean;
   post: PostData | null;
   /** The document that started it, or null for the browser. */
   initiator: string | null;
@@ -1723,6 +2156,8 @@ interface LoadCallbacks {
   commit(url: string, first: Doc, title: string | null, posted: boolean): void;
   progress(next: Doc): void;
   finish(): void;
+  /** It is to be saved, not shown. */
+  download(source: HtmlDownloadSource): void;
 }
 
 /**
@@ -1741,10 +2176,12 @@ async function loadDocument(
     title: string | null,
     url = nav.url,
     posted = false,
+    viewer?: Viewer,
+    filename?: string,
   ) => {
     on.commit(
       url,
-      { source, partial: false, baseUrl: null, url },
+      { source, partial: false, baseUrl: null, url, viewer, filename },
       title,
       posted,
     );
@@ -1766,40 +2203,78 @@ async function loadDocument(
   try {
     response = await network.document(target, signal, nav.post, {
       initiator: nav.initiator,
+      // a hard reload asks past a worker, and what it brings is uncontrolled
+      serviceWorkers: !nav.scripts ? false : nav.fresh ? 'bypass' : true,
+      reload: nav.reload,
     });
   } catch (error) {
     if (signal.aborted) return;
-    const { message, code } =
-      error instanceof NetworkError
-        ? error
-        : {
-            message: String((error as Error)?.message ?? error),
-            code: 'ERR_FAILED',
-          };
-    return own(errorPage(target, message, code), null);
+    return own(errorPage(target, ...failure(error)), null);
   }
   if (signal.aborted) return;
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
+  // what says it is a file, or is nothing this browser can show or hold
+  if (
+    !viewSource &&
+    (kind === 'other' ||
+      dispositionOf(response.disposition).attachment ||
+      (kind === 'pdf' && (response.size ?? 0) > MOST_PDF))
+  ) {
+    on.download(downloadSource(response, ''));
+    return;
+  }
+  const viewed = (viewer: Viewer) =>
+    own(
+      '',
+      fileName(response.url),
+      response.url,
+      posted,
+      viewer,
+      downloadName(response.url, '', response.disposition, response.type),
+    );
+  // the player opens it from its URL, and nothing of it is read here
+  if (kind === 'video') {
+    return viewed({ kind, src: response.url, type: response.type });
+  }
+  if (kind === 'audio') {
+    return viewed({
+      kind,
+      src: response.url,
+      type: response.type,
+      name: fileName(response.url),
+    });
+  }
   if (kind !== 'html') {
-    const bytes = await readAll(response.body, signal);
+    let bytes: Uint8Array;
+    try {
+      bytes =
+        kind === 'pdf'
+          ? await readAll(response.whole ?? response.body, signal, MOST_PDF)
+          : await readAll(response.body, signal);
+    } catch (error) {
+      if (signal.aborted) return;
+      return own(errorPage(target, ...failure(error)), null);
+    }
     if (signal.aborted) return;
     const url = viewSource ? `view-source:${response.url}` : response.url;
     if (kind === 'image') {
       network.seed({ ...response, bytes });
       return own(imagePage(response.url), fileName(response.url), url, posted);
     }
-    if (kind === 'text') {
-      const text = decode(bytes, response.charset ?? sniffCharset(bytes));
-      return own(
-        textPage(url, text),
-        viewSource ? url : fileName(url),
-        url,
-        posted,
-      );
-    }
-    return own(unsupportedPage(response.url, response.type), null, url, posted);
+    if (kind === 'pdf') return viewed({ kind, bytes });
+    const text = decode(bytes, response.charset ?? sniffCharset(bytes));
+    // text that says it is JSON or XML and is not is shown as what it is
+    const tree =
+      kind === 'json' ? readJson(text) : kind === 'xml' ? readXml(text) : null;
+    if (tree) return viewed(tree);
+    return own(
+      textPage(url, text),
+      viewSource ? url : fileName(url),
+      url,
+      posted,
+    );
   }
 
   // HTML: stream it. The encoding is the response's, or the one a `<meta>`
@@ -1807,14 +2282,19 @@ async function loadDocument(
   let head: Uint8Array = new Uint8Array(0);
   const iterator = response.body[Symbol.asyncIterator]();
   let ended = false;
-  while (head.length < 1024) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) return;
-    if (done) {
-      ended = true;
-      break;
+  try {
+    while (head.length < 1024) {
+      const { done, value } = await iterator.next();
+      if (signal.aborted) return;
+      if (done) {
+        ended = true;
+        break;
+      }
+      head = concat(head, value);
     }
-    head = concat(head, value);
+  } catch (error) {
+    if (signal.aborted) return;
+    return own(errorPage(target, ...failure(error)), null);
   }
   const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
   const at = landedAt(response.url, target);
@@ -1835,23 +2315,36 @@ async function loadDocument(
   on.commit(at, first, null, posted);
   let last = Date.now();
   let interval = STREAM_FIRST;
-  while (!ended) {
-    const { done, value } = await iterator.next();
-    if (signal.aborted) {
-      void iterator.return?.();
-      return;
+  try {
+    while (!ended) {
+      const { done, value } = await iterator.next();
+      if (signal.aborted) {
+        void iterator.return?.();
+        return;
+      }
+      if (done) break;
+      source += decoder.decode(value, { stream: true });
+      if (Date.now() - last >= interval) {
+        last = Date.now();
+        interval = Math.min(interval * 2, STREAM_MOST);
+        on.progress({ ...first, source });
+      }
     }
-    if (done) break;
-    source += decoder.decode(value, { stream: true });
-    if (Date.now() - last >= interval) {
-      last = Date.now();
-      interval = Math.min(interval * 2, STREAM_MOST);
-      on.progress({ ...first, source });
-    }
+  } catch {
+    // the page is what arrived, as a browser keeps a page whose connection
+    // dropped: it has been shown, so there is no error page to go to
+    if (signal.aborted) return;
   }
   source += decoder.decode();
   on.progress({ ...first, source, partial: false });
   on.finish();
+}
+
+/** Why a load failed, as `errorPage` takes it. */
+function failure(error: unknown): [message: string, code: string] {
+  return error instanceof NetworkError
+    ? [error.message, error.code]
+    : [String((error as Error)?.message ?? error), 'ERR_FAILED'];
 }
 
 /** Where a navigation's document is: where its response came from, at the
@@ -1864,38 +2357,6 @@ function landedAt(response: string, asked: string): string {
   return response.includes('#') || at < 0
     ? response
     : response + asked.slice(at);
-}
-
-function kindOf(
-  type: string,
-  url: string,
-): 'html' | 'text' | 'image' | 'other' {
-  if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
-  if (type.startsWith('image/')) return 'image';
-  if (
-    type.startsWith('text/') ||
-    type === 'application/json' ||
-    type === 'application/javascript' ||
-    type.endsWith('+xml') ||
-    type === 'application/xml'
-  ) {
-    return 'text';
-  }
-  // no type at all: what the address says, and HTML where it says nothing
-  if (!type) return /\.(txt|md|json|css|js)$/i.test(url) ? 'text' : 'html';
-  return 'other';
-}
-
-async function readAll(
-  body: AsyncIterable<Uint8Array>,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
-  let out: Uint8Array = new Uint8Array(0);
-  for await (const chunk of body) {
-    if (signal.aborted) break;
-    out = concat(out, chunk);
-  }
-  return out;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {

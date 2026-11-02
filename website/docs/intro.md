@@ -56,6 +56,7 @@ and it belongs here.
 | [Markdown](/docs/reference/components/markdown)              | Streaming-friendly GFM with cross-block selection.    |
 | [MediaPlayer](/docs/reference/components/media-player)       | mpv or VLC embedded, or ffmpeg into a `<video>`.      |
 | [Mermaid](/docs/reference/components/mermaid)                | Mermaid diagrams: ondine's layout, native ink.        |
+| [Pdf](/docs/reference/components/pdf)                        | A PDF, drawn: PDFium on a thread, zoom, selection.    |
 | [Terminal](/docs/reference/components/terminal)              | A real terminal: an embedded emulator, or its own.    |
 | [TrayHost](/docs/reference/components/tray-host)             | The system tray: applications dock their icons in.    |
 

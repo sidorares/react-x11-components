@@ -57,9 +57,17 @@ import { installMediaStreams } from './mediastream.js';
 import { installWebAudio } from './webaudio.js';
 import { installMse } from './mse.js';
 import { installRaster } from './raster.js';
+import { installMath } from './math.js';
 import { installStreams } from './streams.js';
 import { installWebRTC } from './webrtc.js';
 import { installRtcTransports } from './rtc-transports.js';
+import { installWebCrypto } from './webcrypto.js';
+import { installDataTransfer } from './datatransfer.js';
+import { installClipboard } from './clipboard.js';
+import { installNotifications } from './notifications.js';
+import { installWindows } from './windows.js';
+import { installServiceWorkers } from './serviceworkers.js';
+import { installCaches } from './caches.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
@@ -265,6 +273,7 @@ const INSTALL = `(function () {
     return target;
   };
   (${lockStacks.toString()})(${JSON.stringify(FACADE)});
+  (${installMath.toString()})();
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
@@ -278,11 +287,18 @@ const INSTALL = `(function () {
   const webaudio = (${installWebAudio.toString()});
   const mse = (${installMse.toString()});
   const geometry = (${installGeometry.toString()});
+  const webcrypto = (${installWebCrypto.toString()});
+  const transfers = (${installDataTransfer.toString()});
+  const clipboards = (${installClipboard.toString()});
+  const notifying = (${installNotifications.toString()});
+  const windowing = (${installWindows.toString()});
+  const serviceWorkers = (${installServiceWorkers.toString()});
+  const cacheStorage = (${installCaches.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, notifying, windowing, serviceWorkers, cacheStorage, named);
 })()`;
 
 /**
@@ -770,6 +786,7 @@ export class ScriptEngine {
     // a top-level `await` is in.
     if (!evaluated && module.status !== 'linked') return module.namespace;
     if (!evaluated) {
+      this.call('__task', null);
       const mark = this._enter();
       try {
         evaluated = module.evaluate({ timeout: this._ceiling });
@@ -861,6 +878,7 @@ export class ScriptEngine {
   private _evaluate(module: PageModule): boolean {
     // one an `import()` has evaluated already ran then
     if (this._evaluated.has(module)) return true;
+    this.call('__task', null);
     const mark = this._enter();
     let done: Promise<void>;
     try {
@@ -1266,6 +1284,15 @@ export class ScriptEngine {
       this._inPage = false;
       this._busy += performance.now() - this._taskFrom;
       this._options.left?.();
+      // any entry's, a script's as much as a task's: a popup's inline script
+      // resolves its opener's promise as readily as a listener does
+      if (
+        this._realms.size > 1 &&
+        !ScriptEngine._drainingRealms &&
+        !this._disposed
+      ) {
+        this._drainRealms();
+      }
     }
   }
 
@@ -1286,28 +1313,109 @@ export class ScriptEngine {
 
   /**
    * Join this realm and another page realm, a frame's and the page it is
-   * in: each handed the other's global through a data slot, and told
-   * through an entry (`__linkFrame`, `__linkParent`) to make the window
-   * that stands for it there. Both are page realms: what one reaches of the
-   * other is what a same-origin frame reaches of its parent, or, where they
-   * are of two origins (`crossOrigin`), what crosses origins — `postMessage`
-   * and little else. Nothing of the host's is handed to either.
+   * in. Of one origin, each is handed the other's global through a data
+   * slot, as a same-origin frame reaches its parent. Of two (`crossOrigin`,
+   * which the host decides), neither is handed anything: each has the other
+   * by a number, and what crosses origins goes through the host (`post`,
+   * `wire` in `./popups.ts`). The facade runs in the page's realm, where a
+   * page can replace what it calls, so a global it was handed is a global the
+   * page has. Told through an entry (`__linkFrame`, `__linkParent`) to make
+   * the window that stands for it there. Nothing of the host's is handed to
+   * either.
    */
   link(frame: ScriptEngine, frameId: number, crossOrigin = false): void {
     if (this._broken || this._disposed) return;
+    if (crossOrigin) {
+      this.call('__linkFrame', [frameId, true]);
+      frame.call('__linkParent', [frameId, true]);
+      return;
+    }
     const into = (engine: ScriptEngine, value: object): void => {
       (engine._context as Record<string, unknown>).__handed = value;
     };
     into(this, frame._global);
-    this.call('__linkFrame', [frameId, crossOrigin]);
+    this.call('__linkFrame', [frameId, false]);
     into(frame, this._global);
-    frame.call('__linkParent', [frameId, crossOrigin]);
+    frame.call('__linkParent', [frameId, false]);
+    this.reached(frame);
   }
 
   /** A frame's realm is gone, or has gone on to another document: the
    *  page's window for it stands for nothing of it any more. */
   unlink(frameId: number): void {
     this.call('__unlinkFrame', [frameId]);
+  }
+
+  /** Reach another window's realm of this one's group and origin
+   *  (`./popups.ts`, which decides that): handed its global, as a frame's
+   *  parent is, under its window's number. */
+  linkWindow(id: number, other: ScriptEngine): void {
+    if (this._broken || this._disposed || other._disposed) return;
+    (this._context as Record<string, unknown>).__handed = other._global;
+    this.call('__linkWindow', [id]);
+  }
+
+  /** That window's document has gone, and it may be for good. */
+  unlinkWindow(id: number, discarded: boolean): void {
+    this.call('__unlinkWindow', [id, discarded]);
+  }
+
+  /** This realm's document came after `was`, the `about:blank` its window
+   *  opened with, of its origin: what a page put on that window is this
+   *  window's, and whoever reached that window holds what this one resolves. */
+  reuseWindow(was: ScriptEngine): void {
+    if (this._broken || this._disposed || was._disposed) return;
+    (this._context as Record<string, unknown>).__handed = was._global;
+    this.call('__reuseWindow', null);
+    this.reached(was);
+  }
+
+  /**
+   * The realms that can hold each other's promises, itself among them, shared
+   * as they join. A promise of one with a reaction of another's queues its
+   * job in the other's queue (`then` goes by the handler's realm), and each
+   * queue runs only as the host enters its realm (`microtaskMode`), so
+   * `frame.contentWindow.fetch().then()` in a page, settled in the frame, and
+   * `await new Promise((go) => (popup.onload = go))` went on only when a
+   * timer of the page's happened to enter it.
+   */
+  private _realms = new Set<ScriptEngine>([this]);
+  private _realmsOwed = false;
+  /** Whether the realms are being entered for that, which those entries do
+   *  not ask for again. */
+  private static _drainingRealms = false;
+
+  /** A script of this realm reached another's, a frame's as it is linked and
+   *  a window's as a proxy is first read through (`windowReached`), and from
+   *  now on either may hold what the other's task resolves. Noted then, and
+   *  not as windows are linked: a page with many windows that it never
+   *  touches would otherwise run them all after every task. */
+  reached(other: ScriptEngine): void {
+    if (other._realms === this._realms) return;
+    for (const realm of other._realms) {
+      this._realms.add(realm);
+      realm._realms = this._realms;
+    }
+  }
+
+  /** Enter each of the realms an entry may have left a job in. A few turns,
+   *  since a job of one can queue another's. */
+  private _drainRealms(): void {
+    if (this._realmsOwed) return;
+    this._realmsOwed = true;
+    void Promise.resolve().then(() => {
+      this._realmsOwed = false;
+      ScriptEngine._drainingRealms = true;
+      try {
+        for (let turn = 0; turn < REALM_TURNS; turn += 1) {
+          for (const realm of this._realms) {
+            if (!realm._disposed && !realm.running) realm.call('__drain', null);
+          }
+        }
+      } finally {
+        ScriptEngine._drainingRealms = false;
+      }
+    });
   }
 
   /** A promise of the page's rejected and nothing caught it: told in the
@@ -1359,6 +1467,7 @@ export class ScriptEngine {
   dispose(): void {
     this._disposed = true;
     this._held = null;
+    this._realms.delete(this);
     this._modules.clear();
     ENGINES.delete(this._promises);
   }
@@ -1384,6 +1493,10 @@ const HELD_ONCE = new Set([
 /** How many turns of the host's the context is entered on after an
  *  `import()` settles (`_drainLater`). */
 const DRAIN_TURNS = 4;
+
+/** How many times linked realms are entered after an entry of one
+ *  (`_drainRealms`). */
+const REALM_TURNS = 3;
 
 /** How many times the page's time a task may take at all, the host's in
  *  its ops included (`_bridge`): what bounds a runaway that touches nothing

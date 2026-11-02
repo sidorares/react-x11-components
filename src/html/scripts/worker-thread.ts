@@ -13,12 +13,21 @@ import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
+import { addKeySecret } from './subtle.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
   WorkerThreadsModule,
 } from './platform.js';
+
+import type {
+  HtmlNotificationEvents,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from '../notifications.js';
+import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
+import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const AbortController: AbortControllerClass;
 
@@ -35,8 +44,17 @@ const WORKER_TIMEOUT_MS = 30_000;
  *  an `importScripts`. */
 const WORKER_CEILING_MS = 60_000;
 
-const { init, userAgent, language, sync, flag, frozen, stopped } =
-  workerData as WorkerThreadData;
+const {
+  init,
+  userAgent,
+  language,
+  sync,
+  flag,
+  frozen,
+  stopped,
+  permissions,
+  notifies,
+} = workerData as WorkerThreadData;
 const port = parentPort!;
 const word = new Int32Array(flag);
 const tell = (message: FromWorker): void => port.postMessage(message);
@@ -148,11 +166,89 @@ const fetchThrough = (
 const log = (level: string, text: string): void =>
   tell({ kind: 'log', level, text });
 
+// the page's secrets, and the first of them what this seals with
+for (const secret of init.keySecrets) addKeySecret(secret);
+
 /** The worker's WebTransport sessions, opened by the page process over the
  *  page's own seam (`transport-relay.ts`). */
 const transports = new TransportProxy((m) => tell(m));
 /** And its WebSockets (`socket-relay.ts`). */
 const sockets = new SocketProxy((m) => tell(m));
+
+/** Where each permission stands for the page, as the page last said: a read
+ *  of one is at once, and an answer from across a thread cannot be. */
+const permissionStates = new Map(Object.entries(permissions));
+const permissionWatchers = new Set<(name: string) => void>();
+const permissionsCopied: HtmlPermissions = {
+  state: (name) =>
+    (permissionStates.get(name) ?? 'denied') as HtmlPermissionState,
+  // a window's alone (`Notification.requestPermission`)
+  request: () => Promise.resolve('denied'),
+  watch: (listener) => {
+    permissionWatchers.add(listener);
+    return () => permissionWatchers.delete(listener);
+  },
+};
+
+/** A notification this worker made, on its way or showing. */
+interface ShownHere {
+  events: HtmlNotificationEvents;
+  shown(handle: HtmlShownNotification): void;
+  failed(reason: Error): void;
+}
+const showing = new Map<number, ShownHere>();
+let nextShown = 1;
+/** Its notifications are the page's to show (`PageWorkers._notification`). */
+const notificationsThrough: HtmlNotifications = {
+  show(notification, events) {
+    return new Promise((resolve, reject) => {
+      const id = nextShown;
+      nextShown += 1;
+      showing.set(id, {
+        events,
+        shown: resolve,
+        failed: reject,
+      });
+      tell({ kind: 'notification', id, show: notification });
+    });
+  },
+  focus: () => tell({ kind: 'notification', id: 0, focus: true }),
+};
+const heardNotification = (id: number, told: string): void => {
+  const here = showing.get(id);
+  if (!here) return;
+  if (told === 'show') {
+    here.shown({
+      close: () => {
+        showing.delete(id);
+        tell({ kind: 'notification', id, close: true });
+      },
+    });
+  } else if (told === 'click') {
+    here.events.click();
+  } else if (told === 'close') {
+    showing.delete(id);
+    here.events.close();
+  } else {
+    showing.delete(id);
+    here.failed(new Error('the notification was not shown'));
+  }
+};
+
+/** What this worker's `caches` asked, across the thread: its store is the
+ *  page's. */
+const cacheAsks = new Map<number, (answer: HtmlCacheAnswer) => void>();
+let nextCacheAsk = 1;
+const cachesThrough = (
+  origin: string,
+  ask: HtmlCacheAsk,
+): Promise<HtmlCacheAnswer> =>
+  new Promise((resolve) => {
+    const id = nextCacheAsk;
+    nextCacheAsk += 1;
+    cacheAsks.set(id, resolve);
+    tell({ kind: 'caches', id, origin, ask });
+  });
 
 const seams: HostSeams = {
   handle: NO_VIEW,
@@ -175,8 +271,12 @@ const seams: HostSeams = {
   fetch: fetchThrough,
   webTransport: transports,
   webSocket: sockets,
+  caches: cachesThrough,
+  permissions: permissionsCopied,
+  ...(notifies && { notifications: notificationsThrough }),
   userAgent,
   language,
+  secureContext: init.secure,
 };
 
 const host = new DomHost(new Document([]), seams, init.url);
@@ -195,6 +295,8 @@ host.workerScope = {
   error: (message, filename, line, column) =>
     tell({ kind: 'error', message, filename, line, column }),
   rtc: (message) => tell(message),
+  service: (text, bytes) =>
+    tell({ kind: 'service', text, ...(bytes ? { bytes } : {}) }),
 };
 const engine = new ScriptEngine(host.bridge, {
   timeout: WORKER_TIMEOUT_MS,
@@ -204,6 +306,9 @@ const engine = new ScriptEngine(host.bridge, {
   log,
   settled: () => host.flush(),
   load: async (url) => {
+    // a service worker's modules are those it was installed with, as its
+    // `importScripts` are
+    if (init.service) return importScript(url);
     try {
       const response = await fetchThrough(
         { url, method: 'GET', headers: [], body: null },
@@ -254,6 +359,17 @@ const followPage = (): void => {
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
     engine.call('__workerMessage', [0, m.data]);
+  } else if (m.kind === 'service') {
+    engine.call('__sw', [m.text]);
+    engine.call('__swDispatched', null);
+  } else if (m.kind === 'caches') {
+    cacheAsks.get(m.id)?.(m.answer);
+    cacheAsks.delete(m.id);
+  } else if (m.kind === 'permission') {
+    permissionStates.set(m.name, m.state);
+    for (const listener of permissionWatchers) listener(m.name);
+  } else if (m.kind === 'notification') {
+    heardNotification(m.id, m.told);
   } else if (m.kind === 'suspended') {
     followPage();
   } else if (m.kind === 'fetched') {
@@ -296,16 +412,15 @@ script = () => {
       0,
       0,
     );
-    if (init.service) engine.call('__serviceInstall', [false]);
+    if (init.service) engine.call('__serviceStarted', [false]);
   } else if (init.type === 'module') {
     void engine.module(source, init.url, init.source === null).then((ran) => {
-      if (init.service) engine.call('__serviceInstall', [ran]);
+      if (init.service) engine.call('__serviceStarted', [ran]);
     });
   } else {
     const ran = engine.exec(source, init.url, 0);
-    // a service worker is installed once its script has run (Service
-    // Workers 1, "Install")
-    if (init.service) engine.call('__serviceInstall', [ran]);
+    // its registry goes on from here (Service Workers 1, "Run Service Worker")
+    if (init.service) engine.call('__serviceStarted', [ran]);
   }
 };
 // its page may have been left while this thread was starting

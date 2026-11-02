@@ -49,7 +49,7 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -61,6 +61,7 @@ import type {
   ScriptRequest,
 } from './node.js';
 import {
+  clipboardChord,
   documentPoint,
   domButton,
   domButtons,
@@ -85,12 +86,17 @@ import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
 import type { ScrollState as ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
+import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import { useSounds } from './sounds.js';
 import type { MediaState } from './media.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
+import type { HtmlClipboardData } from './clipboard.js';
+import { useDocumentDrag } from './drag.js';
+import type { HtmlDownloadHandler, HtmlDownloadRequest } from './download.js';
+import type { HtmlDrop } from './drag.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
@@ -143,6 +149,14 @@ export type {
   SubmitContext,
 } from './form.js';
 export { formSubmission } from './form.js';
+export { downloadSource } from './network.js';
+export {
+  acceptFilters,
+  fileTypeOf,
+  readHtmlFiles,
+  useHtmlFilePicker,
+} from './files.js';
+export type { HtmlFile, HtmlFileRequest, HtmlPickFiles } from './files.js';
 export type {
   ConsoleProperty,
   ConsoleResult,
@@ -174,6 +188,30 @@ export type {
   WebTransportStreamStats,
 } from './transport.js';
 export { NO_WEBSOCKET } from './socket.js';
+export { memoryClipboard, useHtmlClipboard } from './clipboard.js';
+export type { HtmlClipboard, HtmlClipboardData } from './clipboard.js';
+export type { HtmlDragData, HtmlDrop } from './drag.js';
+export { dispositionOf, downloadName, safeFilename } from './download.js';
+export type {
+  HtmlDownloadHandler,
+  HtmlDownloadRequest,
+  HtmlDownloadSource,
+} from './download.js';
+export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
+export { memoryNotifications, useHtmlNotifications } from './notifications.js';
+export { parseWindowFeatures } from './popups.js';
+export type {
+  HtmlPopup,
+  HtmlPopupFeatures,
+  HtmlPopups,
+  WindowFeatures,
+} from './popups.js';
+export type {
+  HtmlNotification,
+  HtmlNotificationEvents,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from './notifications.js';
 export type {
   HtmlWebSocket,
   WebSocketConnectRequest,
@@ -312,6 +350,7 @@ export {
   HtmlProfile,
   PROFILE_FILE,
   PROFILE_VERSION,
+  WORKERS_FILE,
 } from './profile.js';
 export type { HtmlProfileHttpCache, HtmlProfileOptions } from './profile.js';
 export type {
@@ -319,6 +358,24 @@ export type {
   HtmlCachedResponse,
   HtmlHttpCacheStore,
 } from './http-cache.js';
+export { HtmlServiceWorkers, memoryServiceWorkers } from './service-workers.js';
+export type {
+  HtmlServiceWorkerRecord,
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkerScript,
+  HtmlServiceWorkerStore,
+  HtmlServiceWorkerUpdateViaCache,
+  HtmlServiceWorkerVersion,
+  HtmlServiceWorkersOptions,
+} from './service-workers.js';
+export { memoryCaches } from './cache-storage.js';
+export type {
+  HtmlCacheAddition,
+  HtmlCacheEntry,
+  HtmlCacheRequest,
+  HtmlCacheResponse,
+  HtmlCacheStore,
+} from './cache-storage.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   MatchedRule as HtmlMatchedRule,
@@ -557,6 +614,26 @@ export interface HtmlProps {
    * component never sends anything by itself, any more than it navigates.
    */
   onSubmit?: (submission: FormSubmission) => void;
+  /**
+   * Ask the user for files: a press on an `<input type=file>`, its label or,
+   * under a gesture, a script's `click()`. Default: none, and a file input
+   * opens nothing. `useHtmlFilePicker()` is core's file dialog.
+   */
+  onPickFiles?: HtmlPickFiles;
+  /**
+   * A page asked to have something saved: an `<a download>` of its own
+   * origin, or of a `blob:` or `data:` URL it made. Default: none, and such a
+   * link is a link like any other, since a component that shows a page writes
+   * nothing to a disk for it. `HtmlNetwork.download` reads what it names.
+   */
+  onDownload?: HtmlDownloadHandler;
+  /**
+   * Read what another application dropped on the document, for a page's
+   * `drop`: `readHtmlFiles` is one. Default: none, and nothing from outside
+   * the process lands on it. A drag from one element of a document to another
+   * needs none of this.
+   */
+  onDropFiles?: (paths: string[]) => Promise<readonly HtmlFile[]>;
   /**
    * How the document asks to be scrolled: the `overflow` its root element
    * gives the viewport, or its `<body>` where the root's is `visible` (CSS
@@ -906,6 +983,16 @@ export interface HtmlHandle {
     end: number,
     direction?: FieldSelection['direction'],
   ): boolean;
+  /** What another application is dragging over the document, for a host
+   *  that takes drops for it, as one of a `<Frame>` pane does: whether what
+   *  is under it takes the drop. A drag from another application reaches the
+   *  document by itself where it has a window of its own. */
+  dragOver(drop: HtmlDrop): boolean;
+  /** It left. */
+  dragLeave(): void;
+  /** It was dropped, with its `paths` and its `text`, which the document
+   *  reads through `onDropFiles`: whether a page took it. */
+  dropHere(drop: HtmlDrop): Promise<boolean>;
   /**
    * Drop a control's picker, as a script's `showPicker()` does once it is
    * allowed to: a drop-down `<select>`'s menu, which its widget drops
@@ -1074,7 +1161,22 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // is drawn while the window has the keyboard
   const { caretBlink, caretBlinkMs } = useDesktopSettings();
   const windowFocused = useWindowState().focused;
-  const links = useLinkClicks(onLink);
+  // a link that says to save what it names, with no script to read it: the
+  // realm answers for one where a document's scripts run (`downloadLink`)
+  const onDownload = props.onDownload;
+  const followed = React.useMemo(() => {
+    if (!onLink || !onDownload || props.scripts) return onLink;
+    return (href: string, ev: X11MouseEvent<DrawnNode>) => {
+      const anchor = linkAround(viewNode.current?.elementAtPoint(ev.x, ev.y));
+      const name = anchor && attr(anchor, 'download');
+      if (name === undefined || name === null || !sameOriginAs(href, baseUrl)) {
+        onLink(href, ev);
+        return;
+      }
+      onDownload({ url: href, filename: name });
+    };
+  }, [onLink, onDownload, props.scripts, baseUrl]);
+  const links = useLinkClicks(followed);
   const menu = useSelectionMenu(selectable);
 
   // The element, for the document's base when a form is submitted, as well
@@ -1138,6 +1240,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     baseUrl,
     onControlChange,
     onSubmit,
+    onPickFiles: props.onPickFiles,
     onDomEvent,
     touch: (changes) => {
       if (changes) viewNode.current?.touchDocument(changes);
@@ -1163,14 +1266,34 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const sounds = useSounds(viewNode);
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
   const embedded = useEmbedded(props.renderEmbedded);
-  live.current = { forms, stops, onLink };
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,
     forms,
     stops,
     embedded,
+    props._readClipboard,
   );
+  const drag = useDocumentDrag({
+    view: viewNode,
+    baseUrl,
+    onDomEvent,
+    embedded,
+    pressed: events.pressedElement,
+    controlOf: forms.controlOf,
+    onDropFiles: props.onDropFiles,
+  });
+  live.current = {
+    forms,
+    stops,
+    onLink,
+    onDownload: props.onDownload,
+    drag: drag.external,
+  };
+  // what a script focused before anything could take it takes it from the
+  // render that mounts a widget or a stop for it, however long that is: no
+  // count of turns is long enough on a page still loading
+  React.useEffect(() => interactive.settleFocus());
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)
@@ -1294,6 +1417,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       // selection per application. One element answers for every paragraph,
       // so there is nothing per-block to thread through.
       selectable,
+      // a document whose host hears what happens to it drags as a page does:
+      // core's drag, of what the press was on (`useDocumentDrag`)
+      ...(onDomEvent && drag.rootProps),
       // Where the document has stops of its own, Tab goes to them and not
       // to the surface they are on, which a press still focuses for the
       // selection's keys — and Tab from there goes on from the press.
@@ -1321,19 +1447,6 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         links.onMouseDown(ev);
         forms.onMouseDown(ev);
         stops.onMouseDown(ev);
-        // a press on what `user-select: none` keeps out of a selection
-        // starts none, and leaves the one there is: turned down here, it
-        // never reaches the surface's press, nor its drag
-        const view = viewNode.current;
-        if (
-          selectable &&
-          view &&
-          ev.target === view &&
-          ev.button === 1 &&
-          !view.startsSelectionAt(ev.x, ev.y)
-        ) {
-          ev.preventDefault();
-        }
       },
       onKeyDown: (ev: X11KeyboardEvent<DrawnNode>) => {
         stops.onKeyDown(ev);
@@ -1384,210 +1497,231 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
 export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
   const nodeRef = React.useRef<HtmlViewNode | null>(null);
   const [, force] = React.useReducer((n: number) => n + 1, 0);
-  return React.useMemo(
-    (): HtmlHandle & HandleInternals & { ref: React.Ref<unknown> } => ({
-      ref: nodeRef as unknown as React.Ref<unknown>,
-      get document() {
-        return nodeRef.current?.document ?? null;
+  return React.useMemo(() => makeHtmlHandle(nodeRef, force), []);
+}
+
+/** A handle on the node `nodeRef` comes to hold, which answers nothing until
+ *  it holds one. */
+export function makeHtmlHandle(
+  nodeRef: React.RefObject<HtmlViewNode | null>,
+  force: () => void,
+): HtmlHandle & HandleInternals & { ref: React.Ref<unknown> } {
+  return {
+    ref: nodeRef as unknown as React.Ref<unknown>,
+    get document() {
+      return nodeRef.current?.document ?? null;
+    },
+    get title() {
+      return nodeRef.current?.title ?? null;
+    },
+    get base() {
+      return nodeRef.current?.documentBase ?? null;
+    },
+    refresh: (changes?: readonly HtmlChange[]) => {
+      nodeRef.current?.touchDocument(changes ?? null);
+      force();
+    },
+    elementAt: (x: number, y: number) =>
+      (nodeRef.current?.settle(), nodeRef.current?.elementAtPoint(x, y)) ??
+      null,
+    hrefAt: (x: number, y: number) =>
+      nodeRef.current?.hrefAtPoint(x, y) ?? null,
+    elementRect: (element: Element) =>
+      nodeRef.current?.elementRect(element) ?? null,
+    indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
+    offsetRect: (element: Element) =>
+      nodeRef.current?.offsetRect(element) ?? null,
+    askImage: (element) => nodeRef.current?.askImage(element),
+    imageState: (element) =>
+      nodeRef.current?.imageState(element) ?? {
+        complete: true,
+        available: false,
+        width: 0,
+        height: 0,
+        src: '',
       },
-      get title() {
-        return nodeRef.current?.title ?? null;
-      },
-      get base() {
-        return nodeRef.current?.documentBase ?? null;
-      },
-      refresh: (changes?: readonly HtmlChange[]) => {
-        nodeRef.current?.touchDocument(changes ?? null);
-        force();
-      },
-      elementAt: (x: number, y: number) =>
-        (nodeRef.current?.settle(), nodeRef.current?.elementAtPoint(x, y)) ??
-        null,
-      hrefAt: (x: number, y: number) =>
-        nodeRef.current?.hrefAtPoint(x, y) ?? null,
-      elementRect: (element: Element) =>
-        nodeRef.current?.elementRect(element) ?? null,
-      indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
-      offsetRect: (element: Element) =>
-        nodeRef.current?.offsetRect(element) ?? null,
-      askImage: (element) => nodeRef.current?.askImage(element),
-      imageState: (element) =>
-        nodeRef.current?.imageState(element) ?? {
-          complete: true,
-          available: false,
-          width: 0,
-          height: 0,
-          src: '',
-        },
-      clientBox: (element: Element) =>
-        nodeRef.current?.clientBoxOf(element) ?? null,
-      checkVisibility: (element, asks) =>
-        nodeRef.current?.checkVisibility(element, asks) ?? false,
-      drawnAtViewport: (element: Element) =>
-        nodeRef.current?.atViewport(element) ?? false,
-      scrollMoves: (scroller: Element, element: Element) =>
-        nodeRef.current?.scrollMoves(scroller, element) ?? false,
-      showClip: (element: Element, file: string | null) =>
-        nodeRef.current?.showClip(element, file),
-      geometryKey: () => nodeRef.current?.geometryKey() ?? '',
-      viewportHeld: (busy: number) =>
-        nodeRef.current?.viewportHeld(busy) ?? false,
-      intersectionsOf: (
-        elements: readonly (Element | null)[],
-        root: Element | null,
-        margin: readonly MarginLength[] | null,
-      ) => nodeRef.current?.intersectionsOf(elements, root, margin) ?? null,
-      textPointAt: (x: number, y: number) =>
-        nodeRef.current?.textPointAt(x, y) ?? null,
-      textRects: (
-        start: AnyNode,
-        startOffset: number,
-        end: AnyNode,
-        endOffset: number,
-      ) =>
-        nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
-      setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
-      setRegisteredProperties: (rules) =>
-        nodeRef.current?.setRegisteredProperties(rules),
-      snapViewport: (x, y, target, relative) =>
-        nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
-      layoutNow: () => nodeRef.current?.layoutNow(),
-      interrupted: () => nodeRef.current?.interrupted(),
-      cssAnimations: (element, subtree) =>
-        nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
-      cssTransitions: (element, subtree) =>
-        nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
-      seekTransition: (key, currentTime) =>
-        nodeRef.current?.seekTransition(key, currentTime),
-      seekAnimation: (key, currentTime, paused) =>
-        nodeRef.current?.seekAnimation(key, currentTime, paused),
-      seekScrolled: (key, mode, time, rate) =>
-        nodeRef.current?.seekScrolled(key, mode, time, rate),
-      viewAdjust: (element, vertical) =>
-        nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
-      cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
-      cssKeyframes: (element, pseudo, name) =>
-        nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
-      transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
-      transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
-      transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
-      transitionEnd: () => nodeRef.current?.transitionEnd(),
-      selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
-      selectPoints: (points) => nodeRef.current?.selectPoints(points),
-      setCaret: (point) => nodeRef.current?.setCaret(point),
-      movedPoint: (node, offset, granularity, back) =>
-        nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
-      scrollState: (element: Element) =>
-        nodeRef.current?.scrollStateOf(element) ?? null,
-      canvasChanged: (element: Element) =>
-        nodeRef.current?.canvasChanged(element),
-      setMediaState: (element: Element, state: MediaState) =>
-        nodeRef.current?.setMediaState(element, state),
-      setScriptAnimation: (
-        element: Element,
-        id: number,
-        effect: string | null,
-        play: string | null,
-      ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
-      scriptAnimationValues: (
-        element: Element,
-        id: number,
-        properties: readonly string[],
-      ) =>
-        nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
-      scrollElementTo: (
-        element: Element,
-        to: { x?: number; y?: number },
-        relative?: boolean,
-        target?: Element | null,
-      ) =>
-        nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
-      styleWhileOwed: (element, pseudo) =>
-        nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
-      layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
-      computedStyle: (
-        element: Element,
-        pseudo?: 'before' | 'after' | HighlightPseudo | null,
-      ) => nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
-      customProperty: (
-        element: Element,
-        name: string,
-        pseudo?: 'before' | 'after' | HighlightPseudo | null,
-      ) =>
-        nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
-      matchMedia: (query: string) =>
-        nodeRef.current?.matchMedia(query) ?? false,
-      fontFaces: () => nodeRef.current?.fontFaces() ?? [],
-      matchFonts: (query, text) =>
-        nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
-      loadFonts: (keys) =>
-        nodeRef.current?.loadFonts(keys) ??
-        Promise.resolve(keys.map(() => false)),
-      fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
-      mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
-      scriptsUnblocked: (script?: Element | null) =>
-        nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
-      beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
-      evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
-      inspectValue: (id: number) => nodeRef.current?.inspectValue?.(id) ?? null,
-      releaseValues: () => nodeRef.current?.releaseValues?.(),
-      namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
-        nodeRef.current?.namesThatStyle(element, attribute) ?? [],
-      matchedRules: (element: Element) =>
-        nodeRef.current?.matchedRules(element) ?? [],
-      styleSheets: () => nodeRef.current?.styleSheets() ?? [],
-      parserWrite: (script: Element, markup: string) =>
-        nodeRef.current?.parserWrite(script, markup) ?? false,
-      parserResume: (script: Element) => nodeRef.current?.parserResume(script),
-      parserMade: () => nodeRef.current?.parserMade() ?? [],
-      controlValue: (element: Element) =>
-        nodeRef.current?.interactive?.controlValue(element) ?? null,
-      setControlValue: (element: Element, value: string | boolean) =>
-        nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
-      controlSelection: (element: Element) =>
-        nodeRef.current?.interactive?.controlSelection(element) ?? null,
-      setControlSelection: (
-        element: Element,
-        start: number,
-        end: number,
-        direction?: FieldSelection['direction'],
-      ) =>
-        nodeRef.current?.interactive?.setControlSelection(element, {
-          start,
-          end,
-          direction:
-            direction === 'forward' || direction === 'backward'
-              ? direction
-              : 'none',
-        }) ?? false,
-      showPicker: (element: Element) =>
-        nodeRef.current?.interactive?.showPicker(element) ?? false,
-      focus: (element: Element) =>
-        nodeRef.current?.interactive?.focus(element) ?? false,
-      toldFocus: (element: Element) =>
-        nodeRef.current?.interactive?.told(element),
-      blur: () => nodeRef.current?.interactive?.blur(),
-      get activeElement() {
-        return nodeRef.current?.interactive?.activeElement() ?? null;
-      },
-      activate: (element: Element) =>
-        nodeRef.current?.interactive?.activate(element) ?? false,
-      submitForm: (form: Element, submitter?: Element | null) =>
-        nodeRef.current?.interactive?.submit(form, submitter ?? null),
-      reportValidity: (
-        form: Element,
-        submitter?: Element | null,
-        attempt?: boolean,
-      ) =>
-        nodeRef.current?.interactive?.reportValidity(
-          form,
-          submitter ?? null,
-          attempt,
-        ) ?? true,
-      resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
-    }),
-    [],
-  );
+    clientBox: (element: Element) =>
+      nodeRef.current?.clientBoxOf(element) ?? null,
+    checkVisibility: (element, asks) =>
+      nodeRef.current?.checkVisibility(element, asks) ?? false,
+    drawnAtViewport: (element: Element) =>
+      nodeRef.current?.atViewport(element) ?? false,
+    scrollMoves: (scroller: Element, element: Element) =>
+      nodeRef.current?.scrollMoves(scroller, element) ?? false,
+    showClip: (element: Element, file: string | null) =>
+      nodeRef.current?.showClip(element, file),
+    geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+    viewportHeld: (busy: number) =>
+      nodeRef.current?.viewportHeld(busy) ?? false,
+    intersectionsOf: (
+      elements: readonly (Element | null)[],
+      root: Element | null,
+      margin: readonly MarginLength[] | null,
+    ) => nodeRef.current?.intersectionsOf(elements, root, margin) ?? null,
+    textPointAt: (x: number, y: number) =>
+      nodeRef.current?.textPointAt(x, y) ?? null,
+    textRects: (
+      start: AnyNode,
+      startOffset: number,
+      end: AnyNode,
+      endOffset: number,
+    ) => nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
+    setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
+    setRegisteredProperties: (rules) =>
+      nodeRef.current?.setRegisteredProperties(rules),
+    snapViewport: (x, y, target, relative) =>
+      nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
+    layoutNow: () => nodeRef.current?.layoutNow(),
+    interrupted: () => nodeRef.current?.interrupted(),
+    cssAnimations: (element, subtree) =>
+      nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
+    cssTransitions: (element, subtree) =>
+      nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
+    seekTransition: (key, currentTime) =>
+      nodeRef.current?.seekTransition(key, currentTime),
+    seekAnimation: (key, currentTime, paused) =>
+      nodeRef.current?.seekAnimation(key, currentTime, paused),
+    seekScrolled: (key, mode, time, rate) =>
+      nodeRef.current?.seekScrolled(key, mode, time, rate),
+    viewAdjust: (element, vertical) =>
+      nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
+    cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
+    cssKeyframes: (element, pseudo, name) =>
+      nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
+    transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
+    transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
+    transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
+    transitionEnd: () => nodeRef.current?.transitionEnd(),
+    selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
+    selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
+    selectPoints: (points) => nodeRef.current?.selectPoints(points),
+    setCaret: (point) => nodeRef.current?.setCaret(point),
+    movedPoint: (node, offset, granularity, back) =>
+      nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
+    scrollState: (element: Element) =>
+      nodeRef.current?.scrollStateOf(element) ?? null,
+    canvasChanged: (element: Element) =>
+      nodeRef.current?.canvasChanged(element),
+    setMediaState: (element: Element, state: MediaState) =>
+      nodeRef.current?.setMediaState(element, state),
+    setScriptAnimation: (
+      element: Element,
+      id: number,
+      effect: string | null,
+      play: string | null,
+    ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
+    scriptAnimationValues: (
+      element: Element,
+      id: number,
+      properties: readonly string[],
+    ) =>
+      nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
+    scrollElementTo: (
+      element: Element,
+      to: { x?: number; y?: number },
+      relative?: boolean,
+      target?: Element | null,
+    ) =>
+      nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
+    styleWhileOwed: (element, pseudo) =>
+      nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
+    layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
+    computedStyle: (
+      element: Element,
+      pseudo?: 'before' | 'after' | HighlightPseudo | null,
+    ) => nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+    customProperty: (
+      element: Element,
+      name: string,
+      pseudo?: 'before' | 'after' | HighlightPseudo | null,
+    ) => nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
+    matchMedia: (query: string) => nodeRef.current?.matchMedia(query) ?? false,
+    fontFaces: () => nodeRef.current?.fontFaces() ?? [],
+    matchFonts: (query, text) =>
+      nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
+    loadFonts: (keys) =>
+      nodeRef.current?.loadFonts(keys) ??
+      Promise.resolve(keys.map(() => false)),
+    fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
+    scriptFonts: () => nodeRef.current?.scriptFonts() ?? null,
+    scriptFontsChanged: (id: number, added: boolean) =>
+      nodeRef.current?.scriptFontsChanged(id, added),
+    svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+    canvasText: () => nodeRef.current?.canvasText() ?? null,
+    foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
+    mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
+    scriptsUnblocked: (script?: Element | null) =>
+      nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
+    beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
+    evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
+    inspectValue: (id: number) => nodeRef.current?.inspectValue?.(id) ?? null,
+    releaseValues: () => nodeRef.current?.releaseValues?.(),
+    namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
+      nodeRef.current?.namesThatStyle(element, attribute) ?? [],
+    matchedRules: (element: Element) =>
+      nodeRef.current?.matchedRules(element) ?? [],
+    styleSheets: () => nodeRef.current?.styleSheets() ?? [],
+    parserWrite: (script: Element, markup: string) =>
+      nodeRef.current?.parserWrite(script, markup) ?? false,
+    parserResume: (script: Element) => nodeRef.current?.parserResume(script),
+    parserMade: () => nodeRef.current?.parserMade() ?? [],
+    controlValue: (element: Element) =>
+      nodeRef.current?.interactive?.controlValue(element) ?? null,
+    setControlValue: (element: Element, value: string | boolean) =>
+      nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
+    controlSelection: (element: Element) =>
+      nodeRef.current?.interactive?.controlSelection(element) ?? null,
+    setControlSelection: (
+      element: Element,
+      start: number,
+      end: number,
+      direction?: FieldSelection['direction'],
+    ) =>
+      nodeRef.current?.interactive?.setControlSelection(element, {
+        start,
+        end,
+        direction:
+          direction === 'forward' || direction === 'backward'
+            ? direction
+            : 'none',
+      }) ?? false,
+    showPicker: (element: Element) =>
+      nodeRef.current?.interactive?.showPicker(element) ?? false,
+    pickFiles: (element: Element) =>
+      nodeRef.current?.interactive?.pickFiles(element),
+    download: (request: HtmlDownloadRequest) =>
+      nodeRef.current?.interactive?.download(request) ?? false,
+    dragOver: (drop: HtmlDrop) =>
+      nodeRef.current?.interactive?.dragOver(drop) ?? false,
+    dragLeave: () => nodeRef.current?.interactive?.dragLeave(),
+    dropHere: (drop: HtmlDrop) =>
+      nodeRef.current?.interactive?.dropHere(drop) ?? Promise.resolve(false),
+    setFiles: (element: Element, files: readonly HtmlFile[]) =>
+      nodeRef.current?.interactive?.setFiles(element, files),
+    focus: (element: Element) =>
+      nodeRef.current?.interactive?.focus(element) ?? false,
+    toldFocus: (element: Element) =>
+      nodeRef.current?.interactive?.told(element),
+    blur: () => nodeRef.current?.interactive?.blur(),
+    get activeElement() {
+      return nodeRef.current?.interactive?.activeElement() ?? null;
+    },
+    activate: (element: Element) =>
+      nodeRef.current?.interactive?.activate(element) ?? false,
+    submitForm: (form: Element, submitter?: Element | null) =>
+      nodeRef.current?.interactive?.submit(form, submitter ?? null),
+    reportValidity: (
+      form: Element,
+      submitter?: Element | null,
+      attempt?: boolean,
+    ) =>
+      nodeRef.current?.interactive?.reportValidity(
+        form,
+        submitter ?? null,
+        attempt,
+      ) ?? true,
+    resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
+  };
 }
 
 // --- what happens to the document --------------------------------------------
@@ -1614,6 +1748,8 @@ interface Live {
   forms: ReturnType<typeof useForms>;
   stops: ReturnType<typeof useFocusStops>;
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
+  onDownload?: HtmlDownloadHandler;
+  drag: ReturnType<typeof useDocumentDrag>['external'];
 }
 
 /** The node core's window has focused, where the element is in a window. */
@@ -1649,6 +1785,16 @@ function documentInteraction(
     setControlSelection: (el, selection) =>
       live.current?.forms.setSelection(el, selection) ?? false,
     showPicker: (el) => live.current?.forms.showPicker(el) ?? false,
+    download: (request) => {
+      const save = live.current?.onDownload;
+      save?.(request);
+      return !!save;
+    },
+    dragOver: (drop) => live.current?.drag.over(drop) ?? false,
+    dragLeave: () => live.current?.drag.leave(),
+    dropHere: (drop) => live.current?.drag.drop(drop) ?? Promise.resolve(false),
+    pickFiles: (el) => live.current?.forms.pickFiles(el),
+    setFiles: (el, files) => live.current?.forms.setFiles(el, files),
     focus: (el) => {
       const now = live.current;
       if (!now) return false;
@@ -1668,12 +1814,27 @@ function documentInteraction(
       }
       return took;
     },
-    told: (el) => live.current?.forms.focused(el, true),
+    told: (el) => {
+      const forms = live.current?.forms;
+      forms?.focused(el, true);
+      forms?.owe(el);
+    },
+    settleFocus: () => {
+      const now = live.current;
+      const el = now?.forms.owed();
+      if (el) void (now!.forms.focusControl(el) || now!.stops.focus(el));
+    },
     blur: () => {
+      const forms = live.current?.forms;
+      if (forms?.owed()) {
+        forms.letGo();
+        return;
+      }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
     },
-    activeElement: () => owner(focusedNode(view.current)),
+    activeElement: () =>
+      live.current?.forms.owed() ?? owner(focusedNode(view.current)),
     activate: (el) => {
       const node = view.current;
       const now = live.current;
@@ -1702,6 +1863,7 @@ const CONTROLS = new Set(['button', 'input', 'select', 'textarea']);
 /** What a press on a control's widget ticks or presses: its click is the
  *  widget's to tell, after the box changes (`widgets.ts`). */
 const CLICKS_ITSELF = new Set([
+  'file',
   'checkbox',
   'radio',
   'submit',
@@ -1725,6 +1887,7 @@ function useDocumentEvents(
   forms: ReturnType<typeof useForms>,
   stops: ReturnType<typeof useFocusStops>,
   embedded: Embedded,
+  readClipboard?: () => Promise<HtmlClipboardData>,
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
@@ -1782,6 +1945,26 @@ function useDocumentEvents(
       if (!go) ev.preventDefault();
     };
   const keyDown = key('keydown');
+  /** The key just told, where it is the clipboard's chord and the page let
+   *  it be: told as what it is, before core's own copy, cut or paste. An
+   *  event is told at once and a read of the clipboard is not, so with a
+   *  clipboard to read, a paste stops core's and is the page's to make. */
+  const clipboardKey = (ev: X11KeyboardEvent<DrawnNode>) => {
+    if (!onDomEvent || ev.defaultPrevented || ev.composing) return;
+    if (embedded.contains(ev.target as DrawnNode)) return;
+    const type = clipboardChord(ev, view.current?.app);
+    const target = type && keyedAt(ev.target as DrawnNode);
+    if (!type || !target) return;
+    if (type === 'paste' && readClipboard) {
+      ev.preventDefault();
+      const told = (clipboard: HtmlClipboardData) => {
+        if (view.current) fire('paste', target, { clipboard });
+      };
+      readClipboard().then(told, () => told({}));
+      return;
+    }
+    if (!fire(type, target, modifiersOf(ev))) ev.preventDefault();
+  };
   return {
     onMouseDownCapture: (ev: X11MouseEvent<DrawnNode>) => {
       forms.userInput('pointer');
@@ -1827,6 +2010,7 @@ function useDocumentEvents(
         forms.userInput('keyboard');
       }
       keyDown(ev);
+      clipboardKey(ev);
     },
     onKeyUpCapture: key('keyup'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
@@ -1860,6 +2044,8 @@ function useDocumentEvents(
     },
     /** Whether the press now under way is a scroll bar's. */
     onBar: () => barPress.current,
+    /** The element the press now under way was on. */
+    pressedElement: () => pressed.current,
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressed.current;
       const up = released.current;
@@ -1883,6 +2069,27 @@ function useDocumentEvents(
       return go;
     },
   };
+}
+
+/** The link an element is in, or null. */
+function linkAround(el: Element | null | undefined): Element | null {
+  for (let at = el ?? null; at; at = flatParentOf(at)) {
+    if (tagOf(at) === 'a' || tagOf(at) === 'area') return at;
+  }
+  return null;
+}
+
+declare const URL: new (url: string) => { origin: string };
+
+/** Whether an address is of a document's origin, or is one a page made: what
+ *  a link's `download` counts on (HTML 4.6.5). */
+function sameOriginAs(href: string, base: string | null | undefined): boolean {
+  if (/^(?:blob|data):/i.test(href)) return true;
+  try {
+    return new URL(href).origin === new URL(base ?? '').origin;
+  } catch {
+    return false;
+  }
 }
 
 /** The nearest element two are both in, themselves included. */

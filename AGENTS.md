@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.3` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.3` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -857,6 +857,16 @@ it up. **The floor is a running one and moves often** — every move since
   behind the text a line by the twenty-fifth. A core before it reads no
   `lineHeight` on a field and sets it at its font's own, so the floor
   moves with the fix.
+- `^2.56.3` — a press moves the focus after its `mousedown`, and not where
+  a handler cancelled it (react-x11#1029, over #1028). Core moved it first,
+  so a page's `preventDefault()` kept nothing, and a click on Monaco, in
+  vscode.dev and the TS Playground, left the editor unfocused. `<Html>` and
+  `<RichTextEditor>` each cancelled a press for a reason of their own, and
+  stopped, since a press cancelled on this core moves no focus. A core
+  before it tells a page the focus has gone before it hears the press, so
+  the floor moves with the fix. 2.56.2 under it keeps pinned repairs apart
+  (#1022), so a sticky header over a sticky sidebar is no repaint of the
+  window at every scroll, which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -1884,6 +1894,19 @@ selection goes through `Forms.setSelection`.** It keeps the selection for a
 widget not mounted yet, and it notes it as `seen`, so the user's next key
 is not told as `select` for the script's selection.
 
+**A focus told is owed until something takes it** (`Forms.owe`,
+`settleFocus`). A control has no widget until a render after it is laid out,
+and a script's `focus()` is told at once, as HTML has it (`told`), so the
+page goes by what it heard from there. It was asked of `<Html>` once more,
+16 ms later, and let go of with nothing told: on a page still loading,
+Monaco's textarea had no widget by then one load in five, and Monaco, told
+it had the focus, asked for nothing when it was pressed, so a click on it
+did nothing. The render that mounts a widget or a stop hands the focus on,
+and `activeElement` answers for it until then. **Wait for what takes it, as
+for a layout, and never for a count of turns.** Anything that moves the focus
+before then goes through `Forms.focused` or `letGo`, which take the debt
+back.
+
 **A control's state has one answer, which a rule and a page both ask for**
 (`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,
 `:user-valid`, `:user-invalid`, `:in-range`, `:out-of-range`,
@@ -2535,7 +2558,12 @@ cascade only where the sheets read otherwise** (`_sheetsKept`, over the
 `_sameSheets` that `_restyle` asks to keep the cascade) — a `<link>` put
 in before its sheet is in is a change when the sheet comes — and
 `changesCascade` lists the attributes `DocumentSource.facts` reads of
-them: anything new read there joins it. Where the sheets do read
+them: anything new read there joins it. It is asked of a change before
+anything goes by where the change is (`_cascadeChanged`), since a `<style>`
+is a sheet wherever it stands: what a script wrote to one a drawing was
+exported with, and what a stream's chunk cut inside one, went by way of the
+drawing and waited for a refresh that said nothing. **Anything new `_scopeOf`
+answers by where a change is goes after it.** Where the sheets do read
 otherwise, **the cascade made again takes the parses of the one before**
 (`_parseSheet`), each once, since `place` sets its rules' `order`: so
 anything new a parse comes to read besides its text, its base, the media
@@ -2590,10 +2618,18 @@ out or written over, and one adding what reaches past its selectors — an
 `@counter-style` or layer, a rule at a shadow tree's edge or for a highlight.
 **Anything new a sheet can declare that reaches past the elements its
 selectors name joins `onlyRules`' and `rulesAfter`'s checks**, or a sheet
-bringing it restyles too little. A shadow tree's sheet reaches only what the
-tree's host holds, so a tree that comes to read otherwise, or to other
-rules, styles its host and all it holds (`_shadowKeys`), where GitHub's first
-`<tool-tip>` styled the whole document. A `<meta>` the
+bringing it restyles too little. The styles kept are the cascade before's,
+and the one made for the rules styles the root only if a rule reaches it, so
+**what is known of the root goes over with them** (`keepsStylesOf`): its
+style, which `KeptStyles.root` is not, that being the root box's, the initial
+style under an `<html>` the markup writes; and who reads its font, which only
+computing a style notes. Anything new a cascade notes of the root joins it, or
+a `rem` in an added rule comes to the initial size, and one a `<body>` of
+another size keeps from the root stays where it was when the root moves. A
+shadow tree's sheet reaches only what the tree's host holds, so a tree that
+comes to read otherwise, or to other rules, styles its host and all it holds
+(`_shadowKeys`), where GitHub's first `<tool-tip>` styled the whole document.
+A `<meta>` the
 cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
 `<base>`, a `:has()` every element could anchor
 that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`
@@ -3462,6 +3498,36 @@ its frames read as `rgb()` rather than as the colour it set out from. And
 **nothing that draws reads a source**: the common hex and named colour
 keep nothing, and cost two string tests.
 
+**A file input holds what a host gave it, and its bytes stay the host's
+until a page asks** (`files.ts`, `CHOSEN` in `form.ts`, `hostFile` in
+`dom.ts`). What was chosen is by element at `form.ts`'s module scope, for the
+reason `TYPED` is, and a form's entries, validity and reset read it there. A
+page's `File` is made from what `fileList` answers and has an accessor for
+`_bytes` that pulls them a piece at a time (`fileChunk`), since a string has a
+limit and a file has none. So **anything new that reads a `Blob`'s bytes reads
+`_bytes` and never holds a copy of what the constructor set, and anything that
+asks a blob's size asks `size`**, which answers without pulling. A picker is the
+host's to show (`onPickFiles`), and a pane on a Mac cannot, so the example
+browser shows it and the pane reads the paths: a thing a pane cannot do goes
+through a callback and an answering prop, since a `<Frame>`'s functions are
+one-way. **A press on any of the control is the button**, since a page lays a
+transparent one over what it draws: the box beside the button has the same
+`onClick`.
+
+**What leaves a document as a file goes through a seam that does nothing by
+default** (`download.ts`, `onDownload`). A link's `download` is the realm's to
+read where scripts run (`downloadLink`), and `<Html>`'s where they do not
+(`followed`), with the same rule: another origin's says nothing. A `blob:`'s
+bytes cross with the request, since no host can read one. **`safeFilename` is
+what stands between a server's name and a path**: anything new that takes a name
+for a file goes through `downloadName` or `safeFilename`, never around them, and
+a host joins nothing else to a directory. `HtmlNetwork.document` hands over a
+second body with no limit on it (`whole`), lazily: **read `body` or `whole`,
+never both**, since both drain the one response. The clock on a stalled response
+runs from the request whether or not anyone reads it, so **anything new that
+keeps a response waiting calls `hold()`**, which the save dialog does, or
+it is given up as stalled while the user is choosing.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
@@ -3500,6 +3566,20 @@ press, which the root then leaves alone. The handle's `interactive` reaches
 the hooks' state through one object made once and a ref every render sets
 (`documentInteraction`), so a host calling it between renders is answered
 from the last one.
+
+**A press's focus is `mousedown`'s default action, and that is core's**
+(react-x11#1028). Core moved it before dispatching the press, so a page
+heard `mousedown` with the focus already gone and `preventDefault()` could
+keep nothing: Monaco cancels a press and asks for the focus only where it
+believes it has none, so a press on the editor took the focus for good.
+Nothing here could have put that right. The root's capture phase is inside
+core's dispatch, and an undo after it would have told the page `focusin`
+ahead of `mousedown`, and scrolled and rung as a `'script'` focus does.
+**So nothing of `<Html>`'s own cancels a press**: a `preventDefault()` here
+is a page's, and keeps the focus. What the document turns down of a press
+goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
+`user-select: none` starts no selection and moves the focus in all three
+engines.
 
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
@@ -3692,6 +3772,15 @@ the example browser's, which runs it behind the toolbar's JS switch, and
 which moved here so that a document's scripts are one prop. Each rule
 closes a way out a DOM binding opens by accident:
 
+- **An element is SVG's by what the parser's rule says of where it stands**
+  (`inDrawing`, over `namespaceIn`), not by a list of names. The facade's
+  list held some of SVG's names in lower case, where the parser keeps the
+  capitals, and HTML's classes were asked first, so `<style>`, `<clipPath>`
+  and `<foreignObject>` read as HTML's in a drawing, and DOMPurify removed
+  them as out of place: every mermaid diagram lost its colours and its
+  labels. A `<script>` stays HTML's, where scripts are run from, and what a
+  script made with `createElement` stays what it was made, since a wrapper
+  is made once.
 - **The facade is source text.** `installDom` (`dom.ts`) is handed to the
   context by `toString()` and closes over nothing, so every object a page
   touches is the context's. Anything new it needs comes over the bridge as
@@ -3726,7 +3815,10 @@ closes a way out a DOM binding opens by accident:
   `<head>`. Met at `<Html>`'s read of the tree, they ran backwards and a
   module ran before the one defining what it needs. **Anything new that
   makes a `<script>` element sets its `forceAsync`**, as `create` and a
-  copy do.
+  copy do. A frame goes the same way, whichever of the two it went in by
+  (`_connected`): one `innerHTML` put in after the parse loaded only if a
+  page read its `contentWindow`, so a player written in by a press on its
+  poster, an `<iframe>` of YouTube's embed, was an empty box.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the
@@ -3755,6 +3847,29 @@ closes a way out a DOM binding opens by accident:
   runs nothing there either (`importStaysInPage`). **An escape test reads
   what a refusal hands the page**, and what `import()` hands it, not only
   that it was refused.
+- **A list is a proxy, and is live by a count kept in the realm** (`itemsOf`,
+  `LIST_PROXY`). `NodeList`, `HTMLCollection` and the lists like them are
+  legacy platform objects, whose indices are own properties nobody can set,
+  which only a proxy gives: an `Array` subclass was the shape before, so
+  `Array.isArray` said yes, `slice.call` made another list and held lists were
+  snapshots, and `while (kids.length) parent.removeChild(kids[0])` never ended.
+  A read is some 100 ns, less than the op a page does with what it read. A live
+  list reads the host only where `treeEpoch` or `attrEpoch` moved since it last
+  did, and a read of the host at each index would be a trip per element. Three
+  things are load-bearing. **`KEEPS_LISTS` names reads alone**: an op it does
+  not name moves the counts, which costs a read and is never wrong, so an op
+  added to it has to change nothing a list holds. **A list that an attribute
+  decides passes `readsAttributes`, and the attribute joins `LIST_ATTRIBUTES`**,
+  or `setAttribute` leaves it as it was. **Anything new that runs the page's
+  code from the host goes through an `entry`**, which moves both counts, as
+  `__task` does for a module: the parser and the host change the tree only
+  between two tasks, and nothing else tells a list so. A frame's realm counts
+  its own ops, so a list of one realm is told of another realm's change to the
+  same tree at the next task. And a held list that a page changes in a loop
+  reads the tree at each step, which is what makes it live: 200 steps of
+  `appendChild` over a held `getElementsByTagName` in a document of 6,000
+  elements take 57 ms, where a snapshot took 1 and went on answering what the
+  tree no longer held.
 - **A page's stacks are its own frames** (`stacks.ts`). Every task is
   entered from the host, and the runtime wrote every frame into an error's
   `stack`: any page read the user's home directory and the install's
@@ -3777,6 +3892,59 @@ closes a way out a DOM binding opens by accident:
   the listeners already there off and hands them every rejection that is
   not a page's. A test needs no setting node:test's listener aside: that
   it fails no test is the check.
+- **XML is the host's and XPath is the host's** (`xml.ts`, `xpath.ts`). An
+  expression walks every node it can reach, and through the facade that would
+  be an op for each, so only the expression and the prefixes it names cross, a
+  page's resolver is asked as the expression is compiled, and an attribute,
+  which is no node of the tree, stands for itself as an `XAttr` and comes back
+  as its element and its name. `_xmlTree` is the one way XML reaches the tree:
+  htmlparser2 reads it leniently, so `readProlog` holds it to XML first, and a
+  CDATA section is a `Text` in `CDATA_SECTIONS`, a text to everything but a
+  serializer. A processing instruction and a doctype are both directives, so
+  **anything that asks whether a node is a doctype asks `isDoctype`**, never
+  `instanceof ProcessingInstruction`. **An attribute's name goes through
+  `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
+- **A window with an opener is a realm in its opener's process**
+  (`scripts/popups.ts` on the host, `scripts/windows.ts` in the page,
+  `src/html/popups.ts` for the seam, docs/prd-popups.md). `window.open` answers
+  at once with a document, which no process boundary could, so a window is a
+  `WindowSlot`: a number in a group that outlives every document it shows, each
+  of which comes into it as its runner is made (`adopt`), and in each realm a
+  proxy over that number. Eight things are load-bearing. **A window's first document
+  is made inside the op** (`Popup.seams`), before any `<Html>`, with its opener's
+  seams until a view lends its own, so anything new a realm asks of its seams as
+  it starts has an answer with no view there. **What reads as a window through a
+  proxy goes through `seen`**: `popup.opener === window` needs this realm's name
+  for it, since a proxy is a realm's own. **A slot is found by what a window's
+  documents share** (`windowKey`): a host's `session`, a frame's element, so an
+  opener's next document reaches its popups; `SLOTS` is by that key, and anything
+  new that makes a top-level document goes through `ScriptRunner`'s constructor.
+  **What a page holds of a same-origin window it may hand another realm's op**, so
+  a node's id is its realm's and `idOf` asks the host to hand it across
+  (`__handOver`, `takeNode`): anything new that takes a node as an op's argument
+  goes through `idOf`, never `node._id`, or it takes another node with no error.
+  **A page's top is its host's** (`DomHost.top`): a popup
+  shares its opener's tree and is a top of its own, so anything that reads the
+  site for cookies asks its host. **A context runs its microtasks only as the
+  host enters it**, so a promise of one realm that another's task resolves waits
+  for that realm's next task: `await new Promise((go) => (popup.onload = go))`
+  has nothing else to wake it. So windows join `_drainRealms`, as same-origin
+  frames do, but only as a proxy is first read through (`windowReached`), and
+  never for being in one group: linked in pairs, a page of ninety windows ran all
+  of them after every task and timed out. **A window's `about:blank` is of what
+  made it** (`DomHost.creator`), set before its realm is made, since a realm asks
+  what context it is as it installs: anything new that goes by a document's origin
+  or its security asks the host, never its address, which says `null` and not
+  secure, and a service worker's client answers `origin` for the same reason. And
+  **a group is
+  kept out of the back-forward cache** (`salvageable`): a window another reaches
+  stays where it can be reached. A host answers `popups.open`, and shows a window
+  by mounting `<Html>`
+  with `scripts.popup` for each of its documents, the first `source=""` at
+  `about:blank`, which `useScriptedHtml` turns into the document `window.open`
+  made. **Nothing but the seam says a window may open**: no `popups`, and
+  `window.open` is null, as "Nothing is fetched, by construction" has it.
+
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since
@@ -3822,6 +3990,17 @@ closes a way out a DOM binding opens by accident:
   between its reads of a computed style. What an image answers before the
   engine is here is kept (`Early.images`), since an `onload` in the markup
   is still to hear it.
+- **A `<link rel=preload>` a script puts in is asked for, to hear `load` or
+  `error`** (`_preloadLink`), and for no more: what it fetched goes through the
+  network's cache to whatever asks next. `as=style` is `<Html>`'s own
+  (`isStylePreload`). Squoosh's loader waits on it before it adds the script,
+  and with neither told, its editor never loaded. **What a page draws of its
+  own `blob:` URL is answered in `useScriptedHtml`** (`onResource`,
+  `__blobBytes`), since no host could fetch one, a turn later, as it is asked
+  from inside the page's ops. And **what crosses a thread keeps its kind**: an
+  `ImageData` clones and a `File` stays one, with `fn` and `fm` on the wire,
+  since `n` is a number's and `D` a `Date`'s: **a new clone tag or key is checked
+  against `make`'s reserved ones**, which take it silently for something else.
 - **What a page asks of a media element is the player's, kept by
   element.** `play()`, `pause()`, `muted`, `volume`, `playbackRate` and a
   seek are the facade's state (`mediaAsks`) and one `mediaState` op each;
@@ -3864,7 +4043,11 @@ closes a way out a DOM binding opens by accident:
   **the host never reads what a page threw**: a module's error goes to the
   page through `__thrown` to be reported there, under the timeout.
 - **What a page feature-detects or assigns is the IDL's, not the facade's
-  reading of it.** A missing interface brings a polyfill: Next.js's
+  reading of it.** A property a style has answers `in`
+  (`isStyleProperty`, from `declaredProperties`): Vue 2 writes a name only
+  where it finds it there, so every `:style` binding on StackEdit came out
+  as `undefined: 44px`, and jQuery looks the same way. A missing interface
+  brings a polyfill: Next.js's
   IntersectionObserver polyfill re-measured every target at every
   mutation, because `IntersectionObserverEntry` was missing. A getter with
   no setter throws in strict code, as `contentEditable` did for
@@ -4082,6 +4265,28 @@ closes a way out a DOM binding opens by accident:
   replaces the streaming forms, which on Node are the host's and refuse a
   page's `Response` with an error of the host's realm: a way out of the
   context, which the escape test reads.
+- **A canvas's text is set by the engine and painted by the realm**
+  (`src/html/canvas-text.ts`, `canvasRaster`). `layout.coverage()` is the
+  one thing every engine answers for text drawn where a 2d context is not,
+  so the host hands a string's coverage across, as a string of a byte a
+  character, set up to four times finer than it is drawn. The realm reads
+  it at points through the matrix (`coverMask`) and hands that to
+  `paintCoverage`, so a clip, an alpha, an operator and a gradient reach
+  text as they reach a path, and a letter lands at a quarter of a pixel,
+  which is how near pdf.js's letter-at-a-time placing needs it. Three things
+  are load-bearing. **A raster is kept by all it was set from**, the faces'
+  `generation` among them, which a context reads once a task (`_textNow`):
+  anything new a string is set from joins `canvasRaster`'s key and the
+  `textSetting` that crosses, or a page draws what it drew before.
+  **A context's units are nobody's display's**: `Cascade.canvasFont` works
+  at a scale of 1, and a `font` is kept written out in pixels, so a raster
+  of the same font is the same raster at 2x. **A face a page's `load()`
+  answered for is one it draws in at once**, which a build otherwise reads
+  at the next layout, so `canvasText()` brings the sheets up to date first.
+  A worker has no fonts to ask: its text is drawn as nothing and its
+  measures are a guess, as all of a canvas's were. `strokeText` is a band of
+  the coverage's distance field, since no engine hands over outlines on
+  every backend, so its joins are round and it draws no dash.
 - **A canvas's pixels are the page realm's** (`CanvasState` in `dom.ts`),
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it
@@ -4119,7 +4324,11 @@ closes a way out a DOM binding opens by accident:
   simulation of a dozen programs. It runs on `gpuWebGL`, a windowless
   x11-dri context per canvas, and it costs a read of the GPU's pixels, so
   **a frame is read as the document paints it** (`PageContexts.settle`, from
-  `DomHost.canvas`) rather than as it is drawn: read at each frame, a glow in
+  `DomHost.canvas`) rather than as it is drawn, **or as a page reads the
+  canvas as an image** (`canvasBitmap`, `WEBGL.pixels`), once a picture.
+  Anything new that reads a canvas's pixels goes through `canvasBitmap`, or
+  a WebGL canvas reads as nothing: jspaint draws its shapes on one nothing
+  shows and copies them, and a pencil left no mark. Read at each frame, a glow in
   a canvas scrolled out of view starved the page's downloads, and a clip's
   10-second load timer dropped the whole section to its fallback, one load
   in three. **The ways desktop GL is not WebGL fail with nothing drawn and no
@@ -4167,13 +4376,36 @@ closes a way out a DOM binding opens by accident:
   page may have (`_ending`), or a page that starts and ends them in a loop
   has threads without end. **Anything new that ends a thread goes through
   `end`.**
-- **Another origin's frame is linked as another origin.** Its realm and
-  the page's hand each other their globals, as same-origin frames do, and
-  the facade keeps what either reaches to what crosses origins
-  (`crossLinked`, the cross-origin `parent`): a cross-origin frame's global
-  never answers a property read from the other realm. `postMessage`'s
-  `targetOrigin` is held to the window posted to (`__origin`), which is
-  not the sender's once two origins are linked.
+- **A realm never holds another origin's global, or any object of that
+  realm.** The facade runs in the page's realm, so a page can replace all it
+  calls: `String`, `Map.prototype.get`, `WeakMap.prototype.get`. An origin
+  compared there can be made to come out the same, and what a table there keeps
+  can be read as the facade reads it, so no check in the facade, and no copy of
+  a builtin under one, keeps a global from a page. **A page has every object the
+  facade's code touches.** So the host decides, by `host.origin`:
+  `ScriptEngine.link` and `WindowSlot.adopt` hand a global only to a realm of
+  one origin (`sameOrigin`, in which an opaque origin is no other's), and two
+  of different origins have each other by a number. What crosses origins goes
+  through ops on that number: `closed`, `length`, `close`, `focus`, a `location`
+  set, and `postMessage` and a port's messages as strings (`postAcross`,
+  `realmPost`, `realmWire`), delivered by entering the other realm
+  (`__messageAcross`, `__wireAcross`). Who sent a message and whether it is
+  meant for that origin are the host's to say (`post`). Three things are
+  load-bearing. **Anything that reaches another document is refused on the host
+  by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
+  `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
+  first. A facade's check is a courtesy, for the error a page should see.
+  **What an origin is read from cannot be moved by a page**: `setLocation`
+  stays in its origin, since every check of one, storage and cookies among them,
+  reads it, and `creator` is an `about:blank` document's alone, or a popup's
+  `data:` document is its opener's origin. A frame's origin is where it landed
+  (`response.url`), not what it asked for. And **a test of this replaces what
+  the facade calls** (`STEAL` in `test/html/popups.test.ts`), beside a control
+  of one origin that finds the global by the same reach: finding nothing proves
+  nothing until the same search finds something. **Anything new that reaches
+  another realm is an op on its number, refused on the host**, and a window
+  moving between origins links or unlinks in `adopt`, so nothing keeps a global
+  past it.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
@@ -4286,20 +4518,123 @@ closes a way out a DOM binding opens by accident:
   overtakes goes at once**, and so does the one a reload makes again, or
   it comes into the session after the document that overtook it — which is
   why the browser numbers a document only as it comes in, never ahead.
-- **A page's streams are the standard's, and none of their state is the
-  page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
-  operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
-  the public object, and the promise and array methods they call are taken
-  before page code runs. So **anything new that makes or drives a stream
-  goes through `StreamsInternals`** — `readable`, `readableBytes`,
-  `writable`, `controllerOf`, `errorReadable`, `errorWritable`,
-  `writableSignal` — never through a field of the object, and a subclass
-  (WebTransport's send and receive streams) is made with `INTERNAL` and set
-  up by them. A byte stream a source closes answers a pending BYOB read
-  with `respond(0)` after `close()`, or the reader waits for ever
-  (`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
-  it after a change, through `scripts/conformance/testharness.tsx` and a
-  list.
+- **A service worker is the registry's, and a realm only holds what stands for
+  it** (`sw-registry.ts` on the host, `serviceworkers.ts` in a realm). A worker
+  outlives every document, and a navigation has to reach one with no realm there
+  to ask, so registrations, the job queue, the threads and what a `fetch` event
+  comes to are `ServiceWorkerRegistry`, one for each `HtmlServiceWorkers`, which a
+  host hands to `HtmlNetwork` and to every document alike. `HtmlServiceWorkers` is
+  light, since `<Html>` and the network reach it whether or not anything runs: a
+  navigation asks `controls`, one read of a list of scopes, and only a request
+  with a worker to go to loads the engine's chunk. A realm asks by the `sw` op and
+  is told by `__sw`, as JSON, in the order the registry tells it, so a
+  registration's attributes change before a worker's `statechange`, and a client
+  is told a task later (`_told`), since it may be told from inside one of its ops.
+  Seven things are load-bearing.
+
+- **A process has its own worker, over one store.** Each tab is a process, so
+  nothing here can hold a tab's request and ask another's thread: a registration,
+  its scripts, `caches` and IndexedDB are the profile's, a worker is a thread any
+  process starts from them, and `_sync` reads what another process changed as the
+  next request asks about the scope. So **nothing that has to outlive a thread may
+  live in a worker's realm or in the registry alone**, and `clients` is the
+  process's, which the docs say.
+- **A request goes to a worker where its client is known, before CORS.** A
+  subresource is the document's client's: `_fetchFor` for a page's `fetch`,
+  `workerResource` in the hook for what `<Html>` asks for, which waits for the
+  client where a document is controlled and its realm is not up (`controls`), or
+  a controlled page's first stylesheet goes to a network that may be off.
+  **Anything new that asks the network for a document's subresource asks its
+  client first**, and goes to the network only on an undefined. A navigation and
+  a frame's document are the scope's, whatever the requester is
+  (`navigation`, `_navigationFetch`). A worker's own requests and scripts go
+  straight to the network (`_network`), or a worker hears itself.
+- **What a worker ran it can run again with the network off.** Its main script
+  and each it imported are `Version.scripts`, kept with the registration, and a
+  thread is started from them (`_importScript`, `load` in the thread), so **a
+  script a worker's thread loads goes through `script`**, and past `installing` an
+  import it did not make is no script, as the specification has it.
+- **An opaque response stays on the host** (`_opaques`, `held`). A realm is told
+  status 0 and a number, and `respondWith` and `put` hand the number back, so a
+  site that answers a cross-origin `<img>` with `fetch(e.request)`, or caches one,
+  moves bytes no script read. **Anything new that takes a `Response` asks
+  `_held` before it asks for a body.** The held list is bounded (`OPAQUE_HELD`),
+  so a page that fetches and drops holds no more than that.
+- **A worker's dispatch ends in an entry of its own** (`__swDispatched`). A
+  browser runs microtasks as each listener returns, with the event still
+  dispatching; a context runs them as an entry ends, which is after the dispatch.
+  So `_dispatching` stays on until the next entry, or `respondWith` from a
+  microtask throws, and whether a `fetch` fell through is decided there.
+- **What a thread is told it hears as a task, and a thread keeps no process
+  alive.** `PageWorkers`' `background` unrefs a service worker's thread: it has no
+  page to answer for it, and held the process 30 seconds past its last client.
+- **A frame a worker can have for a client has a realm.** A secure page's frame of
+  its own origin has one whatever it holds (`_frameLoaded`), a script or none, a
+  page or a 404's JSON, since its `navigator` has to answer for it and a claim
+  reaches it, and `fetch` from its window has to be its own. `DomShared.realms`
+  was HTML with scripts alone, and a frame's `controller` read the page's.
+- **`_held` is a field a page can write**, so the host never believes what came
+  with it: a body held by number goes on under `OPAQUE_HEAD` whatever head the
+  realm sent (`_serviceSaid`, `_cacheOp`), and a forged number can draw an image
+  and never read one. The same goes for what a realm's `URL` said: the registry
+  holds a `register` and a post to the realm's origin itself.
+
+**A promise of one realm with a reaction of another's runs in the other's
+queue** (`_drainRealms`). `then` goes by the handler's realm, and a context's
+queue runs only as the host enters it, so `frame.contentWindow.fetch().then()`
+in a page, settled in the frame, waited for a timer of the page's to happen. Any
+entry into a realm with others in its set enters them after it, a few turns, and
+those entries never ask for that again (`_drainingRealms`). A same-origin frame
+joins the set as it is linked, and a window as a script first reaches it
+(`reached`), so anything that links realms goes through `link` or `reached`.
+
+**`caches` is a store and one function over it** (`../cache-storage.ts`,
+`caches.ts`). What a query matches, `Vary` and a batch's all-or-none are
+`askCaches`, whichever realm or thread asked, so a store only files entries by a
+URL with no query (`cacheUrlKey`) and hands over a head with no body: a cache of a
+thousand responses costs a `match` one body and a `keys()` none. A worker reaches
+it across its thread (`cachesThrough`), and the profile's is `workers.sqlite`, a
+third file for the reason the HTTP cache is a second. **Anything new a cache's
+semantics need goes in `askCaches`**, not in a store or a facade, or memory and
+the profile come apart: `test/html/cache-storage.test.ts` runs over both.
+
+**A page's streams are the standard's, and none of their state is the
+page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
+operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
+the public object, and the promise and array methods they call are taken
+before page code runs. So **anything new that makes or drives a stream
+goes through `StreamsInternals`** — `readable`, `readableBytes`,
+`writable`, `controllerOf`, `errorReadable`, `errorWritable`,
+`writableSignal` — never through a field of the object, and a subclass
+(WebTransport's send and receive streams) is made with `INTERNAL` and set
+up by them. A byte stream a source closes answers a pending BYOB read
+with `respond(0)` after `close()`, or the reader waits for ever
+(`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
+it after a change, through `scripts/conformance/testharness.tsx` and a
+list.
+
+- **A page's `CryptoKey` is a sealed string, and that string is the whole
+  of the key** (`webcrypto.ts` in the page, `subtle.ts` on the host,
+  docs/prd-webcrypto.md). The specification's split is the line between the
+  two: a method's steps up to "return promise" run in the realm, in its order,
+  and what it does "in parallel" is the host's, through the runtime's own
+  `crypto.subtle`, told back through `__crypto`, which is held for a frozen
+  document and is no `HELD_ONCE`, since it carries an answer. A key's material
+  and everything that says what it may do are sealed with AES-256-GCM under a
+  secret no realm has, so a key crosses a clone, a thread and a disk as any
+  string does, and there is no table of keys to keep in step. A page's script
+  may come by the string, which is why three things are load-bearing. **What
+  the host asks of a key it reads from what it opened, never from what the
+  facade says**: `key.extractable` is the page's to fool itself with.
+  **Anything new that carries a key's material leaves the host sealed**, and
+  never through a field of the facade, since the realm can read all it holds.
+  And **the buffers are copied after the algorithm is normalized**, which WPT
+  holds to a getter that changes one. The table of algorithms is everything
+  a runtime might have, so one it lacks is its `NotSupportedError`, and
+  `offers` says which later methods it has, so a page that finds one finds it
+  working. Where a store keeps databases past the
+  process it answers `keySecret()`, or a key in one opens for that process's
+  life and reads back as no record after it.
 - **WebTransport's network is a seam whose default opens nothing**
   (`HtmlScripts.webTransport`, `NO_WEBTRANSPORT`, `src/html/transport.ts`).
   The page's API is the facade's (`webtransport.ts`); the host's half is
@@ -4432,6 +4767,81 @@ closes a way out a DOM binding opens by accident:
   kept apart from the blobs' (`mediaSourceUrls`), since a `fetch` finds
   nothing behind one, and an element goes through the load algorithm for one
   with no network, or a page waits for a `sourceopen` that never comes.
+- **A data store's mode is what keeps what was pasted**
+  (`datatransfer.ts`, a `DataTransfer`'s state in a `WeakMap`). A store is
+  read/write for `copy`, read-only for `paste`, and protected from the moment
+  its event has been dispatched, which `setMode` does; a page that keeps the
+  object reads nothing after. **Anything new that hands a page a store moves it
+  to protected once its event is over.** Its lists are `listOf`'s, which reads
+  each time (`unkept`): no count says a store moved, and read by `treeEpoch`
+  a page's `FileList` stood still through `items.add`.
+- **A clipboard chord is told by `<Html>`, and only a paste is the realm's
+  to finish** (`clipboardKey`, `clipboardEvent`). `copy` and `cut` answer
+  whether core's default goes on, as `keydown` does: core copies a selection
+  and edits a field, and the realm writes only what a listener left, or cuts
+  from an editing host, which core has no hold on. A paste with a clipboard to
+  read cannot be told in time to stop core, so `clipboardKey` stops core's
+  first, the read comes back as `e.clipboard`, and `pasteInto` makes the paste.
+  With no seam there is nothing to read, and core's goes on: **`offered` being
+  undefined is what says so**, so anything new that tells a `paste` passes what
+  it read, or nothing is pasted in a page whose host has a clipboard. A frame's
+  `<Html>` is handed the same read (`_readClipboard`, `frames.ts`). An `<Html>`
+  host's chord is the primary modifier (`clipboardChord`), which is Cmd on a
+  Mac: a chord tested on `ctrlKey` did nothing there, as `stops.ts`'s Ctrl+C
+  did until this.
+- **What a page reads or writes of the clipboard crosses as text**
+  (`clipboard.ts`, the `clipboard` op and `__clipboard`): JSON of `{ t, s }`
+  and `{ t, b }`, bytes as base64, and `__clipboard` is no `HELD_ONCE`, since it
+  carries an answer. The gates are the realm's, as `crypto.subtle`'s splitting
+  is the specification's: activation is the realm's to know
+  (`hasTransientActivation`), and `permission` the host's. **A read that a host
+  has not said yes to is refused, whatever gesture is behind it**: with
+  `scripts.permissions` absent, `request` answers `denied`, so a host that hands
+  a page its clipboard does not hand it the clipboard's contents.
+- **A document's drag is a layer over core's, on one root** (`drag.ts`). The
+  root is core's one draggable and its one drop target; `onDragStart` cancels
+  every press that is on nothing a drag starts from, which leaves it ordinary
+  mouse events. Core arms a drag only from a press nothing cancelled, so a
+  press that starts no selection, as one past a text's end does, is declined
+  in `defaultMouseDown` and never cancelled. Core reads `dragData` before
+  `onDragStart`, so the root's is fixed, thunks that answer from `active`,
+  this process's drag. **A
+  `<Frame>` pane on a Mac has neither half of it**: no `attachDropTransport`,
+  so `_initDnd` makes no drop session and core takes every drag for one over
+  another application; and no `beginDrag`. `onDrag` answers what is inside the
+  document for it (`droppable`), and the host takes what comes from outside
+  (`dragOver`, `dropHere`). Both are worked around here, and the fix is core's:
+  when it lands, `droppable` goes. **A drag event's `dataTransfer` is new at
+  each event over one store**, as HTML has it, so what a page left comes back
+  through `dragOut` and `HtmlDomEvent.drag`, and `offeredEntries` is what makes
+  a store of what crossed. A store's entry can have no data: a `File` of
+  another application's, known to be there and unreadable until the drop.
+- **Where a permission stands has one answer, and it is what asking would come
+  to** (`DomHost._permissionState`). `Notification.permission`,
+  `navigator.permissions`, the clipboard's gates and a worker's copy all read it,
+  so anything new that a user has to agree to asks it, and its name goes in
+  `PERMISSION_NAMES` and, where a Permissions Policy feature decides it too, in
+  `POLICY_FEATURES`. **With no host to ask the answer is `denied`, not `prompt`**:
+  a page that reads `prompt` asks and is refused, and only what a host handed a
+  seam for has an answer without one. A `PermissionStatus` joins
+  `permissionsHeard` only once it has a listener, since nothing else can hear
+  it move, and that is what keeps a page that polls `query()` from holding every
+  status it ever made. **Anything that moves a permission calls
+  `_permissionMoved`**: a host's `watch`, and a `request` a page made. A worker
+  has no way to ask its page at once, so it reads a copy made as it starts
+  (`WorkerThreadData.permissions`), which `permissionMoved` keeps current.
+- **`Notification` is there with no seam, and a seam's origin is the host's**
+  (`notifications.ts` twice: the seam in `src/html/`, the page's in `scripts/`).
+  Leaving it out would send a page down a path no browser takes, so a host with
+  nothing to show one with is a user who said no. **What a page writes never
+  says who wrote it**: `_notificationOp` adds `origin` itself, and a test holds
+  that an `origin` in the options goes nowhere. `data` stays in the realm, and
+  what crosses is a JSON string of text and numbers. `useHtmlNotifications`
+  escapes a body for the rungs that read markup: `dbus` and `notify-send`, and
+  any rung it does not know yet. A worker's go through its page's seam
+  (`PageWorkers._notification`), in the same words. A registration's
+  (`showFor`, `listFor`) are listed by the realm, since a registration is no
+  more than a realm's here, and nothing is kept across a reload.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells
@@ -4812,6 +5222,159 @@ holds, as the build would (`_restyleHover`); only one where an edge rule
 styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
 elements built them at every other move of the pointer.
 
+**What an element is, the parser says, and nothing else can** (`namespaceIn`,
+`isForeign`). HTML's parser makes a `<link>` or a `<base>` in a drawing an SVG
+element, and in a `<math>` a MathML one: no sheet and no base, and all three
+engines keep it so wherever a script moves or copies it. One a script makes
+with `createElement` and puts in the same `<g>` is a sheet. So no walk of the
+tree can say, and neither could the element: the parser's and a script's
+carried nothing, and a host's `createElement` is the same. The parser now writes
+`Element.namespace` on the names in `MARKED`, which is what `createElementNS`
+wrote already and what `cloneNode` keeps, and what reads those names asks
+`isForeign`, one property an element: the scan, `changesCascade`,
+`cascadeHeld`, the `sheets` and `title` ops, a frame, a window's names, a form's
+controls and the two `<base target>` readers. Chromium's Network panel asks for
+a `<link>` in a drawing all the same: that is its preload scanner, which goes
+with `doHtmlPreloadScanning=false`, and nothing comes of it. Seven things are
+load-bearing.
+
+- **Only what `MARKED` names says.** All else in a drawing is told by its name,
+  as it was. Marking everything is no small change: `wrap` picks another class,
+  and `sheet` is on the facade's `HTMLStyleElement` alone. **Anything new that
+  reads an HTML element by a name a drawing can hold asks `isForeign`, and the
+  parser marks the name.** An `<img>` and an `<embed>` need no mark, since they
+  end the drawing. What is left reads an element as HTML's where no engine does:
+  a form owns a `<button>`, a `<select>` or a `<textarea>` in a drawing, an
+  `<iframe>` there loads, `:disabled` and `:checked` match an `<input>` there and
+  a `<label>` finds one, and `<math><input>` draws a widget where all three
+  draw nothing. `<math><style>` stays `display: none`: Chromium and WebKit draw
+  nothing of it, and Firefox its text.
+- **SVG has a `<style>` and a `<script>` of its own, so those are not foreign**
+  (`isStyleOrScript`). The parser marks them in MathML alone: one in a drawing
+  says nothing, is a sheet or runs, and is an `HTMLStyleElement` to a page. So
+  `document.scripts` lists a drawing's, which no engine does, and it reads `src`
+  where all three read `href`. A `<style>` or a `<script>` is asked
+  `isStyleOrScript` and never `isForeign`, or a sheet a script makes with
+  `createElementNS` is none.
+- **A title is the first of HTML's, wherever it stands**, and a drawing's only
+  where the drawing is the document's element (`titleOf`, HTML 3.1.3): the
+  `title` op and `setTitle` go through it, and a setter writes a drawing's own.
+- **`namespaceIn` goes by HTML's integration points, not by htmlparser2's
+  `foreignContext`**, which has one list for both languages and takes any
+  `annotation-xml`: `<math><title>` and `<svg><mi>` are no points, and an
+  `annotation-xml` is one only with an HTML `encoding`, in any case. And an
+  `<svg>` or a `<math>` starts its language only outside the other's
+  (`rootNamespace`): `<math><svg><script>` runs in no engine, and `<svg><math>`
+  is the same way round. An `<annotation-xml>` takes an `<svg>` as one.
+- **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
+  would turn `<svg><p></p><link>`, a sheet in every engine, into none. The list
+  is the engines', and `<table>` is on it. What only attributes can say is
+  known at the end of a tag (`_tagEnds`): a `<font>` with a `color`, a `face` or
+  a `size` ends the drawing, and an `<annotation-xml>` with an HTML `encoding`
+  is a point.
+- **In foreign content the parser goes by an element's language, where
+  htmlparser2 goes by its name** (`_openForeign`, `_closedBy`). A foreign tag is
+  opened without `emitOpenTag`, which would close a `<td>` with a `<td>` and take
+  a `<math>` in a drawing for MathML, and with a frame of `foreignContext` in
+  that element's language. An end tag from a foreign element closes the nearest
+  of its name back to the first HTML element, and from there it is HTML's: it
+  closes HTML elements alone, and stops at what HTML's scopes stop at, a point
+  of the element's own language or any `<annotation-xml>`. A table's own end tags
+  do not stop there, since their scope has no such stop, which a reading of "in
+  scope" gets wrong and the engines do not. So **anything new that opens a
+  foreign element goes through `_openForeign`**, since `popElement` takes a
+  frame off by the name alone (`FRAMED`), and **a tag's end decides anything
+  more through `_tagEnds`**, where the element is not made yet. Every chain to
+  depth 5 of foreign and HTML elements, with each end tag after it, is read as
+  the engines read it (788,922 documents). A generator for this holds HTML well
+  nested, or HTML's rules drown what foreign content's do. Left, and nobody
+  writes it: an `<mglyph>` under a point holds what it holds as HTML (its `/>`
+  does end it), and at the top of a fragment what breaks out leaves the tokenizer
+  in HTML until the next tag's name is read, so a `<title>` there is RCDATA.
+- **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
+  `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
+  path in the first, and a `clipPath` lost its capital. **Anything new that
+  parses markup for an element hands the element over.** What breaks out of the
+  context is HTML's until it closes, and the context is there again after it.
+
+**HTML's tags are closed by HTML's rules, read off the stack** (`_open`,
+`_implied`, `_tablePart`, `_closedBy`, `_endTag`). htmlparser2's parser keeps a
+table of what a start tag closes and asks only the top of the stack, and closes
+the nearest element of an end tag's name whatever stands between, so a `</span>`
+ended a block it was never in, the block's own end tag then ended an outer one,
+and `<button><input>` closed the button. `DocumentParser` keeps htmlparser2's
+tokenizer and opens every element itself: nothing calls `emitOpenTag`. A
+differential over 969,873 generated chains to depth 3 differs from all three
+engines in two, each a `<select>` that ended in a `<template>`, where it was 2,170
+in 16,002 and 3,225 in 18,981 at depth 2. Six things are load-bearing.
+
+- **Generate for one rule at a time.** Whole trees from a loose vocabulary drown
+  in foster parenting and the adoption agency. The rig's families leave out what
+  only foster-parents, and a marker after each tag says where the tag left the
+  parser, a `<style>` in a table.
+- **An end tag goes by a scope, and `_stopsAt` says which.** A block's and a
+  heading's go by default scope, a `</li>` stops at a list, a `</p>` at a button,
+  a table's at a table, and any other at what is `SPECIAL`, which is what keeps a
+  block open for its own end tag. `select` is in the default scope, which the
+  engines all have and an older reading of HTML does not. `html`, `head` and
+  `body` are in none of them: an ignored `<html>` stands on the stack for what it
+  would have closed (`_ignored`), and the real ones are at the bottom.
+- **Nothing a start tag implies closes a formatting element**, which is a stop
+  in every walk `_implied` makes (`TO_A_PARAGRAPH`, `IMPLYING`,
+  `SPECIAL_TO_AN_ITEM`). An engine brings one closed from under it back around
+  what comes after, from a list nothing here keeps, so `<p><a><div>` closed here
+  would have the block out of the link. The two together are the adoption agency
+  and belong together. A cell and a caption do close what is in them, since HTML
+  clears that list at each. Where a formatting element's end tag has a block
+  above it, the agency would move the block out; here it leaves the stack and the
+  block stays open (`_leaveOpen`), so the block's end tag closes the block and no
+  outer one.
+- **What takes an element off the middle of the stack goes through `_leaveOpen`**,
+  which tells the handler, since the two stacks have to stay in step from the
+  top. HTML's `</form>` is the other that does: `<form><div></form>x` has the `x`
+  in the `<div>`, after it generates implied end tags.
+- **The form pointer outlives the stack** (`Handler.form`). A `<form>` closed by
+  what held it still turns the next away, and between a table's parts one closes
+  as it opens, so the rows are not in it and each control after it has the form
+  through `PARSED_FORMS`. `formOwner` and a page's `form` both end there, after
+  what is around the control, so **anything new that asks a control's form asks
+  `parsedForm` last**. Old pages write `<table><form><tr>`, whose rows were in a
+  form in a table and laid out as nothing a browser draws.
+- **Every document pays for this, so the cost is kept off the path of a page with
+  no mistakes.** A start tag with nothing to do asks one `Set`, as htmlparser2 did;
+  `Handler.paragraphs` saves each block a walk of the stack to find there is no
+  `<p>`, which is O(n) at every level of a document of unclosed `<div>`s; and an
+  end tag that closes what is current goes no further than `onclosetag`. A 3 MB
+  document of plain HTML parses within 1% of what it did, and one all of SVG takes
+  2% more.
+  **And no walk with nothing foreign open goes past `MAX_DEPTH`** (`_walked`):
+  past what a tree holds it takes the name for what it finds, as htmlparser2 did,
+  since a page of unclosed elements and a tag for each that closes nothing would
+  otherwise cost the square of them. Unbounded, a 150 KB document of 20,000
+  `<span>`s took a hundred times as long as it did. Measure a change here on such
+  a document as well: no real page shows it.
+
+What is left, each against all three engines: the adoption agency and its list,
+so a formatting element closed from under what follows it is not brought back,
+and a nested `<a>` is not ended; foster parenting, so what is out of place in a
+table stays in it; `<template>`'s modes past the first tag it holds and
+`colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
+quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
+which ends no written `<head>`. A comment after `</body>` goes in the body, where
+HTML has it after it.
+
+**A script asks a drawing where things are, and the attributes answer.**
+Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
+`getScreenCTM`, `getBoundingClientRect` and a shape's lengths are worked out by
+`src/html/scripts/svg-geometry.ts` over the DOM, with `SvgMeasure` the only
+thing asked of `<Html>`: a run of text, an `<svg>`'s box and whether a style
+hides an element. It reads `transform` and never a CSS transform, and each
+curve is cut a fixed number of times, so a box is a fraction of a pixel from
+the drawing's. mermaid measures every label with `getBBox`. **Anything new a
+drawing is asked goes through `svgAnswer`**, whose answer is numbers, as a
+bridge's has to be. `SvgView`'s private `_bbox` is not reached for, as nothing
+of it is here.
+
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
 `<path>` and no `ComputedStyle` is made for one — a style for each would
@@ -4836,8 +5399,17 @@ theirs, and a build took each for a seed and built the block around the
 drawing. Each drawing they are in, and a root the change reached, asks
 again, and is drawn again only for another answer (`_askShapes`): most of
 what a subject can reach comes to what it was. **What a drawing names by a
-`url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which nothing
-says, so a reach into one asks every drawing. Two
+`url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which no selector
+says, so a reach into one asks every drawing. A rule a sheet adds or a
+breakpoint turns on is told of by no record, so it reaches a drawing by what
+the drawing last read (`Named`): what is at or in what it names (`namersOf`),
+and asked after the build, whose cascade and copies are what a kept box is
+asked of. `addedReach` and `crossed` ask what is named as a `<use>` copies it
+too (`namedBy`, `_reachInCopy`), since `symbol:first-child rect` matches a
+copy where it misses the element. **Anything new that brings a rule into
+force without styling every element does the same**, or a sprite's icons go
+on drawing what the last cascade gave them, while the sprite's block is built
+beside them. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
 ancestor it is for by a class or an id, which is looked for once around
@@ -4898,6 +5470,14 @@ reaches the object in its order, its transforms, opacity, mask and clip
 already on the context (`ForeignPainter`, `paintForeign`). Five things are
 load-bearing:
 
+- **A page reads an element in an object through its object**
+  (`foreignRect`, `drawnWithin`): where it was laid out, from the object's
+  corner, through the matrix `svg-geometry.ts` works out for the object.
+  So an object of no size is laid out all the same: mermaid and d3 size one
+  from what it holds, which read as nothing, so every label came to 0 by 0
+  and hid its text. It goes by a walk of the object's tree, since
+  `_firstBoxesOf` keeps one tree's index and would be made again at each
+  read. `offsetWidth` and its kin are not there yet.
 - **`tree.foreign` is absent where the document has none, and every path
   asks it first** — the layout, the paint, the restyle, the scope of a
   change. A document with none takes the paths it took: keep any new
@@ -4957,7 +5537,9 @@ capital in its name.** The parser keeps SVG's camelCase (`foreignObject`,
 `getName` hands it the name as parsed. So SVG's UA rule for an object,
 `overflow: hidden`, is a presentation hint (`presentationHints`), under
 its own `overflow` attribute and every rule, where it is in no worse
-place.
+place. A page's own query folds the name (`QUERY_ADAPTER`), since d3 finds
+an object with `select('foreignObject')`; a sheet's rule still does not,
+which would need the rule index's type buckets to fold it as well.
 
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box
@@ -5517,6 +6099,36 @@ stream may bring; and a `url()` a rule gives a shape, of which the key has
 only the name. And **only a drawing cut to its box is kept**, since a raster
 is its box's size, and only with no `PaintOptions.matrix`, as an image.
 
+**What a drawing names is told of whatever it is in, so a drawing says what
+it read** (`Named`, `drawingsNaming`). A told `fill` on a shape in a hidden
+sprite is a change to the sprite's `<svg>`, which was drawn again, and the
+icons that `<use>` it moved no pixel until some other paint reached them; a
+drawing set in a box that turns kept its surface for as long. Each read of a
+drawing notes what every id it looked for outside its root came to, and a
+told list reaches it where a change was at what was found or in it, where
+that went and is out of the document or back under another id, or where
+something came to go by a name it looked for. A page with nothing named pays
+a lookup a drawing, and of a thousand icons only those that name what changed
+are drawn again, so this is no reason to widen the reach. Five things are
+load-bearing. **Anything new that looks an id up for a drawing notes it**
+(`noteNamed`): `copyTree`, `drawnFrom` and `drawingReach` each do, since a
+raster's key is all a paint of a copied icon asks and how far it reaches is
+all that is asked of one no paint has reached. **What is noted is the
+element's and not the `SvgDrawing`'s**, which a refresh told of anything makes
+again where it reads outside itself: what is shown of it was read before that.
+**A drawing reached gives up what it noted**: it is owed a paint, and the read
+that pays it notes what it reads now. Kept, what went would reach it at every
+change after it while nothing draws it, off screen for one. **The names are
+asked before `forgetDrawings` drops them**, or a list that changes a drawing's
+root and what it names does neither. And **a drawing that shows its overflow
+works out how far it reaches as it is drawn again** (`_drawAgain`, through
+`inkAfterMove`, its rules asked first), or what grew is cut at the damage. A
+`<use>`'s copy goes with any drawing changed or reached, and `idIndex` looks
+again once the tree has moved, for a drawing nothing could have reached: one
+that is yet to be read, or that gave up what it noted and changed again. An
+`<svg>` in a `<foreignObject>`'s HTML is in no `facts().drawings`, and is not
+reached this way.
+
 **An animated image is the document's to play, and a frame is a repaint
 of the boxes that drew the one before** (`animated.ts`, `_gifFrame`). It is
 here and not in core's `<image>` because `<Html>` draws its own images, so
@@ -6055,7 +6667,12 @@ product pages read `getComputedStyle` and `offsetTop` tens of thousands of
 times a load, of their closed dialogs' contents a property at a time, and
 the walk and the styling were a third of what their script took.
 **Anything new that changes the style of what nothing draws without moving
-one of those drops `_unboxed`.**
+one of those drops `_unboxed`.** And `_styleOf` asks the tree before it works
+anything out, so a style a build would have dropped reads as though it still
+held: **anything new that takes an element out of what a build styles takes
+its style with it, and those of its shadow trees** (`forgetStyles`). A host
+moved into a `<g>` kept the style of everything in its tree, and what a slot
+took there inherited from it.
 
 **A video is core's `<video>`, mounted over the box, and never drawn
 here** (`media.ts`, `videos.ts`; core's `docs/architecture/video.md`, 8.2).
@@ -6108,6 +6725,24 @@ paints after the element alone (`fixedOver`, by `paintOrderOf`), worked
 out as the rects are laid out: a fixed box before a frame in the paint
 order is under it, and joshwcomeau.com's like button, fixed beside its
 article, hid every playground's frame it was inside.
+
+**A box fixed over a video is a cover like any, asked at each paint**
+(`fixedCoversOf`, `_fixedOver`). `walkPaintedAfter` leaves fixed boxes out of
+`coverersOver`, since a scroll moves them against the video, and they cut the
+player instead (`cutByFixed`), which is right for a solid band, a header. It
+is wrong for what lets the video show or stands in its middle: YouTube's
+embed fixes `#player-controls` over the whole player, and as they faded in
+the picture went black with the video playing on. So what is not a solid band
+across a side goes on the canvas over the player, in the order the document
+paints it (`inPaintOrder`), and only what cannot be a cover is left to cut or
+to hide. Three things are load-bearing. **What covers a player changes with
+nothing laid out**, so it is decided in `_publishMedia`, at each paint, and
+never in `_reportMedia`. **The canvas draws again with any damage that
+reaches it** (core's `onDraw` runs at each repaint), so a fade over the same
+rect needs no telling: anything that changes a cover claims its damage as
+anything else does. And **a cover's rect is where the scroll has the box**,
+and `paintCovers` moves the viewport to the canvas's origin, which is what
+`atViewport` places a fixed box from.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
@@ -6905,6 +7540,86 @@ GBM/EGL, on Linux. Four things to keep:
   When a release fixes the declaration (GLMap/earstrip#1), delete the copy
   and import `earstrip` directly.
 
+## A PDF somebody else draws
+
+`src/pdf/` is the fourth element that draws a whole scene, after `<Flow>`,
+`<Html>` and `<Map>`, and it adds the case none of them has: **the scene arrives
+as pixels from an engine that draws better and faster than anything here could.**
+`docs/prd-office-documents.md` has the survey and every number, and it is where
+the formats after this one are designed.
+
+**Measure the floor before designing around a parser.** The design everybody would
+draw is pdf.js's operator list through the 2D context. PDFium in WebAssembly takes
+7 to 12 ms a page for finished pixels at 2x, where pdf.js takes 2 to 7 ms for a list
+of what to draw, and from there all of PDF's graphics model would be this package's
+to write and keep. So a page is tiles. `@embedpdf/pdfium` is the package because it
+is the C API and nothing else: `FPDF_RenderPageBitmapWithMatrix` draws part of a page
+into a buffer we name, and a friendlier wrapper hides exactly that. It is an optional
+peer, as `ondine` is, and its types are written out in `pdfium.ts`. The rule to carry
+to the next engine: a Rust or C engine in WebAssembly, on a thread, handing over
+pixels, is a real option for anything heavy, and it costs a `.wasm` file rather than
+a native build.
+
+**The engine is a thread away and the queue is on this side.** At most `IN_FLIGHT`
+tiles are at the engine, and what to ask for next is worked out from the view as each
+lands, so a flick leaves nothing behind it. A worker-side queue would have to be told
+to cancel, and would still be drawing what nobody will see. A tile comes back in a
+buffer moved rather than copied; the one copy is out of the WebAssembly heap, since a
+buffer that is the heap's cannot be moved.
+
+Nine things are load-bearing.
+
+- **The thread is ref'd only while an answer is due** (`ThreadEngine`). A listener
+  for `message` refs a `Worker` again, so an `unref` before it holds the process
+  open for good, idle, with nothing to say why; and one left unref'd lets a process
+  with nothing else to do end in the middle of an `await`. A suite run with
+  `--test-force-exit` shows neither, and on Node 20 from source there is no thread at
+  all: CI's other three jobs ran past 40 minutes. A process of its own is the test.
+- **`PdfEngine` crosses numbers and typed arrays only**, so an engine can be a thread
+  away, and it is public for the reason `ProcessHost` is. `test/fake-pdf.ts` drives it,
+  and its every pixel says where it is: a flat page cannot show a shift. The tests that
+  matter mount the view away from the window's corner, at `scale: 2` and at 1.5.
+- **Never keep a view of the heap.** It grows, and a grown heap is a new buffer: `_heap()`
+  asks each time.
+- **What PDFium reports is in the page's own space**, whose origin may be anywhere and
+  which `/Rotate` may turn. A box goes through `_shown`, the page's matrix asked of
+  `FPDF_PageToDevice` at three points. Worked out from the box and the rotation, a
+  selection lands beside the text on a turned page and every other page passes.
+- **Pages stay parsed** (`PAGES_KEPT`). A tile of a parsed page is 1.5 ms and parsing a
+  dense one is half a second, and two pages side by side in view ask in turn: with one
+  kept, each parsed the other away at every tile.
+- **A scroll stays on the device grid** (`_snap`). A zoom about a point leaves it
+  wherever the arithmetic came to, and a blit from a fraction does not meet the strip it
+  exposed. A test that only scrolls from whole offsets passes without this.
+- **What an engine cannot draw is asked for once** (`_failed`, `_noSurfaces`). The queue
+  asks again for whatever is not there, so a page it cannot read, or a backend with no
+  `Surface`, is a loop as fast as it can refuse, which is silent. **A fake engine answers
+  on a macrotask**, as a thread does: answered in a microtask, that loop holds the thread
+  from every timer, and the test hangs at 100% of a core where it should fail, with
+  children a killed runner leaves spinning.
+- **What a paint draws is cut to the pass by hand** (`Pass`, `fillWithin`). Core's clip
+  is no bound on the pane: a claim beside it merges into one pass with it, as a toolbar's
+  text saying the new page does, and a pass over the window is not clipped at all. Drawn
+  whole, a tile that straddles the pane's edge lands on the toolbar and stays there, and
+  only with tiles on hand: a scroll onto new ground has none in that pass. **Anything new
+  a paint draws goes through it**, and a test of it reads outside the element
+  (`fenced`), since every pixel inside is right.
+- **A thumb is pinned where it was as well as where it is.** It moves against the
+  content, so the copy drags its image the other way, and core repairs only the places
+  it is told of. Pinned at the new place alone, a sliver of the old image stays at every
+  step. From the top of a document that image leaves the pane and nothing shows, so a
+  test of this scrolls from the middle.
+
+Everything `PdfViewNode` holds but `_handle` is about pages rather than PDFs, and the
+design for the next format moves it to a shared module when one arrives. Do not move it
+before that.
+
+One trap from measuring it. **`paintDamage()` is not the view**: a paint of the first tile
+to land has no other tile in it, so a metric that asks a paint whether anything was
+missing says the view is whole with most of it blank. `_wholeView` asks of the view. And
+`scripts/bench/pdf.tsx` sizes its window with `width` and `height`: with `style` the view
+gets no room, reports zoom 0.1 and asks for no tiles, which reads as a broken engine.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from
@@ -7006,9 +7721,12 @@ What to know before changing it:
   `toDOM` returns `remoteCaret`'s description (`collab.ts`); the view asks a
   text-less widget's `toDOM` once, cached by the widget's type, and a
   builder that reaches for `document` throws and is skipped.
-- **A press on the selection is left to core, so that it can arm a
-  drag.** The root is `draggable`; `mouseDown` claims every other press,
-  and `onDragStart` cancels a drag whose press was not on the selection.
+- **No press is cancelled**, since a cancelled press moves no focus, and
+  core's focus is the one a press wants: a `'script'` focus from a handler
+  would light a ring and scroll a tall editor to its top. So core arms a
+  drag from every press on the `draggable` root, and `onDragStart` cancels
+  one whose press was not on the selection (`dragCandidate`), after which
+  the gesture goes on as ordinary mouse events.
   An in-app drop reaches its target with no modifiers — core builds it
   with `buttons: 0` — so the copy modifier travels in the slice payload
   from the source's last `onDrag`; and an in-app drop must answer
@@ -7278,6 +7996,8 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | A StatusNotifierItem host                        | nowhere yet — but the _item_ side landed in core                                                    | **Still planned here**, as a sibling of `<TrayHost>` with its own issue. Shares intent with `<TrayHost>` and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`. Note the split — the **item** side (an app putting its own icon in a tray) shipped upstream in react-x11 as `useTray()`'s freedesktop rung (react-x11#353), on `src/statusnotifier.js` + the extracted `src/dbusmenuexport.js`. That is the same seam `<TrayHost>` sits on: core owns being _in_ a tray, this package owns _being_ one. A host here consumes `org.kde.StatusNotifierWatcher` and core's dbusmenu **client** half, which does not exist yet and is the real prerequisite. |
 | A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                                                                      | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)                                                    | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md).                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PDF                                              | new, here (`src/pdf/`)                                                                              | **Done.** `<Pdf>`: PDFium as WebAssembly on a thread, an optional peer, and one element compositing its tiles. Reading only. See "A PDF somebody else draws".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Word, PowerPoint, Excel                          | nowhere yet                                                                                         | **Designed, not built**: [docs/prd-office-documents.md](docs/prd-office-documents.md). `@silurus/ooxml` for docx and pptx, through an adapter that was proved on X11 and not yet on Cocoa, and `hucre` with `numfmt` for xlsx. Reading first: authoring is a contract this package has not taken on.                                                                                                                                                                                                                                                                                                                                                                          |
 | A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (IME tiers, inline widgets, images in text).                                                                                                                          |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
@@ -7408,6 +8128,15 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+One that comes from Node 20, and fails a long way from the cause:
+
+- **An `assert.ok` inside a `waitFor` has a message.** Without one, Node 20
+  builds the message by parsing the test's own source with acorn, and that
+  search is quadratic in the file: `waitFor`'s two-second budget ran for five
+  and eight minutes on `test/pdf.test.ts`, at a line or two of the file, and
+  the job failed after 28 with `'false == true'`. Node 22 and later do not
+  parse, so nothing shows locally. It looks like a hang at 100% of a core.
 
 One that comes from the test harness:
 

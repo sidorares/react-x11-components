@@ -112,6 +112,7 @@ import type { ScriptAnimations } from './scripted.js';
 import {
   animatedFields,
   applyDeclaration,
+  fontQuery,
   blockify,
   holdsItems,
   settleAlign,
@@ -2243,6 +2244,7 @@ function ancestorKeys(selector: string): string[] {
 
 /** No names: what is above the root. */
 const NO_NAMES: ReadonlySet<string> = new Set();
+const NO_ELEMENTS: ReadonlySet<Element> = new Set();
 
 /** The element a selector's ancestor is matched against: the parent, where
  *  that is an element — not the document, nor a shadow tree's root, as the
@@ -2284,15 +2286,13 @@ export class ShapeCopies {
     ComputedStyle,
     Map<Element, { into: Map<Element, ShapeStyle> | null; key: string }>
   >();
-  constructor(public byId: (id: string) => Element | null) {}
+  constructor(readonly byId: (id: string) => Element | null) {}
 
-  /** All of it forgotten, the ids looked up in `byId` from now on: what a
-   *  `<use>` names came, or grew, in a stream's chunk, which builds none
-   *  of the drawings that name it (`HtmlViewNode._parsedChanges`). */
-  forget(byId: (id: string) => Element | null): void {
+  /** All of it forgotten: what a `<use>` names came, grew or changed, which
+   *  builds none of the drawings that name it. */
+  forget(): void {
     this.matched.clear();
     this.resolved = new WeakMap();
-    this.byId = byId;
   }
 }
 
@@ -4379,7 +4379,8 @@ export class Cascade {
    *  is and its line height what an `rlh` is (CSS Values 4, 6.1.1), in
    *  every element but the root, whose own declarations measure them from
    *  the initial values. Set as the root's style is computed, which a build
-   *  does ahead of every element under it. */
+   *  does ahead of every element under it, or with the styles a cascade
+   *  keeps from the one before it (`keepsStylesOf`). */
   private _root: ComputedStyle | null = null;
   /** The constructor's `documentElement`, which is the root in its turn. */
   private readonly _documentElement: Element | null;
@@ -5673,6 +5674,8 @@ export class Cascade {
      *  the aspect ratio reads. */
     fromHeight = this.viewportHeight,
     toHeight = this.viewportHeight,
+    /** What the document's drawings name, asked as `addedReach` asks it. */
+    named: ReadonlySet<Element> = NO_ELEMENTS,
   ): Set<Element> | null {
     const answers = (
       media: MediaCondition[][] | null,
@@ -5727,6 +5730,7 @@ export class Cascade {
       const shadow = this._scoped ? shadowRootOf(el) : null;
       if (shadow) for (const child of shadow.children) stack.push(child);
     }
+    for (const top of named) this._reachInCopy(turned, top, reached);
     return reached;
   }
 
@@ -5741,6 +5745,11 @@ export class Cascade {
    * rule is in a sheet no cascade had filed. Null where one is in neither
    * `_index` nor `_pseudo`: a rule at a shadow tree's edge, a highlight's, a
    * view transition's.
+   *
+   * What a drawing names is asked as a `<use>` copies it as well, in a tree
+   * of its own (`_copyTop`), which a rule can match where it matches nothing
+   * where the element stands: `symbol:first-child rect` of any symbol, since
+   * nothing is beside a copy.
    */
   addedReach(
     added: readonly StyleRule[],
@@ -5749,6 +5758,8 @@ export class Cascade {
      *  stands for the root's: one no element's rules are asked for, which
      *  a rule that may match the root changes (`impliedHtml`). */
     impliedRoot = false,
+    /** What the document's drawings name (`namedBy`). */
+    named: ReadonlySet<Element> = NO_ELEMENTS,
   ): Set<Element> | null {
     const reached = new Set<Element>();
     if (!added.length) return reached;
@@ -5784,7 +5795,32 @@ export class Cascade {
       const shadow = this._scoped ? shadowRootOf(el) : null;
       if (shadow) for (const child of shadow.children) stack.push(child);
     }
+    for (const top of named) this._reachInCopy(turned, top, reached);
     return reached;
+  }
+
+  /** What in the copy a `<use>` makes of `top` the rules of `turned` match,
+   *  put in `reached`. */
+  private _reachInCopy(
+    turned: RuleIndex,
+    top: Element,
+    reached: Set<Element>,
+  ): void {
+    this._copyTop = top;
+    try {
+      const stack: AnyNode[] = [top];
+      for (let at = stack.pop(); at; at = stack.pop()) {
+        if (!isTag(at)) continue;
+        if (!reached.has(at) && turned.reaches(at)) {
+          const matched: number[] = [];
+          this._matchInto(turned, at, null, matched, undefined, true, true);
+          if (matched.length) reached.add(at);
+        }
+        for (const child of at.children) stack.push(child);
+      }
+    } finally {
+      this._copyTop = null;
+    }
   }
 
   /** Which media band a viewport of device pixels falls in: the width's
@@ -6008,6 +6044,22 @@ export class Cascade {
     // which tree each element is in, found again: an element a script
     // moved into another tree since the last build is styled by its rules
     this._trees = new WeakMap();
+  }
+
+  /**
+   * The styles of the document are `before`'s, and go on being the ones
+   * this cascade's builds keep (`_sheetsAdded`): it was made for the rules a
+   * sheet added, and styles the root only if one reaches it. So the root is
+   * taken over with them, and what they read of its font, which only
+   * computing a style notes. A page with a font size on its `html` measured
+   * every `rem` an added rule holds from the initial size, and a rule that
+   * moved the root left the `rem`s kept under a `<body>` of another size.
+   */
+  keepsStylesOf(before: Cascade): void {
+    this._root = before._root;
+    this._rootRead = before._rootRead;
+    this._pseudoRoot = before._pseudoRoot;
+    this._queryRoot = before._queryRoot;
   }
 
   /** Whether an element's parent has the style it had before the build,
@@ -7040,6 +7092,40 @@ export class Cascade {
       this._ids.set(of, id);
     }
     return id;
+  }
+
+  /**
+   * What a canvas's `font` comes to (HTML 4.12.5.1.8): the shorthand over the
+   * canvas's style, or over 10px where nothing styles it, with no line height
+   * and in CSS pixels, since a context has no scale of the display's. Null
+   * for what is no font, which the context ignores: a CSS-wide keyword too,
+   * and a `var()`, which only a style has.
+   */
+  canvasFont(
+    value: string,
+    parent: ComputedStyle | null,
+  ): ComputedStyle | null {
+    if (!fontQuery(value) || /var\(/i.test(value)) return null;
+    const unit = parent ? this.scale * parent.effectiveZoom : 1;
+    const above = {
+      ...(parent ?? this.initial),
+      fontSize: parent ? parent.fontSize / unit : 10,
+    };
+    const root = this._root ?? this.initial;
+    const style = inherit(above, this.initial);
+    applyDeclaration(style, above, 'font', value, {
+      em: above.fontSize,
+      rem: root.fontSize / (this.scale * root.effectiveZoom),
+      vw: this.viewportWidth / this.scale,
+      vh: this.viewportHeight / this.scale,
+      scale: 1,
+      initial: this.initial,
+      fallbackFamily: () => this.initial.fontFamily,
+      families: this._mapFamilies,
+    });
+    style.lineHeight = 'normal';
+    style.lineHeightIsLength = false;
+    return style;
   }
 
   /**

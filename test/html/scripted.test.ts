@@ -767,12 +767,18 @@ test('a hand that holds still tells the page where the drag has come to, and the
   assert.ok(!drag.held(), 'the hand rested');
   await drag.hears('resize 320');
   await drag.hears('observer 320');
-  const rested = drag.heard();
-  drag.scripts.value += 1e9;
-  await drag.step(310, 300);
+  // a page that has spent nothing since it heard hears the next step
+  await drag.step(310);
+  await drag.hears('resize 310');
+  await drag.hears('observer 310');
   assert.ok(drag.held(), 'and it is behind again from the next step');
+  const told = drag.heard();
+  // and its scripts' time goes in now the drag is behind: at rest, a look of
+  // the page's would count it as heard, and nothing would hold the next width
+  drag.scripts.value += 1e9;
+  await drag.step(300);
   await drag.rests();
-  assert.equal(drag.heard(), rested, 'the next width waits');
+  assert.equal(drag.heard(), told, 'the next width waits');
   drag.live(false);
   await act(async () => void (await drag.clock.finish()));
   await drag.hears('observer 300');

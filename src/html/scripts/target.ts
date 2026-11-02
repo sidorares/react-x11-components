@@ -6,6 +6,8 @@
 import * as DomUtils from 'domutils';
 import type { Document, Element } from 'domhandler';
 
+import { isForeign } from '../dom.js';
+
 /** Where a target sends a navigation: the page's own tab, a new tab, or
  *  the frame element whose navigable it is. */
 export type Navigable = 'here' | 'tab' | Element;
@@ -37,11 +39,33 @@ export function navigableFor(
   if (keyword === '_blank' || !document) return 'tab';
   return (
     DomUtils.findOne(
-      (el) => FRAMES.has(el.name) && el.attribs.name === target,
+      (el) =>
+        FRAMES.has(el.name) && el.attribs.name === target && !isForeign(el),
       document.children,
       true,
     ) ?? 'tab'
   );
+}
+
+/**
+ * Whether what a link or a form opens has its opener (HTML 7.3.1.7, "get an
+ * element's noopener"): not with `noopener` or `noreferrer` in its `rel`, nor
+ * for `_blank` unless its `rel` says `opener`. So a name has one by default,
+ * and a plain `target=_blank` does not.
+ */
+export function linkOpener(
+  target: string,
+  rel: string | undefined,
+): { noopener: boolean; noreferrer: boolean } {
+  const tokens = new Set((rel ?? '').toLowerCase().split(/[\t\n\f\r ]+/));
+  const noreferrer = tokens.has('noreferrer');
+  return {
+    noreferrer,
+    noopener:
+      noreferrer ||
+      tokens.has('noopener') ||
+      (target.toLowerCase() === '_blank' && !tokens.has('opener')),
+  };
 }
 
 /** A link's target (HTML 4.6.5, "get an element's target"): its own
@@ -55,7 +79,8 @@ export function linkTarget(
   const base =
     document &&
     DomUtils.findOne(
-      (el) => el.name === 'base' && el.attribs.target !== undefined,
+      (el) =>
+        el.name === 'base' && !isForeign(el) && el.attribs.target !== undefined,
       document.children,
       true,
     );

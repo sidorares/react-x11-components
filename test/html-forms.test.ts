@@ -270,6 +270,16 @@ test("a <base target> inside a <template> is not the document's", () => {
   assert.strictEqual(s.target, 'named');
 });
 
+test("a <base target> in a drawing is not the document's", () => {
+  // the parser's is SVG's, in all three engines
+  const s = submit(
+    '<svg><g><base target="drawn"></g></svg>' +
+      '<form id="f" action="/a"><input name="q" value="x"></form>',
+    null,
+  );
+  assert.strictEqual(s.target, '');
+});
+
 test('an image button is the point it was pressed at', () => {
   const html =
     '<form id="f" method="post"><input name="q" value="x">' +

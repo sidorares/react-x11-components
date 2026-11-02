@@ -375,6 +375,23 @@ export type {
   KatexNode,
 } from './formula/index.js';
 
+// PDFs — PDFium (an optional peer, WebAssembly on a thread of its own) reads
+// the file and draws tiles, and one element composites them. Nothing goes
+// through `<Html>`, and nothing is fetched: the bytes are the application's.
+export { Pdf, PDF_ELEMENT, PdfOpenError, PdfViewNode } from './pdf/index.js';
+export type {
+  PageLink,
+  PageText,
+  PdfEngine,
+  PdfFit,
+  PdfHandle,
+  PdfInfo,
+  PdfOutlineItem,
+  PdfProps,
+  PdfStatus,
+  PdfViewStats,
+} from './pdf/index.js';
+
 // Mermaid diagrams — ondine (an optional peer) compiles the source to SVG,
 // the `mermaid` element draws it themed from the palette, and the labels
 // answer the text accessors so a selectable document (a `<Markdown>`

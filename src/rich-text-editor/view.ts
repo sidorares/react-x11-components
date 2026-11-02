@@ -1602,13 +1602,14 @@ export class RichEditorView implements EditorHost, ClipboardView {
 
   // --- the pointer -----------------------------------------------------------------
 
-  /** A press, from the root's `onMouseDown`. Returns whether the editor
-   *  took it — the component then prevents core's default action. */
-  mouseDown(ev: X11MouseEvent): boolean {
+  /** A press, from the root's `onMouseDown`. It is not cancelled: core's
+   *  default action is what focuses the editor, as a browser's focuses a
+   *  page's. */
+  mouseDown(ev: X11MouseEvent): void {
     this.goalX = null;
     this.dragCandidate = null;
     const hit = this.hit(ev.x, ev.y);
-    if (!hit) return false;
+    if (!hit) return;
     const { doc } = this.state;
     const sel = this.state.selection;
     if (ev.button === 3) {
@@ -1619,18 +1620,18 @@ export class RichEditorView implements EditorHost, ClipboardView {
           this.state.tr.setSelection(Selection.near(doc.resolve(hit.pos))),
         );
       }
-      return false;
+      return;
     }
     if (ev.button === 2) {
       this.dispatch(
         this.state.tr.setSelection(Selection.near(doc.resolve(hit.pos))),
       );
       void this.paste(false, 'PRIMARY');
-      return true;
+      return;
     }
-    if (ev.button !== 1) return false;
+    if (ev.button !== 1) return;
     const detail = ev.detail || 1;
-    if (this.clickHandlers(hit, ev, detail)) return true;
+    if (this.clickHandlers(hit, ev, detail)) return;
     // a press on the selection may be the start of dragging it: it is
     // left to core, which arms a drag on the root, and settled when the
     // pointer comes up — a click — or when core starts the drag
@@ -1639,7 +1640,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
         pos: hit.pos,
         collapse: !(sel instanceof NodeSelection),
       };
-      return false;
+      return;
     }
     if (hit.atom) {
       const node = doc.nodeAt(hit.pos);
@@ -1648,7 +1649,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
           this.state.tr.setSelection(NodeSelection.create(doc, hit.pos)),
         );
       }
-      return true;
+      return;
     }
     let anchor = hit.pos;
     let head = hit.pos;
@@ -1669,7 +1670,6 @@ export class RichEditorView implements EditorHost, ClipboardView {
       ),
     );
     ev.capturePointer?.();
-    return true;
   }
 
   /** ProseMirror's click props, innermost node first: `handleClickOn` for
@@ -1819,9 +1819,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
   // --- drag and drop --------------------------------------------------------------
   //
   // The gesture is core's; these answer its events on the root, and
-  // ./drag.ts has the document's half. A drag starts only from a press on the
-  // selection — `mouseDown` leaves that press to core, which arms a drag on
-  // the draggable root — and a drop is read the way a paste is.
+  // ./drag.ts has the document's half. Core arms a drag on the draggable
+  // root from any press; one starts only from a press on the selection,
+  // which `mouseDown` notes (`dragCandidate`), and a drop is read the way a
+  // paste is.
 
   /** Whether a press lands on what is selected: inside a text selection, or
    *  on the block a node selection holds. */

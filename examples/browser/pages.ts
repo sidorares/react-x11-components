@@ -1,9 +1,10 @@
 // The pages the browser makes itself: the new-tab page, the ones that say a
 // page could not be shown, and the wrappers that turn a response that is not
 // HTML — plain text, an image, a page's own source — into a document `<Html>`
-// can render. Every one is HTML handed to the same component as a page from
-// the web, so it is styled with CSS like one, including the dark scheme,
-// which `<Html>` answers from the palette in force.
+// can render, where it takes no component of its own (`documents.ts`). Every
+// one is HTML handed to the same component as a page from the web, so it is
+// styled with CSS like one, including the dark scheme, which `<Html>` answers
+// from the palette in force.
 import { escapeHtml } from '../../src/html/index.js';
 
 export const HOME = 'about:home';
@@ -131,19 +132,6 @@ export function errorPage(url: string, message: string, code: string): string {
 <p>${escapeHtml(message)}</p>
 <p class="lead"><a href="${escapeHtml(url)}">${escapeHtml(url)}</a></p>
 <p><code>${escapeHtml(code)}</code></p>
-</main></body></html>`;
-}
-
-/** A response of a kind this browser does not render. */
-export function unsupportedPage(url: string, type: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8">
-<title>${escapeHtml(fileName(url))}</title><style>${PAGE_STYLE}
-  main { padding-top: 96px; }
-</style></head><body><main>
-<h1>Nothing to show</h1>
-<p>This is <code>${escapeHtml(type || 'something with no type')}</code>, which
-this browser does not display, and it does not download files.</p>
-<p class="lead">${escapeHtml(url)}</p>
 </main></body></html>`;
 }
 

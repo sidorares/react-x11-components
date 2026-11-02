@@ -59,12 +59,12 @@ export type UrlClass = new (url: string, base?: string | UrlLike) => UrlLike;
 
 /** `Buffer`, for base64 both ways. */
 export interface BufferClass {
-  from(text: string, encoding: 'base64' | 'latin1'): Uint8Array;
+  from(text: string, encoding: 'base64' | 'latin1' | 'utf8'): Uint8Array;
   from(
     buffer: ArrayBufferLike,
     offset?: number,
     length?: number,
-  ): Uint8Array & { toString(encoding: 'base64'): string };
+  ): Uint8Array & { toString(encoding: 'base64' | 'latin1'): string };
 }
 
 /** The slice of `process` the engine reads. */
@@ -135,6 +135,7 @@ export interface WorkerLike {
   on(event: 'error', listener: (error: Error) => void): void;
   on(event: 'exit', listener: (code: number) => void): void;
   terminate(): Promise<number>;
+  ref(): void;
   unref(): void;
 }
 

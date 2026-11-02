@@ -593,6 +593,9 @@ export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
   return style.styledControl;
 }
 
+/** How wide an `<input type=file>` is, in the width of a digit. */
+const FILE_WIDTH_CHARS = 34;
+
 /**
  * The size a control's box takes in the flow.
  *
@@ -633,6 +636,12 @@ export function measureControl(
         height: lineHeight + chrome,
       };
     }
+    // thirty-four of the digit zero, as Blink's is, whatever it holds
+    case 'file':
+      return {
+        width: Math.round(ch * FILE_WIDTH_CHARS),
+        height: lineHeight + chrome,
+      };
     case 'select': {
       const widest = optionWidths(el);
       // a select the page styled is its widest option and its arrow, and

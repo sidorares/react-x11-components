@@ -33,6 +33,7 @@ import {
   ShadowRoot,
   shadowRootOf,
   tagOf,
+  treeGeneration,
 } from '../dom.js';
 import {
   ShapeCopies,
@@ -603,6 +604,8 @@ export type ReplacedKind =
   | 'textarea'
   | 'select'
   | 'button'
+  /** An `<input type=file>`: its button and what it holds. */
+  | 'file'
   | 'checkbox'
   | 'radio'
   | 'hr'
@@ -636,7 +639,14 @@ function controlBaseline(
   if (kind === 'input' && (attr(el, 'type') ?? '').toLowerCase() === 'range') {
     return 'border';
   }
-  if (kind !== 'input' && kind !== 'select' && kind !== 'button') return null;
+  if (
+    kind !== 'input' &&
+    kind !== 'select' &&
+    kind !== 'button' &&
+    kind !== 'file'
+  ) {
+    return null;
+  }
   // a list box shows rows, and sits on its bottom edge
   if (kind === 'select' && Number(attr(el, 'size') ?? 1) > 1) return null;
   return (
@@ -3418,11 +3428,16 @@ function flatPrecedes(a: ChildNode, b: ChildNode): boolean {
 }
 
 /** A document's first element with an id: one walk of it, the first time
- *  an id is asked for (`ShapeCopies`). */
+ *  an id is asked for after the tree moved (`ShapeCopies`). Moved by what no
+ *  drawing has read yet too, so it is the index's to notice: told of every
+ *  change, a walk of what each put in would be every refresh's. */
 export function idIndex(root: Element): (id: string) => Element | null {
   let index: Map<string, Element> | null = null;
+  let at = -1;
   return (id) => {
-    if (!index) {
+    const now = treeGeneration();
+    if (!index || at !== now) {
+      at = now;
       index = new Map();
       const stack: ChildNode[] = [...root.children].reverse();
       for (let node = stack.pop(); node; node = stack.pop()) {
@@ -6414,6 +6429,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';
+      if (type === 'file') return 'file';
       return 'input';
     }
     default:

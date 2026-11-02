@@ -44,15 +44,29 @@ import type {
   HtmlStorageArea,
   HtmlStorageChange,
 } from './storage.js';
+import type { HtmlPermissionState } from './permissions.js';
+import { cacheUrlKey } from './cache-storage.js';
+import type {
+  HtmlCacheAddition,
+  HtmlCacheEntry,
+  HtmlCacheStore,
+} from './cache-storage.js';
+import type {
+  HtmlServiceWorkerRecord,
+  HtmlServiceWorkerScript,
+  HtmlServiceWorkerStore,
+  HtmlServiceWorkerVersion,
+} from './service-workers.js';
 import { nodeModule } from './scripts/platform.js';
 import type { ClearTimeout, SetTimeout } from './scripts/platform.js';
 
 declare const setInterval: SetTimeout;
 declare const clearInterval: ClearTimeout;
+declare const crypto: { getRandomValues(array: Uint8Array): Uint8Array };
 
 /** The schema this module writes and reads. A file of a later one is not
  *  opened; an earlier one is brought up to this. */
-export const PROFILE_VERSION = 1;
+export const PROFILE_VERSION = 3;
 
 /** The file in a profile's directory. */
 export const PROFILE_FILE = 'profile.sqlite';
@@ -60,6 +74,11 @@ export const PROFILE_FILE = 'profile.sqlite';
 /** The HTTP cache's file beside it, and the schema it is in. */
 export const CACHE_FILE = 'cache.sqlite';
 const CACHE_VERSION = 1;
+
+/** What a page's workers and its `caches` keep, a third file beside them,
+ *  and the schema it is in. */
+export const WORKERS_FILE = 'workers.sqlite';
+const WORKERS_VERSION = 1;
 
 /** A prepared statement: the slice `node:sqlite` and `bun:sqlite` share,
  *  with positional parameters alone. */
@@ -113,9 +132,21 @@ export interface HtmlProfileOptions {
    * it forgets those used longest ago. Default 512 MB; 0 keeps no cache.
    */
   cacheBytes?: number;
+  /**
+   * How many bytes of bodies an origin may keep in `caches`. A page past it
+   * is told `QuotaExceededError`, since what it keeps is its own to give up.
+   * Default 2 GB.
+   */
+  cacheStorageBytes?: number;
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS permissions (
+  origin TEXT NOT NULL,
+  name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  PRIMARY KEY (origin, name)
+);
 CREATE TABLE IF NOT EXISTS cookies (
   host_key TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -152,6 +183,10 @@ CREATE TABLE IF NOT EXISTS storage_events (
   source TEXT NOT NULL,
   at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS key_secret (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  secret TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS idb_databases (
   origin TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -184,13 +219,22 @@ const WATCH_MS = 250;
 export class HtmlProfile {
   readonly cookies: HtmlCookieStore;
   readonly storage: HtmlStorage;
+  /** What the user said to each origin's questions. */
+  readonly permissions: HtmlProfilePermissions;
   /**
    * The HTTP cache's store (`HtmlNetworkOptions.httpCache`), which every
    * process that opens the profile shares; null where it was asked for no
    * bytes, or its file could not be opened.
    */
   readonly httpCache: HtmlProfileHttpCache | null;
+  /**
+   * What keeps a page's service workers (`HtmlServiceWorkers`' `store`) past
+   * a restart, which every process that opens the profile shares; null where
+   * its file could not be opened, and they live in memory.
+   */
+  readonly serviceWorkers: HtmlServiceWorkerStore | null;
   private _cache: ProfileHttpCache | null;
+  private _workers: ProfileWorkers | null;
   private _db: Database;
   private _dataVersion: Statement;
   private _lastData = -1;
@@ -244,20 +288,37 @@ export class HtmlProfile {
         // would have kept is asked for again
       }
     }
-    return new HtmlProfile(db, options, cache);
+    let workers: ProfileWorkers | null = null;
+    try {
+      workers = ProfileWorkers.open(
+        Database,
+        fs,
+        dir,
+        options.cacheStorageBytes ?? 2 * 1024 * 1024 * 1024,
+      );
+    } catch {
+      // a store that cannot be opened is memory: a page's `caches` still
+      // work, for as long as the process
+    }
+    return new HtmlProfile(db, options, cache, workers);
   }
 
   private constructor(
     db: Database,
     options: HtmlProfileOptions,
     cache: ProfileHttpCache | null,
+    workers: ProfileWorkers | null,
   ) {
     this._db = db;
     this._dataVersion = db.prepare('PRAGMA data_version');
     this.cookies = new ProfileCookies(this, db);
     this.storage = new ProfileStorage(this, db, options.tab ?? null);
+    this.permissions = new ProfilePermissions(db);
     this._cache = cache;
     this.httpCache = cache;
+    this._workers = workers;
+    this.serviceWorkers = workers;
+    if (workers) (this.storage as ProfileStorage).caches = workers;
   }
 
   /** How many times another connection was found to have committed: a
@@ -317,6 +378,7 @@ export class HtmlProfile {
     (this.storage as ProfileStorage).stop();
     this._db.close();
     this._cache?.close();
+    this._workers?.close();
   }
 
   /** A function run in one transaction, which a throw rolls back. */
@@ -510,9 +572,401 @@ class ProfileHttpCache implements HtmlProfileHttpCache {
   }
 }
 
+// --- service workers and `caches` -----------------------------------------------
+
+const WORKERS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS registrations (
+  scope TEXT PRIMARY KEY,
+  origin TEXT NOT NULL,
+  active TEXT,
+  record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS registrations_origin ON registrations (origin);
+CREATE TABLE IF NOT EXISTS scripts (
+  scope TEXT NOT NULL,
+  version TEXT NOT NULL,
+  url TEXT NOT NULL,
+  type TEXT NOT NULL,
+  body BLOB NOT NULL,
+  PRIMARY KEY (scope, version, url)
+);
+CREATE TABLE IF NOT EXISTS caches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  origin TEXT NOT NULL,
+  name TEXT NOT NULL,
+  UNIQUE (origin, name)
+);
+CREATE TABLE IF NOT EXISTS cache_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cache INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  request TEXT NOT NULL,
+  response TEXT NOT NULL,
+  body BLOB NOT NULL,
+  size INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cache_entries_key ON cache_entries (cache, key);
+`;
+
+/** A record's worker as a row keeps it: its scripts are rows of their own. */
+type KeptVersion = Omit<HtmlServiceWorkerVersion, 'scripts'>;
+type KeptRecord = Omit<HtmlServiceWorkerRecord, 'active' | 'waiting'> & {
+  active: KeptVersion | null;
+  waiting: KeptVersion | null;
+};
+
+/**
+ * What a page's service workers and its `caches` keep on disk, a file of their
+ * own for the reasons the HTTP cache has one: a body is up to megabytes, which
+ * would grow the log every cookie write goes through, and every write here
+ * would move the `data_version` that makes every other process read its
+ * cookies again. It is read straight from the file at each call, so what one
+ * tab's process kept is there for the next request another makes. Unlike a
+ * cache of the network it is what a page was told is kept, so nothing here is
+ * forgotten behind its back, and a file of a later schema is left alone.
+ */
+class ProfileWorkers implements HtmlServiceWorkerStore, HtmlCacheStore {
+  private _scopes: Statement;
+  private _record: Statement;
+  private _scripts: Statement;
+  private _saveRecord: Statement;
+  private _saveScript: Statement;
+  private _dropRecord: Statement;
+  private _dropScripts: Statement;
+  private _staleScripts: Statement;
+  private _cacheId: Statement;
+  private _cacheNames: Statement;
+  private _makeCache: Statement;
+  private _dropCache: Statement;
+  private _dropEntries: Statement;
+  private _entriesOf: Statement;
+  private _entriesAt: Statement;
+  private _body: Statement;
+  private _dropEntry: Statement;
+  private _addEntry: Statement;
+  private _used: Statement;
+
+  static open(
+    Database: DatabaseClass,
+    fs: FsModule,
+    dir: string,
+    quota: number,
+  ): ProfileWorkers | null {
+    const path = `${dir.replace(/[\\/]+$/, '')}/${WORKERS_FILE}`;
+    const db = new Database(path);
+    try {
+      try {
+        fs.chmodSync(path, 0o600);
+      } catch {
+        // a file system with no modes
+      }
+      db.exec('PRAGMA busy_timeout = 5000');
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = NORMAL');
+      const version = Number(
+        db.prepare('PRAGMA user_version').get()?.user_version ?? 0,
+      );
+      if (version > WORKERS_VERSION) {
+        db.close();
+        return null;
+      }
+      if (version < WORKERS_VERSION) {
+        db.exec('BEGIN IMMEDIATE');
+        db.exec(WORKERS_SCHEMA);
+        db.exec(`PRAGMA user_version = ${WORKERS_VERSION}`);
+        db.exec('COMMIT');
+      }
+      return new ProfileWorkers(db, quota);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+
+  private constructor(
+    private readonly _db: Database,
+    private readonly _quota: number,
+  ) {
+    this._scopes = _db.prepare(
+      'SELECT scope, active FROM registrations WHERE origin = ?',
+    );
+    this._record = _db.prepare(
+      'SELECT record FROM registrations WHERE scope = ?',
+    );
+    this._scripts = _db.prepare(
+      'SELECT url, type, body FROM scripts WHERE scope = ? AND version = ?',
+    );
+    this._saveRecord = _db.prepare(
+      'INSERT OR REPLACE INTO registrations (scope, origin, active, record) VALUES (?, ?, ?, ?)',
+    );
+    this._saveScript = _db.prepare(
+      'INSERT OR IGNORE INTO scripts (scope, version, url, type, body) VALUES (?, ?, ?, ?, ?)',
+    );
+    this._dropRecord = _db.prepare('DELETE FROM registrations WHERE scope = ?');
+    this._dropScripts = _db.prepare('DELETE FROM scripts WHERE scope = ?');
+    this._staleScripts = _db.prepare(
+      'DELETE FROM scripts WHERE scope = ? AND version != ? AND version != ?',
+    );
+    this._cacheId = _db.prepare(
+      'SELECT id FROM caches WHERE origin = ? AND name = ?',
+    );
+    this._cacheNames = _db.prepare(
+      'SELECT name FROM caches WHERE origin = ? ORDER BY id',
+    );
+    this._makeCache = _db.prepare(
+      'INSERT OR IGNORE INTO caches (origin, name) VALUES (?, ?)',
+    );
+    this._dropCache = _db.prepare('DELETE FROM caches WHERE id = ?');
+    this._dropEntries = _db.prepare(
+      'DELETE FROM cache_entries WHERE cache = ?',
+    );
+    this._entriesOf = _db.prepare(
+      'SELECT id, request, response FROM cache_entries WHERE cache = ? ORDER BY id',
+    );
+    this._entriesAt = _db.prepare(
+      'SELECT id, request, response FROM cache_entries WHERE cache = ? AND key = ? ORDER BY id',
+    );
+    this._body = _db.prepare(
+      'SELECT body FROM cache_entries WHERE id = ? AND cache = ?',
+    );
+    this._dropEntry = _db.prepare(
+      'DELETE FROM cache_entries WHERE id = ? AND cache = ?',
+    );
+    this._addEntry = _db.prepare(
+      'INSERT INTO cache_entries (cache, key, request, response, body, size) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+    this._used = _db.prepare(
+      `SELECT total(size) AS used FROM cache_entries
+         WHERE cache IN (SELECT id FROM caches WHERE origin = ?)`,
+    );
+  }
+
+  // registrations
+
+  scopes(origin: string): { scope: string; active: string | null }[] {
+    return this._scopes.all(origin).map((row) => ({
+      scope: String(row.scope),
+      active: row.active === null ? null : String(row.active),
+    }));
+  }
+
+  load(scope: string): HtmlServiceWorkerRecord | null {
+    const row = this._record.get(scope);
+    if (!row) return null;
+    let kept: KeptRecord;
+    try {
+      kept = JSON.parse(String(row.record)) as KeptRecord;
+    } catch {
+      return null;
+    }
+    const version = (v: KeptVersion | null): HtmlServiceWorkerVersion | null =>
+      v && {
+        ...v,
+        scripts: this._scripts
+          .all(scope, v.id)
+          .map((script): HtmlServiceWorkerScript => ({
+            url: String(script.url),
+            type: String(script.type),
+            body: bytesOf(script.body),
+          })),
+      };
+    return {
+      ...kept,
+      active: version(kept.active),
+      waiting: version(kept.waiting),
+    };
+  }
+
+  save(record: HtmlServiceWorkerRecord): void {
+    const bare = (v: HtmlServiceWorkerVersion | null): KeptVersion | null => {
+      if (!v) return null;
+      const { scripts: _left, ...rest } = v;
+      return rest;
+    };
+    const kept: KeptRecord = {
+      ...record,
+      active: bare(record.active),
+      waiting: bare(record.waiting),
+    };
+    this._transaction(() => {
+      this._saveRecord.run(
+        record.scope,
+        record.origin,
+        record.active?.id ?? null,
+        JSON.stringify(kept),
+      );
+      for (const version of [record.active, record.waiting]) {
+        for (const script of version?.scripts ?? []) {
+          this._saveScript.run(
+            record.scope,
+            version!.id,
+            script.url,
+            script.type,
+            script.body,
+          );
+        }
+      }
+      this._staleScripts.run(
+        record.scope,
+        record.active?.id ?? '',
+        record.waiting?.id ?? '',
+      );
+    });
+  }
+
+  delete(scope: string): void {
+    this._transaction(() => {
+      this._dropRecord.run(scope);
+      this._dropScripts.run(scope);
+    });
+  }
+
+  // `caches`
+
+  get caches(): HtmlCacheStore {
+    return this;
+  }
+
+  private _id(origin: string, name: string): number | null {
+    const row = this._cacheId.get(origin, name);
+    return row ? Number(row.id) : null;
+  }
+
+  names(origin: string): string[] {
+    return this._cacheNames.all(origin).map((row) => String(row.name));
+  }
+
+  has(origin: string, name: string): boolean {
+    return this._id(origin, name) !== null;
+  }
+
+  create(origin: string, name: string): void {
+    this._makeCache.run(origin, name);
+  }
+
+  remove(origin: string, name: string): boolean {
+    const id = this._id(origin, name);
+    if (id === null) return false;
+    this._transaction(() => {
+      this._dropEntries.run(id);
+      this._dropCache.run(id);
+    });
+    return true;
+  }
+
+  entries(origin: string, name: string, key?: string): HtmlCacheEntry[] {
+    const id = this._id(origin, name);
+    if (id === null) return [];
+    const rows =
+      key === undefined
+        ? this._entriesOf.all(id)
+        : this._entriesAt.all(id, key);
+    return rows.map((row) => ({
+      id: Number(row.id),
+      request: JSON.parse(String(row.request)),
+      response: JSON.parse(String(row.response)),
+    }));
+  }
+
+  body(origin: string, name: string, entry: number): Uint8Array | null {
+    const id = this._id(origin, name);
+    if (id === null) return null;
+    const row = this._body.get(entry, id);
+    return row ? bytesOf(row.body) : null;
+  }
+
+  commit(
+    origin: string,
+    name: string,
+    remove: readonly number[],
+    add: readonly HtmlCacheAddition[],
+  ): boolean {
+    const id = this._id(origin, name);
+    if (id === null) return false;
+    let fits = true;
+    this._transaction(() => {
+      for (const entry of remove) this._dropEntry.run(entry, id);
+      let size = 0;
+      for (const item of add) {
+        size += item.bytes.length;
+        this._addEntry.run(
+          id,
+          cacheUrlKey(item.request.url),
+          JSON.stringify(item.request),
+          JSON.stringify(item.response),
+          item.bytes,
+          item.bytes.length,
+        );
+      }
+      if (size > 0 && Number(this._used.get(origin)?.used ?? 0) > this._quota) {
+        fits = false;
+        throw new Error('quota');
+      }
+    });
+    return fits;
+  }
+
+  close(): void {
+    this._db.close();
+  }
+
+  private _transaction(run: () => void): void {
+    this._db.exec('BEGIN IMMEDIATE');
+    try {
+      run();
+      this._db.exec('COMMIT');
+    } catch (error) {
+      this._db.exec('ROLLBACK');
+      if ((error as Error).message !== 'quota') throw error;
+    }
+  }
+}
+
+function bytesOf(body: unknown): Uint8Array {
+  return body instanceof Uint8Array
+    ? body
+    : new Uint8Array(body as ArrayBuffer);
+}
+
 // --- cookies --------------------------------------------------------------------
 
 /** `host_key` as Chrome writes it: a domain cookie's with a leading dot. */
+/** What a browser keeps of a user's answers: read as often as a page asks,
+ *  from whichever process the page is in. */
+export interface HtmlProfilePermissions {
+  /** What the user said, or null where they have not been asked. */
+  get(origin: string, name: string): HtmlPermissionState | null;
+  /** Keep what they said. */
+  set(origin: string, name: string, state: HtmlPermissionState): void;
+  /** Let an origin ask again. Says which names it had answers for. */
+  forget(origin: string): string[];
+}
+
+class ProfilePermissions implements HtmlProfilePermissions {
+  constructor(private readonly _db: Database) {}
+  get(origin: string, name: string): HtmlPermissionState | null {
+    const row = this._db
+      .prepare('SELECT state FROM permissions WHERE origin = ? AND name = ?')
+      .get(origin, name);
+    return (row?.state as HtmlPermissionState | undefined) ?? null;
+  }
+  set(origin: string, name: string, state: HtmlPermissionState): void {
+    this._db
+      .prepare(
+        'INSERT OR REPLACE INTO permissions (origin, name, state) VALUES (?, ?, ?)',
+      )
+      .run(origin, name, state);
+  }
+  forget(origin: string): string[] {
+    const names = this._db
+      .prepare('SELECT name FROM permissions WHERE origin = ?')
+      .all(origin)
+      .map((row) => String(row.name));
+    this._db.prepare('DELETE FROM permissions WHERE origin = ?').run(origin);
+    return names;
+  }
+}
+
 const hostKey = (c: { domain: string; hostOnly: boolean }) =>
   c.hostOnly ? c.domain : `.${c.domain}`;
 
@@ -637,6 +1091,8 @@ interface AreaStatements {
 
 class ProfileStorage implements HtmlStorage {
   readonly indexedDB: HtmlIndexedDB;
+  /** What a page's `caches` keep, where the profile has its file. */
+  caches?: HtmlCacheStore;
   private _local = new Map<string, HtmlStorageArea>();
   private _session = new Map<string, HtmlStorageArea>();
   private _localStatements: AreaStatements;
@@ -811,6 +1267,9 @@ class ProfileSessionArea implements HtmlStorageArea {
 // --- IndexedDB -------------------------------------------------------------------
 
 class ProfileIndexedDB implements HtmlIndexedDB {
+  private _secret: Uint8Array | null = null;
+  private _makeSecret: Statement;
+  private _readSecret: Statement;
   private _list: Statement;
   private _database: Statement;
   private _records: Statement;
@@ -851,6 +1310,10 @@ class ProfileIndexedDB implements HtmlIndexedDB {
     this._put = db.prepare(
       'INSERT OR REPLACE INTO idb_records (origin, db, store, key, value) VALUES (?, ?, ?, ?, ?)',
     );
+    this._makeSecret = db.prepare(
+      'INSERT OR IGNORE INTO key_secret (id, secret) VALUES (1, ?)',
+    );
+    this._readSecret = db.prepare('SELECT secret FROM key_secret WHERE id = 1');
     this._delete = db.prepare(
       'DELETE FROM idb_records WHERE origin = ? AND db = ? AND store = ? AND key = ?',
     );
@@ -927,6 +1390,24 @@ class ProfileIndexedDB implements HtmlIndexedDB {
     });
     this._remember(origin, name, stamp);
     return stamp;
+  }
+  /** The first process to ask makes it, and the rest read what that made:
+   *  a key is as safe here as a cookie is, as a browser's profile has it. */
+  keySecret(): Uint8Array {
+    if (this._secret) return this._secret;
+    let kept = this._readSecret.get()?.secret;
+    if (typeof kept !== 'string') {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      this._makeSecret.run(
+        [...bytes].map((b) => b.toString(16).padStart(2, '0')).join(''),
+      );
+      kept = this._readSecret.get()?.secret;
+    }
+    const hex = String(kept);
+    this._secret = Uint8Array.from({ length: hex.length / 2 }, (_, i) =>
+      parseInt(hex.slice(i * 2, i * 2 + 2), 16),
+    );
+    return this._secret;
   }
   delete(origin: string, name: string): void {
     this._profile.transaction(() => {

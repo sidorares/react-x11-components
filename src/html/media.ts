@@ -37,10 +37,15 @@
 //    what it draws there, and not how far it reaches (`inkMeets`): GitHub
 //    lays an empty box over its hero's video, and its header holds a menu,
 //    hidden, that reaches as far.
-//  - **A box fixed to the viewport is asked about as the pane scrolls**
-//    (`cutByFixed`): a header that comes over a playing video cuts the
-//    player where it reaches it, and one that reaches into its middle hides
-//    it, the poster drawn there in the meantime and the video playing on.
+//  - **A box fixed to the viewport is asked about as the pane scrolls**,
+//    and at each paint, since a fade changes what it draws and lays nothing
+//    out. A solid band that comes over a playing video, a header, cuts the
+//    player where it reaches it (`cutByFixed`). What lets the video show,
+//    or stands in its middle, is painted over the player again, where it can
+//    be (`fixedCoversOf`): YouTube's embed fixes its controls over the whole
+//    player, translucent, and they fade in over the video. One that cannot
+//    be hides it, the poster drawn there in the meantime and the video
+//    playing on.
 //    A sticky box the viewport holds (`VIEWPORT_STICKY`), which the pane's
 //    scroll moves over the document as it moves a fixed one, is painted
 //    over a player again where it is held (`coversOf`), and cuts what is
@@ -87,6 +92,7 @@ import {
   FIXED_BOXES,
   inkWithin,
   NO_ZOOM,
+  opaqueWithin,
   paintedAfter,
   paintOrderOf,
   unzoomRect,
@@ -144,15 +150,16 @@ export interface MediaRect {
   opacity?: number;
   /**
    * Set while a box fixed to the viewport reaches into the picture where
-   * no rectangle can cut it out: the player is not seen, and the poster
-   * under it shows.
+   * no rectangle can cut it out and it cannot be painted over the player
+   * again: the player is not seen, and the poster under it shows.
    */
   hidden?: boolean;
   /**
    * Where the document paints over the player, in the same space as `x`:
    * around what of the boxes painted after the video reaches the part of
-   * it that shows — a play button in its corner. A sibling mounted after
-   * the player paints them there again (`HtmlViewNode.paintCovers`).
+   * it that shows — a play button in its corner, the boxes fixed over it.
+   * A sibling mounted after the player paints them there again
+   * (`HtmlViewNode.paintCovers`).
    */
   over?: Rect;
   /**
@@ -689,16 +696,17 @@ export interface Cover {
 
 /** As many boxes painted after a video as are painted over its player
  *  again: more is a page laid over the video, which keeps the poster. */
-const MAX_COVERS = 4;
+export const MAX_COVERS = 4;
 
 /**
  * Of the boxes the document paints after a video whose ink reaches its
  * picture (`coverersOver`), each with the part of what the video `shows`
  * it reaches, where a sibling over the player can paint them as the
  * document does (`paintCover`): no more than `MAX_COVERS`, none held back
- * or fixed to the viewport, and each cut, where the boxes around it cut
- * it, to a rectangle. Null where any is not, and the video keeps its
- * poster. GitHub's hero has a play button in the corner of its video, and
+ * or fixed to the viewport (`fixedCoversOf`'s, at each paint), and each
+ * cut, where the boxes around it cut it, to a rectangle. Null where any is
+ * not, and the video keeps its poster. GitHub's hero has a play button in
+ * the corner of its video, and
  * diabrowser.com's a dock whose arc a scroll scales, under a halo it blurs
  * and fades.
  *
@@ -724,22 +732,12 @@ function coversOf(
   if (found.length > MAX_COVERS) return null;
   const out: Cover[] = [];
   for (const cover of found) {
-    if (heldBack(tree, cover) || drawnAtViewport(cover)) return null;
-    for (
-      let at = cover.topLayer ? null : cover.parent;
-      at;
-      at = at.topLayer ? null : at.parent
+    if (
+      heldBack(tree, cover) ||
+      drawnAtViewport(cover) ||
+      groupedAround(cover)
     ) {
-      const style = at.style;
-      if (
-        placedMatrix(at) ||
-        style.filter !== null ||
-        style.clipPath ||
-        masked(style) ||
-        style.opacity < 1
-      ) {
-        return null;
-      }
+      return null;
     }
     // where it is drawn: its own bounds are through its own matrix, as no
     // box's inside it are (`computePaintBounds`)
@@ -758,6 +756,127 @@ function coversOf(
   return out;
 }
 
+/** Whether a box around a cover fades, turns, filters, masks or cuts to a
+ *  path what it holds, which a sibling over the player cannot do for it
+ *  (`coversOf`). */
+function groupedAround(cover: Box): boolean {
+  for (
+    let at = cover.topLayer ? null : cover.parent;
+    at;
+    at = at.topLayer ? null : at.parent
+  ) {
+    const style = at.style;
+    if (
+      placedMatrix(at) ||
+      style.filter !== null ||
+      style.clipPath ||
+      masked(style) ||
+      style.opacity < 1
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Of the boxes fixed to the viewport that the document paints after a video
+ * (`fixedOver`), those painted over its player again, with what of `shows`
+ * each reaches: as `coversOf` holds a cover to, in as many as there is
+ * `room` for. `shift` and `viewport` are `cutByFixed`'s, and the rects are in
+ * the document's coordinates, where the scroll has the boxes.
+ *
+ * A solid band across a side of what shows is left in `cutting`, since
+ * taking it off is cheaper than painting it and shows the same: a header
+ * the page scrolls under, a frame at a time. So is one that cannot be a
+ * cover, for `cutByFixed` to cut around or to hide the player for. The rest
+ * let the video show, or stand in its middle, where a cut would take the
+ * picture away: YouTube's embed fixes its controls over the whole player
+ * and fades them in over the video, translucent, and a floating button is
+ * no reason to hide what is around it. Asked at each paint, as `cutByFixed`
+ * is: their opacity and their ink change with nothing laid out.
+ */
+export function fixedCoversOf(
+  tree: BoxTree,
+  fixed: readonly Box[],
+  shows: Rect,
+  shift: { x: number; y: number } | null,
+  viewport: Rect | null,
+  scale: number,
+  room: number,
+): { covers: Cover[]; cutting: readonly Box[] } {
+  const seen = viewport ? within(shows, viewport) : shows;
+  if (!(seen.width > 0 && seen.height > 0)) {
+    return { covers: [], cutting: fixed };
+  }
+  const dx = shift?.x ?? 0;
+  const dy = shift?.y ?? 0;
+  // what shows, where the boxes are: at the document's top
+  const there = { ...seen, x: seen.x - dx, y: seen.y - dy };
+  const drawn: Cover[] = [];
+  const cutting: Box[] = [];
+  for (const box of fixed) {
+    if (!(box.boundsWidth > 0 && box.boundsHeight > 0)) continue;
+    const z = box.style.zIndex;
+    if (typeof z === 'number' && z < 0) continue;
+    const ink = inkWithin(box, there);
+    // a rect that only gets smaller is never reached by it
+    if (!ink) continue;
+    const cut =
+      drawn.length < room &&
+      !solidBand(box, ink, there) &&
+      !heldBack(tree, box) &&
+      !groupedAround(box)
+        ? clipFor(box, ink, scale)
+        : null;
+    if (cut === null || (cut && cut.radius > 0)) {
+      cutting.push(box);
+      continue;
+    }
+    const over = within(ink, cut?.rect ?? ink);
+    if (!(over.width > 0 && over.height > 0)) continue;
+    drawn.push({
+      box,
+      rect: pixelsAround({ ...over, x: over.x + dx, y: over.y + dy }),
+    });
+  }
+  return { covers: drawn, cutting };
+}
+
+/** Whether what a box draws in `rect`, its `ink`, is an opaque band across
+ *  one of its sides, which a rectangle takes off what shows and nothing of
+ *  which lets what is under it through. */
+function solidBand(box: Box, ink: Rect, rect: Rect): boolean {
+  const right = ink.x + ink.width;
+  const bottom = ink.y + ink.height;
+  const across = ink.x <= rect.x + EDGE && right >= rect.x + rect.width - EDGE;
+  const down = ink.y <= rect.y + EDGE && bottom >= rect.y + rect.height - EDGE;
+  if (!across && !down) return false;
+  const band =
+    (across &&
+      (ink.y <= rect.y + EDGE || bottom >= rect.y + rect.height - EDGE)) ||
+    (down && (ink.x <= rect.x + EDGE || right >= rect.x + rect.width - EDGE));
+  if (!band) return false;
+  return opaqueWithin(box, rect).some((filled) => covers(filled, ink));
+}
+
+/** Covers in the order the document paints them, a box it cannot place
+ *  among the others last. */
+export function inPaintOrder(covers: readonly Cover[]): Cover[] {
+  const keyed = covers.map((cover) => ({
+    cover,
+    key: paintOrderOf(cover.box),
+  }));
+  keyed.sort((p, q) => {
+    if (!p.key || !q.key) return p.key ? -1 : q.key ? 1 : 0;
+    for (let i = 0; i < p.key.length && i < q.key.length; i += 1) {
+      if (p.key[i] !== q.key[i]) return p.key[i] - q.key[i];
+    }
+    return p.key.length - q.key.length;
+  });
+  return keyed.map((k) => k.cover);
+}
+
 /** Where two rects meet: none of either where they do not. */
 function within(a: Rect, b: Rect): Rect {
   const x = Math.max(a.x, b.x);
@@ -771,7 +890,7 @@ function within(a: Rect, b: Rect): Rect {
 }
 
 /** The least rect that holds all of `rects`. */
-function around(rects: readonly Rect[]): Rect {
+export function around(rects: readonly Rect[]): Rect {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;

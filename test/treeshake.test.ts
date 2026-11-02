@@ -89,6 +89,9 @@ const COMPONENTS = [
   // `<Mermaid>` reaches ondine only through a dynamic import, so the marker
   // is the theme property its palette mapping alone writes
   { exportName: 'Mermaid', dir: 'mermaid', marker: '--ondine-muted' },
+  // The element's name: PDFium's thread is reached by a URL and a dynamic
+  // import, so nothing of it is in any entry chunk.
+  { exportName: 'Pdf', dir: 'pdf', marker: 'pdfview' },
   // `<Html>` shares `src/richtext/`'s run decorations and `src/internal/`'s
   // code-point helpers with `<Markdown>` and `<Code>`, so its marker is a
   // string only its user-agent stylesheet writes.

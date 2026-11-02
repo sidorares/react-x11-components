@@ -177,6 +177,7 @@ import type { CodeEditorProps } from '@react-x11/components';
 | `Markdown`       | `@react-x11/components/markdown`         | Streaming-friendly GFM with cross-block selection.           |
 | `MediaPlayer`    | `@react-x11/components/media-player`     | mpv or VLC embedded, or ffmpeg into a `<video>`; transport.  |
 | `Mermaid`        | `@react-x11/components/mermaid`          | Mermaid diagrams: ondine's layout, native ink, selectable.   |
+| `Pdf`            | `@react-x11/components/pdf`              | A PDF, drawn: PDFium on a thread, zoom, selection, links.    |
 | `QmlView`        | `@react-x11/components/qml`              | Qt's QML language as an authoring layer. No Qt.              |
 | `ReorderList` …  | `@react-x11/components/reorder`          | A drag-and-drop list, over core's own drag and drop.         |
 | `RichTextEditor` | `@react-x11/components/rich-text-editor` | WYSIWYG editing over ProseMirror; markdown in and out.       |
@@ -469,6 +470,23 @@ with the document around it, and `partial` holds the last diagram that
 compiled while a stream is still writing it. A ` ```mermaid ` fence becomes
 one through `<Markdown>`'s `fences` map, as a math fence does.
 [The reference](docs/components/mermaid.md) has the rest.
+
+## PDF
+
+```jsx
+import { Pdf } from '@react-x11/components/pdf';
+
+<Pdf data={bytes} defaultZoom="width" onLink={({ url }) => open(url)} />;
+```
+
+A PDF, read and drawn by [PDFium](https://pdfium.googlesource.com/pdfium/),
+the engine in Chrome, as WebAssembly on a thread of its own. It is an optional
+peer: `npm i @embedpdf/pdfium`. One element composites the tiles that thread
+draws, so nothing goes through `<Html>`: a scroll is a blit, a zoom stretches
+what is on hand until it rests, and a page that takes seconds to draw never
+stops the window. Text selects and copies, and links are followed where the
+application says. `<Pdf>` reads no file and fetches nothing: `data` is bytes.
+[The reference](docs/components/pdf.md) has the rest.
 
 ## A terminal session you already have: `<TerminalOutput>`
 

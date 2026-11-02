@@ -73,6 +73,7 @@ when it is missing — each has a `status` and a `fallback` instead.
 | `<Terminal>` on an embedded emulator     | xterm, urxvt or alacritty on `PATH`                              | `backend="auto"` falls through to `vt`                         |
 | `<MediaPlayer>`                          | mpv or VLC on `PATH` (X11), or ffmpeg and ffprobe                | `fallback` renders, `onError` names what it looked for         |
 | `<Mermaid>` diagrams                     | `npm i ondine`                                                   | the source renders as muted code                               |
+| `<Pdf>`                                  | `npm i @embedpdf/pdfium`                                         | `status` is `'unavailable'`, `fallback` renders                |
 | Recurring events in the desktop calendar | `npm i ical.js`                                                  | `status` is `'unavailable'`; the calendar renders without dots |
 
 `@xterm/headless` is an optional **dependency**, not a peer: it is 2 MB and

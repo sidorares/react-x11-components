@@ -50,7 +50,8 @@ export class LiveRange {
   }
 }
 
-export const isDoctype = (node: AnyNode): boolean => node.type === 'directive';
+export const isDoctype = (node: AnyNode): boolean =>
+  node.type === 'directive' && (node as { name?: string }).name?.[0] === '!';
 export const isCharacterData = (node: AnyNode): node is CharacterData =>
   node instanceof Text || node instanceof Comment;
 

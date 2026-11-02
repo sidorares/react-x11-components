@@ -87,7 +87,10 @@ Windows' speech, speech-dispatcher), and core's if it is anyone's.
 
 `<MediaPlayer backend="ffmpeg">` runs ffmpeg with `-an`: "a sink is
 frames, not sound". Its mpv and VLC backends do play sound, because they
-are somebody else's program, embedded on X11.
+are somebody else's program, embedded on X11. The example browser shows a
+response that is a sound with them where there is no platform player:
+`--no-video`, and never ffmpeg, which `backend="auto"` would come to
+(`examples/browser/viewers.tsx`).
 
 ### react-x11: sound on one platform, as video's side effect
 

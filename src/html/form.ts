@@ -20,12 +20,15 @@
 // back.
 import type { AnyNode, Element } from 'domhandler';
 
+import type { HtmlFile } from './files.js';
 import {
   NON_RENDERED,
   attr,
   childrenOf,
   elementsIn,
   isElement,
+  isForeign,
+  parsedForm,
   tagOf,
   treeGeneration,
 } from './dom.js';
@@ -58,8 +61,9 @@ export interface FormSubmission {
   /** The name–value pairs the form carries, in tree order, unencoded. A
    *  file field's value is the name of its file: always empty here. */
   entries: [name: string, value: string][];
-  /** A POST's body, encoded as `enctype` says; null for a GET. */
-  body: string | null;
+  /** A POST's body, encoded as `enctype` says; null for a GET. Bytes where
+   *  a file is in it, which no string holds. */
+  body: string | Uint8Array | null;
   /** The `Content-Type` a POST's body goes with — `multipart/form-data`'s
    *  names its boundary; null for a GET. */
   contentType: string | null;
@@ -93,6 +97,12 @@ export interface SubmitContext {
 
 /** The elements that can be submitted (HTML 4.10.2, "submittable"). */
 const SUBMITTABLE = new Set(['button', 'input', 'select', 'textarea']);
+
+/** Whether an element is one: an `<input>` a drawing or a `<math>` holds is
+ *  only a name, which no form owns. */
+function isSubmittable(el: Element): boolean {
+  return SUBMITTABLE.has(tagOf(el)) && !isForeign(el);
+}
 
 /** Every `<input type>` HTML knows. Any other type, or none, is a text
  *  field. */
@@ -172,9 +182,11 @@ export function rootOf(el: AnyNode): AnyNode {
 
 /**
  * The form a control belongs to (HTML 4.10.17.3): the one its `form`
- * attribute names by id, or else the nearest `<form>` around it. A `form`
- * attribute that names nothing, or names something that is not a form,
- * leaves it with none — it does not fall back to the form around it.
+ * attribute names by id, or else the nearest `<form>` around it, or else the
+ * one the parser met last, which a `<table><form>` needs: the form closes as
+ * it opens, and the rows after it are none of its. A `form` attribute that
+ * names nothing, or names something that is not a form, leaves it with none —
+ * it does not fall back to the form around it.
  */
 export function formOwner(
   el: Element,
@@ -196,7 +208,8 @@ function ownerOf(
   for (let at = el.parent; at && isElement(at); at = at.parent) {
     if (tagOf(at) === 'form') return at;
   }
-  return null;
+  const parsed = parsedForm(el);
+  return parsed && rootOf(parsed) === root ? parsed : null;
 }
 
 /** The first element in the document with an id, as `getElementById`
@@ -219,7 +232,7 @@ export function controlsOf(form: Element): Element[] {
   let byId: Map<string, Element> | null = null;
   const out: Element[] = [];
   for (const el of elementsIn(root, NON_RENDERED)) {
-    if (!SUBMITTABLE.has(tagOf(el))) continue;
+    if (!isSubmittable(el)) continue;
     // one walk for every id, and only when something asks by one
     if (attr(el, 'form') !== undefined && !byId) {
       byId = new Map();
@@ -522,11 +535,12 @@ function offStep(el: Element, type: string, value: number): boolean {
 // --- the entry list --------------------------------------------------------------
 
 /** One entry, and whether it is a file's — encoded differently in a
- *  multipart body. */
+ *  multipart body, where `chosen` is what goes in it. */
 interface Entry {
   name: string;
   value: string;
   file: boolean;
+  chosen?: HtmlFile;
 }
 
 /**
@@ -572,8 +586,12 @@ function entriesOf(
       continue;
     }
     if (type === 'file') {
-      // no file is ever chosen here: the field goes as one with no name
-      add(name, '', true);
+      const chosen = chosenFiles(el);
+      // a field with none goes as one file with no name and no bytes
+      if (!chosen.length) add(name, '', true);
+      for (const file of chosen) {
+        out.push({ name, value: file.name, file: true, chosen: file });
+      }
       continue;
     }
     if (type === 'hidden' && name.toLowerCase() === '_charset_') {
@@ -653,15 +671,48 @@ function dispositionName(name: string): string {
   );
 }
 
-function multipart(entries: readonly Entry[], boundary: string): string {
+function multipart(
+  entries: readonly Entry[],
+  boundary: string,
+): string | Uint8Array {
+  // what is text so far, then each file's bytes after the text before it
+  const parts: (string | Uint8Array)[] = [];
   let body = '';
-  for (const { name, value, file } of entries) {
+  for (const { name, value, file, chosen } of entries) {
     body += `--${boundary}\r\nContent-Disposition: form-data; name="${dispositionName(name)}"`;
-    body += file
-      ? `; filename="${dispositionName(value)}"\r\nContent-Type: application/octet-stream\r\n\r\n\r\n`
-      : `\r\n\r\n${crlf(value)}\r\n`;
+    if (!file) {
+      body += `\r\n\r\n${crlf(value)}\r\n`;
+      continue;
+    }
+    const type = chosen?.type || 'application/octet-stream';
+    body += `; filename="${dispositionName(value)}"\r\nContent-Type: ${type}\r\n\r\n`;
+    if (chosen?.bytes.length) {
+      parts.push(body, chosen.bytes);
+      body = '';
+    }
+    body += '\r\n';
   }
-  return `${body}--${boundary}--\r\n`;
+  body += `--${boundary}--\r\n`;
+  if (!parts.length) return body;
+  parts.push(body);
+  return joinParts(parts);
+}
+
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+
+/** Text and bytes as one run of bytes, the text as UTF-8. */
+function joinParts(parts: readonly (string | Uint8Array)[]): Uint8Array {
+  const encoder = new TextEncoder();
+  const chunks = parts.map((part) =>
+    typeof part === 'string' ? encoder.encode(part) : part,
+  );
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
 }
 
 function makeBoundary(): string {
@@ -692,7 +743,11 @@ function enctypeOf(raw: string | undefined): FormEnctype {
 /** The first `<base target>` in the document, or empty. */
 function baseTarget(root: AnyNode): string {
   for (const el of elementsIn(root, NON_RENDERED)) {
-    if (tagOf(el) === 'base' && attr(el, 'target') !== undefined) {
+    if (
+      tagOf(el) === 'base' &&
+      !isForeign(el) &&
+      attr(el, 'target') !== undefined
+    ) {
       return attr(el, 'target') ?? '';
     }
   }
@@ -959,7 +1014,9 @@ export function validityError(
       : wrong('valueMissing', 'Please select one of these options.');
   }
   if (type === 'file') {
-    return required ? wrong('valueMissing', 'Please select a file.') : null;
+    return required && !chosenFiles(el).length
+      ? wrong('valueMissing', 'Please select a file.')
+      : null;
   }
   if (type === 'range' || type === 'color' || type === 'submit') return null;
 
@@ -1196,6 +1253,22 @@ export function setCheckedDefault(el: Element, value: string | null): void {
  * really use and it reads those; so for them this keeps the markup's
  * attributes, from before the first change, for a reset.
  */
+/** What each file input holds, by element, for the same reason `TYPED`
+ *  is: a cascade asks what a control holds, and has no `FormState`. */
+const CHOSEN = new WeakMap<Element, readonly HtmlFile[]>();
+const NO_FILES: readonly HtmlFile[] = [];
+
+/** The files an `<input type=file>` holds. */
+export function chosenFiles(el: Element): readonly HtmlFile[] {
+  return CHOSEN.get(el) ?? NO_FILES;
+}
+
+/** Give a file input what was chosen, none to leave it empty. */
+export function chooseFiles(el: Element, files: readonly HtmlFile[]): void {
+  if (files.length) CHOSEN.set(el, files);
+  else CHOSEN.delete(el);
+}
+
 export class FormState {
   private _selections = new WeakMap<Element, FieldSelection>();
   /** The fields the user typed in since they took the focus, which their
@@ -1281,6 +1354,7 @@ export class FormState {
     let changed = false;
     for (const el of controlsOf(form)) {
       changed = TYPED.delete(el) || changed;
+      changed = CHOSEN.delete(el) || changed;
       changed = setUserValidity(el, false) || changed;
       SET_BY_SCRIPT.delete(el);
       this._edited.delete(el);
@@ -1386,7 +1460,7 @@ function controlIndex(root: AnyNode): ControlIndex {
   let byId: Map<string, Element> | null = null;
   for (const el of elementsIn(root, NON_RENDERED)) {
     if (tagOf(el) === 'form') forms.push(el);
-    if (!SUBMITTABLE.has(tagOf(el)) && !FORM_ASSOCIATED.has(el)) continue;
+    if (!isSubmittable(el) && !FORM_ASSOCIATED.has(el)) continue;
     if (inert(el)) continue;
     if (attr(el, 'form') !== undefined && !byId) {
       byId = new Map();

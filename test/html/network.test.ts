@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
+import { mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 import {
   mixedContent,
@@ -16,6 +20,67 @@ import {
 import { CookieJar } from '../../src/html/cookies.js';
 import type { HtmlNetworkActivity } from '../../src/html/network.js';
 import { FRAME_MS, holdClock } from '../held-clock.js';
+
+test('a body past the limit is a failed request, where it was handed on cut short', async (t) => {
+  // vscode.dev's workbench came back as its first 16 MiB, a 200 with no
+  // sign of it, and failed with `Unexpected end of input` at its last line
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/javascript' });
+    res.end('x'.repeat(req.url === '/large.js' ? 2049 : 2048));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ resourceBytes: 2048 });
+  const activity: HtmlNetworkActivity[] = [];
+  t.after(network.observe((event) => activity.push(event)));
+
+  const fits = await network.resource(`${base}/fits.js`, 'script', `${base}/`);
+  assert.equal(fits?.bytes.length, 2048, 'a body at the limit is whole');
+  assert.equal(
+    await network.resource(`${base}/large.js`, 'script', `${base}/`),
+    null,
+    'a body past it is no body at all',
+  );
+  const failed = activity.find((event) => event.type === 'failed');
+  assert.equal(failed?.type, 'failed', 'and its observers hear that it failed');
+  await assert.rejects(
+    network.request(
+      { url: `${base}/large.js`, method: 'GET', headers: [], body: null },
+      `${base}/`,
+      new AbortController().signal,
+    ),
+    { code: 'ERR_FILE_TOO_BIG' },
+    'as a page does that asks for all of it at once',
+  );
+});
+
+test('a body a page reads as it arrives has no limit, since nothing here holds it', async (t) => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end('x'.repeat(4096));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({ resourceBytes: 2048 });
+  const response = await network.request(
+    {
+      url: `${base}/events`,
+      method: 'GET',
+      headers: [],
+      body: null,
+      stream: true,
+    },
+    `${base}/`,
+    new AbortController().signal,
+  );
+  let read = 0;
+  for await (const chunk of response.chunks!) read += chunk.length;
+  assert.equal(read, 4096);
+});
 
 test('a secure page has none of its stylesheets or fonts over an insecure connection, and its images over a secure one', () => {
   // W3C Mixed Content: a stylesheet or a font is blockable, an image is
@@ -633,6 +698,108 @@ test('a body that keeps arriving is read to its end however long it takes, and o
   const stalled = await network.document(`${origin}/stalls.css`, signal);
   await assert.rejects(readText(stalled.body), 'a stalled document');
   await serving;
+});
+
+test('a response a host holds does not stall while nobody reads it, and may once it is read', async (t) => {
+  const limit = holdClock(t, stallClock);
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream' });
+    res.write('some');
+    // and the rest once a test says
+    server.once('request-end', () => res.end(' more'));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    timeout: 3 * FRAME_MS,
+  });
+  const signal = new AbortController().signal;
+
+  // held: a dialog open for ten limits costs it nothing
+  const held = await network.document(`${origin}/held`, signal);
+  held.hold?.();
+  for (let frame = 0; frame < 30; frame += 1) await limit.frame();
+  assert.equal(signal.aborted, false);
+  const reader = held.whole![Symbol.asyncIterator]();
+  const first = await reader.next();
+  assert.equal(new TextDecoder().decode(first.value), 'some');
+  server.emit('request-end');
+  let rest = '';
+  for (let next = await reader.next(); !next.done; next = await reader.next()) {
+    rest += new TextDecoder().decode(next.value);
+  }
+  assert.equal(rest, ' more');
+
+  // not held: the same wait is a response that stalled
+  const left = await network.document(`${origin}/left`, signal);
+  for (let frame = 0; frame < 4; frame += 1) await limit.frame();
+  await assert.rejects(readText(left.whole!), 'nobody read it, nobody held it');
+
+  // and the clock runs again as it is read
+  const stops = await network.document(`${origin}/stops`, signal);
+  stops.hold?.();
+  const stopping = stops.whole![Symbol.asyncIterator]();
+  await stopping.next();
+  const refused = assert.rejects(
+    stopping.next(),
+    'a read that nothing answers is a stall again',
+  );
+  for (let frame = 0; frame < 4; frame += 1) await limit.frame();
+  await refused;
+});
+
+test('a local file says what it is, and is read only as it is asked for', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'network-files-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = (name: string) => pathToFileURL(join(dir, name)).href;
+  const signal = new AbortController().signal;
+  const network = new HtmlNetwork({ connectTimeout: null });
+  for (const [name, type] of [
+    ['a.pdf', 'application/pdf'],
+    ['a.json', 'application/json'],
+    ['a.xml', 'application/xml'],
+    ['a.mp4', 'video/mp4'],
+    ['a.webm', 'video/webm'],
+    ['a.mp3', 'audio/mpeg'],
+    ['a.m4a', 'audio/mp4'],
+    ['a.flac', 'audio/flac'],
+    ['a.ogg', 'audio/ogg'],
+    ['a.txt', 'text/plain'],
+    ['a.bin', 'application/octet-stream'],
+  ]) {
+    await writeFile(join(dir, name), 'x');
+    const shown = await network.document(file(name), signal);
+    assert.equal(shown.type, type, name);
+    assert.equal(await readText(shown.body), 'x', name);
+  }
+  // 33 MB of nothing, past a document's limit: known at once, and refused
+  // only by what would hold it
+  const big = join(dir, 'big.mp4');
+  await writeFile(big, '');
+  await truncate(big, 33 * 1024 * 1024);
+  const video = await network.document(file('big.mp4'), signal);
+  assert.equal(video.size, 33 * 1024 * 1024);
+  await assert.rejects(readText(video.body), { code: 'ERR_FILE_TOO_BIG' });
+  let saved = 0;
+  const again = await network.document(file('big.mp4'), signal);
+  for await (const chunk of again.whole!) saved += chunk.length;
+  assert.equal(saved, 33 * 1024 * 1024);
+});
+
+test('what is no file is opened as none', async () => {
+  const signal = new AbortController().signal;
+  await assert.rejects(
+    new HtmlNetwork({ connectTimeout: null }).document(
+      'file:///dev/zero',
+      signal,
+    ),
+    { code: 'ERR_FILE' },
+  );
 });
 
 test('a redirect followed by the network: a loop ends, and a POST’s 302 is a GET', async (t) => {
