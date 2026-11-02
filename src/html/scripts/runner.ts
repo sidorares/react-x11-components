@@ -45,17 +45,35 @@ import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import { ScriptEngine } from './engine.js';
-import { DomHost } from './host.js';
+import { DomHost, wholeBytes } from './host.js';
 import { PageWorkers } from './workers.js';
-import type { HostSeams } from './host.js';
+import { registryOf } from './sw-registry.js';
+import type { ServiceClient } from './sw-registry.js';
+import type { HtmlServiceWorkers } from '../service-workers.js';
+import type {
+  FetchRequest,
+  FetchResponse,
+  FramePost,
+  HostSeams,
+  WorkerInit,
+} from './host.js';
+import type { Popup } from './popups.js';
 import { liveSession } from './session.js';
+import { slotFor, windowOps } from './popups.js';
+import type { WindowSlot } from './popups.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
-import type { ClearTimeout, SetTimeout, UrlClass } from './platform.js';
+import type {
+  AbortSignalLike,
+  ClearTimeout,
+  SetTimeout,
+  UrlClass,
+} from './platform.js';
 
 declare const setTimeout: SetTimeout;
 declare const clearTimeout: ClearTimeout;
 declare const queueMicrotask: (fn: () => void) => void;
 declare const URL: UrlClass;
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** A frame of the page's clock, which `scroll` is told at most once in. */
 const FRAME_MS = 16;
@@ -70,7 +88,12 @@ export const SCRIPT_TIMEOUT_MS = 2000;
 /** What the page around a document gives its scripts. */
 declare const Buffer: { from(text: string, encoding: 'base64'): Uint8Array };
 
-export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
+export interface ScriptsOptions extends Omit<
+  HostSeams,
+  'handle' | 'adopt' | 'serviceWorkers'
+> {
+  /** What keeps the page's service workers; `true` for one of its own. */
+  serviceWorkers?: boolean | HtmlServiceWorkers | null;
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
    *  module's an import names, with none. */
@@ -108,7 +131,8 @@ export interface PageSwap {
 
 /** What a runner is made with: the options, the handle, and where the
  *  sheets the page adopts go. */
-export type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
+export type RunnerSeams = Omit<ScriptsOptions, 'serviceWorkers'> &
+  Pick<HostSeams, 'handle' | 'adopt' | 'serviceWorkers'>;
 
 interface Queued {
   request: ScriptRequest;
@@ -130,6 +154,13 @@ interface InOrder {
 export interface FrameLink {
   parent: ScriptRunner;
   frame: Element;
+}
+
+/** What a view of a document it did not make binds to: a frame's page, or
+ *  the window whose first document it draws (`Popup`). */
+export interface ViewLink {
+  parent: Pick<ScriptRunner, 'bindFrame' | 'releaseFrame' | 'serviceKeeper'>;
+  frame: Element | null;
 }
 
 /**
@@ -170,6 +201,9 @@ export class ScriptRunner {
   private _elementScrollOwed: ReturnType<typeof setTimeout> | null = null;
   /** The runners of the frames' documents in this one (`FrameSeat`). */
   private _seats = new Map<Document, FrameSeat>();
+  /** The window this document is shown in, where it has one of a group
+   *  (`./popups.ts`). */
+  slot: WindowSlot | null = null;
   private _seatsWatched: (() => void) | null = null;
   private _viewListeners = new Set<() => void>();
   private _viewsTold = false;
@@ -192,8 +226,28 @@ export class ScriptRunner {
      *  what its realm reads as it starts (`./session.ts`). */
     arrival: SessionArrival | null = null,
   ) {
-    this.host = new DomHost(document, _options, url, _link?.parent.host.shared);
+    // the window a document of a group comes into, which is its tab's or
+    // its popup's: a host's `session` is what a tab's documents share, and
+    // a frame's its element (`windowKey`)
+    const popup = _options.popup as Popup | null | undefined;
+    const slot = popup?.slot ?? slotFor(this.windowKey);
+    this.host = new DomHost(
+      document,
+      _options,
+      url,
+      _link?.parent.host.shared ?? slot?.group.shared,
+      _link?.parent.host.top,
+    );
     this.host.arrival = arrival;
+    // before its realm is made, which asks what context it is as it starts
+    if (popup && url === 'about:blank') this.host.creator = popup.creator;
+    // the host's to know, and never the facade's: it decides what a realm is
+    // handed, and what is refused it
+    const foreign =
+      !!_link &&
+      url !== 'about:blank' &&
+      (originOf(url) === 'null' || originOf(url) !== _link.parent.host.origin);
+    this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
@@ -237,7 +291,15 @@ export class ScriptRunner {
       _options.workers === false
         ? null
         : new PageWorkers({
-            fetch: (request, signal) => this._options.fetch(request, signal),
+            fetch: (request, signal, id) =>
+              this._workerFetch(request, signal, id),
+            caches: (origin, ask) =>
+              Promise.resolve(this.host.askCaches(origin, ask)),
+            started: (id, init) => this._workerClient(id, init),
+            exited: (id) => {
+              this._workerClients.get(id)?.detach();
+              this._workerClients.delete(id);
+            },
             get webTransport() {
               return _options.webTransport;
             },
@@ -269,15 +331,209 @@ export class ScriptRunner {
               ]),
           });
     this.host.workers = this._workers;
-    if (_link) {
-      _link.parent.engine.link(
-        this.engine,
-        this._frameId(),
-        // `about:blank` is the origin of the document that opened it
-        url !== 'about:blank' &&
-          originOf(url) !== originOf(_link.parent.host.url),
-      );
+    this._windows = windowOps(
+      this,
+      (blank, address, seams) => new ScriptRunner(blank, address, seams),
+    );
+    this.host.windows = this._windows;
+    slot?.adopt(this);
+    // a window goes by the name it was opened under, and a frame's by its
+    // element's, whichever document it shows
+    const name = _link
+      ? _link.frame.attribs.name
+      : !slot && _options.windowName;
+    if (name) {
+      this.engine.call('__windowNamed', [name]);
+      this._windows.named(name);
     }
+    this._attachService();
+    if (_link) {
+      _link.parent.engine.link(this.engine, this._frameId(), foreign);
+    }
+  }
+
+  private readonly _windows: ReturnType<typeof windowOps>;
+
+  /** What the documents of this one's window share, which its slot is found
+   *  again by: a frame's element, the host's session, or what `<Html>` lent
+   *  it, the same for every document one `<Html>` shows. */
+  get windowKey(): object {
+    return this._link?.frame ?? this._options.session ?? this._options;
+  }
+
+  /** What this document was made with. */
+  get seams(): RunnerSeams {
+    return this._options;
+  }
+
+  /** The frame's element, where this document is a frame's. */
+  get frame(): Element | null {
+    return this._link?.frame ?? null;
+  }
+
+  /** The realm this document's frame is in, and its frame's id there. */
+  get parentRealm(): { runner: ScriptRunner; from: number } | null {
+    return this._link
+      ? { runner: this._link.parent, from: this._frameId() }
+      : null;
+  }
+
+  /** The realm of a frame of this document, by its id here. */
+  frameRealm(id: number): ScriptRunner | null {
+    const document = this.host.frameDocumentAt(id);
+    return (document && this._seats.get(document)?.runner) ?? null;
+  }
+
+  /**
+   * A link or a form asks for a target no frame has: a window of the group
+   * that goes by it, or a new one with this one its opener. False where it is
+   * none of the group's: a tab, the host's to open.
+   */
+  followTarget(
+    url: string,
+    target: string,
+    noopener: boolean,
+    noreferrer: boolean,
+    post: FramePost | null,
+  ): boolean {
+    if (this._disposed) return false;
+    return this._windows.follow(url, target, noopener, noreferrer, post);
+  }
+
+  /** A page closed the window it is in, which is the host's: one created by
+   *  a script, or with nothing to go back to, may be (HTML 7.2.2.3). Answers
+   *  whether it is closing. */
+  closeTab(): boolean {
+    if (this._link) return false;
+    const alone = (this._options.session?.entries.length ?? 1) <= 1;
+    return this._options.close?.(alone) === true;
+  }
+
+  /** What keeps this page's service workers, where it has any. */
+  get serviceKeeper(): HtmlServiceWorkers | null {
+    return this._options.serviceWorkers ?? null;
+  }
+
+  /** What a service worker tells this document, told a task later and in
+   *  order: it may be told from inside one of the page's ops. */
+  private _told: string[] = [];
+
+  /**
+   * This document as a service worker's client (Service Workers 1, 2.2): a
+   * secure context's alone, and a local document's where its parent is one.
+   */
+  private _attachService(): void {
+    const keeper = this.serviceKeeper;
+    if (!keeper || !this.host.secure) return;
+    const popup = this._options.popup as Popup | null | undefined;
+    // a window's `about:blank` is its opener's client, as a frame's is its
+    // parent's: the document of no address that the opener made
+    const parent =
+      this._link?.parent.host.serviceClient ?? popup?.creatorClient ?? null;
+    if (!/^https?:/i.test(this.host.url) && !parent) return;
+    const options = this._options;
+    this.host.serviceClient = registryOf(keeper).attach(
+      {
+        url: () => this.host.url,
+        origin: () => this.host.origin,
+        type: 'window',
+        frameType: () =>
+          this._link ? 'nested' : popup ? 'auxiliary' : 'top-level',
+        // a window has the focus here, and a frame where the page gave it
+        focused: () =>
+          this._link
+            ? this._link.parent.host.focusedFrame === this._link.frame
+            : !this.engine.frozen && !this._disposed,
+        visibility: () => (this.engine.frozen ? 'hidden' : 'visible'),
+        frozen: () => this.engine.frozen,
+        tell: (text) => {
+          this._told.push(text);
+          if (this._told.length === 1) this._tellNext();
+        },
+        fetch: (request, signal) => options.fetch(request, signal),
+        navigate: (url, how) => options.navigate(url, how),
+        workerSeams: () => ({
+          webTransport: options.webTransport,
+          webSocket: options.webSocket,
+          notifications: options.notifications,
+          permissions: () => this.host.permissionStates(),
+          log: (level, text) => options.log(level, text),
+          userAgent: options.userAgent,
+          language: options.language,
+          keySecrets: this.host.keySecretsOf(),
+        }),
+        caches: (origin, ask) => this.host.askCaches(origin, ask),
+      },
+      parent,
+    );
+  }
+
+  /** This document's workers, as a service worker's clients. */
+  private _workerClients = new Map<number, ServiceClient>();
+
+  /** A worker of this document is a client of a service worker too: one its
+   *  `clients` lists, whose requests it hears. It has no `navigator` to tell
+   *  anything of it, and hears nothing. */
+  private _workerClient(id: number, init: WorkerInit): void {
+    const page = this.host.serviceClient;
+    if (!page || init.service) return;
+    const seams = page.seams;
+    this._workerClients.set(
+      id,
+      registryOf(this.serviceKeeper!).attach(
+        {
+          ...seams,
+          url: () => init.url,
+          type: init.shared ? 'sharedworker' : 'worker',
+          frameType: () => 'none',
+          tell() {},
+        },
+        page,
+      ),
+    );
+  }
+
+  /** A task for each thing told, as a browser queues them: a page's
+   *  reaction to one runs before the next, and sets up what hears it. */
+  private _tellNext(): void {
+    setTimeout(() => {
+      const said = this._told[0];
+      if (said !== undefined && !this._disposed) {
+        this.engine.call('__sw', [said]);
+      }
+      this._told.shift();
+      if (this._told.length) this._tellNext();
+    }, 0);
+  }
+
+  /** What a worker of this document asks for: its controller's first, as the
+   *  document's own requests are. */
+  private async _workerFetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+    id: number | undefined,
+  ): Promise<FetchResponse> {
+    const client =
+      (id === undefined ? null : this._workerClients.get(id)) ??
+      this.host.serviceClient;
+    if (client?.controlled && /^https?:/i.test(request.url)) {
+      const answered = await client.fetch(
+        { ...request, mode: 'cors', destination: '' },
+        signal,
+      );
+      if (answered) {
+        // whole, with its text: what a worker's script is read from
+        const bytes = await wholeBytes(answered);
+        return {
+          ...answered,
+          url: answered.url || request.url,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
+    return this._options.fetch(request, signal);
   }
 
   /**
@@ -731,6 +987,9 @@ export class ScriptRunner {
   salvageable(): boolean {
     if (this._disposed || this._ready !== 'complete') return false;
     if (this.host.connected) return false;
+    // a window another reaches stays where it can be reached, as Chrome
+    // keeps such a page out of its cache
+    if ((this.slot?.group.slots.size ?? 0) > 1) return false;
     for (const seat of this._seats.values()) {
       if (!seat.runner.salvageable()) return false;
     }
@@ -810,8 +1069,9 @@ export class ScriptRunner {
    * hidden already, and is told nothing more: it goes as it is (HTML,
    * "destroy a document").
    */
-  dispose(swap: PageSwap | null = null): void {
+  dispose(swap: PageSwap | null = null, quiet = false): void {
     if (this._disposed) return;
+    this.slot?.left(this);
     this._unlive?.();
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
     if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
@@ -821,7 +1081,7 @@ export class ScriptRunner {
     this._seats.clear();
     this._seatsWatched?.();
     this.host.leaving();
-    if (!this.engine.frozen) {
+    if (!this.engine.frozen && !quiet) {
       this.engine.call('__unload', swap ? [swap] : null);
     }
     this._workers?.dispose();

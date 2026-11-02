@@ -92,6 +92,9 @@ parts.
   are eligible, how an animated transform stops re-rasterizing its subtree
   (a retained sprite, a translate fast path, and where an offscreen GL
   renderer does and does not help), and the sprite seam to file in core.
+- [Popups](prd-popups.md) — implemented: why a window with an opener runs in
+  its opener's process, what a window reference answers across origins,
+  `noopener` and names, blocking, and what is left out.
 - [Scripts in the browser example](prd-html-scripts.md) — investigation:
   a page's JavaScript in a hardened `node:vm` context in the tab's pane,
   with a DOM facade bridged by id to `<Html>`'s own tree. It covers what

@@ -3904,6 +3904,47 @@ closes a way out a DOM binding opens by accident:
   **anything that asks whether a node is a doctype asks `isDoctype`**, never
   `instanceof ProcessingInstruction`. **An attribute's name goes through
   `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
+- **A window with an opener is a realm in its opener's process**
+  (`scripts/popups.ts` on the host, `scripts/windows.ts` in the page,
+  `src/html/popups.ts` for the seam, docs/prd-popups.md). `window.open` answers
+  at once with a document, which no process boundary could, so a window is a
+  `WindowSlot`: a number in a group that outlives every document it shows, each
+  of which comes into it as its runner is made (`adopt`), and in each realm a
+  proxy over that number. Eight things are load-bearing. **A window's first document
+  is made inside the op** (`Popup.seams`), before any `<Html>`, with its opener's
+  seams until a view lends its own, so anything new a realm asks of its seams as
+  it starts has an answer with no view there. **What reads as a window through a
+  proxy goes through `seen`**: `popup.opener === window` needs this realm's name
+  for it, since a proxy is a realm's own. **A slot is found by what a window's
+  documents share** (`windowKey`): a host's `session`, a frame's element, so an
+  opener's next document reaches its popups; `SLOTS` is by that key, and anything
+  new that makes a top-level document goes through `ScriptRunner`'s constructor.
+  **What a page holds of a same-origin window it may hand another realm's op**, so
+  a node's id is its realm's and `idOf` asks the host to hand it across
+  (`__handOver`, `takeNode`): anything new that takes a node as an op's argument
+  goes through `idOf`, never `node._id`, or it takes another node with no error.
+  **A page's top is its host's** (`DomHost.top`): a popup
+  shares its opener's tree and is a top of its own, so anything that reads the
+  site for cookies asks its host. **A context runs its microtasks only as the
+  host enters it**, so a promise of one realm that another's task resolves waits
+  for that realm's next task: `await new Promise((go) => (popup.onload = go))`
+  has nothing else to wake it. So windows join `_drainRealms`, as same-origin
+  frames do, but only as a proxy is first read through (`windowReached`), and
+  never for being in one group: linked in pairs, a page of ninety windows ran all
+  of them after every task and timed out. **A window's `about:blank` is of what
+  made it** (`DomHost.creator`), set before its realm is made, since a realm asks
+  what context it is as it installs: anything new that goes by a document's origin
+  or its security asks the host, never its address, which says `null` and not
+  secure, and a service worker's client answers `origin` for the same reason. And
+  **a group is
+  kept out of the back-forward cache** (`salvageable`): a window another reaches
+  stays where it can be reached. A host answers `popups.open`, and shows a window
+  by mounting `<Html>`
+  with `scripts.popup` for each of its documents, the first `source=""` at
+  `about:blank`, which `useScriptedHtml` turns into the document `window.open`
+  made. **Nothing but the seam says a window may open**: no `popups`, and
+  `window.open` is null, as "Nothing is fetched, by construction" has it.
+
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since
@@ -4335,13 +4376,36 @@ closes a way out a DOM binding opens by accident:
   page may have (`_ending`), or a page that starts and ends them in a loop
   has threads without end. **Anything new that ends a thread goes through
   `end`.**
-- **Another origin's frame is linked as another origin.** Its realm and
-  the page's hand each other their globals, as same-origin frames do, and
-  the facade keeps what either reaches to what crosses origins
-  (`crossLinked`, the cross-origin `parent`): a cross-origin frame's global
-  never answers a property read from the other realm. `postMessage`'s
-  `targetOrigin` is held to the window posted to (`__origin`), which is
-  not the sender's once two origins are linked.
+- **A realm never holds another origin's global, or any object of that
+  realm.** The facade runs in the page's realm, so a page can replace all it
+  calls: `String`, `Map.prototype.get`, `WeakMap.prototype.get`. An origin
+  compared there can be made to come out the same, and what a table there keeps
+  can be read as the facade reads it, so no check in the facade, and no copy of
+  a builtin under one, keeps a global from a page. **A page has every object the
+  facade's code touches.** So the host decides, by `host.origin`:
+  `ScriptEngine.link` and `WindowSlot.adopt` hand a global only to a realm of
+  one origin (`sameOrigin`, in which an opaque origin is no other's), and two
+  of different origins have each other by a number. What crosses origins goes
+  through ops on that number: `closed`, `length`, `close`, `focus`, a `location`
+  set, and `postMessage` and a port's messages as strings (`postAcross`,
+  `realmPost`, `realmWire`), delivered by entering the other realm
+  (`__messageAcross`, `__wireAcross`). Who sent a message and whether it is
+  meant for that origin are the host's to say (`post`). Three things are
+  load-bearing. **Anything that reaches another document is refused on the host
+  by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
+  `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
+  first. A facade's check is a courtesy, for the error a page should see.
+  **What an origin is read from cannot be moved by a page**: `setLocation`
+  stays in its origin, since every check of one, storage and cookies among them,
+  reads it, and `creator` is an `about:blank` document's alone, or a popup's
+  `data:` document is its opener's origin. A frame's origin is where it landed
+  (`response.url`), not what it asked for. And **a test of this replaces what
+  the facade calls** (`STEAL` in `test/html/popups.test.ts`), beside a control
+  of one origin that finds the global by the same reach: finding nothing proves
+  nothing until the same search finds something. **Anything new that reaches
+  another realm is an op on its number, refused on the host**, and a window
+  moving between origins links or unlinks in `adopt`, so nothing keeps a global
+  past it.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
@@ -4454,20 +4518,101 @@ closes a way out a DOM binding opens by accident:
   overtakes goes at once**, and so does the one a reload makes again, or
   it comes into the session after the document that overtook it — which is
   why the browser numbers a document only as it comes in, never ahead.
-- **A page's streams are the standard's, and none of their state is the
-  page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
-  operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
-  the public object, and the promise and array methods they call are taken
-  before page code runs. So **anything new that makes or drives a stream
-  goes through `StreamsInternals`** — `readable`, `readableBytes`,
-  `writable`, `controllerOf`, `errorReadable`, `errorWritable`,
-  `writableSignal` — never through a field of the object, and a subclass
-  (WebTransport's send and receive streams) is made with `INTERNAL` and set
-  up by them. A byte stream a source closes answers a pending BYOB read
-  with `respond(0)` after `close()`, or the reader waits for ever
-  (`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
-  it after a change, through `scripts/conformance/testharness.tsx` and a
-  list.
+- **A service worker is the registry's, and a realm only holds what stands for
+  it** (`sw-registry.ts` on the host, `serviceworkers.ts` in a realm). A worker
+  outlives every document, and a navigation has to reach one with no realm there
+  to ask, so registrations, the job queue, the threads and what a `fetch` event
+  comes to are `ServiceWorkerRegistry`, one for each `HtmlServiceWorkers`, which a
+  host hands to `HtmlNetwork` and to every document alike. `HtmlServiceWorkers` is
+  light, since `<Html>` and the network reach it whether or not anything runs: a
+  navigation asks `controls`, one read of a list of scopes, and only a request
+  with a worker to go to loads the engine's chunk. A realm asks by the `sw` op and
+  is told by `__sw`, as JSON, in the order the registry tells it, so a
+  registration's attributes change before a worker's `statechange`, and a client
+  is told a task later (`_told`), since it may be told from inside one of its ops.
+  Seven things are load-bearing.
+
+- **A process has its own worker, over one store.** Each tab is a process, so
+  nothing here can hold a tab's request and ask another's thread: a registration,
+  its scripts, `caches` and IndexedDB are the profile's, a worker is a thread any
+  process starts from them, and `_sync` reads what another process changed as the
+  next request asks about the scope. So **nothing that has to outlive a thread may
+  live in a worker's realm or in the registry alone**, and `clients` is the
+  process's, which the docs say.
+- **A request goes to a worker where its client is known, before CORS.** A
+  subresource is the document's client's: `_fetchFor` for a page's `fetch`,
+  `workerResource` in the hook for what `<Html>` asks for, which waits for the
+  client where a document is controlled and its realm is not up (`controls`), or
+  a controlled page's first stylesheet goes to a network that may be off.
+  **Anything new that asks the network for a document's subresource asks its
+  client first**, and goes to the network only on an undefined. A navigation and
+  a frame's document are the scope's, whatever the requester is
+  (`navigation`, `_navigationFetch`). A worker's own requests and scripts go
+  straight to the network (`_network`), or a worker hears itself.
+- **What a worker ran it can run again with the network off.** Its main script
+  and each it imported are `Version.scripts`, kept with the registration, and a
+  thread is started from them (`_importScript`, `load` in the thread), so **a
+  script a worker's thread loads goes through `script`**, and past `installing` an
+  import it did not make is no script, as the specification has it.
+- **An opaque response stays on the host** (`_opaques`, `held`). A realm is told
+  status 0 and a number, and `respondWith` and `put` hand the number back, so a
+  site that answers a cross-origin `<img>` with `fetch(e.request)`, or caches one,
+  moves bytes no script read. **Anything new that takes a `Response` asks
+  `_held` before it asks for a body.** The held list is bounded (`OPAQUE_HELD`),
+  so a page that fetches and drops holds no more than that.
+- **A worker's dispatch ends in an entry of its own** (`__swDispatched`). A
+  browser runs microtasks as each listener returns, with the event still
+  dispatching; a context runs them as an entry ends, which is after the dispatch.
+  So `_dispatching` stays on until the next entry, or `respondWith` from a
+  microtask throws, and whether a `fetch` fell through is decided there.
+- **What a thread is told it hears as a task, and a thread keeps no process
+  alive.** `PageWorkers`' `background` unrefs a service worker's thread: it has no
+  page to answer for it, and held the process 30 seconds past its last client.
+- **A frame a worker can have for a client has a realm.** A secure page's frame of
+  its own origin has one whatever it holds (`_frameLoaded`), a script or none, a
+  page or a 404's JSON, since its `navigator` has to answer for it and a claim
+  reaches it, and `fetch` from its window has to be its own. `DomShared.realms`
+  was HTML with scripts alone, and a frame's `controller` read the page's.
+- **`_held` is a field a page can write**, so the host never believes what came
+  with it: a body held by number goes on under `OPAQUE_HEAD` whatever head the
+  realm sent (`_serviceSaid`, `_cacheOp`), and a forged number can draw an image
+  and never read one. The same goes for what a realm's `URL` said: the registry
+  holds a `register` and a post to the realm's origin itself.
+
+**A promise of one realm with a reaction of another's runs in the other's
+queue** (`_drainRealms`). `then` goes by the handler's realm, and a context's
+queue runs only as the host enters it, so `frame.contentWindow.fetch().then()`
+in a page, settled in the frame, waited for a timer of the page's to happen. Any
+entry into a realm with others in its set enters them after it, a few turns, and
+those entries never ask for that again (`_drainingRealms`). A same-origin frame
+joins the set as it is linked, and a window as a script first reaches it
+(`reached`), so anything that links realms goes through `link` or `reached`.
+
+**`caches` is a store and one function over it** (`../cache-storage.ts`,
+`caches.ts`). What a query matches, `Vary` and a batch's all-or-none are
+`askCaches`, whichever realm or thread asked, so a store only files entries by a
+URL with no query (`cacheUrlKey`) and hands over a head with no body: a cache of a
+thousand responses costs a `match` one body and a `keys()` none. A worker reaches
+it across its thread (`cachesThrough`), and the profile's is `workers.sqlite`, a
+third file for the reason the HTTP cache is a second. **Anything new a cache's
+semantics need goes in `askCaches`**, not in a store or a facade, or memory and
+the profile come apart: `test/html/cache-storage.test.ts` runs over both.
+
+**A page's streams are the standard's, and none of their state is the
+page's** (`streams.ts`, source text as `dom.ts` is). Every abstract
+operation of WHATWG Streams is there, over slots kept in a `WeakMap` by
+the public object, and the promise and array methods they call are taken
+before page code runs. So **anything new that makes or drives a stream
+goes through `StreamsInternals`** — `readable`, `readableBytes`,
+`writable`, `controllerOf`, `errorReadable`, `errorWritable`,
+`writableSignal` — never through a field of the object, and a subclass
+(WebTransport's send and receive streams) is made with `INTERNAL` and set
+up by them. A byte stream a source closes answers a pending BYOB read
+with `respond(0)` after `close()`, or the reader waits for ever
+(`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
+it after a change, through `scripts/conformance/testharness.tsx` and a
+list.
+
 - **A page's `CryptoKey` is a sealed string, and that string is the whole
   of the key** (`webcrypto.ts` in the page, `subtle.ts` on the host,
   docs/prd-webcrypto.md). The specification's split is the line between the

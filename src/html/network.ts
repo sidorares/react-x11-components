@@ -49,6 +49,7 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { CookieJar } from './cookies.js';
+import type { HtmlServiceWorkers } from './service-workers.js';
 import { downloadName } from './download.js';
 import type { HtmlDownloadRequest, HtmlDownloadSource } from './download.js';
 import {
@@ -149,6 +150,12 @@ export type HtmlTransport = (
 export interface HtmlNetworkOptions {
   /** The `User-Agent` every request carries. Default `HTML_USER_AGENT`. */
   userAgent?: string;
+  /**
+   * What keeps the service workers of the documents this network loads: a
+   * navigation the scope of one holds is that worker's to answer first. The
+   * same one goes to `<Html scripts={{ serviceWorkers }}>`. Default none.
+   */
+  serviceWorkers?: HtmlServiceWorkers;
   /** How many bytes the cache keeps in memory before it forgets the
    *  oldest. Default 256 MB. */
   cacheBytes?: number;
@@ -490,6 +497,7 @@ export class HtmlNetwork {
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
   private readonly _cookies: CookieJar | null;
+  private readonly _serviceWorkers: HtmlServiceWorkers | null;
   /** Who is told of each request (`observe`), and the last id handed out. */
   private readonly _observers = new Set<
     (activity: HtmlNetworkActivity) => void
@@ -512,6 +520,23 @@ export class HtmlNetwork {
     this._webRTC = options.webRTC !== false;
     this._webSocket = options.webSocket !== false;
     this._cookies = options.cookies ?? null;
+    this._serviceWorkers = options.serviceWorkers ?? null;
+    if (this._serviceWorkers) {
+      const network = this;
+      this._serviceWorkers.network = {
+        fetch: (scope, request, signal) =>
+          network.fetcher(scope)(request, signal),
+        get userAgent() {
+          return network.userAgent;
+        },
+      };
+    }
+  }
+
+  /** What keeps the service workers of the documents this network loads, for
+   *  `<Html scripts={{ serviceWorkers }}>`, or null for none. */
+  get serviceWorkers(): HtmlServiceWorkers | null {
+    return this._serviceWorkers;
   }
 
   /** The cookie jar this network sends and stores cookies through, and a
@@ -1286,6 +1311,12 @@ export class HtmlNetwork {
        *  same-site with anything (6265bis 5.2.2). A form's POST is started
        *  by its `from`. */
       initiator?: string | null;
+      /** Whether a service worker hears it: not where the site's scripts
+       *  are off (`false`), and not on a hard reload (`'bypass'`), which
+       *  leaves the document it brings uncontrolled. */
+      serviceWorkers?: boolean | 'bypass';
+      /** Whether a reload asked for it, which a worker reads. */
+      reload?: boolean;
     } = {},
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
@@ -1313,6 +1344,31 @@ export class HtmlNetwork {
         `The ${scheme}: scheme is not something this browser opens.`,
         'ERR_UNKNOWN_URL_SCHEME',
       );
+    }
+    const workers = this._serviceWorkers;
+    if (workers && options.serviceWorkers !== false && workers.controls(url)) {
+      if (options.serviceWorkers === 'bypass') {
+        workers.bypassing.add(url.split('#')[0]);
+      } else {
+        const answered = await workers.navigation(
+          {
+            url,
+            method: post ? 'POST' : 'GET',
+            headers: post ? [['content-type', post.contentType]] : [],
+            body: typeof post?.body === 'string' ? post.body : null,
+            ...(post && typeof post.body !== 'string'
+              ? { bytes: post.body }
+              : {}),
+            mode: 'navigate',
+            destination: 'document',
+            credentials: 'include',
+            referrer: options.initiator ?? post?.from ?? '',
+            reload: !!options.reload,
+          },
+          signal,
+        );
+        if (answered) return this._fromWorker(answered, url, signal, options);
+      }
     }
     const stall = stallTimer(this._timeout);
     const headers: Record<string, string> = {
@@ -1380,6 +1436,49 @@ export class HtmlNetwork {
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
+    };
+  }
+
+  /**
+   * A document a service worker answered with. It is at the address that was
+   * asked for, whatever URL the response was made from, which is how an
+   * application's shell answers every route of it; a redirect the worker
+   * handed back is followed as a server's is.
+   */
+  private async _fromWorker(
+    response: FetchResponse,
+    url: string,
+    signal: AbortSignalLike,
+    options: Parameters<HtmlNetwork['document']>[3],
+  ): Promise<DocumentResponse> {
+    const header = (name: string): string | null =>
+      response.headers.find(([k]) => k.toLowerCase() === name)?.[1] ?? null;
+    if (response.status >= 300 && response.status < 400) {
+      const location = header('location');
+      if (location) {
+        const moved = await this.document(
+          new URL(location, url).href,
+          signal,
+          null,
+          options,
+        );
+        return { ...moved, redirected: true };
+      }
+    }
+    const { type, charset } = contentType(header('content-type'));
+    const chunks =
+      response.chunks ??
+      once(response.bytes ?? new TextEncoder().encode(response.body ?? ''));
+    return {
+      url: response.redirected ? response.url : url,
+      redirected: response.redirected,
+      status: response.status,
+      type,
+      charset,
+      disposition: header('content-disposition'),
+      size: Number(header('content-length')) || null,
+      body: chunks,
+      whole: chunks,
     };
   }
 

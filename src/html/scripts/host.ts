@@ -173,7 +173,10 @@ import {
   isDoctype,
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
-import { navigableFor } from './target.js';
+import { linkOpener, navigableFor } from './target.js';
+import { parseWindowFeatures } from '../popups.js';
+import type { HtmlPopup, HtmlPopups } from '../popups.js';
+import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
@@ -190,6 +193,17 @@ import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
+import { askCaches } from '../cache-storage.js';
+import type {
+  HtmlCacheAnswer,
+  HtmlCacheAsk,
+  HtmlCacheStore,
+} from '../cache-storage.js';
+import type {
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkers,
+} from '../service-workers.js';
+import type { ServiceClient } from './sw-registry.js';
 import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
@@ -226,6 +240,8 @@ declare const clearInterval: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const Buffer: BufferClass;
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** A context's setting of its text as it crosses: its direction, its
  *  spacings in CSS pixels, its kerning and its capitals. */
@@ -317,10 +333,9 @@ export interface WorkerInit {
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
-  /** A service worker's (Service Workers 1), with the scope it was
-   *  registered for and the address of the page that registered it, the
-   *  one client it has. */
-  service?: { scope: string; client: string };
+  /** A service worker's (Service Workers 1): the scope it was registered
+   *  for, and how its registry knows it and its registration. */
+  service?: { scope: string; worker: unknown; registration: unknown };
 }
 
 /** Where a page's workers run (`workers.ts`): each started, posted to and
@@ -349,6 +364,8 @@ export interface WorkerScope {
   error(message: string, filename: string, line: number, column: number): void;
   /** Asks the page process of a data channel the page handed over. */
   rtc?(message: ChannelRelay): void;
+  /** What a service worker's realm says to its registry. */
+  service?(text: string, bytes?: Uint8Array): void;
 }
 
 /** A frame a browser that draws frames mounts a view for (`frames`). */
@@ -385,8 +402,12 @@ export interface FetchResponse {
    *  does — a model's reply, a stream of events, a download that trickles. */
   chunks?: AsyncIterable<Uint8Array>;
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
-   *  origin's, `cors` another's that let it, `opaque` none of it. */
-  type?: 'basic' | 'cors' | 'opaque';
+   *  origin's, `cors` another's that let it, `opaque` none of it, and
+   *  `default` what a service worker made of nothing. */
+  type?: 'basic' | 'cors' | 'opaque' | 'default';
+  /** The number an opaque response's body is held by here, which a realm
+   *  hands back to keep it or to answer with it. */
+  held?: number;
 }
 
 /** A page's request as the facade hands it over, with what decides
@@ -396,6 +417,12 @@ interface PageRequest extends FetchRequest {
   credentials: 'omit' | 'same-origin' | 'include';
   /** The headers the user agent set, of which CORS asks nothing. */
   uaHeaders?: string[];
+  /** What a worker's `fetch` event reads of it. */
+  cache?: string;
+  redirect?: 'follow' | 'error' | 'manual';
+  integrity?: string;
+  referrerPolicy?: string;
+  destination?: string;
 }
 
 /** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
@@ -678,8 +705,26 @@ export interface HostSeams {
     top: number;
   };
   scrollTo(x: number, y: number): void;
-  /** A navigation the page asked for: an address assigned, `open`. */
-  navigate(url: string, how: 'here' | 'replace' | 'tab'): void;
+  /** A navigation the page asked for: an address assigned, `open`. `post`
+   *  is the form a link's or a form's target sends it with, into a window
+   *  of the group; `name` what a tab is opened with. */
+  navigate(
+    url: string,
+    how: 'here' | 'replace' | 'tab',
+    post?: FramePost | null,
+    name?: string,
+  ): void;
+  /** What a page's `window.open` reaches (`HtmlPopups`). */
+  popups?: HtmlPopups;
+  /** The window this document is shown in, where a page opened it. */
+  popup?: HtmlPopup | null;
+  /** What the window this document is shown in goes by, where a host opened
+   *  it under a name. */
+  windowName?: string;
+  /** A page closed the window it is in, a tab of its host's: `alone` where
+   *  its history has one entry, which is what lets a page close a window no
+   *  script opened. Answers whether it closes. */
+  close?(alone: boolean): boolean | void;
   reload(): void;
   go(delta: number): void;
   /** A page that is being left asked to be confirmed first (HTML 7.4.2.4,
@@ -699,9 +744,12 @@ export interface HostSeams {
    *  fetches its source through it to know its duration and when it can
    *  play, and with none is ready as soon as it is asked. */
   network?: boolean;
-  /** Whether a page may register service workers (`HtmlScripts`'
-   *  `serviceWorkers`). */
-  serviceWorkers?: boolean;
+  /** What keeps a page's service workers (`HtmlScripts`' `serviceWorkers`).
+   *  Absent, a page has none. */
+  serviceWorkers?: HtmlServiceWorkers | null;
+  /** What a worker's `caches` ask, where its store is across a thread.
+   *  Absent, the store is `storage`'s. */
+  caches?(origin: string, ask: HtmlCacheAsk): Promise<HtmlCacheAnswer>;
   /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
    *  `webTransport`). Absent, every session fails, as with no network. */
   webTransport?: HtmlWebTransport;
@@ -743,6 +791,42 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+}
+
+/** All a page is told of an opaque response. */
+const OPAQUE_HEAD = {
+  status: 0,
+  statusText: '',
+  headers: [] as [string, string][],
+  type: 'opaque',
+  url: '',
+  redirected: false,
+};
+
+/** How many opaque responses a document holds at once (`_opaques`). */
+const OPAQUE_HELD = 64;
+
+/** A response's body, all of it, read here. */
+export async function wholeBytes(response: FetchResponse): Promise<Uint8Array> {
+  if (!response.chunks) {
+    return response.bytes ?? new TextEncoder().encode(response.body ?? '');
+  }
+  const pieces: Uint8Array[] = [];
+  for await (const piece of response.chunks) pieces.push(piece);
+  return joinBytes(pieces);
+}
+
+/** Bytes as one piece. */
+function joinBytes(pieces: Uint8Array[]): Uint8Array {
+  let size = 0;
+  for (const piece of pieces) size += piece.length;
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const piece of pieces) {
+    whole.set(piece, at);
+    at += piece.length;
+  }
+  return whole;
 }
 
 /** Bytes as lowercase hex, two digits a byte. */
@@ -1664,9 +1748,12 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
-  /** The top-level document's address: the page's, whose site is the site
-   *  for cookies of every frame in it. */
-  top: string | null = null;
+  /** The windows that can reach each other over this tree, once one has
+   *  opened another (`./popups.ts`). */
+  windows: WindowGroup | null = null;
+  /** A node one realm hands another (`handOver`), and that realm's origin:
+   *  another origin's takes nothing. */
+  handed: { node: AnyNode; origin: string } | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -1839,6 +1926,11 @@ export class DomHost {
   workers: PageWorkersLike | null = null;
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
+  /** This document as a service worker's client, where the host keeps
+   *  service workers (`ScriptRunner`). */
+  serviceClient: ServiceClient | null = null;
+  /** The frame a script last focused, which is a `WindowClient.focused`. */
+  focusedFrame: Element | null = null;
   /** Where the document is in the host's session across documents, where
    *  the host keeps one (`HtmlSessionHistory`): set before the page's
    *  realm is made, which reads it as it starts. */
@@ -1860,6 +1952,9 @@ export class DomHost {
     private readonly _seams: HostSeams,
     url: string,
     shared: DomShared = new DomShared(),
+    /** The top-level document's address: the page's, whose site is the site
+     *  for cookies of every frame in it. Its own, for a page. */
+    top: string | null = null,
   ) {
     // a fragment directive is the user agent's, and no part of the URL a
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
@@ -1888,7 +1983,7 @@ export class DomHost {
     this._unwatchPermissions =
       _seams.permissions?.watch?.((name) => this._permissionMoved(name)) ??
       null;
-    shared.top ??= this.url;
+    this.top = top ?? this.url;
     // what another document of the origin does to its storage, which this
     // one hears as a `storage` event
     this._unwatchStorage =
@@ -2073,6 +2168,35 @@ export class DomHost {
       this._dragOut = null;
     }
     return answer !== false;
+  }
+
+  /** The address of the document this one's window is at the top of. */
+  readonly top: string;
+  /** A page's windows, where the host may open any (`./popups.ts`). */
+  windows: ReturnType<typeof windowOps> | null = null;
+  /** What made this document, where it is `about:blank`: its origin and its
+   *  base are that document's (HTML 7.1.1). */
+  creator: string | null = null;
+  /** What `document.referrer` reads. */
+  referrer = '';
+  /** Whether the document around this one's frame is of another origin:
+   *  what the frame's element is, and all it reaches, is refused it. */
+  foreignParent = false;
+
+  /** This document's origin. */
+  get origin(): string {
+    return this._origin();
+  }
+
+  /** The document a frame of this document shows, by the frame's id. */
+  frameDocumentAt(id: number): Document | null {
+    const frame = this._nodes.get(id);
+    return (frame && this._frames.get(frame as Element)) ?? null;
+  }
+
+  /** A document of nothing, `about:blank`'s, for a window's first. */
+  blankDocument(): Document {
+    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -2431,6 +2555,10 @@ export class DomHost {
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
+    for (const response of this._opaques.values()) release(response);
+    this._opaques.clear();
+    this.serviceClient?.detach();
+    this.serviceClient = null;
     this.entries = null;
   }
 
@@ -4103,23 +4231,49 @@ export class DomHost {
         return doc ? this.idOf(doc) : 0;
       }
       case 'frameElement': {
-        const frame = this._frameOf.get(this._node(a) as Document);
-        return frame ? this.idOf(frame) : 0;
+        const doc = this._node(a) as Document;
+        const frame = this._frameOf.get(doc);
+        // of the document around this one, which is not this one's to reach
+        // where it is another origin's
+        if (!frame || (doc === this.document && this.foreignParent)) return 0;
+        return this.idOf(frame);
       }
-      // where a frame's document is from, another origin's as well: its
-      // window's `location`, which the page may set whoever's it is
+      // where a frame's document is from, read only of this one's origin: the
+      // page may set another origin's window's `location`, and not read it
       case 'frameLocation': {
         const frame = this._element(a);
         this._frameDocument(frame);
-        return this._frameAt.get(frame) ?? 'about:blank';
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        if (!this._sameOrigin(at)) {
+          throw new DomError(
+            'SecurityError',
+            "A frame of another origin's address is none of this document's.",
+          );
+        }
+        return at;
       }
       case 'frameNavigate':
         this.navigateFrame(this._element(a), text(b), null);
         return null;
-      // a frame's address changed by its own history, with no navigation
-      case 'setFrameLocation':
-        this._frameAt.set(this._element(a), text(b));
+      // a frame's address changed by its own history, with no navigation:
+      // never to or from another origin, since what the address says is what
+      // `frameDocument` hands a page a document by
+      case 'setFrameLocation': {
+        const frame = this._element(a);
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        const to = text(b);
+        if (
+          !this._sameOrigin(at) ||
+          !(this._sameOrigin(to) || originOf(to) === originOf(at))
+        ) {
+          throw new DomError(
+            'SecurityError',
+            "A frame's history stays in its origin.",
+          );
+        }
+        this._frameAt.set(frame, to);
         return null;
+      }
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
@@ -4884,6 +5038,7 @@ export class DomHost {
       case 'focus': {
         this.flush();
         const el = this._element(a);
+        this.focusedFrame = el.name === 'iframe' ? el : null;
         // A control just put in has no widget until the render that the
         // flush asked for, nor a link shown a stop: asked again once it
         // has, and until then the element the page has the focus on, as a
@@ -4980,7 +5135,16 @@ export class DomHost {
       case 'hasNetwork':
         return this._seams.network === true;
       case 'serviceWorkers':
-        return this._seams.serviceWorkers === true;
+        return !!this._seams.serviceWorkers;
+      // what a page's service worker objects ask of the registry, and what a
+      // worker's own realm says to it
+      case 'sw':
+        if (this.serviceClient) return this.serviceClient.heard(text(a));
+        this._serviceSaid(text(a));
+        return null;
+      case 'cache':
+        this._cacheOp(Number(a), text(b));
+        return null;
       case 'image': {
         const el = this._node(a) as Element;
         const state = this._imageDrawn(el)?.imageState?.(el);
@@ -4997,9 +5161,19 @@ export class DomHost {
         return this._seams.handle.base ?? this.url;
       case 'location':
         return this.url;
-      case 'setLocation':
-        this.url = text(a);
+      // the document's address changed by its own history. Never to another
+      // origin: this is what every check of a document's origin reads
+      case 'setLocation': {
+        const to = text(a);
+        if (originOf(to) !== originOf(this.url)) {
+          throw new DomError(
+            'SecurityError',
+            "A document's history stays in its origin.",
+          );
+        }
+        this.url = to;
         return null;
+      }
       case 'resolve':
         return this._resolve(text(a));
       case 'url':
@@ -5015,6 +5189,106 @@ export class DomHost {
       }
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
+        return null;
+      // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
+      case 'windowFeatures':
+        return JSON.stringify(parseWindowFeatures(text(a)));
+      case 'windowBase':
+        return this._seams.handle.base ?? this.creator ?? this.url;
+      case 'windowPopups':
+        return !this._seams.popups
+          ? 'none'
+          : this._seams.popups.unblocked
+            ? 'any'
+            : 'gesture';
+      case 'windowBlocked':
+        this._seams.popups?.blocked?.(text(a));
+        return null;
+      case 'windowOpen':
+        return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
+      case 'windowTab':
+        this._seams.navigate(
+          text(a),
+          'tab',
+          null,
+          /^_blank$/i.test(text(c)) ? '' : text(c),
+        );
+        return null;
+      case 'windowFind':
+        return this.windows?.find(text(a)) ?? 0;
+      case 'windowClose':
+        this.windows?.close(Number(a));
+        return null;
+      case 'windowFocus':
+        this.windows?.focus(Number(a));
+        return null;
+      case 'windowNavigate':
+        this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        return null;
+      case 'windowName':
+        this.windows?.named(text(a));
+        return null;
+      case 'windowDisown':
+        this.windows?.disown();
+        return null;
+      case 'windowReached':
+        this.windows?.reached(Number(a));
+        return null;
+      case 'windowOpener':
+        return this.windows?.openerOf(Number(a)) ?? 0;
+      case 'windowLength':
+        return this.windows?.lengthOf(Number(a)) ?? 0;
+      case 'windowFollow': {
+        const { noopener, noreferrer } = linkOpener(text(b), text(c));
+        const made = this.windows?.follow(
+          text(a),
+          text(b),
+          noopener,
+          noreferrer,
+          null,
+        );
+        return made ?? false;
+      }
+      // what a page writes into the `about:blank` a window opened with: read
+      // back as it is written, and the scripts in it run at the end
+      case 'writeWindow': {
+        const markup = text(a);
+        if (!b) this._fill(this.document, markup);
+        else if (/<script/i.test(markup)) {
+          this._replaceAll(this.document, this._htmlTree(markup, true));
+        }
+        return null;
+      }
+      case 'documentOrigin':
+        return this._origin();
+      case 'referrer':
+        return this.referrer;
+      case 'frameNamed': {
+        const frame = navigableFor(this.document, text(a));
+        return typeof frame === 'string' ? 0 : this.idOf(frame);
+      }
+      case 'handOver':
+        this._s.handed = { node: this._node(a), origin: this._origin() };
+        return null;
+      case 'takeNode': {
+        const handed = this._s.handed;
+        this._s.handed = null;
+        if (!handed) return 0;
+        if (handed.origin !== this._origin()) {
+          throw new DomError(
+            'SecurityError',
+            "A node of another origin's is none of this document's.",
+          );
+        }
+        return this.idOf(handed.node);
+      }
+      // what crosses to a realm of another origin, which this one holds
+      // nothing of (`ScriptEngine.link`)
+      case 'realmPost':
+        this.windows?.post(Number(a), text(b), text(c));
+        return null;
+      case 'realmWire':
+        this.windows?.wire(Number(a), text(b));
         return null;
       // `window.open`, to where its name says (`navigableFor`): a frame of
       // the page's, the page's own tab, or a new one
@@ -6424,20 +6698,19 @@ export class DomHost {
       }, 0);
       return;
     }
-    this._seams
-      .fetch(
-        post
-          ? {
-              url: src,
-              method: 'POST',
-              headers: [['content-type', post.contentType]],
-              ...(typeof post.body === 'string'
-                ? { body: post.body }
-                : { body: null, bytes: post.body }),
-            }
-          : { url: src, method: 'GET', headers: [], body: null },
-        new AbortController().signal,
-      )
+    this._navigationFetch(
+      post
+        ? {
+            url: src,
+            method: 'POST',
+            headers: [['content-type', post.contentType]],
+            ...(typeof post.body === 'string'
+              ? { body: post.body }
+              : { body: null, bytes: post.body }),
+          }
+        : { url: src, method: 'GET', headers: [], body: null },
+      new AbortController().signal,
+    )
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
         const type = (headerOf(response.headers, 'content-type') ?? '')
@@ -6473,8 +6746,9 @@ export class DomHost {
           );
           scripts = false;
         }
-        // another origin's scripts never run in this realm
-        if (foreign) scripts = false;
+        // another origin's scripts never run in this realm, where it was
+        // asked for or where it sent the frame
+        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
         this._frameLoaded(
           frame,
           doc,
@@ -6540,8 +6814,15 @@ export class DomHost {
     // document with none has no code to want globals of its own, and the
     // page's realm reaches into it at once, as Acid3's do into theirs,
     // where a realm would answer once React had mounted it
+    // — and where a service worker can have it for a client, which a secure
+    // page's frame of its own origin is, whether or not a scope holds it yet:
+    // its `navigator` has to answer for it, and it can be claimed
     const realm =
-      !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
+      !!this._seams.drawsFrames &&
+      ((type === 'text/html' && hasScripts(doc)) ||
+        (!!this._seams.serviceWorkers &&
+          this._secureContext() &&
+          this._sameOrigin(address)));
     if (realm) this._s.realms.add(doc);
     // the one it shows unloads first, while it is still the frame's
     this._unloadFrameDocument(frame);
@@ -7029,7 +7310,8 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.url).href;
+      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
+        .href;
     } catch {
       return url;
     }
@@ -7037,7 +7319,11 @@ export class DomHost {
 
   private _origin(): string {
     try {
-      return new URL(this.url).origin;
+      const origin = new URL(this.url).origin;
+      // `about:blank` alone is of what made it: `data:` has no origin to share
+      return this.creator && this.url.startsWith('about:')
+        ? new URL(this.creator).origin
+        : origin;
     } catch {
       return 'null';
     }
@@ -7175,12 +7461,23 @@ export class DomHost {
    *  the top of its frames, and by its own where that came over a network
    *  that is not one. A frame of no address of its own is its parent's. A
    *  worker's is its owner's. */
+  /** Whether this is a secure context, which a service worker's clients
+   *  are. */
+  get secure(): boolean {
+    return this._secureContext();
+  }
+
+  /** What opens the keys this document makes, for a worker it starts. */
+  keySecretsOf(): Uint8Array[] {
+    return keySecrets(this._keySecret());
+  }
+
   private _secureContext(): boolean {
     if (this._seams.secureContext !== undefined) {
       return this._seams.secureContext;
     }
     return (
-      trustworthy(this._s.top ?? this.url) &&
+      trustworthy(this.creator ?? this.top) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
   }
@@ -7426,8 +7723,7 @@ export class DomHost {
   private _featureAllowed(feature: string): boolean {
     const frame = this._frameOf.get(this.document);
     if (!frame) return true;
-    const top = this._s.top;
-    if (top && originOf(top) === this._origin()) return true;
+    if (originOf(this.top) === this._origin()) return true;
     return (frame.attribs.allow ?? '')
       .split(';')
       .some((entry) => entry.trim().split(/\s+/)[0] === feature);
@@ -7546,7 +7842,7 @@ export class DomHost {
     if (op === 'enabled') return !!jar;
     const averse =
       !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
-    const top = this._s.top;
+    const { top } = this;
     switch (op) {
       case 'get':
         return averse ? '' : jar.documentCookie(url, top);
@@ -7660,6 +7956,11 @@ export class DomHost {
           raw.credentials === 'omit' || raw.credentials === 'include'
             ? raw.credentials
             : 'same-origin',
+        cache: raw.cache,
+        redirect: raw.redirect,
+        integrity: raw.integrity,
+        referrerPolicy: raw.referrerPolicy,
+        destination: raw.destination,
       };
     } catch {
       return;
@@ -7840,6 +8141,15 @@ export class DomHost {
       throw new TypeError('Failed to fetch');
     }
     const own = target === page && page !== 'null';
+    // a controlled client's request goes to its worker before CORS asks
+    // anything of it (Fetch 4.3, "HTTP fetch")
+    if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
+      const answered = await this.serviceClient.fetch(
+        this._forWorker(request),
+        signal,
+      );
+      if (answered) return this._fromWorker(answered, request);
+    }
     const plain: FetchRequest = {
       url: request.url,
       method: request.method,
@@ -7880,16 +8190,7 @@ export class DomHost {
           `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
         );
       }
-      release(await this._seams.fetch(plain, signal));
-      return {
-        url: '',
-        status: 0,
-        statusText: '',
-        redirected: false,
-        headers: [],
-        body: '',
-        type: 'opaque',
-      };
+      return this._opaque(await this._seams.fetch(plain, signal));
     }
     const unsafe = unsafeRequestHeaders(
       request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
@@ -7898,6 +8199,231 @@ export class DomHost {
       await this._preflight(request, unsafe, page, signal);
     }
     return this._shared(await this._seams.fetch(plain, signal), request, page);
+  }
+
+  /**
+   * A frame's document, which the worker whose scope holds its address hears
+   * of before the network does, whatever controls this document. Its body is
+   * read here, as the network's is for a frame.
+   */
+  private async _navigationFetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+  ): Promise<FetchResponse> {
+    const keeper = this._seams.serviceWorkers;
+    if (keeper?.controls(request.url)) {
+      const answered = await keeper.navigation(
+        {
+          ...request,
+          mode: 'navigate',
+          destination: 'iframe',
+          credentials: 'include',
+          referrer: this.url,
+          clientId: this.serviceClient?.id,
+        },
+        signal,
+      );
+      if (answered) {
+        const bytes = await wholeBytes(answered);
+        return {
+          ...answered,
+          url: answered.redirected ? answered.url : request.url,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
+    const fetched = await this._seams.fetch(request, signal);
+    // the document is at the fragment it was asked for, which a response's
+    // address drops
+    const hash = request.url.indexOf('#');
+    return hash >= 0 && fetched.url && !fetched.url.includes('#')
+      ? { ...fetched, url: fetched.url + request.url.slice(hash) }
+      : fetched;
+  }
+
+  /** A request as a worker's `fetch` event reads it. */
+  private _forWorker(request: PageRequest): HtmlServiceWorkerRequest {
+    return {
+      ...request,
+      referrer: this.url,
+      destination: request.destination ?? '',
+    };
+  }
+
+  /**
+   * What a worker answered with, held to what the request may take (Fetch
+   * 4.3, "HTTP fetch", the checks on a service worker's response): an opaque
+   * answer is no answer to a request that reads it, and a redirect's trail no
+   * answer to one that does not follow.
+   */
+  private _fromWorker(
+    response: FetchResponse,
+    request: PageRequest,
+  ): FetchResponse {
+    const type = response.type ?? 'default';
+    if (
+      (type === 'opaque' && request.mode !== 'no-cors') ||
+      (type === 'cors' && request.mode === 'same-origin') ||
+      (response.redirected && request.redirect && request.redirect !== 'follow')
+    ) {
+      release(response);
+      throw new TypeError('Failed to fetch');
+    }
+    if (type === 'opaque') return this._opaque(response);
+    return {
+      ...response,
+      url: response.url || request.url.split('#')[0],
+      type:
+        type !== 'default'
+          ? type
+          : originOf(request.url) === this._origin()
+            ? 'basic'
+            : 'cors',
+    };
+  }
+
+  /** The responses a page has been told of as opaque, by the number it hands
+   *  back to keep one or to answer with it. The oldest goes past
+   *  `OPAQUE_HELD`: a page that fetches and drops holds no more than that. */
+  private _opaques = new Map<number, FetchResponse>();
+  private _opaqueSeq = 0;
+
+  /** What a page sees of a `no-cors` response another origin answered:
+   *  nothing, and a number, in a realm that can do something with it. */
+  private _opaque(response: FetchResponse): FetchResponse {
+    const hidden: FetchResponse = {
+      url: '',
+      status: 0,
+      statusText: '',
+      redirected: false,
+      headers: [],
+      body: '',
+      type: 'opaque',
+    };
+    if (!this._secureContext()) {
+      release(response);
+      return hidden;
+    }
+    const held = ++this._opaqueSeq;
+    this._opaques.set(held, response);
+    for (const [key, oldest] of this._opaques) {
+      if (this._opaques.size <= OPAQUE_HELD) break;
+      this._opaques.delete(key);
+      release(oldest);
+    }
+    return { ...hidden, held };
+  }
+
+  /** An opaque response's bytes, read the first time they are asked for and
+   *  kept for a clone's: null where it has gone. */
+  private async _opaqueBytes(held: number): Promise<Uint8Array | null> {
+    const response = this._opaques.get(held);
+    if (!response) return null;
+    if (response.chunks) {
+      const pieces: Uint8Array[] = [];
+      for await (const piece of response.chunks) pieces.push(piece);
+      response.chunks = undefined;
+      response.bytes = joinBytes(pieces);
+    }
+    return (
+      response.bytes ?? new Uint8Array(Buffer.from(response.body, 'latin1'))
+    );
+  }
+
+  /** What a service worker's realm said to its registry: a body held here
+   *  goes as bytes, which no script has read. */
+  private _serviceSaid(said: string): void {
+    const scope = this.workerScope;
+    if (!scope?.service) return;
+    const m = JSON.parse(said) as { op: string; held?: number; f?: number };
+    if (m.op !== 'respond' || m.held === undefined) {
+      scope.service(said);
+      return;
+    }
+    const { held, ...rest } = m;
+    void this._opaqueBytes(held).then((bytes) =>
+      scope.service!(
+        JSON.stringify({ ...rest, head: OPAQUE_HEAD }),
+        bytes ?? new Uint8Array(0),
+      ),
+    );
+  }
+
+  /** The store a page's `caches` are kept in. */
+  private _cacheStore(): HtmlCacheStore {
+    return (
+      this._storageOf().caches ?? (defaultStorage().caches as HtmlCacheStore)
+    );
+  }
+
+  /** What a worker's `caches` ask, in this page's store. */
+  askCaches(origin: string, ask: HtmlCacheAsk): HtmlCacheAnswer {
+    return askCaches(this._cacheStore(), origin, ask);
+  }
+
+  /** A page's `caches`: bytes made of what crossed, the store asked, and what
+   *  it answers told back through `__cache`. An opaque response's body stays
+   *  here, as it did on the way in. */
+  private _cacheOp(n: number, json: string): void {
+    const run = async (): Promise<unknown> => {
+      const origin = this._origin();
+      if (origin === 'null') return { error: 'SecurityError' };
+      const ask = JSON.parse(json) as HtmlCacheAsk;
+      if (ask.op === 'batch') {
+        for (const step of ask.operations as unknown as {
+          bytes: Uint8Array;
+          base64?: string;
+          held?: number;
+          response?: unknown;
+        }[]) {
+          if ('held' in step && step.held !== undefined) {
+            step.bytes =
+              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
+            delete step.held;
+            // what the number holds stays opaque whatever came with it:
+            // `_held` is a field a page can write, and a body it put under
+            // its own URL and a type of its own it could read back
+            step.response = OPAQUE_HEAD;
+          } else if (typeof step.base64 === 'string') {
+            step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
+            delete step.base64;
+          }
+        }
+      }
+      const answer = this._seams.caches
+        ? await this._seams.caches(origin, ask)
+        : this.askCaches(origin, ask);
+      if (!answer.responses) return answer;
+      return {
+        ...answer,
+        responses: answer.responses.map(({ bytes, ...head }) => {
+          if (head.type !== 'opaque') {
+            return { ...head, base64: base64Of(bytes) };
+          }
+          const held = ++this._opaqueSeq;
+          this._opaques.set(held, {
+            url: '',
+            status: 0,
+            statusText: '',
+            redirected: false,
+            headers: [],
+            body: '',
+            bytes,
+          });
+          return { ...head, held };
+        }),
+      };
+    };
+    const told = (answer: unknown): void => {
+      if (!this._disposed) {
+        this.entries?.call('__cache', [n, JSON.stringify(answer)]);
+      }
+    };
+    run().then(told, (error: unknown) =>
+      told({ error: 'UnknownError', message: String(error) }),
+    );
   }
 
   /** Another origin's answer, where it lets the page read it (Fetch 4.10,

@@ -64,6 +64,7 @@ import {
   useReducer,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { ReactElement } from 'react';
 import * as DomUtils from 'domutils';
@@ -98,6 +99,7 @@ import {
   CookieJar,
   Html,
   HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
   NetworkError,
   canPlayMedia,
@@ -132,6 +134,8 @@ import type {
   HtmlDownloadSource,
   HtmlDrop,
   HtmlPickFiles,
+  HtmlPopup,
+  HtmlPopups,
   HtmlScripts,
   HtmlSessionEntry,
   PostData,
@@ -150,6 +154,7 @@ import { unanswered } from './permissions.js';
 import { shortcuts } from './keys.js';
 import type { Command } from './keys.js';
 import type { TabIcon } from './favicon.js';
+import { PopupWindow, PopupWindows } from './popup-window.js';
 import { Dock, Highlight } from './devtools/dock.js';
 import { ConsoleLog, Inspection, levelOf } from './devtools/model.js';
 import { NetworkLog } from './devtools/network-log.js';
@@ -253,6 +258,13 @@ void publicSuffixList().then((list) => {
   if (list) cookies.publicSuffix = list;
 });
 
+/** The service workers of the pages this process shows, whose registrations
+ *  and scripts every tab shares through the profile, each tab running its
+ *  own thread of a worker. */
+const serviceWorkers = new HtmlServiceWorkers({
+  store: profile?.serviceWorkers ?? undefined,
+});
+
 /** One process's network: a tab's own memory, where each tab is a process,
  *  over the profile's HTTP cache, which every tab shares and the next run
  *  finds, and the profile's cookies. `BROWSER_DEBUG=1` logs every request
@@ -264,6 +276,7 @@ const network = new HtmlNetwork({
   userAgent: DEFAULT_USER_AGENT,
   cookies,
   httpCache: profile?.httpCache ?? undefined,
+  serviceWorkers,
   // on a thread of its own: a page that keeps this one busy laying itself
   // out and running its scripts holds back no download — the 2.3 MB
   // script a playground's frame on joshwcomeau.com waits for came in
@@ -428,7 +441,40 @@ export interface PageProps {
   /** One of the browser's own chords, pressed while this page had the key
    *  (`keys.ts`). */
   onCommand(command: Command): void;
+  /** The window a page opened that this page is, in a `<popup>` of the
+   *  process of the tab that opened it (`popup-window.tsx`). */
+  popup?: HtmlPopup;
+  /** And the windows of that tab, which a page in one of them adds to. */
+  windows?: PopupWindows;
 }
+
+/** The navigation number of the `about:blank` a window opened with, which no
+ *  load made. */
+const OPENED_SEQ = -1;
+
+/** The document of a window a page opened, as it opens. */
+const OPENED_DOC: Doc = {
+  source: '',
+  partial: false,
+  baseUrl: 'about:blank',
+  url: 'about:blank',
+};
+
+/** What it shows, which `<Html scripts>` made as `window.open` was called,
+ *  and which no session has: number 0 is no entry's. */
+const OPENED_VIEWS: Views = {
+  views: [
+    {
+      n: 0,
+      seq: OPENED_SEQ,
+      url: 'about:blank',
+      scripted: true,
+      zoom: 1,
+      number: 0,
+    },
+  ],
+  shown: 0,
+};
 
 /** What `<Html>` is given for one document. */
 interface Doc {
@@ -709,7 +755,13 @@ export default function Page(props: PageProps): ReactElement {
   const cocoa = useSupports('nativeControls');
   // whether a page's `<video>` is handed to the platform's player
   const plays = useSupports('mediaPlayback');
-  const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(new Map());
+  const [docs, setDocs] = useState<ReadonlyMap<number, Doc>>(
+    () => new Map(props.popup ? [[OPENED_SEQ, OPENED_DOC]] : []),
+  );
+  // the windows this tab's pages opened, drawn by the tab's: a window a popup
+  // opened outlives the popup, as it does in a browser
+  const [windows] = useState(() => props.windows ?? new PopupWindows());
+  const opened = useSyncExternalStore(windows.watch, windows.list);
   const docsNow = useRef(docs);
   docsNow.current = docs;
   // The tab's history, and which navigation's document each of its
@@ -721,10 +773,9 @@ export default function Page(props: PageProps): ReactElement {
   // takes the place of. One state, changed only by updaters: the session
   // tells of a change a microtask on, which may be before React has drawn
   // a document just added.
-  const [{ views, shown: shownN }, setViews] = useState<Views>({
-    views: [],
-    shown: 0,
-  });
+  const [{ views, shown: shownN }, setViews] = useState<Views>(
+    props.popup ? OPENED_VIEWS : { views: [], shown: 0 },
+  );
   const shown = views.find((v) => v.n === shownN) ?? null;
   const shownNow = useRef(shown);
   shownNow.current = shown;
@@ -910,6 +961,8 @@ export default function Page(props: PageProps): ReactElement {
         seq,
         url: props.loadUrl,
         fresh: props.loadFresh,
+        scripts: props.scripts,
+        reload: how === 'reload' || how === 'pageReload',
         post: props.loadPost,
         // a link or a script's navigation is the document's, whose site
         // decides which cookies go with it; the browser's own are
@@ -1507,12 +1560,25 @@ export default function Page(props: PageProps): ReactElement {
       // playlist among it, which a page with no `MediaSource` hands it
       canPlayType: (type) => (plays ? canPlayMedia(type) : ''),
       session,
-      navigate: (to, how) => {
+      navigate: (to, how, post) => {
         if (how === 'tab') return live.current.onLink(to, 'tab', null);
         // a fragment the document went to itself, which its engine has
         // written to the history already
         if (to.includes('#') && session.current?.url === to) return;
-        live.current.onLink(to, 'here', null);
+        live.current.onLink(
+          to,
+          'here',
+          post ? { ...post, from: view.url } : null,
+        );
+      },
+      // a window with an opener, drawn in this process: every one asked
+      // for, behind a press or a key, and what has none is said so
+      popups: windowsAnswer,
+      ...(props.popup && { popup: props.popup }),
+      // a page may close a tab with nothing to go back to
+      close: (alone) => {
+        if (alone) live.current.onCommand('closeTab');
+        return alone;
       },
       reload: () => {
         const current = session.current;
@@ -1540,6 +1606,9 @@ export default function Page(props: PageProps): ReactElement {
       // the profile's, where there is one, shared with every tab
       cookies,
       storage: profile?.storage,
+      // and what a page's worker answers and keeps, the navigations of its
+      // scope and what its pages ask for, as a browser's does
+      serviceWorkers,
       // a page's WebTransport sessions, over quico where it is installed
       webTransport: network.webTransport,
       // and its WebSockets, over the runtime's own, with the tab's cookies
@@ -1567,6 +1636,14 @@ export default function Page(props: PageProps): ReactElement {
           (event.altKey && /^Arrow(Left|Right)$/.test(event.key ?? '')) ||
           /^F(?:5|6|12)$/.test(event.key ?? '')),
     };
+
+  const windowsAnswer = useMemo<HtmlPopups>(
+    () => ({
+      open: windows.add,
+      blocked: () => setNotice('A pop-up window was blocked.'),
+    }),
+    [windows],
+  );
 
   // The page's menu: a link's items where the press was on one, Copy where
   // something is selected, the history, and the tools — Inspect opens them
@@ -1977,7 +2054,7 @@ export default function Page(props: PageProps): ReactElement {
     </box>
   );
 
-  return (
+  const dock = (
     <Dock
       page={pageBox}
       side={props.devtoolsDock}
@@ -2013,6 +2090,21 @@ export default function Page(props: PageProps): ReactElement {
       }
     />
   );
+  if (props.popup) return dock;
+  return (
+    <>
+      {dock}
+      {opened.map((popup) => (
+        <PopupWindow
+          key={popup.id}
+          popup={popup}
+          page={props}
+          windows={windows}
+          Page={Page}
+        />
+      ))}
+    </>
+  );
 }
 
 const withoutHash = (url: string): string => url.split('#')[0];
@@ -2043,6 +2135,11 @@ interface Navigation {
   seq: number;
   url: string;
   fresh: boolean;
+  /** Whether the site's scripts run: where they do not, neither does its
+   *  worker. */
+  scripts: boolean;
+  /** Whether a reload asked for it, which a worker reads. */
+  reload: boolean;
   post: PostData | null;
   /** The document that started it, or null for the browser. */
   initiator: string | null;
@@ -2101,6 +2198,9 @@ async function loadDocument(
   try {
     response = await network.document(target, signal, nav.post, {
       initiator: nav.initiator,
+      // a hard reload asks past a worker, and what it brings is uncontrolled
+      serviceWorkers: !nav.scripts ? false : nav.fresh ? 'bypass' : true,
+      reload: nav.reload,
     });
   } catch (error) {
     if (signal.aborted) return;

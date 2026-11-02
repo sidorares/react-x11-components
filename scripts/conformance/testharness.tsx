@@ -38,10 +38,11 @@
 // - **A window the test opens is a window** (`Tab`): `window.open`, and
 //   anything else a page sends to a new tab, loads its address in a top-level
 //   `<Html scripts>` of its own, with its own session history, laid out
-//   beside the test's window where nothing is drawn. Its navigations are its
-//   own, as the test's are; it has no opener — the test's `window.open`
-//   answers null, as one with `noopener` does — and what its harness reports
-//   is not the test's. WPT's remote contexts (`/common/dispatcher/`) open
+//   beside the test's window where nothing is drawn, at the size its features
+//   ask for. Its navigations are its own, as the test's are, and what its
+//   harness reports is not the test's. One with an opener is linked to it
+//   (`scripts.popups`), as wptrunner lets every popup through; one with
+//   `noopener` has none. WPT's remote contexts (`/common/dispatcher/`) open
 //   their pages so.
 //
 // The server's hosts are `web-platform.test` and its subdomains, which this
@@ -64,6 +65,7 @@ import type { RenderX11Result } from 'react-x11/test';
 import {
   Html,
   HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
   fakeMediaDevices,
   memoryClipboard,
@@ -76,6 +78,8 @@ import type {
   HtmlHandle,
   HtmlNotifications,
   HtmlPermissionState,
+  HtmlPopup,
+  HtmlPopups,
   HtmlProps,
   HtmlScripts,
   ResourceRequest,
@@ -93,6 +97,7 @@ const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
 const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
 const [listFile, outFile] = process.argv.slice(2);
+let lastWorkers: HtmlServiceWorkers | null = null;
 if (!listFile || !outFile) {
   console.error('usage: testharness.tsx <list> <out.jsonl>');
   process.exit(2);
@@ -322,13 +327,49 @@ function Run(props: {
   network: HtmlNetwork;
   page: Current;
 }): React.ReactElement {
-  const [opened, setOpened] = useState<{ id: number; url: string }[]>([]);
-  const open = (url: string) => {
-    if (props.page !== current) return;
-    setOpened((all) => [...all, { id: all.length + 1, url }]);
+  const [opened, setOpened] = useState<
+    { id: number; url: string; popup?: HtmlPopup; name?: string }[]
+  >([]);
+  const count = useRef(0);
+  const add = (url: string, popup?: HtmlPopup, name?: string) => {
+    count.current += 1;
+    const id = count.current;
+    setOpened((all) => [...all, { id, url, popup, name }]);
+    return id;
   };
-  const tab = (main: boolean, first: Loaded | string) =>
-    h(Tab, { first, network: props.network, page: props.page, main, open });
+  const open = (url: string, name?: string) => {
+    if (props.page !== current) return;
+    add(url, undefined, name);
+  };
+  const popups: HtmlPopups = {
+    // as wptrunner runs a browser
+    unblocked: true,
+    open(popup) {
+      if (props.page !== current) return false;
+      add(popup.url, popup);
+      return true;
+    },
+  };
+  const closed = (id: number) =>
+    setOpened((all) => all.filter((tab) => tab.id !== id));
+  const tab = (
+    main: boolean,
+    first: Loaded | string,
+    popup?: HtmlPopup,
+    close?: () => void,
+    name?: string,
+  ) =>
+    h(Tab, {
+      first,
+      network: props.network,
+      page: props.page,
+      main,
+      open,
+      popups,
+      popup,
+      close,
+      name,
+    });
   return h(
     'box',
     { style: { flexDirection: 'column', flexGrow: 1 } },
@@ -352,7 +393,7 @@ function Run(props: {
     ),
     // beside the test's window, where nothing is drawn: a window of its
     // own size, which its documents are laid out in
-    ...opened.map(({ id, url }) =>
+    ...opened.map(({ id, url, popup, name }) =>
       h(
         'box',
         {
@@ -361,8 +402,8 @@ function Run(props: {
             position: 'absolute',
             left: WIDTH * id,
             top: 0,
-            width: WIDTH,
-            height: HEIGHT,
+            width: popup?.features.width ?? WIDTH,
+            height: popup?.features.height ?? HEIGHT,
             overflow: 'scroll',
             backgroundColor: '#ffffff',
             flexDirection: 'column',
@@ -372,7 +413,7 @@ function Run(props: {
         h(
           'box',
           { style: { flexDirection: 'column', flexGrow: 1 } },
-          tab(false, url),
+          tab(false, url, popup, () => closed(id), name),
         ),
       ),
     ),
@@ -460,16 +501,34 @@ function Tab(props: {
   network: HtmlNetwork;
   page: Current;
   main: boolean;
-  open: (url: string) => void;
+  open: (url: string, name?: string) => void;
+  popups: HtmlPopups;
+  /** The window a page opened this is, with an opener. */
+  popup?: HtmlPopup;
+  /** It closed. */
+  close?: () => void;
+  /** What a tab was opened under. */
+  name?: string;
 }): React.ReactElement | null {
   const handleOf = useHtmlHandle();
-  const { network, page, main } = props;
+  const { network, page, main, popup } = props;
   if (main) handle = handleOf;
   const [session] = useState(
     () => new HtmlSessionHistory(undefined, { backForwardCache: BFCACHE }),
   );
   const [win, setWin] = useState<{ docs: WindowDoc[]; shown: number }>({
-    docs: typeof props.first === 'string' ? [] : [{ n: 0, doc: props.first }],
+    docs: popup
+      ? // the `about:blank` it opened with, which no session has
+        [
+          {
+            n: 0,
+            doc: { source: '', baseUrl: 'about:blank', charset: 'utf-8' },
+            number: 0,
+          },
+        ]
+      : typeof props.first === 'string'
+        ? []
+        : [{ n: 0, doc: props.first }],
     shown: 0,
   });
   const { docs, shown } = win;
@@ -482,9 +541,15 @@ function Tab(props: {
   /** The window's next document, loaded from `url`: `number` is the one
    *  the session will know it by where that is known before it arrives —
    *  a reload's, the current entry's; a step's, its entry's. */
-  const load = (url: string, number?: number) => {
+  const load = (
+    url: string,
+    number?: number,
+    post?: { body: string | Uint8Array; contentType: string } | null,
+  ) => {
     void network
-      .html(url)
+      .html(url, {
+        post: post ? { ...post, from: session.current?.url ?? url } : null,
+      })
       .then((doc) => {
         if (page !== current) return;
         // at the fragment it was asked for, which a fetch's answer drops
@@ -515,8 +580,13 @@ function Tab(props: {
   // a window opened at an address loads it as it opens
   const opening = useRef(typeof props.first === 'string' ? props.first : null);
   useEffect(() => {
-    if (opening.current) load(opening.current);
+    // what a window opened by a page is on its way to may have moved since
+    const to = popup ? popup.url : opening.current;
+    if (to && to !== 'about:blank') {
+      load(to, undefined, popup?.post);
+    }
     opening.current = null;
+    return popup?.onClose(() => props.close?.());
   }, []);
   useEffect(() => {
     // the first document came in before this listened
@@ -546,17 +616,27 @@ function Tab(props: {
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
       // WPT's `.any.serviceworker.html` variants register their tests' worker
-      serviceWorkers: true,
+      serviceWorkers: network.serviceWorkers ?? false,
       session,
-      navigate: (url, how) => {
+      navigate: (url, how, post, name) => {
         // a window of its own, beside this one
         if (how === 'tab') {
-          props.open(url);
+          props.open(url, name);
           return;
         }
         // a fragment the document went to itself, which its engine wrote
         if (url.includes('#') && session.current?.url === url) return;
-        load(url);
+        load(url, undefined, post);
+      },
+      popups: props.popups,
+      ...(popup && { popup }),
+      ...(props.name && { windowName: props.name }),
+      // a tab a script opened with no opener is its own to close, and the
+      // test's window is the harness's
+      close: () => {
+        if (main) return false;
+        props.close?.();
+        return true;
       },
       reload: () => {
         const entry = session.current;
@@ -660,6 +740,10 @@ function Tab(props: {
       partial: false,
       baseUrl: doc.baseUrl,
       onResource,
+      // a form aimed at a window of no name, which a script may submit
+      onSubmit: (submission) => {
+        if (/^_blank$/i.test(submission.target)) props.open(submission.url);
+      },
       scripts,
       onLoaded: () => {
         if (!main) return;
@@ -945,7 +1029,12 @@ async function render(
   source: string;
   error?: string;
 }> {
-  const network = new HtmlNetwork({ connectTimeout: 2500 });
+  // what keeps the test's service workers, as a tab's process holds them;
+  // the threads of the test before go with it
+  lastWorkers?.dispose();
+  const serviceWorkers = new HtmlServiceWorkers();
+  lastWorkers = serviceWorkers;
+  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
   const page: Current = {
     url,
     results: new Map(),
@@ -1087,7 +1176,12 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     source,
   );
   const budget = (long ? 60000 : 10000) + 6000;
-  const network = new HtmlNetwork({ connectTimeout: 2500 });
+  // what keeps the test's service workers, as a tab's process holds them;
+  // the threads of the test before go with it
+  lastWorkers?.dispose();
+  const serviceWorkers = new HtmlServiceWorkers();
+  lastWorkers = serviceWorkers;
+  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
   const url = urlFor(test);
   const page: Current = {
     url,

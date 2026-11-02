@@ -199,6 +199,13 @@ export type {
 } from './download.js';
 export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export { memoryNotifications, useHtmlNotifications } from './notifications.js';
+export { parseWindowFeatures } from './popups.js';
+export type {
+  HtmlPopup,
+  HtmlPopupFeatures,
+  HtmlPopups,
+  WindowFeatures,
+} from './popups.js';
 export type {
   HtmlNotification,
   HtmlNotificationEvents,
@@ -343,6 +350,7 @@ export {
   HtmlProfile,
   PROFILE_FILE,
   PROFILE_VERSION,
+  WORKERS_FILE,
 } from './profile.js';
 export type { HtmlProfileHttpCache, HtmlProfileOptions } from './profile.js';
 export type {
@@ -350,6 +358,24 @@ export type {
   HtmlCachedResponse,
   HtmlHttpCacheStore,
 } from './http-cache.js';
+export { HtmlServiceWorkers, memoryServiceWorkers } from './service-workers.js';
+export type {
+  HtmlServiceWorkerRecord,
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkerScript,
+  HtmlServiceWorkerStore,
+  HtmlServiceWorkerUpdateViaCache,
+  HtmlServiceWorkerVersion,
+  HtmlServiceWorkersOptions,
+} from './service-workers.js';
+export { memoryCaches } from './cache-storage.js';
+export type {
+  HtmlCacheAddition,
+  HtmlCacheEntry,
+  HtmlCacheRequest,
+  HtmlCacheResponse,
+  HtmlCacheStore,
+} from './cache-storage.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   MatchedRule as HtmlMatchedRule,
@@ -1471,228 +1497,231 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
 export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
   const nodeRef = React.useRef<HtmlViewNode | null>(null);
   const [, force] = React.useReducer((n: number) => n + 1, 0);
-  return React.useMemo(
-    (): HtmlHandle & HandleInternals & { ref: React.Ref<unknown> } => ({
-      ref: nodeRef as unknown as React.Ref<unknown>,
-      get document() {
-        return nodeRef.current?.document ?? null;
+  return React.useMemo(() => makeHtmlHandle(nodeRef, force), []);
+}
+
+/** A handle on the node `nodeRef` comes to hold, which answers nothing until
+ *  it holds one. */
+export function makeHtmlHandle(
+  nodeRef: React.RefObject<HtmlViewNode | null>,
+  force: () => void,
+): HtmlHandle & HandleInternals & { ref: React.Ref<unknown> } {
+  return {
+    ref: nodeRef as unknown as React.Ref<unknown>,
+    get document() {
+      return nodeRef.current?.document ?? null;
+    },
+    get title() {
+      return nodeRef.current?.title ?? null;
+    },
+    get base() {
+      return nodeRef.current?.documentBase ?? null;
+    },
+    refresh: (changes?: readonly HtmlChange[]) => {
+      nodeRef.current?.touchDocument(changes ?? null);
+      force();
+    },
+    elementAt: (x: number, y: number) =>
+      (nodeRef.current?.settle(), nodeRef.current?.elementAtPoint(x, y)) ??
+      null,
+    hrefAt: (x: number, y: number) =>
+      nodeRef.current?.hrefAtPoint(x, y) ?? null,
+    elementRect: (element: Element) =>
+      nodeRef.current?.elementRect(element) ?? null,
+    indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
+    offsetRect: (element: Element) =>
+      nodeRef.current?.offsetRect(element) ?? null,
+    askImage: (element) => nodeRef.current?.askImage(element),
+    imageState: (element) =>
+      nodeRef.current?.imageState(element) ?? {
+        complete: true,
+        available: false,
+        width: 0,
+        height: 0,
+        src: '',
       },
-      get title() {
-        return nodeRef.current?.title ?? null;
-      },
-      get base() {
-        return nodeRef.current?.documentBase ?? null;
-      },
-      refresh: (changes?: readonly HtmlChange[]) => {
-        nodeRef.current?.touchDocument(changes ?? null);
-        force();
-      },
-      elementAt: (x: number, y: number) =>
-        (nodeRef.current?.settle(), nodeRef.current?.elementAtPoint(x, y)) ??
-        null,
-      hrefAt: (x: number, y: number) =>
-        nodeRef.current?.hrefAtPoint(x, y) ?? null,
-      elementRect: (element: Element) =>
-        nodeRef.current?.elementRect(element) ?? null,
-      indicatedPart: () => nodeRef.current?.indicatedPart() ?? null,
-      offsetRect: (element: Element) =>
-        nodeRef.current?.offsetRect(element) ?? null,
-      askImage: (element) => nodeRef.current?.askImage(element),
-      imageState: (element) =>
-        nodeRef.current?.imageState(element) ?? {
-          complete: true,
-          available: false,
-          width: 0,
-          height: 0,
-          src: '',
-        },
-      clientBox: (element: Element) =>
-        nodeRef.current?.clientBoxOf(element) ?? null,
-      checkVisibility: (element, asks) =>
-        nodeRef.current?.checkVisibility(element, asks) ?? false,
-      drawnAtViewport: (element: Element) =>
-        nodeRef.current?.atViewport(element) ?? false,
-      scrollMoves: (scroller: Element, element: Element) =>
-        nodeRef.current?.scrollMoves(scroller, element) ?? false,
-      showClip: (element: Element, file: string | null) =>
-        nodeRef.current?.showClip(element, file),
-      geometryKey: () => nodeRef.current?.geometryKey() ?? '',
-      viewportHeld: (busy: number) =>
-        nodeRef.current?.viewportHeld(busy) ?? false,
-      intersectionsOf: (
-        elements: readonly (Element | null)[],
-        root: Element | null,
-        margin: readonly MarginLength[] | null,
-      ) => nodeRef.current?.intersectionsOf(elements, root, margin) ?? null,
-      textPointAt: (x: number, y: number) =>
-        nodeRef.current?.textPointAt(x, y) ?? null,
-      textRects: (
-        start: AnyNode,
-        startOffset: number,
-        end: AnyNode,
-        endOffset: number,
-      ) =>
-        nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
-      setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
-      setRegisteredProperties: (rules) =>
-        nodeRef.current?.setRegisteredProperties(rules),
-      snapViewport: (x, y, target, relative) =>
-        nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
-      layoutNow: () => nodeRef.current?.layoutNow(),
-      interrupted: () => nodeRef.current?.interrupted(),
-      cssAnimations: (element, subtree) =>
-        nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
-      cssTransitions: (element, subtree) =>
-        nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
-      seekTransition: (key, currentTime) =>
-        nodeRef.current?.seekTransition(key, currentTime),
-      seekAnimation: (key, currentTime, paused) =>
-        nodeRef.current?.seekAnimation(key, currentTime, paused),
-      seekScrolled: (key, mode, time, rate) =>
-        nodeRef.current?.seekScrolled(key, mode, time, rate),
-      viewAdjust: (element, vertical) =>
-        nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
-      cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
-      cssKeyframes: (element, pseudo, name) =>
-        nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
-      transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
-      transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
-      transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
-      transitionEnd: () => nodeRef.current?.transitionEnd(),
-      selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
-      selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
-      selectPoints: (points) => nodeRef.current?.selectPoints(points),
-      setCaret: (point) => nodeRef.current?.setCaret(point),
-      movedPoint: (node, offset, granularity, back) =>
-        nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
-      scrollState: (element: Element) =>
-        nodeRef.current?.scrollStateOf(element) ?? null,
-      canvasChanged: (element: Element) =>
-        nodeRef.current?.canvasChanged(element),
-      setMediaState: (element: Element, state: MediaState) =>
-        nodeRef.current?.setMediaState(element, state),
-      setScriptAnimation: (
-        element: Element,
-        id: number,
-        effect: string | null,
-        play: string | null,
-      ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
-      scriptAnimationValues: (
-        element: Element,
-        id: number,
-        properties: readonly string[],
-      ) =>
-        nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
-      scrollElementTo: (
-        element: Element,
-        to: { x?: number; y?: number },
-        relative?: boolean,
-        target?: Element | null,
-      ) =>
-        nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
-      styleWhileOwed: (element, pseudo) =>
-        nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
-      layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
-      computedStyle: (
-        element: Element,
-        pseudo?: 'before' | 'after' | HighlightPseudo | null,
-      ) => nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
-      customProperty: (
-        element: Element,
-        name: string,
-        pseudo?: 'before' | 'after' | HighlightPseudo | null,
-      ) =>
-        nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
-      matchMedia: (query: string) =>
-        nodeRef.current?.matchMedia(query) ?? false,
-      fontFaces: () => nodeRef.current?.fontFaces() ?? [],
-      matchFonts: (query, text) =>
-        nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
-      loadFonts: (keys) =>
-        nodeRef.current?.loadFonts(keys) ??
-        Promise.resolve(keys.map(() => false)),
-      fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
-      scriptFonts: () => nodeRef.current?.scriptFonts() ?? null,
-      scriptFontsChanged: (id: number, added: boolean) =>
-        nodeRef.current?.scriptFontsChanged(id, added),
-      svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
-      canvasText: () => nodeRef.current?.canvasText() ?? null,
-      foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
-      mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
-      scriptsUnblocked: (script?: Element | null) =>
-        nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
-      beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
-      evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
-      inspectValue: (id: number) => nodeRef.current?.inspectValue?.(id) ?? null,
-      releaseValues: () => nodeRef.current?.releaseValues?.(),
-      namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
-        nodeRef.current?.namesThatStyle(element, attribute) ?? [],
-      matchedRules: (element: Element) =>
-        nodeRef.current?.matchedRules(element) ?? [],
-      styleSheets: () => nodeRef.current?.styleSheets() ?? [],
-      parserWrite: (script: Element, markup: string) =>
-        nodeRef.current?.parserWrite(script, markup) ?? false,
-      parserResume: (script: Element) => nodeRef.current?.parserResume(script),
-      parserMade: () => nodeRef.current?.parserMade() ?? [],
-      controlValue: (element: Element) =>
-        nodeRef.current?.interactive?.controlValue(element) ?? null,
-      setControlValue: (element: Element, value: string | boolean) =>
-        nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
-      controlSelection: (element: Element) =>
-        nodeRef.current?.interactive?.controlSelection(element) ?? null,
-      setControlSelection: (
-        element: Element,
-        start: number,
-        end: number,
-        direction?: FieldSelection['direction'],
-      ) =>
-        nodeRef.current?.interactive?.setControlSelection(element, {
-          start,
-          end,
-          direction:
-            direction === 'forward' || direction === 'backward'
-              ? direction
-              : 'none',
-        }) ?? false,
-      showPicker: (element: Element) =>
-        nodeRef.current?.interactive?.showPicker(element) ?? false,
-      pickFiles: (element: Element) =>
-        nodeRef.current?.interactive?.pickFiles(element),
-      download: (request: HtmlDownloadRequest) =>
-        nodeRef.current?.interactive?.download(request) ?? false,
-      dragOver: (drop: HtmlDrop) =>
-        nodeRef.current?.interactive?.dragOver(drop) ?? false,
-      dragLeave: () => nodeRef.current?.interactive?.dragLeave(),
-      dropHere: (drop: HtmlDrop) =>
-        nodeRef.current?.interactive?.dropHere(drop) ?? Promise.resolve(false),
-      setFiles: (element: Element, files: readonly HtmlFile[]) =>
-        nodeRef.current?.interactive?.setFiles(element, files),
-      focus: (element: Element) =>
-        nodeRef.current?.interactive?.focus(element) ?? false,
-      toldFocus: (element: Element) =>
-        nodeRef.current?.interactive?.told(element),
-      blur: () => nodeRef.current?.interactive?.blur(),
-      get activeElement() {
-        return nodeRef.current?.interactive?.activeElement() ?? null;
-      },
-      activate: (element: Element) =>
-        nodeRef.current?.interactive?.activate(element) ?? false,
-      submitForm: (form: Element, submitter?: Element | null) =>
-        nodeRef.current?.interactive?.submit(form, submitter ?? null),
-      reportValidity: (
-        form: Element,
-        submitter?: Element | null,
-        attempt?: boolean,
-      ) =>
-        nodeRef.current?.interactive?.reportValidity(
-          form,
-          submitter ?? null,
-          attempt,
-        ) ?? true,
-      resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
-    }),
-    [],
-  );
+    clientBox: (element: Element) =>
+      nodeRef.current?.clientBoxOf(element) ?? null,
+    checkVisibility: (element, asks) =>
+      nodeRef.current?.checkVisibility(element, asks) ?? false,
+    drawnAtViewport: (element: Element) =>
+      nodeRef.current?.atViewport(element) ?? false,
+    scrollMoves: (scroller: Element, element: Element) =>
+      nodeRef.current?.scrollMoves(scroller, element) ?? false,
+    showClip: (element: Element, file: string | null) =>
+      nodeRef.current?.showClip(element, file),
+    geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+    viewportHeld: (busy: number) =>
+      nodeRef.current?.viewportHeld(busy) ?? false,
+    intersectionsOf: (
+      elements: readonly (Element | null)[],
+      root: Element | null,
+      margin: readonly MarginLength[] | null,
+    ) => nodeRef.current?.intersectionsOf(elements, root, margin) ?? null,
+    textPointAt: (x: number, y: number) =>
+      nodeRef.current?.textPointAt(x, y) ?? null,
+    textRects: (
+      start: AnyNode,
+      startOffset: number,
+      end: AnyNode,
+      endOffset: number,
+    ) => nodeRef.current?.textRects(start, startOffset, end, endOffset) ?? null,
+    setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
+    setRegisteredProperties: (rules) =>
+      nodeRef.current?.setRegisteredProperties(rules),
+    snapViewport: (x, y, target, relative) =>
+      nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
+    layoutNow: () => nodeRef.current?.layoutNow(),
+    interrupted: () => nodeRef.current?.interrupted(),
+    cssAnimations: (element, subtree) =>
+      nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
+    cssTransitions: (element, subtree) =>
+      nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
+    seekTransition: (key, currentTime) =>
+      nodeRef.current?.seekTransition(key, currentTime),
+    seekAnimation: (key, currentTime, paused) =>
+      nodeRef.current?.seekAnimation(key, currentTime, paused),
+    seekScrolled: (key, mode, time, rate) =>
+      nodeRef.current?.seekScrolled(key, mode, time, rate),
+    viewAdjust: (element, vertical) =>
+      nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
+    cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
+    cssKeyframes: (element, pseudo, name) =>
+      nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
+    transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
+    transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
+    transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
+    transitionEnd: () => nodeRef.current?.transitionEnd(),
+    selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
+    selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
+    selectPoints: (points) => nodeRef.current?.selectPoints(points),
+    setCaret: (point) => nodeRef.current?.setCaret(point),
+    movedPoint: (node, offset, granularity, back) =>
+      nodeRef.current?.movedPoint(node, offset, granularity, back) ?? null,
+    scrollState: (element: Element) =>
+      nodeRef.current?.scrollStateOf(element) ?? null,
+    canvasChanged: (element: Element) =>
+      nodeRef.current?.canvasChanged(element),
+    setMediaState: (element: Element, state: MediaState) =>
+      nodeRef.current?.setMediaState(element, state),
+    setScriptAnimation: (
+      element: Element,
+      id: number,
+      effect: string | null,
+      play: string | null,
+    ) => nodeRef.current?.setScriptAnimation(element, id, effect, play),
+    scriptAnimationValues: (
+      element: Element,
+      id: number,
+      properties: readonly string[],
+    ) =>
+      nodeRef.current?.scriptAnimationValues(element, id, properties) ?? null,
+    scrollElementTo: (
+      element: Element,
+      to: { x?: number; y?: number },
+      relative?: boolean,
+      target?: Element | null,
+    ) =>
+      nodeRef.current?.scrollElementTo(element, to, relative, target) ?? null,
+    styleWhileOwed: (element, pseudo) =>
+      nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
+    layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
+    computedStyle: (
+      element: Element,
+      pseudo?: 'before' | 'after' | HighlightPseudo | null,
+    ) => nodeRef.current?.computedStyle(element, pseudo ?? null) ?? null,
+    customProperty: (
+      element: Element,
+      name: string,
+      pseudo?: 'before' | 'after' | HighlightPseudo | null,
+    ) => nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
+    matchMedia: (query: string) => nodeRef.current?.matchMedia(query) ?? false,
+    fontFaces: () => nodeRef.current?.fontFaces() ?? [],
+    matchFonts: (query, text) =>
+      nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
+    loadFonts: (keys) =>
+      nodeRef.current?.loadFonts(keys) ??
+      Promise.resolve(keys.map(() => false)),
+    fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
+    scriptFonts: () => nodeRef.current?.scriptFonts() ?? null,
+    scriptFontsChanged: (id: number, added: boolean) =>
+      nodeRef.current?.scriptFontsChanged(id, added),
+    svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+    canvasText: () => nodeRef.current?.canvasText() ?? null,
+    foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
+    mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
+    scriptsUnblocked: (script?: Element | null) =>
+      nodeRef.current?.scriptsUnblocked(script ?? null) ?? Promise.resolve(),
+    beforeUnload: () => nodeRef.current?.unloadCheck?.() ?? true,
+    evaluate: (code: string) => nodeRef.current?.evaluate?.(code) ?? null,
+    inspectValue: (id: number) => nodeRef.current?.inspectValue?.(id) ?? null,
+    releaseValues: () => nodeRef.current?.releaseValues?.(),
+    namesThatStyle: (element: Element, attribute: 'class' | 'id') =>
+      nodeRef.current?.namesThatStyle(element, attribute) ?? [],
+    matchedRules: (element: Element) =>
+      nodeRef.current?.matchedRules(element) ?? [],
+    styleSheets: () => nodeRef.current?.styleSheets() ?? [],
+    parserWrite: (script: Element, markup: string) =>
+      nodeRef.current?.parserWrite(script, markup) ?? false,
+    parserResume: (script: Element) => nodeRef.current?.parserResume(script),
+    parserMade: () => nodeRef.current?.parserMade() ?? [],
+    controlValue: (element: Element) =>
+      nodeRef.current?.interactive?.controlValue(element) ?? null,
+    setControlValue: (element: Element, value: string | boolean) =>
+      nodeRef.current?.interactive?.setControlValue(element, value) ?? false,
+    controlSelection: (element: Element) =>
+      nodeRef.current?.interactive?.controlSelection(element) ?? null,
+    setControlSelection: (
+      element: Element,
+      start: number,
+      end: number,
+      direction?: FieldSelection['direction'],
+    ) =>
+      nodeRef.current?.interactive?.setControlSelection(element, {
+        start,
+        end,
+        direction:
+          direction === 'forward' || direction === 'backward'
+            ? direction
+            : 'none',
+      }) ?? false,
+    showPicker: (element: Element) =>
+      nodeRef.current?.interactive?.showPicker(element) ?? false,
+    pickFiles: (element: Element) =>
+      nodeRef.current?.interactive?.pickFiles(element),
+    download: (request: HtmlDownloadRequest) =>
+      nodeRef.current?.interactive?.download(request) ?? false,
+    dragOver: (drop: HtmlDrop) =>
+      nodeRef.current?.interactive?.dragOver(drop) ?? false,
+    dragLeave: () => nodeRef.current?.interactive?.dragLeave(),
+    dropHere: (drop: HtmlDrop) =>
+      nodeRef.current?.interactive?.dropHere(drop) ?? Promise.resolve(false),
+    setFiles: (element: Element, files: readonly HtmlFile[]) =>
+      nodeRef.current?.interactive?.setFiles(element, files),
+    focus: (element: Element) =>
+      nodeRef.current?.interactive?.focus(element) ?? false,
+    toldFocus: (element: Element) =>
+      nodeRef.current?.interactive?.told(element),
+    blur: () => nodeRef.current?.interactive?.blur(),
+    get activeElement() {
+      return nodeRef.current?.interactive?.activeElement() ?? null;
+    },
+    activate: (element: Element) =>
+      nodeRef.current?.interactive?.activate(element) ?? false,
+    submitForm: (form: Element, submitter?: Element | null) =>
+      nodeRef.current?.interactive?.submit(form, submitter ?? null),
+    reportValidity: (
+      form: Element,
+      submitter?: Element | null,
+      attempt?: boolean,
+    ) =>
+      nodeRef.current?.interactive?.reportValidity(
+        form,
+        submitter ?? null,
+        attempt,
+      ) ?? true,
+    resetForm: (form: Element) => nodeRef.current?.interactive?.reset(form),
+  };
 }
 
 // --- what happens to the document --------------------------------------------

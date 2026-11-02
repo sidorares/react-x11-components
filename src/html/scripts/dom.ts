@@ -46,6 +46,9 @@ import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
+import type { installWindows, WindowInternals } from './windows.js';
+import type { installServiceWorkers } from './serviceworkers.js';
+import type { installCaches } from './caches.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -85,6 +88,9 @@ export function installDom(
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
   notificationsApi: typeof installNotifications,
+  windowing: typeof installWindows,
+  serviceWorkersApi: typeof installServiceWorkers,
+  cachesApi: typeof installCaches,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -1107,7 +1113,8 @@ export function installDom(
     const own = windowMethods.get(self ?? G);
     if (own !== undefined) return own;
     if (self._listeners !== undefined) return null;
-    const proxied = windowMethods.get(self.window);
+    const proxied =
+      windowMethods.get(self.window) ?? windowMethods.get(self.__global);
     if (proxied !== undefined) return proxied;
     throw new TypeError('Illegal invocation');
   };
@@ -5032,6 +5039,13 @@ export function installDom(
   const idOf = (node: Any, what = 'parameter'): number => {
     if (!node || typeof node._id !== 'number') {
       throw new TypeError(`${what} is not of type 'Node'.`);
+    }
+    // a node of another realm of this group, whose id is that realm's: the
+    // host hands it across, as a same-origin frame's or popup's document
+    // takes a node a page made in its own (`handOver`)
+    if (!(node instanceof Node) && node.__handOver) {
+      node.__handOver();
+      return Number(call('takeNode'));
     }
     return node._id;
   };
@@ -9956,6 +9970,10 @@ export function installDom(
     'history',
     'navigation',
     'visualViewport',
+    'close',
+    'focus',
+    'blur',
+    'open',
     'scrollTo',
     'scroll',
     'scrollBy',
@@ -9976,6 +9994,15 @@ export function installDom(
       `Blocked a frame with origin "${location.origin}" from accessing a cross-origin frame.`,
       'SecurityError',
     );
+  /** The page's top-level windows (`./windows.ts`), made once what they
+   *  stand on is here. */
+  let WINDOWS: WindowInternals | null = null;
+  /** This window's origin: its address's, and `about:blank` is the origin of
+   *  what made it (HTML 7.1.1), which `location` does not say. */
+  const documentOrigin = (): string => {
+    const origin = str(G.location?.origin ?? location.origin);
+    return origin === 'null' ? str(call('documentOrigin')) : origin;
+  };
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
   const frameWindows = new WeakMap<object, Any>();
@@ -10027,6 +10054,8 @@ export function installDom(
     }
     return made;
   };
+  /** The window that sent each frame where it is, by the frame's name. */
+  const frameOpeners = new WeakMap<object, Any>();
   /** The window each frame's document was handed last, and whether that
    *  document is the frame's initial `about:blank` (`frameWindowOf`). */
   const keptFrameWindows = new WeakMap<
@@ -10097,10 +10126,9 @@ export function installDom(
       globalThis: () => proxy,
       parent: () => windowOfDocument(frame.ownerDocument) ?? proxy,
       top: () => G,
-      opener: () => null,
       frameElement: () => frame,
       document: () => current,
-      closed: () => false,
+      closed: () => !frame.isConnected,
       length: () => 0,
       innerWidth: () => size()[0],
       innerHeight: () => size()[1],
@@ -10125,6 +10153,24 @@ export function installDom(
         enumerable: false,
       });
     }
+    // what opened it, where a window of a name sent it here (HTML 7.2.2.2)
+    Object.defineProperty(win, 'opener', {
+      get: () => frameOpeners.get(frame) ?? null,
+      set(value: Any) {
+        if (value === null) frameOpeners.delete(frame);
+        else {
+          Object.defineProperty(win, 'opener', {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    WINDOWS?.bars(win, () => frame.isConnected);
     // `location` set is a navigation, as the page's is
     Object.defineProperty(win, 'location', {
       get: () => frameLocationOf(frame),
@@ -10173,6 +10219,13 @@ export function installDom(
       },
       postMessage: (message: Any, options?: Any, transfer?: Any) =>
         postTo(target, message, options, transfer),
+      // nothing of a frame's is the page's to close (HTML 7.2.2.3), and what
+      // it opens the page opens
+      close() {},
+      focus() {},
+      blur() {},
+      open: (url?: Any, target?: Any, features?: Any) =>
+        current._unloadCounter > 0 ? null : G.open(url, target, features),
       scrollTo() {},
       scroll() {},
       scrollBy() {},
@@ -10261,7 +10314,9 @@ export function installDom(
     },
     top: G,
     opener: null,
-    closed: false,
+    get closed() {
+      return !frame.isConnected;
+    },
     length: 0,
     close() {},
     focus() {},
@@ -10280,8 +10335,9 @@ export function installDom(
    * scripts write to.
    */
   const linkedFrames = new Map<number, Any>();
-  /** Where this realm is a frame's: the global of the realm it is in, the
-   *  window that stands for that here, and its frame's id there. */
+  /** Where this realm is a frame's: the global of the realm it is in, which
+   *  is null where that is another origin's, the window that stands for
+   *  that here, and its frame's id there. */
   let parentLink: { global: Any; window: Any; frame: number } | null = null;
   /** A message posted to another page realm's window (`__message`), where
    *  it is cloned and told with the window that stands for this one there:
@@ -10312,9 +10368,39 @@ export function installDom(
         }
       });
     };
+  /**
+   * A message to a realm of another origin, of which this one holds nothing
+   * but a number: `name` is 0 for this realm's parent, a frame's id here, or
+   * a window's number made negative. What it says is made a string here, as a
+   * worker's is, and the host hands that over and says who it is from, so
+   * neither its `origin` nor its `source` is this realm's to say, and holds it
+   * to the origin it is meant for, which it knows of both.
+   */
+  const postAcross =
+    (name: number) =>
+    (message: Any, options?: Any, transfer?: Any): void => {
+      const byOptions = options !== null && typeof options === 'object';
+      // an origin that is none is thrown here, as for any window
+      originAllowed(options, '');
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, undefined, {
+        across: realmAcross(name),
+        moving: transfersOf(transferListOf(byOptions ? options : transfer)),
+        later,
+      });
+      giveUp(byOptions ? options : transfer);
+      const target = byOptions
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : options;
+      call('realmPost', name, data, str(target));
+      for (const go of later) go();
+    };
   /** Another of the page's realms, as a port can be across it: `name` 0
-   *  for this realm's parent, else its frame's id here. What crosses is a
-   *  string, to that realm's `__wire`, which names this one back. */
+   *  for this realm's parent, else its frame's id here, or a window's number
+   *  made negative. What crosses is a string: to that realm's `__wire`, which
+   *  names this one back, or, of another origin, through the host. */
   const realmsAcross = new Map<number, Across>();
   const realmAcross = (name: number): Across => {
     let across = realmsAcross.get(name);
@@ -10322,8 +10408,13 @@ export function installDom(
       across = {
         key: `r${name}`,
         send: (text) => {
-          if (name === 0) parentLink?.global.__wire(parentLink.frame, text);
-          else linkedFrames.get(name)?.__wire(0, text);
+          const parent = parentLink?.global;
+          const frame = linkedFrames.get(name);
+          if (name < 0) WINDOWS?.send(-name, text);
+          else if (name === 0 && parent) {
+            parent.__wire(parentLink!.frame, text);
+          } else if (name > 0 && frame) frame.__wire(0, text);
+          else call('realmWire', name, text);
         },
       };
       realmsAcross.set(name, across);
@@ -10344,24 +10435,56 @@ export function installDom(
       return doc ? frameWindowOf(doc, frame) : null;
     };
     let cross: Any = null;
-    const across = (): Any => (cross ??= crossOriginWindow(frame, proxy));
+    proxy = windowProxy({
+      current,
+      across: () => (cross ??= crossOriginWindow(frame, proxy)),
+      post() {
+        const linked = linkedFrames.get(frame._id);
+        if (linked) return deliverInto(linked, 0, frame._id);
+        return crossLinked.has(frame._id) ? postAcross(frame._id) : null;
+      },
+      closed: () => !frame.isConnected,
+      seen: (_key, value) => value,
+      quiet: () => false,
+    });
+    frameProxies.set(frame, proxy);
+    proxiedFrames.set(proxy, frame);
+    return proxy;
+  };
+  /**
+   * A WindowProxy (HTML 7.2.3): the window `current` answers, where one of
+   * this origin's is there, and else what `across` says may be reached across
+   * origins, the rest of it a `SecurityError`. A frame's, and a window's of
+   * this one's group (`./windows.ts`).
+   */
+  const windowProxy = (spec: {
+    current(): Any;
+    across(): Any;
+    post(): Any;
+    closed(): boolean;
+    seen(key: PropertyKey, value: Any, win: Any): Any;
+    quiet(): boolean;
+  }): Any => {
+    const { current, across } = spec;
     // what a cross-origin window answers undefined to rather than throwing,
     // so that `await` and `instanceof` do not (HTML 7.2.3.3)
     const silent = (key: PropertyKey): boolean =>
+      spec.quiet() ||
       key === 'then' ||
       key === Symbol.toStringTag ||
       key === Symbol.hasInstance ||
       key === Symbol.isConcatSpreadable;
-    proxy = new Proxy(
+    const proxy: Any = new Proxy(
       {},
       {
         get(_t, key) {
-          const linked = linkedFrames.get(frame._id);
-          if (linked && key === 'postMessage') {
-            return deliverInto(linked, 0, frame._id);
+          if (key === 'postMessage') {
+            const post = spec.post();
+            if (post) return post;
           }
+          if (key === 'closed' && spec.closed()) return true;
           const win = current();
-          if (win) return Reflect.get(win, key, win);
+          if (win) return spec.seen(key, Reflect.get(win, key, win), win);
           const others = across();
           if (Object.prototype.hasOwnProperty.call(others, key)) {
             return others[key as string];
@@ -10434,8 +10557,6 @@ export function installDom(
       removeEventListener: forward('removeEventListener'),
       dispatchEvent: forward('dispatchEvent'),
     });
-    frameProxies.set(frame, proxy);
-    proxiedFrames.set(proxy, frame);
     return proxy;
   };
   /** Each frame's `location`: where its document is from, and a way to
@@ -16248,7 +16369,7 @@ export function installDom(
       location.href = v;
     }
     get referrer(): string {
-      return '';
+      return this === document ? str(call('referrer')) : '';
     }
     get domain(): string {
       return location.hostname;
@@ -16652,6 +16773,10 @@ export function installDom(
      *  the document — it is refused. */
     write(...parts: Any[]): void {
       const text = parts.map((p) => str(p)).join('');
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.write(this, text);
+        return;
+      }
       if (this !== document) {
         // a document of the page's own, a frame's among them: what is
         // written since `open` is its markup at `close`, and a write to
@@ -16676,6 +16801,10 @@ export function installDom(
       return this;
     }
     close(): void {
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.wrote(this);
+        return;
+      }
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
@@ -19112,6 +19241,9 @@ export function installDom(
      *  image, a font, which no text decoding may pass through. */
     _raw: Uint8Array | null = null;
     bodyUsed = false;
+    /** The number an opaque response's body is held by in the host, which
+     *  no script reads (`caches.ts`). */
+    _held: number | null = null;
     constructor(body: Any = null, init: Any = {}) {
       this._body = '';
       const page = init.type === undefined;
@@ -19232,11 +19364,23 @@ export function installDom(
      *  it: what the app router of Next.js reads a server's payload with. */
     get body(): Any {
       if (this._stream) return this._stream;
+      // one made with none has none (Fetch 6.5, a response's body), and an
+      // opaque one's is no script's
+      if (
+        this.type === 'opaque' ||
+        this.type === 'error' ||
+        (this.type === 'default' && this._raw === null && this._body === '')
+      ) {
+        return null;
+      }
       const response = this;
       this._made = true;
       this._stream = new ReadableStream({
         pull(controller: Any) {
-          const bytes = response._bytes();
+          // read as a reader asks, which is what makes it used
+          response.bodyUsed = true;
+          const bytes =
+            response._raw ?? new TextEncoder().encode(response._body);
           if (bytes.length) controller.enqueue(new Uint8Array(bytes));
           controller.close();
         },
@@ -19261,7 +19405,9 @@ export function installDom(
         this._stream = mine;
         return new Response(theirs, init);
       }
-      return new Response(this._raw ?? this._body, init);
+      const copy = new Response(this._raw ?? this._body, init);
+      copy._held = this._held;
+      return copy;
     }
     static error(): Any {
       return new Response(null, { status: 0, type: 'error' });
@@ -19299,6 +19445,9 @@ export function installDom(
     }
   }
 
+  /** The entries of `serviceworkers.ts` and `caches.ts`, registered with the
+   *  rest, below. */
+  const serviceEntries: [string, () => Primitive][] = [];
   // `fetch`: the request is the host's, which keeps the browser's network
   // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
@@ -19639,6 +19788,14 @@ export function installDom(
             credentials: str(
               init.credentials ?? request?.credentials ?? 'same-origin',
             ),
+            // and what a worker's `fetch` event reads of it
+            cache: str(init.cache ?? request?.cache ?? 'default'),
+            redirect: str(init.redirect ?? request?.redirect ?? 'follow'),
+            integrity: str(init.integrity ?? request?.integrity ?? ''),
+            referrerPolicy: str(
+              init.referrerPolicy ?? request?.referrerPolicy ?? '',
+            ),
+            destination: str(request?.destination ?? ''),
           }),
         );
       };
@@ -19669,11 +19826,13 @@ export function installDom(
     readonly credentials: string;
     readonly cache: string;
     readonly redirect: string;
-    readonly referrer = 'about:client';
-    readonly referrerPolicy = '';
-    readonly integrity = '';
+    readonly referrer: string = 'about:client';
+    readonly referrerPolicy: string = '';
+    readonly integrity: string = '';
     readonly keepalive: boolean;
-    readonly destination = '';
+    readonly destination: string = '';
+    readonly isReloadNavigation: boolean = false;
+    readonly isHistoryNavigation: boolean = false;
     readonly duplex = 'half';
     /** The body's bytes, or the stream it is, or neither for none. */
     _raw: Uint8Array | null = null;
@@ -19685,10 +19844,31 @@ export function installDom(
       // `duplex` among them, whose being read a page feature-detects a
       // stream body by
       const duplex = init.duplex;
-      this.url = new URL(from ? from.url : str(input), location.href).href;
+      const parsed = new URL(
+        from ? from.url : str(input),
+        str(workerLocation?.href ?? location.href),
+      );
+      if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(parsed.href)) {
+        throw new TypeError(
+          `Failed to construct 'Request': Request cannot be constructed from a URL that includes credentials: ${parsed.href}`,
+        );
+      }
+      this.url = parsed.href;
       this.method = str(init.method ?? from?.method ?? 'GET').toUpperCase();
       this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
-      this.mode = str(init.mode ?? from?.mode ?? 'cors');
+      if (init.mode === 'navigate') {
+        throw new TypeError(
+          "Failed to construct 'Request': Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.",
+        );
+      }
+      // a navigation's request, made again by a worker, is the same origin's
+      // (Fetch 6.3, the `Request` constructor's step for a `navigate` mode)
+      this.mode = str(
+        init.mode ??
+          (from?.mode === 'navigate' && Object.keys(init).length
+            ? 'same-origin'
+            : (from?.mode ?? 'cors')),
+      );
       if (this.mode === 'no-cors' && !/^(GET|HEAD|POST)$/.test(this.method)) {
         throw new TypeError(
           `Failed to construct 'Request': '${this.method}' is unsupported in no-cors mode.`,
@@ -19704,6 +19884,16 @@ export function installDom(
       this.cache = str(init.cache ?? from?.cache ?? 'default');
       this.redirect = str(init.redirect ?? from?.redirect ?? 'follow');
       this.keepalive = !!(init.keepalive ?? from?.keepalive);
+      if (from) {
+        this.destination = from.destination;
+        this.referrer = from.referrer;
+        this.referrerPolicy = from.referrerPolicy;
+        this.integrity = from.integrity;
+      }
+      if (init.referrerPolicy !== undefined) {
+        this.referrerPolicy = str(init.referrerPolicy);
+      }
+      if (init.integrity !== undefined) this.integrity = str(init.integrity);
       const given = init.body !== undefined && init.body !== null;
       if (!given && from && from.bodyUsed) {
         throw new TypeError(
@@ -21708,6 +21898,14 @@ export function installDom(
    *  where the message is told (`movePort`): its partner, or a wire's end
    *  where that is across a thread. */
   class MessagePort extends EventTarget {
+    /** One of any of the page's realms is one, since a page hands a frame's
+     *  worker a port it made itself. */
+    static override [Symbol.hasInstance](value: Any): boolean {
+      return !!value && value._isMessagePort === true;
+    }
+    get _isMessagePort(): boolean {
+      return true;
+    }
     /** What hears what this posts: its partner, or a wire's end. */
     _other: Any = null;
     _started = false;
@@ -22040,6 +22238,13 @@ export function installDom(
     'frameElement',
     'history',
     'navigation',
+    'BarProp',
+    'locationbar',
+    'menubar',
+    'personalbar',
+    'scrollbars',
+    'statusbar',
+    'toolbar',
     'localStorage',
     'sessionStorage',
     'customElements',
@@ -22287,488 +22492,142 @@ export function installDom(
     port._deliver(made.data, made.ports);
     return true;
   };
-  // --- service workers -------------------------------------------------------------
-  //
-  // Service Workers 1, where the host lets a page have them (`serviceWorkers`)
-  // and the page is a secure context: a registration a scope, and its worker
-  // a thread of its own (`workers.ts`, `service`) whose global is a
-  // `ServiceWorkerGlobalScope`. Its lifecycle is the spec's — installing
-  // once its script has run, `install`, installed, `activate`, activated —
-  // told back as messages of its own (`{ sw }`), and what it posts to the
-  // page arrives on `navigator.serviceWorker` from it. It intercepts none
-  // of the page's requests: nothing controls the page, `controller` is null.
-
-  /** The page's registrations, by scope. */
-  const swRegistrations = new Map<string, Any>();
-  /** The page's service workers, by the thread each runs in. */
-  const swWorkers = new Map<number, Any>();
-  /** `ready`'s, kept until a registration has an active worker. */
-  let swReady: { promise: Promise<Any>; resolve: (r: Any) => void } | null =
-    null;
-  class ServiceWorker extends EventTarget {
-    _id = 0;
-    _url = '';
-    _state = 'parsed';
-    _registration: Any = null;
-    /** `register()`'s promise, until the worker's script has run. */
-    _settle: { resolve(r: Any): void; reject(e: Any): void } | null = null;
-    get scriptURL(): string {
-      return this._url;
-    }
-    get state(): string {
-      return this._state;
-    }
-    postMessage(message: Any, transfer?: Any): void {
-      const later: Array<() => void> = [];
-      const data = serializeClone(message, undefined, {
-        across: threadAcross(this._id),
-        moving: transfersOf(transferListOf(transfer)),
-        later,
-      });
-      giveUp(transfer);
-      if (this._state === 'redundant') return;
-      call('workerPost', this._id, data);
-      for (const go of later) go();
-    }
-  }
   handlerProperty(FontFaceSet.prototype, 'loading');
   handlerProperty(FontFaceSet.prototype, 'loadingdone');
   handlerProperty(FontFaceSet.prototype, 'loadingerror');
-  handlerProperty(ServiceWorker.prototype, 'statechange');
-  handlerProperty(ServiceWorker.prototype, 'error');
-  class ServiceWorkerRegistration extends EventTarget {
-    _scope = '';
-    _installing: Any = null;
-    _waiting: Any = null;
-    _active: Any = null;
-    get scope(): string {
-      return this._scope;
-    }
-    get installing(): Any {
-      return this._installing;
-    }
-    get waiting(): Any {
-      return this._waiting;
-    }
-    get active(): Any {
-      return this._active;
-    }
-    get updateViaCache(): string {
-      return 'imports';
-    }
-    get navigationPreload(): Any {
-      return {
-        enable: () => Promise.resolve(),
-        disable: () => Promise.resolve(),
-        setHeaderValue: () => Promise.resolve(),
-        getState: () =>
-          Promise.resolve({ enabled: false, headerValue: 'true' }),
-      };
-    }
-    update(): Promise<Any> {
-      return Promise.resolve(this);
-    }
-    showNotification(title: Any, options?: Any): Any {
-      return NOTE.showFor(this, title, options);
-    }
-    getNotifications(filter?: Any): Any {
-      return NOTE.listFor(this, filter);
-    }
-    /** Service Workers 1, "Unregister": gone from the page's, and its
-     *  workers ended. */
-    unregister(): Promise<boolean> {
-      if (swRegistrations.get(this._scope) !== this) {
-        return Promise.resolve(false);
-      }
-      swRegistrations.delete(this._scope);
-      NOTE.forget(this);
-      for (const worker of [this._installing, this._waiting, this._active]) {
-        if (worker) swRedundant(worker);
-      }
-      return Promise.resolve(true);
-    }
-  }
-  handlerProperty(ServiceWorkerRegistration.prototype, 'updatefound');
-  for (const name of ['showNotification', 'getNotifications']) {
-    Object.defineProperty(ServiceWorkerRegistration.prototype, name, {
-      enumerable: true,
+  // --- service workers and caches ----------------------------------------------
+  //
+  // `serviceworkers.ts` and `caches.ts`: what a page holds stands for what the
+  // host keeps (`sw-registry.ts`, `../cache-storage.ts`), reached through the
+  // `sw` and `cache` ops.
+
+  /** A request as a cache keeps it and a `fetch` event hears it. */
+  const requestWire = (request: Any): Any => ({
+    url: request.url,
+    method: request.method,
+    headers: Array.from(request.headers._map.entries()),
+    mode: request.mode,
+    credentials: request.credentials,
+    cache: request.cache,
+    redirect: request.redirect,
+    referrer: request.referrer,
+    referrerPolicy: request.referrerPolicy,
+    integrity: request.integrity,
+    destination: request.destination,
+  });
+  /** A `Request` made of one, its members what they were, a `navigate` mode
+   *  among them, which no page can give one, and its headers read-only. */
+  const requestFrom = (wire: Any, signal?: Any): Any => {
+    const request: Any = new Request(wire.url, {
+      method: wire.method,
+      headers: wire.headers,
+      ...(wire.base64
+        ? { body: bytesOfBase64(wire.base64), duplex: 'half' }
+        : {}),
+      credentials: wire.credentials,
+      cache: wire.cache,
+      redirect: wire.redirect,
+      ...(signal ? { signal } : {}),
     });
-  }
-  /** A worker that will do nothing more: its thread ended, its state
-   *  `redundant`, and it is no registration's. */
-  const swRedundant = (worker: Any): void => {
-    if (worker._state === 'redundant') return;
-    call('workerEnd', worker._id);
-    swWorkers.delete(worker._id);
-    const reg = worker._registration;
-    if (reg) {
-      if (reg._installing === worker) reg._installing = null;
-      if (reg._waiting === worker) reg._waiting = null;
-      if (reg._active === worker) reg._active = null;
-    }
-    swState(worker, 'redundant');
+    request.mode = wire.mode ?? 'cors';
+    request.referrer = wire.referrer ?? '';
+    request.referrerPolicy = wire.referrerPolicy ?? '';
+    request.integrity = wire.integrity ?? '';
+    request.destination = wire.destination ?? '';
+    request.isReloadNavigation = !!wire.reload;
+    request.headers._guard = 'immutable';
+    return request;
   };
-  const swState = (worker: Any, state: string): void => {
-    worker._state = state;
-    const ev = new Event('statechange');
-    ev.isTrusted = true;
-    dispatch(worker, ev);
-  };
-  /** Where a URL's path is a scope's: the longest scope it starts with. */
-  const swMatch = (url: string): Any => {
-    let best: Any;
-    for (const [scope, reg] of swRegistrations) {
-      if (
-        url.startsWith(scope) &&
-        (!best || scope.length > best._scope.length)
-      ) {
-        best = reg;
-      }
-    }
-    return best;
-  };
-  class ServiceWorkerContainer extends EventTarget {
-    get controller(): Any {
-      return null;
-    }
-    get ready(): Promise<Any> {
-      const active = [...swRegistrations.values()].find((r) => r._active);
-      if (active) return Promise.resolve(active);
-      if (!swReady) {
-        let resolve!: (r: Any) => void;
-        const promise = new Promise<Any>((r) => (resolve = r));
-        swReady = { promise, resolve };
-      }
-      return swReady.promise;
-    }
-    /** Service Workers 1, "Start Register": the script and the scope the
-     *  page's origin's, the scope under the script's directory, and a
-     *  worker started for it — the promise kept once its script has run,
-     *  with the registration whose `installing` it is. */
-    register(url: Any, options: Any = {}): Promise<Any> {
-      let script: URL;
-      let scope: URL;
-      try {
-        script = new URL(str(url), location.href);
-        scope = new URL(
-          options?.scope === undefined ? './' : str(options.scope),
-          options?.scope === undefined ? script.href : location.href,
-        );
-      } catch {
-        return Promise.reject(
-          new TypeError(
-            "Failed to execute 'register' on 'ServiceWorkerContainer': Invalid URL",
-          ),
-        );
-      }
-      if (!/^https?:$/.test(script.protocol)) {
-        return Promise.reject(
-          new TypeError(
-            `Failed to register a ServiceWorker: The URL protocol of the script ('${script.href}') is not supported.`,
-          ),
-        );
-      }
-      if (
-        script.origin !== location.origin ||
-        scope.origin !== location.origin
-      ) {
-        return Promise.reject(
-          new DOMException(
-            `Failed to register a ServiceWorker: The origin of the provided scriptURL ('${script.origin}') does not match the current origin ('${location.origin}').`,
-            'SecurityError',
-          ),
-        );
-      }
-      const directory = script.pathname.replace(/[^/]*$/, '');
-      if (!scope.pathname.startsWith(directory)) {
-        return Promise.reject(
-          new DOMException(
-            `Failed to register a ServiceWorker: The path of the provided scope ('${scope.pathname}') is not under the max scope allowed ('${directory}').`,
-            'SecurityError',
-          ),
-        );
-      }
-      scope.hash = '';
-      const key = scope.href;
-      const had = swRegistrations.get(key);
-      const current = had?._active ?? had?._waiting ?? had?._installing;
-      if (current && current._url === script.href) {
-        return Promise.resolve(had);
-      }
-      const reg = had ?? new ServiceWorkerRegistration();
-      reg._scope = key;
-      swRegistrations.set(key, reg);
-      const worker = new ServiceWorker();
-      worker._url = script.href;
-      worker._registration = reg;
-      try {
-        worker._id = Number(
-          call(
-            'workerStart',
-            JSON.stringify({
-              url: script.href,
-              type: options?.type === 'module' ? 'module' : 'classic',
-              name: '',
-              service: { scope: key, client: location.href },
-            }),
-            null,
-          ),
-        );
-      } catch (e) {
-        if (!had) swRegistrations.delete(key);
-        return Promise.reject(e);
-      }
-      swWorkers.set(worker._id, worker);
-      return new Promise((resolve, reject) => {
-        worker._settle = { resolve, reject };
-      });
-    }
-    getRegistration(url: Any = ''): Promise<Any> {
-      return Promise.resolve(swMatch(new URL(str(url), location.href).href));
-    }
-    getRegistrations(): Promise<Any[]> {
-      return Promise.resolve([...swRegistrations.values()]);
-    }
-    startMessages(): void {}
-  }
-  handlerProperty(ServiceWorkerContainer.prototype, 'controllerchange');
-  handlerProperty(ServiceWorkerContainer.prototype, 'message');
-  handlerProperty(ServiceWorkerContainer.prototype, 'messageerror');
-  const serviceWorkerContainer = new ServiceWorkerContainer();
-  /**
-   * What a page's service worker said: a step of its lifecycle, or a
-   * message, which arrives on `navigator.serviceWorker` from it (Service
-   * Workers 1, "Client.postMessage"). False where it is none of the page's.
-   */
-  const swHeard = (id: number, text: string): boolean => {
-    const worker = swWorkers.get(id);
-    if (!worker) return false;
-    let wrapper: Any;
-    try {
-      wrapper = JSON.parse(text);
-    } catch {
-      return true;
-    }
-    const reg = worker._registration;
-    if (typeof wrapper?.sw === 'string') {
-      const state = wrapper.sw;
-      if (state === 'failed') {
-        worker._settle?.reject(
-          new TypeError(
-            `Failed to register a ServiceWorker for scope ('${reg._scope}') with script ('${worker._url}'): ServiceWorker script evaluation failed`,
-          ),
-        );
-        worker._settle = null;
-        if (swRegistrations.get(reg._scope) === reg && !reg._active) {
-          swRegistrations.delete(reg._scope);
-        }
-        swRedundant(worker);
-        return true;
-      }
-      if (state === 'installing') {
-        // the one it replaces gives way
-        const was = reg._installing;
-        if (was && was !== worker) swRedundant(was);
-        reg._installing = worker;
-        worker._state = 'installing';
-        const found = new Event('updatefound');
-        found.isTrusted = true;
-        dispatch(reg, found);
-        worker._settle?.resolve(reg);
-        worker._settle = null;
-        return true;
-      }
-      if (state === 'installed') {
-        if (reg._installing === worker) reg._installing = null;
-        const was = reg._waiting;
-        if (was && was !== worker) swRedundant(was);
-        reg._waiting = worker;
-      } else if (state === 'activating') {
-        if (reg._waiting === worker) reg._waiting = null;
-        const was = reg._active;
-        if (was && was !== worker) swRedundant(was);
-        reg._active = worker;
-      } else if (state === 'activated' && swReady) {
-        swReady.resolve(reg);
-        swReady = null;
-      } else if (state === 'redundant') {
-        swRedundant(worker);
-        return true;
-      }
-      swState(worker, state);
-      return true;
-    }
-    let made: Any;
-    try {
-      made = deserializeWith(str(wrapper?.d), threadAcross(id));
-    } catch {
-      const ev = new MessageEvent('messageerror', { source: worker });
-      ev.isTrusted = true;
-      dispatch(serviceWorkerContainer, ev);
-      return true;
-    }
-    const ev = new MessageEvent('message', {
-      data: made.data,
-      origin: location.origin,
-      source: worker,
-      ports: made.ports,
+  /** A `Response` made of what the host holds of one, which nothing changes;
+   *  an opaque one's body stays there, under the number it is held by. */
+  const responseFrom = (head: Any, bytes: Uint8Array | null): Any => {
+    const response: Any = new Response(bytes, {
+      status: head.status,
+      statusText: head.statusText,
+      headers: head.headers,
+      url: head.url,
+      redirected: head.redirected,
+      type: head.type,
+      guard: 'immutable',
     });
-    ev.isTrusted = true;
-    dispatch(serviceWorkerContainer, ev);
-    return true;
+    response._held = head.held ?? null;
+    return response;
   };
-  // a service worker's global (`__becomeWorker`): what it is installed and
-  // messaged with, and the one client it has, the page that registered it
-  /** Where this realm is a service worker's: its scope and its client's
-   *  address. */
-  let serviceRealm: { scope: string; client: string } | null = null;
-  /** Service Workers 1, 4.4: an event a worker may keep alive with
-   *  `waitUntil`, until whatever it was handed settles. */
-  class ExtendableEvent extends Event {
-    _waits: Promise<Any>[] = [];
-    _open = true;
-    waitUntil(promise: Any): void {
-      if (!this.isTrusted || !this._open) {
-        throw new DOMException(
-          "Failed to execute 'waitUntil' on 'ExtendableEvent': The event handler is already finished.",
-          'InvalidStateError',
-        );
-      }
-      this._waits.push(Promise.resolve(promise));
-    }
-  }
-  class NotificationEvent extends ExtendableEvent {
-    _init: Any;
-    constructor(type: Any, init: Any) {
-      super(type, init);
-      if (typeof init?.notification !== 'object' || !init.notification) {
-        throw new TypeError(
-          "Failed to construct 'NotificationEvent': Required member is undefined.",
-        );
-      }
-      this._init = init;
-    }
-    get notification(): Any {
-      return this._init.notification;
-    }
-    get action(): string {
-      return `${this._init.action ?? ''}`;
-    }
-  }
-  idlAttributes(NotificationEvent);
-  class ExtendableMessageEvent extends ExtendableEvent {
-    _data: Any;
-    _origin: string;
-    _lastEventId: string;
-    _source: Any;
-    _ports: readonly Any[];
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this._data = init?.data ?? null;
-      this._origin = str(init?.origin ?? '');
-      this._lastEventId = str(init?.lastEventId ?? '');
-      this._source = init?.source ?? null;
-      this._ports = Object.freeze([...(init?.ports ?? [])]);
-    }
-    get data(): Any {
-      return this._data;
-    }
-    get origin(): string {
-      return this._origin;
-    }
-    get lastEventId(): string {
-      return this._lastEventId;
-    }
-    get source(): Any {
-      return this._source;
-    }
-    get ports(): readonly Any[] {
-      return this._ports;
-    }
-  }
-  /** Service Workers 1, 4.2: the page a worker hears from, which it posts
-   *  to. */
-  class Client {
-    _url = '';
-    _id = '';
-    get url(): string {
-      return this._url;
-    }
-    get id(): string {
-      return this._id;
-    }
-    get type(): string {
-      return 'window';
-    }
-    get frameType(): string {
-      return 'top-level';
-    }
-    postMessage(message: Any, transfer?: Any): void {
-      const later: Array<() => void> = [];
-      const d = serializeClone(message, undefined, {
-        across: UP,
-        moving: transfersOf(transferListOf(transfer)),
-        later,
+  const SW = serviceWorkersApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      serviceEntries.push([name, fn]);
+    },
+    input: () => input(),
+    Event,
+    EventTarget,
+    MessageEvent,
+    DOMException,
+    Response,
+    document,
+    windowTarget,
+    dispatch,
+    report: (error: Any) => report(error),
+    handlerProperty,
+    idlAttributes,
+    setHandler: (target: Any, type: string, fn: Any) =>
+      setHandler(target, type, fn),
+    heard: (target: Any, type: string) => heard(target, type),
+    fullyActive: () => call('fullyActive') !== false,
+    define: (name: string, value: Any) => define(name, value),
+    base: () =>
+      workerLocation ? str(workerLocation.href) : str(document.baseURI),
+    origin: () => str(workerLocation?.origin ?? location.origin),
+    bytesOfBase64,
+    base64OfBytes,
+    serializeClone: serializeClone as Any,
+    deserializeWith: deserializeWith as Any,
+    transfersOf,
+    transferListOf,
+    giveUp,
+    wireMessage: wireMessage as Any,
+    requestFrom,
+    responseFrom,
+    NOTE: () => NOTE,
+    get AbortController() {
+      return AbortController;
+    },
+    get URL() {
+      return URL;
+    },
+    MessagePort,
+  } as Any);
+  const CACHES = cachesApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      serviceEntries.push([name, fn]);
+    },
+    input: () => input(),
+    DOMException,
+    Request,
+    Response,
+    fetch,
+    bytesOfBase64,
+    base64OfBytes,
+    requestOf: requestWire,
+    // through its stream, which stays locked and read, as a page's read of
+    // it would leave it; a response with no body has nothing to use up
+    drain: (response: Any) => {
+      const body = response.body;
+      if (body === null) return Promise.resolve(new Uint8Array(0));
+      return drainStream(body, () => {
+        response.bodyUsed = true;
       });
-      giveUp(transfer);
-      call('workerPostOut', JSON.stringify({ d }));
-      for (const go of later) go();
-    }
-  }
-  class WindowClient extends Client {
-    get focused(): boolean {
-      return false;
-    }
-    get visibilityState(): string {
-      return 'visible';
-    }
-    focus(): Promise<Any> {
-      return Promise.reject(
-        new DOMException(
-          'Not allowed to focus a window.',
-          'InvalidAccessError',
-        ),
-      );
-    }
-    navigate(): Promise<Any> {
-      return Promise.reject(
-        new TypeError('Cannot navigate a client this worker does not control.'),
-      );
-    }
-  }
-  let theClient: Any = null;
-  const clientOf = (): Any => {
-    if (!theClient && serviceRealm) {
-      theClient = new WindowClient();
-      theClient._url = serviceRealm.client;
-      theClient._id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    }
-    return theClient;
-  };
-  /** Service Workers 1, 4.3: the worker's clients — the page, which it
-   *  does not control, so only `includeUncontrolled` lists it. */
-  class Clients {
-    get(id: Any): Promise<Any> {
-      const client = clientOf();
-      return Promise.resolve(
-        client && client.id === str(id) ? client : undefined,
-      );
-    }
-    matchAll(options: Any = {}): Promise<Any[]> {
-      const client = clientOf();
-      return Promise.resolve(
-        options?.includeUncontrolled && client ? [client] : [],
-      );
-    }
-    openWindow(): Promise<Any> {
-      return Promise.reject(
-        new DOMException('Not allowed to open a window.', 'InvalidAccessError'),
-      );
-    }
-    claim(): Promise<void> {
-      return Promise.resolve();
-    }
-  }
+    },
+    disturbed: (response: Any) =>
+      response.bodyUsed || !!response._stream?.locked,
+    responseFrom,
+    requestFrom,
+    idlAttributes,
+    get AbortController() {
+      return AbortController;
+    },
+  } as Any);
   class File extends Blob {
     _name: string;
     _lastModified: number;
@@ -26745,17 +26604,11 @@ export function installDom(
     },
     clone: (value: Any) => (G as Any).structuredClone(value),
     hasTransientActivation: () => hasTransientActivation(),
-    inServiceWorker: () => serviceRealm !== null,
+    inServiceWorker: () => SW.inWorker(),
     permission: () => permissionState('notifications'),
-    noWorker: (registration: Any) =>
-      !serviceRealm && !registration._active && !registration._waiting,
-    workerEvent: (type: string, notification: Any, action: string) => {
-      if (!serviceRealm) return false;
-      const ev = new NotificationEvent(type, { notification, action });
-      ev.isTrusted = true;
-      dispatch(windowTarget, ev);
-      return true;
-    },
+    noWorker: (registration: Any) => SW.noWorker(registration),
+    workerEvent: (type: string, notification: Any, action: string) =>
+      SW.workerEvent(type, notification, action),
   });
 
   const navigator = {
@@ -26795,12 +26648,16 @@ export function installDom(
     });
   }
   // a page's service workers, where the host lets it have them and it is a
-  // secure context; left out otherwise, as `clipboard` is
+  // secure context; left out otherwise, as `clipboard` is. A window's
+  // `about:blank` is of what opened it, and under the same worker
   const serviceWorkersOn =
-    location.protocol === 'https:' && call('serviceWorkers') === true;
+    (/^https?:$/.test(location.protocol) ||
+      (location.protocol === 'about:' && /^https?:/.test(documentOrigin()))) &&
+    call('secureContext') === true &&
+    call('serviceWorkers') === true;
   if (serviceWorkersOn) {
     Object.defineProperty(navigator, 'serviceWorker', {
-      get: () => serviceWorkerContainer,
+      get: () => SW.container,
       enumerable: true,
       configurable: true,
     });
@@ -28174,6 +28031,9 @@ export function installDom(
    * of its own navigates in that realm. Null for a keyword, or a name no
    * frame here has.
    */
+  /** The frames a window's `length` and its indices count, in tree order. */
+  const windowFrames = (): Any[] =>
+    Array.from(document.querySelectorAll('iframe, frame'));
   const namedFrame = (name: string): { frame: Any; session: Any } | null => {
     if (!name || name.startsWith('_')) return null;
     for (const frame of Array.from(
@@ -28206,9 +28066,17 @@ export function installDom(
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
-      // own navigation; any other window is the host's to choose
+      // own navigation; a window of its group goes where it is sent, and
+      // any other is the host's to choose
       const framed = namedFrame(target);
-      if (!framed) return true;
+      if (!framed) {
+        return !WINDOWS!.follow(
+          address(),
+          target,
+          anchor.getAttribute('rel') ?? '',
+          userInitiated,
+        );
+      }
       const href = address();
       navigateTo(
         framed.session,
@@ -31935,13 +31803,7 @@ export function installDom(
     CSSPositionTryDescriptors,
   };
   // and their interfaces with it, which a page tells a service worker by
-  if (serviceWorkersOn) {
-    Object.assign(classes, {
-      ServiceWorker,
-      ServiceWorkerRegistration,
-      ServiceWorkerContainer,
-    });
-  }
+  if (serviceWorkersOn) Object.assign(classes, SW.interfaces);
   for (const [name, value] of Object.entries(classes)) {
     // an interface's prototype says its name to `Object.prototype.toString`
     // (Web IDL 3.7.3), so a `<div>` is `[object HTMLDivElement]`
@@ -31987,7 +31849,13 @@ export function installDom(
     delete (navigator as Any).locks;
     delete G.Lock;
     delete G.LockManager;
+    delete G.caches;
+    delete G.Cache;
+    delete G.CacheStorage;
     if (!secure) return;
+    define('Cache', CACHES.Cache);
+    define('CacheStorage', CACHES.CacheStorage);
+    define('caches', CACHES.caches);
     define('Lock', Lock);
     define('LockManager', LockManager);
     Object.defineProperty(navigator, 'locks', {
@@ -31996,7 +31864,7 @@ export function installDom(
       configurable: true,
     });
   };
-  secureGlobals(location.protocol === 'https:');
+  secureGlobals(call('secureContext') === true);
   // `[Replaceable]`: a page's own `scheduler` takes its place
   Object.defineProperty(G, 'scheduler', {
     value: madeScheduler(),
@@ -32265,7 +32133,7 @@ export function installDom(
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);
-  getter('origin', () => location.origin);
+  getter('origin', () => documentOrigin());
   // The window's own strings, made strings as they are set, as a
   // browser's are: a classic script's `var name = 1` sets the window's
   // name, and `typeof name` is a string after it, as it is there.
@@ -32275,6 +32143,7 @@ export function installDom(
     get: () => windowName,
     set: (v: Any) => {
       windowName = str(v);
+      WINDOWS?.named(windowName);
     },
     configurable: true,
     enumerable: false,
@@ -32287,11 +32156,12 @@ export function installDom(
     configurable: true,
     enumerable: false,
   });
-  getter('closed', () => false);
-  // no frames, which is what `length` counts
-  getter('length', () => 0);
+  getter('closed', () => WINDOWS?.closed() ?? false);
+  // the document's frames, which is what `length` counts
+  getter('length', () => windowFrames().length);
+  // where a window's features put it, there being no screen to read
   for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
-    getter(at, () => 0);
+    getter(at, () => WINDOWS?.screen(at.endsWith('X') || at.endsWith('Left')));
   }
   define('visualViewport', visualOf(ownViewport));
   // no check of its receiver: what a call on the global hands a getter is
@@ -32434,15 +32304,22 @@ export function installDom(
     );
     return null;
   });
-  // to where its name says, a new tab where it names none (HTML 7.2.2.1)
-  define('open', (url?: Any, target?: Any) => {
-    const name = target === undefined || target === '' ? '_blank' : str(target);
-    // a frame of this document's that the name names: navigated as its own
-    // session has it, and its window handed back (HTML 7.2.2.1)
+  // to where its name says, and a new window where it names none (HTML
+  // 7.2.2.1, `./windows.ts`)
+  define('open', (url?: Any, target?: Any, features?: Any) =>
+    WINDOWS!.open(url, target, features),
+  );
+  /** A frame of this document's that a name names: navigated as its own
+   *  session has it, and its window handed back (HTML 7.2.2.1). */
+  const openInFrame = (
+    name: string,
+    href: string | null,
+    noopener: boolean,
+  ): Any => {
     const framed = namedFrame(name);
     if (framed) {
-      if (url) {
-        const href = String(call('resolve', str(url)));
+      if (href) {
+        if (!noopener) frameOpeners.set(framed.frame, G);
         navigateTo(
           framed.session,
           href,
@@ -32456,23 +32333,25 @@ export function installDom(
       }
       return frameProxyOf(framed.frame);
     }
-    // this window: a navigation of its own, which the page hears first
-    if (/^_self$/i.test(name) && url) {
-      const s = pageSession.session;
-      const href = String(call('resolve', str(url)));
-      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
-        userInitiated: false,
-        sourceElement: null,
-        hostFollows: true,
-      });
-      if (went === 'other') call('open', href, name);
-      return G;
-    }
-    if (url) call('open', String(call('resolve', str(url))), name);
-    return null;
-  });
-  define('close', () => {});
-  define('focus', () => {});
+    // one that runs in a realm of its own, which that realm navigates
+    const id = Number(call('frameNamed', name));
+    if (!id) return null;
+    const frame = wrap(id);
+    if (href) call('frameNavigate', id, href);
+    return frameProxyOf(frame);
+  };
+  /** This window: a navigation of its own, which the page hears first. */
+  const openHere = (href: string, name: string): void => {
+    const s = pageSession.session;
+    const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+      userInitiated: false,
+      sourceElement: null,
+      hostFollows: true,
+    });
+    if (went === 'other') call('open', href, name);
+  };
+  define('close', () => WINDOWS!.close());
+  define('focus', () => WINDOWS!.focus());
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
@@ -32615,8 +32494,20 @@ export function installDom(
   // shadows it, as in a browser. A worker's global has none, and nor does
   // a window where the runtime refuses the proxy (`namedAccessWorks`).
   if (namedAccess) {
-    const lookup = (key: string | symbol): Any => {
+    const lookup = (key: string | symbol, receiver: Any = G): Any => {
       if (typeof key !== 'string' || !key || workerLocation) return undefined;
+      // an index is a frame's window, ahead of any name, and only on the
+      // window itself: on its prototype a number is a name (HTML 7.2.3.3)
+      const first = key.charCodeAt(0);
+      if (
+        first >= 48 &&
+        first <= 57 &&
+        receiver !== named &&
+        `${+key}` === key
+      ) {
+        const frame = windowFrames()[+key];
+        if (frame) return frame.contentWindow;
+      }
       const found = idList(call('named', key, document._id)).map(wrap);
       if (!found.length) return undefined;
       for (const el of found) {
@@ -32631,13 +32522,13 @@ export function installDom(
       }
       return found.length === 1 ? found[0] : collection(found);
     };
-    const named = new Proxy(Object.create(Object.getPrototypeOf(G)), {
+    const named: Any = new Proxy(Object.create(Object.getPrototypeOf(G)), {
       has: (target: Any, key: string | symbol) =>
         Reflect.has(target, key) || lookup(key) !== undefined,
       get: (target: Any, key: string | symbol, receiver: Any) =>
         Reflect.has(target, key)
           ? Reflect.get(target, key, receiver)
-          : lookup(key),
+          : lookup(key, receiver),
       getOwnPropertyDescriptor: (target: Any, key: string | symbol) => {
         const own = Reflect.getOwnPropertyDescriptor(target, key);
         if (own) return own;
@@ -32891,6 +32782,7 @@ export function installDom(
   for (const [name, fn] of cryptoEntries) entry(name, fn);
   for (const [name, fn] of clipboardEntries) entry(name, fn);
   for (const [name, fn] of notificationEntries) entry(name, fn);
+  for (const [name, fn] of serviceEntries) entry(name, fn);
   // a permission moved: each that listens is told, if it did for this page
   entry('__permission', () => {
     const name = str(input());
@@ -33544,32 +33436,6 @@ export function installDom(
     if ((id === 0 && sharedRealm) || sharedWorkersOf.has(id)) {
       return sharedMessage(str(text), across);
     }
-    // a service worker's, its lifecycle or to the page's container
-    if (swWorkers.has(id)) return swHeard(id, str(text));
-    // and in a service worker, from its client (Service Workers 1, 4.2.7)
-    if (id === 0 && serviceRealm) {
-      let made: Any;
-      try {
-        made = deserializeWith(str(text), across);
-      } catch {
-        const ev = new ExtendableMessageEvent('messageerror', {
-          source: clientOf(),
-        });
-        ev.isTrusted = true;
-        dispatch(windowTarget, ev);
-        return true;
-      }
-      const ev = new ExtendableMessageEvent('message', {
-        data: made.data,
-        origin: new URL(serviceRealm.client).origin,
-        source: clientOf(),
-        ports: made.ports,
-      });
-      ev.isTrusted = true;
-      dispatch(windowTarget, ev);
-      ev._open = false;
-      return true;
-    }
     const target = id === 0 ? windowTarget : workers.get(id);
     if (!target) return false;
     let made: Any;
@@ -33591,53 +33457,18 @@ export function installDom(
     return true;
   });
 
-  // a service worker's script has run, or failed to (Service Workers 1,
-  // "Install"): the page told it is installing, `install`, and once what
-  // it waited on settles, installed, activating, `activate` and activated
-  entry('__serviceInstall', () => {
+  // a service worker's script has run, or failed to: its registry is told,
+  // with whether it listens for `fetch`
+  entry('__serviceStarted', () => {
     const [ran] = input();
-    if (!serviceRealm) return false;
-    const tell = (sw: string): void => {
-      call('workerPostOut', JSON.stringify({ sw }));
-    };
-    if (!ran) {
-      tell('failed');
-      return true;
-    }
-    tell('installing');
-    const lifetime = (type: string): Promise<boolean> => {
-      const ev = new ExtendableEvent(type);
-      ev.isTrusted = true;
-      dispatch(windowTarget, ev);
-      return Promise.all(ev._waits).then(
-        () => {
-          ev._open = false;
-          return true;
-        },
-        () => {
-          ev._open = false;
-          return false;
-        },
-      );
-    };
-    void lifetime('install').then((installed) => {
-      if (!installed) {
-        tell('redundant');
-        return undefined;
-      }
-      tell('installed');
-      tell('activating');
-      return lifetime('activate').then(() => tell('activated'));
-    });
+    SW.started(!!ran);
     return true;
   });
 
   // what a worker's script threw that nothing there caught, to its `Worker`
   entry('__workerError', () => {
     const [id, message, filename, lineno, colno] = input();
-    const targets = sharedWorkersOf.get(id) ?? [
-      workers.get(id) ?? swWorkers.get(id),
-    ];
+    const targets = sharedWorkersOf.get(id) ?? [workers.get(id)];
     let told = false;
     for (const target of targets) {
       if (!target) continue;
@@ -33699,7 +33530,7 @@ export function installDom(
       hash: here.hash,
       toString: () => here.href,
     };
-    secureGlobals(here.protocol === 'https:');
+    secureGlobals(call('secureContext') === true);
     const scope = (label: string): Any => {
       const fn: Any = function () {
         throw new TypeError('Illegal constructor');
@@ -33734,60 +33565,12 @@ export function installDom(
         configurable: true,
       });
     } else if (service) {
-      // a service worker's global is installed and activated, hears its
-      // client, and posts to it alone (Service Workers 1, 4.1)
-      serviceRealm = { scope: str(service.scope), client: str(service.client) };
+      // a service worker's global hears its registry, and posts to its
+      // clients alone (Service Workers 1, 4.1)
       try {
         delete (G as Any).postMessage;
       } catch {}
-      define('ServiceWorkerGlobalScope', scope('ServiceWorkerGlobalScope'));
-      define('ExtendableEvent', ExtendableEvent);
-      define('ExtendableMessageEvent', ExtendableMessageEvent);
-      define('Client', Client);
-      define('WindowClient', WindowClient);
-      define('Clients', Clients);
-      define('clients', new Clients());
-      define('skipWaiting', () => Promise.resolve());
-      const own = serviceRealm.scope;
-      define('NotificationEvent', NotificationEvent);
-      define('registration', {
-        scope: own,
-        installing: null,
-        waiting: null,
-        active: null,
-        updateViaCache: 'imports',
-        update: () => Promise.resolve(),
-        unregister: () => Promise.resolve(true),
-        addEventListener() {},
-        removeEventListener() {},
-        showNotification(title: Any, options?: Any) {
-          return NOTE.showFor(this, title, options);
-        },
-        getNotifications(filter?: Any) {
-          return NOTE.listFor(this, filter);
-        },
-      });
-      for (const type of [
-        'install',
-        'activate',
-        'message',
-        'messageerror',
-        'fetch',
-        'notificationclick',
-        'notificationclose',
-      ]) {
-        Object.defineProperty(G, `on${type}`, {
-          get: () => windowTarget._handlers?.[type] ?? null,
-          set: (fn: Any) => {
-            setHandler(
-              windowTarget,
-              type,
-              typeof fn === 'function' ? fn : null,
-            );
-          },
-          configurable: true,
-        });
-      }
+      SW.become(service);
     } else {
       define('DedicatedWorkerGlobalScope', scope('DedicatedWorkerGlobalScope'));
       // a dedicated worker's animation frames (HTML 8.10), which a worker
@@ -34016,6 +33799,7 @@ export function installDom(
       if (typeof answer.base64 === 'string') {
         response._raw = bytesOfBase64(answer.base64);
       }
+      response._held = answer.held ?? null;
       pending.resolve(response);
     }
     return true;
@@ -34297,13 +34081,49 @@ export function installDom(
     G.__handed = undefined;
     return value;
   };
+  // a node of this realm's, for another realm's op to take (`idOf`)
+  Object.defineProperty(Node.prototype, '__handOver', {
+    value(this: Any) {
+      call('handOver', this._id);
+    },
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  WINDOWS = windowing({
+    G,
+    call,
+    entry,
+    input,
+    handed,
+    str,
+    DOMException,
+    hasTransientActivation,
+    consumeActivation,
+    deliverInto,
+    postAcross,
+    windowProxy,
+    openInFrame,
+    openHere,
+    unloading: () => !!document._unloaded || document._unloadCounter > 0,
+    windowTarget,
+    windowName: () => windowName,
+    setWindowName(name) {
+      windowName = name;
+    },
+    setTimer,
+  });
   // a frame of this page's runs in its own realm: its window here is that
   // realm's global from now on
   entry('__linkFrame', () => {
     const [id, cross] = input();
-    linkedFrames.set(Number(id), handed());
-    if (cross) crossLinked.add(Number(id));
-    else crossLinked.delete(Number(id));
+    if (cross) {
+      linkedFrames.delete(Number(id));
+      crossLinked.add(Number(id));
+    } else {
+      linkedFrames.set(Number(id), handed());
+      crossLinked.delete(Number(id));
+    }
     return true;
   });
   entry('__unlinkFrame', () => {
@@ -34316,7 +34136,6 @@ export function installDom(
   // a window that posts to it with this one as the source
   entry('__linkParent', () => {
     const [id, cross] = input();
-    const global = handed();
     const frame = Number(id);
     if (cross) {
       // a parent of another origin's: what crosses origins and no more
@@ -34327,7 +34146,7 @@ export function installDom(
           'SecurityError',
         );
       const allowed: Any = {
-        postMessage: deliverInto(global, frame, 0),
+        postMessage: postAcross(0),
         closed: false,
         length: 0,
         opener: null,
@@ -34391,7 +34210,7 @@ export function installDom(
         },
       );
       proxiedFrames.set(window, null);
-      parentLink = { global, window, frame };
+      parentLink = { global: null, window, frame };
       define('parent', window);
       define('top', window);
       Object.defineProperty(G, 'frameElement', {
@@ -34400,6 +34219,7 @@ export function installDom(
       });
       return true;
     }
+    const global = handed();
     const window: Any = new Proxy(
       {},
       {
@@ -34437,6 +34257,53 @@ export function installDom(
     });
     return true;
   });
+  /** A message of another realm's told here, as a task of its own: `from`
+   *  is what this realm calls that one. */
+  const tellMessage = (
+    data: Any,
+    origin: string,
+    from: number,
+    ports: Any[],
+  ): void => {
+    const source =
+      from < 0
+        ? WINDOWS!.proxyOf(-from)
+        : from === 0
+          ? (parentLink?.window ?? null)
+          : frameProxyOf(wrap(from));
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', { data, origin, source, ports });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  // A message from a realm of another origin, which the host hands over and
+  // says the origin and the source of (`postAcross`): a string made again
+  // here, the ports in it each at the end of a wire back to that realm
+  entry('__messageAcross', () => {
+    const [text, origin, from] = input();
+    const made = deserializeWith(str(text), realmAcross(Number(from)));
+    tellMessage(made.data, str(origin), Number(from), made.ports);
+    return true;
+  });
+  // and a port's along a wire from one, or a frame of a canvas it shows
+  entry('__wireAcross', () => {
+    const [text, from] = input();
+    const across = realmAcross(Number(from));
+    const said = str(text);
+    setTimer(
+      () => wireMessage(across, said) || canvasFrame(across, said),
+      0,
+      [],
+      false,
+    );
+    return true;
+  });
   // A message from another realm of this page: cloned here, as it is
   // posted, and told as a task of its own, its source the window that
   // stands for the realm it came from — `from` 0 for this realm's parent,
@@ -34463,24 +34330,7 @@ export function installDom(
           ports.push(port);
         });
       }
-      const data = structuredCopy(message, seen);
-      const source =
-        from === 0 ? (parentLink?.window ?? null) : frameProxyOf(wrap(from));
-      setTimer(
-        () => {
-          const ev = new MessageEvent('message', {
-            data,
-            origin: str(origin),
-            source,
-            ports,
-          });
-          ev.isTrusted = true;
-          dispatch(windowTarget, ev);
-        },
-        0,
-        [],
-        false,
-      );
+      tellMessage(structuredCopy(message, seen), str(origin), from, ports);
     },
     writable: false,
     configurable: false,
@@ -34502,7 +34352,7 @@ export function installDom(
   // this realm's origin, which a message posted to it from another realm
   // is held to (`deliverInto`)
   Object.defineProperty(G, '__origin', {
-    value: () => str(G.location?.origin ?? location.origin),
+    value: () => documentOrigin(),
     writable: false,
     configurable: false,
     enumerable: false,
