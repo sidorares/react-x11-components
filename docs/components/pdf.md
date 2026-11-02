@@ -96,7 +96,7 @@ is where the reader is now.
 
 **One thread and one module for the process.** PDFium takes some 30 ms to start
 and two documents on a screen want one queue, so `defaultPdfEngine()` keeps one
-for the process, and it keeps no event loop alive. Where no thread can start, the
+for the process, and it holds the event loop only while an answer is on its way. Where no thread can start, the
 module runs on the application's thread: a heavy page is then felt, and nothing
 else changes. **A bundler that moves the module has to carry
 `worker-thread.js` beside it**, or that is what happens.

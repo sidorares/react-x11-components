@@ -22,6 +22,8 @@ import { Surface } from 'react-x11/ntk';
 import type { A11yTextState, Context2D } from 'react-x11/node';
 import type { Rect } from 'react-x11';
 
+import type { DelayTick } from '../internal/timers.js';
+import { restClock } from './clock.js';
 import type { PageLink, PdfEngine, PdfInfo } from './engine.js';
 import {
   clampZoom,
@@ -158,8 +160,6 @@ export interface PdfViewStats {
   wholeAt: number;
 }
 
-declare const setTimeout: (fn: () => void, ms: number) => { unref?(): void };
-declare const clearTimeout: (id: unknown) => void;
 declare const performance: { now(): number };
 
 export class PdfViewNode extends Node {
@@ -186,7 +186,7 @@ export class PdfViewNode extends Node {
   private _failed = new Set<string>();
   private _noSurfaces = false;
   private _inFlight = 0;
-  private _settle: unknown = null;
+  private _settle: DelayTick | null = null;
   private _generation = 0;
   private _pumping = false;
 
@@ -312,7 +312,7 @@ export class PdfViewNode extends Node {
 
   override destroySubtree(): void {
     this._clear();
-    clearTimeout(this._settle);
+    if (this._settle !== null) restClock.disarm(this._settle);
     super.destroySubtree();
   }
 
@@ -425,16 +425,14 @@ export class PdfViewNode extends Node {
   }
 
   private _armSettle(): void {
-    clearTimeout(this._settle);
-    const timer = setTimeout(() => {
+    if (this._settle !== null) restClock.disarm(this._settle);
+    this._settle = restClock.arm(() => {
       this._settle = null;
       if (this.destroyed) return;
       this._level = 0;
       this._pump();
       this._repaint();
     }, SETTLE_MS);
-    timer.unref?.();
-    this._settle = timer;
   }
 
   scrollToPage(index: number): void {

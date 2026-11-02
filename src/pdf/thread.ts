@@ -31,6 +31,7 @@ declare const URL: new (url: string, base?: string) => FileUrl;
 interface ThreadLike {
   postMessage(message: unknown, transfer?: unknown[]): void;
   on(event: string, listener: (value: never) => void): void;
+  ref(): void;
   unref(): void;
   terminate(): Promise<number>;
 }
@@ -69,6 +70,7 @@ export class ThreadEngine implements PdfEngine {
       const pending = this._pending.get(answer.id);
       if (!pending) return;
       this._pending.delete(answer.id);
+      if (this._pending.size === 0) thread.unref();
       if (answer.error) {
         pending.reject(
           answer.error.code
@@ -89,11 +91,18 @@ export class ThreadEngine implements PdfEngine {
     };
     thread.on('error', died);
     thread.on('exit', () => died(new Error('The PDF thread ended')));
+    // Last, and not as the thread starts: a listener for `message` refs a
+    // worker again, and one that was unref'd first held the process open for
+    // good with nothing left to do.
+    thread.unref();
   }
 
   private _ask<T>(op: string, args: unknown[]): Promise<T> {
     if (this._dead) return Promise.reject(this._dead);
     const id = this._next++;
+    // Held while there is an answer to wait for: unref'd then, a process with
+    // nothing else to do would end in the middle of an `await`.
+    if (this._pending.size === 0) this._thread.ref();
     return new Promise<T>((resolve, reject) => {
       this._pending.set(id, {
         resolve: resolve as (value: never) => void,
@@ -145,7 +154,6 @@ async function startThread(): Promise<PdfEngine | null> {
       resolve(null);
       return;
     }
-    thread.unref();
     const answer = (ready: { ready?: boolean }): void => {
       if (ready.ready === undefined) return;
       if (ready.ready) {
@@ -176,7 +184,8 @@ let shared: Promise<PdfEngine | null> | null = null;
 /**
  * The process's engine: the thread if one starts, the module here if not,
  * and null where the package is not installed. Kept for the process, as the
- * module is costly to start and the thread keeps no event loop alive.
+ * module is costly to start, and the thread holds the event loop only while
+ * an answer is on its way.
  */
 export function defaultPdfEngine(): Promise<PdfEngine | null> {
   shared ??= startThread().then((engine) => engine ?? inThisThread());

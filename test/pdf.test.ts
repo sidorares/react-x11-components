@@ -6,7 +6,9 @@
 // element runs over `FakePdfEngine`, whose every pixel says where it is: a
 // flat page cannot show a shift, and these mount the pane away from the
 // window's corner and at `scale: 2`, which is where a geometry bug hides.
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert';
 import React from 'react';
 import {
@@ -46,7 +48,9 @@ import {
   rangeBands,
   wordAround,
 } from '../src/pdf/text.js';
+import { restClock } from '../src/pdf/clock.js';
 import { FakePdfEngine, inkAt, lineOfText } from './fake-pdf.js';
+import { holdClock } from './held-clock.js';
 import { makePdf } from './pdf-fixture.js';
 import type { FixturePage } from './pdf-fixture.js';
 import { mulberry32 } from './mulberry32.js';
@@ -438,6 +442,31 @@ test('links say where they go, in points from the top', async (t) => {
   engine.close(info.handle);
 });
 
+// Node 20 and the first releases of 22 hand a worker no hooks for a `.ts` entry,
+// so from the source there is no thread there to hold anything open. From 24 on
+// there has to be one, or these two prove nothing.
+const threaded = Number(process.versions.node.split('.')[0]) >= 24;
+
+function inAProcess(what: string) {
+  const file = fileURLToPath(new URL('./pdf-process.ts', import.meta.url));
+  const child = spawnSync(process.execPath, ['--import', 'tsx', file, what], {
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+  assert.strictEqual(child.signal, null, `held open: ${child.stderr}`);
+  assert.strictEqual(child.status, 0, `cut short: ${child.stderr}`);
+  if (threaded) assert.match(child.stdout, /^ThreadEngine/);
+  return child.stdout;
+}
+
+test('a process that only made the engine ends by itself', () => {
+  assert.match(inAProcess('nothing'), /ended/);
+});
+
+test('a process waits for the answer it asked for, and then ends', () => {
+  assert.match(inAProcess('slow'), /drew\s+ended/);
+});
+
 // --- the element -------------------------------------------------------------
 
 test('the element is registered, and draws', () => {
@@ -638,7 +667,8 @@ test('the queue never holds more than it can answer, through a flick', async () 
   assert.ok(last.page > 50, `the last tile was of page ${last.page}`);
 });
 
-test('a zoom shows what there is and draws its own tiles once it rests', async () => {
+test('a zoom shows what there is and draws its own tiles once it rests', async (t) => {
+  const rest = holdClock(t, restClock);
   const engine = new FakePdfEngine(FOUR_PAGES);
   const { result, node } = await mounted(engine);
   await settled(engine, node);
@@ -652,6 +682,7 @@ test('a zoom shows what there is and draws its own tiles once it rests', async (
   await waitFor(() =>
     assert.ok(node.stats.staleComposited > 0, 'nothing stretched yet'),
   );
+  await rest.finish();
   await waitFor(() =>
     assert.ok(engine.requests.length > asked, 'no tiles asked for yet'),
   );
@@ -673,7 +704,8 @@ test('a zoom shows what there is and draws its own tiles once it rests', async (
   assert.ok(checked > 20, `only ${checked} points were on a page`);
 });
 
-test("a scroll inside a zoom's rest asks for no tiles of the scale it left", async () => {
+test("a scroll inside a zoom's rest asks for no tiles of the scale it left", async (t) => {
+  const rest = holdClock(t, restClock);
   const pages = Array.from({ length: 40 }, () => ({ width: 400, height: 500 }));
   const engine = new FakePdfEngine(pages);
   const { node } = await mounted(engine);
@@ -684,6 +716,7 @@ test("a scroll inside a zoom's rest asks for no tiles of the scale it left", asy
     node.scrollBy({ y: 9000 });
   });
   assert.strictEqual(engine.requests.length, asked);
+  await rest.finish();
   await waitFor(() =>
     assert.ok(engine.requests.length > asked, 'no tiles asked for yet'),
   );
@@ -868,7 +901,8 @@ test('a screen reader reads the pages in view', async () => {
   assert.ok(!/page0/.test(node.a11yTextState()!.value));
 });
 
-test('at a scale that is no whole number a scroll still meets its band', async () => {
+test('at a scale that is no whole number a scroll still meets its band', async (t) => {
+  const rest = holdClock(t, restClock);
   const engine = new FakePdfEngine(FOUR_PAGES);
   const { result, node } = await mounted(engine, { scale: 1.5, zoom: 1.13 });
   await settled(engine, node);
@@ -878,6 +912,7 @@ test('at a scale that is no whole number a scroll still meets its band', async (
   for (const step of [37, 101, 53]) {
     await act(async () => node.scrollBy({ y: step }));
   }
+  await rest.finish();
   await waitFor(() =>
     assert.ok(
       engine.requests.some((r) => r.level !== engine.requests[0]!.level),

@@ -7150,8 +7150,14 @@ to cancel, and would still be drawing what nobody will see. A tile comes back in
 buffer moved rather than copied; the one copy is out of the WebAssembly heap, since a
 buffer that is the heap's cannot be moved.
 
-Six things are load-bearing.
+Seven things are load-bearing.
 
+- **The thread is ref'd only while an answer is due** (`ThreadEngine`). A listener
+  for `message` refs a `Worker` again, so an `unref` before it holds the process
+  open for good, idle, with nothing to say why; and one left unref'd lets a process
+  with nothing else to do end in the middle of an `await`. A suite run with
+  `--test-force-exit` shows neither, and on Node 20 from source there is no thread at
+  all: CI's other three jobs ran past 40 minutes. A process of its own is the test.
 - **`PdfEngine` crosses numbers and typed arrays only**, so an engine can be a thread
   away, and it is public for the reason `ProcessHost` is. `test/fake-pdf.ts` drives it,
   and its every pixel says where it is: a flat page cannot show a shift. The tests that
