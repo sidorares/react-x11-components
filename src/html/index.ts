@@ -343,6 +343,7 @@ export {
   HtmlProfile,
   PROFILE_FILE,
   PROFILE_VERSION,
+  WORKERS_FILE,
 } from './profile.js';
 export type { HtmlProfileHttpCache, HtmlProfileOptions } from './profile.js';
 export type {
@@ -350,6 +351,24 @@ export type {
   HtmlCachedResponse,
   HtmlHttpCacheStore,
 } from './http-cache.js';
+export { HtmlServiceWorkers, memoryServiceWorkers } from './service-workers.js';
+export type {
+  HtmlServiceWorkerRecord,
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkerScript,
+  HtmlServiceWorkerStore,
+  HtmlServiceWorkerUpdateViaCache,
+  HtmlServiceWorkerVersion,
+  HtmlServiceWorkersOptions,
+} from './service-workers.js';
+export { memoryCaches } from './cache-storage.js';
+export type {
+  HtmlCacheAddition,
+  HtmlCacheEntry,
+  HtmlCacheRequest,
+  HtmlCacheResponse,
+  HtmlCacheStore,
+} from './cache-storage.js';
 export type { ComputedStyle, RootLook } from './css/style.js';
 export type {
   MatchedRule as HtmlMatchedRule,

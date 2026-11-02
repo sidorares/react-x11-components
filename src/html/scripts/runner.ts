@@ -47,10 +47,23 @@ import type { MediaEventKind } from '../media.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost } from './host.js';
 import { PageWorkers } from './workers.js';
-import type { HostSeams } from './host.js';
+import { registryOf } from './sw-registry.js';
+import type { ServiceClient } from './sw-registry.js';
+import type { HtmlServiceWorkers } from '../service-workers.js';
+import type {
+  FetchRequest,
+  FetchResponse,
+  HostSeams,
+  WorkerInit,
+} from './host.js';
 import { liveSession } from './session.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
-import type { ClearTimeout, SetTimeout, UrlClass } from './platform.js';
+import type {
+  AbortSignalLike,
+  ClearTimeout,
+  SetTimeout,
+  UrlClass,
+} from './platform.js';
 
 declare const setTimeout: SetTimeout;
 declare const clearTimeout: ClearTimeout;
@@ -70,7 +83,12 @@ export const SCRIPT_TIMEOUT_MS = 2000;
 /** What the page around a document gives its scripts. */
 declare const Buffer: { from(text: string, encoding: 'base64'): Uint8Array };
 
-export interface ScriptsOptions extends Omit<HostSeams, 'handle' | 'adopt'> {
+export interface ScriptsOptions extends Omit<
+  HostSeams,
+  'handle' | 'adopt' | 'serviceWorkers'
+> {
+  /** What keeps the page's service workers; `true` for one of its own. */
+  serviceWorkers?: boolean | HtmlServiceWorkers | null;
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
    *  module's an import names, with none. */
@@ -108,7 +126,8 @@ export interface PageSwap {
 
 /** What a runner is made with: the options, the handle, and where the
  *  sheets the page adopts go. */
-export type RunnerSeams = ScriptsOptions & Pick<HostSeams, 'handle' | 'adopt'>;
+export type RunnerSeams = Omit<ScriptsOptions, 'serviceWorkers'> &
+  Pick<HostSeams, 'handle' | 'adopt' | 'serviceWorkers'>;
 
 interface Queued {
   request: ScriptRequest;
@@ -237,7 +256,15 @@ export class ScriptRunner {
       _options.workers === false
         ? null
         : new PageWorkers({
-            fetch: (request, signal) => this._options.fetch(request, signal),
+            fetch: (request, signal, id) =>
+              this._workerFetch(request, signal, id),
+            caches: (origin, ask) =>
+              Promise.resolve(this.host.askCaches(origin, ask)),
+            started: (id, init) => this._workerClient(id, init),
+            exited: (id) => {
+              this._workerClients.get(id)?.detach();
+              this._workerClients.delete(id);
+            },
             get webTransport() {
               return _options.webTransport;
             },
@@ -269,6 +296,7 @@ export class ScriptRunner {
               ]),
           });
     this.host.workers = this._workers;
+    this._attachService();
     if (_link) {
       _link.parent.engine.link(
         this.engine,
@@ -278,6 +306,113 @@ export class ScriptRunner {
           originOf(url) !== originOf(_link.parent.host.url),
       );
     }
+  }
+
+  /** What keeps this page's service workers, where it has any. */
+  get serviceKeeper(): HtmlServiceWorkers | null {
+    return this._options.serviceWorkers ?? null;
+  }
+
+  /** What a service worker tells this document, told a task later and in
+   *  order: it may be told from inside one of the page's ops. */
+  private _told: string[] = [];
+
+  /**
+   * This document as a service worker's client (Service Workers 1, 2.2): a
+   * secure context's alone, and a local document's where its parent is one.
+   */
+  private _attachService(): void {
+    const keeper = this.serviceKeeper;
+    if (!keeper || !this.host.secure) return;
+    const parent = this._link?.parent.host.serviceClient ?? null;
+    if (!/^https?:/i.test(this.host.url) && !parent) return;
+    const options = this._options;
+    this.host.serviceClient = registryOf(keeper).attach(
+      {
+        url: () => this.host.url,
+        type: 'window',
+        frameType: () => (this._link ? 'nested' : 'top-level'),
+        focused: () => !this.engine.frozen && !this._disposed,
+        visibility: () => (this.engine.frozen ? 'hidden' : 'visible'),
+        frozen: () => this.engine.frozen,
+        tell: (text) => {
+          this._told.push(text);
+          if (this._told.length === 1) this._tellNext();
+        },
+        fetch: (request, signal) => options.fetch(request, signal),
+        navigate: (url, how) => options.navigate(url, how),
+        workerSeams: () => ({
+          webTransport: options.webTransport,
+          webSocket: options.webSocket,
+          notifications: options.notifications,
+          permissions: () => this.host.permissionStates(),
+          log: (level, text) => options.log(level, text),
+          userAgent: options.userAgent,
+          language: options.language,
+          keySecrets: this.host.keySecretsOf(),
+        }),
+        caches: (origin, ask) => this.host.askCaches(origin, ask),
+      },
+      parent,
+    );
+  }
+
+  /** This document's workers, as a service worker's clients. */
+  private _workerClients = new Map<number, ServiceClient>();
+
+  /** A worker of this document is a client of a service worker too: one its
+   *  `clients` lists, whose requests it hears. It has no `navigator` to tell
+   *  anything of it, and hears nothing. */
+  private _workerClient(id: number, init: WorkerInit): void {
+    const page = this.host.serviceClient;
+    if (!page || init.service) return;
+    const seams = page.seams;
+    this._workerClients.set(
+      id,
+      registryOf(this.serviceKeeper!).attach(
+        {
+          ...seams,
+          url: () => init.url,
+          type: init.shared ? 'sharedworker' : 'worker',
+          frameType: () => 'none',
+          tell() {},
+        },
+        page,
+      ),
+    );
+  }
+
+  /** A task for each thing told, as a browser queues them: a page's
+   *  reaction to one runs before the next, and sets up what hears it. */
+  private _tellNext(): void {
+    setTimeout(() => {
+      const said = this._told[0];
+      if (said !== undefined && !this._disposed) {
+        this.engine.call('__sw', [said]);
+      }
+      this._told.shift();
+      if (this._told.length) this._tellNext();
+    }, 0);
+  }
+
+  /** What a worker of this document asks for: its controller's first, as the
+   *  document's own requests are. */
+  private async _workerFetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+    id: number | undefined,
+  ): Promise<FetchResponse> {
+    const client =
+      (id === undefined ? null : this._workerClients.get(id)) ??
+      this.host.serviceClient;
+    if (client?.controlled && /^https?:/i.test(request.url)) {
+      const answered = await client.fetch(
+        { ...request, mode: 'cors', destination: '' },
+        signal,
+      );
+      if (answered) return answered;
+    }
+    return this._options.fetch(request, signal);
   }
 
   /**

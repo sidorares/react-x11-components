@@ -293,6 +293,19 @@ again. Its `busy_timeout` is a second where the profile's is five: a cache
 that is busy is a response not kept this time, and the page has it all the
 same — a store that throws or rejects is one that kept nothing.
 
+### Service workers and `caches`
+
+A third file, `workers.sqlite`, holds what a page's service workers keep past
+a restart: each registration, the scripts of its active and waiting workers,
+and Cache Storage (`HtmlProfile.serviceWorkers`, and `storage.caches`, the same
+object). A file of its own for the reasons the HTTP cache has one, but no cache:
+a page was told this is kept, so nothing here is forgotten behind its back, a
+page past `HtmlProfileOptions.cacheStorageBytes` (2 GB an origin) is told
+`QuotaExceededError`, and a file of a later schema is left alone and memory used
+for the run. Every tab's process opens it itself, and reads it at each request
+that asks about a scope, so a worker one tab installed is there for the next
+navigation another makes, which runs a thread of its own over the same scripts.
+
 ### Tabs and a restart
 
 The browser (`examples/browser/profile.ts`) keeps the tabs in
@@ -313,9 +326,6 @@ tab's key as `BROWSER_TAB_KEY`.
 
 ### Not done
 
-- Cache Storage, and service-worker registrations past a restart: service
-  workers are off by default and keep no `caches` (`HtmlScripts`'
-  `serviceWorkers`), so there is nothing to keep yet.
 - `cookieStore`'s `change` event: nothing tells a realm of a cookie a
   response, or another tab, set.
 - Importing a Chrome profile's cookies.

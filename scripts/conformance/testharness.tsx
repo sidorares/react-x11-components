@@ -64,6 +64,7 @@ import type { RenderX11Result } from 'react-x11/test';
 import {
   Html,
   HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
   fakeMediaDevices,
   memoryClipboard,
@@ -93,6 +94,7 @@ const HTTPS_PORT = Number(process.env.WPT_HTTPS_PORT || 8443);
 const H2_PORT = Number(process.env.WPT_H2_PORT || 9000);
 
 const [listFile, outFile] = process.argv.slice(2);
+let lastWorkers: HtmlServiceWorkers | null = null;
 if (!listFile || !outFile) {
   console.error('usage: testharness.tsx <list> <out.jsonl>');
   process.exit(2);
@@ -546,7 +548,7 @@ function Tab(props: {
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
       // WPT's `.any.serviceworker.html` variants register their tests' worker
-      serviceWorkers: true,
+      serviceWorkers: network.serviceWorkers ?? false,
       session,
       navigate: (url, how) => {
         // a window of its own, beside this one
@@ -945,7 +947,12 @@ async function render(
   source: string;
   error?: string;
 }> {
-  const network = new HtmlNetwork({ connectTimeout: 2500 });
+  // what keeps the test's service workers, as a tab's process holds them;
+  // the threads of the test before go with it
+  lastWorkers?.dispose();
+  const serviceWorkers = new HtmlServiceWorkers();
+  lastWorkers = serviceWorkers;
+  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
   const page: Current = {
     url,
     results: new Map(),
@@ -1087,7 +1094,12 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     source,
   );
   const budget = (long ? 60000 : 10000) + 6000;
-  const network = new HtmlNetwork({ connectTimeout: 2500 });
+  // what keeps the test's service workers, as a tab's process holds them;
+  // the threads of the test before go with it
+  lastWorkers?.dispose();
+  const serviceWorkers = new HtmlServiceWorkers();
+  lastWorkers = serviceWorkers;
+  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
   const url = urlFor(test);
   const page: Current = {
     url,

@@ -17,6 +17,8 @@
 //
 // Light on purpose: `<Html>` reaches it whether or not a document runs
 // scripts.
+import { memoryCaches } from './cache-storage.js';
+import type { HtmlCacheStore } from './cache-storage.js';
 
 /** One origin's `localStorage` or `sessionStorage` (HTML 12.2). */
 export interface HtmlStorageArea {
@@ -129,6 +131,8 @@ export interface HtmlStorage {
   /** Where IndexedDB is kept past the document. Absent, a database lives
    *  as long as the document that opened it. */
   indexedDB?: HtmlIndexedDB;
+  /** What a page's `caches` keep. Absent, the process's memory. */
+  caches?: HtmlCacheStore;
 }
 
 /** How much an origin may keep in `localStorage` or `sessionStorage`, in
@@ -193,6 +197,7 @@ export function memoryStorage(): HtmlStorage {
   return {
     local: (origin) => area(local, origin),
     session: (origin) => area(session, origin),
+    caches: memoryCaches(),
     tell(change) {
       for (const listener of [...listeners]) listener(change);
     },

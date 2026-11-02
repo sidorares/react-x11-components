@@ -6,3 +6,4 @@
 export { SCRIPTS_CONTAINED } from './engine.js';
 export { ScriptRunner, SCRIPT_TIMEOUT_MS } from './runner.js';
 export { FrameHolder, embeddedMounts } from './frames.js';
+export { registryOf } from './sw-registry.js';

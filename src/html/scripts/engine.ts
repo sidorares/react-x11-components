@@ -65,6 +65,8 @@ import { installWebCrypto } from './webcrypto.js';
 import { installDataTransfer } from './datatransfer.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
+import { installServiceWorkers } from './serviceworkers.js';
+import { installCaches } from './caches.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
@@ -288,11 +290,13 @@ const INSTALL = `(function () {
   const transfers = (${installDataTransfer.toString()});
   const clipboards = (${installClipboard.toString()});
   const notifying = (${installNotifications.toString()});
+  const serviceWorkers = (${installServiceWorkers.toString()});
+  const cacheStorage = (${installCaches.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, notifying, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, notifying, serviceWorkers, cacheStorage, named);
 })()`;
 
 /**
@@ -1113,7 +1117,10 @@ export class ScriptEngine {
       return undefined;
     } finally {
       this._leave(mark);
-      if (!this._depth && !this._disposed) this._options.settled();
+      if (!this._depth && !this._disposed) {
+        this._options.settled();
+        if (this._realms.size > 1 && name !== '__drain') this._drainRealms();
+      }
     }
   }
 
@@ -1314,12 +1321,42 @@ export class ScriptEngine {
     this.call('__linkFrame', [frameId, crossOrigin]);
     into(frame, this._global);
     frame.call('__linkParent', [frameId, crossOrigin]);
+    if (!crossOrigin) {
+      this._realms.add(frame);
+      frame._realms = this._realms;
+    }
   }
 
   /** A frame's realm is gone, or has gone on to another document: the
    *  page's window for it stands for nothing of it any more. */
   unlink(frameId: number): void {
     this.call('__unlinkFrame', [frameId]);
+  }
+
+  /**
+   * The realms of one origin linked with this one, itself among them, shared
+   * as they join. A promise of one with a reaction of another's queues its
+   * job in the other's queue (`then` goes by the handler's realm), and each
+   * queue runs only as the host enters its realm (`microtaskMode`), so
+   * `frame.contentWindow.fetch().then()` in a page, settled in the frame,
+   * went on only when a timer of the page's happened to enter it.
+   */
+  private _realms = new Set<ScriptEngine>([this]);
+  private _realmsOwed = false;
+
+  /** Enter each of the realms an entry may have left a job in. A few turns,
+   *  since a job of one can queue another's. */
+  private _drainRealms(): void {
+    if (this._realmsOwed) return;
+    this._realmsOwed = true;
+    void Promise.resolve().then(() => {
+      this._realmsOwed = false;
+      for (let turn = 0; turn < REALM_TURNS; turn += 1) {
+        for (const realm of this._realms) {
+          if (!realm._disposed && !realm.running) realm.call('__drain', null);
+        }
+      }
+    });
   }
 
   /** A promise of the page's rejected and nothing caught it: told in the
@@ -1371,6 +1408,7 @@ export class ScriptEngine {
   dispose(): void {
     this._disposed = true;
     this._held = null;
+    this._realms.delete(this);
     this._modules.clear();
     ENGINES.delete(this._promises);
   }
@@ -1396,6 +1434,10 @@ const HELD_ONCE = new Set([
 /** How many turns of the host's the context is entered on after an
  *  `import()` settles (`_drainLater`). */
 const DRAIN_TURNS = 4;
+
+/** How many times linked realms are entered after an entry of one
+ *  (`_drainRealms`). */
+const REALM_TURNS = 3;
 
 /** How many times the page's time a task may take at all, the host's in
  *  its ops included (`_bridge`): what bounds a runaway that touches nothing

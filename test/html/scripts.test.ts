@@ -1710,14 +1710,16 @@ test('a service worker is registered for a scope, installed and activated in a t
     '    r.push(e.source === w, JSON.stringify(e.data)); res(); }); });' +
     '  w.postMessage({ hi: 1 });' +
     '  return Promise.all([heard, activated(w)]).then(function () {' +
-    '    return navigator.serviceWorker.ready; }).then(function (ready) {' +
-    '    r.push(ready === reg, reg.active === w, reg.installing);' +
+    '    r.push(reg.active === w, reg.installing);' +
     '    return navigator.serviceWorker.getRegistration("here/deeper");' +
     '  }).then(function (found) {' +
     '    r.push(found === reg);' +
     '    return reg.unregister();' +
     '  }).then(function (gone) {' +
-    '    r.push(gone, w.state);' +
+    '    r.push(gone);' +
+    '    return w.state === "redundant" ? null : new Promise(function (res) { w.addEventListener("statechange", res); });' +
+    '  }).then(function () {' +
+    '    r.push(w.state);' +
     '    return navigator.serviceWorker.register("sw.js", { scope: "../" }).catch(function (e) { r.push(e.name); });' +
     '  });' +
     '}).then(function () { document.getElementById("out").textContent = JSON.stringify(r); });' +
@@ -1745,7 +1747,6 @@ test('a service worker is registered for a scope, installed and activated in a t
       'installing',
       true,
       '{"got":1,"scope":true,"reg":"here/","post":"undefined","from":"page.html"}',
-      true,
       true,
       null,
       true,

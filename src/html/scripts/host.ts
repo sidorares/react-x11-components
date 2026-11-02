@@ -190,6 +190,17 @@ import { parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
+import { askCaches } from '../cache-storage.js';
+import type {
+  HtmlCacheAnswer,
+  HtmlCacheAsk,
+  HtmlCacheStore,
+} from '../cache-storage.js';
+import type {
+  HtmlServiceWorkerRequest,
+  HtmlServiceWorkers,
+} from '../service-workers.js';
+import type { ServiceClient } from './sw-registry.js';
 import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
 import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
@@ -226,6 +237,8 @@ declare const clearInterval: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const Buffer: BufferClass;
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** A context's setting of its text as it crosses: its direction, its
  *  spacings in CSS pixels, its kerning and its capitals. */
@@ -317,10 +330,9 @@ export interface WorkerInit {
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
-  /** A service worker's (Service Workers 1), with the scope it was
-   *  registered for and the address of the page that registered it, the
-   *  one client it has. */
-  service?: { scope: string; client: string };
+  /** A service worker's (Service Workers 1): the scope it was registered
+   *  for, and how its registry knows it and its registration. */
+  service?: { scope: string; worker: unknown; registration: unknown };
 }
 
 /** Where a page's workers run (`workers.ts`): each started, posted to and
@@ -349,6 +361,8 @@ export interface WorkerScope {
   error(message: string, filename: string, line: number, column: number): void;
   /** Asks the page process of a data channel the page handed over. */
   rtc?(message: ChannelRelay): void;
+  /** What a service worker's realm says to its registry. */
+  service?(text: string, bytes?: Uint8Array): void;
 }
 
 /** A frame a browser that draws frames mounts a view for (`frames`). */
@@ -385,8 +399,12 @@ export interface FetchResponse {
    *  does — a model's reply, a stream of events, a download that trickles. */
   chunks?: AsyncIterable<Uint8Array>;
   /** What the page may read of it (Fetch 2.2.6): `basic` its own
-   *  origin's, `cors` another's that let it, `opaque` none of it. */
-  type?: 'basic' | 'cors' | 'opaque';
+   *  origin's, `cors` another's that let it, `opaque` none of it, and
+   *  `default` what a service worker made of nothing. */
+  type?: 'basic' | 'cors' | 'opaque' | 'default';
+  /** The number an opaque response's body is held by here, which a realm
+   *  hands back to keep it or to answer with it. */
+  held?: number;
 }
 
 /** A page's request as the facade hands it over, with what decides
@@ -396,6 +414,12 @@ interface PageRequest extends FetchRequest {
   credentials: 'omit' | 'same-origin' | 'include';
   /** The headers the user agent set, of which CORS asks nothing. */
   uaHeaders?: string[];
+  /** What a worker's `fetch` event reads of it. */
+  cache?: string;
+  redirect?: 'follow' | 'error' | 'manual';
+  integrity?: string;
+  referrerPolicy?: string;
+  destination?: string;
 }
 
 /** What CORS remembers of a preflight (Fetch 4.9, the CORS-preflight
@@ -699,9 +723,12 @@ export interface HostSeams {
    *  fetches its source through it to know its duration and when it can
    *  play, and with none is ready as soon as it is asked. */
   network?: boolean;
-  /** Whether a page may register service workers (`HtmlScripts`'
-   *  `serviceWorkers`). */
-  serviceWorkers?: boolean;
+  /** What keeps a page's service workers (`HtmlScripts`' `serviceWorkers`).
+   *  Absent, a page has none. */
+  serviceWorkers?: HtmlServiceWorkers | null;
+  /** What a worker's `caches` ask, where its store is across a thread.
+   *  Absent, the store is `storage`'s. */
+  caches?(origin: string, ask: HtmlCacheAsk): Promise<HtmlCacheAnswer>;
   /** What a page's `WebTransport` sessions are carried over (`HtmlScripts`'
    *  `webTransport`). Absent, every session fails, as with no network. */
   webTransport?: HtmlWebTransport;
@@ -743,6 +770,32 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+}
+
+/** How many opaque responses a document holds at once (`_opaques`). */
+const OPAQUE_HELD = 64;
+
+/** A response's body, all of it, read here. */
+export async function wholeBytes(response: FetchResponse): Promise<Uint8Array> {
+  if (!response.chunks) {
+    return response.bytes ?? new TextEncoder().encode(response.body ?? '');
+  }
+  const pieces: Uint8Array[] = [];
+  for await (const piece of response.chunks) pieces.push(piece);
+  return joinBytes(pieces);
+}
+
+/** Bytes as one piece. */
+function joinBytes(pieces: Uint8Array[]): Uint8Array {
+  let size = 0;
+  for (const piece of pieces) size += piece.length;
+  const whole = new Uint8Array(size);
+  let at = 0;
+  for (const piece of pieces) {
+    whole.set(piece, at);
+    at += piece.length;
+  }
+  return whole;
 }
 
 /** Bytes as lowercase hex, two digits a byte. */
@@ -1839,6 +1892,9 @@ export class DomHost {
   workers: PageWorkersLike | null = null;
   /** The page this realm is the worker of, where it is one. */
   workerScope: WorkerScope | null = null;
+  /** This document as a service worker's client, where the host keeps
+   *  service workers (`ScriptRunner`). */
+  serviceClient: ServiceClient | null = null;
   /** Where the document is in the host's session across documents, where
    *  the host keeps one (`HtmlSessionHistory`): set before the page's
    *  realm is made, which reads it as it starts. */
@@ -2431,6 +2487,10 @@ export class DomHost {
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
     this._observers.clear();
+    for (const response of this._opaques.values()) release(response);
+    this._opaques.clear();
+    this.serviceClient?.detach();
+    this.serviceClient = null;
     this.entries = null;
   }
 
@@ -4980,7 +5040,16 @@ export class DomHost {
       case 'hasNetwork':
         return this._seams.network === true;
       case 'serviceWorkers':
-        return this._seams.serviceWorkers === true;
+        return !!this._seams.serviceWorkers;
+      // what a page's service worker objects ask of the registry, and what a
+      // worker's own realm says to it
+      case 'sw':
+        if (this.serviceClient) return this.serviceClient.heard(text(a));
+        this._serviceSaid(text(a));
+        return null;
+      case 'cache':
+        this._cacheOp(Number(a), text(b));
+        return null;
       case 'image': {
         const el = this._node(a) as Element;
         const state = this._imageDrawn(el)?.imageState?.(el);
@@ -6424,20 +6493,19 @@ export class DomHost {
       }, 0);
       return;
     }
-    this._seams
-      .fetch(
-        post
-          ? {
-              url: src,
-              method: 'POST',
-              headers: [['content-type', post.contentType]],
-              ...(typeof post.body === 'string'
-                ? { body: post.body }
-                : { body: null, bytes: post.body }),
-            }
-          : { url: src, method: 'GET', headers: [], body: null },
-        new AbortController().signal,
-      )
+    this._navigationFetch(
+      post
+        ? {
+            url: src,
+            method: 'POST',
+            headers: [['content-type', post.contentType]],
+            ...(typeof post.body === 'string'
+              ? { body: post.body }
+              : { body: null, bytes: post.body }),
+          }
+        : { url: src, method: 'GET', headers: [], body: null },
+      new AbortController().signal,
+    )
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
         const type = (headerOf(response.headers, 'content-type') ?? '')
@@ -6540,8 +6608,16 @@ export class DomHost {
     // document with none has no code to want globals of its own, and the
     // page's realm reaches into it at once, as Acid3's do into theirs,
     // where a realm would answer once React had mounted it
+    // — and where a service worker can have it for a client, which a secure
+    // page's frame of its own origin is, whether or not a scope holds it yet:
+    // its `navigator` has to answer for it, and it can be claimed
     const realm =
-      !!this._seams.drawsFrames && type === 'text/html' && hasScripts(doc);
+      !!this._seams.drawsFrames &&
+      type === 'text/html' &&
+      (hasScripts(doc) ||
+        (!!this._seams.serviceWorkers &&
+          this._secureContext() &&
+          this._sameOrigin(address)));
     if (realm) this._s.realms.add(doc);
     // the one it shows unloads first, while it is still the frame's
     this._unloadFrameDocument(frame);
@@ -7175,6 +7251,17 @@ export class DomHost {
    *  the top of its frames, and by its own where that came over a network
    *  that is not one. A frame of no address of its own is its parent's. A
    *  worker's is its owner's. */
+  /** Whether this is a secure context, which a service worker's clients
+   *  are. */
+  get secure(): boolean {
+    return this._secureContext();
+  }
+
+  /** What opens the keys this document makes, for a worker it starts. */
+  keySecretsOf(): Uint8Array[] {
+    return keySecrets(this._keySecret());
+  }
+
   private _secureContext(): boolean {
     if (this._seams.secureContext !== undefined) {
       return this._seams.secureContext;
@@ -7660,6 +7747,11 @@ export class DomHost {
           raw.credentials === 'omit' || raw.credentials === 'include'
             ? raw.credentials
             : 'same-origin',
+        cache: raw.cache,
+        redirect: raw.redirect,
+        integrity: raw.integrity,
+        referrerPolicy: raw.referrerPolicy,
+        destination: raw.destination,
       };
     } catch {
       return;
@@ -7840,6 +7932,15 @@ export class DomHost {
       throw new TypeError('Failed to fetch');
     }
     const own = target === page && page !== 'null';
+    // a controlled client's request goes to its worker before CORS asks
+    // anything of it (Fetch 4.3, "HTTP fetch")
+    if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
+      const answered = await this.serviceClient.fetch(
+        this._forWorker(request),
+        signal,
+      );
+      if (answered) return this._fromWorker(answered, request);
+    }
     const plain: FetchRequest = {
       url: request.url,
       method: request.method,
@@ -7880,16 +7981,7 @@ export class DomHost {
           `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
         );
       }
-      release(await this._seams.fetch(plain, signal));
-      return {
-        url: '',
-        status: 0,
-        statusText: '',
-        redirected: false,
-        headers: [],
-        body: '',
-        type: 'opaque',
-      };
+      return this._opaque(await this._seams.fetch(plain, signal));
     }
     const unsafe = unsafeRequestHeaders(
       request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
@@ -7898,6 +7990,217 @@ export class DomHost {
       await this._preflight(request, unsafe, page, signal);
     }
     return this._shared(await this._seams.fetch(plain, signal), request, page);
+  }
+
+  /**
+   * A frame's document, which the worker whose scope holds its address hears
+   * of before the network does, whatever controls this document. Its body is
+   * read here, as the network's is for a frame.
+   */
+  private async _navigationFetch(
+    request: FetchRequest,
+    signal: AbortSignalLike,
+  ): Promise<FetchResponse> {
+    const keeper = this._seams.serviceWorkers;
+    if (keeper?.controls(request.url)) {
+      const answered = await keeper.navigation(
+        {
+          ...request,
+          mode: 'navigate',
+          destination: 'iframe',
+          credentials: 'include',
+          referrer: this.url,
+          clientId: this.serviceClient?.id,
+        },
+        signal,
+      );
+      if (answered) {
+        const bytes = await wholeBytes(answered);
+        return {
+          ...answered,
+          url: answered.redirected ? answered.url : request.url,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
+    return this._seams.fetch(request, signal);
+  }
+
+  /** A request as a worker's `fetch` event reads it. */
+  private _forWorker(request: PageRequest): HtmlServiceWorkerRequest {
+    return {
+      ...request,
+      referrer: this.url,
+      destination: request.destination ?? '',
+    };
+  }
+
+  /**
+   * What a worker answered with, held to what the request may take (Fetch
+   * 4.3, "HTTP fetch", the checks on a service worker's response): an opaque
+   * answer is no answer to a request that reads it, and a redirect's trail no
+   * answer to one that does not follow.
+   */
+  private _fromWorker(
+    response: FetchResponse,
+    request: PageRequest,
+  ): FetchResponse {
+    const type = response.type ?? 'default';
+    if (
+      (type === 'opaque' && request.mode !== 'no-cors') ||
+      (type === 'cors' && request.mode === 'same-origin') ||
+      (response.redirected && request.redirect && request.redirect !== 'follow')
+    ) {
+      release(response);
+      throw new TypeError('Failed to fetch');
+    }
+    if (type === 'opaque') return this._opaque(response);
+    return {
+      ...response,
+      url: response.url || request.url.split('#')[0],
+      type:
+        type !== 'default'
+          ? type
+          : originOf(request.url) === this._origin()
+            ? 'basic'
+            : 'cors',
+    };
+  }
+
+  /** The responses a page has been told of as opaque, by the number it hands
+   *  back to keep one or to answer with it. The oldest goes past
+   *  `OPAQUE_HELD`: a page that fetches and drops holds no more than that. */
+  private _opaques = new Map<number, FetchResponse>();
+  private _opaqueSeq = 0;
+
+  /** What a page sees of a `no-cors` response another origin answered:
+   *  nothing, and a number, in a realm that can do something with it. */
+  private _opaque(response: FetchResponse): FetchResponse {
+    const hidden: FetchResponse = {
+      url: '',
+      status: 0,
+      statusText: '',
+      redirected: false,
+      headers: [],
+      body: '',
+      type: 'opaque',
+    };
+    if (!this._secureContext()) {
+      release(response);
+      return hidden;
+    }
+    const held = ++this._opaqueSeq;
+    this._opaques.set(held, response);
+    for (const [key, oldest] of this._opaques) {
+      if (this._opaques.size <= OPAQUE_HELD) break;
+      this._opaques.delete(key);
+      release(oldest);
+    }
+    return { ...hidden, held };
+  }
+
+  /** An opaque response's bytes, read the first time they are asked for and
+   *  kept for a clone's: null where it has gone. */
+  private async _opaqueBytes(held: number): Promise<Uint8Array | null> {
+    const response = this._opaques.get(held);
+    if (!response) return null;
+    if (response.chunks) {
+      const pieces: Uint8Array[] = [];
+      for await (const piece of response.chunks) pieces.push(piece);
+      response.chunks = undefined;
+      response.bytes = joinBytes(pieces);
+    }
+    return (
+      response.bytes ?? new Uint8Array(Buffer.from(response.body, 'latin1'))
+    );
+  }
+
+  /** What a service worker's realm said to its registry: a body held here
+   *  goes as bytes, which no script has read. */
+  private _serviceSaid(said: string): void {
+    const scope = this.workerScope;
+    if (!scope?.service) return;
+    const m = JSON.parse(said) as { op: string; held?: number; f?: number };
+    if (m.op !== 'respond' || m.held === undefined) {
+      scope.service(said);
+      return;
+    }
+    const { held, ...rest } = m;
+    void this._opaqueBytes(held).then((bytes) =>
+      scope.service!(JSON.stringify(rest), bytes ?? new Uint8Array(0)),
+    );
+  }
+
+  /** The store a page's `caches` are kept in. */
+  private _cacheStore(): HtmlCacheStore {
+    return (
+      this._storageOf().caches ?? (defaultStorage().caches as HtmlCacheStore)
+    );
+  }
+
+  /** What a worker's `caches` ask, in this page's store. */
+  askCaches(origin: string, ask: HtmlCacheAsk): HtmlCacheAnswer {
+    return askCaches(this._cacheStore(), origin, ask);
+  }
+
+  /** A page's `caches`: bytes made of what crossed, the store asked, and what
+   *  it answers told back through `__cache`. An opaque response's body stays
+   *  here, as it did on the way in. */
+  private _cacheOp(n: number, json: string): void {
+    const run = async (): Promise<unknown> => {
+      const origin = this._origin();
+      if (origin === 'null') return { error: 'SecurityError' };
+      const ask = JSON.parse(json) as HtmlCacheAsk;
+      if (ask.op === 'batch') {
+        for (const step of ask.operations as unknown as {
+          bytes: Uint8Array;
+          base64?: string;
+          held?: number;
+        }[]) {
+          if ('held' in step && step.held !== undefined) {
+            step.bytes =
+              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
+            delete step.held;
+          } else if (typeof step.base64 === 'string') {
+            step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
+            delete step.base64;
+          }
+        }
+      }
+      const answer = this._seams.caches
+        ? await this._seams.caches(origin, ask)
+        : this.askCaches(origin, ask);
+      if (!answer.responses) return answer;
+      return {
+        ...answer,
+        responses: answer.responses.map(({ bytes, ...head }) => {
+          if (head.type !== 'opaque') {
+            return { ...head, base64: base64Of(bytes) };
+          }
+          const held = ++this._opaqueSeq;
+          this._opaques.set(held, {
+            url: '',
+            status: 0,
+            statusText: '',
+            redirected: false,
+            headers: [],
+            body: '',
+            bytes,
+          });
+          return { ...head, held };
+        }),
+      };
+    };
+    const told = (answer: unknown): void => {
+      if (!this._disposed) {
+        this.entries?.call('__cache', [n, JSON.stringify(answer)]);
+      }
+    };
+    run().then(told, (error: unknown) =>
+      told({ error: 'UnknownError', message: String(error) }),
+    );
   }
 
   /** Another origin's answer, where it lets the page read it (Fetch 4.10,

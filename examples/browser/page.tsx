@@ -98,6 +98,7 @@ import {
   CookieJar,
   Html,
   HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
   NetworkError,
   canPlayMedia,
@@ -242,6 +243,13 @@ void publicSuffixList().then((list) => {
   if (list) cookies.publicSuffix = list;
 });
 
+/** The service workers of the pages this process shows, whose registrations
+ *  and scripts every tab shares through the profile, each tab running its
+ *  own thread of a worker. */
+const serviceWorkers = new HtmlServiceWorkers({
+  store: profile?.serviceWorkers ?? undefined,
+});
+
 /** One process's network: a tab's own memory, where each tab is a process,
  *  over the profile's HTTP cache, which every tab shares and the next run
  *  finds, and the profile's cookies. `BROWSER_DEBUG=1` logs every request
@@ -253,6 +261,7 @@ const network = new HtmlNetwork({
   userAgent: DEFAULT_USER_AGENT,
   cookies,
   httpCache: profile?.httpCache ?? undefined,
+  serviceWorkers,
   // on a thread of its own: a page that keeps this one busy laying itself
   // out and running its scripts holds back no download — the 2.3 MB
   // script a playground's frame on joshwcomeau.com waits for came in
@@ -886,6 +895,7 @@ export default function Page(props: PageProps): ReactElement {
         seq,
         url: props.loadUrl,
         fresh: props.loadFresh,
+        scripts: props.scripts,
         post: props.loadPost,
         // a link or a script's navigation is the document's, whose site
         // decides which cookies go with it; the browser's own are
@@ -1460,6 +1470,9 @@ export default function Page(props: PageProps): ReactElement {
       // the profile's, where there is one, shared with every tab
       cookies,
       storage: profile?.storage,
+      // and what a page's worker answers and keeps, the navigations of its
+      // scope and what its pages ask for, as a browser's does
+      serviceWorkers,
       // a page's WebTransport sessions, over quico where it is installed
       webTransport: network.webTransport,
       // and its WebSockets, over the runtime's own, with the tab's cookies
@@ -1921,6 +1934,9 @@ interface Navigation {
   seq: number;
   url: string;
   fresh: boolean;
+  /** Whether the site's scripts run: where they do not, neither does its
+   *  worker. */
+  scripts: boolean;
   post: PostData | null;
   /** The document that started it, or null for the browser. */
   initiator: string | null;
@@ -1977,6 +1993,8 @@ async function loadDocument(
   try {
     response = await network.document(target, signal, nav.post, {
       initiator: nav.initiator,
+      // a hard reload asks past a worker, and what it brings is uncontrolled
+      serviceWorkers: !nav.scripts ? false : nav.fresh ? 'bypass' : true,
     });
   } catch (error) {
     if (signal.aborted) return;
