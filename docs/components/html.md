@@ -31,6 +31,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | -------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                                                                                                                 |
 | `document`           | `Document`                                       | A tree to draw in place of parsing `source`, which is then not read: one the host holds and changes, a frame's — see [Embedded content](#embedded-content).                                                                                                                                         |
+| `contentType`        | `string`                                         | What `source` was served as, a MIME type. Default `text/html`. An XML type reads it by XML's rules and not HTML's — see [XML documents](#xml-documents).                                                                                                                                            |
 | `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                                                                                        |
 | `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                                                                                            |
 | `animate`            | `boolean`                                        | Whether CSS animations and animated images run. Default true. False draws each animation as it stands once it has run — see [Animations](#what-renders) — and each animated GIF or WebP at its first frame.                                                                                         |
@@ -1828,8 +1829,8 @@ processing instructions are nodes. `XMLSerializer` writes a node back, declaring
 what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
 `XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
 with the page's resolver asked for each prefix as the expression is compiled, not
-as it runs. `innerHTML` still reads and writes HTML in an XML document, and
-XSLT is not here.
+as it runs. `innerHTML` reads and writes XML in an XML document, a `SyntaxError`
+where what it is given is not well-formed, and XSLT is not here.
 
 **The page's selection is the reader's** (Selection API 2). What the
 reader selects in the document — a press and a drag, a double click, Ctrl+A
@@ -1968,9 +1969,7 @@ HTML 4.13.4).
   nothing, since its `super()` looks it up in the window's registry.
 - **`customelementregistry`.** An element the parser makes with the
   attribute has no registry, and so does what it holds. That holds for the
-  HTML parser, and for the XML parser that reads a frame's XHTML.
-- **What doesn't work yet:** a top-level XHTML document, which `<Html>`
-  parses as HTML.
+  HTML parser, and for the XML parser.
 
 `setHTMLUnsafe()` parses declarative shadow roots, as the document's
 parser does, where `innerHTML` doesn't. An element of an HTML name no
@@ -6938,8 +6937,9 @@ it ends, goes in the body, as a browser puts it there. So `:first-child +
 *` under `<html>` is the body, as it is in a browser, which Acid3 styles its
 coloured boxes through. A `/>` closes an
 element only where HTML's parser says it does, on a void element and in
-SVG and MathML: a `<div/>` opens a div, as it does in a browser, and XHTML
-that means it closed has to be handed over as HTML, its `/>` written out.
+SVG and MathML: a `<div/>` opens a div, as it does in a browser. XHTML that
+means it closed is handed over as what it is, with
+[`contentType`](#xml-documents).
 
 **The user-agent stylesheet is themed.** `color`, the link colour and every
 rule and border in it come from the react-x11 palette, so an unstyled
@@ -7229,6 +7229,69 @@ length in UTF-16), found by laying each out alone and remembered per face.
 The document's text is untouched — selection, copy and the accessors see
 the page's own characters — and the first stand-in is reported once through
 `console.warn` outside production.
+
+## XML documents
+
+`contentType` says what `source` was served as. An XML type —
+`application/xhtml+xml`, `image/svg+xml`, `text/xml`, `application/xml`,
+anything `+xml`, as `isXmlType` answers — has it read by XML's rules, where
+any other reads it as HTML, what it reads for every document with no type:
+
+```tsx
+<Html source={text} contentType="application/xhtml+xml" baseUrl={url} />
+```
+
+What that changes:
+
+- **Nothing is implied, moved or dropped.** No `<html>`, `<head>`, `<body>` or
+  `<tbody>` the document did not write, a `<td>` outside a table stays where it
+  is and is laid out as a table's anonymous boxes have it, and a `<meta>` in a
+  drawing's `<metadata>` stays in the drawing. A `/>` closes any element.
+- **What a `<style>` holds is XML's.** References are read, a CDATA section is
+  text, and a comment is a comment: a sheet in `<!-- -->` is no sheet here,
+  where HTML reads it as one.
+- **Names have their case.** `DIV` as a selector is no `<div>`, an element
+  written `<DIV>` is no HTML element, `[data-Up]` is that attribute, and a value
+  has its case wherever HTML compares one without. Nothing is in quirks mode.
+- **An element is what its namespace says.** `xmlns` and its prefixes put it in
+  one, so `<h:div xmlns:h="http://www.w3.org/1999/xhtml">` is a `<div>`, and a
+  `<div>` in no namespace is an inline box of no look, which only a sheet's
+  rules for that name reach. A selector with no `@namespace` matches a local
+  name in any namespace, as it does in a browser.
+- **The root element is whatever it says.** `:root`, a `rem` and the canvas's
+  background are of it, and it is blockified. A drawing at the top has nothing
+  around it: an `<svg>` that says no size fills the window, and one that says a
+  size is cut to it whatever its `overflow`.
+- **A document that is not well-formed is the error and nothing of it**, as
+  Firefox shows it, and runs none of its scripts. An undeclared name is such an
+  error unless the doctype's public identifier is one of those HTML 13.4 lists,
+  XHTML's and MathML's, under which HTML's named characters are defined:
+  `&nbsp;` is well-formed under a Strict doctype and nowhere else. No DTD is
+  fetched. An internal subset's `<!ENTITY>`s and `<!ATTLIST>` defaults are read.
+- **`<?xml-stylesheet?>` in the prolog links a sheet**, of `type="text/css"` or
+  none and no `alternate="yes"`, ahead of every sheet in the document, and holds
+  the scripts after it as a `<link>` does.
+
+**Scripts run**, where `scripts` is on, as HTML 13.4 has an XML parser run
+them: a `<script>` in XHTML's or SVG's namespace, in tree order, each where the
+parser met it, seeing what came before it and no more, and `async`, `defer` and
+`type="module"` mean what they mean in HTML. An SVG one's source is `href` or
+`xlink:href`. One in no namespace, or MathML's, is not a script. The document
+hears `DOMContentLoaded` and `load` as any does, and `document.contentType`
+says the type. `document.write`, `writeln`, `open` and `close` throw an
+`InvalidStateError`, `createElement` keeps its name's case and makes XHTML's
+elements in `application/xhtml+xml` and elements of no namespace in any other
+type, and `querySelector` matches as a sheet does.
+
+An XML document is read once all of it is here, since what is wrong with one
+decides what it is, and that may be its last byte. So `partial` defaults to
+false for one, and a host that streams sees nothing until it says the stream
+has ended, where HTML is drawn as it comes.
+
+Not here: XSLT, which a `text/xsl` instruction asks for and nothing does;
+`@namespace` selectors (`svg|rect` drops its rule, as css-select refuses a
+namespaced type selector); and drawing a frame whose document is XML, whose
+scripts run and whose box stays empty.
 
 ## Streaming
 

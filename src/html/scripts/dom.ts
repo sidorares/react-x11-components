@@ -16982,6 +16982,7 @@ export function installDom(
      *  that runs once the parse has ended, which in a browser would replace
      *  the document — it is refused. */
     write(...parts: Any[]): void {
+      notXml(this, 'write');
       const text = parts.map((p) => str(p)).join('');
       if (this === document && WINDOWS?.blank()) {
         WINDOWS.write(this, text);
@@ -17006,6 +17007,7 @@ export function installDom(
       this.write(...parts, '\n');
     }
     open(): Any {
+      notXml(this, 'open');
       // `== null`: a wrapper is made without its class's fields
       if (this !== document && this._written == null) {
         this._written = '';
@@ -17016,6 +17018,7 @@ export function installDom(
       return this;
     }
     close(): void {
+      notXml(this, 'close');
       if (this === document && WINDOWS?.blank()) {
         WINDOWS.wrote(this);
         return;
@@ -17030,6 +17033,15 @@ export function installDom(
       }
     }
   }
+  /** What refuses `document.write` and its kin in an XML document, which
+   *  has no parser to write into (HTML 8.4.1 to 8.4.3). */
+  const notXml = (doc: Any, name: string): void => {
+    if (!doc._type) return;
+    throw new DOMException(
+      `Failed to execute '${name}' on 'Document': Only HTML documents support ${name}().`,
+      'InvalidStateError',
+    );
+  };
   /** A document made of XML's rules: `createDocument`'s. */
   class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));

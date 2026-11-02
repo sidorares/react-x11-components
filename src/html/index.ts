@@ -49,7 +49,14 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import {
+  attr,
+  flatParentOf,
+  isElement,
+  isModal,
+  isXmlType,
+  tagOf,
+} from './dom.js';
 import { focusableElement } from './focus.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
@@ -304,6 +311,7 @@ export {
   htmlTextDecoder,
   readyFor,
   sniffEncoding,
+  sniffXmlEncoding,
 } from './encoding.js';
 export type { HtmlTextDecoder } from './encoding.js';
 export { threadTransport } from './thread-transport.js';
@@ -405,6 +413,7 @@ export type {
   ShadowRootMode,
 } from './dom.js';
 export {
+  isXmlType,
   appendChild,
   attachShadow,
   createElement as createHtmlElement,
@@ -435,6 +444,15 @@ export interface HtmlProps {
    * (`renderEmbedded`).
    */
   document?: Document;
+  /**
+   * What `source` was served as, a MIME type (default `text/html`). An XML
+   * type — `application/xhtml+xml`, `image/svg+xml`, `text/xml`, anything
+   * `+xml` — reads it by XML's rules and not HTML's: no element is implied,
+   * moved or dropped, names keep their case, and a document that is not
+   * well-formed is an error and nothing of it. An XML document is read once
+   * all of it is here, so for one `partial` defaults to false.
+   */
+  contentType?: string;
   /**
    * Whether more source may still arrive (default true, matching
    * `<Markdown partial>`). While true the parser is left open and a `source`
@@ -1149,7 +1167,8 @@ function ScriptedHtml(props: HtmlProps): ReactElement {
 function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const {
     source,
-    partial = true,
+    contentType,
+    partial = !(contentType && isXmlType(contentType)),
     selectable = true,
     animate = true,
     stylesheet,
@@ -1352,6 +1371,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   } = {
     source,
     ...(props.document && { document: props.document }),
+    ...(contentType && { contentType }),
     complete: !partial,
     stylesheet,
     charset,

@@ -34,6 +34,8 @@ import {
   shadowRootOf,
   tagOf,
   treeGeneration,
+  isRootElement,
+  isXmlDocument,
 } from '../dom.js';
 import {
   ShapeCopies,
@@ -3657,8 +3659,11 @@ class Builder {
     const styles = this._styles;
     cascade.stylesOf = (el) => styles.get(el)?.style;
     cascade.pageColorScheme = metaColorScheme(root);
-    const body = hasBody(root);
-    const html = hasHtml(root);
+    // what the HTML parser's documents have, written or implied: an XML
+    // document's root element is whatever it says, with nothing around it
+    const xml = isXmlDocument(root);
+    const body = xml || hasBody(root);
+    const html = xml || hasHtml(root);
     const { style: rootStyle, html: impliedHtml } = cascade.rootStyle(
       body,
       html,
@@ -3683,7 +3688,9 @@ class Builder {
     // the initial containing block's direction is the root element's (CSS
     // 2.1 10.1), which puts an `<html>` narrower than it at its right end
     if (body && html) {
-      const top = rootBox.children.find((b) => b.el && tagOf(b.el) === 'html');
+      const top = rootBox.children.find(
+        (b) => b.el && (tagOf(b.el) === 'html' || isRootElement(b.el)),
+      );
       if (top) rootStyle.direction = top.style.direction;
     }
     cascade.endSharing();
@@ -5895,7 +5902,7 @@ function viewportOverflowOf(
   for (const child of childrenOf(root)) {
     if (!isElement(child)) continue;
     const tag = tagOf(child);
-    if (tag !== 'html' && tag !== 'body') continue;
+    if (tag !== 'html' && tag !== 'body' && !isRootElement(child)) continue;
     const given = overflowGivenToViewport(styles.get(child)?.style);
     if (given) return given;
     if (tag !== 'html') continue;

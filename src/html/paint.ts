@@ -159,7 +159,7 @@ import type {
 import type { SelectionStyle } from './css/cascade.js';
 import type { DrawingUnits } from './css/shapes.js';
 import type { Element } from './dom.js';
-import { topLayerOrder, treeGeneration } from './dom.js';
+import { isRootElement, tagOf, topLayerOrder, treeGeneration } from './dom.js';
 import {
   CLIPPED_TEXT,
   clipBoxOf,
@@ -1642,7 +1642,7 @@ function canvasBackground(tree: BoxTree): CanvasBackground | null {
       ? { style: root.style, source: root, anchor: impliedFrame(tree) }
       : null;
   }
-  const top = childNamed(root, 'html') ?? root;
+  const top = topBox(root);
   if (has(top.style)) return { style: top.style, source: top, anchor: top };
   const body = childNamed(top, 'body');
   if (!body || top.style.contain || body.style.contain) return null;
@@ -1694,7 +1694,7 @@ function groundScheme(
  *  or that of whichever box stands in for it (`canvasBackground`). */
 function rootScheme(tree: BoxTree): 'light' | 'dark' {
   if (tree.impliedHtml) return tree.impliedHtml.colorScheme;
-  return (childNamed(tree.root, 'html') ?? tree.root).style.colorScheme;
+  return topBox(tree.root).style.colorScheme;
 }
 
 /**
@@ -1750,13 +1750,24 @@ function canvasArea(
  *  an anonymous row and cell. */
 function childNamed(box: Box, name: string): Box | null {
   for (const child of box.children) {
-    if (child.el?.name === name) return child;
+    if (child.el && tagOf(child.el) === name) return child;
     if (!child.el) {
       const found = childNamed(child, name);
       if (found) return found;
     }
   }
   return null;
+}
+
+/** The box of the document's root element — an `<html>`, or in an XML
+ *  document whatever it is — or the box that stands in for it. */
+function topBox(root: Box): Box {
+  const html = childNamed(root, 'html');
+  if (html) return html;
+  for (const child of root.children) {
+    if (child.el && isRootElement(child.el)) return child;
+  }
+  return root;
 }
 
 function paintCanvas(
@@ -9774,7 +9785,7 @@ function hoistFrom(
     layersWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') continue;
     // the root element is the root stacking context, over its own borders
-    const top = root && child.el?.name === 'html';
+    const top = root && !!child.el && isRootElement(child.el);
     const up =
       nested || top || !stacksLayers(child)
         ? hoistFrom(child, top, nested)
@@ -13750,7 +13761,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
   const size = style.fontSize / scale;
   const inherited = svgInherited(style);
   const units = options.drawingUnits?.() ?? null;
-  const cut = drawingCut(style);
+  const cut = drawingCut(box);
   const set = (on: PaintContext, left: number, top: number): void =>
     drawing.draw(
       on,
@@ -13812,8 +13823,12 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
 
 /** The axes an inline drawing is cut to its content box on: those its
  *  `overflow` is not `visible` on, `auto` among them, as every engine cuts
- *  one. */
-function drawingCut(style: ComputedStyle): DrawingCut {
+ *  one. A drawing that is its document is cut on both, whatever went to the
+ *  viewport (Chrome's `LayoutSVGRoot::ShouldApplyViewportClip`): a `<svg
+ *  width="100">` at the top shows a hundred pixels of what it draws. */
+function drawingCut(box: Box): DrawingCut {
+  const { style, el } = box;
+  if (el && isRootElement(el)) return CUT_BOTH;
   const x = style.overflowX !== 'visible';
   const y = style.overflowY !== 'visible';
   return x && y ? CUT_BOTH : { x, y };
@@ -13823,8 +13838,8 @@ const CUT_BOTH: DrawingCut = { x: true, y: true };
 
 /** Whether an inline drawing shows what it paints past its box on an axis
  *  (`drawingOverflow`). */
-export function drawingOverflows(style: ComputedStyle): boolean {
-  const cut = drawingCut(style);
+export function drawingOverflows(box: Box): boolean {
+  const cut = drawingCut(box);
   return !cut.x || !cut.y;
 }
 
@@ -13835,7 +13850,7 @@ export function drawingOverflows(style: ComputedStyle): boolean {
 function drawingOverflow(box: Box): Rect | null {
   const style = box.style;
   if (!box.el || box.replaced !== 'svg') return null;
-  const cut = drawingCut(style);
+  const cut = drawingCut(box);
   if (cut.x && cut.y) return null;
   const scale = DRAWING_SCALE.get(box) ?? style.effectiveZoom;
   const x = box.contentX;

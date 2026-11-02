@@ -11,7 +11,13 @@
 // inline pass ask "how wide is the line at this y" without knowing whose
 // formatting context it is inside.
 import type { Element } from 'domhandler';
-import { implicitAnchorOf, isInputButton, topLayerOrder } from '../dom.js';
+import {
+  implicitAnchorOf,
+  isInputButton,
+  isRootElement,
+  tagOf,
+  topLayerOrder,
+} from '../dom.js';
 import {
   AUTO,
   gapOf,
@@ -1796,7 +1802,7 @@ export function layoutDocument(
   // root element took its height, or a limit on it, of the viewport above
   let readsViewportHeight = own?.viewport === true;
   for (const child of root.children) {
-    if (child.el?.name !== 'html') continue;
+    if (!child.el || !isRootElement(child.el)) continue;
     child.percentHeightBase = viewportHeight;
     if (readsPercentHeight(child.style)) readsViewportHeight = true;
   }
@@ -9872,7 +9878,7 @@ export function establishesBFC(box: Box): boolean {
   // The root element establishes the document's formatting context. Here it
   // is a box below the synthetic initial containing block, so it is named:
   // without it, <html>'s own margin collapsed with <body>'s first block's.
-  if (box.el?.name === 'html') return true;
+  if (box.el && isRootElement(box.el)) return true;
   // a button's content is in a formatting context of its own, the
   // anonymous button content box's (HTML 15.5.5), whatever its `display`
   if (isButtonBlock(box)) return true;
@@ -10422,8 +10428,8 @@ function stickyOffset(
   // scrolls, or the viewport, whose are the root's and the body's overflow
   let port = box.parent;
   while (port && !scrolls(port.style)) port = port.parent;
-  const tag = port?.el?.name;
-  const inside = !!port && tag !== 'html' && tag !== 'body';
+  const el = port?.el;
+  const inside = !!el && tagOf(el) !== 'body' && !isRootElement(el);
   const cb = stickyContainer(box);
   const size = stickySizeOf(box);
   if (!cb || !size) return [0, 0];
