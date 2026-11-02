@@ -4524,6 +4524,50 @@ test('a context with no alpha says its canvas lets nothing through', async () =>
   assert.equal(host?.canvasOpaque(doc.byId('b')), false);
 });
 
+test('a canvas a WebGL context drew on is an image, whether or not the document shows it', async () => {
+  // jspaint draws its shapes on a canvas nothing shows and copies them with
+  // drawImage, and what the GL held was read in only for what is shown, so
+  // a pencil left no mark. GL's rows go up the picture, and this is premultiplied
+  const picture = [
+    // the bottom row, red and green, then the top, half a red and nothing
+    [255, 0, 0, 255, 0, 255, 0, 255],
+    [64, 0, 0, 128, 0, 0, 0, 0],
+  ].flat();
+  const gl = fakeGL({
+    readPixels: Buffer.from(picture).toString('base64'),
+    getError: 0,
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var c = document.createElement("canvas"); c.width = 2; c.height = 2;' +
+      'var g = c.getContext("webgl", { antialias: false });' +
+      'g.clearColor(1, 0, 0, 1); g.clear(g.COLOR_BUFFER_BIT);' +
+      'var d = document.createElement("canvas"); d.width = 2; d.height = 2;' +
+      'var x = d.getContext("2d");' +
+      'var f = g.createFramebuffer(); g.bindFramebuffer(g.FRAMEBUFFER, f);' +
+      'x.drawImage(c, 0, 0);' +
+      'var px = [].slice.call(x.getImageData(0, 0, 2, 2).data);' +
+      'var bound = g.getParameter(g.FRAMEBUFFER_BINDING) === f;' +
+      'x.drawImage(c, 0, 0); var url = c.toDataURL().slice(0, 15);' +
+      'g.bindFramebuffer(g.FRAMEBUFFER, null);' +
+      'g.clear(g.COLOR_BUFFER_BIT); x.drawImage(c, 0, 0);' +
+      'document.getElementById("out").textContent = JSON.stringify([px, bound, url]);' +
+      '</script>',
+    { webgl: gl.webgl },
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(text, doc.logs.join('\n'));
+  const [px, bound, url] = JSON.parse(text);
+  // the top row first, its half a red made straight
+  assert.deepEqual(px.slice(1, 8), [0, 0, 128, 0, 0, 0, 0]);
+  assert.ok(Math.abs(px[0] - 128) <= 1, `half a red, straight: ${px[0]}`);
+  assert.deepEqual(px.slice(8), [255, 0, 0, 255, 0, 255, 0, 255]);
+  assert.equal(bound, true, 'what the page had bound stays bound');
+  assert.equal(url, 'data:image/png;');
+  const reads = gl.calls.filter(([name]) => name === 'readPixels');
+  assert.equal(reads.length, 2, 'once a picture, however often it is copied');
+});
+
 test("a MediaSource's members answer as Chrome's do, and SourceBuffer takes only what a clip is", async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

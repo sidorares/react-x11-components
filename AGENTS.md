@@ -4167,7 +4167,11 @@ closes a way out a DOM binding opens by accident:
   simulation of a dozen programs. It runs on `gpuWebGL`, a windowless
   x11-dri context per canvas, and it costs a read of the GPU's pixels, so
   **a frame is read as the document paints it** (`PageContexts.settle`, from
-  `DomHost.canvas`) rather than as it is drawn: read at each frame, a glow in
+  `DomHost.canvas`) rather than as it is drawn, **or as a page reads the
+  canvas as an image** (`canvasBitmap`, `WEBGL.pixels`), once a picture.
+  Anything new that reads a canvas's pixels goes through `canvasBitmap`, or
+  a WebGL canvas reads as nothing: jspaint draws its shapes on one nothing
+  shows and copies them, and a pencil left no mark. Read at each frame, a glow in
   a canvas scrolled out of view starved the page's downloads, and a clip's
   10-second load timer dropped the whole section to its fallback, one load
   in three. **The ways desktop GL is not WebGL fail with nothing drawn and no
