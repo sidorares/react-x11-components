@@ -827,6 +827,7 @@ const net = useHtmlNetwork(url);
     scripts={{
       fetch: net.fetch,
       webSocket: net.webSocket,
+      syncNetwork: net.syncNetwork,
       webTransport: net.webTransport,
     }}
   />

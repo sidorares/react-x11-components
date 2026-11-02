@@ -30,14 +30,14 @@ let running: {
 
 /** A jar's store over a copy of the page's cookies, keeping what changes. */
 class CopiedCookies implements HtmlCookieStore {
-  readonly put_: HtmlCookie[] = [];
+  readonly made: HtmlCookie[] = [];
   readonly gone: HtmlCookie[] = [];
   constructor(private readonly _cookies: HtmlCookie[]) {}
   load(): HtmlCookie[] {
     return this._cookies;
   }
   put(cookie: HtmlCookie): void {
-    this.put_.push({ ...cookie });
+    this.made.push({ ...cookie });
   }
   delete(cookie: HtmlCookie): void {
     this.gone.push({ ...cookie });
@@ -65,7 +65,7 @@ async function run(job: SyncJob): Promise<SyncAnswer> {
     return {
       id: job.id,
       answer,
-      ...(store && { put: store.put_, gone: store.gone }),
+      ...(store && { put: store.made, gone: store.gone }),
     };
   } catch (error) {
     return { id: job.id, failed: String((error as Error)?.message ?? error) };
