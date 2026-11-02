@@ -16823,6 +16823,13 @@ export function installDom(
   class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));
 
+  // HTMLOrSVGElement is a mixin as well: without it `focus()` on an element
+  // of a drawing threw, and `tabIndex` was an expando that said nothing
+  for (const name of ['focus', 'blur', 'tabIndex', 'nonce', 'autofocus']) {
+    const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+    if (d) Object.defineProperty(SVGElement.prototype, name, d);
+  }
+
   // ParentNode is a mixin (Web IDL 2.5), so what it has is each
   // interface's own, and they inherit from `Node`. Shady DOM, which
   // YouTube forces, copies `children` and its kin off `Element.prototype`
