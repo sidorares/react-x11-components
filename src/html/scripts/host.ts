@@ -1566,7 +1566,7 @@ function shadowIncludingRoot(node: AnyNode): AnyNode {
  * have an opaque origin and are not, as Chromium and Firefox have them, where
  * 3.2 of the specification would have it otherwise.
  */
-function trustworthy(url: string): boolean {
+export function trustworthy(url: string): boolean {
   try {
     const at = new URL(url);
     if (at.protocol === 'blob:') return trustworthy(at.pathname);
@@ -5467,6 +5467,7 @@ export class DomHost {
             `Blocked a frame from navigating the top window to '${to}'.`,
           );
         }
+        this.windows?.initiates(0);
         parent._seams.navigate(to, 'here');
         return null;
       }
@@ -5499,6 +5500,9 @@ export class DomHost {
         return null;
       case 'windowFind':
         return this.windows?.find(text(a)) ?? 0;
+      case 'windowInitiates':
+        this.windows?.initiates(Number(a));
+        return null;
       case 'windowClose':
         this.windows?.close(Number(a));
         return null;
@@ -5541,6 +5545,7 @@ export class DomHost {
       // back as it is written, and the scripts in it run at the end
       case 'writeWindow': {
         const markup = text(a);
+        this.windows?.wrote();
         if (!b) this._fill(this.document, markup);
         else if (/<script/i.test(markup)) {
           this._replaceAll(this.document, this._htmlTree(markup, true));

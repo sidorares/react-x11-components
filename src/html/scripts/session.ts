@@ -226,6 +226,19 @@ function changed(state: SessionState): void {
   });
 }
 
+/** The window left its browsing context group (`WindowSlot.arrives`), and
+ *  what the session keeps to show again has a slot in the one it left, which
+ *  nothing can come back to: each goes, and is loaded again if it is asked
+ *  for. */
+export function forgetKept(session: HtmlSessionHistory): void {
+  const state = stateOf(session);
+  for (const [doc, live] of [...state.kept]) {
+    state.kept.delete(doc);
+    live.destroy?.();
+  }
+  changed(state);
+}
+
 /** A key or an id: a random UUID, as a browser's are. */
 function uuid(): string {
   const random =

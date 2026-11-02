@@ -258,6 +258,148 @@ document takes its parent's.
 `clients.openWindow` goes to `navigate(url, 'tab')`, whichever client it is told
 through: a worker has no window to be an opener, and a tab is what has none.
 
+## `Cross-Origin-Opener-Policy`
+
+A document says what it will share a browsing context group with
+(`Cross-Origin-Opener-Policy`, HTML 7.1.3), and a window whose next document
+disagrees with the one it shows leaves its group. The opener's reference reads
+`closed`, the window's `opener` and `name` are empty, and nothing crosses between
+them from then on. To the host it is the same window: `HtmlPopup` lives on, and
+closes when the user or a page closes it.
+
+### How a window leaves a group
+
+**A window leaves by being a new one.** The slot it had is discarded to every
+window of the group, as a closed window's is, and the window goes on in a slot of
+a new `WindowGroup` over a new `DomShared` (`WindowSlot.arrives`).
+
+This looked like the hard part, because a group and its tree are one to one and
+everything finds a window through the tree: `adopt`, `slotById`, `find` and
+`follow` all read `shared.windows`. It seemed a severed window had to go on over
+the tree it was in while leaving the group that hangs off it, which would have
+meant two groups on a tree and a question at each of those four. It does not. A
+window leaves as a document comes in, and that document is parsed by a new
+`<Html>` and has no node of the old tree. What a tree is shared for is realms
+handing each other nodes, and a window that has just left has nobody to hand a
+node to. So a new tree costs nothing, and all four are right as they were.
+
+What had to change is the number. Each group counted its own, so a window that
+left would come to share one with a window of its new group, and a host mounts its
+windows by that number. Numbers are the process's now, and a realm can reach
+nothing by one outside its group, since `slotById` asks only its own.
+
+The document the window showed may outlive the leaving, for as long as the host
+takes to let it go. Its slot says `severed`, and from then on its ops find no
+window. It is told every other window has gone, as they are told it has.
+
+### What decides it
+
+The host, in the `ScriptRunner`'s constructor, before the document has a realm:
+`WindowSlot.arrives` reads `scripts.headers` and `scripts.redirects`, holds them to
+what the slot says the window shows (`active`), and answers the slot the document
+comes into. A page cannot reach any of it, since the decision is made before it
+has a line of script running. A host that hands in no headers is a host of no
+policies, which is every host before this. `coop.ts` is the rules, and pure.
+
+- **Each response is held to the one before it.** A redirect's policy counts,
+  whatever the last response says, and once a response has taken the window out
+  nothing puts it back. So `HtmlNetwork.document` follows a document's redirects
+  itself where it did not already, jar or no jar, to read what each one said:
+  `fetch` shows none of them.
+- **The window's first document has a rule of its own.** It has the policy of the
+  document that made it, if that is of its top-level document's origin. An opener
+  of `same-origin-allow-popups` lets it go to a document with no policy, and that
+  is the rule a popup login stands on: `same-origin-allow-popups` behaves as it did
+  before any of this, through the provider's pages and home, unless the callback
+  has a policy of its own, which a provider with none does not match. A browser
+  ends that login too. `document.write` ends it being the first, as it does in
+  HTML.
+- **A frame's document says nothing.** Only a top-level document's response is
+  read. What a frame opens is another matter: one of another origin than a page of
+  `same-origin` opens windows with no opener, as tabs, and `window.open` answers it
+  null. That is decided on the host too, in `open` and `follow`, and only for a new
+  window, since a name still finds the window it names. HTML's text says the
+  document's own policy here, which a frame has none of, and its note and WPT say
+  the top's. A frame that has sandboxing flags to hand on opens a window here
+  instead, in a group of its own: a tab carries no flags, so as a tab it would
+  have left its sandbox.
+- **Over no secure context a policy says nothing**, by the address of each
+  response, so a window can go from `http:` to `https:` and be taken out there.
+
+Two answers go by what browsers do rather than by HTML's text, and each is what
+WPT holds:
+
+- **A local document has its policy from who sent the window there.** HTML gives
+  `about:blank` no policy and enforces none, and Chrome and Safari take the policy
+  of the document that navigated, or of the top of its frames where it is of that
+  origin, and hold the window to it. So `slot.initiator` notes who sent the window
+  somewhere by a path the host cannot see, and a `blob:` document does the same.
+- **A document's own `sandbox` is no refusal.** A response with a policy, where
+  the window has sandboxing flags, is a network error: nothing of it runs or is
+  drawn, since a document cannot be given a clean slate and be sandboxed at once.
+  HTML's text counts the response's own `Content-Security-Policy: sandbox` among
+  those flags, and Chrome and Safari do not: such a document loads, with an opaque
+  origin, which is enough to take it from its opener.
+
+### What it does not give
+
+**A window that left is still in this process.** Its opener cannot reach it, and
+that is what COOP says to a page. It says more to a browser, which puts the two in
+processes of their own to keep Spectre from reading across, and here the two realms
+share a thread, as every window with an opener does. So this is a reference cut,
+not an isolation: `window.crossOriginIsolated` is false wherever it is asked, which
+is HTML's "logical" cross-origin isolation mode, kept for a user agent that cannot
+give the capability, and `SharedArrayBuffer` is not held to it.
+
+**Nothing is reported.** `Cross-Origin-Opener-Policy-Report-Only` and `report-to`
+are parsed past and do nothing: there is no Reporting API here to tell, and
+`html/cross-origin-opener-policy/reporting/` stays where it was.
+
+**`Cross-Origin-Embedder-Policy` only names a policy.** `same-origin` with one is
+`same-origin-plus-COEP`, a policy `same-origin` alone does not match, which is all
+it is read for: nothing enforces it on what the document loads.
+
+**A window that left and goes back** comes back to a document of its own origin
+with no opener, as in a browser. What the session kept of it is let go as it leaves
+(`forgetKept`): it has a slot in the group the window left, which nothing can come
+back to, so a browser's back-forward cache keeps it where this loads it again.
+
+**A same-origin window sent to `about:blank` through its `location`** goes by what
+it showed, not by who sent it: the setter runs in that window's realm, and nothing
+there says which realm called it. `window.open(url, name)` and a window of another
+origin do say.
+
+### Scores
+
+`html/cross-origin-opener-policy/`, against the same checkout and the same runner.
+The runner had been dropping a test's own headers on its way to `<Html>`, and could
+not load `about:blank`; both are fixed here, so what is below is the engine's.
+
+| directory    | tests | subtests             | before | after |
+| ------------ | ----- | -------------------- | ------ | ----- |
+| all but this | 111   | 207 to 486 of 520    | 32.5%  | 85.7% |
+| `reporting/` | 51    | no reporting to tell | 13.4%  | 13.4% |
+
+Of the 111, 91 pass whole and none scored lower. Of the 20 that do not, none is a
+decision of `coop.ts`:
+
+- `javascript-url`, nine variants: a top-level `javascript:` URL makes no document
+  of what it answers.
+- `blob-popup` and `coep-blob-popup`: no host can load a `blob:` document, as
+  nothing hands it the bytes.
+- `coep-with-*`, three: each passes but for `crossOriginIsolated`, which is false
+  here on purpose.
+- `coop-navigated-popup`: a relative address set on another window's `location` is
+  resolved against that window, where HTML resolves it against the page that set it.
+- `coop-same-origin-allow-popups-document-write`: `<meta http-equiv=refresh>` does
+  nothing.
+- `header-parsing-failures?1-4`: the HTTP client refuses a response with a vertical
+  tab in a header, so no popup loads to be asked.
+- `coop-csp-sandbox-navigate`: a window that has gone answers `undefined` for
+  `document`, where a browser keeps the object it last had.
+- `coop-sandbox` and `coop-coep-sandbox`: three of four pass, and the frame with
+  `sandbox` and COOP times out as it did before, which this did not look into.
+
 ## The example browser
 
 A popup is a managed `<popup>`, a real window on X11, Cocoa and win32, in the
@@ -288,11 +430,6 @@ the prototype, frames nested in frames, `document.domain`, and a window's
 
 ## Left out
 
-- **Cross-Origin-Opener-Policy.** A provider that sends `same-origin` severs the
-  opener in a browser, and does not here. Login flows that work in a browser
-  send `same-origin-allow-popups`, which this already behaves as. It waits on a
-  window being able to leave its group: `WindowGroup` and `DomShared` are one to
-  one, and a severed window has to go on over the tree of nodes it is in.
 - **A window opened from a realm-less frame** opens as its page: such a frame
   has no script of its own to call it, only the page reaching in.
 - **`resizeTo` and `moveTo`** on a popup, and `screenX` and `screenY`: a popup

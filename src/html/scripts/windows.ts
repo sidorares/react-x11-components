@@ -318,10 +318,12 @@ export function installWindows(deps: WindowDeps): WindowInternals {
   hidden('__openerId', (): number => openerId);
   hidden('__global', G);
 
-  /** The name a window goes by in the group, where one has it. */
-  const windowNamed = (name: string): Any => {
-    const id = Number(call('windowFind', name));
-    return id ? windowOf(id) : null;
+  /** Send a window up this one's frames somewhere. A page's script does that
+   *  through its `location`, which the host cannot see from here, and a local
+   *  document there takes its policy from this one (`WindowSlot.initiator`). */
+  const sendUp = (win: Any, href: string): void => {
+    if (win === G.top) call('windowInitiates', 0);
+    win.location.href = href;
   };
 
   /**
@@ -344,13 +346,18 @@ export function installWindows(deps: WindowDeps): WindowInternals {
       const win = keyword === '_top' ? G.top : G.parent;
       if (win === G) {
         if (href) deps.openHere(href, '_self');
-      } else if (href) win.location.href = href;
+      } else if (href) sendUp(win, href);
       return win;
     }
     const framed = deps.openInFrame(target, href, noopener);
     if (framed) return framed;
-    const win = windowNamed(target);
-    if (win && href) win.location.href = href;
+    const id = Number(call('windowFind', target));
+    if (!id) return null;
+    const win = windowOf(id);
+    if (href) {
+      call('windowInitiates', id);
+      win.location.href = href;
+    }
     return win;
   };
 
@@ -547,7 +554,7 @@ export function installWindows(deps: WindowDeps): WindowInternals {
       if (keyword === '_parent' || keyword === '_top') {
         const win = keyword === '_top' ? G.top : G.parent;
         if (win === G) return false;
-        win.location.href = href;
+        sendUp(win, href);
         return true;
       }
       if (call('windowFollow', href, target, rel) === true) return true;

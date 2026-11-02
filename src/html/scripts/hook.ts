@@ -264,6 +264,9 @@ export function useScripts(
     get headers() {
       return latest.current.headers;
     },
+    get redirects() {
+      return latest.current.redirects;
+    },
     get workers() {
       return latest.current.workers;
     },

@@ -74,6 +74,7 @@ import {
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
+  HtmlDocumentHop,
   FakeMediaDevices,
   HtmlClipboard,
   HtmlHandle,
@@ -375,6 +376,7 @@ interface Loaded {
   baseUrl: string;
   charset: string;
   headers?: [string, string][];
+  redirects?: HtmlDocumentHop[];
 }
 
 /**
@@ -605,10 +607,21 @@ function Tab(props: {
     number?: number,
     post?: { body: string | Uint8Array; contentType: string } | null,
   ) => {
-    void network
-      .html(url, {
-        post: post ? { ...post, from: session.current?.url ?? url } : null,
-      })
+    // a document of no response, as a browser makes one itself
+    const blank = {
+      source: '',
+      url,
+      charset: 'utf-8',
+      headers: [],
+      redirects: [],
+    };
+    void (
+      url === 'about:blank'
+        ? Promise.resolve(blank)
+        : network.html(url, {
+            post: post ? { ...post, from: session.current?.url ?? url } : null,
+          })
+    )
       .then((doc) => {
         if (page !== current) return;
         // at the fragment it was asked for, which a fetch's answer drops
@@ -628,6 +641,7 @@ function Tab(props: {
                 baseUrl: at,
                 charset: doc.charset,
                 headers: doc.headers,
+                redirects: doc.redirects,
               },
               number,
             },
@@ -680,6 +694,7 @@ function Tab(props: {
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
       headers: doc.headers,
+      redirects: doc.redirects,
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
@@ -1216,6 +1231,7 @@ async function render(
         baseUrl: doc.url,
         charset: doc.charset,
         headers: doc.headers,
+        redirects: doc.redirects,
       },
       network,
       page,
@@ -1372,7 +1388,13 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   await show(
     h(Run, {
       key: `${serial++}`,
-      first: { source: doc.source, baseUrl: doc.url, charset: doc.charset },
+      first: {
+        source: doc.source,
+        baseUrl: doc.url,
+        charset: doc.charset,
+        headers: doc.headers,
+        redirects: doc.redirects,
+      },
       network,
       page,
     }),

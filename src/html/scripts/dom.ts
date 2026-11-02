@@ -10311,6 +10311,7 @@ export function installDom(
       visualViewport: () => visualOf(view),
       crypto: () => crypto,
       isSecureContext: () => call('secureContext') === true,
+      crossOriginIsolated: () => false,
       // its own session history (`makeSession`), made as it is asked for
       history: () => frameSessionOf(frame, current, target).history,
       navigation: () => frameSessionOf(frame, current, target).navigation,
@@ -32027,9 +32028,12 @@ export function installDom(
   /** A window attribute, `[Replaceable]` where HTML says so: what a page
    *  assigns takes its place, as a classic script's top-level `var length`
    *  does, where it was dropped and the name went on reading the window's.
-   *  `closed` and `isSecureContext` are only read. */
+   *  `closed`, `isSecureContext` and `crossOriginIsolated` are only read. */
   const getter = (name: string, get: () => Any): void => {
-    const replaceable = name !== 'closed' && name !== 'isSecureContext';
+    const replaceable =
+      name !== 'closed' &&
+      name !== 'isSecureContext' &&
+      name !== 'crossOriginIsolated';
     Object.defineProperty(G, name, {
       get,
       ...(replaceable && {
@@ -32718,6 +32722,9 @@ export function installDom(
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);
+  // every realm here shares a process, which is the "logical" cross-origin
+  // isolation mode HTML keeps for a user agent that cannot give the capability
+  getter('crossOriginIsolated', () => false);
   getter('event', () => currentEvent);
   getter('origin', () => documentOrigin());
   // The window's own strings, made strings as they are set, as a

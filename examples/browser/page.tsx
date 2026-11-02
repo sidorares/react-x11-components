@@ -126,6 +126,7 @@ import {
   gpuWebGL,
 } from '../../src/html/index.js';
 import type {
+  HtmlDocumentHop,
   Document,
   DocumentResponse,
   Element,
@@ -496,6 +497,8 @@ interface Doc {
   filename?: string;
   /** Its response's headers, for what it says of itself to its engine. */
   headers?: [string, string][];
+  /** The responses that redirected it here, which count as much. */
+  redirects?: HtmlDocumentHop[];
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -525,6 +528,8 @@ interface View {
   overflow?: ViewportOverflow;
   /** Its response's headers (`Doc.headers`). */
   headers?: [string, string][];
+  /** The responses that redirected it here (`Doc.redirects`). */
+  redirects?: HtmlDocumentHop[];
 }
 
 /** The documents the tab has an `<Html>` for, and which of them is shown. */
@@ -905,6 +910,7 @@ export default function Page(props: PageProps): ReactElement {
       scripted: runs && engine !== false,
       zoom: live.current.zoom,
       headers: doc.headers,
+      redirects: doc.redirects,
     };
     setViews(({ views }) => ({
       views: [...overtaken(views, again), view],
@@ -1563,6 +1569,7 @@ export default function Page(props: PageProps): ReactElement {
   const scriptsOf = (view: View): HtmlScripts | false =>
     view.scripted && {
       headers: view.headers,
+      redirects: view.redirects,
       userAgent: props.userAgent ?? DEFAULT_USER_AGENT,
       language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
       // what the platform's player opens, where there is one: a stream's
@@ -2316,6 +2323,7 @@ async function loadDocument(
     baseUrl: at,
     url: at,
     headers: response.headers,
+    redirects: response.redirects,
   };
   on.commit(at, first, null, posted);
   let last = Date.now();

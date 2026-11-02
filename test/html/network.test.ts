@@ -830,6 +830,50 @@ test('a redirect followed by the network: a loop ends, and a POST’s 302 is a G
   assert.equal(answer.url, `${origin}/echo`);
 });
 
+test('a document says what redirected it, with a jar or without, and each hop what it said', async (t) => {
+  const server = createServer((req, res) => {
+    if (req.url === '/one') {
+      res.writeHead(302, {
+        location: '/two',
+        'cross-origin-opener-policy': 'same-origin',
+      });
+      res.end();
+    } else if (req.url === '/two') {
+      res.writeHead(307, { location: '/end' });
+      res.end();
+    } else {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<!doctype html>');
+    }
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const signal = new AbortController().signal;
+  for (const network of [
+    new HtmlNetwork({ connectTimeout: null }),
+    new HtmlNetwork({ connectTimeout: null, cookies: new CookieJar() }),
+  ]) {
+    const doc = await network.document(`${origin}/one`, signal);
+    assert.equal(doc.url, `${origin}/end`);
+    assert.equal(doc.redirected, true);
+    assert.deepEqual(
+      doc.redirects?.map((hop) => hop.url),
+      [`${origin}/one`, `${origin}/two`],
+    );
+    assert.ok(
+      doc.redirects?.[0].headers.some(
+        ([name, value]) =>
+          name === 'cross-origin-opener-policy' && value === 'same-origin',
+      ),
+      'what the redirect said is kept',
+    );
+    await readText(doc.body);
+    const page = await network.html(`${origin}/end`);
+    assert.deepEqual(page.redirects, []);
+  }
+});
+
 test('a network with no jar keeps no cookies and leaves redirects to the transport', async () => {
   const asked: string[] = [];
   const network = new HtmlNetwork({

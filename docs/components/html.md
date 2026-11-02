@@ -1011,6 +1011,8 @@ since this component navigates nowhere by itself:
 | `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                          |
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
 | `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
+| `headers`        | none                      | The headers of the response the document came in, for what it says of itself: its `sandbox`, its `Cross-Origin-Opener-Policy`.                                                   |
+| `redirects`      | none                      | The responses that redirected it here, each `{ url, headers }`, whose policies count as much.                                                                                    |
 | `popup`          | none                      | The window this document is shown in, where a page opened it.                                                                                                                    |
 | `close`          | nothing                   | A page closed the tab it is in, with `window.close()`.                                                                                                                           |
 | `reload`         | nothing                   | `location.reload()`.                                                                                                                                                             |
@@ -2285,8 +2287,30 @@ opened; a host knows the rest, and answers true where it closes, which `closed` 
 reads. A tab a host opened under a name, the fourth argument of `navigate`, goes by it
 through `scripts.windowName`.
 
-Not done: `Cross-Origin-Opener-Policy`, `moveTo` and
-`resizeTo` ([the design](../prd-popups.md#left-out)).
+**A document's `Cross-Origin-Opener-Policy` is enforced by the host**, as the
+document comes in and before it has a realm (`src/html/scripts/coop.ts`, HTML 7.1.3).
+Where it says so the window leaves its group: its opener reads `closed` as true, its
+`opener` and `name` are empty, no name finds it and nothing crosses either way. A
+window of `same-origin` keeps only windows of its origin and its policy, and one of
+`same-origin-allow-popups` keeps a window that goes to a document with no policy,
+which is what a popup login needs, and it behaves as it always did: another
+origin, a redirect home, `opener.postMessage` and `close()`. The rules are HTML's,
+header parsing and redirects among them, so hand in `scripts.redirects` beside
+`scripts.headers`: `HtmlNetwork`'s `document` and `html` answer both, and each
+response on the way counts. A host that hands in neither gets no policies. A frame
+of another origin in a page of `same-origin` opens windows with no opener, which go
+to `navigate(url, 'tab')`, and `window.open` answers it null. One with sandboxing
+flags to hand on goes to `popups.open` instead, since a tab carries none.
+
+To the host a window that left is the window it was: `HtmlPopup` goes on, and its
+documents still have `scripts.popup`. It is not isolated, since it stays in this
+process as every window with an opener does, so `crossOriginIsolated` is false, and
+`Cross-Origin-Embedder-Policy` is read only to name the policy. Nothing is reported:
+`Cross-Origin-Opener-Policy-Report-Only` does nothing. A window with sandboxing flags
+turns down a document with a policy as a network error: nothing of it runs or is
+drawn.
+
+Not done: `moveTo` and `resizeTo` ([the design](../prd-popups.md#left-out)).
 
 ### Sandboxes and framing
 

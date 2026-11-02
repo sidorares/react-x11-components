@@ -369,6 +369,13 @@ export type Loaded =
    *  was cut short, or the page went away before the request was made. */
   | { failed: unknown };
 
+/** A response on the way to a document, that redirected it: where it came
+ *  from, and what it said. */
+export interface HtmlDocumentHop {
+  url: string;
+  headers: [string, string][];
+}
+
 /** A document on its way: the head of the response, and the body as it
  *  arrives. */
 export interface DocumentResponse {
@@ -387,6 +394,9 @@ export interface DocumentResponse {
   /** Its response's headers, for what a document says of itself
    *  (`HtmlScripts.headers`). */
   headers?: [string, string][];
+  /** The responses that redirected it here, first first
+   *  (`HtmlScripts.redirects`). */
+  redirects?: HtmlDocumentHop[];
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
@@ -712,15 +722,18 @@ export class HtmlNetwork {
    * request's credentials mode lets it carry them: each redirect followed
    * here, the `Set-Cookie` of every response on the way stored and the
    * cookies of every URL on the way sent (Fetch 4.4, 4.5). Without a jar,
-   * the transport follows redirects, as it always did.
+   * the transport follows redirects, as it always did, but where the caller
+   * asks for the responses on the way in `hops`, which it cannot see.
    */
   private async _exchange(
     url: string,
     init: Omit<Parameters<HtmlTransport>[1], 'redirect'>,
     cookies: CookieRequest | null,
+    hops: HtmlDocumentHop[] | null = null,
   ): Promise<ResponseLike> {
-    const jar = this._cookies;
-    if (!jar || !cookies || cookies.credentials === 'omit') {
+    const jar = cookies?.credentials === 'omit' ? null : this._cookies;
+    const carrying = jar && cookies ? { jar, cookies } : null;
+    if (!carrying && !hops) {
       return this._send(url, { ...init, redirect: 'follow' });
     }
     let at = url;
@@ -731,18 +744,23 @@ export class HtmlNetwork {
      *  its way is held to as not same-site (6265bis 5.2). */
     const before: string[] = [];
     for (let hop = 0; ; hop += 1) {
-      const include =
-        cookies.credentials === 'include' || originOf(at) === cookies.origin;
-      const sameSite = this._sameSite(at, cookies, before);
-      const context = {
-        http: true,
-        sameSite,
-        topLevel: cookies.topLevel,
-        method,
-      };
+      const sending =
+        carrying &&
+        (carrying.cookies.credentials === 'include' ||
+          originOf(at) === carrying.cookies.origin)
+          ? {
+              jar: carrying.jar,
+              context: {
+                http: true,
+                sameSite: this._sameSite(at, carrying.cookies, before),
+                topLevel: carrying.cookies.topLevel,
+                method,
+              },
+            }
+          : null;
       delete headers.cookie;
-      if (include) {
-        const header = jar.header(at, context);
+      if (sending) {
+        const header = sending.jar.header(at, sending.context);
         if (header) headers.cookie = header;
       }
       const response = await this._send(at, {
@@ -755,7 +773,9 @@ export class HtmlNetwork {
           : { streamedBody: undefined }),
         redirect: 'manual',
       });
-      if (include) jar.store(at, setCookies(response.headers), context);
+      if (sending) {
+        sending.jar.store(at, setCookies(response.headers), sending.context);
+      }
       const location = response.headers.get('location');
       if (!REDIRECTS.has(response.status) || location === null) {
         return answered(
@@ -764,6 +784,7 @@ export class HtmlNetwork {
           hop > 0 || response.redirected,
         );
       }
+      hops?.push({ url: at, headers: [...response.headers.entries()] });
       response.body
         ?.getReader()
         .cancel()
@@ -1409,6 +1430,7 @@ export class HtmlNetwork {
     );
     this._sent(id);
     let response: ResponseLike;
+    const redirects: HtmlDocumentHop[] = [];
     try {
       response = await this._exchange(
         url,
@@ -1430,6 +1452,7 @@ export class HtmlNetwork {
                 ? post.from
                 : null,
         },
+        redirects,
       );
     } catch (error) {
       stall.stop();
@@ -1449,6 +1472,7 @@ export class HtmlNetwork {
       disposition: response.headers.get('content-disposition'),
       size: Number(response.headers.get('content-length')) || null,
       headers: [...response.headers.entries()],
+      redirects,
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
@@ -1751,6 +1775,7 @@ export class HtmlNetwork {
     charset: string;
     source: string;
     headers: [string, string][];
+    redirects: HtmlDocumentHop[];
   }> {
     const signal = options.signal ?? new AbortController().signal;
     const response = await this.document(url, signal, options.post ?? null);
@@ -1766,6 +1791,7 @@ export class HtmlNetwork {
       charset,
       source: decodeText(bytes, charset),
       headers: response.headers ?? [],
+      redirects: response.redirects ?? [],
     };
   }
 
