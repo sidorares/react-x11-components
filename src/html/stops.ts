@@ -35,6 +35,7 @@ import {
   XK_SPACE,
   XK_TAB,
   ctrlChordLetter,
+  primaryModifierHeld,
 } from 'react-x11/keysyms';
 
 import type {} from 'react-x11/jsx-runtime';
@@ -184,9 +185,9 @@ export function useFocusStops(options: StopsOptions): Stops {
     // the surface focused (`TextSelection.keyDown`, by the same rule); a
     // stop inside it is focused instead, and the document's selection is
     // still what they are for.
-    if (selectable && ev.ctrlKey) {
+    const surface = root.current;
+    if (selectable && primaryModifierHeld(ev, view.current?.app)) {
       const letter = ctrlChordLetter(ev);
-      const surface = root.current;
       if (letter === 0x61 /* a */ && surface) {
         surface.selectAll();
         ev.preventDefault();
