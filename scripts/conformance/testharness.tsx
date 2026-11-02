@@ -937,6 +937,19 @@ async function driver(what: string, body: string | null): Promise<string> {
 
 /** Where the last action sequence is. */
 let sequences: Promise<unknown> = Promise.resolve();
+/** The buttons and keys actions left down, which a test that ended early
+ *  would leave down for the next: wptrunner releases them between tests. */
+const buttonsDown = new Set<number>();
+const keysDown = new Set<number>();
+
+function releaseActions(): void {
+  const server = harness?.server;
+  if (!server) return;
+  for (const button of buttonsDown) server.injectButton(button, false);
+  for (const key of keysDown) server.injectKey(key, false);
+  buttonsDown.clear();
+  keysDown.clear();
+}
 /** Where the pointer was left: a sequence relative to it goes on from there. */
 let pointerX = 0;
 let pointerY = 0;
@@ -1000,7 +1013,7 @@ async function perform(
         }
       } else if (type === 'pointerDown' || type === 'pointerUp') {
         const button = Number(a.button ?? 0);
-        server.injectButton(
+        const x =
           button === 1
             ? 2
             : button === 2
@@ -1009,9 +1022,10 @@ async function perform(
                 ? 8
                 : button === 4
                   ? 9
-                  : 1,
-          type === 'pointerDown',
-        );
+                  : 1;
+        server.injectButton(x, type === 'pointerDown');
+        if (type === 'pointerDown') buttonsDown.add(x);
+        else buttonsDown.delete(x);
       } else if (type === 'keyDown' || type === 'keyUp') {
         // a character on a key's shifted level is that key with Shift, which
         // WebDriver's virtual keyboard presses by itself and this one must
@@ -1026,6 +1040,8 @@ async function perform(
           if (shifted && type === 'keyDown') server.injectKey(shift, true);
           server.injectKey(code, type === 'keyDown');
           if (shifted && type === 'keyUp') server.injectKey(shift, false);
+          if (type === 'keyDown') keysDown.add(code);
+          else keysDown.delete(code);
         }
       }
     }
@@ -1406,6 +1422,9 @@ process.on('uncaughtException', (error) => {
 
 const tests = readFileSync(listFile, 'utf8').split('\n').filter(Boolean);
 for (const test of tests) {
+  // what a test that ended early left running would be pressed into the next
+  await sequences;
+  releaseActions();
   let outcome: Outcome;
   try {
     const head = await new HtmlNetwork().html(urlFor(test));
