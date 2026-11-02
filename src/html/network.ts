@@ -214,6 +214,12 @@ export interface HtmlNetworkOptions {
    *  request. Default nowhere. */
   log?: (...parts: unknown[]) => void;
   /**
+   * A module to import on the thread a page's synchronous requests are made
+   * on, as a URL, before it makes one: whatever a host has changed about this
+   * thread that requests depend on, such as a resolver. Default none.
+   */
+  threadSetup?: string;
+  /**
    * How a page's WebTransport sessions are opened (`webTransport`): over
    * `quico`, an optional peer — pure JavaScript QUIC, HTTP/3 and
    * WebTransport — with the server's certificate verified against `ca`,
@@ -240,6 +246,22 @@ export interface HtmlNetworkOptions {
    * carries a cookie, and none is kept.
    */
   cookies?: CookieJar;
+}
+
+/**
+ * What makes a network again on another thread, for a page's synchronous
+ * requests (`<Html scripts={{ syncNetwork }}>`). It is data, since a function
+ * cannot cross: what `HtmlNetwork.syncNetwork` answers.
+ */
+export interface HtmlSyncNetwork {
+  /** What it is made with there. */
+  options: Partial<HtmlNetworkOptions>;
+  /** The jar that goes over with each request and hears what became of it. */
+  cookies: CookieJar | null;
+  /** Whether the jar has the Public Suffix List. */
+  publicSuffix: boolean;
+  /** A module to import on that thread first. */
+  setup?: string;
 }
 
 /** Whose cookies a request carries (Fetch, a request's credentials mode),
@@ -522,6 +544,7 @@ export class HtmlNetwork {
   private _language: string;
   private _userAgent: string;
   private readonly _transport: HtmlTransport | null;
+  private readonly _threadSetup: string | null;
   private readonly _files: boolean;
   private _connectTimeout: number | null;
   private readonly _timeout: number;
@@ -553,6 +576,7 @@ export class HtmlNetwork {
       options.connectTimeout === undefined ? 2500 : options.connectTimeout;
     this._timeout = options.timeout ?? TIMEOUT;
     this._log = options.log ?? (() => {});
+    this._threadSetup = options.threadSetup ?? null;
     this._webTransport = options.webTransport ?? {};
     this._webRTC = options.webRTC !== false;
     this._webSocket = options.webSocket !== false;
@@ -660,10 +684,35 @@ export class HtmlNetwork {
           userAgent: this._userAgent,
           language: this._language,
           cookies: this._cookies,
-          site,
+          // no document of no origin is same-site with anything
+          site: request.origin === 'null' ? null : site,
           turns: this._socketTurns,
         });
       },
+    };
+  }
+
+  /**
+   * What a page's synchronous requests are made through (`<Html scripts={{
+   * syncNetwork }}>`), which is a network like this one on a thread of its
+   * own, since a page that waits has stopped this one. It sends this one's
+   * cookies, and they are this one's again once it has its answer. Null where
+   * nothing here can be had on a thread: with a `fetch` transport of the
+   * host's. It keeps no cache, and hears nothing of what this one has kept.
+   */
+  syncNetwork(): HtmlSyncNetwork | null {
+    if (this._transport) return null;
+    return {
+      options: {
+        userAgent: this._userAgent,
+        resourceBytes: this._resourceLimit,
+        files: this._files,
+        connectTimeout: this._connectTimeout,
+        timeout: this._timeout,
+      },
+      cookies: this._cookies,
+      publicSuffix: this._cookies?.hasPublicSuffix ?? false,
+      ...(this._threadSetup && { setup: this._threadSetup }),
     };
   }
 
@@ -1696,7 +1745,7 @@ export class HtmlNetwork {
             credentials: request.credentials ?? 'same-origin',
             origin: request.opaqueOrigin ? 'null' : originOf(client),
             // no document of no origin is same-site with anything
-            site: request.opaqueOrigin ? 'about:blank' : page,
+            site: request.opaqueOrigin ? null : page,
             topLevel: false,
             initiator: null,
           },
@@ -2108,7 +2157,7 @@ function runtimeSocket(
     userAgent: string;
     language: string;
     cookies: CookieJar | null;
-    site: string;
+    site: string | null;
     turns: Map<string, Promise<void>>;
   },
 ): WebSocketConnectionLike {
@@ -3059,6 +3108,9 @@ export interface HtmlNetworkSeams {
   webTransport: HtmlWebTransport;
   webSocket: HtmlWebSocket;
   webRTC: HtmlWebRTC;
+  /** What a page's synchronous requests are made through, where this network
+   *  can be had on a thread. */
+  syncNetwork: HtmlSyncNetwork | null;
   /** The network's cookie jar, for `<Html scripts={{ cookies }}>`, where it
    *  has one. */
   cookies?: CookieJar;
@@ -3096,6 +3148,7 @@ export function useHtmlNetwork(
       fetch: net.fetcher(address),
       webTransport: net.webTransport,
       webSocket: net.webSockets(address),
+      syncNetwork: net.syncNetwork(),
       webRTC: net.webRTC,
       ...(net.cookies ? { cookies: net.cookies } : {}),
     }),

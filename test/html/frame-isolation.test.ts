@@ -4,16 +4,24 @@
 // `frame-ancestors`, which `framing.ts` does. Each is the host's to hold, so
 // the tests are a page doing what it should not, and what it was told.
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, test as nodeTest } from 'node:test';
 import { act, cleanup, renderX11 } from 'react-x11/test';
 
-import { Html, preloadHtmlScripts } from '../../src/html/index.js';
+import { Document, Element } from 'domhandler';
+
+import { Html, HtmlNetwork, preloadHtmlScripts } from '../../src/html/index.js';
+import { CookieJar } from '../../src/html/cookies.js';
 import type { HtmlPopup, HtmlScripts } from '../../src/html/index.js';
+import type { HtmlPermissionState } from '../../src/html/permissions.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { framingRefused } from '../../src/html/scripts/framing.js';
+import { DomHost } from '../../src/html/scripts/host.js';
 import type {
   FetchRequest,
   FetchResponse,
+  HostSeams,
 } from '../../src/html/scripts/host.js';
 import {
   SB_ALL,
@@ -753,7 +761,6 @@ test('document.domain and the storage getters answer for an origin of none', asy
         read('domain', () => document.domain);
         read('set domain', () => { document.domain = 'app.test'; return 'set'; });
         read('getter', () => window.localStorage);
-        read('locks', () => navigator.locks.request);
       `),
     },
   );
@@ -814,11 +821,9 @@ test('a page replacing what the facade reads an origin through gets no store, no
         };
         window.String = () => 'https://app.test';
         const url = URL.createObjectURL(new Blob(['postMessage(self.origin)']));
-        let area;
-        try { area = window.localStorage; } catch {}
+        read('forged store', () => window.localStorage);
         window.String = real;
         console.log('forged', url.slice(0, 22));
-        read('forged store', () => area && area.getItem('x'));
         read('forged worker', () => { new Worker(url); return 'started'; });
       `),
     },
@@ -873,6 +878,333 @@ test('a top-level document with no allow-scripts in its policy runs nothing', as
   );
   await settle();
   assert.deepEqual(s.logs, []);
+});
+
+test('every sandbox would be one table of locks, so a sandbox has none', async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe sandbox="allow-scripts" src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: script(`
+        navigator.locks.request('a-secret-name', () => new Promise(() => {})).catch(
+          (e) => console.log('a request', e.name),
+        );
+      `),
+      [`${APP}b`]: script(`
+        setTimeout(() => {
+          navigator.locks.query().then(
+            (held) => console.log('b query', JSON.stringify(held)),
+            (e) => console.log('b query', e.name),
+          );
+        }, 50);
+      `),
+    },
+  );
+  assert.equal(await until(s, 'a request'), 'SecurityError');
+  assert.equal(await until(s, 'b query'), 'SecurityError');
+  assert.ok(!s.logs.join('\n').includes('a-secret-name'), s.logs.join('\n'));
+});
+
+test('a sandbox asks nobody for anything: no permission is by no origin', async () => {
+  const asked: string[] = [];
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
+    {
+      [FRAME]: script(`
+        Notification.requestPermission().then((p) => console.log('asked', p));
+        navigator.permissions.query({ name: 'notifications' }).then((p) => console.log('state', p.state));
+        navigator.mediaDevices.getUserMedia({ video: true }).catch((e) => console.log('camera', e.name));
+        navigator.mediaDevices.enumerateDevices().then((d) => console.log('devices', JSON.stringify(d.map((x) => x.deviceId + x.label))));
+      `),
+    },
+    {
+      permissions: {
+        state: () => 'granted',
+        request: async (name, origin) => {
+          asked.push(`${name} ${origin}`);
+          return 'granted';
+        },
+      },
+      mediaDevices: {
+        devices: async () => [
+          {
+            kind: 'videoinput',
+            deviceId: 'real-id',
+            groupId: 'real-group',
+            label: 'A camera',
+          },
+        ],
+        permission: () => 'granted',
+        request: async () => {
+          asked.push('camera');
+          return true;
+        },
+      } as unknown as HtmlScripts['mediaDevices'],
+    },
+  );
+  assert.equal(await until(s, 'asked'), 'denied');
+  assert.equal(await until(s, 'state'), 'denied');
+  assert.equal(await until(s, 'camera'), 'NotAllowedError');
+  assert.equal(await until(s, 'devices'), '[""]');
+  assert.deepEqual(asked, []);
+});
+
+/** A document's host at an address, with what it asks of a page's seams. */
+function hostOf(url: string, seams: Partial<HostSeams> = {}): DomHost {
+  return new DomHost(
+    new Document([]),
+    {
+      handle: {},
+      log() {},
+      fetch: async () => {
+        throw new Error('no network');
+      },
+      ...seams,
+    } as unknown as HostSeams,
+    url,
+  );
+}
+
+const SANDBOXED = (url: string, seams: Partial<HostSeams> = {}): DomHost => {
+  const host = hostOf(url, seams);
+  host.shared.sandboxes.set(host.document, SB_ORIGIN);
+  return host;
+};
+
+const refusal = (answer: unknown): boolean =>
+  typeof answer === 'string' && answer.includes('SecurityError');
+
+test('the host refuses a sandbox what is by origin, whatever the facade asks', () => {
+  const box = SANDBOXED(FRAME);
+  assert.equal(box.originless, true);
+  assert.ok(refusal(box.bridge('storage', 'local', 'get', 'x')));
+  assert.ok(refusal(box.bridge('storage', 'session', 'get', 'x')));
+  assert.equal(box.bridge('storage', 'local', 'allowed'), false);
+  assert.ok(refusal(box.bridge('lockRequest', 1, 'name', true, '')));
+  assert.ok(refusal(box.bridge('lockQuery')));
+  assert.equal(box.bridge('lockRelease', 1), null);
+  assert.equal(box.bridge('permission', 'notifications'), 'denied');
+});
+
+test('a document at a data: address has nothing of its own, and a file: page keeps its store', () => {
+  const data = hostOf('data:text/html,x');
+  assert.equal(data.originless, true);
+  assert.ok(refusal(data.bridge('storage', 'local', 'get', 'x')));
+  const file = hostOf('file:///site/page.html');
+  assert.equal(file.origin, 'null');
+  assert.equal(file.originless, false);
+  assert.equal(file.bridge('storage', 'local', 'allowed'), true);
+  assert.equal(file.bridge('storage', 'local', 'set', 'kept', '1'), null);
+  assert.equal(file.bridge('storage', 'local', 'get', 'kept'), '1');
+  assert.equal(file.bridge('lockQuery') !== undefined, true);
+  assert.ok(!refusal(file.bridge('lockQuery')));
+});
+
+test('a sandbox at a file: address has no store either', () => {
+  const box = SANDBOXED('file:///site/frame.html');
+  assert.equal(box.originless, true);
+  assert.ok(refusal(box.bridge('storage', 'local', 'get', 'x')));
+});
+
+test('a sandbox asks nobody for the clipboard either, whatever the page hands the host', async () => {
+  const asked: string[] = [];
+  const box = SANDBOXED(FRAME, {
+    secureContext: true,
+    clipboard: { read: async () => ({ text: 'x' }), write: async () => {} },
+    permissions: {
+      state: () => 'granted',
+      request: async (name: string, origin: string) => {
+        asked.push(`${name} ${origin}`);
+        return 'granted';
+      },
+    },
+  } as unknown as Partial<HostSeams>);
+  box.bridge('clipboard', 'request', 1, 'clipboard-read');
+  await act(() => new Promise((r) => setTimeout(r, 20)));
+  assert.deepEqual(asked, []);
+});
+
+test("a feature of the top document is no opaque frame's for sharing its `null`", () => {
+  const frameOf = (allow: string | null): DomHost => {
+    const host = new DomHost(
+      new Document([]),
+      { handle: {}, log() {} } as unknown as HostSeams,
+      'data:text/html,frame',
+      undefined,
+      'data:text/html,top',
+    );
+    const frame = new Element('iframe', allow ? { allow } : {});
+    host.shared.frameOf.set(host.document, frame);
+    return host;
+  };
+  assert.equal(frameOf(null).bridge('featureAllowed', 'camera'), false);
+  assert.equal(frameOf('camera').bridge('featureAllowed', 'camera'), true);
+});
+
+test('a sandbox on a secure page is held to mixed content by its address, which its origin no longer says', async () => {
+  let connected = 0;
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
+    {
+      [FRAME]: script(`
+        const socket = new WebSocket('ws://other.test/');
+        socket.onerror = () => console.log('socket failed');
+      `),
+    },
+    {
+      webSocket: {
+        connect() {
+          connected += 1;
+          return { send() {}, close() {}, bufferedAmount: () => 0 };
+        },
+      },
+    } as Partial<HtmlScripts>,
+  );
+  await until(s, 'socket failed');
+  assert.equal(connected, 0);
+});
+
+nodeTest(
+  'a request of no origin is same-site with nothing, so what a cookie holds back it holds back',
+  async (t) => {
+    const heard: (string | undefined)[] = [];
+    const site = createServer((req, res) => {
+      heard.push(req.headers.cookie);
+      res.end('x');
+    });
+    await new Promise<void>((go) => site.listen(0, '127.0.0.1', go));
+    t.after(() => site.close());
+    const { port } = site.address() as AddressInfo;
+    const page = `http://127.0.0.1:${port}/`;
+    const jar = new CookieJar();
+    jar.store(page, ['strict=1; SameSite=Strict; Path=/'], {
+      http: true,
+      sameSite: true,
+    });
+    const fetch = new HtmlNetwork({ cookies: jar }).fetcher(page);
+    const ask = (opaqueOrigin: boolean) =>
+      fetch(
+        {
+          url: page,
+          method: 'GET',
+          headers: [],
+          body: null,
+          credentials: 'include',
+          ...(opaqueOrigin ? { opaqueOrigin } : {}),
+        },
+        new AbortController().signal,
+      );
+    await ask(false);
+    await ask(true);
+    assert.deepEqual(heard, ['strict=1', undefined]);
+  },
+);
+
+test('a file: page reads the localStorage it had, where a sandbox of one reads none', async () => {
+  const s = await scene(
+    script(`
+      try {
+        localStorage.setItem('k', 'v');
+        console.log('file store', localStorage.getItem('k'));
+      } catch (e) {
+        console.log('file store', e.name);
+      }
+    `),
+    {},
+    {},
+    'file:///site/page.html',
+  );
+  assert.equal(await until(s, 'file store'), 'v');
+});
+
+test('what the realm gates, the host asks again: a page that talks it round reads no clipboard and shows no notification', async () => {
+  let read = 0;
+  let wrote = 0;
+  const shown: string[] = [];
+  const seams = (state: 'granted' | 'denied' | 'prompt') => ({
+    secureContext: true,
+    clipboard: {
+      read: async () => {
+        read += 1;
+        return { text: 'password' };
+      },
+      write: async () => {
+        wrote += 1;
+      },
+    },
+    notifications: {
+      show: async (n: { title: string }) => {
+        shown.push(n.title);
+        return { close() {} };
+      },
+    },
+    permissions: {
+      state: () => state,
+      request: async () => state,
+    },
+  });
+  const settled = () => act(() => new Promise((r) => setTimeout(r, 20)));
+  const write = JSON.stringify([]);
+  const note = JSON.stringify({ title: 'hello' });
+
+  // told no, wherever the page's own gate left it
+  const closed = hostOf(FRAME, seams('denied') as Partial<HostSeams>);
+  closed.bridge('clipboard', 'read', 1, '');
+  closed.bridge('clipboard', 'write', 2, write);
+  closed.bridge('notification', 'show', 3, note);
+  await settled();
+  assert.equal(read, 0);
+  assert.equal(wrote, 0);
+  assert.deepEqual(shown, []);
+
+  // a sandbox, whatever its host would say of `null`
+  const box = SANDBOXED(FRAME, seams('granted') as Partial<HostSeams>);
+  box.bridge('clipboard', 'read', 1, '');
+  box.bridge('clipboard', 'write', 2, write);
+  box.bridge('notification', 'show', 3, note);
+  await settled();
+  assert.equal(read, 0);
+  assert.equal(wrote, 0);
+  assert.deepEqual(shown, []);
+
+  // and what a host says yes to goes through
+  const open = hostOf(FRAME, seams('granted') as Partial<HostSeams>);
+  open.bridge('clipboard', 'read', 1, '');
+  open.bridge('clipboard', 'write', 2, write);
+  open.bridge('notification', 'show', 3, note);
+  await settled();
+  assert.equal(read, 1);
+  assert.equal(wrote, 1);
+  assert.deepEqual(shown, ['hello']);
+});
+
+test('a read a user just said yes to goes through, where the host answers no state of it', async () => {
+  let read = 0;
+  let answer: HtmlPermissionState = 'prompt';
+  const host = hostOf(FRAME, {
+    secureContext: true,
+    clipboard: {
+      read: async () => {
+        read += 1;
+        return { text: 'x' };
+      },
+      write: async () => {},
+    },
+    permissions: {
+      state: () => 'prompt',
+      request: async () => answer,
+    },
+  } as unknown as Partial<HostSeams>);
+  const settled = () => act(() => new Promise((r) => setTimeout(r, 20)));
+  host.bridge('clipboard', 'read', 1, '');
+  await settled();
+  assert.equal(read, 0);
+  answer = 'granted';
+  host.bridge('clipboard', 'request', 2, 'clipboard-read');
+  await settled();
+  host.bridge('clipboard', 'read', 3, '');
+  await settled();
+  assert.equal(read, 1);
 });
 
 // --- framing --------------------------------------------------------------

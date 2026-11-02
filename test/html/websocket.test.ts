@@ -473,6 +473,51 @@ test('HtmlNetwork opens one handshake to a host and port at a time, each waiting
 });
 
 runtimeTest(
+  'a socket of no origin carries no cookie that keeps to its site',
+  async () => {
+    const server = await wsServer({ text() {} });
+    try {
+      const origin = `http://127.0.0.1:${server.port}`;
+      const jar = new CookieJar();
+      jar.store(`${origin}/`, ['strict=1; SameSite=Strict; Path=/'], {
+        http: true,
+        sameSite: true,
+      });
+      const sockets = new HtmlNetwork({ cookies: jar }).webSockets(
+        `${origin}/`,
+      );
+      const open = (from: string): Promise<void> =>
+        new Promise((go) => {
+          const socket = sockets.connect(
+            {
+              url: `ws://127.0.0.1:${server.port}/`,
+              protocols: [],
+              origin: from,
+            },
+            {
+              open: () => {
+                socket.close(1000, '');
+                go();
+              },
+              message() {},
+              closed() {},
+              failed: () => go(),
+            },
+          );
+        });
+      await open(origin);
+      await open('null');
+      assert.deepEqual(
+        server.handshakes.map((h) => h.headers.cookie),
+        ['strict=1', undefined],
+      );
+    } finally {
+      await server.stop();
+    }
+  },
+);
+
+runtimeTest(
   'HtmlNetwork opens a socket over the runtime’s WebSocket: its Origin, User-Agent and cookies on the handshake, text and binary both ways, close codes, a refusal',
   async () => {
     const server = await wsServer({

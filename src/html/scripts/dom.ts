@@ -294,6 +294,7 @@ export function installDom(
     'base',
     'location',
     'resolve',
+    'syncRequests',
     'characterSet',
     'encodingLabel',
     'textDecode',
@@ -20460,8 +20461,53 @@ export function installDom(
     status = 0;
     statusText = '';
     responseURL = '';
-    responseType = '';
-    timeout = 0;
+    /** How `open` was told to go, and with what way of doing it, the page's
+     *  or a worker's. */
+    _sync = false;
+    _syncWay = '';
+    _timeout = 0;
+    _responseType = '';
+    get timeout(): number {
+      return this._timeout;
+    }
+    set timeout(value: Any) {
+      this._refuseSync('timeout');
+      this._timeout = Number(value) || 0;
+    }
+    get responseType(): string {
+      return this._responseType;
+    }
+    set responseType(value: Any) {
+      // what is no value of the enumeration is never handed to the setter,
+      // and a worker has no document to make
+      const type = str(value);
+      if (
+        !['', 'arraybuffer', 'blob', 'document', 'json', 'text'].includes(
+          type,
+        ) ||
+        (type === 'document' && call('syncRequests') === 'worker')
+      ) {
+        return;
+      }
+      if (this.readyState === 3 || this.readyState === 4) {
+        throw new DOMException(
+          "Failed to set the 'responseType' property on 'XMLHttpRequest': The response type cannot be set if the object's state is LOADING or DONE.",
+          'InvalidStateError',
+        );
+      }
+      this._refuseSync('responseType');
+      this._responseType = type;
+    }
+    /** What a window's synchronous request may not have (XHR 3.5.4, 3.6.9),
+     *  since a page that blocks has no use for either. */
+    _refuseSync(what: string): void {
+      if (this._sync && this._syncWay === 'page') {
+        throw new DOMException(
+          `Failed to set the '${what}' property on 'XMLHttpRequest': ${what} cannot be set for synchronous requests made from a document.`,
+          'InvalidAccessError',
+        );
+      }
+    }
     withCredentials = false;
     readonly upload = madeUpload();
     _method = 'GET';
@@ -20475,16 +20521,46 @@ export function installDom(
     _attempt = 0;
     _controller: Any = null;
     open(method: Any, url: Any, async: Any = true): void {
-      if (arguments.length > 2 && !async) {
-        throw new DOMException(
-          'A synchronous XMLHttpRequest would hold the page for the network; this page has only asynchronous ones.',
-          'InvalidAccessError',
-        );
+      const sync = arguments.length > 2 && !async;
+      if (sync) {
+        this._syncWay = String(call('syncRequests'));
+        if (!this._syncWay) {
+          throw new DOMException(
+            'A synchronous XMLHttpRequest would hold the page for the network; this page has only asynchronous ones.',
+            'InvalidAccessError',
+          );
+        }
+        if (
+          this._syncWay === 'page' &&
+          (this._timeout !== 0 || this._responseType !== '')
+        ) {
+          throw new DOMException(
+            "Failed to execute 'open' on 'XMLHttpRequest': Synchronous requests from a document must not set a timeout or a response type.",
+            'InvalidAccessError',
+          );
+        }
       }
+      this._sync = sync;
       this._attempt += 1;
       this._controller?.abort();
       this._controller = null;
-      this._method = str(method).toUpperCase();
+      // a method is a token, three are forbidden, and six are normalized
+      const written = str(method);
+      if (!HEADER_NAME.test(written)) {
+        throw new DOMException(
+          `Failed to execute 'open' on 'XMLHttpRequest': '${written}' is not a valid HTTP method.`,
+          'SyntaxError',
+        );
+      }
+      if (/^(?:connect|trace|track)$/i.test(written)) {
+        throw new DOMException(
+          `Failed to execute 'open' on 'XMLHttpRequest': '${written}' HTTP method is unsupported.`,
+          'SecurityError',
+        );
+      }
+      this._method = /^(?:delete|get|head|options|post|put)$/i.test(written)
+        ? written.toUpperCase()
+        : written;
       this._url = str(url);
       this._headers = new Headers();
       this._response = null;
@@ -20526,6 +20602,10 @@ export function installDom(
         );
       }
       this._sent = true;
+      if (this._sync) {
+        this._sendNow(body);
+        return;
+      }
       const attempt = this._attempt;
       const controller = new AbortController();
       this._controller = controller;
@@ -20594,6 +20674,86 @@ export function installDom(
           this._fail('error');
         },
       );
+    }
+    /** `send()` of a synchronous request (XHR 3.6.6): this thread sleeps in
+     *  the op, and on waking there is no `loadstart`, no progress and no state
+     *  between, only `DONE`. What fails is thrown, with no event. */
+    _sendNow(body: Any): void {
+      const bodyless = this._method === 'GET' || this._method === 'HEAD';
+      const headers = guardedHeaders(this._headers, 'request');
+      const extracted =
+        bodyless || body === null || body === undefined
+          ? null
+          : extractBody(body);
+      if (extracted?.type && !headers.has('content-type')) {
+        headers.set('content-type', extracted.type);
+      }
+      const url = str(this._url);
+      let response: Any = null;
+      try {
+        const href = String(call('resolve', url));
+        // what a `fetch` answers here without a network
+        if (/^data:/i.test(href)) response = dataResponse(href);
+        else if (href.startsWith('blob:')) {
+          const blob = blobUrls.get(href.replace(/#.*$/, ''));
+          response = blob ? blobResponse(blob, href, headers) : null;
+        } else {
+          const answer = JSON.parse(
+            String(
+              call(
+                'fetchSync',
+                JSON.stringify({
+                  url,
+                  method: this._method,
+                  headers: Array.from(headers._map.entries()),
+                  ...(extracted?.bytes
+                    ? { body: '', base64: base64OfBytes(extracted.bytes) }
+                    : { body: null }),
+                  mode: 'cors',
+                  credentials: this.withCredentials ? 'include' : 'same-origin',
+                }),
+                this._timeout,
+              ),
+            ),
+          );
+          response = new Response('', {
+            status: answer.status,
+            statusText: answer.statusText,
+            headers: answer.headers,
+            url: answer.url,
+            redirected: answer.redirected,
+            type: answer.type ?? 'basic',
+          });
+          response._raw = bytesOfBase64(answer.base64 ?? '');
+        }
+        if (!response) throw new TypeError('Failed to load.');
+      } catch (error: Any) {
+        this.readyState = 4;
+        this._sent = false;
+        this.status = 0;
+        this.statusText = '';
+        this._response = null;
+        if (error?.name === 'TimeoutError') throw error;
+        throw new DOMException(
+          `Failed to execute 'send' on 'XMLHttpRequest': Failed to load '${url}'.`,
+          'NetworkError',
+        );
+      }
+      this._response = response;
+      this.status = response.status;
+      this.statusText = response.statusText;
+      this.responseURL = response.url;
+      this._raw = response._raw ?? new Uint8Array(0);
+      this._text = this._decode(this._raw);
+      this._sent = false;
+      const size = {
+        lengthComputable: true,
+        loaded: this._raw.length,
+        total: this._raw.length,
+      };
+      this._state(4);
+      this._progress('load', size);
+      this._progress('loadend', size);
     }
     abort(): void {
       const under = this._sent && this.readyState !== 4;
@@ -27583,13 +27743,19 @@ export function installDom(
           });
         }
         const flags = `${ifAvailable ? 'i' : ''}${steal ? 's' : ''}`;
-        const asked = call(
-          'lockRequest',
-          id,
-          lockName,
-          mode === 'exclusive',
-          flags,
-        );
+        let asked: Any;
+        try {
+          asked = call(
+            'lockRequest',
+            id,
+            lockName,
+            mode === 'exclusive',
+            flags,
+          );
+        } catch (error) {
+          lockRequests.delete(id);
+          throw error;
+        }
         if (asked === false) {
           lockRequests.delete(id);
           new Promise((run) => run(callback(null))).then(resolve, reject);
@@ -27597,7 +27763,11 @@ export function installDom(
       });
     }
     query(): Any {
-      return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+      try {
+        return Promise.resolve(JSON.parse(str(call('lockQuery'))));
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
   }
   // `classes` says this of the rest: these two are defined where a context
@@ -32595,8 +32765,10 @@ export function installDom(
   const sessionArea = storage('session');
   // of an origin of none there is no store to hand over: the host refuses it
   // as well (`DomHost._storage`), and this is where HTML throws
+  let keeps: boolean | null = null;
   const area = (held: Any) => (): Any => {
-    if (!workerLocation && documentOrigin() === 'null') {
+    keeps ??= call('storage', 'local', 'allowed') === true;
+    if (!keeps) {
       throw new DOMException(
         "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
         'SecurityError',

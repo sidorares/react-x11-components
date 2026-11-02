@@ -51,8 +51,8 @@ const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\]|::1|.*\.localhost)$/i;
  * holds it to `error` and `close`; Chrome and Firefox throw a
  * `SecurityError` from the constructor instead.
  */
-export function mixedContent(url: string, origin: string): boolean {
-  if (!/^https:/i.test(origin)) return false;
+export function mixedContent(url: string, from: string): boolean {
+  if (!/^https:/i.test(from)) return false;
   try {
     const u = new URL(url);
     return u.protocol === 'ws:' && !LOOPBACK.test(u.hostname);
@@ -122,6 +122,9 @@ export interface SocketSeams {
   connector(): HtmlWebSocket | undefined;
   /** The origin of the document, or the worker, the sockets are of. */
   origin(): string;
+  /** Its address, which says whether it came securely where an opaque
+   *  origin does not. */
+  address(): string;
   /** The document's Content Security Policies, which a socket is held to
    *  (`connect-src`). Absent, none. */
   policies?(): CspPolicy[];
@@ -310,7 +313,7 @@ export class PageSockets {
     // a secure page's insecure endpoint, and one the document's policy
     // does not allow, are refused before anything is sent (Mixed Content,
     // and CSP's `connect-src`, which a WebSocket is held to as `fetch` is)
-    if (mixedContent(url, origin)) {
+    if (mixedContent(url, this._seams.address())) {
       this._seams.log?.(
         'error',
         `Mixed Content: The page at '${origin}' was loaded over HTTPS, but attempted to connect to the insecure WebSocket endpoint '${url}'. This request has been blocked; this endpoint must be available over WSS.`,

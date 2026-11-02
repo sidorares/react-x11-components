@@ -232,7 +232,7 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { parseCsp } from '../csp.js';
+import { connectAllowed, parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
@@ -253,6 +253,8 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles, formEncoding, urlencoded } from '../form.js';
+import type { HtmlSyncNetwork } from '../network.js';
+import { fetchSync } from './sync-fetch.js';
 import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
@@ -809,6 +811,14 @@ export interface HostSeams {
   /** The document's title changed. */
   title(title: string | null): void;
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
+  /** What a page's synchronous requests are made through, on a thread that
+   *  stays awake while this one sleeps (`sync-fetch.ts`). Absent, a page
+   *  has only asynchronous ones. */
+  syncNetwork?: HtmlSyncNetwork | null;
+  /** A synchronous request where this realm makes them its own way: a web
+   *  worker's, whose page has a network to answer it with. Throws what it
+   *  came to, a `TimeoutError` by name where `timeout` ms ran out. */
+  fetchSync?(request: FetchRequest, timeout: number): FetchResponse;
   userAgent: string;
   language: string;
   /** The label of the encoding the host decoded the document from. */
@@ -1760,6 +1770,9 @@ type Pseudos = Record<
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** How long the task under way may still wait on an op, in ms
+   *  (`ScriptEngine.waitLeft`). */
+  readonly waitLeft?: number;
   /** How long the page's tasks have taken, in ms (`ScriptEngine.busy`). */
   readonly busy?: number;
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
@@ -1792,6 +1805,10 @@ export interface Entries {
  * realm changes may be drawn by another's `<Html>`. What is a realm's own
  * — its ids, its timers, its observers, its address — stays its host's.
  */
+/** How long a synchronous request may hold a page, at most: the task's own
+ *  limit comes first, and only a host that raised it gets this far. */
+const SYNC_REQUEST_MS = 30_000;
+
 /** The document an element is in, if any. */
 function documentHolding(element: Element): Document | null {
   let node: AnyNode = element;
@@ -2298,6 +2315,18 @@ export class DomHost {
   /** This document's origin. */
   get origin(): string {
     return this._origin();
+  }
+
+  /**
+   * Whether this document has nothing to keep anything under: an opaque
+   * origin's, which serializes to the one `null` every sandbox and `data:`
+   * document would share, and so has no store, no lock, no permission and no
+   * channel of its own. A `file:` page is the exception, as in browsers: it
+   * serializes the same and keeps a `localStorage`.
+   */
+  get originless(): boolean {
+    if (this.sandbox & SB_ORIGIN) return true;
+    return this._origin() === 'null' && !/^file:/i.test(this.url);
   }
 
   /** Which opaque origin this document has, or null for one of a scheme, a
@@ -5736,8 +5765,7 @@ export class DomHost {
       // a page's `BroadcastChannel`s, by origin and name
       case 'bcOpen': {
         // an opaque origin talks to itself, whatever else is opaque
-        const origin = this._origin();
-        const key = `${origin === 'null' ? this._token : origin} ${text(b)}`;
+        const key = `${this.originless ? this._token : this._origin()} ${text(b)}`;
         const end = { id: Number(a), tell: this._channelTold };
         this._channels.set(Number(a), { key, end });
         openChannel(key, end);
@@ -5760,6 +5788,7 @@ export class DomHost {
       }
       // a page's `navigator.locks` (`page-channels.ts`)
       case 'lockRequest':
+        this._holdsLocks();
         return requestLock(
           this._origin(),
           {
@@ -5774,9 +5803,12 @@ export class DomHost {
           text(d).includes('s'),
         );
       case 'lockRelease':
-        releaseLock(this._origin(), Number(a), this._lockClient);
+        if (!this.originless) {
+          releaseLock(this._origin(), Number(a), this._lockClient);
+        }
         return null;
       case 'lockQuery':
+        this._holdsLocks();
         return queryLocks(this._origin());
       case 'lockClient':
         return this._lockClient;
@@ -5883,6 +5915,14 @@ export class DomHost {
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
+      case 'syncRequests':
+        return this._seams.fetchSync
+          ? 'worker'
+          : this._seams.syncNetwork
+            ? 'page'
+            : '';
+      case 'fetchSync':
+        return this._syncRequest(text(a), Number(b));
       // a page's WebGL contexts, where the host has a GL (`gl.ts`)
       case 'glOpen':
         return this._contexts.open(JSON.parse(text(a)) as HtmlGLOptions);
@@ -7881,6 +7921,7 @@ export class DomHost {
       this._sourcesMade = new PageSources({
         devices: () => this._seams.mediaDevices,
         origin: () => this._origin(),
+        originless: () => this.originless,
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
@@ -7924,6 +7965,7 @@ export class DomHost {
       this._socketsMade = new PageSockets({
         connector: () => this._seams.webSocket,
         origin: () => this._origin(),
+        address: () => this.url,
         policies: () => this._cspPolicies(),
         log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
@@ -8064,6 +8106,9 @@ export class DomHost {
    * `__clipboard`, under the number the page asked with: a write told as 0
    * is a `copy`'s, whose page has nothing waiting on it.
    */
+  /** Whether the user said yes to a read just now, where a host answers that
+   *  without its `state` saying so after. */
+  private _clipboardGranted = false;
   private _clipboardOp(
     what: string,
     id: Primitive,
@@ -8077,11 +8122,16 @@ export class DomHost {
       }
     };
     if (what === 'request') {
-      const asked = this._seams.permissions?.request(payload, this._origin());
+      const asked = this.originless
+        ? undefined
+        : this._seams.permissions?.request(payload, this._origin());
       if (!asked) tell(true, 'denied');
       else {
         asked.then(
           (state) => {
+            if (payload === 'clipboard-read') {
+              this._clipboardGranted = state === 'granted';
+            }
             this._permissionMoved(payload);
             tell(true, state);
           },
@@ -8092,6 +8142,22 @@ export class DomHost {
     }
     if (!seam) {
       tell(false, 'There is no clipboard.');
+      return null;
+    }
+    // the realm's gate is a gesture's, and a page can talk it round: what the
+    // clipboard holds is a user's, so whether it is read is decided here
+    const refused =
+      what === 'read'
+        ? !this._clipboardGranted &&
+          this._permissionState('clipboard-read') !== 'granted'
+        : this._permissionState('clipboard-write') === 'denied';
+    if (refused) {
+      tell(
+        false,
+        what === 'read'
+          ? 'Read permission denied.'
+          : 'Write permission denied.',
+      );
       return null;
     }
     const done =
@@ -8126,6 +8192,9 @@ export class DomHost {
   private _permissionState(name: string): HtmlPermissionState {
     const seams = this._seams;
     const origin = this._origin();
+    // what a user grants is by origin, and `null` is no one's: a grant to it
+    // would be a grant to every sandbox
+    if (this.originless) return 'denied';
     // a worker's is its page's, kept up to date from there
     if (this.workerScope) {
       return seams.permissions?.state(name, origin) ?? 'denied';
@@ -8201,7 +8270,8 @@ export class DomHost {
       const shown = this._shown.get(id);
       this._shown.delete(id);
       closeShown(shown);
-    } else if (!seam) {
+    } else if (!seam || this._permissionState('notifications') !== 'granted') {
+      // the realm asks first, and a page can talk it round
       tell('error');
     } else {
       this._shown.set(id, null);
@@ -8240,7 +8310,7 @@ export class DomHost {
   private _featureAllowed(feature: string): boolean {
     const frame = this._frameOf.get(this.document);
     if (!frame) return true;
-    if (originOf(this.top) === this._origin()) return true;
+    if (!this.originless && originOf(this.top) === this._origin()) return true;
     return (frame.attribs.allow ?? '')
       .split(';')
       .some((entry) => entry.trim().split(/\s+/)[0] === feature);
@@ -8282,11 +8352,11 @@ export class DomHost {
     key: string,
     value: string,
   ): Primitive {
+    if (op === 'allowed') return !this.originless;
     const storage = this._storageOf();
     const origin = this._origin();
-    // an opaque origin has none of its own, and sharing `null` would be every
-    // sandbox's store in one (HTML 12.2.3)
-    if (origin === 'null') {
+    // sharing `null` would be every sandbox's store in one (HTML 12.2.3)
+    if (this.originless) {
       throw new DomError(
         'SecurityError',
         "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
@@ -8422,6 +8492,17 @@ export class DomHost {
     }
   }
 
+  /** Locks are by origin, and every sandbox's would be the one table of `null`
+   *  (Web Locks 3.2): a sandbox could read another's names and hold it up. */
+  private _holdsLocks(): void {
+    if (this.originless) {
+      throw new DomError(
+        'SecurityError',
+        "Access to the Locks API is denied in this context: the document's origin is opaque.",
+      );
+    }
+  }
+
   /** Whether a page may read a canvas back once an image or a video was
    *  drawn on it. It has its pixels in no case (`drawnPixels`), so one that
    *  says it asked by CORS is taken at its word. */
@@ -8477,47 +8558,7 @@ export class DomHost {
     };
     let request: PageRequest;
     try {
-      const raw = JSON.parse(json) as Partial<PageRequest>;
-      const method = String(raw.method ?? 'GET').toUpperCase();
-      // what a page may not set, which a browser drops (Fetch 2.2.2)
-      const headers = Array.isArray(raw.headers)
-        ? raw.headers
-            .map(([k, v]) => [String(k), String(v)] as [string, string])
-            .filter(([k]) => !forbiddenRequestHeader(k))
-        : [];
-      const agent = agentHeaders(raw.uaHeaders, method, headers);
-      request = {
-        url: this._resolve(String(raw.url ?? '')),
-        method,
-        headers,
-        body: typeof raw.body === 'string' ? raw.body : null,
-        ...(raw.stream === true ? { stream: true } : {}),
-        ...(agent ? { uaHeaders: agent } : {}),
-        ...(raw.streamedBody === true ? { streamedBody: true } : {}),
-        ...(typeof (raw as { base64?: unknown }).base64 === 'string'
-          ? {
-              bytes: new Uint8Array(
-                Buffer.from((raw as { base64: string }).base64, 'base64'),
-              ),
-            }
-          : {}),
-        mode:
-          raw.mode === 'no-cors' || raw.mode === 'same-origin'
-            ? raw.mode
-            : 'cors',
-        credentials:
-          raw.credentials === 'omit' || raw.credentials === 'include'
-            ? raw.credentials
-            : 'same-origin',
-        cache: raw.cache,
-        redirect:
-          raw.redirect === 'error' || raw.redirect === 'manual'
-            ? raw.redirect
-            : 'follow',
-        integrity: raw.integrity,
-        referrerPolicy: raw.referrerPolicy,
-        destination: raw.destination,
-      };
+      request = this._pageRequest(json);
     } catch {
       return;
     }
@@ -8562,6 +8603,117 @@ export class DomHost {
     }
     if (!this._fetches.delete(id) || this._disposed) return;
     this.entries?.call('__fetchEnd', [id, failed]);
+  }
+
+  /** A request as the facade sends it. */
+  private _pageRequest(json: string): PageRequest {
+    const raw = JSON.parse(json) as Partial<PageRequest>;
+    const method = String(raw.method ?? 'GET').toUpperCase();
+    // what a page may not set, which a browser drops (Fetch 2.2.2)
+    const headers = Array.isArray(raw.headers)
+      ? raw.headers
+          .map(([k, v]) => [String(k), String(v)] as [string, string])
+          .filter(([k]) => !forbiddenRequestHeader(k))
+      : [];
+    const agent = agentHeaders(raw.uaHeaders, method, headers);
+    return {
+      url: this._resolve(String(raw.url ?? '')),
+      method,
+      headers,
+      body: typeof raw.body === 'string' ? raw.body : null,
+      ...(raw.stream === true ? { stream: true } : {}),
+      ...(agent ? { uaHeaders: agent } : {}),
+      ...(raw.streamedBody === true ? { streamedBody: true } : {}),
+      ...(typeof (raw as { base64?: unknown }).base64 === 'string'
+        ? {
+            bytes: new Uint8Array(
+              Buffer.from((raw as { base64: string }).base64, 'base64'),
+            ),
+          }
+        : {}),
+      mode:
+        raw.mode === 'no-cors' || raw.mode === 'same-origin'
+          ? raw.mode
+          : 'cors',
+      credentials:
+        raw.credentials === 'omit' || raw.credentials === 'include'
+          ? raw.credentials
+          : 'same-origin',
+      cache: raw.cache,
+      redirect:
+        raw.redirect === 'error' || raw.redirect === 'manual'
+          ? raw.redirect
+          : 'follow',
+      integrity: raw.integrity,
+      referrerPolicy: raw.referrerPolicy,
+      destination: raw.destination,
+    };
+  }
+
+  /**
+   * A synchronous `XMLHttpRequest`: what `_fetchFor` does, with the thread
+   * asleep where that awaits. What comes back is JSON, the bytes as base64,
+   * and what fails is the `NetworkError` the page's `send()` throws, or a
+   * `TimeoutError`. It waits for no longer than `limit` ms, a worker's
+   * `timeout`, nor than the task may wait: the runtime's watchdog counts this
+   * and cannot be paused, and past it the whole task goes. So a request that
+   * takes too long is one failed request, and the page goes on.
+   */
+  private _syncRequest(json: string, limit: number): string {
+    const timeout = Math.min(
+      limit > 0 ? limit : SYNC_REQUEST_MS,
+      SYNC_REQUEST_MS,
+      this.entries?.waitLeft ?? SYNC_REQUEST_MS,
+    );
+    try {
+      const request = this._pageRequest(json);
+      const {
+        bytes,
+        chunks: _chunks,
+        ...rest
+      } = this._fetchNow(request, timeout);
+      return JSON.stringify({
+        ...rest,
+        body: bytes ? '' : rest.body,
+        ...(bytes && { base64: base64Of(bytes) }),
+      });
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      // the page's exception says nothing of why, as a browser's does not
+      this._seams.log('error', message);
+      throw new DomError(
+        (error as Error)?.name === 'TimeoutError'
+          ? 'TimeoutError'
+          : 'NetworkError',
+        message,
+      );
+    }
+  }
+
+  /** `_fetchFor`, for `_syncRequest`: the same hops, with this thread asleep
+   *  where that awaits. A service worker hears nothing of it: its registry is
+   *  on this thread. */
+  private _fetchNow(request: PageRequest, timeout: number): FetchResponse {
+    this._checkRequest(request);
+    const until = performance.now() + timeout;
+    const send = (plain: FetchRequest): FetchResponse => {
+      if (!connectAllowed(this._cspPolicies(), plain.url, this._origin())) {
+        throw new TypeError(
+          `${plain.url} is refused by the document's Content Security Policy.`,
+        );
+      }
+      const left = until - performance.now();
+      if (this._seams.fetchSync) return this._seams.fetchSync(plain, left);
+      const network = this._seams.syncNetwork;
+      if (!network) throw new TypeError('Failed to fetch');
+      // a frame's request is the frame's, and its site for cookies the page's
+      const client = { ...plain, client: this.url };
+      return fetchSync(network, client, this.top ?? this.url, left);
+    };
+    const hops = this._hops(request);
+    let step = hops.next();
+    while (!step.done) step = hops.next(send(step.value));
+    return step.value;
   }
 
   /** What CORS remembers of the preflights this page made. */
@@ -8689,15 +8841,7 @@ export class DomHost {
     request: PageRequest,
     signal: AbortSignalLike,
   ): Promise<FetchResponse> {
-    const page = this._origin();
-    try {
-      new URL(request.url);
-    } catch {
-      throw new TypeError('Failed to fetch');
-    }
-    if (forbiddenMethod(request.method)) {
-      throw new TypeError('Failed to fetch');
-    }
+    this._checkRequest(request);
     // a controlled client's request goes to its worker before CORS asks
     // anything of it (Fetch 4.3, "HTTP fetch")
     if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
@@ -8707,6 +8851,37 @@ export class DomHost {
       );
       if (answered) return this._fromWorker(answered, request);
     }
+    const hops = this._hops(request);
+    let step = hops.next();
+    while (!step.done) {
+      step = hops.next(await this._seams.fetch(step.value, signal));
+    }
+    return step.value;
+  }
+
+  /** What no page's request may be, whichever way it is waited for. */
+  private _checkRequest(request: PageRequest): void {
+    try {
+      new URL(request.url);
+    } catch {
+      throw new TypeError('Failed to fetch');
+    }
+    if (forbiddenMethod(request.method)) {
+      throw new TypeError('Failed to fetch');
+    }
+  }
+
+  /**
+   * A page's request a hop at a time, as one body for both ways of waiting
+   * for it: this yields each request the network has to make and is resumed
+   * with what it answered. So a synchronous request (`_fetchNow`) is held to
+   * every rule an asynchronous one (`_fetchFor`) is, at every hop, and the
+   * two differ only in how they wait.
+   */
+  private *_hops(
+    request: PageRequest,
+  ): Generator<FetchRequest, FetchResponse, FetchResponse> {
+    const page = this._origin();
     const urls: string[] = [];
     let hop: Hop = {
       url: request.url,
@@ -8753,30 +8928,27 @@ export class DomHost {
           hop.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
         );
         if (!SIMPLE_METHODS.has(hop.method) || unsafe.length) {
-          await this._preflight(hop, request, unsafe, origin, signal);
+          yield* this._preflight(hop, request, unsafe, origin);
         }
       }
-      const response = await this._seams.fetch(
-        {
-          url: hop.url,
-          method: hop.method,
-          headers: hop.headers,
-          body: hop.body,
-          ...(hop.bytes ? { bytes: hop.bytes } : {}),
-          ...(request.stream ? { stream: true } : {}),
-          ...(hop.streamedBody ? { streamedBody: true } : {}),
-          // `same-origin`'s are a request's while it has not left its origin
-          // (Fetch 4.5): one that came back from another carries none
-          credentials:
-            request.credentials === 'include' ||
-            (request.credentials === 'same-origin' && tainting === 'basic')
-              ? 'include'
-              : 'omit',
-          redirect: 'manual',
-          ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
-        },
-        signal,
-      );
+      const response: FetchResponse = yield {
+        url: hop.url,
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
+        ...(hop.bytes ? { bytes: hop.bytes } : {}),
+        ...(request.stream ? { stream: true } : {}),
+        ...(hop.streamedBody ? { streamedBody: true } : {}),
+        // `same-origin`'s are a request's while it has not left its origin
+        // (Fetch 4.5): one that came back from another carries none
+        credentials:
+          request.credentials === 'include' ||
+          (request.credentials === 'same-origin' && tainting === 'basic')
+            ? 'include'
+            : 'omit',
+        redirect: 'manual',
+        ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
+      };
       if (response.redirected && request.redirect === 'error') {
         release(response);
         throw new TypeError('Failed to fetch');
@@ -9090,13 +9262,12 @@ export class DomHost {
 
   /** Ask another origin whether a request that is not a simple one may be
    *  made (Fetch 4.9, "CORS-preflight fetch"), unless it said so lately. */
-  private async _preflight(
+  private *_preflight(
     hop: Hop,
     request: PageRequest,
     unsafe: string[],
     origin: string,
-    signal: AbortSignalLike,
-  ): Promise<void> {
+  ): Generator<FetchRequest, void, FetchResponse> {
     const include = request.credentials === 'include';
     const key = `${origin}\u0000${hop.url}\u0000${include}`;
     const kept = this._preflights.get(key);
@@ -9123,18 +9294,15 @@ export class DomHost {
       headers.push(['access-control-request-headers', unsafe.join(',')]);
     }
     // a preflight carries no cookies (Fetch 4.9)
-    const response = await this._seams.fetch(
-      {
-        url: hop.url,
-        method: 'OPTIONS',
-        headers,
-        body: null,
-        credentials: 'omit',
-        redirect: 'manual',
-        ...(origin === 'null' ? { opaqueOrigin: true } : {}),
-      },
-      signal,
-    );
+    const response: FetchResponse = yield {
+      url: hop.url,
+      method: 'OPTIONS',
+      headers,
+      body: null,
+      credentials: 'omit',
+      redirect: 'manual',
+      ...(origin === 'null' ? { opaqueOrigin: true } : {}),
+    };
     const failed = (why: string) =>
       new CorsError(
         `Response to preflight request doesn't pass access control check: ${why}`,

@@ -454,6 +454,12 @@ export class CookieJar implements HtmlDocumentCookies {
     this._publicSuffix = list;
   }
 
+  /** Whether it was handed anything but the default: what a copy of it on
+   *  another thread, which cannot be handed a function, loads for itself. */
+  get hasPublicSuffix(): boolean {
+    return this._publicSuffix !== lastLabel;
+  }
+
   /** Every cookie the jar holds that has not expired. */
   all(): HtmlCookie[] {
     this._fresh();
@@ -480,6 +486,35 @@ export class CookieJar implements HtmlDocumentCookies {
       this._count -= list.length;
     }
     if (gone.length) this._tell(gone);
+  }
+
+  /** What a copy of this jar came to on another thread (`scripts/
+   *  sync-fetch.ts`), made true here: cookies set, then cookies gone. */
+  take(put: readonly HtmlCookie[], gone: readonly HtmlCookie[]): void {
+    this._fresh();
+    const remove = (cookie: HtmlCookie): void => {
+      const list = this._byDomain.get(cookie.domain);
+      const key = cookieKey(cookie);
+      const at = list?.findIndex((c) => cookieKey(c) === key) ?? -1;
+      if (!list || at < 0) return;
+      list.splice(at, 1);
+      this._count -= 1;
+      if (!list.length) this._byDomain.delete(cookie.domain);
+    };
+    for (const cookie of put) {
+      remove(cookie);
+      const list = this._byDomain.get(cookie.domain) ?? [];
+      list.push(cookie);
+      this._byDomain.set(cookie.domain, list);
+      this._count += 1;
+      this._lastCreated = Math.max(this._lastCreated, cookie.created);
+      this._store.put(cookie);
+    }
+    for (const cookie of gone) {
+      remove(cookie);
+      this._store.delete(cookie);
+    }
+    if (put.length || gone.length) this._tell([...put, ...gone]);
   }
 
   /** Told of each change a script or a response made, by this jar. */

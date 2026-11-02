@@ -48,7 +48,6 @@
 // The server's hosts are `web-platform.test` and its subdomains, which this
 // process resolves to the loopback itself, so nothing on the machine has to
 // change; `interop.ts` hands Node WPT's CA for the https ones.
-import dns from 'node:dns';
 import {
   appendFileSync,
   existsSync,
@@ -87,6 +86,7 @@ import type {
   HtmlScripts,
   ResourceRequest,
 } from '../../src/html/index.js';
+import './wpt-hosts.js';
 
 const h = React.createElement;
 
@@ -106,33 +106,9 @@ if (!listFile || !outFile) {
   process.exit(2);
 }
 
-// WPT's hosts, on the loopback where wptserve listens
-{
-  const lookup = dns.lookup;
-  const ours = /(^|\.)(not-)?web-platform\.test$/i;
-  (dns as { lookup: unknown }).lookup = function (
-    host: string,
-    options: unknown,
-    callback?: (...args: unknown[]) => void,
-  ) {
-    const cb = (typeof options === 'function' ? options : callback) as (
-      ...args: unknown[]
-    ) => void;
-    const opts = (typeof options === 'object' && options) || {};
-    if (ours.test(host)) {
-      if ((opts as { all?: boolean }).all) {
-        process.nextTick(cb, null, [{ address: '127.0.0.1', family: 4 }]);
-      } else process.nextTick(cb, null, '127.0.0.1', 4);
-      return;
-    }
-    return (lookup as (...a: unknown[]) => unknown).call(
-      dns,
-      host,
-      options,
-      callback,
-    );
-  };
-}
+/** What a thread does first that makes a page's synchronous requests, and
+ *  this process has done as it loaded it. */
+const THREAD_SETUP = new URL('./wpt-hosts.ts', import.meta.url).href;
 
 // The generic families as files: Liberation where it is installed, and on a
 // Mac the faces it is metric-compatible with.
@@ -745,6 +721,9 @@ function Tab(props: {
       // WPT's pywebsocket handlers, on the ports the server chose, over the
       // runtime's own WebSocket, as the example browser's
       webSocket: network.webSockets(doc.baseUrl),
+      // a synchronous request, on a thread of its own that resolves WPT's
+      // hosts as this one does
+      syncNetwork: network.syncNetwork(),
       // two peers in one page, over werift
       webRTC: network.webRTC,
       mediaDevices: page.media,
@@ -1217,6 +1196,7 @@ async function render(
     connectTimeout: 2500,
     serviceWorkers,
     cookies,
+    threadSetup: THREAD_SETUP,
   });
   const page: Current = {
     url,
@@ -1373,6 +1353,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     connectTimeout: 2500,
     serviceWorkers,
     cookies,
+    threadSetup: THREAD_SETUP,
   });
   const url = urlFor(test);
   const page: Current = {
