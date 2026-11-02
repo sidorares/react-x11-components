@@ -91,6 +91,7 @@ import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
 import { controlsReached } from './form.js';
 import type { FieldSelection } from './form.js';
+import type { HtmlDrop } from './drag.js';
 import type { HtmlFile } from './files.js';
 import { alphaOf, inkColor, isTransparent } from './css/values.js';
 import type { Len } from './css/values.js';
@@ -742,6 +743,9 @@ export interface DocumentInteraction {
   showPicker(el: Element): boolean;
   pickFiles(el: Element): void;
   setFiles(el: Element, files: readonly HtmlFile[]): void;
+  dragOver(drop: HtmlDrop): boolean;
+  dragLeave(): void;
+  dropHere(drop: HtmlDrop): Promise<boolean>;
   focus(el: Element): boolean;
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal

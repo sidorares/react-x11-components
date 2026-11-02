@@ -121,6 +121,7 @@ import type {
   DocumentResponse,
   Element,
   FormSubmission,
+  HtmlDrop,
   HtmlPickFiles,
   HtmlScripts,
   HtmlSessionEntry,
@@ -354,6 +355,10 @@ export interface PageProps {
   /** The last answer to `onPickFiles`: paths, or null where it was
    *  cancelled. */
   picked?: { id: number; paths: string[] | null } | null;
+  /** What another application is dragging over the page, or has dropped on
+   *  it: a pane has no window for one to land on, so the browser takes it
+   *  and says so here. Positions are the pane's own. */
+  dropped?: (HtmlDrop & { phase: 'over' | 'drop' }) | { phase: 'leave' } | null;
   /** An entry wants its document loaded, which this process does not have:
    *  a step to one it let go, the page's own reload, or the entry shown
    *  after a crash. `doc` is the document it was, whose POST to send. */
@@ -1230,6 +1235,15 @@ export default function Page(props: PageProps): ReactElement {
     picking.current.delete(answered.id);
   }, [answered]);
 
+  // what the browser took for the page, which has no window of its own
+  const dropped = props.dropped;
+  useEffect(() => {
+    if (!dropped) return;
+    if (dropped.phase === 'over') handle.dragOver(dropped);
+    else if (dropped.phase === 'leave') handle.dragLeave();
+    else void handle.dropHere(dropped);
+  }, [dropped, handle]);
+
   const onSubmit = (submission: FormSubmission) => {
     const { url: action, method, body, contentType, target } = submission;
     if (!/^(?:https?|file|data):/i.test(action)) {
@@ -1625,6 +1639,7 @@ export default function Page(props: PageProps): ReactElement {
                   onLink={onLink}
                   onSubmit={onSubmit}
                   onPickFiles={pickFiles}
+                  onDropFiles={readHtmlFiles}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>

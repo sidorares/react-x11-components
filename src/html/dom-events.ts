@@ -24,6 +24,7 @@ import { ctrlChordLetter, primaryModifierHeld } from 'react-x11/keysyms';
 
 import type { HtmlClipboardData } from './clipboard.js';
 import type { Element } from './dom.js';
+import type { HtmlDragData } from './drag.js';
 
 /** What can happen to a document that `<Html>` tells its host about. */
 export type HtmlDomEventType =
@@ -52,6 +53,14 @@ export type HtmlDomEventType =
   | 'toggle'
   // a file input's dialog dismissed, with nothing changed by it
   | 'cancel'
+  // a drag of what the document draws, or of something over it
+  | 'dragstart'
+  | 'drag'
+  | 'dragenter'
+  | 'dragover'
+  | 'dragleave'
+  | 'drop'
+  | 'dragend'
   // a text field's text selected, by a key, a press or a release in it
   | 'select'
   // told after the fact: a `<link rel=stylesheet>`'s sheet applied, or not
@@ -102,6 +111,9 @@ export interface HtmlDomEvent {
   /** For a `paste`, what was on the clipboard, where the host handed a
    *  clipboard and it was read first. */
   clipboard?: HtmlClipboardData;
+  /** For a drag's events, what it carries: a host writes to it, as a page's
+   *  `dataTransfer` does, at `dragstart` and `dragover`. */
+  drag?: HtmlDragData;
 }
 
 /** `onDomEvent`: false cancels a cancelable event. */
@@ -147,6 +159,11 @@ const CANCELABLE = new Set<HtmlDomEventType>([
   'copy',
   'cut',
   'paste',
+  'dragstart',
+  'drag',
+  'dragenter',
+  'dragover',
+  'drop',
   'submit',
   'reset',
 ]);

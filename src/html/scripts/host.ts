@@ -2033,7 +2033,19 @@ export class DomHost {
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
       clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
+      drag: event.drag && {
+        entries: event.drag.entries,
+        hasFiles: event.drag.hasFiles,
+        files: event.drag.files?.map((file) => this._toldFile(file)),
+        effectAllowed: event.drag.effectAllowed,
+        dropEffect: event.drag.dropEffect,
+      },
     });
+    // what a page left in the drag's store, for what the drag does next
+    if (event.drag && this._dragOut) {
+      Object.assign(event.drag, JSON.parse(this._dragOut));
+      this._dragOut = null;
+    }
     return answer !== false;
   }
 
@@ -5220,6 +5232,9 @@ export class DomHost {
         return this._fileList(this._element(a));
       case 'fileChunk':
         return this._fileChunk(Number(a), Number(b));
+      case 'dragOut':
+        this._dragOut = text(a);
+        return null;
       case 'pickFiles':
         this._seams.handle.pickFiles?.(this._element(a));
         return null;
@@ -7139,16 +7154,19 @@ export class DomHost {
   /** What a file input holds, as a page's realm makes `File`s of. Nothing
    *  of a file's bytes crosses until the page reads them (`_fileChunk`). */
   private _fileList(el: Element): string {
-    return JSON.stringify(
-      chosenFiles(el).map((file) => ({
-        id: this._fileId(file),
-        name: file.name,
-        type: file.type,
-        lastModified: file.lastModified,
-        size: file.bytes.length,
-      })),
-    );
+    return JSON.stringify(chosenFiles(el).map((f) => this._toldFile(f)));
   }
+  private _toldFile(file: HtmlFile) {
+    return {
+      id: this._fileId(file),
+      name: file.name,
+      type: file.type,
+      lastModified: file.lastModified,
+      size: file.bytes.length,
+    };
+  }
+  /** What a page's `dataTransfer` came to at the event just told. */
+  private _dragOut: string | null = null;
   /** A piece of a file, from an offset: a string has a limit, and a file
    *  has none. */
   private _fileChunk(id: number, at: number): string {
