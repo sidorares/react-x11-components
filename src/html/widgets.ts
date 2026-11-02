@@ -48,6 +48,7 @@ import {
   tagOf,
 } from './dom.js';
 import type { Document, Element, HtmlChange } from './dom.js';
+import type { HtmlFile, HtmlPickFiles } from './files.js';
 import type { HtmlViewNode } from './node.js';
 import { browserSystemColor } from './css/color.js';
 import type { RootLook } from './css/style.js';
@@ -69,6 +70,8 @@ import type {
 import {
   FormState,
   buttonType,
+  chooseFiles,
+  chosenFiles,
   controlChange,
   controlsOf,
   firstInvalid,
@@ -99,6 +102,8 @@ export interface FormsOptions {
   baseUrl: string | null | undefined;
   onControlChange?: (element: Element, value: string | boolean) => void;
   onSubmit?: (submission: FormSubmission) => void;
+  /** Ask the user for files, for a file input: `HtmlProps.onPickFiles`. */
+  onPickFiles?: HtmlPickFiles;
   /** What happened, before what it does: `onDomEvent` (`dom-events.ts`). */
   onDomEvent?: DomEventHandler;
   /** Restyle and lay out again: a change a selector can see, told as
@@ -126,6 +131,11 @@ export interface Forms {
    *  `<button>` or an image button pressed, a summary's details opened or
    *  closed. False where it does nothing. */
   activate(el: Element): boolean;
+  /** A file input's dialog, under a press of its own or a script's
+   *  `click()`: nothing where the host handed `onPickFiles` none. */
+  pickFiles(el: Element): void;
+  /** Set what a file input holds, as a script's `files` does: no event. */
+  setFiles(el: Element, files: readonly HtmlFile[]): void;
   /**
    * Something of the document's took the focus, or gave it up: the element
    * it is the document's `:focus` (`HtmlViewNode.setFocus`). A blur is
@@ -194,8 +204,15 @@ const CLICK_SLOP = 4;
 const MESSAGE_MS = 5000;
 
 export function useForms(options: FormsOptions): Forms {
-  const { view, baseUrl, onControlChange, onSubmit, onDomEvent, touch } =
-    options;
+  const {
+    view,
+    baseUrl,
+    onControlChange,
+    onSubmit,
+    onPickFiles,
+    onDomEvent,
+    touch,
+  } = options;
   /** Tell the host what happened; whether the default goes on. */
   const fire = (
     type: HtmlDomEventType,
@@ -571,6 +588,47 @@ export function useForms(options: FormsOptions): Forms {
     if (fire('click', el, { detail: 1, ...init })) then();
   };
 
+  // A file input's dialog. What it held changes as its answer comes, and the
+  // control's label with it, which only a render of the widgets shows.
+  const [, setFilesShown] = React.useState(0);
+  const asking = React.useRef(new WeakSet<Element>());
+  const setFiles = (el: Element, files: readonly HtmlFile[]) => {
+    const was = answers(el);
+    chooseFiles(el, files);
+    const moved = answersMoved(el, was);
+    if (moved) touch(moved);
+    setFilesShown((n) => n + 1);
+  };
+  /** The input's picker (HTML 4.10.5.1.17): one at a time, and what comes
+   *  of it is told as `input` and `change`, or, where nothing changed by
+   *  it, as `cancel`. */
+  const pickFiles = (el: Element) => {
+    if (!onPickFiles || isDisabled(el) || asking.current.has(el)) return;
+    asking.current.add(el);
+    const multiple = attr(el, 'multiple') !== undefined;
+    const accept = (attr(el, 'accept') ?? '')
+      .split(',')
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean);
+    const answered = (files: readonly HtmlFile[] | null) => {
+      asking.current.delete(el);
+      if (!view.current) return;
+      const chosen = multiple ? files : files?.slice(0, 1);
+      if (!chosen || sameFiles(chosen, chosenFiles(el))) {
+        fire('cancel', el);
+        return;
+      }
+      setUserValidity(el, true);
+      setFiles(el, chosen);
+      onControlChange?.(el, chosen[0]?.name ?? '');
+      fire('input', el);
+      fire('change', el);
+    };
+    onPickFiles({ element: el, multiple, accept }).then(answered, () =>
+      answered(null),
+    );
+  };
+
   /** A summary's activation behaviour (HTML 4.11.2): its details open, or
    *  close. The attribute is the state, as `checked` is a checkbox's, and
    *  `details[open]` a selector a sheet styles by. */
@@ -601,6 +659,8 @@ export function useForms(options: FormsOptions): Forms {
       click(control, {}, () =>
         press(control, type === 'image' ? { x: 0, y: 0 } : undefined),
       );
+    } else if (type === 'file') {
+      click(control, {}, () => pickFiles(control));
     } else if (fire('click', control, { detail: 1 })) {
       widgets.focus(control);
     }
@@ -678,6 +738,7 @@ export function useForms(options: FormsOptions): Forms {
     pickerChanged,
     answers,
     answersMoved,
+    pickFiles,
     changed,
     setChecked,
     checkRadio,
@@ -807,6 +868,8 @@ export function useForms(options: FormsOptions): Forms {
       }
       return false;
     },
+    pickFiles,
+    setFiles,
     focused,
     letGo,
     userInput: (kind) => {
@@ -1013,6 +1076,8 @@ interface ControlContext {
   checkRadio: (el: Element) => void;
   /** A button was pressed: what it does to its form. */
   press: (button: Element) => void;
+  /** A file input's button was pressed. */
+  pickFiles: (el: Element) => void;
   /** A click on a widget, asked about before `then` runs. */
   click: (el: Element, init: DomEventInit, then: () => void) => void;
   /** A field's widget took the focus, or gave it up. */
@@ -1151,6 +1216,54 @@ function renderControl(
         onPress: (ev) => ctx.click(el, modifiersOf(ev), () => ctx.press(el)),
       });
       break;
+    case 'file': {
+      const several = attr(el, 'multiple') !== undefined;
+      const choose = (ev: Partial<X11MouseEvent<DrawnNode>>) =>
+        ctx.click(el, modifiersOf(ev), () => ctx.pickFiles(el));
+      widget = hx(
+        'box',
+        {
+          style: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            width: '100%',
+            height: '100%',
+          },
+          // all of it is the button: a page lays a file input over what it
+          // draws, transparent, and means all of it, and a native button is
+          // no taller than its bezel
+          onClick: disabled ? undefined : choose,
+        },
+        h(Button, {
+          key: 'choose',
+          label: several ? 'Choose Files' : 'Choose File',
+          disabled,
+          ...order,
+          ...(ownFont && { native: false }),
+          // the keyboard's, and a press on it, which goes no further
+          onPress: (ev) => {
+            ev.stopPropagation?.();
+            choose(ev);
+          },
+        }),
+        hx(
+          'text',
+          {
+            key: 'chosen',
+            style: {
+              flexGrow: 1,
+              flexShrink: 1,
+              flexBasis: 0,
+              paddingLeft: 6,
+              textWrap: 'nowrap',
+              textOverflow: 'ellipsis',
+            },
+          },
+          filesLabel(el, several),
+        ),
+      );
+      break;
+    }
     case 'select': {
       const options = optionsOf(el);
       widget = h(Select, {
@@ -1716,6 +1829,27 @@ function isTextField(el: Element): boolean {
 }
 
 const CHECKABLE = new Set(['checkbox', 'radio', 'hidden', 'file', 'image']);
+
+/** What a file input says beside its button. */
+function filesLabel(el: Element, several: boolean): string {
+  const files = chosenFiles(el);
+  if (!files.length) return several ? 'No files chosen' : 'No file chosen';
+  return files.length === 1 ? files[0].name : `${files.length} files`;
+}
+
+/** Whether a dialog came back with what the input held already: no change,
+ *  which a browser tells as a `cancel`. */
+function sameFiles(a: readonly HtmlFile[], b: readonly HtmlFile[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (file, i) =>
+        file.name === b[i].name &&
+        file.lastModified === b[i].lastModified &&
+        file.bytes.length === b[i].bytes.length,
+    )
+  );
+}
 
 /** A control's value as a script reads it (`Forms.value`). */
 function controlState(el: Element, forms: FormState): string | boolean | null {

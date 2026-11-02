@@ -60,6 +60,7 @@ import {
   isDefinedElement,
   isForeign,
   isStyleOrScript,
+  isStylePreload,
   inActiveTransition,
   isModal,
   setActiveTransition,
@@ -192,6 +193,8 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
+import { chosenFiles } from '../form.js';
+import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
 import type { HtmlClipboard } from '../clipboard.js';
 import type { HtmlPermissions } from '../permissions.js';
@@ -338,7 +341,8 @@ export interface FrameShown {
 
 /** A form's POST into a frame its target names (`navigateFrame`). */
 export interface FramePost {
-  body: string;
+  /** Bytes where a file is in it. */
+  body: string | Uint8Array;
   contentType: string;
 }
 export interface FetchResponse {
@@ -390,6 +394,10 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** A file input's dialog (`HtmlProps.onPickFiles`). */
+  pickFiles(element: Element): void;
+  /** Set what a file input holds, as a script's `files` does. */
+  setFiles(element: Element, files: readonly HtmlFile[]): void;
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
@@ -1069,6 +1077,9 @@ function base64Of(bytes: Uint8Array): string {
     'base64',
   );
 }
+
+/** How much of a file crosses to a page at once. */
+const FILE_CHUNK = 6 * 2 ** 20;
 
 /** Bytes from what crossed as base64. */
 function bytesOf(text: string): Uint8Array {
@@ -5143,6 +5154,18 @@ export class DomHost {
         return crypto.randomUUID();
       case 'secureContext':
         return this._secureContext();
+      // a file input: which selection it holds, what is in it, a piece of
+      // one file's bytes, its picker, and what a script set
+      case 'fileList':
+        return this._fileList(this._element(a));
+      case 'fileChunk':
+        return this._fileChunk(Number(a), Number(b));
+      case 'pickFiles':
+        this._seams.handle.pickFiles?.(this._element(a));
+        return null;
+      case 'setFiles':
+        this._setFiles(this._element(a), text(b));
+        return null;
       case 'clipboard':
         return this._clipboardOp(text(a), b, text(c));
       case 'permission':
@@ -6274,7 +6297,9 @@ export class DomHost {
               url: src,
               method: 'POST',
               headers: [['content-type', post.contentType]],
-              body: post.body,
+              ...(typeof post.body === 'string'
+                ? { body: post.body }
+                : { body: null, bytes: post.body }),
             }
           : { url: src, method: 'GET', headers: [], body: null },
         new AbortController().signal,
@@ -6577,14 +6602,47 @@ export class DomHost {
    *  once a page read its `contentWindow`, and was an empty box. */
   private _connected(nodes: readonly AnyNode[]): void {
     const found = DomUtils.findAll(
-      (el) => el.name === 'script' || FRAME_TAGS.has(el.name),
+      (el) =>
+        el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
     for (const el of found) {
       if (this._disposed) return;
       if (el.name === 'script') this._prepareScript(el);
+      else if (el.name === 'link') this._preloadLink(el);
       else this._frameIn(el);
     }
+  }
+
+  /**
+   * A `<link rel=preload>` or `modulepreload` a page's script put in, of
+   * anything but a sheet, whose `<Html>` holds to its own: asked for, so
+   * that it hears `load` or `error` (HTML 4.2.4), which is all it is for
+   * here. A page's loader can wait on it before it puts the script in, as
+   * Squoosh's does: with neither told, its editor never loaded.
+   */
+  private _preloadLink(el: Element): void {
+    const { rel, href } = el.attribs;
+    if (!rel || !href || isForeign(el) || isStylePreload(el)) return;
+    if (!/(?:^|\s)(?:preload|modulepreload)(?:\s|$)/i.test(rel)) return;
+    const id = this.idOf(el);
+    const tell = (type: string) => {
+      if (!this._disposed) this.entries?.call('__fire', [id, type]);
+    };
+    this._seams
+      .fetch(
+        { url: this._resolve(href), method: 'GET', headers: [], body: null },
+        new AbortController().signal,
+      )
+      .then(
+        (response) => {
+          release(response);
+          tell(
+            response.status >= 200 && response.status < 300 ? 'load' : 'error',
+          );
+        },
+        () => tell('error'),
+      );
   }
 
   /**
@@ -6991,6 +7049,62 @@ export class DomHost {
       trustworthy(this._s.top ?? this.url) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
+  }
+
+  /** The files a page has been told of, by the number it reads them by. */
+  private _files: (HtmlFile | undefined)[] = [undefined];
+  private _fileIds = new Map<HtmlFile, number>();
+  private _fileId(file: HtmlFile): number {
+    let id = this._fileIds.get(file);
+    if (id === undefined) {
+      id = this._files.length;
+      this._files.push(file);
+      this._fileIds.set(file, id);
+    }
+    return id;
+  }
+  /** What a file input holds, as a page's realm makes `File`s of. Nothing
+   *  of a file's bytes crosses until the page reads them (`_fileChunk`). */
+  private _fileList(el: Element): string {
+    return JSON.stringify(
+      chosenFiles(el).map((file) => ({
+        id: this._fileId(file),
+        name: file.name,
+        type: file.type,
+        lastModified: file.lastModified,
+        size: file.bytes.length,
+      })),
+    );
+  }
+  /** A piece of a file, from an offset: a string has a limit, and a file
+   *  has none. */
+  private _fileChunk(id: number, at: number): string {
+    const file = this._files[id];
+    return file ? base64Of(file.bytes.subarray(at, at + FILE_CHUNK)) : '';
+  }
+  /** What a page's `files` setter gave an input: files of the host's, by
+   *  their numbers, or of the page's, with their bytes. */
+  private _setFiles(el: Element, list: string): void {
+    const given = JSON.parse(list) as {
+      id?: number;
+      name?: string;
+      type?: string;
+      lastModified?: number;
+      b?: string;
+    }[];
+    const files: HtmlFile[] = [];
+    for (const file of given) {
+      const held = file.id ? this._files[file.id] : undefined;
+      files.push(
+        held ?? {
+          name: file.name ?? '',
+          type: file.type ?? '',
+          lastModified: file.lastModified ?? 0,
+          bytes: bytesOf(file.b ?? ''),
+        },
+      );
+    }
+    this._seams.handle.setFiles?.(el, files);
   }
 
   /**

@@ -50,6 +50,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onDocument`         | `(document: Document) => void`                   | The parsed DOM, each time it is re-parsed.                                                                                                                                                                                                                                                          |
 | `onControlChange`    | `(element, value) => void`                       | A form control changed, or a `<button>` was pressed, with its `value`. The element is the one in the DOM.                                                                                                                                                                                           |
 | `onSubmit`           | `(submission: FormSubmission) => void`           | A form was submitted, handed over as the request it makes — see [Forms](#forms). Absent, submitting does nothing.                                                                                                                                                                                   |
+| `onPickFiles`        | `(request) => Promise<HtmlFile[] \| null>`       | Ask the user for files, for an `<input type=file>` — see [File inputs](#file-inputs). `useHtmlFilePicker()` is core's file dialog. Absent, a file input opens nothing.                                                                                                                              |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                                                                                        |
 | `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).                                                                                |
 | `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                                                                                  |
@@ -2225,7 +2226,7 @@ anywhere is the host's to decide, as whether an image loads is. Without
 | `url`         | The `action`, resolved as `onLink`'s `href` is — against the document's base, and an empty one is the document's own URL. A GET's has the entries as its query, so a GET is a link to exactly this. |
 | `enctype`     | `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain`.                                                                                                                         |
 | `entries`     | The `[name, value]` pairs, in tree order, unencoded.                                                                                                                                                |
-| `body`        | A POST's body, encoded as `enctype` says; null for a GET.                                                                                                                                           |
+| `body`        | A POST's body, encoded as `enctype` says: bytes where a file is in it; null for a GET.                                                                                                              |
 | `contentType` | The `Content-Type` for the body — `multipart/form-data`'s names its boundary; null for a GET.                                                                                                       |
 | `target`      | `formtarget`, `target` or `<base target>`: `'_blank'` asks for a new browsing context, empty for this one.                                                                                          |
 
@@ -2353,6 +2354,59 @@ is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
 and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
+
+### File inputs
+
+```jsx
+const onPickFiles = useHtmlFilePicker();
+
+<Html source={page} onPickFiles={onPickFiles} onSubmit={post} />;
+```
+
+An `<input type=file>` is a button and what it holds, as wide as Blink's, and a
+press anywhere on it asks `onPickFiles`, so one a page makes transparent over
+what it draws works as it does in a browser. So does a press on its `<label>`,
+and a page's `click()` or `showPicker()` under a user's press or key, which is
+how a page's own button opens one that is hidden: such an input needs no box.
+Without `onPickFiles` it opens nothing: a component that shows a page does not
+open a dialog for it.
+
+`onPickFiles` is handed the element, `multiple` and what `accept` names, and
+answers with files or, for a dialog dismissed, null. What comes back is told as
+`input` and `change`; a dialog dismissed, or one that changed nothing, as
+`cancel`. A page's `click` that it cancelled asks nothing.
+
+| `HtmlFile`     |                               |
+| -------------- | ----------------------------- |
+| `name`         | Its name, with no path.       |
+| `type`         | Its MIME type, or `''`.       |
+| `lastModified` | Milliseconds since the epoch. |
+| `bytes`        | What it holds.                |
+
+`useHtmlFilePicker()` is core's file dialog, on the best rung the machine has,
+with `accept` as its filters, and `readHtmlFiles(paths)` reads what it answers
+with; `fileTypeOf(name)` is the type a file goes by, by its extension, since
+nothing on a disk says. **A host whose documents are in a `<Frame>` pane shows
+the dialog itself**: a pane has no NSApplication on a Mac to show a panel from.
+It hands the pane the paths, `acceptFilters(accept)` being the dialog's filters,
+and the pane calls `readHtmlFiles`, as the example browser does, so that nothing
+of a file passes through the host.
+
+A form with files in it posts them: `multipart/form-data` has each with its
+name, its type and its bytes, and `body` is then a `Uint8Array`, which a host's
+`post` hands on as it does text; the other two encodings send the file's name.
+An input with nothing in it goes as HTML has it, one file with no name.
+`required` is satisfied by a file, and a reset empties the input.
+
+A page's `input.files` is a `FileList` of `File`s, the same list until what the
+input holds changes, and a `File`'s bytes cross as the page reads them, so a
+video chosen to be uploaded need never reach the page at all. `value` reads
+`C:\\fakepath\\name`, and takes nothing but `''`. `files` takes another
+input's list, or a `DataTransfer`'s, and tells no event. `new FormData(form)`
+holds the files, and `URL.createObjectURL(file)` shows one in an `<img>` before
+anything is uploaded. Not here: `webkitdirectory`, `capture`, and
+`showOpenFilePicker`, which is left out rather than half there, since a page
+that finds it goes on to `showSaveFilePicker` and handles it can write to.
 
 ## Video
 

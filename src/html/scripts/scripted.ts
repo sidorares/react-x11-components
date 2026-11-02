@@ -34,6 +34,8 @@ import type {
   HtmlDomEvent,
   HtmlHandle,
   HtmlProps,
+  ResourceRequest,
+  ResourceResult,
   ScriptRequest,
 } from '../index.js';
 import { fireDomEvent } from '../dom-events.js';
@@ -518,6 +520,7 @@ export function useScriptedHtml(
         animate: p.animate,
         reducedMotion: p.reducedMotion,
         selectionColor: p.selectionColor,
+        onPickFiles: p.onPickFiles,
       },
     };
   };
@@ -591,6 +594,25 @@ export function useScriptedHtml(
       latest.current.props.onSubmit?.(submission);
     },
     [scripts.navigateFrame],
+  );
+
+  // A blob URL is the page's own, and no host could fetch it: what a page
+  // draws of a `File` it was given, before it uploads it, is answered here.
+  const onResource = useCallback(
+    async (request: ResourceRequest) => {
+      if (!request.url.startsWith('blob:')) {
+        return latest.current.props.onResource?.(request) ?? null;
+      }
+      // a turn on, since this is asked from inside the page's own ops
+      await Promise.resolve();
+      const bytes = scripts.runner?.()?.blobBytes(request.url);
+      if (!bytes) throw new Error(`${request.url} holds nothing.`);
+      const { kind } = request;
+      return kind === 'image' || kind === 'font' || kind === 'stylesheet'
+        ? ({ kind, bytes } as ResourceResult)
+        : null;
+    },
+    [scripts.runner],
   );
 
   // the application's own callbacks, called beside the engine's
@@ -670,6 +692,7 @@ export function useScriptedHtml(
   return {
     ...props,
     scripting: scripts.scripting,
+    onResource,
     onDocument,
     onScript,
     onParsed,
