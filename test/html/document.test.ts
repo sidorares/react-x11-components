@@ -510,10 +510,265 @@ test("a table's rows go in the row group and the row HTML's parser implies", () 
     'tbody " "',
   );
   // nothing is implied in SVG, whose names these are not
+  assert.strictEqual(shapeOf('<svg><tr><td></td></tr></svg>'), 'svg(tr(td()))');
+});
+
+/** What Chromium, Firefox and WebKit each make of `innerHTML` in a body
+ *  (`DOMParser`), element by element: every row here is theirs. */
+test('a start tag that ends foreign content closes it, and what comes after is HTML', () => {
+  for (const [markup, shape] of [
+    ['<svg><g><div><link></div></g></svg>', 'svg(g()) div(link())'],
+    ['<svg><g><div></div><link></g></svg>', 'svg(g()) div() link()'],
+    ['<svg><p>x</p><link></svg>', 'svg() p(x) link()'],
+    ['<svg><g><meta><rect></rect></g></svg>', 'svg(g()) meta() rect()'],
+    ['<svg><table><tr><td>x</table></svg>', 'svg() table(tbody(tr(td(x))))'],
+    ['<svg><br><rect></rect></svg>', 'svg() br() rect()'],
+    ['<svg><text>a<span>b</span>c</text></svg>', 'svg(text(a)) span(b) c'],
+    ['<math><mrow><p>x</p></mrow></math>', 'math(mrow()) p(x)'],
+    ['<p>a<svg><div>b</div></svg>', 'p(a svg()) div(b)'],
+    // as far as the nearest integration point, and no further
+    [
+      '<svg><foreignObject><svg><div></div></svg></foreignObject></svg>',
+      'svg(foreignObject(svg() div()))',
+    ],
+    // where it is HTML's already there is nothing to end
+    [
+      '<svg><foreignObject><div></div><rect></rect></foreignObject><rect></rect></svg>',
+      'svg(foreignObject(div() rect()) rect())',
+    ],
+    [
+      '<svg><title><b>x</b></title><rect></rect></svg>',
+      'svg(title(b(x)) rect())',
+    ],
+    ['<math><mi><p>x</p></mi></math>', 'math(mi(p(x)))'],
+    // and these are names foreign content may have
+    ['<svg><a><font>x</font><tr></tr></a></svg>', 'svg(a(font(x) tr()))'],
+  ]) {
+    assert.strictEqual(shapeOf(markup), shape, markup);
+  }
+  // every name that does, and some a reading of the list would add
+  for (const name of (
+    'b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 ' +
+    'h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small ' +
+    'span strike strong sub sup table tt u ul var'
+  ).split(' ')) {
+    for (const root of ['svg', 'math']) {
+      assert.ok(
+        shapeOf(`<body><${root}><g><${name}>`).includes(`${root}(g())`),
+        `<${name}> stayed in ${root}`,
+      );
+    }
+  }
+  for (const name of 'a dir font form input section tr'.split(' ')) {
+    assert.ok(
+      !shapeOf(`<body><svg><g><${name}>`).includes('svg(g())'),
+      `<${name}> ended the drawing`,
+    );
+  }
+});
+
+const SVG = 'http://www.w3.org/2000/svg';
+const MATHML = 'http://www.w3.org/1998/Math/MathML';
+
+test('a <link> and a <base> are in the namespace HTML’s parser reads them in, and only an HTML one is the document’s', () => {
+  // no walk up the tree says this: all three engines have a `<link>` a
+  // script puts in a drawing as a sheet, and the parser's as no sheet
+  const link = 'id="t" rel="stylesheet" href="s.css"';
+  for (const [markup, namespace] of [
+    [`<svg><link ${link}></svg>`, SVG],
+    [`<svg><g><a><link ${link}></a></g></svg>`, SVG],
+    [`<svg><foreignObject></foreignObject><link ${link}></svg>`, SVG],
+    [
+      `<svg><foreignObject><svg><link ${link}></svg></foreignObject></svg>`,
+      SVG,
+    ],
+    [`<svg><foreignObject><link ${link}></foreignObject></svg>`, undefined],
+    [
+      `<svg><foreignObject><div><link ${link}></div></foreignObject></svg>`,
+      undefined,
+    ],
+    [`<svg><title><link ${link}></title></svg>`, undefined],
+    [`<svg><desc><link ${link}></desc></svg>`, undefined],
+    // SVG's integration points are not MathML's, nor the other way round
+    [`<svg><mi><link ${link}></mi></svg>`, SVG],
+    [`<svg><annotation-xml encoding="text/html"><link ${link}></svg>`, SVG],
+    [`<math><link ${link}></math>`, MATHML],
+    [`<math><mrow><link ${link}></mrow></math>`, MATHML],
+    [`<math><title><link ${link}></title></math>`, MATHML],
+    [`<math><mi><link ${link}></mi></math>`, undefined],
+    [`<math><mtext><link ${link}></mtext></math>`, undefined],
+    [`<math><annotation-xml><link ${link}></annotation-xml></math>`, MATHML],
+    [
+      `<math><annotation-xml encoding="MathML-Content"><link ${link}></annotation-xml></math>`,
+      MATHML,
+    ],
+    [
+      `<math><annotation-xml encoding="TEXT/HTML"><link ${link}></annotation-xml></math>`,
+      undefined,
+    ],
+    [
+      `<math><annotation-xml encoding="application/xhtml+xml"><link ${link}></annotation-xml></math>`,
+      undefined,
+    ],
+    // what ended the drawing leaves it behind
+    [`<svg><p></p><link ${link}></svg>`, undefined],
+    [`<svg><meta><link ${link}></svg>`, undefined],
+    [`<link ${link}>`, undefined],
+  ] as const) {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    const el = findById(source.document, 't')!;
+    assert.strictEqual(el.namespace, namespace, markup);
+    const { sheets, resources } = source.facts();
+    const expected = namespace === undefined ? 1 : 0;
+    assert.strictEqual(sheets.length, expected, `${markup}: its sheet`);
+    assert.strictEqual(resources.length, expected, `${markup}: what is asked`);
+  }
+  const baseOf = (markup: string): string | null => {
+    const source = new HtmlSource();
+    source.setSource(markup, true);
+    return source.facts().base;
+  };
+  assert.strictEqual(baseOf('<svg><g><base href="/b/"></g></svg>'), null);
+  assert.strictEqual(baseOf('<math><base href="/b/"></math>'), null);
   assert.strictEqual(
-    shapeOf('<svg><table><tr></tr></table></svg>'),
-    'svg(table(tr()))',
+    baseOf('<svg><foreignObject><base href="/b/"></foreignObject></svg>'),
+    '/b/',
   );
+  assert.strictEqual(
+    baseOf('<svg><g><base href="/b/"></g></svg><base href="/c/">'),
+    '/c/',
+    'the first that is HTML’s',
+  );
+  // a `<style>` is SVG's as well, and stays a sheet
+  const styled = new HtmlSource();
+  styled.setSource('<svg><g><style>rect{fill:blue}</style></g></svg>', true);
+  assert.strictEqual(styled.facts().sheets.length, 1);
+  // and a preload of a sheet is a `<link>`'s to ask for as well
+  const preload = new HtmlSource();
+  preload.setSource(
+    '<svg><link rel="preload" as="style" href="s.css"></svg>',
+    true,
+  );
+  assert.strictEqual(preload.facts().resources.length, 0);
+});
+
+test('a <link> an application puts in a drawing is a sheet, as a script’s is, and one it parsed in a drawing is not', () => {
+  const source = new HtmlSource();
+  source.setSource('<svg><g id="g"></g></svg><p id="p"></p>', true);
+  const g = findById(source.document, 'g')!;
+  const own = createElement('link', { rel: 'stylesheet', href: 'own.css' });
+  appendChild(g, own);
+  source.touch();
+  assert.deepStrictEqual(
+    source.facts().sheets.map((sheet) => sheet.element),
+    [own],
+  );
+  const [drawing] = parseFragment(
+    '<svg><link rel="stylesheet" href="parsed.css"></svg>',
+  ) as Element[];
+  const parsed = drawing.children[0] as Element;
+  // what it was made as stays with it, wherever it goes and in each copy
+  appendChild(findById(source.document, 'p')!, parsed);
+  appendChild(findById(source.document, 'p')!, parsed.cloneNode() as Element);
+  source.touch();
+  assert.deepStrictEqual(
+    source.facts().sheets.map((sheet) => sheet.element),
+    [own],
+  );
+  // a `<base>` the same way
+  const [other] = parseFragment('<svg><base href="/p/"></svg>') as Element[];
+  appendChild(g, other.children[0] as Element);
+  source.touch();
+  assert.strictEqual(source.facts().base, null);
+  appendChild(g, createElement('base', { href: '/own/' }));
+  source.touch();
+  assert.strictEqual(source.facts().base, '/own/');
+});
+
+test('a fragment is read as what its context holds', () => {
+  const inNamespace = (name: string, namespace?: string): Element => {
+    const el = createElement(name);
+    if (namespace !== undefined) el.namespace = namespace;
+    return el;
+  };
+  const [drawing] = parseFragment(
+    '<svg><g id="g"><title id="t"></svg>',
+  ) as Element[];
+  const g = findById(drawing, 'g')!;
+  const name = (nodes: ChildNode[]) =>
+    nodes.map((node) => (node as Element).name).join(' ');
+  // SVG's own rules, which read as HTML nested each `<path/>` in the last,
+  // and folded what its names keep in capitals
+  for (const context of [g, inNamespace('g', SVG), inNamespace('svg', SVG)]) {
+    assert.strictEqual(
+      name(parseFragment('<path/><path/><clipPath/>', false, context)),
+      'path path clipPath',
+    );
+  }
+  assert.strictEqual(
+    (
+      parseFragment(
+        '<mi/><mo/>',
+        false,
+        inNamespace('math', MATHML),
+      ) as Element[]
+    ).length,
+    2,
+  );
+  // what breaks out of the context is HTML's until it closes, and the
+  // context is there again after it, in all three engines
+  const shape = (nodes: ChildNode[]): string =>
+    nodes
+      .map((node) =>
+        node.type === 'text'
+          ? (node as unknown as { data: string }).data.trim()
+          : `${(node as Element).name}(${shape((node as Element).children)})`,
+      )
+      .filter(Boolean)
+      .join(' ');
+  for (const [markup, expected] of [
+    ['<div><span/>x</div><path/><path/>', 'div(span(x)) path() path()'],
+    ['<br><path/><path/>', 'br() path() path()'],
+    ['<p>a</p><clipPath/>b', 'p(a) clipPath() b'],
+    ['<svg><div></div></svg><path/>', 'svg() div() path()'],
+    ['<b/>x', 'b(x)'],
+  ]) {
+    assert.strictEqual(
+      shape(parseFragment(markup, false, g)),
+      expected,
+      markup,
+    );
+  }
+  // every row is what `innerHTML` makes of `<link id=a><div id=b><link
+  // id=c></div><a><link id=d></a>` in all three engines
+  for (const [context, a, c, d] of [
+    [g, SVG, undefined, SVG],
+    [inNamespace('g', SVG), SVG, undefined, SVG],
+    [inNamespace('svg', SVG), SVG, undefined, SVG],
+    [findById(drawing, 't')!, undefined, undefined, undefined],
+    [inNamespace('foreignObject', SVG), undefined, undefined, undefined],
+    [inNamespace('title', SVG), undefined, undefined, undefined],
+    [inNamespace('math', MATHML), MATHML, undefined, MATHML],
+    [inNamespace('mrow', MATHML), MATHML, undefined, MATHML],
+    [inNamespace('mi', MATHML), undefined, undefined, undefined],
+    [createElement('div'), undefined, undefined, undefined],
+    [createElement('g'), undefined, undefined, undefined],
+    [null, undefined, undefined, undefined],
+  ] as const) {
+    const held = parseFragment(
+      '<link id="a"><div id="b"><link id="c"></div><a><link id="d"></a>',
+      false,
+      context,
+    );
+    const holder = createElement('div', {}, held);
+    const made = (id: string) => findById(holder, id)!.namespace;
+    const named = context?.name ?? 'no context';
+    assert.strictEqual(made('a'), a, `<link> in ${named}`);
+    assert.strictEqual(made('b'), undefined, `<div> in ${named}`);
+    assert.strictEqual(made('c'), c, `<link> in a <div> in ${named}`);
+    assert.strictEqual(made('d'), d, `<link> after a <div> in ${named}`);
+  }
 });
 
 test('a fragment can be parsed and spliced in', () => {

@@ -1598,6 +1598,18 @@ export function bytesApart(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
 export const treeOf = (el: HtmlViewNode) =>
   (el as unknown as { _tree: unknown })._tree;
 
+/** The pane a document scrolls in. */
+export function paneOf(node: unknown): {
+  scrollY: number;
+  scrollTo(to: { y: number }): void;
+} {
+  type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
+  let at = (node as Up).parent;
+  while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
+  assert.ok(at, 'a pane');
+  return at as unknown as ReturnType<typeof paneOf>;
+}
+
 /** A logical window point inside an element of the document. */
 export function pointIn(el: HtmlViewNode, id: string): [number, number] {
   const target = findById(el.document, id)!;

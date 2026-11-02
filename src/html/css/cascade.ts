@@ -2243,6 +2243,7 @@ function ancestorKeys(selector: string): string[] {
 
 /** No names: what is above the root. */
 const NO_NAMES: ReadonlySet<string> = new Set();
+const NO_ELEMENTS: ReadonlySet<Element> = new Set();
 
 /** The element a selector's ancestor is matched against: the parent, where
  *  that is an element — not the document, nor a shadow tree's root, as the
@@ -5671,6 +5672,8 @@ export class Cascade {
      *  the aspect ratio reads. */
     fromHeight = this.viewportHeight,
     toHeight = this.viewportHeight,
+    /** What the document's drawings name, asked as `addedReach` asks it. */
+    named: ReadonlySet<Element> = NO_ELEMENTS,
   ): Set<Element> | null {
     const answers = (
       media: MediaCondition[][] | null,
@@ -5725,6 +5728,7 @@ export class Cascade {
       const shadow = this._scoped ? shadowRootOf(el) : null;
       if (shadow) for (const child of shadow.children) stack.push(child);
     }
+    for (const top of named) this._reachInCopy(turned, top, reached);
     return reached;
   }
 
@@ -5739,6 +5743,11 @@ export class Cascade {
    * rule is in a sheet no cascade had filed. Null where one is in neither
    * `_index` nor `_pseudo`: a rule at a shadow tree's edge, a highlight's, a
    * view transition's.
+   *
+   * What a drawing names is asked as a `<use>` copies it as well, in a tree
+   * of its own (`_copyTop`), which a rule can match where it matches nothing
+   * where the element stands: `symbol:first-child rect` of any symbol, since
+   * nothing is beside a copy.
    */
   addedReach(
     added: readonly StyleRule[],
@@ -5747,6 +5756,8 @@ export class Cascade {
      *  stands for the root's: one no element's rules are asked for, which
      *  a rule that may match the root changes (`impliedHtml`). */
     impliedRoot = false,
+    /** What the document's drawings name (`namedBy`). */
+    named: ReadonlySet<Element> = NO_ELEMENTS,
   ): Set<Element> | null {
     const reached = new Set<Element>();
     if (!added.length) return reached;
@@ -5782,7 +5793,32 @@ export class Cascade {
       const shadow = this._scoped ? shadowRootOf(el) : null;
       if (shadow) for (const child of shadow.children) stack.push(child);
     }
+    for (const top of named) this._reachInCopy(turned, top, reached);
     return reached;
+  }
+
+  /** What in the copy a `<use>` makes of `top` the rules of `turned` match,
+   *  put in `reached`. */
+  private _reachInCopy(
+    turned: RuleIndex,
+    top: Element,
+    reached: Set<Element>,
+  ): void {
+    this._copyTop = top;
+    try {
+      const stack: AnyNode[] = [top];
+      for (let at = stack.pop(); at; at = stack.pop()) {
+        if (!isTag(at)) continue;
+        if (!reached.has(at) && turned.reaches(at)) {
+          const matched: number[] = [];
+          this._matchInto(turned, at, null, matched, undefined, true, true);
+          if (matched.length) reached.add(at);
+        }
+        for (const child of at.children) stack.push(child);
+      }
+    } finally {
+      this._copyTop = null;
+    }
   }
 
   /** Which media band a viewport of device pixels falls in: the width's

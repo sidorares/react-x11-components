@@ -1405,12 +1405,20 @@ export function inlineDrawing(el: Element): SvgDrawing {
  * node in no document is told to nobody, and is told with all the node holds
  * by the change that puts it in (`DomHost._tell`), so a drawing taken out,
  * given another `viewBox` and put back says no more than that it came back.
+ *
+ * What it noted goes with a change in it, which is drawn again, and the read
+ * that pays for it notes what it reads now. A change to an attribute of its
+ * root may draw nothing, an icon's `class` off screen among them, and with
+ * nothing read after it what it names would reach it by nothing. Kept, a name
+ * it no longer has reaches it once more, and is read away.
  */
 export function forgetDrawings(changes: readonly HtmlChange[]): void {
   for (const change of changes) {
     for (let at: AnyNode | null = change.target; at; at = at.parent) {
       INLINE.delete(at as Element);
-      NAMED.delete(at as Element);
+      if (at !== change.target || change.type !== 'attributes') {
+        NAMED.delete(at as Element);
+      }
     }
     if (change.type !== 'childList') continue;
     for (const node of change.addedNodes) forgetUnder(node);
@@ -1452,6 +1460,64 @@ export function drawingsNaming(
   }
 }
 
+/**
+ * What `drawings` last found outside themselves (`Named`): what a rule has to
+ * be asked of as a `<use>` copies it too, in a tree where a selector sees
+ * nothing above it and nothing beside it (`Cascade.addedReach`).
+ */
+export function namedBy(drawings: readonly Element[]): Set<Element> {
+  const found = new Set<Element>();
+  for (const root of drawings) {
+    const named = NAMED.get(root);
+    if (!named) continue;
+    for (const el of named.values()) if (el) found.add(el);
+  }
+  return found;
+}
+
+/**
+ * Which of `drawings` draw from `elements`, put in `reached`: those that name
+ * one of them or what holds one. What a rule a sheet added gives a shape in a
+ * sprite is given to the icons that `<use>` it, and a build that follows
+ * reaches none of them unless it happens to be built around them
+ * (`HtmlViewNode._update`).
+ *
+ * A drawing reached keeps what it noted, as one `drawingsNaming` reaches does
+ * not: it is asked here, not owed a paint, and most answers come to what they
+ * were. Given up, what it names would reach it by nothing after that.
+ */
+export function namersOf(
+  elements: ReadonlySet<Element>,
+  drawings: readonly Element[],
+  reached: Set<Element>,
+): void {
+  if (!elements.size) return;
+  let within: Set<AnyNode> | null = null;
+  for (const root of drawings) {
+    const named = NAMED.get(root);
+    if (!named) continue;
+    if (!within) {
+      within = new Set();
+      for (const el of elements) holders(el, within);
+    }
+    for (const el of named.values()) {
+      if (el && within.has(el)) {
+        reached.add(root);
+        break;
+      }
+    }
+  }
+}
+
+/** A node and all that holds it, into `within`, which stops at what is in
+ *  there already. */
+function holders(node: AnyNode, within: Set<AnyNode>): void {
+  for (let at: AnyNode | null = node; at; at = at.parent) {
+    if (within.has(at)) break;
+    within.add(at);
+  }
+}
+
 /** What a list of changes can do to a name (`drawingsNaming`). */
 interface AskedNames {
   /** What each change was at, and all that holds it. */
@@ -1467,10 +1533,7 @@ function askedNames(changes: readonly HtmlChange[]): AskedNames {
   const given = new Set<string>();
   let gone = false;
   for (const change of changes) {
-    for (let at: AnyNode | null = change.target; at; at = at.parent) {
-      if (within.has(at)) break;
-      within.add(at);
-    }
+    holders(change.target, within);
     if (change.type === 'attributes') {
       if (change.attributeName !== 'id') continue;
       const id = change.target.attribs.id;

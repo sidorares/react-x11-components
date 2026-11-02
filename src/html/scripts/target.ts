@@ -6,6 +6,8 @@
 import * as DomUtils from 'domutils';
 import type { Document, Element } from 'domhandler';
 
+import { isForeign } from '../dom.js';
+
 /** Where a target sends a navigation: the page's own tab, a new tab, or
  *  the frame element whose navigable it is. */
 export type Navigable = 'here' | 'tab' | Element;
@@ -55,7 +57,8 @@ export function linkTarget(
   const base =
     document &&
     DomUtils.findOne(
-      (el) => el.name === 'base' && el.attribs.target !== undefined,
+      (el) =>
+        el.name === 'base' && !isForeign(el) && el.attribs.target !== undefined,
       document.children,
       true,
     );

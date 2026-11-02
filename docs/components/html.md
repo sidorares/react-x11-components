@@ -799,10 +799,17 @@ with them once they are in; `check()` says whether they are, and `ready`
 waits for every face on its way. A loader such as FontFaceObserver polls
 `load()` until it hands a face over, and gives up at its timeout:
 facebook.com draws its login QR code only once Instagram Sans Condensed is
-in, and an answer of no faces left the code blank. A face a script makes
-with `new FontFace` is not among them, since nothing hands its data to the
-document's fonts yet: there is no `FontFace` to construct, and `add()` takes
-none.
+in, and an answer of no faces left the code blank.
+
+**`new FontFace(family, source, descriptors)` goes through the same path.**
+A `url()` source is asked for through `onResource`, a buffer is handed over,
+and either is opened by the engine, WOFF2 rebuilt where it has to be, before
+the face says it has loaded. `document.fonts.add` puts a face among the
+document's, which styles the document again, as an `@font-face` in a sheet
+would; `delete` and `clear` take it out, and only what a script put there. A
+family or a descriptor that cannot be read is the `SyntaxError` `loaded`
+rejects with, and a font the engine cannot read a `NetworkError`. A
+descriptor set after a face is made reads back and changes nothing of it.
 
 ## Scripts
 
@@ -1204,8 +1211,9 @@ as WPT's tests make them, and to another peer the host can reach.
   `MediaStreamAudioDestinationNode`, whose track is a host source that
   renders the oscillators and constant sources reaching it through gains.
   Nothing else on a path is rendered, an analyser hears silence,
-  `decodeAudioData` rejects with the `EncodingError` a browser gives what
-  it cannot decode, and nothing is heard, since core has no audio output.
+  `decodeAudioData` reads WAV and gives anything else the `EncodingError` a
+  browser gives what it cannot decode, and nothing is heard, since core has
+  no audio output.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
@@ -1745,6 +1753,17 @@ until its animations are over, when it is finished.
 - **Not yet.** Rendering held while the update runs, and transitions across
   documents.
 
+**A list is live, as the DOM has it.** `childNodes`, `children`,
+`getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
+form's `elements`, a select's `options` and `selectedOptions`, a table's
+`rows` and the document's `forms`, `images`, `links` and `scripts` hold what
+the tree holds when they are read, and an attribute hands out the same list
+each time. `querySelectorAll` holds what it found. None of them is an array:
+`Array.isArray` says no, `Array.prototype.slice.call` gives a plain array, and
+a `NodeList` has `forEach`, `keys`, `values` and `entries` where an
+`HTMLCollection` has only its iterator. A `<select>` itself has no indexed
+properties yet, so `select[0]` reads nothing where `select.options[0]` does.
+
 **A page's custom elements are its own** (HTML 4.13): `customElements`
 defines them, upgrades the ones already in the document and runs their
 callbacks as elements are put in, taken out, moved or given another
@@ -1969,6 +1988,18 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
+**`execCommand` makes the edits a key makes, and no others**: `insertText`,
+`delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
+`selectAll`, in an editing host or a focused text field, each told as a
+`beforeinput` and an `input`. `queryCommandSupported` says which, so a
+formatting command, `undo` and `copy` answer false rather than pretending, and
+`queryCommandState` and `queryCommandValue` have nothing to report.
+
+**`navigator.permissions` answers `prompt` for every name a browser knows**,
+since nothing has been asked and nothing refused, and a name it does not know
+is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and `TaskController`
+are the Prioritized Task Scheduling API: one task to a turn, the highest
+priority first, a continuation ahead of a task of the same one.
 **A drawing's geometry is worked out from its attributes.** No box stands for
 what an inline `<svg>` holds, so `getBBox`, `getCTM`, `getScreenCTM`,
 `getBoundingClientRect` and a shape's `getTotalLength` and `getPointAtLength`
@@ -4431,8 +4462,16 @@ and `font-weight` — `text { font: 10px/1 Ahem }` — and a gradient stop's
 `style` attribute, as the cascade orders them, `!important` and `var()`
 included. A `<style>` inside the `<svg>` is one of the document's style
 sheets, which is where a drawing exported from an editor keeps its colours
-— `.st0 { fill: #fff }` for `<path class="st0">`. Those properties are the
-ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
+— `.st0 { fill: #fff }` for `<path class="st0">`. A `<link>` or a `<base>`
+written there is neither a sheet nor the document's base, and asks
+`onResource` for nothing: HTML's parser makes an SVG element of each, and a
+MathML one under `<math>`, which it stays wherever a script moves or copies
+it. One in a `<foreignObject>`, in an SVG `<title>` or `<desc>`, or in
+MathML's `<mi>` and its kin is HTML's, and one a script or an application
+makes with `createElement` is a sheet wherever it is put, as in all three
+engines. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
+drawing there, and it and what comes after it stand after the drawing. Those
+properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
 no others: a rule's `transform` is not. A length in the drawing's
 geometry is worked out as CSS has it, where ntk's `SvgView` would read it
 as the number before its unit: `x2="2.5em"` is of the element's font
@@ -6489,6 +6528,9 @@ operations that are easy to get wrong (`appendChild`, `removeNode`,
 `replaceNode`, and `createHtmlElement`/`createText`/`parseHtmlFragment` to
 build nodes), because a domhandler node carries `parent`, `prev`, `next` and
 `children` and a splice has to keep all four straight.
+`parseHtmlFragment(html, false, element)` reads the markup as what `element`
+holds, as its `innerHTML` does: in a drawing a `<path/>` closes itself and a
+`clipPath` keeps its capital.
 
 After mutating, call `handle.refresh()`. That is explicit on purpose:
 observing a plain object graph would cost a proxy per node and tax the static

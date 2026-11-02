@@ -74,6 +74,7 @@ import {
   imageUrlOf,
   indicatedElement,
   isElement,
+  isForeign,
   isInputButton,
   isText,
   loadsLazily,
@@ -465,7 +466,13 @@ import type {
 } from './resources.js';
 import { ImageSources } from './srcset.js';
 import type { SourceChanges, SourceEnv } from './srcset.js';
-import { atDensity, drawingsNaming, forgetDrawings } from './svg.js';
+import {
+  atDensity,
+  drawingsNaming,
+  forgetDrawings,
+  namedBy,
+  namersOf,
+} from './svg.js';
 import {
   askMedia,
   cutByFixed,
@@ -3281,7 +3288,7 @@ export class HtmlViewNode extends Node {
         fonts ? (face) => xHeightOf(fonts, face) : null,
         fonts ? (face) => zeroWidthOf(fonts, face) : null,
         fonts ? (face) => normalLineOf(fonts, face) : null,
-        faces.length ? this._webFonts : null,
+        faces.length || this._webFonts.scripted ? this._webFonts : null,
         null,
         this._target,
         shadows,
@@ -4267,6 +4274,12 @@ export class HtmlViewNode extends Node {
     let follow = restyleOnly !== null && this._restyleFollows;
     this._restyleFollows = false;
     let crossing = false;
+    /** The drawings that draw from what the rules a sheet added or a
+     *  breakpoint turned on reached (`namersOf`). No seed is theirs: a sprite
+     *  is another element, and what a build keeps of a drawing is what the
+     *  rules gave it before. Asked once the build has made what they are
+     *  asked of. */
+    const askShapes = new Set<Element>();
     /** What a crossing, a `vw` or an image's new source restyles, added to
      *  what a change asked for, as `_sheetsAdded` adds what its rules
      *  reach: each its own subtree's to build (`seeds`) where the change
@@ -4319,6 +4332,7 @@ export class HtmlViewNode extends Node {
           always?.add(el);
         }
         follow = true;
+        namersOf(reached, this._source.facts().drawings, askShapes);
       } else restyleOnly = null;
     } else if (this._cascade.mediaBand(target, viewport) !== this._mediaBand) {
       // A resize that crossed a `@media` breakpoint is the one resize that
@@ -4341,6 +4355,7 @@ export class HtmlViewNode extends Node {
         // breakpoint turns on lays out otherwise what it matches, and
         // nothing a build makes of what is around them
         if (reached.size) seedWith(reached);
+        namersOf(reached, this._source.facts().drawings, askShapes);
       }
     }
 
@@ -4775,6 +4790,7 @@ export class HtmlViewNode extends Node {
       parsed = false;
     }
     this._stale = Stale.Nothing;
+    if (askShapes.size) this._askShapes(askShapes);
     if (!this._owed.size && this._measureOwed) {
       this._measureOwed = false;
       if (!this._measuring) {
@@ -4821,6 +4837,7 @@ export class HtmlViewNode extends Node {
       this._source.document,
       cascade.viewportHeight,
       viewport,
+      namedBy(this._source.facts().drawings),
     );
   }
 
@@ -7142,6 +7159,19 @@ export class HtmlViewNode extends Node {
   /** Load faces by key, as `FontFace.load()` does (`WebFonts.load`). */
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
+  }
+
+  /** The document's fonts, where a page's `new FontFace` goes. */
+  scriptFonts(): WebFonts {
+    return this._webFonts;
+  }
+
+  /** A face a page's script made joined the document's, or left: as a
+   *  sheet with an `@font-face` is, it changes what every family reads. */
+  scriptFontsChanged(id: number, added: boolean): void {
+    if (!this._webFonts.addFace(id, added)) return;
+    this._sheetsRead = null;
+    this._invalidate(Stale.Everything);
   }
 
   /** What `svg-geometry.ts` asks of the document: an element's text and
@@ -12403,6 +12433,7 @@ export class HtmlViewNode extends Node {
       added.rules,
       this._source.document,
       !!tree.impliedHtml,
+      namedBy(this._source.facts().drawings),
     );
     if (reached) {
       this._keptFor = this._cascade;
@@ -12602,7 +12633,8 @@ export class HtmlViewNode extends Node {
 
   /**
    * Inline drawings a change reached the shapes of from outside them
-   * (`_shapesReached`): what the rules give their shapes asked for again,
+   * (`_shapesReached`), or that draw from what a rule that came into force
+   * reached (`namersOf`): what the rules give their shapes asked for again,
    * and those with another answer drawn again, as a move's are in
    * `_restyleInPlace`. Most of what a selector can reach comes to what it
    * was, and a `<path>` a class's rule names for its `color` repaints
@@ -17534,7 +17566,7 @@ function changesCascade(
       return name === 'media';
     case 'link':
       return (
-        name === 'rel' ||
+        (name === 'rel' && !isForeign(el)) ||
         ((name === 'href' || name === 'media') && isSheetLink(el))
       );
     case 'meta':
@@ -17545,7 +17577,7 @@ function changesCascade(
         pragmaMeta(el, name, (oldValue ?? '').trim().toLowerCase())
       );
     case 'base':
-      return name === 'href';
+      return name === 'href' && !isForeign(el);
     default:
       return false;
   }
@@ -17553,6 +17585,7 @@ function changesCascade(
 
 /** Whether a `<link>` is a sheet's, as `DocumentSource.facts` reads it. */
 function isSheetLink(el: Element): boolean {
+  if (isForeign(el)) return false;
   return (attr(el, 'rel') ?? '')
     .toLowerCase()
     .split(/\s+/)
@@ -17841,7 +17874,10 @@ function cascadeHeld(node: AnyNode): number {
   while (stack.length) {
     const el = stack.pop()!;
     const tag = tagOf(el);
-    if (tag === 'base' || (tag === 'meta' && pragmaMeta(el))) {
+    if (
+      (tag === 'base' && !isForeign(el)) ||
+      (tag === 'meta' && pragmaMeta(el))
+    ) {
       return HELD_PRAGMA;
     }
     if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
