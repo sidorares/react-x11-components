@@ -197,6 +197,7 @@ export function tagOf(node: AnyNode): string {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
 
 /**
  * Whether an element is the root of an SVG drawing. The HTML parser names
@@ -218,6 +219,59 @@ export function isSvgRoot(el: Element): boolean {
     node = parent && parent.type === 'tag' ? (parent as Element) : null;
   }
   return false;
+}
+
+/**
+ * Whether an element says it is no HTML element, which only an element whose
+ * name means something in HTML has to. A `<path>` is told by its name and says
+ * nothing; a `<link>` or a `<base>` that HTML's parser made in a drawing says
+ * so (`namespaceIn`), as whatever a script makes with `createElementNS` does.
+ * It stays with the element wherever it is put and in every copy, so this is
+ * no question of where an element stands: a `<link>` a script puts in a drawing
+ * is a sheet, and one the parser made there, moved to the `<head>`, is not.
+ */
+export function isForeign(el: Element): boolean {
+  const { namespace } = el;
+  return namespace !== undefined && namespace !== HTML_NAMESPACE;
+}
+
+/** What HTML's parser reads as HTML in SVG and in MathML, each in its own
+ *  language, and an `<annotation-xml>` only where it says it holds HTML
+ *  (13.2.6.5): htmlparser2 has one list for both, and any `annotation-xml`. */
+const SVG_POINTS = new Set(['foreignobject', 'desc', 'title']);
+const MATHML_POINTS = new Set(['mi', 'mo', 'mn', 'ms', 'mtext']);
+const HTML_ENCODINGS = new Set(['text/html', 'application/xhtml+xml']);
+
+/**
+ * The namespace HTML's parser makes an element in that goes in `parent`, or
+ * undefined for HTML's (13.2.6.5): that of the nearest `<svg>`, `<math>` or
+ * element that says, unless an integration point of its language stands
+ * between. A walk up, which a `<link>`, a `<base>` or an `innerHTML` pays for
+ * as it is parsed, and a scan of the document never does.
+ */
+export function namespaceIn(parent: AnyNode | null): string | undefined {
+  let svgPoint = false;
+  let mathPoint = false;
+  for (let at = parent; at; at = at.parent) {
+    if (!isElement(at)) continue;
+    const name = at.name.toLowerCase();
+    svgPoint ||= SVG_POINTS.has(name);
+    mathPoint ||=
+      MATHML_POINTS.has(name) ||
+      (name === 'annotation-xml' &&
+        HTML_ENCODINGS.has((at.attribs.encoding ?? '').toLowerCase()));
+    const namespace =
+      at.namespace ??
+      (name === 'svg' ? SVG_NS : name === 'math' ? MATHML_NS : undefined);
+    if (namespace === SVG_NS) return svgPoint ? undefined : namespace;
+    if (namespace === MATHML_NS) return mathPoint ? undefined : namespace;
+    if (namespace !== undefined) {
+      return namespace === HTML_NAMESPACE ? undefined : namespace;
+    }
+    // what broke out of a fragment's context still stands in it
+    if (BREAKS_OUT.has(name)) return undefined;
+  }
+  return undefined;
 }
 
 export function isElement(node: AnyNode | null | undefined): node is Element {
@@ -1036,9 +1090,7 @@ export function topLayerIn(
 export function isDefinedElement(el: Element): boolean {
   if (CUSTOMIZED.has(el)) return true;
   // made in another namespace, or none (`''`): never a custom element
-  if (el.namespace !== undefined && el.namespace !== HTML_NAMESPACE) {
-    return true;
-  }
+  if (isForeign(el)) return true;
   return !(isCustomElementName(el.name) || el.attribs.is !== undefined);
 }
 const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
@@ -1916,7 +1968,7 @@ function scanElements(
           media,
         });
       }
-    } else if (tag === 'link') {
+    } else if (tag === 'link' && !isForeign(el)) {
       const rel = (attr(el, 'rel') ?? '').toLowerCase();
       const href = attr(el, 'href');
       if (href && rel.split(/\s+/).includes('stylesheet')) {
@@ -1949,7 +2001,7 @@ function scanElements(
       continue;
     } else if (tag === 'title' && facts.title === null) {
       facts.title = rawTextOf(el).trim();
-    } else if (tag === 'base' && facts.base === null) {
+    } else if (tag === 'base' && facts.base === null && !isForeign(el)) {
       const href = attr(el, 'href');
       if (href !== undefined) facts.base = href;
     }
@@ -2144,6 +2196,10 @@ class Handler extends DomHandler {
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
     if (this.marksSheets && (name === 'link' || name === 'style')) {
       PARSER_SHEETS.add(opened);
+    }
+    if (name === 'link' || name === 'base') {
+      const namespace = namespaceIn(opened.parent);
+      if (namespace !== undefined) opened.namespace = namespace;
     }
     if (attribs.customelementregistry !== undefined) {
       NULL_REGISTRY.add(opened);
@@ -2488,7 +2544,7 @@ function startsBody(node: ChildNode): boolean {
 }
 
 function createParser(declarative = true): {
-  parser: Parser;
+  parser: DocumentParser;
   handler: Handler;
 } {
   const handler = new Handler(null, {
@@ -2517,6 +2573,8 @@ function createParser(declarative = true): {
  *  open tag is made in. Held to htmlparser2 12 by `test/html/document.test.ts`. */
 interface ParserInternals {
   readonly stack: string[];
+  readonly foreignContext: number[];
+  endIndex: number;
   readTagName(start: number, endIndex: number): string;
   emitOpenTag(name: string): void;
   endOpenTag(isImplied: boolean): void;
@@ -2528,6 +2586,63 @@ interface ParserInternals {
 const SECTIONS = new Set(['tbody', 'thead', 'tfoot']);
 const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
 
+/** htmlparser2's foreign contexts, which it does not export. */
+const NOT_FOREIGN = 0;
+const IN_SVG = 1;
+const IN_MATHML = 2;
+
+/**
+ * The start tags that end foreign content, as all three engines have them
+ * (HTML 13.2.6.5). A `<font>` with a `color`, a `face` or a `size` is one too,
+ * which is not here: its attributes come after the name this is asked of.
+ */
+const BREAKS_OUT = new Set([
+  'b',
+  'big',
+  'blockquote',
+  'body',
+  'br',
+  'center',
+  'code',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'em',
+  'embed',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'head',
+  'hr',
+  'i',
+  'img',
+  'li',
+  'listing',
+  'menu',
+  'meta',
+  'nobr',
+  'ol',
+  'p',
+  'pre',
+  'ruby',
+  's',
+  'small',
+  'span',
+  'strike',
+  'strong',
+  'sub',
+  'sup',
+  'table',
+  'tt',
+  'u',
+  'ul',
+  'var',
+]);
+
 /**
  * htmlparser2's parser, deciding a `/>` from the context its tag was read
  * in, as HTML's does. htmlparser2 decides from the context the tag opens,
@@ -2538,15 +2653,53 @@ const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
 class DocumentParser extends Parser {
   private _foreignTag = false;
   private _acknowledging = false;
+  /** What a fragment is read in (`readIn`). */
+  private _context = NOT_FOREIGN;
 
   override isInForeignContext(): boolean {
     return this._acknowledging || super.isInForeignContext();
   }
 
+  /** Read what comes as what an element of `namespace` holds, as `innerHTML`
+   *  reads it (HTML 13.4): in SVG a `<path/>` closes itself and a `clipPath`
+   *  keeps its capital, and read as HTML `<path/><path/>` nested. */
+  readIn(namespace: string | undefined): void {
+    const self = this as unknown as ParserInternals;
+    this._context =
+      namespace === SVG_NS
+        ? IN_SVG
+        : namespace === MATHML_NS
+          ? IN_MATHML
+          : NOT_FOREIGN;
+    self.foreignContext[0] = this._context;
+  }
+
   override onopentagname(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    // what broke out of a fragment's context left it until it closed
+    if (!self.stack.length) self.foreignContext[0] = this._context;
+    // read once, for all of this: every tag of a drawing comes through here
+    const name = self.readTagName(start, endIndex);
+    if (this.isInForeignContext() && BREAKS_OUT.has(name)) this._breakOut();
     this._foreignTag = this.isInForeignContext();
-    if (!this._foreignTag) this._impliedBy(start, endIndex);
-    super.onopentagname(start, endIndex);
+    if (!this._foreignTag) this._impliedBy(name);
+    self.endIndex = endIndex;
+    self.emitOpenTag(name);
+  }
+
+  /**
+   * A start tag that ends foreign content closes it, as far as the nearest
+   * HTML element or integration point, and what it opens, and all that comes
+   * after, stands there (HTML 13.2.6.5). htmlparser2 keeps it in the drawing,
+   * so an `<svg><p>x</p><link>` held a link that all three engines have as
+   * HTML's, in the body. A fragment keeps its context, which nothing closes.
+   */
+  private _breakOut(): void {
+    const self = this as unknown as ParserInternals;
+    while (this.isInForeignContext() && self.stack.length) {
+      self.popElement(true);
+    }
+    self.foreignContext[0] = NOT_FOREIGN;
   }
 
   /**
@@ -2560,11 +2713,10 @@ class DocumentParser extends Parser {
    * close them: `</tbody>` in a cell closes the cell and the row, as
    * Acid3's table has it.
    */
-  private _impliedBy(start: number, endIndex: number): void {
+  private _impliedBy(name: string): void {
     const self = this as unknown as ParserInternals;
     // asked only where a table is open, since every tag comes through here
     if (!IN_TABLE.has(self.stack[0])) return;
-    const name = self.readTagName(start, endIndex);
     // a column group holds columns and nothing else
     if (self.stack[0] === 'colgroup' && name !== 'col') self.popElement(true);
     if (name !== 'tr' && name !== 'td' && name !== 'th' && name !== 'col') {
@@ -2669,9 +2821,19 @@ export function createText(data: string): Text {
  *  the element to hang it off, and like it, with a `<template
  *  shadowrootmode>` left a template: `attachShadow` makes a shadow root.
  *  Not streaming: a fragment is small by definition, and an app calling
- *  this already has the whole string. */
-export function parseFragment(html: string, declarative = false): ChildNode[] {
+ *  this already has the whole string. `context` is the element it is read
+ *  as the content of, which says what it is in a drawing. */
+export function parseFragment(
+  html: string,
+  declarative = false,
+  context: Element | null = null,
+): ChildNode[] {
   const { parser, handler } = createParser(declarative);
+  if (context) {
+    // hung off it while it is read, for `namespaceIn` to go on up
+    handler.root.parent = context;
+    parser.readIn(namespaceIn(context));
+  }
   parser.write(html);
   parser.end();
   const kids = handler.root.children.slice();

@@ -553,6 +553,57 @@ test('an AudioContext’s oscillator into a stream destination is an audio track
   }
 });
 
+test('decodeAudioData reads a WAV file at the context rate, and says it cannot read anything else', async () => {
+  // jspaint puts up a dialog for each sound that does not decode
+  const logs = await run(`
+    function wav(bits, format, rate, samples) {
+      var width = bits >> 3;
+      var data = new ArrayBuffer(44 + samples.length * width);
+      var v = new DataView(data);
+      function tag(at, text) {
+        for (var i = 0; i < 4; i++) v.setUint8(at + i, text.charCodeAt(i));
+      }
+      tag(0, 'RIFF');
+      v.setUint32(4, 36 + samples.length * width, true);
+      tag(8, 'WAVE');
+      tag(12, 'fmt ');
+      v.setUint32(16, 16, true);
+      v.setUint16(20, format, true);
+      v.setUint16(22, 1, true);
+      v.setUint32(24, rate, true);
+      v.setUint16(34, bits, true);
+      tag(36, 'data');
+      v.setUint32(40, samples.length * width, true);
+      samples.forEach(function (s, i) {
+        if (bits === 16) v.setInt16(44 + i * 2, s, true);
+        else v.setFloat32(44 + i * 4, s, true);
+      });
+      return data;
+    }
+    var ctx = new AudioContext({ sampleRate: 8000 });
+    var pcm = await ctx.decodeAudioData(wav(16, 1, 8000, [16384, -16384]));
+    log('pcm', pcm.length, pcm.sampleRate, Array.from(pcm.getChannelData(0)).join());
+    var float = await ctx.decodeAudioData(wav(32, 3, 8000, [0.25]));
+    log('float', float.getChannelData(0)[0]);
+    var slower = await ctx.decodeAudioData(wav(16, 1, 4000, [0, 16384, 0]));
+    log('slower', slower.length, Array.from(slower.getChannelData(0)).join());
+    var heard = 0;
+    await ctx.decodeAudioData(wav(16, 1, 8000, [0]), function (b) { heard = b.length; });
+    log('callback', heard);
+    await ctx.decodeAudioData(new ArrayBuffer(64)).catch(function (e) { log('refused', e.name); });
+    await ctx.close();
+  `);
+  for (const line of [
+    'pcm|2|8000|0.5,-0.5',
+    'float|0.25',
+    'slower|6|0,0.25,0.5,0.25,0,0',
+    'callback|1',
+    'refused|EncodingError',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('a remote answer narrows a sender’s encodings to the rids its a=simulcast receives, and one with none to the first', async () => {
   const logs = await run(`
     function rids(sender) {

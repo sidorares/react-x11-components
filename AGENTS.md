@@ -3760,6 +3760,29 @@ closes a way out a DOM binding opens by accident:
   runs nothing there either (`importStaysInPage`). **An escape test reads
   what a refusal hands the page**, and what `import()` hands it, not only
   that it was refused.
+- **A list is a proxy, and is live by a count kept in the realm** (`itemsOf`,
+  `LIST_PROXY`). `NodeList`, `HTMLCollection` and the lists like them are
+  legacy platform objects, whose indices are own properties nobody can set,
+  which only a proxy gives: an `Array` subclass was the shape before, so
+  `Array.isArray` said yes, `slice.call` made another list and held lists were
+  snapshots, and `while (kids.length) parent.removeChild(kids[0])` never ended.
+  A read is some 100 ns, less than the op a page does with what it read. A live
+  list reads the host only where `treeEpoch` or `attrEpoch` moved since it last
+  did, and a read of the host at each index would be a trip per element. Three
+  things are load-bearing. **`KEEPS_LISTS` names reads alone**: an op it does
+  not name moves the counts, which costs a read and is never wrong, so an op
+  added to it has to change nothing a list holds. **A list that an attribute
+  decides passes `readsAttributes`, and the attribute joins `LIST_ATTRIBUTES`**,
+  or `setAttribute` leaves it as it was. **Anything new that runs the page's
+  code from the host goes through an `entry`**, which moves both counts, as
+  `__task` does for a module: the parser and the host change the tree only
+  between two tasks, and nothing else tells a list so. A frame's realm counts
+  its own ops, so a list of one realm is told of another realm's change to the
+  same tree at the next task. And a held list that a page changes in a loop
+  reads the tree at each step, which is what makes it live: 200 steps of
+  `appendChild` over a held `getElementsByTagName` in a document of 6,000
+  elements take 57 ms, where a snapshot took 1 and went on answering what the
+  tree no longer held.
 - **A page's stacks are its own frames** (`stacks.ts`). Every task is
   entered from the host, and the runtime wrote every frame into an error's
   `stack`: any page read the user's home directory and the install's
@@ -4829,6 +4852,43 @@ holds, as the build would (`_restyleHover`); only one where an edge rule
 styles a pseudo-element (`pseudoAtEdges`) builds the boxes. MDN's custom
 elements built them at every other move of the pointer.
 
+**What an element is, the parser says, and nothing else can** (`namespaceIn`,
+`isForeign`). HTML's parser makes a `<link>` or a `<base>` in a drawing an SVG
+element, and in a `<math>` a MathML one: no sheet and no base, and all three
+engines keep it so wherever a script moves or copies it. One a script makes
+with `createElement` and puts in the same `<g>` is a sheet. So no walk of the
+tree can say, and neither could the element: the parser's and a script's
+carried nothing, and a host's `createElement` is the same. The parser now writes
+`Element.namespace`, which is what `createElementNS` wrote already and what
+`cloneNode` keeps, and the scan, `changesCascade`, `cascadeHeld`, the `sheets`
+op and the two `<base target>` readers ask `isForeign`, one property a `<link>`.
+Chromium's Network panel asks for a `<link>` in a drawing all the same: that is
+its preload scanner, which goes with `doHtmlPreloadScanning=false`, and nothing
+comes of it. Four things are load-bearing.
+
+- **Only `link` and `base` are marked.** All else in a drawing is told by its
+  name, as it was. Marking everything is no small change: `_prepareScript` runs
+  no script with a namespace, `wrap` picks another class, and `sheet` is on the
+  facade's `HTMLStyleElement` alone. **Anything new that reads an HTML element by
+  a name a drawing can hold asks `isForeign`, and the parser marks the name.**
+  `<svg><title>` is still taken for the document's title, `<object>` and `<input
+type=image>` in a drawing are still asked for, and a `<style>` and a `<script>`
+  in a `<math>` still count, where no engine does any of it.
+- **`namespaceIn` goes by HTML's integration points, not by htmlparser2's
+  `foreignContext`**, which has one list for both languages and takes any
+  `annotation-xml`: `<math><title>` and `<svg><mi>` are no points, and an
+  `annotation-xml` is one only with an HTML `encoding`, in any case.
+- **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
+  would turn `<svg><p></p><link>`, a sheet in every engine, into none. It goes by
+  htmlparser2's stack, so `<svg><mi><p></p><link>` does not break out, and a
+  `<font color>` does not, whose attributes come after its name. The list is the
+  engines', and `<table>` is on it.
+- **A fragment is read in its context** (`parseFragment`'s `context`, `readIn`,
+  `_parseIn`). Read as HTML, `svg.innerHTML = '<path/><path/>'` nested the second
+  path in the first, and a `clipPath` lost its capital. **Anything new that
+  parses markup for an element hands the element over.** What breaks out of the
+  context is HTML's until it closes, and the context is there again after it.
+
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,
 `getScreenCTM`, `getBoundingClientRect` and a shape's lengths are worked out by
@@ -4866,7 +4926,16 @@ drawing. Each drawing they are in, and a root the change reached, asks
 again, and is drawn again only for another answer (`_askShapes`): most of
 what a subject can reach comes to what it was. **What a drawing names by a
 `url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which no selector
-says, so a reach into one asks every drawing. Two
+says, so a reach into one asks every drawing. A rule a sheet adds or a
+breakpoint turns on is told of by no record, so it reaches a drawing by what
+the drawing last read (`Named`): what is at or in what it names (`namersOf`),
+and asked after the build, whose cascade and copies are what a kept box is
+asked of. `addedReach` and `crossed` ask what is named as a `<use>` copies it
+too (`namedBy`, `_reachInCopy`), since `symbol:first-child rect` matches a
+copy where it misses the element. **Anything new that brings a rule into
+force without styling every element does the same**, or a sprite's icons go
+on drawing what the last cascade gave them, while the sprite's block is built
+beside them. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
 ancestor it is for by a class or an id, which is looked for once around

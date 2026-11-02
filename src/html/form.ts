@@ -26,6 +26,7 @@ import {
   childrenOf,
   elementsIn,
   isElement,
+  isForeign,
   tagOf,
   treeGeneration,
 } from './dom.js';
@@ -692,7 +693,11 @@ function enctypeOf(raw: string | undefined): FormEnctype {
 /** The first `<base target>` in the document, or empty. */
 function baseTarget(root: AnyNode): string {
   for (const el of elementsIn(root, NON_RENDERED)) {
-    if (tagOf(el) === 'base' && attr(el, 'target') !== undefined) {
+    if (
+      tagOf(el) === 'base' &&
+      !isForeign(el) &&
+      attr(el, 'target') !== undefined
+    ) {
       return attr(el, 'target') ?? '';
     }
   }
