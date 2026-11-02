@@ -7310,7 +7310,7 @@ export function installDom(
       }
     }
     get isContentEditable(): boolean {
-      return false;
+      return editingHostOf(this) !== null;
     }
     get innerText(): string {
       return String(call('text', this._id, 'rendered'));

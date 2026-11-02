@@ -11976,6 +11976,45 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
   assert.equal(navigableFor(drawn.document, 'side'), 'tab');
 });
 
+test('isContentEditable says whether an element can be edited, as all three engines have it', async () => {
+  // it said false of everything, so a page's shortcuts, which leave alone
+  // what a person is typing in, took the keys of its editors
+  const doc = await hosted(
+    '<div id="a" contenteditable><span id="b">x<i id="c" contenteditable="false">' +
+      '<u id="d" contenteditable="true">y</u></i></span></div>' +
+      '<div id="e" contenteditable="plaintext-only"><b id="f"></b></div>' +
+      '<div id="g" contenteditable="bogus"><b id="h"></b></div>' +
+      '<div id="i"></div><div id="z" contenteditable></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      '"abcdefghi".split("").forEach(function (id) {' +
+      '  r.push(document.getElementById(id).isContentEditable); });' +
+      'var root = document.getElementById("z").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<p id=s>in</p>";' +
+      'r.push(root.getElementById("s").isContentEditable);' +
+      'var out = document.createElement("div");' +
+      'out.setAttribute("contenteditable", "true");' +
+      'var kid = document.createElement("b"); out.append(kid);' +
+      'r.push(out.isContentEditable, kid.isContentEditable);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'true',
+    'true',
+    'false',
+    'true',
+    'true',
+    'true',
+    'false',
+    'false',
+    'false',
+    'false',
+    'true',
+    'true',
+  ]);
+});
+
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {
   // what CodeMirror stands on: it cancels the keys it has a command for,
   // and reads every other edit back from the DOM a browser changed
