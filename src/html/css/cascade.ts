@@ -112,6 +112,7 @@ import type { ScriptAnimations } from './scripted.js';
 import {
   animatedFields,
   applyDeclaration,
+  fontQuery,
   blockify,
   holdsItems,
   settleAlign,
@@ -7091,6 +7092,40 @@ export class Cascade {
       this._ids.set(of, id);
     }
     return id;
+  }
+
+  /**
+   * What a canvas's `font` comes to (HTML 4.12.5.1.8): the shorthand over the
+   * canvas's style, or over 10px where nothing styles it, with no line height
+   * and in CSS pixels, since a context has no scale of the display's. Null
+   * for what is no font, which the context ignores: a CSS-wide keyword too,
+   * and a `var()`, which only a style has.
+   */
+  canvasFont(
+    value: string,
+    parent: ComputedStyle | null,
+  ): ComputedStyle | null {
+    if (!fontQuery(value) || /var\(/i.test(value)) return null;
+    const unit = parent ? this.scale * parent.effectiveZoom : 1;
+    const above = {
+      ...(parent ?? this.initial),
+      fontSize: parent ? parent.fontSize / unit : 10,
+    };
+    const root = this._root ?? this.initial;
+    const style = inherit(above, this.initial);
+    applyDeclaration(style, above, 'font', value, {
+      em: above.fontSize,
+      rem: root.fontSize / (this.scale * root.effectiveZoom),
+      vw: this.viewportWidth / this.scale,
+      vh: this.viewportHeight / this.scale,
+      scale: 1,
+      initial: this.initial,
+      fallbackFamily: () => this.initial.fontFamily,
+      families: this._mapFamilies,
+    });
+    style.lineHeight = 'normal';
+    style.lineHeightIsLength = false;
+    return style;
   }
 
   /**

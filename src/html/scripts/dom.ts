@@ -10859,9 +10859,216 @@ export function installDom(
     direction: 'inherit',
     letterSpacing: '0px',
     wordSpacing: '0px',
+    fontKerning: 'auto',
+    fontStretch: 'normal',
+    fontVariantCaps: 'normal',
+    textRendering: 'auto',
+    lang: 'inherit',
     filter: 'none',
     imageSmoothingEnabled: true,
     imageSmoothingQuality: 'low',
+  };
+
+  /** A context's font's size in pixels, kept beside `font` and no property. */
+  const FONT_SIZE = '_fontSize';
+
+  /** What each of a context's keywords may be: any other is ignored. */
+  const TEXT_KEYWORDS: Record<string, string[]> = {
+    textAlign: ['start', 'end', 'left', 'right', 'center'],
+    textBaseline: [
+      'top',
+      'hanging',
+      'middle',
+      'alphabetic',
+      'ideographic',
+      'bottom',
+    ],
+    direction: ['ltr', 'rtl', 'inherit'],
+    fontKerning: ['auto', 'normal', 'none'],
+    fontStretch: [
+      'ultra-condensed',
+      'extra-condensed',
+      'condensed',
+      'semi-condensed',
+      'normal',
+      'semi-expanded',
+      'expanded',
+      'extra-expanded',
+      'ultra-expanded',
+    ],
+    fontVariantCaps: [
+      'normal',
+      'small-caps',
+      'all-small-caps',
+      'petite-caps',
+      'all-petite-caps',
+      'unicase',
+      'titling-caps',
+    ],
+    textRendering: [
+      'auto',
+      'optimizeSpeed',
+      'optimizeLegibility',
+      'geometricPrecision',
+    ],
+  };
+
+  /** The OpenType feature each of a context's capitals asks for. */
+  const CAPS_FEATURES: Record<string, string> = {
+    'small-caps': 'smcp',
+    'all-small-caps': 'c2sc',
+    'petite-caps': 'pcap',
+    'all-petite-caps': 'c2pc',
+    unicase: 'unic',
+    'titling-caps': 'titl',
+  };
+
+  /** The white space a context's text takes for a space (HTML 4.12.5.1.8). */
+  const TEXT_SPACES = /[\t\n\f\r]/g;
+
+  /** Pixels in each absolute unit of a context's spacing. */
+  const SPACING_UNITS: Record<string, number> = {
+    px: 1,
+    pt: 4 / 3,
+    pc: 16,
+    in: 96,
+    cm: 96 / 2.54,
+    mm: 96 / 25.4,
+    q: 96 / 101.6,
+    rem: 16,
+    rlh: 19.2,
+  };
+
+  /** Em in each unit of a context's spacing that goes by its font, as near
+   *  as can be said with no face in hand. */
+  const SPACING_EMS: Record<string, number> = {
+    em: 1,
+    ic: 1,
+    ex: 0.5,
+    ch: 0.5,
+    cap: 0.7,
+    lh: 1.2,
+  };
+
+  /** A `letterSpacing` or a `wordSpacing` in pixels at a font's size: null
+   *  for what is no length. */
+  const spacingPixels = (value: string, em: number): number | null => {
+    const read = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z]+)$/.exec(
+      value,
+    );
+    if (!read) return null;
+    const n = Number(read[1]);
+    const ems = SPACING_EMS[read[2]];
+    if (ems !== undefined) return n * ems * em;
+    const unit = SPACING_UNITS[read[2]];
+    return unit === undefined ? null : n * unit;
+  };
+
+  /** How many times finer than it is drawn a string is set: a quarter of a
+   *  pixel is as near as Skia places a glyph, and large text is smooth with
+   *  less. */
+  const textFineness = (device: number): number =>
+    device <= 48 ? 4 : device <= 128 ? 2 : 1;
+
+  /** The most pixels of coverage a string is set in, a side squared: a
+   *  heading the size of a window is no reason for gigabytes. */
+  const TEXT_RASTER_MOST = 16e6;
+
+  /** The strings this realm has set, by everything they were set from: a
+   *  chart draws the same labels at each frame, and pdf.js the same letters
+   *  on each line. */
+  const textRasters = new Map<string, Any>();
+  let textRasterBytes = 0;
+  const TEXT_RASTER_BYTES = 64 * 1024 * 1024;
+
+  /** A string's coverage from the host, with what of it anything covers:
+   *  null where there is no text engine, or it sets none. */
+  const canvasRaster = (
+    owner: number,
+    font: string,
+    chars: string,
+    size: number,
+    stroke: number,
+    setting: string,
+    generation: string,
+  ): Any => {
+    const key = `${generation}\0${font}\0${size}\0${stroke}\0${setting}\0${chars}`;
+    let raster = textRasters.get(key);
+    if (raster !== undefined) {
+      // the last used stays the longest
+      textRasters.delete(key);
+      textRasters.set(key, raster);
+      return raster;
+    }
+    const raw = call(
+      'canvasRaster',
+      owner,
+      font,
+      chars,
+      `${size},${stroke},${setting}`,
+    );
+    raster = null;
+    if (typeof raw === 'string') {
+      const end = raw.indexOf('\n');
+      raster = JSON.parse(raw.slice(0, end));
+      const { width, height } = raster;
+      const data = new Uint8Array(width * height);
+      let u0 = width;
+      let v0 = height;
+      let u1 = 0;
+      let v1 = 0;
+      for (let v = 0, i = 0; v < height; v += 1) {
+        for (let u = 0; u < width; u += 1, i += 1) {
+          const byte = raw.charCodeAt(end + 1 + i);
+          if (!byte) continue;
+          data[i] = byte;
+          if (u < u0) u0 = u;
+          if (u >= u1) u1 = u + 1;
+          if (v < v0) v0 = v;
+          v1 = v + 1;
+        }
+      }
+      raster.data = data;
+      raster.ink = u1 > u0 ? [u0, v0, u1, v1] : null;
+      textRasterBytes += data.length;
+    }
+    textRasters.set(key, raster);
+    while (textRasterBytes > TEXT_RASTER_BYTES) {
+      const oldest = textRasters.keys().next().value as string;
+      textRasterBytes -= textRasters.get(oldest)?.data.length ?? 0;
+      textRasters.delete(oldest);
+    }
+    return raster;
+  };
+
+  /** How far down from the alphabetic baseline a `textBaseline` is, so far
+   *  up the text is moved from `y`, in a raster's or a measure's pixels. */
+  const baselineOffset = (lengths: Any, baseline: string): number => {
+    switch (baseline) {
+      case 'top':
+        return lengths.emAscent;
+      case 'bottom':
+        return -lengths.emDescent;
+      case 'middle':
+        return (lengths.emAscent - lengths.emDescent) / 2;
+      case 'hanging':
+        return lengths.ascent * 0.8;
+      case 'ideographic':
+        return -lengths.descent;
+      default:
+        return 0;
+    }
+  };
+
+  /** How far left of its anchor a line of a width starts. */
+  const alignOffset = (
+    width: number,
+    align: string,
+    direction: string,
+  ): number => {
+    if (align === 'center') return width / 2;
+    const end = direction === 'rtl' ? 'start' : 'end';
+    return align === 'right' || align === end ? width : 0;
   };
 
   /**
@@ -10870,12 +11077,13 @@ export function installDom(
    * paths are filled, stroked and clipped to with colours, gradients and
    * patterns of another canvas, through every compositing operator
    * (`raster.ts`); and another canvas is drawn where the transform keeps a
-   * rectangle one. Text and an image are kept as state and drawn as
-   * nothing: a font's outlines and an image's pixels are the host's.
+   * rectangle one. Text is set by the host and painted here as any shape is
+   * (`canvasRaster`). An image is kept as state and drawn as nothing: its
+   * pixels are the host's.
    */
   class CanvasRenderingContext2D {
     _canvas: Any;
-    _state: Any = { ...CONTEXT_STATE };
+    _state: Any = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
     _stack: Any[] = [];
     _matrix: number[] = [1, 0, 0, 1, 0, 0];
     _dash: number[] = [];
@@ -10892,7 +11100,7 @@ export function installDom(
       return this._canvas;
     }
     _reset(): void {
-      this._state = { ...CONTEXT_STATE };
+      this._state = { ...CONTEXT_STATE, [FONT_SIZE]: 10 };
       this._stack = [];
       this._matrix = [1, 0, 0, 1, 0, 0];
       this._dash = [];
@@ -11460,24 +11668,191 @@ export function installDom(
         Number(b),
       );
     }
-    fillText(): void {}
-    strokeText(): void {}
-    /** A width as a sans-serif's average character, the text being drawn
-     *  as nothing yet. */
-    measureText(text: Any): Any {
-      const size = parseFloat(
-        /(\d+(?:\.\d+)?)px/.exec(this._state.font)?.[1] ?? '10',
+    fillText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], false);
+    }
+    strokeText(text: Any, x: Any, y: Any, ...rest: Any[]): void {
+      this._drawText(text, x, y, rest[0], true);
+    }
+    /** What the document's fonts are for this context, its id with them: a
+     *  canvas in a page, or the document for an `OffscreenCanvas`. Null in a
+     *  worker, which has none. Asked once a task, since a face landing or a
+     *  canvas's `dir` can change them between any two. */
+    _textNow(): Any {
+      if (this._textAsked === undefined) {
+        const owner = this._canvas._id ?? document._id;
+        const raw = call('canvasTextNow', owner);
+        const now = typeof raw === 'string' ? raw.split(',') : null;
+        this._textAsked = now && {
+          owner,
+          generation: now[0],
+          direction: now[1],
+        };
+        queueMicrotask(() => {
+          this._textAsked = undefined;
+        });
+      }
+      return this._textAsked;
+    }
+    _textAsked: Any;
+    /** A string's setting as it crosses, which `textSetting` reads. */
+    _textSetting(direction: string): string {
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      return [
+        state.direction === 'inherit' ? direction : state.direction,
+        spacingPixels(state.letterSpacing, size) ?? 0,
+        spacingPixels(state.wordSpacing, size) ?? 0,
+        state.fontKerning,
+        CAPS_FEATURES[state.fontVariantCaps] ?? '',
+      ].join(',');
+    }
+    /** What a `font` comes to: null for no font. Where there is no text
+     *  engine it is kept as written, with what size can be read off it. */
+    _fontOf(value: string): Any {
+      const raw = call('canvasFont', this._canvas._id ?? document._id, value);
+      if (typeof raw === 'string') return raw ? JSON.parse(raw) : null;
+      if (!value.trim()) return null;
+      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(value)?.[1] ?? '10');
+      return { text: value, size };
+    }
+    _drawText(text: Any, x: Any, y: Any, maxWidth: Any, stroke: boolean): void {
+      const left = Number(x);
+      const top = Number(y);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+      const most = maxWidth === undefined ? Infinity : Number(maxWidth);
+      if (!(most > 0)) return;
+      const state = this._state;
+      const how = this._drawOf(stroke ? state.strokeStyle : state.fillStyle);
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const [a, b, c, d, e, f] = this._matrix;
+      const scale = Math.max(Math.hypot(a, b), Math.hypot(c, d));
+      const now = this._textNow();
+      if (!how || !now || !(scale > 0) || !chars.trim()) return;
+      const fontSize = state[FONT_SIZE];
+      const device = fontSize * scale;
+      const size = Math.max(
+        1,
+        Math.round(
+          Math.min(
+            device * textFineness(device),
+            Math.sqrt(TEXT_RASTER_MOST / chars.length),
+          ),
+        ),
       );
-      const width = str(text).length * size * 0.55;
-      return {
-        width,
-        actualBoundingBoxLeft: 0,
-        actualBoundingBoxRight: width,
-        actualBoundingBoxAscent: size * 0.8,
-        actualBoundingBoxDescent: size * 0.2,
-        fontBoundingBoxAscent: size * 0.9,
-        fontBoundingBoxDescent: size * 0.25,
+      const perUnit = size / fontSize;
+      const setting = this._textSetting(now.direction);
+      const raster = canvasRaster(
+        now.owner,
+        state.font,
+        chars,
+        size,
+        stroke ? state.lineWidth * perUnit : 0,
+        setting,
+        now.generation,
+      );
+      if (!raster?.ink) return;
+      // what a `maxWidth` is short of the text is taken off across it, and
+      // the anchor goes by the width it comes to
+      const width = raster.advance / perUnit;
+      const across = width > most ? most / width : 1;
+      const sx = across / perUnit;
+      const sy = 1 / perUnit;
+      const ux =
+        left -
+        alignOffset(width * across, state.textAlign, setting.split(',')[0]) -
+        raster.x * sx;
+      const uy =
+        top + baselineOffset(raster, state.textBaseline) * sy - raster.y * sy;
+      this._paint(
+        (target, paint) =>
+          RASTER.mask(
+            target,
+            raster.data,
+            raster.width,
+            raster.ink,
+            [
+              a * sx,
+              b * sx,
+              c * sy,
+              d * sy,
+              a * ux + c * uy + e,
+              b * ux + d * uy + f,
+            ],
+            paint,
+          ),
+        how,
+      );
+    }
+    measureText(text: Any): Any {
+      const chars = str(text).replace(TEXT_SPACES, ' ');
+      const state = this._state;
+      const size = state[FONT_SIZE];
+      const now = this._textNow();
+      const setting = this._textSetting(now?.direction ?? 'ltr');
+      const raw =
+        now && call('canvasMeasure', now.owner, state.font, chars, setting);
+      // where there is no text engine, a sans-serif's average character
+      const lengths =
+        typeof raw === 'string'
+          ? JSON.parse(raw)
+          : {
+              width: chars.length * size * 0.55,
+              ascent: size * 0.9,
+              descent: size * 0.25,
+              emAscent: size * 0.8,
+              emDescent: size * 0.2,
+            };
+      const down = baselineOffset(lengths, state.textBaseline);
+      const across = alignOffset(
+        lengths.width,
+        state.textAlign,
+        setting.split(',')[0],
+      );
+      const metrics = new TextMetrics(CANVAS_KEY);
+      metrics._width = lengths.width;
+      metrics._font = [lengths.ascent - down, lengths.descent + down];
+      metrics._em = [lengths.emAscent - down, lengths.emDescent + down];
+      metrics._baselines = [
+        lengths.ascent * 0.8 - down,
+        -down,
+        -lengths.descent - down,
+      ];
+      // read off a raster only if a page asks: a page measures far more
+      // strings than it reads the ink of
+      metrics._read = (): number[] => {
+        const fine = Math.max(1, Math.round(size * 4));
+        const raster =
+          chars.trim() && now
+            ? canvasRaster(
+                now.owner,
+                state.font,
+                chars,
+                fine,
+                0,
+                setting,
+                now.generation,
+              )
+            : null;
+        const perUnit = fine / size;
+        const ink = raster?.ink;
+        return !raster
+          ? [
+              across,
+              lengths.width - across,
+              size * 0.8 - down,
+              size * 0.2 + down,
+            ]
+          : !ink
+            ? [0, 0, 0, 0]
+            : [
+                (raster.x - ink[0]) / perUnit + across,
+                (ink[2] - raster.x) / perUnit - across,
+                (raster.y - ink[1]) / perUnit - down,
+                (ink[3] - raster.y) / perUnit + down,
+              ];
       };
+      return metrics;
     }
     setLineDash(segments: Any): void {
       this._dash = Array.from(segments ?? [], Number);
@@ -11543,6 +11918,60 @@ export function installDom(
       }
       return n;
     });
+  /** What `measureText` answers (HTML 4.12.5.1.8), every length of it from
+   *  the context's anchor, as it was when the text was measured. */
+  class TextMetrics {
+    _width = 0;
+    _font = [0, 0];
+    _em = [0, 0];
+    _baselines = [0, 0, 0];
+    _read: () => number[] = () => [0, 0, 0, 0];
+    _ink: number[] | null = null;
+    constructor(key?: Any) {
+      if (key !== CANVAS_KEY) throw new TypeError('Illegal constructor');
+    }
+    get width(): number {
+      return this._width;
+    }
+    _inkAt(side: number): number {
+      this._ink ??= this._read();
+      return this._ink[side];
+    }
+    get actualBoundingBoxLeft(): number {
+      return this._inkAt(0);
+    }
+    get actualBoundingBoxRight(): number {
+      return this._inkAt(1);
+    }
+    get actualBoundingBoxAscent(): number {
+      return this._inkAt(2);
+    }
+    get actualBoundingBoxDescent(): number {
+      return this._inkAt(3);
+    }
+    get fontBoundingBoxAscent(): number {
+      return this._font[0];
+    }
+    get fontBoundingBoxDescent(): number {
+      return this._font[1];
+    }
+    get emHeightAscent(): number {
+      return this._em[0];
+    }
+    get emHeightDescent(): number {
+      return this._em[1];
+    }
+    get hangingBaseline(): number {
+      return this._baselines[0];
+    }
+    get alphabeticBaseline(): number {
+      return this._baselines[1];
+    }
+    get ideographicBaseline(): number {
+      return this._baselines[2];
+    }
+  }
+
   for (const name of Object.keys(CONTEXT_STATE)) {
     Object.defineProperty(CanvasRenderingContext2D.prototype, name, {
       get(this: Any) {
@@ -11567,7 +11996,23 @@ export function installDom(
         }
         // as is no font, which is what `getComputedStyle(el).font` reads
         // where the shorthand cannot say the element's
-        if (name === 'font' && !str(v).trim()) return;
+        if (name === 'font') {
+          const font = this._fontOf(str(v));
+          if (font) {
+            this._state.font = font.text;
+            this._state[FONT_SIZE] = font.size;
+          }
+          return;
+        }
+        if (name in TEXT_KEYWORDS) {
+          if (TEXT_KEYWORDS[name].includes(str(v))) this._state[name] = str(v);
+          return;
+        }
+        if (name === 'letterSpacing' || name === 'wordSpacing') {
+          const length = str(v).trim().toLowerCase();
+          if (spacingPixels(length, 0) !== null) this._state[name] = length;
+          return;
+        }
         this._state[name] =
           typeof was === 'number'
             ? Number.isFinite(Number(v))
@@ -31139,6 +31584,7 @@ export function installDom(
     SharedWorker,
     ImageData,
     CanvasRenderingContext2D,
+    TextMetrics,
     OffscreenCanvas,
     OffscreenCanvasRenderingContext2D,
     ImageBitmap,

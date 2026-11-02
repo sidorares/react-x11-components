@@ -503,6 +503,7 @@ import type {
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
+import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
@@ -7252,6 +7253,24 @@ export class HtmlViewNode extends Node {
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
   }
+
+  /** What a canvas's context asks of the fonts (`canvas-text.ts`). */
+  canvasText(): CanvasText {
+    // a face a script added is read with the sheets, and a page that waited
+    // for its `load()` draws in it at once
+    if (!this._cascade || this._sheetsRead === null) {
+      this._prepare(this.abs.width || 1);
+    }
+    this._canvasText ??= new CanvasText({
+      fonts: () => this._fonts(),
+      cascade: () => this._cascade,
+      styleOf: (element) => this._styleOf(element),
+      webFonts: this._webFonts,
+    });
+    return this._canvasText;
+  }
+
+  private _canvasText: CanvasText | null = null;
 
   /** The document's fonts, where a page's `new FontFace` goes. */
   scriptFonts(): WebFonts {

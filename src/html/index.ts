@@ -1550,6 +1550,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scriptFontsChanged: (id: number, added: boolean) =>
         nodeRef.current?.scriptFontsChanged(id, added),
       svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+      canvasText: () => nodeRef.current?.canvasText() ?? null,
       foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
       mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
