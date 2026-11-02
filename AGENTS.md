@@ -3907,7 +3907,7 @@ closes a way out a DOM binding opens by accident:
   at once with a document, which no process boundary could, so a window is a
   `WindowSlot`: a number in a group that outlives every document it shows, each
   of which comes into it as its runner is made (`adopt`), and in each realm a
-  proxy over that number. Seven things are load-bearing. **A window's first document
+  proxy over that number. Eight things are load-bearing. **A window's first document
   is made inside the op** (`Popup.seams`), before any `<Html>`, with its opener's
   seams until a view lends its own, so anything new a realm asks of its seams as
   it starts has an answer with no view there. **What reads as a window through a
@@ -3928,7 +3928,12 @@ closes a way out a DOM binding opens by accident:
   has nothing else to wake it. So windows join `_drainRealms`, as same-origin
   frames do, but only as a proxy is first read through (`windowReached`), and
   never for being in one group: linked in pairs, a page of ninety windows ran all
-  of them after every task and timed out. And **a group is
+  of them after every task and timed out. **A window's `about:blank` is of what
+  made it** (`DomHost.creator`), set before its realm is made, since a realm asks
+  what context it is as it installs: anything new that goes by a document's origin
+  or its security asks the host, never its address, which says `null` and not
+  secure, and a service worker's client answers `origin` for the same reason. And
+  **a group is
   kept out of the back-forward cache** (`salvageable`): a window another reaches
   stays where it can be reached. A host answers `popups.open`, and shows a window
   by mounting `<Html>`

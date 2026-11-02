@@ -2222,6 +2222,11 @@ the host shows a tab's documents with one `session`. A popup that is the first o
 page's to be opened keeps a document out of the back-forward cache, as Chrome does,
 for as long as its group has another window in it.
 
+A window is a service worker's `auxiliary` client, and the worker of its opener's
+origin hears what it asks for. Its `about:blank` is under its opener's worker, and
+`clients.openWindow` is a tab with no opener, through `navigate`, whichever window
+it is told through.
+
 `window.close()` in a window no page opened goes to `scripts.close(alone)`, `alone`
 where its history has one entry, which is what lets a page close a window no script
 opened; a host knows the rest, and answers true where it closes, which `closed` then

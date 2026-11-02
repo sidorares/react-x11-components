@@ -7414,7 +7414,7 @@ export class DomHost {
       return this._seams.secureContext;
     }
     return (
-      trustworthy(this.top) &&
+      trustworthy(this.creator ?? this.top) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
   }

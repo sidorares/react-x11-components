@@ -214,6 +214,24 @@ because the realm has to exist before the host answers anything that matters.
 Everything else is the same seams a tab uses, which is why a window is no more
 work for a host than a tab.
 
+## Service workers
+
+A window with an opener is a client of whatever controls its address, as any
+document is, and its `frameType` is `auxiliary`, by the HTML the window was
+opened with rather than by whether it still has an opener: `opener = null` leaves
+it auxiliary. It runs in its opener's process, so it shares that process's
+`HtmlServiceWorkers` and the worker thread in it, and a worker controlling the
+opener's origin hears what the popup asks for.
+
+Its `about:blank` is under its opener's worker too. It has the origin of what made
+it, so it is a secure context where that is, it has `navigator.serviceWorker`, and
+a worker's `clients` lists it, by the origin it was given and not the one its
+address says. It takes its controller from its opener's client, as a frame's local
+document takes its parent's.
+
+`clients.openWindow` goes to `navigate(url, 'tab')`, whichever client it is told
+through: a worker has no window to be an opener, and a tab is what has none.
+
 ## The example browser
 
 A popup is a managed `<popup>`, a real window on X11, Cocoa and win32, in the

@@ -239,6 +239,8 @@ export class ScriptRunner {
       _link?.parent.host.top,
     );
     this.host.arrival = arrival;
+    // before its realm is made, which asks what context it is as it starts
+    if (popup) this.host.creator = popup.creator;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
@@ -409,14 +411,20 @@ export class ScriptRunner {
   private _attachService(): void {
     const keeper = this.serviceKeeper;
     if (!keeper || !this.host.secure) return;
-    const parent = this._link?.parent.host.serviceClient ?? null;
+    const popup = this._options.popup as Popup | null | undefined;
+    // a window's `about:blank` is its opener's client, as a frame's is its
+    // parent's: the document of no address that the opener made
+    const parent =
+      this._link?.parent.host.serviceClient ?? popup?.creatorClient ?? null;
     if (!/^https?:/i.test(this.host.url) && !parent) return;
     const options = this._options;
     this.host.serviceClient = registryOf(keeper).attach(
       {
         url: () => this.host.url,
+        origin: () => this.host.origin,
         type: 'window',
-        frameType: () => (this._link ? 'nested' : 'top-level'),
+        frameType: () =>
+          this._link ? 'nested' : popup ? 'auxiliary' : 'top-level',
         // a window has the focus here, and a frame where the page gave it
         focused: () =>
           this._link

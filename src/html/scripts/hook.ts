@@ -30,6 +30,7 @@ import type {
   ViewLink,
 } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
+import type { Popup } from './popups.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
@@ -190,8 +191,11 @@ export function useScripts(
     const given = latest.current.serviceWorkers;
     if (!given) return null;
     if (given !== true) return given;
+    const popup = latest.current.popup as Popup | null | undefined;
     return (ownWorkers.current ??=
-      link?.parent.serviceKeeper ?? new HtmlServiceWorkers());
+      link?.parent.serviceKeeper ??
+      popup?.serviceKeeper ??
+      new HtmlServiceWorkers());
   }, []);
   /** Those waiting for the document to have a client: a request a controlled
    *  document makes before its realm is up. */

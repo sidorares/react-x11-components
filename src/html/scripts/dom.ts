@@ -26613,9 +26613,11 @@ export function installDom(
     });
   }
   // a page's service workers, where the host lets it have them and it is a
-  // secure context; left out otherwise, as `clipboard` is
+  // secure context; left out otherwise, as `clipboard` is. A window's
+  // `about:blank` is of what opened it, and under the same worker
   const serviceWorkersOn =
-    /^https?:$/.test(location.protocol) &&
+    (/^https?:$/.test(location.protocol) ||
+      (location.protocol === 'about:' && /^https?:/.test(documentOrigin()))) &&
     call('secureContext') === true &&
     call('serviceWorkers') === true;
   if (serviceWorkersOn) {

@@ -24,6 +24,7 @@ import type { Document, Element } from 'domhandler';
 
 import type { HtmlPopup, HtmlPopupFeatures } from '../popups.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
+import type { ServiceClient } from './sw-registry.js';
 import { makeHtmlHandle } from '../index.js';
 import type { FramePost, DomShared } from './host.js';
 import type { RunnerSeams, ScriptRunner } from './runner.js';
@@ -133,10 +134,7 @@ export class WindowSlot {
           this.popup?.features.top ?? 0,
         ]) ?? this.name,
       ) || this.name;
-    if (this.popup) {
-      runner.host.creator = this.popup.creator;
-      if (was) runner.host.referrer = this.popup.takeReferrer();
-    }
+    if (this.popup && was) runner.host.referrer = this.popup.takeReferrer();
     for (const other of this.group.slots) {
       const there = other.runner;
       if (other === this || !there) continue;
@@ -243,8 +241,10 @@ export class Popup implements HtmlPopup {
   initial: ScriptRunner | null = null;
   /** The address the page opened it at. */
   readonly openedAt: string;
-  /** What keeps the service workers of the document that opened it. */
+  /** What keeps the service workers of the document that opened it, and that
+   *  document as a client of them: its `about:blank` is under the same. */
   readonly serviceKeeper: HtmlServiceWorkers | null;
+  readonly creatorClient: ServiceClient | null;
   private _url: string;
   private _closes = new Set<() => void>();
   private _focuses = new Set<() => void>();
@@ -261,6 +261,7 @@ export class Popup implements HtmlPopup {
   ) {
     this.id = id;
     this.serviceKeeper = opener.serviceKeeper;
+    this.creatorClient = opener.host.serviceClient;
     this._url = ask.url;
     this.openedAt = ask.url;
     this.name = ask.name;
@@ -329,8 +330,9 @@ export class Popup implements HtmlPopup {
     // what the document asks before a view is mounted waits for the host,
     // which reads where to go from `url` as it mounts one
     const navigate: RunnerSeams['navigate'] = (to, how, post, name) => {
-      if (this._views.length) current().navigate(to, how, post, name);
-      else this._url = to;
+      if (this._views.length || how === 'tab') {
+        current().navigate(to, how, post, name);
+      } else this._url = to;
     };
     return new Proxy({} as RunnerSeams, {
       get: (_, key) => {

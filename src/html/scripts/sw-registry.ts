@@ -89,6 +89,9 @@ export interface ServiceClientSeams {
   /** The address it was created at, which a worker's scope is held to. */
   type: 'window' | 'worker' | 'sharedworker';
   frameType(): 'top-level' | 'nested' | 'auxiliary' | 'none';
+  /** Its origin, where its address does not say: the `about:blank` a window
+   *  opened with is of what opened it. */
+  origin?(): string;
   focused(): boolean;
   visibility(): string;
   /** Whether it is in the back-forward cache: no client a worker can reach. */
@@ -272,7 +275,7 @@ export class ServiceClient {
     return this.seams.url();
   }
   get origin(): string {
-    return originOf(this.seams.url());
+    return this.seams.origin?.() ?? originOf(this.seams.url());
   }
   /** Whether a worker answers what this asks for. */
   get controlled(): boolean {

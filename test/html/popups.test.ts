@@ -4,6 +4,8 @@
 // is the smallest that shows a window: an `<Html>` for what it opened with, and
 // one for each document it goes to, in a box of this tree.
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, test as nodeTest } from 'node:test';
 import React, { useEffect, useRef, useState } from 'react';
 import { act, cleanup, fireEvent, renderX11 } from 'react-x11/test';
@@ -11,7 +13,10 @@ import type { DrawnNode } from 'react-x11';
 
 import {
   Html,
+  HtmlNetwork,
+  HtmlServiceWorkers,
   HtmlSessionHistory,
+  memoryNotifications,
   parseWindowFeatures,
   preloadHtmlScripts,
   useHtmlHandle,
@@ -716,6 +721,259 @@ test('a frame has an index and is counted, and a window has its bars', async () 
   assert.equal(await s.until('bars'), 'true true true');
   await s.press();
   assert.equal(await s.until('window bars'), 'false true');
+});
+
+test('a page that awaits a window hears it, with no task of its own to wake it', async () => {
+  const s = await scene(
+    pressed(`
+      (async () => {
+        const w = window.open('${APP}one');
+        await new Promise((go) => (w.onload = go));
+        console.log('loaded', w.location.pathname);
+        const told = await new Promise((go) => (w.tell = go));
+        console.log('told', told);
+      })();
+    `),
+    {
+      [`${APP}one`]: page(
+        `addEventListener('load', () => setTimeout(() => self.tell('from its script'), 0));`,
+      ),
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('loaded'), '/one');
+  assert.equal(await s.until('told'), 'from its script');
+});
+
+/** A page of a real address, which a worker can control: its host, a network
+ *  and a keeper, and a window for each it opens, as a tab holds them. */
+async function controlled(
+  pages: Record<string, string>,
+  t: { after(fn: () => unknown): void },
+): Promise<{
+  url(path: string): string;
+  logs: string[];
+  tabs: string[];
+  popups: HtmlPopup[];
+  asked: string[];
+  notes: ReturnType<typeof memoryNotifications>;
+  until(prefix: string): Promise<string>;
+  press(): Promise<void>;
+}> {
+  const notes = memoryNotifications();
+  const asked: string[] = [];
+  const server = createServer((request, response) => {
+    const path = (request.url ?? '/').split('?')[0];
+    asked.push(path);
+    const body = pages[path];
+    response.writeHead(body === undefined ? 404 : 200, {
+      'content-type': path.endsWith('.js') ? 'text/javascript' : 'text/html',
+    });
+    response.end(body ?? 'none');
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  t.after(
+    () =>
+      new Promise<void>((done) => {
+        server.close(() => done());
+        server.closeAllConnections();
+      }),
+  );
+  const port = (server.address() as AddressInfo).port;
+  const url = (path: string) => `http://localhost:${port}${path}`;
+  const keeper = new HtmlServiceWorkers();
+  t.after(() => keeper.dispose());
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  const logs: string[] = [];
+  const tabs: string[] = [];
+  const popups: HtmlPopup[] = [];
+  let setOpened: (popup: HtmlPopup) => void = () => {};
+  let pressAt: (() => Promise<void>) | null = null;
+
+  function Win(props: { popup?: HtmlPopup; first?: string }) {
+    const { popup } = props;
+    const [session] = useState(() => new HtmlSessionHistory());
+    const [doc, setDoc] = useState({
+      n: 0,
+      url: props.first ? url('/opener') : 'about:blank',
+      body: props.first ?? '',
+    });
+    const load = (to: string) =>
+      void network
+        .html(to)
+        .then((got) =>
+          setDoc((was) => ({ n: was.n + 1, url: got.url, body: got.source })),
+        );
+    useEffect(() => {
+      if (popup && popup.url !== 'about:blank') load(popup.url);
+    }, []);
+    const fetcher = network.fetcher(doc.url);
+    return h(Html, {
+      key: doc.n,
+      ref: (node: unknown) => {
+        if (node && !popup) {
+          pressAt = async () => {
+            await act(async () => {
+              fireEvent.mouseDown(node as DrawnNode);
+              fireEvent.mouseUp(node as DrawnNode);
+            });
+          };
+        }
+      },
+      source: doc.body,
+      partial: false,
+      baseUrl: doc.url,
+      style: { flexGrow: 1 },
+      scripts: {
+        log: (level: string, text: string) =>
+          void logs.push(`${level}: ${text}`),
+        fetch: fetcher,
+        session,
+        serviceWorkers: keeper,
+        notifications: notes,
+        ...(popup && { popup }),
+        popups: {
+          unblocked: true,
+          open(opened: HtmlPopup) {
+            popups.push(opened);
+            setOpened(opened);
+            return true;
+          },
+        },
+        navigate: (to: string, how: string) => {
+          if (how === 'tab') tabs.push(to);
+          else load(to);
+        },
+      } as HtmlScripts,
+    });
+  }
+  function Host() {
+    const [opened, set] = useState<HtmlPopup[]>([]);
+    setOpened = (popup) => set((all) => [...all, popup]);
+    return h(
+      'box',
+      { style: { flexDirection: 'column', flexGrow: 1 } },
+      h(
+        'box',
+        { style: { flexDirection: 'column', height: 120 } },
+        h(Win, { first: pages['/opener'] }),
+      ),
+      ...opened.map((popup) =>
+        h(
+          'box',
+          { key: popup.id, style: { flexDirection: 'column', height: 120 } },
+          h(Win, { popup }),
+        ),
+      ),
+    );
+  }
+  await renderX11(
+    h(Host),
+    FONTS
+      ? { width: 400, height: 400, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  return {
+    url,
+    logs,
+    tabs,
+    popups,
+    asked,
+    notes,
+    press: () => pressAt!(),
+    async until(prefix) {
+      const end = Date.now() + 15000;
+      for (;;) {
+        await act(() => new Promise((r) => setTimeout(r, 10)));
+        const line = logs.find((l) => l.startsWith(`log: ${prefix}`));
+        if (line) return line.slice(`log: ${prefix}`.length).trim();
+        assert.ok(Date.now() < end, `no "${prefix}", in:\n${logs.join('\n')}`);
+      }
+    },
+  };
+}
+
+/** Takes the page's requests for `/data`, and says what clients it has. */
+const LISTING_WORKER = `
+self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
+self.addEventListener('fetch', (e) => {
+  if (new URL(e.request.url).pathname === '/data') {
+    e.respondWith(new Response('the worker'));
+  }
+});
+self.addEventListener('notificationclick', (e) => {
+  e.waitUntil(clients.openWindow('/opened'));
+});
+self.addEventListener('message', (e) => {
+  if (e.data === 'notify') {
+    registration.showNotification('go');
+    return;
+  }
+  clients.matchAll({ includeUncontrolled: true }).then((all) => {
+    e.source.postMessage(all.map((c) => new URL(c.url).pathname + ' ' + c.frameType).sort().join(', '));
+  });
+});`;
+
+/** Registers the worker, and says so once it controls the page. */
+const WORKER_OPENER = (press: string) => `<!doctype html><body><script>
+navigator.serviceWorker.register('/sw.js');
+navigator.serviceWorker.addEventListener('controllerchange', () => console.log('controlled'));
+addEventListener('mousedown', () => { ${press} });
+</script>`;
+
+test("a window is its opener worker's auxiliary client, and the worker answers what it asks for", async (t) => {
+  const s = await controlled(
+    {
+      '/opener': WORKER_OPENER(`
+        const blank = window.open('', 'blank');
+        console.log('blank', blank.isSecureContext, blank.navigator.serviceWorker.controller !== null);
+        self.w = window.open('/side', 'side');
+      `),
+      '/side': `<!doctype html><body><script>
+        const worker = navigator.serviceWorker;
+        console.log('side', worker.controller !== null, opener !== null);
+        fetch('/data').then((r) => r.text()).then((text) => console.log('data', text));
+        worker.onmessage = (e) => console.log('clients', e.data);
+        worker.controller.postMessage('list');
+        </script>`,
+      '/sw.js': LISTING_WORKER,
+    },
+    t,
+  );
+  await s.until('controlled');
+  await s.press();
+  assert.equal(await s.until('blank'), 'true true');
+  assert.equal(await s.until('side'), 'true true');
+  assert.equal(await s.until('data'), 'the worker');
+  assert.ok(!s.asked.includes('/data'), 'the network never heard');
+  assert.equal(
+    await s.until('clients'),
+    '/opener top-level, /side auxiliary, blank auxiliary',
+  );
+});
+
+test("a worker's clients.openWindow is a tab with no opener, whatever a page's windows do", async (t) => {
+  const s = await controlled(
+    {
+      '/opener': WORKER_OPENER(`
+        navigator.serviceWorker.controller.postMessage('notify');
+      `),
+      '/sw.js': LISTING_WORKER,
+    },
+    t,
+  );
+  await s.until('controlled');
+  await s.press();
+  const end = Date.now() + 5000;
+  while (!s.notes.shown.length && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+  }
+  await act(async () => s.notes.shown[0].click());
+  while (!s.tabs.length && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+  }
+  assert.deepEqual(s.tabs, [s.url('/opened')]);
+  assert.equal(s.popups.length, 0);
 });
 
 test('features read as HTML reads them', () => {
