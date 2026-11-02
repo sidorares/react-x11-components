@@ -2302,7 +2302,9 @@ What can be dragged is an element marked `draggable=true`, a link and an image.
 The store is read/write at `dragstart`, read-only at `drop` and protected in
 between, where a page sees its types and not its data. A target that takes a
 drop cancels `dragover`; a field or an editing host takes text with nothing
-said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+said, as `insertFromDrop`. A press on a text field or a `<select>` starts no
+drag of it or of what it is in, `draggable` or `readonly` or not, as in a
+browser: it selects. A page that cancels `dragstart`, and a press on
 anything else, leaves the gesture what it was: a selection, or a drag of the
 page's own over pointer events. After `dragstart` the pointer is the drag's, so
 a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
