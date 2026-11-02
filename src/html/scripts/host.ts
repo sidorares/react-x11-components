@@ -2300,6 +2300,18 @@ export class DomHost {
     return this._origin();
   }
 
+  /**
+   * Whether this document has nothing to keep anything under: an opaque
+   * origin's, which serializes to the one `null` every sandbox and `data:`
+   * document would share, and so has no store, no lock, no permission and no
+   * channel of its own. A `file:` page is the exception, as in browsers: it
+   * serializes the same and keeps a `localStorage`.
+   */
+  get originless(): boolean {
+    if (this.sandbox & SB_ORIGIN) return true;
+    return this._origin() === 'null' && !/^file:/i.test(this.url);
+  }
+
   /** Which opaque origin this document has, or null for one of a scheme, a
    *  host and a port: what two documents of no address's origin compare. */
   get opaqueOrigin(): object | null {
@@ -5731,8 +5743,7 @@ export class DomHost {
       // a page's `BroadcastChannel`s, by origin and name
       case 'bcOpen': {
         // an opaque origin talks to itself, whatever else is opaque
-        const origin = this._origin();
-        const key = `${origin === 'null' ? this._token : origin} ${text(b)}`;
+        const key = `${this.originless ? this._token : this._origin()} ${text(b)}`;
         const end = { id: Number(a), tell: this._channelTold };
         this._channels.set(Number(a), { key, end });
         openChannel(key, end);
@@ -5755,6 +5766,7 @@ export class DomHost {
       }
       // a page's `navigator.locks` (`page-channels.ts`)
       case 'lockRequest':
+        this._holdsLocks();
         return requestLock(
           this._origin(),
           {
@@ -5769,9 +5781,12 @@ export class DomHost {
           text(d).includes('s'),
         );
       case 'lockRelease':
-        releaseLock(this._origin(), Number(a), this._lockClient);
+        if (!this.originless) {
+          releaseLock(this._origin(), Number(a), this._lockClient);
+        }
         return null;
       case 'lockQuery':
+        this._holdsLocks();
         return queryLocks(this._origin());
       case 'lockClient':
         return this._lockClient;
@@ -7876,6 +7891,7 @@ export class DomHost {
       this._sourcesMade = new PageSources({
         devices: () => this._seams.mediaDevices,
         origin: () => this._origin(),
+        originless: () => this.originless,
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
@@ -7919,6 +7935,7 @@ export class DomHost {
       this._socketsMade = new PageSockets({
         connector: () => this._seams.webSocket,
         origin: () => this._origin(),
+        address: () => this.url,
         policies: () => this._cspPolicies(),
         log: (level, text) => this._seams.log(level, text),
         tell: (name, input) => {
@@ -8059,6 +8076,9 @@ export class DomHost {
    * `__clipboard`, under the number the page asked with: a write told as 0
    * is a `copy`'s, whose page has nothing waiting on it.
    */
+  /** Whether the user said yes to a read just now, where a host answers that
+   *  without its `state` saying so after. */
+  private _clipboardGranted = false;
   private _clipboardOp(
     what: string,
     id: Primitive,
@@ -8072,11 +8092,16 @@ export class DomHost {
       }
     };
     if (what === 'request') {
-      const asked = this._seams.permissions?.request(payload, this._origin());
+      const asked = this.originless
+        ? undefined
+        : this._seams.permissions?.request(payload, this._origin());
       if (!asked) tell(true, 'denied');
       else {
         asked.then(
           (state) => {
+            if (payload === 'clipboard-read') {
+              this._clipboardGranted = state === 'granted';
+            }
             this._permissionMoved(payload);
             tell(true, state);
           },
@@ -8087,6 +8112,22 @@ export class DomHost {
     }
     if (!seam) {
       tell(false, 'There is no clipboard.');
+      return null;
+    }
+    // the realm's gate is a gesture's, and a page can talk it round: what the
+    // clipboard holds is a user's, so whether it is read is decided here
+    const refused =
+      what === 'read'
+        ? !this._clipboardGranted &&
+          this._permissionState('clipboard-read') !== 'granted'
+        : this._permissionState('clipboard-write') === 'denied';
+    if (refused) {
+      tell(
+        false,
+        what === 'read'
+          ? 'Read permission denied.'
+          : 'Write permission denied.',
+      );
       return null;
     }
     const done =
@@ -8121,6 +8162,9 @@ export class DomHost {
   private _permissionState(name: string): HtmlPermissionState {
     const seams = this._seams;
     const origin = this._origin();
+    // what a user grants is by origin, and `null` is no one's: a grant to it
+    // would be a grant to every sandbox
+    if (this.originless) return 'denied';
     // a worker's is its page's, kept up to date from there
     if (this.workerScope) {
       return seams.permissions?.state(name, origin) ?? 'denied';
@@ -8196,7 +8240,8 @@ export class DomHost {
       const shown = this._shown.get(id);
       this._shown.delete(id);
       closeShown(shown);
-    } else if (!seam) {
+    } else if (!seam || this._permissionState('notifications') !== 'granted') {
+      // the realm asks first, and a page can talk it round
       tell('error');
     } else {
       this._shown.set(id, null);
@@ -8235,7 +8280,7 @@ export class DomHost {
   private _featureAllowed(feature: string): boolean {
     const frame = this._frameOf.get(this.document);
     if (!frame) return true;
-    if (originOf(this.top) === this._origin()) return true;
+    if (!this.originless && originOf(this.top) === this._origin()) return true;
     return (frame.attribs.allow ?? '')
       .split(';')
       .some((entry) => entry.trim().split(/\s+/)[0] === feature);
@@ -8277,11 +8322,11 @@ export class DomHost {
     key: string,
     value: string,
   ): Primitive {
+    if (op === 'allowed') return !this.originless;
     const storage = this._storageOf();
     const origin = this._origin();
-    // an opaque origin has none of its own, and sharing `null` would be every
-    // sandbox's store in one (HTML 12.2.3)
-    if (origin === 'null') {
+    // sharing `null` would be every sandbox's store in one (HTML 12.2.3)
+    if (this.originless) {
       throw new DomError(
         'SecurityError',
         "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
@@ -8414,6 +8459,17 @@ export class DomHost {
         return null;
       default:
         return null;
+    }
+  }
+
+  /** Locks are by origin, and every sandbox's would be the one table of `null`
+   *  (Web Locks 3.2): a sandbox could read another's names and hold it up. */
+  private _holdsLocks(): void {
+    if (this.originless) {
+      throw new DomError(
+        'SecurityError',
+        "Access to the Locks API is denied in this context: the document's origin is opaque.",
+      );
     }
   }
 

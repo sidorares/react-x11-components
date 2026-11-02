@@ -31,6 +31,10 @@ export interface SourceSeams {
   devices(): HtmlMediaDevices | undefined;
   /** The page's origin, which a device's id is digested with. */
   origin(): string;
+  /** Whether it has none anyone could be asked to trust (`DomHost.originless`):
+   *  a user is asked about an origin, and a device's id would be one for every
+   *  sandbox. */
+  originless(): boolean;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
   /** The canvas an element's number names, as a `captureStream()` reads
@@ -261,6 +265,7 @@ export class PageSources {
   }
 
   private _allowed(name: 'camera' | 'microphone'): boolean {
+    if (this._seams.originless()) return false;
     return (
       this._granted[name] ||
       this._seam().permission?.(name, this._seams.origin()) === 'granted'
@@ -299,6 +304,10 @@ export class PageSources {
     const origin = this._seams.origin();
     const fail = (error: unknown) =>
       this._tell('__mdSettled', [req, false, errorOf(error)]);
+    if (this._seams.originless()) {
+      fail(mediaError('NotAllowedError', 'Permission denied.'));
+      return;
+    }
     let asked: { audio: unknown; video: unknown };
     try {
       asked = JSON.parse(json) as { audio: unknown; video: unknown };

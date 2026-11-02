@@ -4554,8 +4554,11 @@ closes a way out a DOM binding opens by accident:
   goes by a document's origin holds. Six things are load-bearing. **`'null'` is
   never another `'null'`**: anything new that compares two origins treats an
   opaque one as no other (`_sameOrigin`, `sameOrigin` in `popups.ts`, `takeNode`),
-  and anything keyed by origin keys an opaque one apart, as `BroadcastChannel`'s
-  does, or every sandbox shares one store. **What a sandbox's address says is
+  and **anything keyed by an origin asks `originless` first**, and refuses, as
+  storage, locks, a permission and a device do, or keys it apart, as
+  `BroadcastChannel` does: every sandbox and `data:` document serializes to the
+  one `null`, so a table of origins hands them one entry, and a host's grant to
+  one is a grant to all. A `file:` page is the exception, as in browsers. **What a sandbox's address says is
   not its origin**, so anything new that reads a document's origin asks the host
   and never `location.origin`, which keeps the address's as HTML has it; a blob
   URL made in a sandbox is `blob:null`, since a worker's host has its address to
@@ -4566,8 +4569,9 @@ closes a way out a DOM binding opens by accident:
   loaded by a host that is no sandbox's. **A request a sandbox makes says so**
   (`opaqueOrigin`), since a frame's `client` is its address, which `HtmlNetwork`
   takes `Origin` and `same-origin` cookies from. And **anything new a sandbox
-  flag takes away is refused on the host**: `form.submit()` and a press both end
-  in `submit`, but a window has four ops and each asks. What a frame refuses is
+  flag takes away is refused on the host**: a window has four ops and each asks,
+  and what the realm's gate holds, a clipboard's read and a notification, is asked
+  again here, since a page can talk the realm round. What a frame refuses is
   read from the response before it is parsed, in `_refusedFraming`, of each
   document around it (`_ancestorOrigins`): **anything new that shows a response
   in a frame goes through it.**
@@ -4957,9 +4961,10 @@ list.
 - **What a page reads or writes of the clipboard crosses as text**
   (`clipboard.ts`, the `clipboard` op and `__clipboard`): JSON of `{ t, s }`
   and `{ t, b }`, bytes as base64, and `__clipboard` is no `HELD_ONCE`, since it
-  carries an answer. The gates are the realm's, as `crypto.subtle`'s splitting
-  is the specification's: activation is the realm's to know
-  (`hasTransientActivation`), and `permission` the host's. **A read that a host
+  carries an answer. The realm asks first, as `crypto.subtle`'s splitting is the
+  specification's: activation is the realm's to know
+  (`hasTransientActivation`), and `permission` the host's, which asks again as
+  the read comes (`_clipboardOp`), since a page can talk its realm round. **A read that a host
   has not said yes to is refused, whatever gesture is behind it**: with
   `scripts.permissions` absent, `request` answers `denied`, so a host that hands
   a page its clipboard does not hand it the clipboard's contents.
