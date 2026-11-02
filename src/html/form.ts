@@ -399,6 +399,14 @@ export function controlValue(
         .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
     case 'number':
       return FLOAT.test(raw) ? raw : '';
+    case 'range': {
+      const value = rangeValue(el, raw);
+      // what its `max` took from it stays taken, as a browser has it, whose
+      // sanitization runs as the attribute changes: a `max` put back gives
+      // nothing back
+      if (typed !== undefined && TYPED.has(el)) TYPED.set(el, value);
+      return value;
+    }
     case 'date':
     case 'month':
     case 'week':
@@ -501,6 +509,56 @@ function attributeNumber(
 ): number | null {
   const text = attr(el, name);
   return text === undefined ? null : fieldNumber(type, text.trim());
+}
+
+/** What an `<input type=range>` runs over (HTML 4.10.5.1.13). */
+export interface RangeLine {
+  min: number;
+  /** Never under `min`: a `max` that is comes to `min`. */
+  max: number;
+  /** How far apart its values are; 0 at `step=any`, any value being one. */
+  step: number;
+  /** What its steps are counted from. */
+  base: number;
+}
+
+/** A range's line, as its attributes say: 0 to 100 by ones where they say
+ *  nothing, or nothing a number can be read from. */
+export function rangeLine(el: Element): RangeLine {
+  const min = attributeNumber(el, 'min', 'range');
+  const low = min ?? 0;
+  const written = attr(el, 'step')?.trim();
+  const asked = written && FLOAT.test(written) ? Number(written) : 0;
+  return {
+    min: low,
+    max: Math.max(low, attributeNumber(el, 'max', 'range') ?? 100),
+    step:
+      written?.toLowerCase() === 'any' ? 0 : asked > 0 ? asked : STEPS.range[0],
+    base: min ?? attributeNumber(el, 'value', 'range') ?? 0,
+  };
+}
+
+/**
+ * What a range holds given `raw`: its value sanitization (HTML 4.10.5.1.13,
+ * and Blink's `StepRange::ClampValue` where HTML leaves the arithmetic open),
+ * which runs at every read, since what it holds moves with its `min`, its
+ * `max` and its `step` however it got there. What is no number is half way
+ * along; the rest is kept to the line and to the nearest step on it, the
+ * upper of two as near, and to a step short of a `max` no step lands on.
+ */
+export function rangeValue(el: Element, raw: string | number): string {
+  const line = rangeLine(el);
+  const { min, max, step, base } = line;
+  const read = typeof raw === 'number' ? raw : fieldNumber('range', raw);
+  const n = Math.min(max, Math.max(min, read ?? min + (max - min) / 2));
+  if (!step) return String(n);
+  // Blink's arithmetic is decimal and a double's is not: .35 is 3.4999999999999996
+  // steps of .1, and a step of .1 lands on 0.30000000000000004
+  const steps = Number(((n - base) / step).toPrecision(15));
+  let near = base + Math.round(steps) * step;
+  if (near > max) near -= step;
+  if (near < min) near += step;
+  return String(near < min || near > max ? n : Number(near.toPrecision(15)));
 }
 
 /** Where a field's value stands against its `min` and its `max`: below

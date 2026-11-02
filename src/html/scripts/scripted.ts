@@ -39,6 +39,7 @@ import type {
   ResourceResult,
   ScriptRequest,
 } from '../index.js';
+import type { ResourceCors } from '../resources.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
@@ -49,6 +50,8 @@ import type { HtmlWebGL } from '../webgl.js';
 import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
+import type { LoadedScript } from './script-origin.js';
+import { SB_FORMS, SB_SCRIPTS, sandboxOfPolicy } from './sandbox.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
@@ -76,6 +79,7 @@ type OpenedWindow = HtmlPopup &
   ViewLink['parent'] & {
     initialDocument: Document | null;
     creator: string;
+    sandbox: number;
   };
 
 /** The pane a document is shown in, as its scripts measure it: its size
@@ -112,11 +116,22 @@ export interface HtmlScripts {
     signal: AbortSignalLike,
   ) => Promise<FetchResponse>;
   /**
+   * The headers of the response the document came in, for what it says of
+   * itself to the engine: its `Content-Security-Policy`'s `sandbox`, which a
+   * frame's response is read for as it arrives. Default: none. `HtmlNetwork`'s
+   * `document` and `html` answer them.
+   */
+  headers?: [string, string][];
+  /**
    * A script's source by its URL: a `<script src>`'s, with its element, and
    * a module's an import names. Default: asked of `onResource` as `kind:
    * 'script'`, the text or the bytes it answers decoded.
    */
-  load?: (url: string, element: Element | null) => Promise<string | null>;
+  load?: (
+    url: string,
+    element: Element | null,
+    cors?: ResourceCors,
+  ) => Promise<LoadedScript | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
    *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
    *  the form it goes with, where a form's `target` named this window, and
@@ -382,10 +397,15 @@ export interface InternalHtmlProps extends HtmlProps {
   /** What is on the clipboard, read for a `paste` where the host handed a
    *  clipboard: the paste is then the page's, and the widget's stopped. */
   _readClipboard?: () => Promise<HtmlClipboardData>;
+  /** Whether anything listens for what a pointer's moves make, where that
+   *  is known: a move nothing hears asks the document nothing. */
+  _movesHeard?: () => boolean;
   /** The pane around the element scrolled (`HtmlViewProps`). */
   _onViewportScroll?: () => void;
   /** The element painted (`HtmlViewProps`). */
   _onPaint?: () => void;
+  /** The colour scheme of the `<iframe>` a frame's document is drawn in. */
+  _embedderScheme?: 'light' | 'dark';
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
   /** What an `<img>` came to (`HtmlViewProps`). */
@@ -468,18 +488,34 @@ function runtimeLanguage(): string {
   }
 }
 
+/** A script's source from what `onResource` answered, with what the host
+ *  said of where it came from. */
+async function loadedScript(
+  result: unknown,
+  fallback: string | undefined,
+): Promise<LoadedScript | null> {
+  const r = result as ScriptAnswer | null | undefined;
+  if (!r || r.kind !== 'script') return null;
+  const text = await scriptText(r, fallback);
+  return text === null ? null : { text, url: r.url, headers: r.headers };
+}
+
+type ScriptAnswer = {
+  kind?: string;
+  text?: string;
+  bytes?: Uint8Array;
+  charset?: string;
+  url?: string;
+  headers?: [string, string][];
+};
+
 /** A script's text from what `onResource` answered: bytes in what the
  *  response names, then in what its element or its document does (HTML's
  *  "fetch a classic script"). */
 async function scriptText(
-  result: unknown,
+  r: ScriptAnswer,
   fallback: string | undefined,
 ): Promise<string | null> {
-  const r = result as
-    | { kind?: string; text?: string; bytes?: Uint8Array; charset?: string }
-    | null
-    | undefined;
-  if (!r || r.kind !== 'script') return null;
   if (typeof r.text === 'string') return r.text;
   if (!r.bytes) return null;
   const charset = r.charset ?? fallback;
@@ -508,8 +544,12 @@ export function useScriptedHtml(
 ): InternalHtmlProps {
   const config: HtmlScripts =
     typeof props.scripts === 'object' && props.scripts ? props.scripts : {};
-  const latest = useRef({ props, config });
-  latest.current = { props, config };
+  // what the document's own response and the window it is in take from it
+  const sandbox =
+    sandboxOfPolicy(config.headers ?? []) |
+    ((config.popup as OpenedWindow | undefined)?.sandbox ?? 0);
+  const latest = useRef({ props, config, sandbox });
+  latest.current = { props, config, sandbox };
   const node = (): PaneNode | null =>
     (handle.ref as React.RefObject<PaneNode | null>).current;
 
@@ -529,6 +569,7 @@ export function useScriptedHtml(
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,
+    headers: config.headers,
     popups: config.popups,
     popup: config.popup ?? null,
     close: config.close,
@@ -543,12 +584,17 @@ export function useScriptedHtml(
     network: config.fetch !== undefined,
     load:
       config.load ??
-      (async (url, element) => {
+      (async (url, element, cors) => {
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
-        return scriptText(
-          await ask({ url, kind: 'script', element: owner }),
+        return loadedScript(
+          await ask({
+            url,
+            kind: 'script',
+            element: owner,
+            ...(cors ? { cors } : {}),
+          }),
           owner.attribs.charset || latest.current.props.charset,
         );
       }),
@@ -579,7 +625,7 @@ export function useScriptedHtml(
       ? { document: popup.initialDocument, base: popup.creator }
       : null;
   const scripts = useScripts(
-    true,
+    !(sandbox & SB_SCRIPTS),
     handle,
     url,
     options,
@@ -675,6 +721,7 @@ export function useScriptedHtml(
   );
   const onSubmit = useCallback(
     (submission: FormSubmission) => {
+      if (latest.current.sandbox & SB_FORMS) return;
       const to = navigableFor(handle.document, submission.target);
       const post =
         submission.method === 'post'
@@ -759,6 +806,11 @@ export function useScriptedHtml(
     },
     [scripts.onDomEvent],
   );
+  const movesHeard = useCallback(
+    () =>
+      !!latest.current.props.onDomEvent || (scripts.movesHeard?.() ?? false),
+    [scripts.movesHeard],
+  );
   const onElementScroll = useCallback(
     (element: Element) => {
       scripts.onElementScroll?.(element);
@@ -828,6 +880,7 @@ export function useScriptedHtml(
     _inspectValue: inspectValue,
     _releaseValues: releaseValues,
     _onParserBlocked: scripts._onParserBlocked,
+    _movesHeard: movesHeard,
     ...(config.clipboard && {
       _readClipboard: () => latest.current.config.clipboard!.read(),
     }),

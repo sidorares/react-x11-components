@@ -47,12 +47,11 @@ What the run adapts, and why each is fair to a static renderer:
   names it without the sheet, the way an application brings its fonts.
   (Answered as an image before the runner knew the kind, the face was
   refused, and 569 tests that link the sheet fell back to the default serif.)
-- **XHTML is read as HTML.** Most of the suite is `.xht`, which a browser
-  parses as XML. Two XML constructs in a style sheet read differently to an
-  HTML parser: the CDATA markers round one, which are removed, and the
-  entities outside them, which XML decodes and HTML leaves be — a
-  selector written `div &gt; span` is a `>` to a browser — so a style
-  sheet's are decoded first (from round 86).
+- **XHTML is read as XML.** Most of the suite is `.xht`, which a browser
+  parses as XML, and the runner hands `<Html>` the type WPT's server would
+  send, so it does too. Until then the runner read XHTML with the HTML parser
+  and rewrote the source to approximate XML: CDATA markers removed, entities in
+  style sheets decoded (from round 86) and every `<div/>` written out.
 - **The palette is a browser's**: black on white, links `#0000ee`, a 16px
   serif. The rest of the user-agent sheet is `<Html>`'s own, themed rules
   included.
@@ -4109,6 +4108,40 @@ a name the first had taken out. #562 is the one line. Run with `tsx`, which
 does not type-check, every flex box with a width threw from its layout, so
 a conformance run on such a tree loses most of css-flexbox at once —
 diff against a master that builds.
+
+### Round 144
+
+The `.xht` files went from the HTML parser, over a source rewritten to look
+like what XML would have read, to `<Html contentType>` and XML's own rules. The
+rewriting was good: of the 5,946 XML tests in the suite and `css-flexbox`, 13
+moved, all up. On X11, `css/CSS2` went from 5,691 to 5,694 passing, and a
+reftest the runner finds now that it looks at `.xml` made it 5,695;
+`css-flexbox` went from 802 to 812.
+
+Past those two, the other 2,217 XML reftests in `css/`, `svg/`, `html/` and
+`mathml/` went from 817 to 888 and lost none, 62 of them in `css/selectors`,
+whose `old-tests` are `.xml` files the runner had never rewritten, so a CDATA
+section's markers reached the CSS parser. Of the 51 left failing there, 50 use
+`@namespace`, which is not here yet.
+
+Why each moved:
+
+- `flexbox-align-self-vert-*` (8 tests) and `flexbox-margin-auto-horiz-001`: a
+  reference with a `<!-- -->` in its `<style>`. XML takes it out before a sheet
+  is read, where in HTML it is tokens that eat the rule after them.
+- `flexbox-table-fixup-001`: a `<td>` outside a table, which HTML's parser drops.
+- `c548-ln-ht-000`, `white-space-pre-001`: a `<pre>` whose first line feed XML
+  keeps.
+- `case-sensitive-007`: `DIV` as a selector, no `<div>` in XML.
+
+`css-flexbox-height-animation-stretch.html` moved in one run with no XML in it:
+it reads a wall clock, and fails by another count of pixels each time on either
+tree.
+
+One passing test was lost on the way and put back:
+`clear-clearance-calculation-004` came out as the parse error, since the
+well-formedness check read `paragraph = 50px` in a `<meta>`'s value, twice, as an
+attribute written twice.
 
 ## What `<Html>` supports
 

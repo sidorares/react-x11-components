@@ -44,8 +44,12 @@ import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
+import type { ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, wholeBytes } from './host.js';
+import { corsSetting, judgeScript } from './script-origin.js';
+import type { LoadedScript } from './script-origin.js';
+import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
 import type { ServiceClient } from './sw-registry.js';
@@ -84,6 +88,9 @@ const FRAME_MS = 16;
  *  host's time in what it asks of the document is not counted, and the task
  *  is stopped outright at five times it (`ScriptEngine._bridge`). */
 export const SCRIPT_TIMEOUT_MS = 2000;
+/** How long the content has to hold still before what is under a pointer
+ *  that did not move is asked, as `<Html>` holds a hover (`HOVER_REST_MS`). */
+const UNDER_REST_MS = 100;
 
 /** What the page around a document gives its scripts. */
 declare const Buffer: { from(text: string, encoding: 'base64'): Uint8Array };
@@ -97,7 +104,14 @@ export interface ScriptsOptions extends Omit<
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
    *  module's an import names, with none. */
-  load(url: string, element: Element | null): Promise<string | null>;
+  load(
+    url: string,
+    element: Element | null,
+    cors?: ResourceCors,
+  ): Promise<LoadedScript | null>;
+  /** The headers of the response the document came in
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** A script ran past the timeout and was stopped. */
   onTimeout(): void;
   /** How long a script's own code may run in a task before it is
@@ -138,6 +152,9 @@ interface Queued {
   request: ScriptRequest;
   source: Promise<string | null>;
   module: boolean;
+  /** Whether what it throws is no business of the page's
+   *  (`judgeScript`), known once its source is here. */
+  muted: boolean;
 }
 
 /** A script in the in-order list, and its source once it is here. */
@@ -240,20 +257,33 @@ export class ScriptRunner {
     );
     this.host.arrival = arrival;
     // before its realm is made, which asks what context it is as it starts
-    if (popup && url === 'about:blank') this.host.creator = popup.creator;
+    if (popup && url === 'about:blank') {
+      this.host.creator = popup.creator;
+      this.host.creatorOrigin = popup.creatorOrigin;
+    }
+    // a window's flags are every document's it shows, and a host says what a
+    // document's own response said of itself
+    const sandbox =
+      (slot?.sandbox ?? 0) | sandboxOfPolicy(_options.headers ?? []);
+    if (sandbox) this.host.shared.sandboxes.set(document, sandbox);
+    if (_link?.frame) this.host.frameParent = _link.parent.host;
     // the host's to know, and never the facade's: it decides what a realm is
     // handed, and what is refused it
     const foreign =
       !!_link &&
-      url !== 'about:blank' &&
-      (originOf(url) === 'null' || originOf(url) !== _link.parent.host.origin);
+      (this.host.origin === 'null'
+        ? url !== 'about:blank' || !!(this.host.sandbox & SB_ORIGIN)
+        : url !== 'about:blank' &&
+          (originOf(url) === 'null' ||
+            originOf(url) !== _link.parent.host.origin));
     this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
       log: _options.log,
       settled: () => this.host.settled(),
-      load: (url) => _options.load(url, null).catch(() => null),
+      // what a module imports is another origin's only by its leave
+      load: (url) => this._scriptFrom(url, null, true).then((s) => s && s.text),
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
@@ -424,7 +454,7 @@ export class ScriptRunner {
    */
   private _attachService(): void {
     const keeper = this.serviceKeeper;
-    if (!keeper || !this.host.secure) return;
+    if (!keeper || !this.host.secure || this.host.sandbox & SB_ORIGIN) return;
     const popup = this._options.popup as Popup | null | undefined;
     // a window's `about:blank` is its opener's client, as a frame's is its
     // parent's: the document of no address that the opener made
@@ -668,12 +698,23 @@ export class ScriptRunner {
     if (!module && !isClassicScriptType(type)) return;
     // a browser with modules runs no `nomodule` script (HTML 4.12.1)
     if (!module && request.element.attribs.nomodule !== undefined) return;
-    const source = request.src
-      ? request.src.startsWith('blob:')
+    const queued: Queued = {
+      request,
+      source: Promise.resolve(request.text),
+      module,
+      muted: false,
+    };
+    if (request.src) {
+      queued.source = request.src.startsWith('blob:')
         ? Promise.resolve(this._blobSource(request.src))
-        : this._options.load(request.src, request.element).catch(() => null)
-      : Promise.resolve(request.text);
-    const queued = { request, source, module };
+        : this._scriptFrom(request.src, request.element, module).then(
+            (judged) => {
+              queued.muted = judged?.muted ?? false;
+              return judged && judged.text;
+            },
+          );
+    }
+    const { source } = queued;
     // one a page's script put in and set `async` false on runs in the order
     // it went in, each once all before it have (`DomHost.inOrder`), and
     // waits for no parse
@@ -856,6 +897,7 @@ export class ScriptRunner {
 
   /** The pane the document is shown in scrolled. */
   scrolled(): void {
+    this._scrolledAt = Date.now();
     // a scroll again puts off the end of it
     if (this._scrollEndOwed) {
       clearTimeout(this._scrollEndOwed);
@@ -882,10 +924,30 @@ export class ScriptRunner {
     if (this._disposed || this._paintSeen) return;
     this._paintSeen = setTimeout(() => {
       this._paintSeen = null;
-      if (!this._disposed) this.host.renderingMoved();
+      if (this._disposed) return;
+      this.host.renderingMoved();
+      this.host.askSelection();
+      this._askUnder();
     }, 0);
   }
   private _paintSeen: ReturnType<typeof setTimeout> | null = null;
+  /** What is under a still pointer is asked once the content has been still
+   *  for `UNDER_REST_MS`: every frame of a scroll moves it, and a page whose
+   *  `mouseover` does anything would be held by each. */
+  private _askUnder(): void {
+    if (!this.host.movesHeard || this._underSoon) return;
+    const left = this._scrolledAt + UNDER_REST_MS - Date.now();
+    if (left <= 0) {
+      this.host.askUnder();
+      return;
+    }
+    this._underSoon = setTimeout(() => {
+      this._underSoon = null;
+      if (!this._disposed) this._askUnder();
+    }, left);
+  }
+  private _underSoon: ReturnType<typeof setTimeout> | null = null;
+  private _scrolledAt = 0;
   /** Each scroll container's `scrollend`, owed a frame after its last
    *  `scroll` (`elementScrolled`). */
   private _elementScrollEnds = new Map<
@@ -896,6 +958,7 @@ export class ScriptRunner {
   /** A scroll container in the document scrolled (`onElementScroll`). */
   elementScrolled(element: Element): void {
     if (this._disposed) return;
+    this._scrolledAt = Date.now();
     this._scrolledElements.add(element);
     const owed = this._elementScrollEnds.get(element);
     if (owed) clearTimeout(owed);
@@ -1172,14 +1235,37 @@ export class ScriptRunner {
         request.src &&
         (attribs.async !== undefined || attribs.defer !== undefined)
       );
+    // a script whose errors are the page's to read no more than the script
+    // is may not run where a name it looks up is the page's to read either
+    if (queued.muted && this.engine.namesWatched()) {
+      this._options.log('error', `Failed to load the script ${request.src}.`);
+      this.engine.call('__fire', [element, 'error']);
+      return;
+    }
     this.host.writing = writes ? request.element : null;
     try {
-      this.engine.exec(code, url, element);
+      this.engine.exec(code, url, element, queued.muted);
     } finally {
       this.host.writing = null;
     }
     // a loader waits for a script it put in on its `load`
     if (request.src) this.engine.call('__fire', [element, 'load']);
+  }
+
+  /** A script's source from the host, and what this document may have of
+   *  it: by CORS where it is a module's, or its element says so. */
+  private async _scriptFrom(
+    url: string,
+    element: Element | null,
+    module: boolean,
+  ): Promise<{ text: string; muted: boolean } | null> {
+    const origin = this.host.origin;
+    const set = corsSetting(element?.attribs.crossorigin);
+    const mode = module ? (set ?? 'anonymous') : set;
+    const loaded = await this._options
+      .load(url, element, mode ? { origin, mode } : undefined)
+      .catch(() => null);
+    return judgeScript(loaded, url, origin, mode, module);
   }
 
   private _advance(state: 'interactive' | 'complete'): void {

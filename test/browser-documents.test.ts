@@ -125,8 +125,8 @@ test('a response is shown as what its type says, and the rest is offered to be s
     ['audio/ogg', 'audio'],
     ['audio/flac', 'audio'],
     ['image/png', 'image'],
-    // an image, though its type ends as XML's do
-    ['image/svg+xml', 'image'],
+    // a window that goes to a drawing shows a document, whose scripts run
+    ['image/svg+xml', 'html'],
     ['text/plain', 'text'],
     ['text/csv', 'text'],
     ['application/javascript', 'text'],

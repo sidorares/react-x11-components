@@ -1344,7 +1344,12 @@ test('a popup that goes to a data: address has no origin, and its opener least o
 test('an opaque origin is no other: two data: windows, and a data: frame in one, are numbers to each other', async () => {
   const first = 'data:text/html,first';
   const second = 'data:text/html,second';
-  const frame = 'data:text/html,frame';
+  // a `data:` URL is its own body, which no network is asked for
+  const frame = `data:text/html,${encodeURIComponent(
+    page(
+      `console.log('framed', ${JSON.stringify('x')}); try { console.log('parent', parent.secret, parent.document.title); } catch (x) { console.log('parent', x.name); }`,
+    ),
+  )}`;
   const s = await scene(
     pressed(`window.open('${first}');`),
     {
@@ -1356,7 +1361,7 @@ test('an opaque origin is no other: two data: windows, and a data: frame in one,
           self.w.postMessage('to my own origin', '/');
           self.w.postMessage('to anyone', '*');
           const f = document.createElement('iframe');
-          f.src = '${frame}';
+          f.src = ${JSON.stringify(frame)};
           document.body.append(f);
         });
       `),
@@ -1365,9 +1370,6 @@ test('an opaque origin is no other: two data: windows, and a data: frame in one,
         addEventListener('message', (e) => console.log('heard', e.data));
         opener.postMessage('up', '*');
       `),
-      [frame]: page(
-        `console.log('framed', ${JSON.stringify('x')}); try { console.log('parent', parent.secret, parent.document.title); } catch (x) { console.log('parent', x.name); }`,
-      ),
     },
     { popups: { unblocked: true } },
   );
@@ -1379,6 +1381,26 @@ test('an opaque origin is no other: two data: windows, and a data: frame in one,
     'the message for anyone',
   );
   assert.ok(!s.logs.includes('log: heard to my own origin'));
+});
+
+test("a javascript: address set on another origin's window goes to no host", async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${PROVIDER}side');
+      addEventListener('message', () => {
+        self.w.location = 'javascript:alert(1)';
+        console.log('set');
+      }, { once: true });
+    `),
+    { [`${PROVIDER}side`]: page(`opener.postMessage('up', '*');`) },
+  );
+  await s.press();
+  await s.until('set');
+  await act(() => new Promise((r) => setTimeout(r, 100)));
+  assert.ok(
+    !s.requests.some((r) => r.includes('javascript:')),
+    s.requests.join(),
+  );
 });
 
 test('the same reach finds a window of one origin, so what finds nothing above can find something', async () => {

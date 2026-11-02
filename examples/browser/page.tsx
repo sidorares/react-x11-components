@@ -107,6 +107,7 @@ import {
   dispositionOf,
   downloadName,
   downloadSource,
+  isXmlType,
   linkTarget,
   navigableFor,
   preloadHtmlScripts,
@@ -118,6 +119,7 @@ import {
   readyFor,
   sniffCharset,
   sniffEncoding,
+  sniffXmlEncoding,
   threadTransport,
   useHtmlClipboard,
   useHtmlNotifications,
@@ -147,7 +149,14 @@ import type {
   ResourceResult,
   ViewportOverflow,
 } from '../../src/html/index.js';
-import { MOST_PDF, kindOf, readAll, readJson, readXml } from './documents.js';
+import {
+  MOST_PDF,
+  drawsItself,
+  kindOf,
+  readAll,
+  readJson,
+  readXml,
+} from './documents.js';
 import type { Viewer } from './documents.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
 import { saveDownload } from './downloads.js';
@@ -487,6 +496,8 @@ interface Doc {
   /** More source may still arrive — the document is streaming. */
   partial: boolean;
   charset?: string;
+  /** What it was served as, where that may be XML. */
+  contentType?: string;
   /** What its relative URLs resolve against; null for the browser's own
    *  pages, which name only absolute ones. */
   baseUrl: string | null;
@@ -496,6 +507,8 @@ interface Doc {
    *  it where it is saved from there. */
   viewer?: Viewer;
   filename?: string;
+  /** Its response's headers, for what it says of itself to its engine. */
+  headers?: [string, string][];
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -523,6 +536,8 @@ interface View {
   number?: number;
   /** What it asks of the pane that scrolls it, once it has been laid out. */
   overflow?: ViewportOverflow;
+  /** Its response's headers (`Doc.headers`). */
+  headers?: [string, string][];
 }
 
 /** The documents the tab has an `<Html>` for, and which of them is shown. */
@@ -902,6 +917,7 @@ export default function Page(props: PageProps): ReactElement {
       url: at,
       scripted: runs && engine !== false,
       zoom: live.current.zoom,
+      headers: doc.headers,
     };
     setViews(({ views }) => ({
       views: [...overtaken(views, again), view],
@@ -1559,6 +1575,7 @@ export default function Page(props: PageProps): ReactElement {
   // and what its workers ask of the network waits for it to be shown again.
   const scriptsOf = (view: View): HtmlScripts | false =>
     view.scripted && {
+      headers: view.headers,
       userAgent: props.userAgent ?? DEFAULT_USER_AGENT,
       language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
       // what the platform's player opens, where there is one: a stream's
@@ -1968,6 +1985,7 @@ export default function Page(props: PageProps): ReactElement {
                   // `prefers-color-scheme` rules are asked
                   defaultColorScheme="light"
                   source={source.source}
+                  contentType={source.contentType}
                   partial={source.partial}
                   charset={source.charset}
                   // where it is shown, and where it runs no scripts, at the
@@ -2267,9 +2285,30 @@ async function loadDocument(
       return own(imagePage(response.url), fileName(response.url), url, posted);
     }
     if (kind === 'pdf') return viewed({ kind, bytes });
-    const charset = response.charset ?? sniffCharset(bytes);
+    const xml = isXmlType(response.type);
+    const charset = xml
+      ? sniffXmlEncoding(bytes, response.charset)
+      : (response.charset ?? sniffCharset(bytes));
     await readyFor(charset);
     const text = decode(bytes, charset);
+    // XML that says how it looks is a document like any
+    if (kind === 'xml' && drawsItself(text)) {
+      const landed = landedAt(response.url, target);
+      on.commit(
+        landed,
+        {
+          source: text,
+          partial: false,
+          contentType: response.type,
+          baseUrl: landed,
+          url: landed,
+        },
+        null,
+        posted,
+      );
+      on.finish();
+      return;
+    }
     // text that says it is JSON or XML and is not is shown as what it is
     const tree =
       kind === 'json' ? readJson(text) : kind === 'xml' ? readXml(text) : null;
@@ -2301,7 +2340,9 @@ async function loadDocument(
     if (signal.aborted) return;
     return own(errorPage(target, ...failure(error)), null);
   }
-  const charset = sniffEncoding(head, response.charset);
+  const charset = isXmlType(response.type)
+    ? sniffXmlEncoding(head, response.charset)
+    : sniffEncoding(head, response.charset);
   const at = landedAt(response.url, target);
   const decoder = await htmlTextDecoder(charset);
   if (signal.aborted) return;
@@ -2311,8 +2352,10 @@ async function loadDocument(
     source,
     partial: !ended,
     charset,
+    contentType: response.type,
     baseUrl: at,
     url: at,
+    headers: response.headers,
   };
   on.commit(at, first, null, posted);
   let last = Date.now();

@@ -49,7 +49,14 @@ import type {} from 'react-x11/jsx-runtime';
 import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
-import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import {
+  attr,
+  flatParentOf,
+  isElement,
+  isModal,
+  isXmlType,
+  tagOf,
+} from './dom.js';
 import { focusableElement } from './focus.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
@@ -66,10 +73,12 @@ import {
   documentPoint,
   domButton,
   domButtons,
+  domLocks,
   domKey,
   isModifierKey,
   fireDomEvent,
   modifiersOf,
+  modifiersOfKey,
   NO_MODIFIERS,
 } from './dom-events.js';
 import type {
@@ -302,6 +311,7 @@ export {
   htmlTextDecoder,
   readyFor,
   sniffEncoding,
+  sniffXmlEncoding,
 } from './encoding.js';
 export type { HtmlTextDecoder } from './encoding.js';
 export { threadTransport } from './thread-transport.js';
@@ -403,6 +413,7 @@ export type {
   ShadowRootMode,
 } from './dom.js';
 export {
+  isXmlType,
   appendChild,
   attachShadow,
   createElement as createHtmlElement,
@@ -433,6 +444,15 @@ export interface HtmlProps {
    * (`renderEmbedded`).
    */
   document?: Document;
+  /**
+   * What `source` was served as, a MIME type (default `text/html`). An XML
+   * type — `application/xhtml+xml`, `image/svg+xml`, `text/xml`, anything
+   * `+xml` — reads it by XML's rules and not HTML's: no element is implied,
+   * moved or dropped, names keep their case, and a document that is not
+   * well-formed is an error and nothing of it. An XML document is read once
+   * all of it is here, so for one `partial` defaults to false.
+   */
+  contentType?: string;
   /**
    * Whether more source may still arrive (default true, matching
    * `<Markdown partial>`). While true the parser is left open and a `source`
@@ -1147,7 +1167,8 @@ function ScriptedHtml(props: HtmlProps): ReactElement {
 function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const {
     source,
-    partial = true,
+    contentType,
+    partial = !(contentType && isXmlType(contentType)),
     selectable = true,
     animate = true,
     stylesheet,
@@ -1278,7 +1299,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // core's `<audio>` for each that a page's script plays (`sounds.ts`)
   const sounds = useSounds(viewNode);
   // what the host shows in the iframes, canvases and embeds (`embedded.ts`)
-  const embedded = useEmbedded(props.renderEmbedded);
+  const embedded = useEmbedded(props.renderEmbedded, viewNode);
   const events = useDocumentEvents(
     onDomEvent,
     viewNode,
@@ -1286,6 +1307,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     stops,
     embedded,
     props._readClipboard,
+    props._movesHeard,
   );
   const drag = useDocumentDrag({
     view: viewNode,
@@ -1349,6 +1371,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   } = {
     source,
     ...(props.document && { document: props.document }),
+    ...(contentType && { contentType }),
     complete: !partial,
     stylesheet,
     charset,
@@ -1369,6 +1392,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onElementScroll: props.onElementScroll,
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
+    embedderScheme: props._embedderScheme,
     onCssEvents: props._onCssEvents,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
@@ -1451,9 +1475,14 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       // widget included — does what it does (`useDocumentEvents`)
       onMouseDownCapture: events.onMouseDownCapture,
       onMouseUpCapture: events.onMouseUpCapture,
+      onContextMenuCapture: events.onContextMenuCapture,
       onKeyDownCapture: events.onKeyDownCapture,
       onKeyUpCapture: events.onKeyUpCapture,
+      onCompositionStartCapture: events.onCompositionStartCapture,
+      onCompositionUpdateCapture: events.onCompositionUpdateCapture,
+      onCompositionEndCapture: events.onCompositionEndCapture,
       onMouseMoveCapture: events.onMouseMoveCapture,
+      onMouseLeave: events.onMouseLeave,
       onWheelCapture: events.onWheelCapture,
       onMouseDown: (ev: X11MouseEvent<DrawnNode>) => {
         // a press in an `<iframe>`'s document is that document's, as a key
@@ -1580,6 +1609,13 @@ export function makeHtmlHandle(
     showClip: (element: Element, file: string | null) =>
       nodeRef.current?.showClip(element, file),
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
+    pointerElement: () => nodeRef.current?.pointerElement() ?? null,
+    pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
+    selectionKey: () => nodeRef.current?.selectionKey() ?? '',
+    hoverAgain: () => nodeRef.current?.hoverAgain(),
+    hoverOn: (element) => nodeRef.current?.hoverOn(element),
+    pointIn: (how, element, x, y) =>
+      nodeRef.current?.pointIn(how, element, x, y) ?? null,
     viewportHeld: (busy: number) =>
       nodeRef.current?.viewportHeld(busy) ?? false,
     intersectionsOf: (
@@ -1938,9 +1974,20 @@ function useDocumentEvents(
   stops: ReturnType<typeof useFocusStops>,
   embedded: Embedded,
   readClipboard?: () => Promise<HtmlClipboardData>,
+  movesHeard?: () => boolean,
 ) {
   const pressed = React.useRef<Element | null>(null);
   const released = React.useRef<Element | null>(null);
+  /** The element each button held was pressed on: a click needs its own
+   *  press, whatever was pressed since. */
+  const pressedBy = React.useRef(new Map<number, Element>());
+  /** What core's count of a press has to be taken back by: it counts
+   *  presses close together whichever button made them, and a click's count
+   *  starts again with a button (UI Events 3.5). */
+  const countFrom = React.useRef(0);
+  const lastButton = React.useRef(0);
+  /** The keys down, which a press of one again is the repeat of. */
+  const keysDown = React.useRef(new Set<number>());
   /** Whether the press was on a scroll container's bar: no click, no
    *  link, no event of the page's comes of it. */
   const barPress = React.useRef(false);
@@ -1955,19 +2002,63 @@ function useDocumentEvents(
   const pointedAt = (ev: X11MouseEvent<DrawnNode>): Element | null => {
     const node = view.current;
     const control = forms.controlOf(ev.target as DrawnNode);
-    const at =
+    return (
       control ??
       (node && ev.target === (node as unknown)
         ? node.elementAtPoint(ev.x, ev.y)
-        : null);
-    if (at && CONTROLS.has(tagOf(at)) && isDisabled(at)) return null;
-    return at;
+        : null)
+    );
   };
   const mouse = (ev: X11MouseEvent<DrawnNode>): DomEventInit => ({
     ...documentPoint(ev, view.current?.getClientRects()[0]),
+    screenX: ev.screenX,
+    screenY: ev.screenY,
     button: domButton(ev.button),
+    detail: ev.detail === undefined ? undefined : ev.detail - countFrom.current,
+    locks: domLocks(ev.nativeEvent?.buttons ?? 0),
     ...modifiersOf(ev),
   });
+  /** What a move is told as: its point, and what ntk gathered since the last
+   *  one it handed on. Its samples are device pixels from the window's
+   *  corner, and the event's logical pixels. */
+  const moved = (ev: X11MouseEvent<DrawnNode>): DomEventInit => {
+    const init: DomEventInit = {
+      ...mouse(ev),
+      button: 0,
+      detail: 0,
+      buttons: domButtons(ev.nativeEvent?.buttons ?? 0),
+    };
+    const native = ev.nativeEvent as
+      | {
+          x?: number;
+          y?: number;
+          time?: number;
+          coalesced?: { x: number; y: number; time?: number }[];
+        }
+      | undefined;
+    const list = native?.coalesced;
+    if (list && list.length > 1) {
+      const scale = (ev.target as DrawnNode | null)?.scale ?? 1;
+      const by = {
+        x: (init.x ?? 0) - ev.x,
+        y: (init.y ?? 0) - ev.y,
+      };
+      const now = native.time ?? 0;
+      init.samples = list.map((sample) => [
+        sample.x / scale + by.x,
+        sample.y / scale + by.y,
+        Math.max(0, now - (sample.time ?? now)),
+      ]);
+    }
+    return init;
+  };
+  /** The element a pointer's event that hit nothing goes to: a button held
+   *  past the document's edge goes on being told, at the root, where a
+   *  browser's does. */
+  const offDocument = (): Element | null => {
+    const doc = view.current?.document;
+    return doc ? rootElementOf(doc) : null;
+  };
   /** What a key is typed at: a control's widget, a stop's element, the
    *  element a focus is owed to (`stops.ts`), or the document's body where
    *  the document itself has the focus. */
@@ -1988,14 +2079,31 @@ function useDocumentEvents(
       const target = keyedAt(ev.target as DrawnNode);
       if (!target) return;
       const names = domKey(ev);
+      const native = ev.nativeEvent as
+        { keycode?: number; buttons?: number; repeat?: boolean } | undefined;
+      const keycode = native?.keycode ?? ev.keysym ?? 0;
+      const repeat =
+        type === 'keydown' && (native?.repeat ?? keysDown.current.has(keycode));
+      if (type === 'keydown') keysDown.current.add(keycode);
+      else keysDown.current.delete(keycode);
       const go = fire(type, target, {
         key: names.key,
         code: names.code,
-        ...modifiersOf(ev),
+        repeat,
+        locks: domLocks(native?.buttons ?? 0),
+        ...modifiersOfKey(modifiersOf(ev), names.key, type === 'keydown'),
       });
       if (!go) ev.preventDefault();
     };
   const keyDown = key('keydown');
+  /** What a composition is at, told as a key is: where the focus is. */
+  const composition =
+    (type: 'compositionstart' | 'compositionupdate' | 'compositionend') =>
+    (ev: X11KeyboardEvent<DrawnNode> & { data?: string }) => {
+      if (!onDomEvent || embedded.contains(ev.target as DrawnNode)) return;
+      const target = keyedAt(ev.target as DrawnNode);
+      if (target) fire(type, target, { data: ev.data });
+    };
   /** The key just told, where it is the clipboard's chord and the page let
    *  it be: told as what it is, before core's own copy, cut or paste. An
    *  event is told at once and a read of the clipboard is not, so with a
@@ -2035,10 +2143,36 @@ function useDocumentEvents(
       const target = pointedAt(ev);
       if (!target) return;
       pressed.current = target;
-      if (!fire('mousedown', target, mouse(ev))) ev.preventDefault();
-      // the menu a secondary press asks for, as X11 and macOS ask on the
-      // press
-      if (ev.button === 3 && !fire('contextmenu', target, mouse(ev))) {
+      pressedBy.current.set(ev.button, target);
+      if (ev.button !== lastButton.current) countFrom.current = ev.detail - 1;
+      else if (ev.detail === 1) countFrom.current = 0;
+      lastButton.current = ev.button;
+      // a press on what the document draws holds the pointer until its
+      // release, wherever that is: a stroke dragged off the window ends
+      if (ev.target === (node as unknown)) ev.capturePointer?.();
+      if (!fire('mousedown', target, mouse(ev))) {
+        ev.preventDefault();
+        return;
+      }
+      // the press's selection starts here (Chromium's
+      // `DispatchSelectStart`), and a page that says no has its press go on
+      // as a press and its text stay as it was
+      if (
+        ev.button === 1 &&
+        ev.target === (node as unknown) &&
+        node?.startsSelectionAt(ev.x, ev.y) &&
+        !fire('selectstart', target, modifiersOf(ev))
+      ) {
+        node.selectsNothing();
+      }
+    },
+    // the menu a secondary press asks for, which X11 and macOS ask on the
+    // press: an event of its own in core, after it, and the page's to keep
+    // from opening
+    onContextMenuCapture: (ev: X11MouseEvent<DrawnNode>) => {
+      if (!onDomEvent) return;
+      const target = pressed.current ?? pointedAt(ev);
+      if (target && !fire('contextmenu', target, mouse(ev))) {
         ev.preventDefault();
       }
     },
@@ -2046,7 +2180,7 @@ function useDocumentEvents(
       released.current = null;
       if (barPress.current) return;
       if (!onDomEvent) return;
-      const target = pointedAt(ev);
+      const target = pointedAt(ev) ?? (pressed.current && offDocument());
       if (!target) return;
       released.current = target;
       // nothing to keep from happening: a cancelled release still clicks
@@ -2064,15 +2198,31 @@ function useDocumentEvents(
       clipboardKey(ev);
     },
     onKeyUpCapture: key('keyup'),
+    onCompositionStartCapture: composition('compositionstart'),
+    onCompositionUpdateCapture: composition('compositionupdate'),
+    onCompositionEndCapture: composition('compositionend'),
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
-      if (!onDomEvent) return;
-      const target = pointedAt(ev);
+      const node = view.current;
+      node?.notePointer(ev.x, ev.y);
+      // a move nothing listens for costs the hit test nothing, and lays
+      // nothing out: `elementAtPoint` settles what is owed
+      if (!onDomEvent || movesHeard?.() === false) return;
+      // the pointer over a frame is over the frame's element, to the page
+      // that holds it, and its moves are the frame's own
+      const frame = embedded.elementOf(ev.target as DrawnNode);
+      if (frame) {
+        fire('mouseover', frame, mouse(ev));
+        return;
+      }
+      const target = pointedAt(ev) ?? (pressed.current && offDocument());
       if (!target) return;
-      fire('mousemove', target, {
-        ...mouse(ev),
-        button: 0,
-        buttons: domButtons(ev.nativeEvent?.buttons ?? 0),
-      });
+      fire('mousemove', target, moved(ev));
+    },
+    onMouseLeave: (ev: X11MouseEvent<DrawnNode>) => {
+      view.current?.notePointer(null);
+      if (!onDomEvent || movesHeard?.() === false) return;
+      const at = offDocument();
+      if (at) fire('mouseleave', at, mouse(ev));
     },
     onWheelCapture: (ev: X11WheelEvent<DrawnNode>) => {
       // where it turned, for the scroll container under it to take it
@@ -2098,13 +2248,21 @@ function useDocumentEvents(
     /** The element the press now under way was on. */
     pressedElement: () => pressed.current,
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
-      const down = pressed.current;
+      const down = pressedBy.current.get(ev.button);
       const up = released.current;
-      pressed.current = null;
+      pressedBy.current.delete(ev.button);
+      if (pressed.current === down) pressed.current = null;
       released.current = null;
-      if (!onDomEvent || ev.button !== 1 || !down || !up) return true;
+      if (!onDomEvent || !down || !up) return true;
       const target = sharedAncestor(down, up);
       if (!target) return true;
+      // a disabled control hears no click (HTML 4.10.18.5)
+      if (CONTROLS.has(tagOf(target)) && isDisabled(target)) return true;
+      // the others' click is a click of no default (UI Events 3.5)
+      if (ev.button !== 1) {
+        fire('auxclick', target, mouse(ev));
+        return true;
+      }
       // a checkbox's, a radio's and a button's widget tell their own click
       // as they tick or press (`widgets.ts`)
       if (
@@ -2114,9 +2272,9 @@ function useDocumentEvents(
       ) {
         return true;
       }
-      const init = { ...mouse(ev), detail: ev.detail };
+      const init = mouse(ev);
       const go = fire('click', target, init);
-      if (ev.detail === 2) fire('dblclick', target, init);
+      if (init.detail === 2) fire('dblclick', target, init);
       return go;
     },
   };
@@ -2150,6 +2308,12 @@ function sharedAncestor(a: Element, b: Element): Element | null {
   for (let at: Element | null = b; at; at = flatParentOf(at)) {
     if (around.has(at)) return at;
   }
+  return null;
+}
+
+/** The document's first element. */
+function rootElementOf(doc: Document): Element | null {
+  for (const child of doc.children) if (isElement(child)) return child;
   return null;
 }
 

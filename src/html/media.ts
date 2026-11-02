@@ -388,6 +388,9 @@ export interface EmbeddedRect {
   element: Element;
   /** Which embedded element it is. */
   kind: EmbeddedKind;
+  /** The used colour scheme of the element: a frame's document that is in
+   *  another is on an opaque canvas of its own (CSS Color Adjust 1, 2.2). */
+  colorScheme: 'light' | 'dark';
   /** Its content box, which what is mounted fills. */
   x: number;
   y: number;
@@ -412,6 +415,10 @@ export interface EmbeddedRect {
    * (`ControlRect.held`), as far as the box is drawn to under a scale.
    */
   held?: true;
+  /** Where the document paints over what is mounted, as a player's: a
+   *  sibling after the mount paints it again, and a press there is the
+   *  document's (`coversOf`). */
+  over?: Rect;
   /**
    * The scale the element is drawn at, where the boxes around it, or the
    * element itself, are drawn through one — the same across as down, with
@@ -427,13 +434,25 @@ export type EmbeddedKind = 'iframe' | 'canvas' | 'embed';
 
 /** The embedded elements a laid-out document mounts what a host gives
  *  over, as `mediaRectsOf` mounts players. */
-export function embeddedRectsOf(tree: BoxTree, scale: number): EmbeddedRect[] {
+export function embeddedRectsOf(
+  tree: BoxTree,
+  scale: number,
+  /** Filled with what the document paints over each mount (`coversOf`), by
+   *  its element. */
+  covers: Map<Element, Cover[]>,
+): EmbeddedRect[] {
   const out: EmbeddedRect[] = [];
   for (const box of tree.embedded) {
-    const placed = placementOf(tree, box, scale, null, true);
+    const over: Cover[] = [];
+    const placed = placementOf(tree, box, scale, null, true, null, over);
     if (!placed) continue;
     const { heldBy, ...at } = placed;
-    const rect = { ...at, kind: tagOf(placed.element) as EmbeddedKind };
+    if (over.length) covers.set(placed.element, over);
+    const rect: EmbeddedRect = {
+      ...at,
+      ...(over.length && { over: around(over.map((c) => c.rect)) }),
+      kind: tagOf(placed.element) as EmbeddedKind,
+    };
     FIXED_OVER.set(rect, fixedOver(tree, box));
     HELD_OVER.set(rect, heldOver(tree, box));
     if (heldBy) HELD_BY.set(rect, heldBy);
@@ -533,8 +552,15 @@ function placementOf(
   fixed = false,
   /** Whether a canvas's picture lets nothing behind it show. */
   opaque: ((el: Element) => boolean) | null = null,
+  /** Where given, what the document paints after an embedded element is
+   *  painted over it again where it can be, and pushed here, where it
+   *  would have kept it from being mounted. A frame is all of what a page
+   *  shows there, where a video has a poster to fall back on: JSFiddle's ad
+   *  in the corner of its result pane left the pane blank. */
+  covering: Cover[] | null = null,
 ): {
   element: Element;
+  colorScheme: 'light' | 'dark';
   x: number;
   y: number;
   width: number;
@@ -617,12 +643,27 @@ function placementOf(
       const after = zoomed
         ? paintedAfter(box, unzoomRect(zoom, reach), fixedReach, held, true)
         : paintedAfter(box, reach, fixedReach, held);
+      let reached = after === true;
       if (after === null) {
         const inside = zoomed
           ? (parent: Box): Rect => unzoomRect(zoomBetween(parent)!, reach)
           : null;
-        if (crowded(tree, box, reach, inside, held)) return null;
-      } else if (after) return null;
+        reached = crowded(tree, box, reach, inside, held);
+      }
+      if (reached) {
+        const found =
+          covering && !zoomed && !atViewport ? coverersOver(box, reach) : null;
+        const over =
+          found &&
+          coversOf(
+            tree,
+            found.filter((cover) => !held?.has(cover)),
+            shows,
+            scale,
+          );
+        if (!over) return null;
+        covering!.push(...over);
+      }
     }
   }
   let opacity = 1;
@@ -633,6 +674,7 @@ function placementOf(
   const heldBy = heldShift(tree, box, scaleAround);
   return {
     element: el,
+    colorScheme: box.style.colorScheme,
     ...picture,
     ...(radius > 0 && { radius }),
     // a rounded clip is the box it is the edge of, corners and all

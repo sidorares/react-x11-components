@@ -31,6 +31,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | -------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source`             | `string`                                         | The HTML. Required.                                                                                                                                                                                                                                                                                 |
 | `document`           | `Document`                                       | A tree to draw in place of parsing `source`, which is then not read: one the host holds and changes, a frame's — see [Embedded content](#embedded-content).                                                                                                                                         |
+| `contentType`        | `string`                                         | What `source` was served as, a MIME type. Default `text/html`. An XML type reads it by XML's rules and not HTML's — see [XML documents](#xml-documents).                                                                                                                                            |
 | `partial`            | `boolean`                                        | Whether more source may still arrive. Default true. While true, a `source` that extends the last one is written to the open parser as a delta — see [Streaming](#streaming).                                                                                                                        |
 | `selectable`         | `boolean`                                        | Mouse selection, Ctrl+A / Ctrl+C, PRIMARY. Default true.                                                                                                                                                                                                                                            |
 | `animate`            | `boolean`                                        | Whether CSS animations and animated images run. Default true. False draws each animation as it stands once it has run — see [Animations](#what-renders) — and each animated GIF or WebP at its first frame.                                                                                         |
@@ -897,12 +898,15 @@ of its own:
   `onResource` as `kind: 'script'`, beside the document's images and sheets,
   answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
 charset }` — the `<script>` is the request's `element`, and the root
-  element is a module's;
+  element is a module's. A host that knows says where it came from: `url`,
+  where a redirect took it, and `headers`, its response's. A module's request
+  and a `crossorigin` script's carry `cors`, the document's origin and whether
+  it sends credentials, and `HtmlNetwork` answers those with an `Origin` of
+  their own, kept apart in its cache;
 - a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
   document, a worker's script — go through `scripts.fetch`, a request of any
-  method and
-  the response whatever its status, after the engine has held the page to
-  what its origin and CORS let it read. **With none, they fail** as a
+  method and the response whatever its status, after the engine has held the
+  page to what its origin and CORS let it read. **With none, they fail** as a
   request with no network does, a `TypeError` in the page. A body is
   handed over as `body`, text, where its bytes are UTF-8, and as `bytes`
   where they are not — an image a page uploads, a `Uint8Array` — with
@@ -922,7 +926,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   is no secure context — is let go the same way; a secure page's `no-cors`
   answer is held for it a while, unread, since `caches` and a service
   worker can hand it on. `HtmlNetwork` answers so, and bounds only the
-  wait for the headers.
+  wait for the headers. A page's request is asked for a hop at a time
+  (`redirect: 'manual'`), since CORS, a preflight, its cookies and its
+  `Origin` are all asked again at a redirect; a host that follows it all the
+  same says `redirected`, and what it answers is held to where it landed, but
+  the hops between have gone unasked.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
@@ -1865,8 +1873,8 @@ processing instructions are nodes. `XMLSerializer` writes a node back, declaring
 what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
 `XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
 with the page's resolver asked for each prefix as the expression is compiled, not
-as it runs. `innerHTML` still reads and writes HTML in an XML document, and
-XSLT is not here.
+as it runs. `innerHTML` reads and writes XML in an XML document, a `SyntaxError`
+where what it is given is not well-formed, and XSLT is not here.
 
 **The page's selection is the reader's** (Selection API 2). What the
 reader selects in the document — a press and a drag, a double click, Ctrl+A
@@ -2005,9 +2013,7 @@ HTML 4.13.4).
   nothing, since its `super()` looks it up in the window's registry.
 - **`customelementregistry`.** An element the parser makes with the
   attribute has no registry, and so does what it holds. That holds for the
-  HTML parser, and for the XML parser that reads a frame's XHTML.
-- **What doesn't work yet:** a top-level XHTML document, which `<Html>`
-  parses as HTML.
+  HTML parser, and for the XML parser.
 
 `setHTMLUnsafe()` parses declarative shadow roots, as the document's
 parser does, where `innerHTML` doesn't. An element of an HTML name no
@@ -2322,8 +2328,58 @@ opened; a host knows the rest, and answers true where it closes, which `closed` 
 reads. A tab a host opened under a name, the fourth argument of `navigate`, goes by it
 through `scripts.windowName`.
 
-Not done: `Cross-Origin-Opener-Policy`, `sandbox`'s `allow-popups`, `moveTo` and
+Not done: `Cross-Origin-Opener-Policy`, `moveTo` and
 `resizeTo` ([the design](../prd-popups.md#left-out)).
+
+### Sandboxes and framing
+
+**`<iframe sandbox>` is enforced by the host**, which keeps a document's flags
+where no realm can reach them (`src/html/scripts/sandbox.ts`, HTML's "sandboxing
+flag sets"). The flags are read as a document is loaded, so a change to the
+attribute waits for the next load, and they add up: a frame's are its own and
+those of the document it is in, and no token takes back what was inherited. A
+response's own `Content-Security-Policy: sandbox` adds to them, a frame's as it
+arrives and a top-level document's where the host hands the engine its
+`scripts.headers`, which `HtmlNetwork`'s `document` and `html` answer.
+
+| without                | the document                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-same-origin`    | has an opaque origin, whatever its address, so the page has it by a number, as any other origin's frame, and it has the page so. `self.origin` is `null`, `location.origin` still its address's. `document.cookie` and `localStorage` are a `SecurityError`, a request says `Origin: null` and carries no `same-origin` cookies, and no service worker has it. |
+| `allow-scripts`        | runs nothing, whoever puts a script in, and shows its `<noscript>`.                                                                                                                                                                                                                                                                                            |
+| `allow-forms`          | submits no form.                                                                                                                                                                                                                                                                                                                                               |
+| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out.                                                                                                                                                                                                                                  |
+| `allow-top-navigation` | sends the top window nowhere. `allow-top-navigation-by-user-activation` lets a press do it.                                                                                                                                                                                                                                                                    |
+| `allow-downloads`      | saves no file.                                                                                                                                                                                                                                                                                                                                                 |
+| `allow-modals`         | is answered as any document is: `alert` draws nothing here, and `confirm` is no and `prompt` is null.                                                                                                                                                                                                                                                          |
+
+A frame with both `allow-scripts` and `allow-same-origin`, of the page's own
+origin, is handed the page's window as any such frame is, so its flags stop
+what it does for itself and not what it does through the page. HTML warns of
+that pair for the same reason: such a frame can take its own `sandbox` off.
+
+Not read: `allow-pointer-lock`, `allow-orientation-lock` and
+`allow-presentation`, which guard nothing here; and the automatic features, so
+`autofocus` works in a sandbox. A subresource of a sandboxed frame, an `<img>` or
+a `<script src>`, goes through `onResource` as the page's does, with the page's
+cookies.
+
+**A cross-origin frame sends the top window somewhere only behind a press**, as
+Chromium has it, where it could not at all; a sandbox goes by its flags. A
+`javascript:` address goes nowhere.
+
+**A document that refuses to be framed is not loaded in that frame**
+(`src/html/scripts/framing.ts`): `Content-Security-Policy: frame-ancestors`, of
+every policy the response carries, or else `X-Frame-Options`, read from its
+headers before anything of it is parsed, of every document around the frame and
+not only the one it is in. So a site's `SAMEORIGIN` page in a frame of its own,
+in a frame of another's, refuses. The frame shows that it did, in a document of
+no origin, and hears `load`, as it would for any failure to show one. A
+service worker's answer is held to the same.
+
+**A `file:` page's `file:` frame is another origin**, as Chromium and Firefox
+have it: the page has its window by a number and no `contentDocument`, and it
+loads where the host's `fetch` answers it. `data:` frames are loaded from their
+own URL, of an opaque origin, where they were left blank.
 
 ### The clipboard
 
@@ -2473,6 +2529,42 @@ nothing did — an address typed. A subresource carries its cookies; a page's
 itself, because a login's session is set on the redirect it answers with:
 each hop's `Set-Cookie` is stored and each hop's cookies sent, with Fetch's
 method rules and limit.
+
+**What a page may read of another origin is the host's to say**, wherever the
+page asks from, since the facade runs where a page can replace what it calls.
+
+- **A classic script of another origin runs, and tells the page nothing.** What
+  it throws or fails to parse with is `Script error.` with no file, line or
+  error (HTML 8.1.4.6), by where the script landed where the host says so. A
+  `ReferenceError`'s message is the script's text, which is how a page reads
+  another site's CSV by pointing a `<script>` at it, with that site's cookies.
+  While such a script runs, the window's named properties answer nothing, and
+  it does not run at all with a `Proxy` on what the window inherits, which would
+  hear each name. `importScripts` is held to the same, by its address.
+- **What says it is no script runs as none** (Fetch's MIME type check): `text/csv`,
+  an image, a video, or anything else under `nosniff`, and a module that does
+  not say it is JavaScript.
+- **A module is the page's to read, so another origin's needs its leave**, as
+  does a `crossorigin` script, which is then told in full. One that is refused
+  fires `error` and runs nothing. A host that says nothing of the headers leaves
+  a `crossorigin` script running muted, and a module of another origin refused.
+- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`,
+  `'error'` fails. Each hop to another origin is held to CORS, and preflighted
+  where the request needs one, so a `DELETE` one server lets through does not go
+  on to wherever that server sends it. A request that passed through a third
+  origin asks the next with `Origin: null`, and one that left the page's origin
+  carries none of its cookies back to it.
+- **A canvas keeps `origin-clean`.** `drawImage`, a pattern and a bitmap of
+  another origin's image taint what they reach, and `getImageData`, `toDataURL`,
+  `toBlob` and `convertToBlob` are a `SecurityError` until the canvas is sized
+  again. An `<img>` is drawn as nothing on a canvas in any case, so none of its
+  pixels reach a page: this is what a page is told, and an image with a
+  `crossorigin` attribute is taken at its word, with nothing fetched by CORS.
+- **Not held to any of this:** a stylesheet's, a font's and an image's own
+  `crossorigin` (a `<link>`'s sheet has no rules a script can read, of any
+  origin); a CORS script's redirects, which `HtmlNetwork` follows and only the
+  last of which is checked; what timing says, and a promise a script of another
+  origin leaves rejected.
 
 **A document's cookies are the jar's** (`scripts.cookies`):
 `document.cookie` reads the document's cookies but its `HttpOnly` ones and
@@ -2808,6 +2900,57 @@ with each one's progress and a Cancel and a Show in Folder. A tab closed with a
 download under way ends it, and the shelf says so. `showSaveFilePicker` is left
 out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
 `<a download>`.
+
+### Range inputs
+
+```html
+<input type="range" min="0" max="100" step="10" value="30" />
+```
+
+An `<input type=range>` is core's `<Slider>`, the platform's own on a Mac, in a
+box 129 by 16 as Chrome's is, whatever its font. Its `min`, `max` and `step` are
+HTML's, so it holds what a browser makes of them: half way along where its value
+is no number, and always on a step, counted from `min`, or from its `value` where
+it has no `min`. A `max` that takes something from it does not give it back.
+What it holds is `FormState`'s, as a field's is, and it is what a form sends.
+
+`input` is told as it moves and `change` as it is let go, only where it ended
+somewhere other than where it was pressed. A key tells both at once. As in a
+browser, a press on the thumb moves nothing until the pointer does, the element
+takes a press on all of its box and a thumb that stands out of it, and a
+`mousedown` or a `keydown` a page cancels moves nothing. Page Up and Page Down
+go a tenth of the way, and `step=any` makes a hundredth of it an arrow's step. A
+press focuses it with no ring, and Tab with the element's own `outline`.
+
+**It runs as the writing mode runs.** In a vertical writing mode its box is 16 by
+129 and its value grows down the page, or up it at `direction: rtl` and in
+`sideways-lr`, and its keys are Chrome's in each, read from a range in each. Core's
+slider only runs across, so one that runs down is drawn here from the same tokens,
+and is never the platform's bezel. Neither is one at `direction: rtl`, since a
+bezel has no such thing.
+
+**What a page draws of one is what its rules for it say**, and these are Chromium's
+answers, which do not follow from reading its sheet:
+
+- `::-webkit-slider-thumb` is the page's only where a rule for it says
+  `appearance: none`. `appearance: none` on the range leaves the widget's thumb,
+  and a rule that keeps the thumb's `appearance` changes nothing.
+- `::-webkit-slider-runnable-track` is the page's wherever a rule reaches it. At
+  `appearance: none` on the range the widget draws no track at all.
+- The box is as thick as the track says, and else, at `appearance: none`, as the
+  thumb is with its margins.
+- A thumb stands from the top of its track, so one taller than the track stands
+  below it until the page's `margin-top` brings it back.
+- A range at `appearance: auto` draws no `background` and no `border` of the
+  page's, which still take room. At `appearance: none` it draws them, under the
+  widget.
+
+Each part is drawn in a flat colour, with a border, a radius, a shadow and an
+opacity. A gradient or an image on one is not drawn, nor is what a rule says of a
+part under `:hover` written after the pseudo-element. `accent-color` is not read,
+`::-moz-range-thumb` is nothing, as it is in Chrome, and a `list`'s tick marks are
+not drawn. A track at `appearance: auto` runs across the content box, where Chrome
+paints it across the border box, which only a range with padding or a border shows.
 
 ### File inputs
 
@@ -3351,22 +3494,26 @@ a field, and what keeps Monaco's editor focused when it is pressed. A press
 on what `user-select: none` keeps out of a selection starts none and still
 moves the focus, since nothing cancelled it.
 
-| `type`                 | When                                                                                                     | Cancelling it                                    |
-| ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
-| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link                                | no link followed, no button pressed, no box kept |
-| `mousemove`            | The pointer moved over the element, with the `buttons` held                                              | —                                                |
-| `wheel`                | The wheel turned over the element, its `deltaX` and `deltaY` in pixels                                   | the pane the document is in does not scroll      |
-| `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press                              | the press starts nothing                         |
-| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`                                        | the key is not typed, nor does Tab move          |
-| `input`                | A field typed into, a box ticked, an option chosen                                                       | —                                                |
-| `select`               | Text the user selected in a field, by a key, a press or a release in it                                  | —                                                |
-| `change`               | A field left, or submitted from, with another value; a box; an option                                    | —                                                |
-| `submit`               | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
-| `reset`                | A reset button pressed                                                                                   | nothing is put back                              |
-| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
-| `toggle`               | A `<details>` opened or closed                                                                           | —                                                |
-| `load`, `error`        | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
+| `type`                                                    | When                                                                                                     | Cancelling it                                    |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `mousedown`, `mouseup`                                    | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
+| `click`, `dblclick`                                       | The two of the main button, on the nearest element both were on; or Enter on a link                      | no link followed, no button pressed, no box kept |
+| `auxclick`                                                | A press and a release of any other button, on the nearest element both were on                           | —                                                |
+| `mouseover`                                               | What is under a pointer that did not move changed, or the pointer came onto a frame's element            | —                                                |
+| `mouseleave`                                              | The pointer left the document                                                                            | —                                                |
+| `mousemove`                                               | The pointer moved over the element, with the `buttons` held                                              | —                                                |
+| `wheel`                                                   | The wheel turned over the element, its `deltaX` and `deltaY` in pixels                                   | the pane the document is in does not scroll      |
+| `contextmenu`                                             | A secondary press, after its `mousedown`, as X11 and macOS ask on the press                              | the press starts nothing                         |
+| `keydown`, `keyup`                                        | A key, at the control or the stop with the focus, or the `<body>`                                        | the key is not typed, nor does Tab move          |
+| `compositionstart`, `compositionupdate`, `compositionend` | What a dead key, the Compose key or an input method is typing, as `data`                                 | the first: none of it is typed                   |
+| `input`                                                   | A field typed into, a box ticked, an option chosen                                                       | —                                                |
+| `select`                                                  | Text the user selected in a field, by a key, a press or a release in it                                  | —                                                |
+| `change`                                                  | A field left, or submitted from, with another value; a box; an option                                    | —                                                |
+| `submit`                                                  | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
+| `reset`                                                   | A reset button pressed                                                                                   | nothing is put back                              |
+| `focusin`, `focusout`                                     | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
+| `toggle`                                                  | A `<details>` opened or closed                                                                           | —                                                |
+| `load`, `error`                                           | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
@@ -3401,17 +3548,65 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
 
 A `mousemove` is told at every move the pointer makes over what the
 document draws, a hit test each, which is why a host decides what crossing
-it into a page costs: the browser example dispatches it as a page has it —
-`pointermove` and `mousemove`, and the `over`, `out`, `enter` and `leave`
-of each where the pointer came onto another element — and a page drawing
-its own picture on a `<canvas>` takes its input from these, as the
-react-x11 playground's X server does.
+it into a page costs: the example's script engine tells a page's moves only
+once something in the page listens for what one makes, so a page that does
+not asks nothing of the document at all, and an owed layout stays owed. What
+a host is told of a move has the samples ntk folded into it (`samples`), for a
+drawing tool.
+
+**The mouse is a pointer to a page's scripts** (Pointer Events 3, UI Events),
+in the order Chromium has it, which is what WPT holds a browser to:
+
+- A press, a release and a move each go through the same steps. A capture
+  asked for changes hands, with the pointer's boundary events to what took
+  it, and `lostpointercapture` and `gotpointercapture`. The pointer's
+  `out`, `leave`, `over` and `enter` go to what is under it now, and the
+  mouse's after them. Then its own event, and the mouse's: `pointerdown` then
+  `mousedown`, `pointermove` then `mousemove`. So a press whose listener takes
+  its target out has its release told at what held it, after a `mouseover`
+  there.
+- An element taken out moves what the pointer is over to what held it, with
+  nothing told, and the `over` the next event tells has no `enter`, since the
+  pointer never left what was around it. That holds if it comes back in the
+  same task. A slot taken out leaves what it held where it was.
+- What comes under a pointer that did not move is told once the content has
+  been still for a tenth of a second, as its boundary events and no move.
+- A cancelled `pointerdown` keeps the mouse's press, moves and release back,
+  and not its boundary events or its `click`. A disabled control has pointer
+  events and no mouse's, and no `click`.
+- A press on what the document draws holds the pointer until its release,
+  so a stroke dragged off the window goes on being told, at the root element,
+  and ends where it should.
+- `getCoalescedEvents()` is `[SecureContext]`, and answers a `pointermove`
+  with a sample for each motion event the frame folded, adding up to it.
+  `getPredictedEvents()` answers nothing here: nothing predicts.
+- `pointerType` is always `mouse` and `pressure` is 0.5 or 0, because that is
+  all core tells of a pointer. A pen and a touch have no seam there yet, so
+  Pointer Events' tests of them cannot pass on this path.
+- No pointer lock is to be had: core has nothing that confines or hides a
+  pointer. `requestPointerLock()` is told as a failure, with a
+  `pointerlockerror` and a rejected promise, and `exitPointerLock()` does
+  nothing.
+
+An event's `target` and `relatedTarget` are retargeted across shadow trees
+and the path goes through a slot, as DOM 2.9 has it, and a listener at a
+target hears capturing listeners first. `window.event` is the event a
+listener outside a shadow tree is in.
+
+A key in a field is told as a `keydown`, a `keypress` where it makes a
+character and no chord does, a `beforeinput` the page can cancel and Chromium's
+`textInput`, with the edit still to be made; the widget makes it, and its
+`input` says what it did (`inputType`, `data`). `getTargetRanges()` answers
+what an edit of an editing host will change for as long as its `beforeinput`
+is on its way, which is what ProseMirror, Slate and Lexical read. In a field
+it answers nothing, as all three browsers have it.
 
 A click on a control's widget — a checkbox, a radio, a button — is the
 widget's to tell, as it ticks or presses; a click on what the document draws
 is the root's. A press on a `<label>` is a click on the label and then one on
 its control, as HTML's activation behaviour is; Enter on a link is a click
-whose `detail` is 0. `x` and `y` are in the document's coordinates in
+whose `detail` is 0, and to a page a click of no pointer, whose `pointerId` is
+-1 and whose `pointerType` is empty. `x` and `y` are in the document's coordinates in
 logical pixels, as `elementRect` is, and `button` is the DOM's numbering.
 
 A host that runs a page's scripts has what it needs from the handle as well:
@@ -3531,8 +3726,9 @@ was told: Monaco, told it had the focus, asks for nothing when it is pressed.
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
 so the component cannot hear them take the focus: `activeElement` still
-answers for them, from the window's focus, and a text field, a link and a
-drawn button tell theirs.
+answers for them, from the window's focus, and a text field, a range, a link
+and a drawn button tell theirs. A range gives up its thumb's lit border for it,
+since the document draws its ring.
 
 ## What renders
 
@@ -6873,8 +7069,9 @@ it ends, goes in the body, as a browser puts it there. So `:first-child +
 *` under `<html>` is the body, as it is in a browser, which Acid3 styles its
 coloured boxes through. A `/>` closes an
 element only where HTML's parser says it does, on a void element and in
-SVG and MathML: a `<div/>` opens a div, as it does in a browser, and XHTML
-that means it closed has to be handed over as HTML, its `/>` written out.
+SVG and MathML: a `<div/>` opens a div, as it does in a browser. XHTML that
+means it closed is handed over as what it is, with
+[`contentType`](#xml-documents).
 
 **The user-agent stylesheet is themed.** `color`, the link colour and every
 rule and border in it come from the react-x11 palette, so an unstyled
@@ -7164,6 +7361,69 @@ length in UTF-16), found by laying each out alone and remembered per face.
 The document's text is untouched — selection, copy and the accessors see
 the page's own characters — and the first stand-in is reported once through
 `console.warn` outside production.
+
+## XML documents
+
+`contentType` says what `source` was served as. An XML type —
+`application/xhtml+xml`, `image/svg+xml`, `text/xml`, `application/xml`,
+anything `+xml`, as `isXmlType` answers — has it read by XML's rules, where
+any other reads it as HTML, what it reads for every document with no type:
+
+```tsx
+<Html source={text} contentType="application/xhtml+xml" baseUrl={url} />
+```
+
+What that changes:
+
+- **Nothing is implied, moved or dropped.** No `<html>`, `<head>`, `<body>` or
+  `<tbody>` the document did not write, a `<td>` outside a table stays where it
+  is and is laid out as a table's anonymous boxes have it, and a `<meta>` in a
+  drawing's `<metadata>` stays in the drawing. A `/>` closes any element.
+- **What a `<style>` holds is XML's.** References are read, a CDATA section is
+  text, and a comment is a comment: a sheet in `<!-- -->` is no sheet here,
+  where HTML reads it as one.
+- **Names have their case.** `DIV` as a selector is no `<div>`, an element
+  written `<DIV>` is no HTML element, `[data-Up]` is that attribute, and a value
+  has its case wherever HTML compares one without. Nothing is in quirks mode.
+- **An element is what its namespace says.** `xmlns` and its prefixes put it in
+  one, so `<h:div xmlns:h="http://www.w3.org/1999/xhtml">` is a `<div>`, and a
+  `<div>` in no namespace is an inline box of no look, which only a sheet's
+  rules for that name reach. A selector with no `@namespace` matches a local
+  name in any namespace, as it does in a browser.
+- **The root element is whatever it says.** `:root`, a `rem` and the canvas's
+  background are of it, and it is blockified. A drawing at the top has nothing
+  around it: an `<svg>` that says no size fills the window, and one that says a
+  size is cut to it whatever its `overflow`.
+- **A document that is not well-formed is the error and nothing of it**, as
+  Firefox shows it, and runs none of its scripts. An undeclared name is such an
+  error unless the doctype's public identifier is one of those HTML 13.4 lists,
+  XHTML's and MathML's, under which HTML's named characters are defined:
+  `&nbsp;` is well-formed under a Strict doctype and nowhere else. No DTD is
+  fetched. An internal subset's `<!ENTITY>`s and `<!ATTLIST>` defaults are read.
+- **`<?xml-stylesheet?>` in the prolog links a sheet**, of `type="text/css"` or
+  none and no `alternate="yes"`, ahead of every sheet in the document, and holds
+  the scripts after it as a `<link>` does.
+
+**Scripts run**, where `scripts` is on, as HTML 13.4 has an XML parser run
+them: a `<script>` in XHTML's or SVG's namespace, in tree order, each where the
+parser met it, seeing what came before it and no more, and `async`, `defer` and
+`type="module"` mean what they mean in HTML. An SVG one's source is `href` or
+`xlink:href`. One in no namespace, or MathML's, is not a script. The document
+hears `DOMContentLoaded` and `load` as any does, and `document.contentType`
+says the type. `document.write`, `writeln`, `open` and `close` throw an
+`InvalidStateError`, `createElement` keeps its name's case and makes XHTML's
+elements in `application/xhtml+xml` and elements of no namespace in any other
+type, and `querySelector` matches as a sheet does.
+
+An XML document is read once all of it is here, since what is wrong with one
+decides what it is, and that may be its last byte. So `partial` defaults to
+false for one, and a host that streams sees nothing until it says the stream
+has ended, where HTML is drawn as it comes.
+
+Not here: XSLT, which a `text/xsl` instruction asks for and nothing does;
+`@namespace` selectors (`svg|rect` drops its rule, as css-select refuses a
+namespaced type selector); and drawing a frame whose document is XML, whose
+scripts run and whose box stays empty.
 
 ## Streaming
 
