@@ -6275,6 +6275,24 @@ out as the rects are laid out: a fixed box before a frame in the paint
 order is under it, and joshwcomeau.com's like button, fixed beside its
 article, hid every playground's frame it was inside.
 
+**A box fixed over a video is a cover like any, asked at each paint**
+(`fixedCoversOf`, `_fixedOver`). `walkPaintedAfter` leaves fixed boxes out of
+`coverersOver`, since a scroll moves them against the video, and they cut the
+player instead (`cutByFixed`), which is right for a solid band, a header. It
+is wrong for what lets the video show or stands in its middle: YouTube's
+embed fixes `#player-controls` over the whole player, and as they faded in
+the picture went black with the video playing on. So what is not a solid band
+across a side goes on the canvas over the player, in the order the document
+paints it (`inPaintOrder`), and only what cannot be a cover is left to cut or
+to hide. Three things are load-bearing. **What covers a player changes with
+nothing laid out**, so it is decided in `_publishMedia`, at each paint, and
+never in `_reportMedia`. **The canvas draws again with any damage that
+reaches it** (core's `onDraw` runs at each repaint), so a fade over the same
+rect needs no telling: anything that changes a cover claims its damage as
+anything else does. And **a cover's rect is where the scroll has the box**,
+and `paintCovers` moves the viewport to the canvas's origin, which is what
+`atViewport` places a fixed box from.
+
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
 lays each out as an empty box of its size and loads and runs nothing for

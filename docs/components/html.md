@@ -2425,15 +2425,20 @@ rest keep their posters:
   under a scale. On macOS a player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
-- **A box fixed to the viewport is asked about as the pane scrolls**: a
-  header that comes over a playing video cuts the player where it reaches
-  it, and one that reaches into its middle hides it for as long as it is
-  there, the poster showing in its place and the video playing on. Only one
-  the document paints after the video is over it: a fixed box before it in
-  the paint order is under it wherever the scroll has it. The same holds of
-  a frame, which is hidden whole by what it cannot be cut around —
-  joshwcomeau.com's floating like button, fixed beside its article and
-  before its playgrounds in the tree, hid each playground's result.
+- **A box fixed to the viewport is asked about as the pane scrolls**, and
+  at each paint, since a fade changes what it draws and lays nothing out. A
+  solid band that comes over a playing video, a header, cuts the player
+  where it reaches it. What lets the video show, or stands in its middle, is
+  painted over the player with the boxes above, and counts among the four:
+  YouTube's embed fixes its controls over the whole player and fades them
+  in, translucent, over the video. One that cannot be painted there hides
+  the player for as long as it is there, the poster showing in its place and
+  the video playing on. Only one the document paints after the video is over
+  it: a fixed box before it in the paint order is under it wherever the
+  scroll has it. A frame has nothing painted over it, so it is hidden whole
+  by what it cannot be cut around — joshwcomeau.com's floating like button,
+  fixed beside its article and before its playgrounds in the tree, hid each
+  playground's result.
 - **What a rectangle cannot follow** — a transform that turns or scales the
   video or a box around it, a `clip-path` or a mask, a video fixed to the
   viewport, or corners of its own, or of a box around it that cuts it, that
