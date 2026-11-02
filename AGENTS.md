@@ -7253,6 +7253,72 @@ GBM/EGL, on Linux. Four things to keep:
   When a release fixes the declaration (GLMap/earstrip#1), delete the copy
   and import `earstrip` directly.
 
+## A PDF somebody else draws
+
+`src/pdf/` is the fourth element that draws a whole scene, after `<Flow>`,
+`<Html>` and `<Map>`, and it adds the case none of them has: **the scene arrives
+as pixels from an engine that draws better and faster than anything here could.**
+`docs/prd-office-documents.md` has the survey and every number, and it is where
+the formats after this one are designed.
+
+**Measure the floor before designing around a parser.** The design everybody would
+draw is pdf.js's operator list through the 2D context. PDFium in WebAssembly takes
+7 to 12 ms a page for finished pixels at 2x, where pdf.js takes 2 to 7 ms for a list
+of what to draw, and from there all of PDF's graphics model would be this package's
+to write and keep. So a page is tiles. `@embedpdf/pdfium` is the package because it
+is the C API and nothing else: `FPDF_RenderPageBitmapWithMatrix` draws part of a page
+into a buffer we name, and a friendlier wrapper hides exactly that. It is an optional
+peer, as `ondine` is, and its types are written out in `pdfium.ts`. The rule to carry
+to the next engine: a Rust or C engine in WebAssembly, on a thread, handing over
+pixels, is a real option for anything heavy, and it costs a `.wasm` file rather than
+a native build.
+
+**The engine is a thread away and the queue is on this side.** At most `IN_FLIGHT`
+tiles are at the engine, and what to ask for next is worked out from the view as each
+lands, so a flick leaves nothing behind it. A worker-side queue would have to be told
+to cancel, and would still be drawing what nobody will see. A tile comes back in a
+buffer moved rather than copied; the one copy is out of the WebAssembly heap, since a
+buffer that is the heap's cannot be moved.
+
+Seven things are load-bearing.
+
+- **The thread is ref'd only while an answer is due** (`ThreadEngine`). A listener
+  for `message` refs a `Worker` again, so an `unref` before it holds the process
+  open for good, idle, with nothing to say why; and one left unref'd lets a process
+  with nothing else to do end in the middle of an `await`. A suite run with
+  `--test-force-exit` shows neither, and on Node 20 from source there is no thread at
+  all: CI's other three jobs ran past 40 minutes. A process of its own is the test.
+- **`PdfEngine` crosses numbers and typed arrays only**, so an engine can be a thread
+  away, and it is public for the reason `ProcessHost` is. `test/fake-pdf.ts` drives it,
+  and its every pixel says where it is: a flat page cannot show a shift. The tests that
+  matter mount the view away from the window's corner, at `scale: 2` and at 1.5.
+- **Never keep a view of the heap.** It grows, and a grown heap is a new buffer: `_heap()`
+  asks each time.
+- **What PDFium reports is in the page's own space**, whose origin may be anywhere and
+  which `/Rotate` may turn. A box goes through `_shown`, the page's matrix asked of
+  `FPDF_PageToDevice` at three points. Worked out from the box and the rotation, a
+  selection lands beside the text on a turned page and every other page passes.
+- **Pages stay parsed** (`PAGES_KEPT`). A tile of a parsed page is 1.5 ms and parsing a
+  dense one is half a second, and two pages side by side in view ask in turn: with one
+  kept, each parsed the other away at every tile.
+- **A scroll stays on the device grid** (`_snap`). A zoom about a point leaves it
+  wherever the arithmetic came to, and a blit from a fraction does not meet the strip it
+  exposed. A test that only scrolls from whole offsets passes without this.
+- **What an engine cannot draw is asked for once** (`_failed`, `_noSurfaces`). The queue
+  asks again for whatever is not there, so a page it cannot read, or a backend with no
+  `Surface`, is a loop as fast as it can refuse, which is silent and hangs a test rather
+  than failing it.
+
+Everything `PdfViewNode` holds but `_handle` is about pages rather than PDFs, and the
+design for the next format moves it to a shared module when one arrives. Do not move it
+before that.
+
+One trap from measuring it. **`paintDamage()` is not the view**: a paint of the first tile
+to land has no other tile in it, so a metric that asks a paint whether anything was
+missing says the view is whole with most of it blank. `_wholeView` asks of the view. And
+`scripts/bench/pdf.tsx` sizes its window with `width` and `height`: with `style` the view
+gets no room, reports zoom 0.1 and asks for no tiles, which reads as a broken engine.
+
 ## A rich text editor over ProseMirror
 
 `src/rich-text-editor/` is `<RichTextEditor>`, and the sentence to keep from
@@ -7626,6 +7692,8 @@ one is written is in "Replacing a core widget rather than moving it" above.
 | A StatusNotifierItem host                        | nowhere yet — but the _item_ side landed in core                                                    | **Still planned here**, as a sibling of `<TrayHost>` with its own issue. Shares intent with `<TrayHost>` and nothing else: it pairs with core's `dbusmenu.js`, not with `<foreign>`. Note the split — the **item** side (an app putting its own icon in a tray) shipped upstream in react-x11 as `useTray()`'s freedesktop rung (react-x11#353), on `src/statusnotifier.js` + the extracted `src/dbusmenuexport.js`. That is the same seam `<TrayHost>` sits on: core owns being _in_ a tray, this package owns _being_ one. A host here consumes `org.kde.StatusNotifierWatcher` and core's dbusmenu **client** half, which does not exist yet and is the real prerequisite. |
 | A pure-JS VT backend for `<Terminal>`            | new, here (`src/terminal/vt/`)                                                                      | **Done** (issue #19). `backend="vt"`, behind the existing props: pty + `@xterm/headless` + a cell-grid renderer. See "The terminal that is not somebody else's program".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `<TerminalOutput>` — a captured session          | new, here (`src/terminal-output/` + `src/ansi/`)                                                    | **Phase 1 done.** A log is a document, not a grid, so flow mode is `<richtext>` spans with no dependency at all. The cell-grid path for captures that addressed the cursor is phase 2 — see [the PRD](docs/prd-terminal-output.md).                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PDF                                              | new, here (`src/pdf/`)                                                                              | **Done.** `<Pdf>`: PDFium as WebAssembly on a thread, an optional peer, and one element compositing its tiles. Reading only. See "A PDF somebody else draws".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Word, PowerPoint, Excel                          | nowhere yet                                                                                         | **Designed, not built**: [docs/prd-office-documents.md](docs/prd-office-documents.md). `@silurus/ooxml` for docx and pptx, through an adapter that was proved on X11 and not yet on Cocoa, and `hucre` with `numfmt` for xlsx. Reading first: authoring is a contract this package has not taken on.                                                                                                                                                                                                                                                                                                                                                                          |
 | A WYSIWYG rich text editor                       | new, here (`src/rich-text-editor/`)                                                                 | **Done.** `<RichTextEditor>`: ProseMirror's model, transforms and plugin system, drawn by this package — the view is ours and `EditorView`-shaped, so every plugin that lives in state (keymaps, input rules, history, decorations, collaboration) runs unchanged and the ones that reach into the DOM do not. Not in the barrel: ProseMirror's declarations name DOM globals. See "A rich text editor over ProseMirror" and [the PRD](docs/prd-rich-text-editor.md), which also carries the follow-ups (IME tiers, inline widgets, images in text).                                                                                                                          |
 
 Verified against ntk 7.2.0 on 2026-08-09: `MarkdownView`, `HtmlView`,
@@ -7756,6 +7824,15 @@ One more, specific to here:
   the node otherwise, and the reason it bothers is that `kind` is what paint
   order, the test queries and the DEV assertion all match on. Keep the name
   in one exported constant per component and use it in all three places.
+
+One that comes from Node 20, and fails a long way from the cause:
+
+- **An `assert.ok` inside a `waitFor` has a message.** Without one, Node 20
+  builds the message by parsing the test's own source with acorn, and that
+  search is quadratic in the file: `waitFor`'s two-second budget ran for five
+  and eight minutes on `test/pdf.test.ts`, at a line or two of the file, and
+  the job failed after 28 with `'false == true'`. Node 22 and later do not
+  parse, so nothing shows locally. It looks like a hang at 100% of a core.
 
 One that comes from the test harness:
 

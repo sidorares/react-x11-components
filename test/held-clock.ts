@@ -1,10 +1,11 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Nine things here run on the wall clock on purpose — the maps wheel's glide
+// Ten things here run on the wall clock on purpose — the maps wheel's glide
 // and the window a map counts as moving in after it (`glideClock` and
 // `settleClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
 // edges and the rest its zoom waits out (`flowClock` in ../src/flow/node.ts),
+// the rest `<Pdf>`'s zoom waits out (`restClock` in ../src/pdf/clock.ts),
 // the virtual window's idea of a scroll in flight (`windowClock` in
 // ../src/internal/window.ts), the rest `<Html>` holds a hover for while its
 // content moves under the pointer (`hoverClock` in ../src/html/node.ts),
