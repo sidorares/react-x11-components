@@ -94,6 +94,8 @@ parts.
   model), the escapes a DOM binding opens and how each is closed, the
   seams `<Html>` would grow while still running nothing, and what core
   would be asked for.
+- [The Web Cryptography API in `<Html scripts>`](prd-webcrypto.md) — design:
+  where a key is, so that it can cross a thread and reach a disk unread.
 - [WebRTC in `<Html scripts>`](prd-webrtc.md) — design: what Interop
   2026's 91 WebRTC tests need, in three tiers; werift's peer connection
   and libav.js's VP8, VP9 and Opus as optional peers behind a seam that

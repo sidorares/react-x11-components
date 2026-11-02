@@ -227,6 +227,10 @@ Where it does (`HtmlStorage.indexedDB`):
   another's, as a browser does: a read-modify-write across tabs is the later
   commit's, record by record. An upgrade in another tab is seen by the next
   `open`, not by connections already open, which hear no `versionchange`.
+- A `CryptoKey` in a record is the sealed string a key always is
+  (docs/prd-webcrypto.md), and `key_secret`, one row made by the first process
+  to ask, is what opens it, here and after a restart. A profile is as readable
+  to the local user as Chrome's: the boundary is a page's scripts.
 - A worker's IndexedDB is the worker's realm's and is not kept: the worker's
   thread has no storage seam yet.
 

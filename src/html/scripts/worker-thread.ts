@@ -13,6 +13,7 @@ import type { FetchRequest, FetchResponse, HostSeams } from './host.js';
 import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
+import { addKeySecret } from './subtle.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -148,6 +149,9 @@ const fetchThrough = (
 const log = (level: string, text: string): void =>
   tell({ kind: 'log', level, text });
 
+// the page's secrets, and the first of them what this seals with
+for (const secret of init.keySecrets) addKeySecret(secret);
+
 /** The worker's WebTransport sessions, opened by the page process over the
  *  page's own seam (`transport-relay.ts`). */
 const transports = new TransportProxy((m) => tell(m));
@@ -177,6 +181,7 @@ const seams: HostSeams = {
   webSocket: sockets,
   userAgent,
   language,
+  secureContext: init.secure,
 };
 
 const host = new DomHost(new Document([]), seams, init.url);

@@ -42,6 +42,7 @@ import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
+import type { installWebCrypto } from './webcrypto.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -77,6 +78,7 @@ export function installDom(
   webaudio: typeof installWebAudio,
   mse: typeof installMse,
   geometry: typeof installGeometry,
+  webcrypto: typeof installWebCrypto,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -129,6 +131,9 @@ export function installDom(
       op !== 'fontMatch' &&
       op !== 'encodeImage' &&
       op !== 'image' &&
+      op !== 'crypto' &&
+      op !== 'random' &&
+      op !== 'uuid' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
@@ -142,7 +147,9 @@ export function installDom(
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
-      throw new DOMException(parts[2] ?? '', parts[1] || 'Error');
+      throw parts[1] === 'QuotaExceededError'
+        ? new QuotaExceededError(parts[2] ?? '')
+        : new DOMException(parts[2] ?? '', parts[1] || 'Error');
     }
     if (mutatesHas.call(MUTATES, op)) {
       mutated();
@@ -387,6 +394,28 @@ export function installDom(
       Object.defineProperty(on, name, { value: i + 1, enumerable: true });
     }
   });
+
+  /** A quota run past (Web IDL 3.14.2): a `DOMException` of its own class,
+   *  which says what the quota was where that is known. */
+  class QuotaExceededError extends DOMException {
+    readonly quota: number | null;
+    readonly requested: number | null;
+    constructor(message: Any = '', options: Any = {}) {
+      super(str(message), 'QuotaExceededError');
+      const limit = options?.quota;
+      const asked = options?.requested;
+      for (const v of [limit, asked]) {
+        if (v !== undefined && (!Number.isFinite(+v) || +v < 0)) {
+          throw new RangeError('A quota is a non-negative number.');
+        }
+      }
+      if (limit !== undefined && asked !== undefined && +asked < +limit) {
+        throw new RangeError('What was requested is less than the quota.');
+      }
+      this.quota = limit === undefined ? null : +limit;
+      this.requested = asked === undefined ? null : +asked;
+    }
+  }
 
   /** A page's exception, reported as a browser reports one it caught: on
    *  the console, and as an `error` event at the window. */
@@ -9866,6 +9895,8 @@ export function installDom(
       pageYOffset: () => 0,
       devicePixelRatio: () => viewport().dpr,
       visualViewport: () => visualOf(view),
+      crypto: () => crypto,
+      isSecureContext: () => call('secureContext') === true,
       // its own session history (`makeSession`), made as it is asked for
       history: () => frameSessionOf(frame, current, target).history,
       navigation: () => frameSessionOf(frame, current, target).navigation,
@@ -19830,41 +19861,24 @@ export function installDom(
     }
   }
 
-  /** `crypto`, its randomness the host's: no `subtle`, which a page that
-   *  wants one asks for and does without. */
-  const crypto = {
-    getRandomValues(array: Any): Any {
-      if (
-        !ArrayBuffer.isView(array) ||
-        array instanceof Float32Array ||
-        array instanceof Float64Array ||
-        array instanceof DataView
-      ) {
-        throw new DOMException(
-          "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is of type 'Float32', which is not an integer array type.",
-          'TypeMismatchError',
-        );
-      }
-      if (array.byteLength > 65536) {
-        throw new DOMException(
-          `Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (65536).`,
-          'QuotaExceededError',
-        );
-      }
-      const hex = String(call('random', array.byteLength));
-      const bytes = new Uint8Array(
-        array.buffer,
-        array.byteOffset,
-        array.byteLength,
-      );
-      for (let i = 0; i < bytes.length; i += 1) {
-        bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-      }
-      return array;
+  // --- Web Cryptography ---------------------------------------------------------
+  //
+  // `webcrypto.ts`, its keys and what it computes the host's (`subtle.ts`,
+  // the `crypto` op and the `__crypto` entry).
+  const cryptoEntries: [string, () => Primitive][] = [];
+  const CRYPTO = webcrypto({
+    call: call as Any,
+    // its entries are registered with the rest, below
+    entry: (name: string, fn: () => Any) => {
+      cryptoEntries.push([name, fn]);
     },
-    randomUUID: (): string => String(call('uuid')),
-    subtle: undefined,
-  };
+    input: () => input(),
+    DOMException,
+    QuotaExceededError,
+    bytesOfBase64,
+    base64OfBytes,
+  });
+  const crypto = CRYPTO.crypto;
 
   /** `document.fragmentDirective` (WICG Scroll To Text Fragment): an
    *  object with nothing on it, which says that a URL's `#:~:text=…` is
@@ -19963,6 +19977,11 @@ export function installDom(
     const tag = Object.prototype.toString.call(value).slice(8, -1);
     let out: Any;
     if (value instanceof Blob) return value;
+    if (CRYPTO.isKey(value)) {
+      out = CRYPTO.copy(value);
+      seen.set(value, out);
+      return out;
+    }
     // an `ImageBitmap` is serializable, its pixels copied (HTML 8.11.2)
     if (value instanceof ImageBitmap) {
       if (!value._data) {
@@ -20349,6 +20368,7 @@ export function installDom(
       if (v instanceof Blob) {
         return { i: index, t: 'L', b: bytesOf(v._bytes), y: v.type };
       }
+      if (CRYPTO.isKey(v)) return { i: index, t: 'Y', s: CRYPTO.sealedOf(v) };
       const shape = GEOMETRY.serialize(v);
       if (shape) {
         return { i: index, t: 'G', k: shape[0], v: shape[1].map(walk) };
@@ -20532,6 +20552,9 @@ export function installDom(
           break;
         case 'L':
           out = new Blob([bytesOfBase64(v.b)], { type: v.y });
+          break;
+        case 'Y':
+          out = CRYPTO.fromSealed(str(v.s));
           break;
         case 'K':
           // a canvas the message transferred, whose frames go back across
@@ -25402,8 +25425,8 @@ export function installDom(
   }
   const sessionEntry = (url: string, key?: string): SessionEntry => ({
     url,
-    key: key ?? crypto.randomUUID(),
-    id: crypto.randomUUID(),
+    key: key ?? CRYPTO.uuid(),
+    id: CRYPTO.uuid(),
     state: null,
     navState: undefined,
     api: null,
@@ -29268,6 +29291,7 @@ export function installDom(
 
   const classes: Record<string, Any> = {
     DOMException,
+    QuotaExceededError,
     Event,
     UIEvent,
     FocusEvent,
@@ -29883,7 +29907,7 @@ export function installDom(
   getter('pageXOffset', () => viewport(true).scrollX);
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
-  getter('isSecureContext', () => location.protocol === 'https:');
+  getter('isSecureContext', () => call('secureContext') === true);
   getter('origin', () => location.origin);
   // The window's own strings, made strings as they are set, as a
   // browser's are: a classic script's `var name = 1` sets the window's
@@ -29913,7 +29937,23 @@ export function installDom(
     getter(at, () => 0);
   }
   define('visualViewport', visualOf(ownViewport));
-  define('crypto', crypto);
+  // no check of its receiver: what a call on the global hands a getter is
+  // the runtime's to say, and on Bun it is nothing a check could tell
+  Object.defineProperty(G, 'crypto', {
+    get: Object.getOwnPropertyDescriptor(
+      {
+        get crypto(): Any {
+          return crypto;
+        },
+      },
+      'crypto',
+    )!.get,
+    configurable: true,
+    enumerable: true,
+  });
+  for (const name of Object.getOwnPropertyNames(CRYPTO.interfaces)) {
+    define(name, CRYPTO.interfaces[name]);
+  }
   // `new Image()`, `new Option()` and `new Audio()`: the elements, made
   // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
   const Image = function (width?: Any, height?: Any): Any {
@@ -30266,11 +30306,7 @@ export function installDom(
       bytesOfBase64,
       base64OfBytes,
     });
-    const protocol = str(location.protocol);
-    const loopback = /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(
-      str(location.hostname),
-    );
-    if (protocol !== 'http:' || loopback) {
+    if (call('secureContext') === true) {
       for (const name of Object.getOwnPropertyNames(interfaces)) {
         define(name, interfaces[name]);
       }
@@ -30477,6 +30513,7 @@ export function installDom(
     });
   };
   for (const [name, fn] of transportEntries) entry(name, fn);
+  for (const [name, fn] of cryptoEntries) entry(name, fn);
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's

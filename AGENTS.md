@@ -4328,6 +4328,25 @@ closes a way out a DOM binding opens by accident:
   (`closeBytes` in `webtransport.ts`). WPT's `streams/` is the check: run
   it after a change, through `scripts/conformance/testharness.tsx` and a
   list.
+- **A page's `CryptoKey` is a sealed string, and that string is the whole
+  of the key** (`webcrypto.ts` in the page, `subtle.ts` on the host,
+  docs/prd-webcrypto.md). The specification's split is the line between the
+  two: a method's steps up to "return promise" run in the realm, in its order,
+  and what it does "in parallel" is the host's, through the runtime's own
+  `crypto.subtle`, told back through `__crypto`, which is held for a frozen
+  document and is no `HELD_ONCE`, since it carries an answer. A key's material
+  and everything that says what it may do are sealed with AES-256-GCM under a
+  secret no realm has, so a key crosses a clone, a thread and a disk as any
+  string does, and there is no table of keys to keep in step. A page's script
+  may come by the string, which is why three things are load-bearing. **What
+  the host asks of a key it reads from what it opened, never from what the
+  facade says**: `key.extractable` is the page's to fool itself with.
+  **Anything new that carries a key's material leaves the host sealed**, and
+  never through a field of the facade, since the realm can read all it holds.
+  And **the buffers are copied after the algorithm is normalized**, which WPT
+  holds to a getter that changes one. Where a store keeps databases past the
+  process it answers `keySecret()`, or a key in one opens for that process's
+  life and reads back as no record after it.
 - **WebTransport's network is a seam whose default opens nothing**
   (`HtmlScripts.webTransport`, `NO_WEBTRANSPORT`, `src/html/transport.ts`).
   The page's API is the facade's (`webtransport.ts`); the host's half is

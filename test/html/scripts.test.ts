@@ -1609,6 +1609,8 @@ function bareWorkers(t: TestContext, limit?: number) {
       name: '',
       origin: new URL(PAGE).origin,
       source,
+      secure: true,
+      keySecrets: [],
     });
   const until = async (done: () => boolean) => {
     while (!done()) {
@@ -13902,6 +13904,39 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test("a key crosses to a frame's realm and back, and the frame's is the frame's", async () => {
+  const frame =
+    '<!doctype html><script>' +
+    'addEventListener("message", async function (e) {' +
+    '  var key = e.data;' +
+    '  var sign = await crypto.subtle.sign("HMAC", key, new Uint8Array(1));' +
+    '  parent.postMessage({ key: key, sign: sign, mine: key instanceof CryptoKey, ext: key.extractable }, "*");' +
+    '});' +
+    'parent.postMessage("ready", "*");' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f"), key;' +
+      'crypto.subtle.importKey("raw", new Uint8Array(32), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]).then(function (k) { key = k; });' +
+      'addEventListener("message", async function (e) {' +
+      '  if (e.data === "ready") { while (!key) await new Promise(function (r) { setTimeout(r, 5); }); f.contentWindow.postMessage(key, "*"); return; }' +
+      '  var d = e.data;' +
+      '  var fine = await crypto.subtle.verify("HMAC", key, d.sign, new Uint8Array(1));' +
+      '  document.getElementById("out").textContent = [d.mine, d.ext, d.key instanceof CryptoKey, d.key === key, fine].join(" ");' +
+      '});' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t.length > 0,
+    ),
+    'true false true false true',
+    logs.join('\n'),
+  );
 });
 
 test("a frame's window in a realm of its own hears what the page adds to it, by its methods or by EventTarget's", async () => {
