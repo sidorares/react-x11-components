@@ -272,6 +272,50 @@ test("a worker's answer takes the network's place, and one it leaves alone goes 
   assert.ok(!site.asked.includes('/made'), 'the network never heard');
 });
 
+test('what a frame left behind as it was taken out asks the registry nothing, and posts nothing', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/frame': '<!doctype html><p>frame</p>',
+      '/page': `<!doctype html><p id="out"></p><script>
+        const frame = document.createElement('iframe');
+        frame.onload = () => {
+          const w = frame.contentWindow;
+          const made = w.DOMException;
+          w.navigator.serviceWorker.getRegistration('/').then((registration) => {
+            const worker = registration.active;
+            frame.remove();
+            let answered = 0;
+            registration.update().then(() => (answered += 1), () => {});
+            registration.unregister().then(() => (answered += 1), () => {});
+            let thrown = 'none';
+            try {
+              worker.postMessage('');
+            } catch (e) {
+              thrown = e.name + ' ' + (e instanceof made);
+            }
+            setTimeout(() => {
+              navigator.serviceWorker.getRegistration('/').then((still) => {
+                document.getElementById('out').textContent =
+                  answered + ' ' + thrown + ' ' + !!still;
+              });
+            }, 100);
+          });
+        };
+        frame.src = '/frame';
+        document.body.appendChild(frame);
+      </script>`,
+      '/sw.js': '',
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(await page.text('out'), '0 InvalidStateError true true');
+});
+
 test('what a worker hands back whole or as it comes reaches an image and a sheet', async (t) => {
   const pixel = Uint8Array.from(
     Buffer.from(
