@@ -2779,7 +2779,8 @@ test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker',
       'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
       '</script>',
   );
-  await waitFor(() => assert.ok(doc.text('thread')));
+  // a worker takes most of `waitFor`'s two seconds to start on Node 20 and 22
+  await settled(doc, 'thread', (t) => t !== '', 15000);
   const answers = [
     '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
     // half the last place past the largest double is the even way up, and
@@ -4360,6 +4361,65 @@ test('a body a page is slow to read comes in one chunk of all that arrived, wher
     bytes,
     pieces.flatMap((p) => [...p]),
     'all of it, in order',
+  );
+});
+
+test('a body with two reads waiting hands each byte over once and ends, where the second read was handed what the first had', async () => {
+  // a stream with no high-water mark pulls from inside `enqueue` while a
+  // read is left waiting, and that pull found what was being handed over
+  // still held: pdf.js's viewer read its PDF some 16 KB long and stalled.
+  // Nothing arrives until both reads wait, so nothing here turns on how
+  // long a task took
+  const pieces = Array.from({ length: 6 }, (_, i) =>
+    new Uint8Array(8).fill(i + 1),
+  );
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'fetch("/stream").then(function (r) {' +
+      '  var reader = r.body.getReader(), bytes = [];' +
+      '  var out = document.getElementById("out");' +
+      '  var pump = function () {' +
+      '    return reader.read().then(function (part) {' +
+      '      if (part.done) return;' +
+      '      bytes.push.apply(bytes, part.value);' +
+      '      return pump();' +
+      '    });' +
+      '  };' +
+      '  Promise.all([pump(), pump()]).then(function () {' +
+      '    out.textContent = JSON.stringify(bytes);' +
+      '  });' +
+      '  out.textContent = "reading";' +
+      '});' +
+      '</script>',
+    {
+      answer: () => ({
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [],
+        url: `${PAGE}stream`,
+        body: '',
+        chunks: {
+          async *[Symbol.asyncIterator]() {
+            await held;
+            for (const piece of pieces) yield piece;
+          },
+        },
+      }),
+    },
+  );
+  assert.equal(await settled(doc, 'out', (t) => t === 'reading'), 'reading');
+  release();
+  const text = await settled(doc, 'out', (t) => t.startsWith('['));
+  assert.ok(text, doc.logs.join('\n'));
+  assert.deepEqual(
+    JSON.parse(text) as number[],
+    pieces.flatMap((p) => [...p]),
+    'each byte once, in order, and both reads told it ended',
   );
 });
 
@@ -6266,6 +6326,69 @@ test('getComputedStyle answers a shorthand by its name, in either spelling, and 
     '1px',
     '1px solid rgb(255, 0, 0)',
   ]);
+});
+
+test('a style has an attribute for each property a page can set, and says so to `in`', async () => {
+  // Vue 2 looks a name up with `in` and writes nothing it does not find, so
+  // every `:style` binding came out as `undefined: 44px`, and StackEdit's
+  // bars filled its window. jQuery looks the same way
+  const doc = await hosted(
+    `<!doctype html><style>p { color: red }</style><p id="p" style="color: red"></p>
+    <pre id="out"></pre><script>
+    var s = document.getElementById('p').style;
+    var rule = document.styleSheets[0].cssRules[0].style;
+    var has = function (of, names) {
+      return names.filter(function (n) { return n in of; });
+    };
+    var ask = ['height', 'width', 'fontSize', 'font', 'margin', 'transform',
+      'backgroundColor', 'background-color', 'cssFloat', 'float', 'display',
+      'webkitTransform', 'WebkitTransition', 'length', 'setProperty', 'cssText',
+      '0', 'bogus', 'HEIGHT', '--x', '1', 'mozBogus'];
+    var vue = document.createElement('div');
+    // Vue 2's own normalize, as its bundle has it
+    var norm = function (name) {
+      var empty = vue.style;
+      if (name in empty) return name;
+      var up = name.charAt(0).toUpperCase() + name.slice(1);
+      for (var v of ['Webkit', 'Moz', 'ms']) if (v + up in empty) return v + up;
+    };
+    var n = norm('height'); vue.style[n] = '44px';
+    document.getElementById('out').textContent = JSON.stringify({
+      element: has(s, ask),
+      rule: has(rule, ask),
+      computed: has(getComputedStyle(document.body), ['height', 'bogus']),
+      symbol: Symbol.iterator in s,
+      vue: [n, vue.getAttribute('style'), vue.style.height],
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const everywhere = [
+    'height',
+    'width',
+    'fontSize',
+    'font',
+    'margin',
+    'transform',
+    'backgroundColor',
+    'background-color',
+    'cssFloat',
+    'float',
+    'display',
+    'webkitTransform',
+    'WebkitTransition',
+    'length',
+    'setProperty',
+    'cssText',
+    '0',
+  ];
+  assert.deepStrictEqual(out, {
+    element: everywhere,
+    rule: everywhere,
+    computed: ['height'],
+    symbol: true,
+    vue: ['height', 'height: 44px;', '44px'],
+  });
 });
 
 test("what HTML's parser makes in a drawing is SVG's, whatever its name, and what an integration point holds is HTML's", async () => {
@@ -14699,12 +14822,13 @@ async function hostedFrames(
   return { text, logs, runner: page, result };
 }
 
-/** What `read` answers once `done` holds of it, or by three seconds. */
+/** What `read` answers once `done` holds of it, or by `ms`. */
 async function until(
   read: () => string,
   done: (text: string) => boolean,
+  ms = 3000,
 ): Promise<string> {
-  const end = Date.now() + 3000;
+  const end = Date.now() + ms;
   let text = read();
   while (!done(text) && Date.now() < end) {
     await settle(20);
@@ -14712,6 +14836,39 @@ async function until(
   }
   return text;
 }
+
+test('Math.sumPrecise is in the page, in a frame’s realm and in a worker, each its realm’s own and each a builtin to read', async () => {
+  // `math.test.ts` has what it answers; this has where it is
+  const read =
+    '[Math.sumPrecise([1e20, 0.1, -1e20]), Object.is(Math.sumPrecise([]), -0),' +
+    ' /native code/.test(String(Math.sumPrecise))].join(",")';
+  const frame =
+    '<!DOCTYPE html><p id="sum">-</p><script>' +
+    `document.getElementById("sum").textContent = ${read} + "," + (Math !== parent.Math);` +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe>' +
+      '<p id="page"></p><p id="worker"></p><script>' +
+      `document.getElementById("page").textContent = ${read};` +
+      `var src = ${JSON.stringify(`postMessage(${read} + "," + (typeof document));`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("worker").textContent = e.data; };' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const held = await until(
+    () =>
+      text('page', 'page') && text('page', 'worker') && text('f', 'sum') !== '-'
+        ? 'in'
+        : '',
+    (t) => t === 'in',
+    15000,
+  );
+  assert.equal(held, 'in', logs.join('\n'));
+  assert.equal(text('page', 'page'), '0.1,true,true');
+  assert.equal(text('f', 'sum'), '0.1,true,true,true');
+  assert.equal(text('page', 'worker'), '0.1,true,true,undefined');
+});
 
 test('a frame runs in a realm of its own, linked to the page: its window, its parent and messages both ways', async () => {
   const frame =
@@ -14763,6 +14920,46 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
     logs.join('\n'),
   );
   assert.equal(text('f', 'got'), '21:true:https://example.test');
+});
+
+test('a frame loads however a script put it in: innerHTML and replaceChildren as appendChild, with nothing reading its window', async () => {
+  const frame = (name: string): string =>
+    `<!doctype html><script>parent.postMessage("${name}", "*")</script>`;
+  const { text, logs } = await hostedFrames(
+    '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
+      '<p id="out"></p><script>' +
+      'var heard = [];' +
+      'function by(id) { return document.getElementById(id); }' +
+      'addEventListener("message", function (e) {' +
+      '  heard.push(e.data); heard.sort();' +
+      '  by("out").textContent = heard.join(",");' +
+      '});' +
+      // after the parse, as a click is: what a script puts in while the
+      // parser runs is loaded with what the markup has (`loadFrames`)
+      'addEventListener("load", function () {' +
+      '  by("a").innerHTML = \'<iframe src="one.html"></iframe>\';' +
+      '  var two = document.createElement("iframe"); two.src = "two.html";' +
+      '  by("b").replaceChildren(two);' +
+      '  var three = document.createElement("iframe"); three.src = "three.html";' +
+      '  by("c").appendChild(three);' +
+      // put in nowhere, it loads as it goes in and not before
+      '  var held = document.createElement("div");' +
+      '  held.innerHTML = \'<iframe src="four.html"></iframe>\';' +
+      '  setTimeout(function () { by("d").appendChild(held); }, 0);' +
+      '});' +
+      '</script>',
+    {
+      'one.html': frame('one'),
+      'two.html': frame('two'),
+      'three.html': frame('three'),
+      'four.html': frame('four'),
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t.split(',').length === 4,
+  );
+  assert.equal(page, 'four,one,three,two', logs.join('\n'));
 });
 
 test("a key crosses to a frame's realm and back, and the frame's is the frame's", async () => {
