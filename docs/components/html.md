@@ -2919,6 +2919,14 @@ in order, and what one writes goes in after it, parsed as a fragment. And an
 inline script that `document.write` writes runs once the script that wrote
 it has ended, where a browser runs it inside the `write`.
 
+**What a script focuses has the focus from then on, whenever its widget
+comes.** A control has no widget until the render after it is put in, or
+after a page still loading is laid out, so `focus()` tells `focusin` and
+`activeElement` answers for the element at once, as a browser's does, and
+the first render that mounts a widget for it hands the focus over. A focus
+sent elsewhere first, or a `blur()`, takes that back. A page goes by what it
+was told: Monaco, told it had the focus, asks for nothing when it is pressed.
+
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
 so the component cannot hear them take the focus: `activeElement` still

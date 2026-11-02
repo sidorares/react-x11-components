@@ -6828,6 +6828,87 @@ test('a focus a script asks for is told before focus() returns: a control just p
   );
 });
 
+/** A page that can put a field in and focus it, and logs the focus. */
+const LATE_FIELD =
+  '<!doctype html><html><head><style>input{display:block;width:150px;height:30px}</style></head>' +
+  '<body><input id="here"><div id="box"></div><pre id="out"></pre><script>' +
+  'var log = [];' +
+  'function say(s) { log.push(s); document.getElementById("out").textContent = log.join(" | "); }' +
+  'function active() { var a = document.activeElement; return a.id || a.nodeName; }' +
+  'function late() { var i = document.createElement("input"); i.id = "late"; document.getElementById("box").appendChild(i); return i; }' +
+  'document.addEventListener("focusin", function (e) { say("in " + e.target.id); });' +
+  'document.addEventListener("focusout", function (e) { say("out " + e.target.id); });' +
+  '</script></body></html>';
+
+/** Run `code` in the page, and `after` a good while later, with nothing
+ *  rendered between them: `act` holds the render that would mount a widget,
+ *  past the turns the host asks again for and the frames of a page loading. */
+async function withWidgetHeld(
+  doc: Hosted,
+  code: string,
+  after = '',
+): Promise<void> {
+  await act(async () => {
+    doc.run(code);
+    await new Promise((r) => setTimeout(r, 60));
+    if (after) doc.run(after);
+  });
+  await settle();
+}
+
+test('a field a script focuses before its widget is mounted has the focus from then on, and the widget takes it however late it comes', async () => {
+  // Monaco's load: it believes it has the focus from then on, so a press on
+  // it asks for nothing, and a field that lost it here was never given it
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(doc, 'late().focus()', 'say("held " + active())');
+  assert.equal(doc.text('out'), 'in late | held late');
+  const field = screen.getAllByRole('textbox').find((n) => n.focused) as
+    DrawnNode | undefined;
+  assert.ok(field, 'its widget has the focus');
+  assert.equal(doc.handle.activeElement?.attribs.id, 'late');
+  await act(async () => fireEvent.char('x', { target: field }));
+  await settle();
+  await act(() => doc.run('say(document.getElementById("late").value)'));
+  assert.ok(doc.text('out').endsWith('| x'), doc.text('out'));
+});
+
+test('a focus that went elsewhere before the widget was mounted stays there, and the widget does not take it back', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'late().focus(); document.getElementById("here").focus()',
+    'say("held " + active())',
+  );
+  assert.equal(doc.text('out'), 'in late | out late | in here | held here');
+  assert.equal(doc.handle.activeElement?.attribs.id, 'here');
+});
+
+test('a focus a script takes back before the widget was mounted is gone, and told as gone', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.blur()',
+    'say("held " + active())',
+  );
+  assert.equal(doc.text('out'), 'in late | out late | held BODY');
+  assert.equal(doc.handle.activeElement, null);
+});
+
+test('a field taken out before its widget was mounted has nothing to come for it', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await withWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.remove()',
+    'say("held " + active())',
+  );
+  assert.ok(doc.text('out').endsWith('held BODY'), doc.text('out'));
+  assert.equal(doc.handle.activeElement, null);
+});
+
 test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
   const doc = await hosted(
     '<style>body{margin:0;font-size:16px}</style>' +

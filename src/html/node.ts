@@ -737,8 +737,11 @@ export interface DocumentInteraction {
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal
    *  dialog gave back to as it closed — as a script's `focus()` tells it
-   *  before it returns (HTML 6.6.3); `focus` gives it core's once it can. */
+   *  before it returns (HTML 6.6.3); `settleFocus` gives it core's. */
   told(el: Element): void;
+  /** Hand a focus the page was told of to what has come to take it, after
+   *  a render: a widget or a stop mounted in it. */
+  settleFocus(): void;
   blur(): void;
   activeElement(): Element | null;
   activate(el: Element): boolean;
