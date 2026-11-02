@@ -4914,7 +4914,16 @@ drawing. Each drawing they are in, and a root the change reached, asks
 again, and is drawn again only for another answer (`_askShapes`): most of
 what a subject can reach comes to what it was. **What a drawing names by a
 `url(#…)` is drawn by whichever names it** (`NAMED_TAGS`), which no selector
-says, so a reach into one asks every drawing. Two
+says, so a reach into one asks every drawing. A rule a sheet adds or a
+breakpoint turns on is told of by no record, so it reaches a drawing by what
+the drawing last read (`Named`): what is at or in what it names (`namersOf`),
+and asked after the build, whose cascade and copies are what a kept box is
+asked of. `addedReach` and `crossed` ask what is named as a `<use>` copies it
+too (`namedBy`, `_reachInCopy`), since `symbol:first-child rect` matches a
+copy where it misses the element. **Anything new that brings a rule into
+force without styling every element does the same**, or a sprite's icons go
+on drawing what the last cascade gave them, while the sprite's block is built
+beside them. Two
 things keep a page of icons from paying for it, and both are easy to
 undo. A rule asked of every `<path>`, or of every element, names the
 ancestor it is for by a class or an id, which is looked for once around

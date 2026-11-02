@@ -30,6 +30,7 @@ import {
   FONTS,
   h,
   metric,
+  paneOf,
   renderScrolled,
   solidPng,
   treeLines,
@@ -1014,18 +1015,6 @@ metric(
     await assertWhole(el, 'the word in its item');
   },
 );
-
-/** The pane a document scrolls in. */
-function paneOf(node: unknown): {
-  scrollY: number;
-  scrollTo(to: { y: number }): void;
-} {
-  type Up = { parent: Up | null; props?: { style?: { overflow?: string } } };
-  let at = (node as Up).parent;
-  while (at && at.props?.style?.overflow !== 'scroll') at = at.parent;
-  assert.ok(at, 'a pane');
-  return at as unknown as ReturnType<typeof paneOf>;
-}
 
 const FUZZ_SHEET = `${FACES}
 p { margin: 3px 0 } h2 { margin: 2px 0; font-size: 18px }
