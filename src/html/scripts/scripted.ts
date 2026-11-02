@@ -49,6 +49,8 @@ import { NO_WEBTRANSPORT } from '../transport.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
+import type { HtmlClipboard, HtmlClipboardData } from '../clipboard.js';
+import type { HtmlPermissions } from '../permissions.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
@@ -194,6 +196,20 @@ export interface HtmlScripts {
    */
   webSocket?: HtmlWebSocket;
   /**
+   * The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard`
+   * reach (`HtmlClipboard`). Default: none, so a `copy` a page cancels puts
+   * nothing anywhere, a `paste` is told empty, and `navigator.clipboard` is
+   * not there; the user's own copy and paste, in a field and of a selection,
+   * are core's and work either way. `useHtmlClipboard()` is the machine's.
+   */
+  clipboard?: HtmlClipboard;
+  /**
+   * What a page has been allowed (`HtmlPermissions`): what
+   * `navigator.permissions.query()` answers and what guards a page's read of
+   * the clipboard. Default: nothing has, and asking refuses.
+   */
+  permissions?: HtmlPermissions;
+  /**
    * What a page's `RTCPeerConnection`s are carried over: an offer and an
    * answer made, a description applied, candidates, transports, data
    * channels and the media a receiver receives (`HtmlWebRTC`). Default:
@@ -299,6 +315,9 @@ export interface InternalHtmlProps extends HtmlProps {
   /** Mounted inside `<Html>`'s root, after the document: the frames the
    *  page lays out no box for (`FrameHolder`). */
   _frames?: ReactNode;
+  /** What is on the clipboard, read for a `paste` where the host handed a
+   *  clipboard: the paste is then the page's, and the widget's stopped. */
+  _readClipboard?: () => Promise<HtmlClipboardData>;
   /** The pane around the element scrolled (`HtmlViewProps`). */
   _onViewportScroll?: () => void;
   /** The element painted (`HtmlViewProps`). */
@@ -471,6 +490,8 @@ export function useScriptedHtml(
     serviceWorkers: config.serviceWorkers ?? false,
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
     webSocket: config.webSocket ?? NO_WEBSOCKET,
+    clipboard: config.clipboard,
+    permissions: config.permissions,
     webRTC: config.webRTC ?? NO_WEBRTC,
     mediaDevices: config.mediaDevices ?? NO_MEDIA_DEVICES,
     webgl: config.webgl,
@@ -695,6 +716,9 @@ export function useScriptedHtml(
     _inspectValue: inspectValue,
     _releaseValues: releaseValues,
     _onParserBlocked: scripts._onParserBlocked,
+    ...(config.clipboard && {
+      _readClipboard: () => latest.current.config.clipboard!.read(),
+    }),
     _frames:
       holderContext && engine
         ? h(engine.FrameHolder, { context: holderContext })

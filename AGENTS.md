@@ -4529,6 +4529,37 @@ closes a way out a DOM binding opens by accident:
   kept apart from the blobs' (`mediaSourceUrls`), since a `fetch` finds
   nothing behind one, and an element goes through the load algorithm for one
   with no network, or a page waits for a `sourceopen` that never comes.
+- **A data store's mode is what keeps what was pasted**
+  (`datatransfer.ts`, a `DataTransfer`'s state in a `WeakMap`). A store is
+  read/write for `copy`, read-only for `paste`, and protected from the moment
+  its event has been dispatched, which `setMode` does; a page that keeps the
+  object reads nothing after. **Anything new that hands a page a store moves it
+  to protected once its event is over.** Its lists are `listOf`'s, which reads
+  each time (`unkept`): no count says a store moved, and read by `treeEpoch`
+  a page's `FileList` stood still through `items.add`.
+- **A clipboard chord is told by `<Html>`, and only a paste is the realm's
+  to finish** (`clipboardKey`, `clipboardEvent`). `copy` and `cut` answer
+  whether core's default goes on, as `keydown` does: core copies a selection
+  and edits a field, and the realm writes only what a listener left, or cuts
+  from an editing host, which core has no hold on. A paste with a clipboard to
+  read cannot be told in time to stop core, so `clipboardKey` stops core's
+  first, the read comes back as `e.clipboard`, and `pasteInto` makes the paste.
+  With no seam there is nothing to read, and core's goes on: **`offered` being
+  undefined is what says so**, so anything new that tells a `paste` passes what
+  it read, or nothing is pasted in a page whose host has a clipboard. A frame's
+  `<Html>` is handed the same read (`_readClipboard`, `frames.ts`). An `<Html>`
+  host's chord is the primary modifier (`clipboardChord`), which is Cmd on a
+  Mac: a chord tested on `ctrlKey` did nothing there, as `stops.ts`'s Ctrl+C
+  did until this.
+- **What a page reads or writes of the clipboard crosses as text**
+  (`clipboard.ts`, the `clipboard` op and `__clipboard`): JSON of `{ t, s }`
+  and `{ t, b }`, bytes as base64, and `__clipboard` is no `HELD_ONCE`, since it
+  carries an answer. The gates are the realm's, as `crypto.subtle`'s splitting
+  is the specification's: activation is the realm's to know
+  (`hasTransientActivation`), and `permission` the host's. **A read that a host
+  has not said yes to is refused, whatever gesture is behind it**: with
+  `scripts.permissions` absent, `request` answers `denied`, so a host that hands
+  a page its clipboard does not hand it the clipboard's contents.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells

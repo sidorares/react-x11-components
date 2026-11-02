@@ -318,6 +318,9 @@ function FrameDocument({
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,
         _onMediaEvent: scripts.mediaEvent,
+        ...(context.seams.clipboard && {
+          _readClipboard: () => context.seams.clipboard!.read(),
+        }),
       } as object),
     }),
     holder ? h(FrameHolder, { context: holder }) : null,
