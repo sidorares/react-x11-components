@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.33.0](https://github.com/sidorares/react-x11-components/compare/v0.32.0...v0.33.0) (2026-11-02)
+
+
+### Features
+
+* **html:** a canvas draws and measures text, in the document's fonts, where fillText drew nothing and pdf.js's pages were blank ([#1242](https://github.com/sidorares/react-x11-components/issues/1242)) ([d2ad373](https://github.com/sidorares/react-x11-components/commit/d2ad3735e6067f44760f00b1f2643e29c7519c03))
+* **html:** a file input is given files, by a seam that opens nothing by default, and a form posts them, where it was a text field and files was always empty ([#1247](https://github.com/sidorares/react-x11-components/issues/1247)) ([2c644ff](https://github.com/sidorares/react-x11-components/commit/2c644ffaa0468049b2f788833e3421d9b62d00a6))
+* **html:** copy, cut and paste reach a page's listeners and the clipboard, with DataTransfer and navigator.clipboard, where a page found neither ([#1243](https://github.com/sidorares/react-x11-components/issues/1243)) ([347947a](https://github.com/sidorares/react-x11-components/commit/347947a54e54ddaeeaaa6b4cc0b94bb5f7a6cf33))
+* **html:** DOMParser reads XML, XMLSerializer writes it and document.evaluate is XPath 1.0, where any XML was refused with an error ([#1230](https://github.com/sidorares/react-x11-components/issues/1230)) ([95e3264](https://github.com/sidorares/react-x11-components/commit/95e32642bb1693ca0646d9ab967a08211bef2b98))
+* **html:** EventSource, CompressionStream, BroadcastChannel and navigator.locks, where a page that asked for one stopped there ([#1229](https://github.com/sidorares/react-x11-components/issues/1229)) ([220d818](https://github.com/sidorares/react-x11-components/commit/220d8189c0ae77c850107a4e88a0fdeb4c372aa9))
+* **html:** Math.sumPrecise in a page and a worker, where pdf.js's font compiler threw and every embedded font was lost ([#1240](https://github.com/sidorares/react-x11-components/issues/1240)) ([2d562d9](https://github.com/sidorares/react-x11-components/commit/2d562d92a3fbc3c22f3db5046288bf1d6c939b7e))
+* **html:** SHA-3, AES-OCB, ChaCha20-Poly1305, KMAC, Argon2, Ed448, X448, ML-DSA and ML-KEM for crypto.subtle, where the runtime has them ([#1237](https://github.com/sidorares/react-x11-components/issues/1237)) ([1e4e71b](https://github.com/sidorares/react-x11-components/commit/1e4e71b90e431aa75a84da73d065ec6c2e63da74))
+* **pdf:** &lt;Pdf&gt;, a PDF drawn from PDFium's tiles on a thread of its own, and a design for office documents ([#1255](https://github.com/sidorares/react-x11-components/issues/1255)) ([0ad3715](https://github.com/sidorares/react-x11-components/commit/0ad37152c414df0e13774c250d4282ec195f1fbb))
+
+
+### Bug Fixes
+
+* **html:** a canvas a WebGL context drew on is an image, where drawImage read nothing from one the document does not show and jspaint's pencil left no mark ([#1251](https://github.com/sidorares/react-x11-components/issues/1251)) ([a12d139](https://github.com/sidorares/react-x11-components/commit/a12d1395a82fa8de44c9578c364983a393c11a98))
+* **html:** a field a script focuses before its widget is mounted keeps the focus, where it was dropped with nothing told and a click on Monaco did nothing ([#1246](https://github.com/sidorares/react-x11-components/issues/1246)) ([becdf33](https://github.com/sidorares/react-x11-components/commit/becdf33702eab5959fc9c3629b0d23d084f65285))
+* **html:** a press a page cancels keeps the focus, and one it does not moves it after its mousedown, where the focus had gone before the page heard the press ([#1249](https://github.com/sidorares/react-x11-components/issues/1249)) ([e0c40e4](https://github.com/sidorares/react-x11-components/commit/e0c40e4f4b49fc9d059975c1fd21127e31c18b4c))
+* **html:** a rem in a rule a sheet adds is of the document's root, where it came to the initial size until something styled the root ([#1234](https://github.com/sidorares/react-x11-components/issues/1234)) ([33eeedf](https://github.com/sidorares/react-x11-components/commit/33eeedf15ea3a9015e2ee64d324e49812d63adeb))
+* **html:** a streamed body with two reads waiting hands each byte over once, where the second read was handed the first's bytes again and pdf.js's viewer stalled at 0 of 0 pages ([#1252](https://github.com/sidorares/react-x11-components/issues/1252)) ([996daf6](https://github.com/sidorares/react-x11-components/commit/996daf626417371eb19f7348103fa9006bdbf0dd))
+* **html:** a style answers `in` for its properties, where Vue 2 wrote every :style binding as undefined and StackEdit's bars filled the window ([#1244](https://github.com/sidorares/react-x11-components/issues/1244)) ([8dea2ba](https://github.com/sidorares/react-x11-components/commit/8dea2babe4025780b0169fcb8f85f610a4eb387c))
+* **html:** an SVG element has its ownerSVGElement and a click on an &lt;a&gt; in a drawing goes where it says, each lost or missing since [#1228](https://github.com/sidorares/react-x11-components/issues/1228) ([#1235](https://github.com/sidorares/react-x11-components/issues/1235)) ([6c0f175](https://github.com/sidorares/react-x11-components/commit/6c0f17581675694cde8970a0cfa293097ac3d231))
+* **html:** display's two-value forms such as inline flex are read, where each was dropped and pdf.js's toolbar stacked up ([#1239](https://github.com/sidorares/react-x11-components/issues/1239)) ([13d852c](https://github.com/sidorares/react-x11-components/commit/13d852c0e0f6577c690f0debfbfeb092be5c9415))
+* **html:** HTML's end tags and implied closes are read as the engines read them, where a &lt;/span&gt; closed a block it was never in and the block's end tag an outer one ([#1261](https://github.com/sidorares/react-x11-components/issues/1261)) ([67864fc](https://github.com/sidorares/react-x11-components/commit/67864fc8752649cc7257f927b45ab94f30baadde))
+* **html:** Math.sumPrecise calls nothing a page can replace, where a page's Number or Math.max changed its answer ([#1245](https://github.com/sidorares/react-x11-components/issues/1245)) ([7633739](https://github.com/sidorares/react-x11-components/commit/763373935c757a792dba395ff55ff1be3157a830))
+* **html:** SVG and MathML are built as HTML's parser builds them, where an end tag closed past a &lt;foreignObject&gt; and an integration point was one in either language ([#1254](https://github.com/sidorares/react-x11-components/issues/1254)) ([f4233b9](https://github.com/sidorares/react-x11-components/commit/f4233b907700155141ad62fc90f0e6112b68c4f1))
+* **html:** what HTML's parser makes something else of in a drawing or a &lt;math&gt; is not read as HTML's, where a &lt;title&gt; named the document and an &lt;object&gt; was asked for ([#1241](https://github.com/sidorares/react-x11-components/issues/1241)) ([dab47eb](https://github.com/sidorares/react-x11-components/commit/dab47ebf1b26460362ae4fe3a622a8b5768be81c))
+* **html:** what stands in a drawing is SVG's and is measured through it, where DOMPurify stripped every mermaid diagram of its colours and labels ([#1248](https://github.com/sidorares/react-x11-components/issues/1248)) ([e4b36e9](https://github.com/sidorares/react-x11-components/commit/e4b36e97a1b397bcbcd100a75e0f006dba8d7bf5))
+* **html:** YouTube's embed plays where a page writes it in on a click, with its controls over the video ([#1250](https://github.com/sidorares/react-x11-components/issues/1250)) ([7e5c3d8](https://github.com/sidorares/react-x11-components/commit/7e5c3d84b2da2f5ac4414149937aeb95a001ac47))
+
 ## [0.32.0](https://github.com/sidorares/react-x11-components/compare/v0.31.0...v0.32.0) (2026-11-02)
 
 
