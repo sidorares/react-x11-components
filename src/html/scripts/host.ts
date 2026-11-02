@@ -7910,11 +7910,9 @@ export class DomHost {
   }
 
   /** Whether a worker may run from an address: of this document's origin,
-   *  or a blob this realm made, which an opaque one's is. */
+   *  which a blob this realm made is, and `blob:null` where that is opaque. */
   private _workerAllowed(url: string): boolean {
-    const page = this._origin();
-    if (page === 'null') return url.startsWith('blob:');
-    return originOf(url) === page;
+    return originOf(url) === this._origin();
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
