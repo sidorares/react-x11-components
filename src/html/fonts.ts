@@ -929,7 +929,12 @@ export class WebFonts implements FontFamilies {
 
   /** Every list mapped before this is stale: a face arrived, or the faces
    *  changed. */
+  /** Moves wherever what a family comes to may have, for what keeps a
+   *  string set in one outside a build (`canvas-text.ts`). */
+  generation = 0;
+
   private _forget(): void {
+    this.generation += 1;
     this._memo.clear();
     this._sources.clear();
     this._settings.clear();

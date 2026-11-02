@@ -1221,6 +1221,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onDropFiles: props.onDropFiles,
   });
   live.current = { forms, stops, onLink, drag: drag.external };
+  // what a script focused before anything could take it takes it from the
+  // render that mounts a widget or a stop for it, however long that is: no
+  // count of turns is long enough on a page still loading
+  React.useEffect(() => interactive.settleFocus());
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)
@@ -1584,6 +1588,7 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
       scriptFontsChanged: (id: number, added: boolean) =>
         nodeRef.current?.scriptFontsChanged(id, added),
       svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+      canvasText: () => nodeRef.current?.canvasText() ?? null,
       foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
       mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
@@ -1744,12 +1749,27 @@ function documentInteraction(
       }
       return took;
     },
-    told: (el) => live.current?.forms.focused(el, true),
+    told: (el) => {
+      const forms = live.current?.forms;
+      forms?.focused(el, true);
+      forms?.owe(el);
+    },
+    settleFocus: () => {
+      const now = live.current;
+      const el = now?.forms.owed();
+      if (el) void (now!.forms.focusControl(el) || now!.stops.focus(el));
+    },
     blur: () => {
+      const forms = live.current?.forms;
+      if (forms?.owed()) {
+        forms.letGo();
+        return;
+      }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
     },
-    activeElement: () => owner(focusedNode(view.current)),
+    activeElement: () =>
+      live.current?.forms.owed() ?? owner(focusedNode(view.current)),
     activate: (el) => {
       const node = view.current;
       const now = live.current;

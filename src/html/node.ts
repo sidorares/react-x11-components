@@ -504,6 +504,7 @@ import type {
   VideoCandidate,
 } from './media.js';
 import type { IntrinsicSize } from './svg.js';
+import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
 import { resolveUrl, UrlResolver } from './url.js';
@@ -749,8 +750,11 @@ export interface DocumentInteraction {
   /** Tell the document an element has the focus before its widget or its
    *  stop is there to take it — a control just put in, an element a modal
    *  dialog gave back to as it closed — as a script's `focus()` tells it
-   *  before it returns (HTML 6.6.3); `focus` gives it core's once it can. */
+   *  before it returns (HTML 6.6.3); `settleFocus` gives it core's. */
   told(el: Element): void;
+  /** Hand a focus the page was told of to what has come to take it, after
+   *  a render: a widget or a stop mounted in it. */
+  settleFocus(): void;
   blur(): void;
   activeElement(): Element | null;
   activate(el: Element): boolean;
@@ -7256,6 +7260,24 @@ export class HtmlViewNode extends Node {
   loadFonts(keys: readonly string[]): Promise<boolean[]> {
     return this._webFonts.load(keys);
   }
+
+  /** What a canvas's context asks of the fonts (`canvas-text.ts`). */
+  canvasText(): CanvasText {
+    // a face a script added is read with the sheets, and a page that waited
+    // for its `load()` draws in it at once
+    if (!this._cascade || this._sheetsRead === null) {
+      this._prepare(this.abs.width || 1);
+    }
+    this._canvasText ??= new CanvasText({
+      fonts: () => this._fonts(),
+      cascade: () => this._cascade,
+      styleOf: (element) => this._styleOf(element),
+      webFonts: this._webFonts,
+    });
+    return this._canvasText;
+  }
+
+  private _canvasText: CanvasText | null = null;
 
   /** The document's fonts, where a page's `new FontFace` goes. */
   scriptFonts(): WebFonts {

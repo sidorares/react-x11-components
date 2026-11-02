@@ -148,6 +148,13 @@ export interface Forms {
    *  the document's, as a modal dialog with nothing to focus gives it to
    *  the document, and a focus given back in the same task is news. */
   letGo(): void;
+  /** The page has been told `el` has the focus, and nothing of the
+   *  document's is there yet to take it: what `owed` answers until something
+   *  does, or the focus goes elsewhere. */
+  owe(el: Element): void;
+  /** What the page has been told has the focus that nothing has taken yet,
+   *  or null: `activeElement`, and what the next render hands on. */
+  owed(): Element | null;
   /** What the user last did in the document, heard before anything else
    *  hears it: a press, or a key that is not a modifier's or a chord's. */
   userInput(kind: 'pointer' | 'keyboard'): void;
@@ -330,6 +337,11 @@ export function useForms(options: FormsOptions): Forms {
   // another value than it took it with has a `change` (HTML 4.10.5.5).
   const blurred = React.useRef<Element | null>(null);
   const holder = React.useRef<Element | null>(null);
+  // What a script focused before a widget or a stop was there to take it,
+  // which may be a good while on a page still loading (`owe`). The page was
+  // told it has the focus and goes by that: Monaco, believing it, asks for
+  // nothing when it is pressed, so a focus let go of here was never had.
+  const owedTo = React.useRef<Element | null>(null);
   // the user's last input in the document, and the element a script last
   // asked to focus with whether its focus shows (`scriptFocus`)
   const lastInput = React.useRef<'pointer' | 'keyboard' | null>(null);
@@ -344,6 +356,7 @@ export function useForms(options: FormsOptions): Forms {
   const focused = (el: Element, on: boolean) => {
     if (on) {
       blurred.current = null;
+      owedTo.current = null;
       const was = holder.current;
       holder.current = el;
       if (was !== el) {
@@ -374,6 +387,7 @@ export function useForms(options: FormsOptions): Forms {
 
   const letGo = () => {
     const el = holder.current;
+    owedTo.current = null;
     if (!el) return;
     blurred.current = null;
     holder.current = null;
@@ -872,6 +886,11 @@ export function useForms(options: FormsOptions): Forms {
     setFiles,
     focused,
     letGo,
+    owe: (el) => {
+      owedTo.current = el;
+    },
+    // not one taken out since, which nothing will come for
+    owed: () => (owedTo.current?.parent ? owedTo.current : null),
     userInput: (kind) => {
       lastInput.current = kind;
     },
