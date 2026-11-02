@@ -171,7 +171,7 @@ export function nextHop(
   hops: number,
   cors: { origin: string; tainting: boolean } | null,
 ): Hop {
-  let next: URL;
+  let next: InstanceType<typeof URL>;
   try {
     next = new URL(location, hop.url);
   } catch {
