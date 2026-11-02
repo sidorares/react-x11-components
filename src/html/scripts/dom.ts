@@ -133,6 +133,12 @@ export function installDom(
     ) {
       opEpoch += 1;
     }
+    if (!mutatesHas.call(KEEPS_LISTS, op)) {
+      if (op !== 'setAttr' && op !== 'delAttr') {
+        treeEpoch += 1;
+        attrEpoch += 1;
+      } else if (mutatesHas.call(LIST_ATTRIBUTES, b)) attrEpoch += 1;
+    }
     const r = bridge(op, a, b, c, d);
     if (typeof r === 'string' && r.charCodeAt(0) === 1) {
       const parts = r.split('\u0001');
@@ -163,6 +169,121 @@ export function installDom(
    *  `getComputedStyle` calls, so each read moved the count, and the next
    *  read of the style read all of it again — 17.7 million ops in a load. */
   let opEpoch = 0;
+  /** What a live list checks before it answers from what it read last
+   *  (`itemsOf`), since a read of the host at every index would be a trip a
+   *  page's `for` loop pays for each element: `treeEpoch` moves at any op
+   *  that is not a read and at each task, and `attrEpoch` with it, and at
+   *  an attribute some list reads as well. A change only reaches the tree
+   *  through an op or between two tasks. */
+  let treeEpoch = 0;
+  let attrEpoch = 0;
+  /** The ops that change nothing a list holds. Anything else, an op added
+   *  later among them, reads the lists again, which costs a read and is
+   *  never wrong. Setting a style is here because a page's loop over a list
+   *  sets one on each element, and no list reads that attribute. */
+  const KEEPS_LISTS = new Set([
+    'info',
+    'parent',
+    'owner',
+    'doctype',
+    'kids',
+    'first',
+    'last',
+    'next',
+    'prev',
+    'connected',
+    'contains',
+    'equal',
+    'position',
+    'text',
+    'attr',
+    'attrs',
+    'style',
+    'stylePriority',
+    'styleNames',
+    'styleText',
+    'setStyle',
+    'blockValue',
+    'blockPriority',
+    'blockNames',
+    'blockText',
+    'shadowRoot',
+    'shadowHost',
+    'shadowFlags',
+    'assignedSlot',
+    'assignedNodes',
+    'shadowMode',
+    'shadowDelegates',
+    'html',
+    'getHTML',
+    'content',
+    'query',
+    'matches',
+    'closest',
+    'named',
+    'byId',
+    'byTag',
+    'byClass',
+    'color',
+    'supports',
+    'rect',
+    'atViewport',
+    'scrollMoves',
+    'geometry',
+    'offset',
+    'computed',
+    'computedShorthands',
+    'customProperty',
+    'at',
+    'viewport',
+    'scrollState',
+    'clientBox',
+    'visible',
+    'value',
+    'validity',
+    'willValidate',
+    'selection',
+    'active',
+    'log',
+    'now',
+    'navigator',
+    'hasNetwork',
+    'image',
+    'canPlayType',
+    'base',
+    'location',
+    'resolve',
+    'url',
+    'random',
+    'uuid',
+    'timer',
+    'clearTimer',
+    'observe',
+    'disconnect',
+    'observed',
+    'takeRecords',
+    'rendering',
+    'intersections',
+    'fontFaces',
+    'fontMatch',
+    'sheets',
+  ]);
+  /** The attributes some list goes by (`readsAttributes` in `liveList`). */
+  const LIST_ATTRIBUTES = new Set([
+    'class',
+    'id',
+    'name',
+    'href',
+    'for',
+    'form',
+    'type',
+    'selected',
+    'multiple',
+    'size',
+    'disabled',
+    'rel',
+    'media',
+  ]);
   /** Whether the page has defined a custom element, after which an op that
    *  changes the tree may have custom element reactions to run
    *  (`takeReactions`). */
@@ -1073,6 +1194,29 @@ export function installDom(
     return fn;
   };
 
+  /** An `on<type>` attribute of an interface (HTML 8.1.8.1). */
+  const handlerProperty = (proto: Any, type: string): void => {
+    const get = function (this: Any): Any {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      return this._handlers?.[type] ?? null;
+    };
+    const set = function (this: Any, fn: Any): void {
+      if (!(this instanceof proto.constructor)) {
+        throw new TypeError('Illegal invocation');
+      }
+      setHandler(this, type, typeof fn === 'function' ? fn : null);
+    };
+    Object.defineProperty(get, 'name', { value: `get on${type}` });
+    Object.defineProperty(set, 'name', { value: `set on${type}` });
+    Object.defineProperty(proto, `on${type}`, {
+      get,
+      set,
+      configurable: true,
+      enumerable: true,
+    });
+  };
   /** Gives a target's `on<type>` handler its place among the target's
    *  listeners, where it has none, as it comes to be something other than
    *  null (HTML 8.1.8.1, "activate an event handler"): the end of the
@@ -4836,33 +4980,331 @@ export function installDom(
     return node._id;
   };
 
-  /** A list a page indexes and iterates, as a `NodeList` or an
-   *  `HTMLCollection` is — not live: a copy as it was asked for. */
-  class NodeList extends Array {}
-  class HTMLCollection extends Array {}
-  const list = (items: Any[]): Any => {
-    const out: Any = Object.setPrototypeOf(items.slice(), NodeList.prototype);
-    out.item = (i: number) => out[i] ?? null;
-    out.namedItem = (name: string) =>
-      items.find(
-        (n) =>
-          n.getAttribute?.('id') === name || n.getAttribute?.('name') === name,
-      ) ?? null;
-    return out;
+  /** Where a list keeps what it holds, on the object its proxy stands
+   *  over. No page reaches it: `ownKeys` leaves it out. */
+  const LIST = Symbol('list');
+
+  /** A property's name as an array index (Web IDL 2.5.6), or -1. */
+  const listIndex = (key: string): number => {
+    const first = key.charCodeAt(0);
+    if (!(first >= 48 && first <= 57)) return -1;
+    const n = +key;
+    return n >>> 0 === n && n !== 4294967295 && `${n}` === key ? n : -1;
   };
 
-  /** An `HTMLCollection` (DOM 4.2.10.2): a list whose members are also
-   *  its properties by id and by name, as `document.forms.form` and
-   *  `form.elements.first` read them. Not live: a copy as it was asked
-   *  for. */
-  const collection = (items: Any[]): Any => {
-    const out = list(items);
+  /** What a list holds now: what it read last, until something could have
+   *  changed that (`treeEpoch`, `attrEpoch`). */
+  const itemsOf = (state: Any): Any[] => {
+    if (
+      state.read &&
+      state.at !== (state.readsAttributes ? attrEpoch : treeEpoch)
+    ) {
+      state.items = state.read();
+      state.at = state.readsAttributes ? attrEpoch : treeEpoch;
+    }
+    return state.items;
+  };
+
+  /** A list's supported property names (DOM 4.2.10.2), each the first
+   *  element in tree order that goes by it. */
+  const namesOf = (state: Any): Map<string, Any> => {
+    const items = itemsOf(state);
+    if (state.names && state.namesAt === attrEpoch) return state.names;
+    const names = new Map<string, Any>();
     for (const el of items) {
-      for (const key of [el.getAttribute?.('id'), el.getAttribute?.('name')]) {
-        if (key && !(key in out)) out[key] = el;
+      const id = call('attr', el._id, 'id');
+      if (typeof id === 'string' && id && !names.has(id)) names.set(id, el);
+      if (el.namespaceURI !== HTML_NS) continue;
+      const name = call('attr', el._id, 'name');
+      if (typeof name === 'string' && name && !names.has(name)) {
+        names.set(name, el);
       }
     }
-    return out;
+    state.names = names;
+    state.namesAt = attrEpoch;
+    return names;
+  };
+  /** What the proxy below is written in, as it was before any page code
+   *  ran: a page's own `Reflect.get` is no business of a list's. */
+  const REFLECT = {
+    get: Reflect.get,
+    has: Reflect.has,
+    getOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
+    defineProperty: Reflect.defineProperty,
+    set: Reflect.set,
+    deleteProperty: Reflect.deleteProperty,
+    ownKeys: Reflect.ownKeys,
+  };
+  const hasOwn = Object.prototype.hasOwnProperty;
+  /** A list's named property (Web IDL 3.9.1, "named property visibility"):
+   *  none that its own expandos or its prototypes have a property of. */
+  const visibleName = (target: Any, key: string): Any => {
+    const state = target[LIST];
+    if (!state.named || REFLECT.has(target, key)) return undefined;
+    return state.named(state, key) ?? undefined;
+  };
+  const NAMED = (state: Any, key: string): Any => namesOf(state).get(key);
+
+  /**
+   * A `NodeList` or an `HTMLCollection` is a legacy platform object (Web
+   * IDL 3.9), whose indices and names are its own properties read from what
+   * it holds now, none of which a page can set. Only a proxy does that, so
+   * every list is one, over a plain object that keeps a page's expandos,
+   * with this one handler. An `Array` subclass was the shape before, and
+   * `Array.prototype.slice.call(list)` made another list of it, on which
+   * StackEdit's `cl_each`, which goes through `slice`, called itself without
+   * end. A read is some 100 ns, less than the op a page does with what it
+   * read.
+   */
+  const LIST_PROXY: Any = {
+    get(target: Any, key: Any, receiver: Any): Any {
+      if (key === LIST) return target[LIST];
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          if (item !== undefined) return item;
+        } else {
+          const named = visibleName(target, key);
+          if (named !== undefined) return named;
+        }
+      }
+      return REFLECT.get(target, key, receiver);
+    },
+    has(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          if (index < itemsOf(target[LIST]).length) return true;
+        } else if (visibleName(target, key) !== undefined) return true;
+      }
+      return key !== LIST && REFLECT.has(target, key);
+    },
+    getOwnPropertyDescriptor(target: Any, key: Any): Any {
+      if (key === LIST) return undefined;
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const item = itemsOf(target[LIST])[index];
+          return item === undefined
+            ? undefined
+            : {
+                value: item,
+                writable: false,
+                enumerable: true,
+                configurable: true,
+              };
+        }
+        const named = visibleName(target, key);
+        if (named !== undefined) {
+          return {
+            value: named,
+            writable: false,
+            enumerable: false,
+            configurable: true,
+          };
+        }
+      }
+      return REFLECT.getOwnPropertyDescriptor(target, key);
+    },
+    defineProperty(target: Any, key: Any, desc: Any): boolean {
+      if (typeof key === 'string') {
+        if (listIndex(key) >= 0) return false;
+        const state = target[LIST];
+        if (
+          state.named &&
+          !hasOwn.call(target, key) &&
+          state.named(state, key)
+        ) {
+          return false;
+        }
+      }
+      return REFLECT.defineProperty(target, key, desc);
+    },
+    set(target: Any, key: Any, value: Any, receiver: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) {
+          const state = target[LIST];
+          if (state.setItem && receiver === state.self) {
+            state.setItem(index, value);
+            return true;
+          }
+          if (index < itemsOf(state).length) return false;
+        }
+      }
+      return REFLECT.set(target, key, value, receiver);
+    },
+    deleteProperty(target: Any, key: Any): boolean {
+      if (typeof key === 'string') {
+        const index = listIndex(key);
+        if (index >= 0) return index >= itemsOf(target[LIST]).length;
+        if (visibleName(target, key) !== undefined) return false;
+      }
+      return REFLECT.deleteProperty(target, key);
+    },
+    preventExtensions(): boolean {
+      return false;
+    },
+    ownKeys(target: Any): Any[] {
+      const state = target[LIST];
+      const keys: Any[] = [];
+      const items = itemsOf(state);
+      for (let i = 0; i < items.length; i += 1) keys[keys.length] = `${i}`;
+      if (state.named) {
+        for (const name of namesOf(state).keys()) {
+          if (visibleName(target, name) !== undefined) {
+            keys[keys.length] = name;
+          }
+        }
+      }
+      for (const key of REFLECT.ownKeys(target)) {
+        if (key !== LIST) keys[keys.length] = key;
+      }
+      return keys;
+    },
+  };
+
+  /** A list of `Proto`'s, holding `items`, or what `read` answers. */
+  const listMade = (
+    Proto: Any,
+    items: Any[],
+    read: (() => Any[]) | null,
+    readsAttributes: boolean,
+    named: ((state: Any, key: string) => Any) | null,
+  ): Any => {
+    const target = Object.create(Proto.prototype);
+    const self = new Proxy(target, LIST_PROXY);
+    target[LIST] = {
+      self,
+      items,
+      read,
+      readsAttributes,
+      // what no count ever is, so a live list reads at its first use
+      at: -1,
+      named,
+      names: null,
+      namesAt: -1,
+      setItem: null,
+    };
+    return self;
+  };
+  /** A list's state, for a method of its interface: `Object.create(list)`
+   *  has one on its prototype and is no list. */
+  const listState = (list: Any): Any => {
+    const state = list?.[LIST];
+    if (state?.self !== list) throw new TypeError('Illegal invocation');
+    return state;
+  };
+
+  class NodeList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+  }
+  class HTMLCollection {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return itemsOf(state)[Number(index) >>> 0] ?? null;
+    }
+    namedItem(name: Any): Any {
+      const state = listState(this);
+      if (!arguments.length) {
+        throw new TypeError('1 argument required, but only 0 present.');
+      }
+      return state.named(state, str(name)) ?? null;
+    }
+  }
+  /** `getClientRects()`'s (CSSOM View 7), which only a rectangle goes in. */
+  class DOMRectList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  /** An `<input type=file>`'s `files` (File API 5). */
+  class FileList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  // what an indexed getter and a `length` have, and `iterable<Node>` adds to
+  // (Web IDL 3.7.10): the array's own functions, not copies of them, each a
+  // page tells from `Array.prototype`'s by nothing
+  for (const Kind of [NodeList, HTMLCollection, DOMRectList, FileList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
+  }
+  for (const name of ['entries', 'forEach', 'keys', 'values']) {
+    Object.defineProperty(NodeList.prototype, name, {
+      value: (Array.prototype as Any)[name],
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+
+  /** A `NodeList` that holds what it was made with (`querySelectorAll`). */
+  const list = (items: Any[]): Any =>
+    listMade(NodeList, items, null, false, null);
+  /** A `NodeList` that holds what `read` answers now (`childNodes`).
+   *  `readsAttributes` says that an attribute decides what is in it, and
+   *  each one that can is in `LIST_ATTRIBUTES`. */
+  const liveList = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = NodeList,
+  ): Any => listMade(Proto, [], read, readsAttributes, null);
+  /** An `HTMLCollection` that holds what it was made with. */
+  const collection = (items: Any[]): Any =>
+    listMade(HTMLCollection, items, null, false, NAMED);
+  /** An `HTMLCollection` that holds what `read` answers now. */
+  const liveCollection = (
+    read: () => Any[],
+    readsAttributes = false,
+    Proto: Any = HTMLCollection,
+    named: (state: Any, key: string) => Any = NAMED,
+  ): Any => listMade(Proto, [], read, readsAttributes, named);
+  /** A list an attribute of a node hands out, the same one each time
+   *  (`[SameObject]`, Web IDL 3.3.21). */
+  const heldList = (node: Any, key: string, make: () => Any): Any => {
+    const held = (node._lists ??= new Map());
+    let made = held.get(key);
+    if (!made) held.set(key, (made = make()));
+    return made;
   };
 
   /** A string a node is given: what a page passes, converted here. */
@@ -4920,7 +5362,9 @@ export function installDom(
       return p instanceof Element ? p : null;
     }
     get childNodes(): Any {
-      return list(wrapAll(call('kids', this._id)));
+      return heldList(this, 'childNodes', () =>
+        liveList(() => wrapAll(call('kids', this._id))),
+      );
     }
     get firstChild(): Any {
       return wrap(call('first', this._id));
@@ -5068,7 +5512,9 @@ export function installDom(
    *  have of their children. */
   class ParentNode extends Node {
     get children(): Any {
-      return list(wrapAll(call('kids', this._id, 'elements')));
+      return heldList(this, 'children', () =>
+        liveCollection(() => wrapAll(call('kids', this._id, 'elements'))),
+      );
     }
     get childElementCount(): number {
       return idList(call('kids', this._id, 'elements')).length;
@@ -5101,10 +5547,15 @@ export function installDom(
       return list(wrapAll(call('query', this._id, str(selector), true)));
     }
     getElementsByTagName(tag: Any): Any {
-      return list(wrapAll(call('byTag', this._id, str(tag))));
+      const name = str(tag);
+      return liveCollection(() => wrapAll(call('byTag', this._id, name)));
     }
     getElementsByClassName(names: Any): Any {
-      return list(wrapAll(call('byClass', this._id, str(names))));
+      const classes = str(names);
+      return liveCollection(
+        () => wrapAll(call('byClass', this._id, classes)),
+        true,
+      );
     }
   }
 
@@ -6169,7 +6620,13 @@ export function installDom(
     }
     getClientRects(): Any {
       const r = docRect(this);
-      return list(r ? [this.getBoundingClientRect()] : []);
+      return listMade(
+        DOMRectList,
+        r ? [this.getBoundingClientRect()] : [],
+        null,
+        false,
+        null,
+      );
     }
     // CSSOM View 6.1: whether it has a box, in no `content-visibility:
     // hidden`, and, where the options ask, is faded to nothing nowhere up
@@ -6826,7 +7283,13 @@ export function installDom(
     override getClientRects(): Any {
       return docRect(this)
         ? super.getClientRects()
-        : list(svgNumbers(this, 'drawn') ? [this.getBoundingClientRect()] : []);
+        : listMade(
+            DOMRectList,
+            svgNumbers(this, 'drawn') ? [this.getBoundingClientRect()] : [],
+            null,
+            false,
+            null,
+          );
     }
   }
   /** A shape, whose outline is a length a page can walk (SVG 2, 8.3). */
@@ -7742,13 +8205,24 @@ export function installDom(
       return formOf(this);
     }
     get labels(): Any {
-      const id = this.id;
-      const out: Any[] = id
-        ? Array.from(document.querySelectorAll(`label[for="${cssEscape(id)}"]`))
-        : [];
-      const around = this.closest('label');
-      if (around && !out.includes(around)) out.push(around);
-      return list(out);
+      return heldList(this, 'labels', () =>
+        liveList(() => {
+          const id = this.id;
+          const out: Any[] = id
+            ? wrapAll(
+                call(
+                  'query',
+                  document._id,
+                  `label[for="${cssEscape(id)}"]`,
+                  true,
+                ),
+              )
+            : [];
+          const around = this.closest('label');
+          if (around && !out.includes(around)) out.push(around);
+          return out;
+        }, true),
+      );
     }
     get willValidate(): boolean {
       return call('willValidate', this._id) === true;
@@ -8061,7 +8535,9 @@ export function installDom(
       call('indeterminate', this._id, !!v);
     }
     get files(): Any {
-      return list([]);
+      return heldList(this, 'files', () =>
+        listMade(FileList, [], null, false, null),
+      );
     }
     select(): void {
       if (selectsAll(this)) selectField(this, 0, this.value.length, 'none');
@@ -8253,7 +8729,7 @@ export function installDom(
     get selected(): boolean {
       const select = this.closest('select');
       return select
-        ? select.selectedOptions.includes(this)
+        ? chosenOptions(select).includes(this)
         : this.hasAttribute('selected');
     }
     set selected(v: Any) {
@@ -8281,61 +8757,164 @@ export function installDom(
     flag('disabled'),
   );
 
+  /** A `<select>`'s options (HTML 4.10.7): those among its children, and
+   *  those among its groups' children, in tree order. */
+  const optionsIn = (select: Any): Any[] => {
+    const options: Any[] = [];
+    const inHtml = (el: Any, tag: string): boolean =>
+      el.localName === tag && el.namespaceURI === HTML_NS;
+    for (const kid of wrapAll(call('kids', select._id, 'elements'))) {
+      if (inHtml(kid, 'option')) options.push(kid);
+      else if (inHtml(kid, 'optgroup')) {
+        for (const inner of wrapAll(call('kids', kid._id, 'elements'))) {
+          if (inHtml(inner, 'option')) options.push(inner);
+        }
+      }
+    }
+    return options;
+  };
+  /** The options chosen: those `selected`, as `<Html>` keeps them, and in a
+   *  list of one the last of those, or else the first that can be (HTML
+   *  4.10.7, "selectedness setting algorithm"). */
+  const chosenOptions = (select: Any): Any[] => {
+    const options = optionsIn(select);
+    const marked = options.filter((o) => o.hasAttribute('selected'));
+    if (select.multiple) return marked;
+    const chosen =
+      marked[marked.length - 1] ??
+      (Number(select.getAttribute('size')) > 1
+        ? null
+        : options.find((o) => !o.disabled));
+    return chosen ? [chosen] : [];
+  };
+
+  /** A `<select>`'s `options` (HTML 2.6.2.3), which unlike any other
+   *  collection takes an option at an index, and a length. */
+  class HTMLOptionsCollection extends HTMLCollection {
+    override get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    override set length(v: Any) {
+      const { select } = listState(this);
+      const wanted = Number(v) >>> 0;
+      if (wanted > 100000) return;
+      const options = optionsIn(select);
+      for (let i = options.length; i < wanted; i += 1) {
+        select.appendChild(select.ownerDocument.createElement('option'));
+      }
+      for (let i = options.length - 1; i >= wanted; i -= 1) options[i].remove();
+    }
+    add(element: Any, before: Any = null): void {
+      const { select } = listState(this);
+      if (
+        !(element instanceof HTMLOptionElement) &&
+        !(element instanceof HTMLOptGroupElement)
+      ) {
+        throw new TypeError(
+          "The element to add is neither an 'option' nor an 'optgroup'.",
+        );
+      }
+      if (element.contains(select)) {
+        throw new DOMException(
+          'The element to add is an ancestor of the select.',
+          'HierarchyRequestError',
+        );
+      }
+      if (typeof before === 'object' && before && !select.contains(before)) {
+        throw new DOMException(
+          'The element to add before is not in the select.',
+          'NotFoundError',
+        );
+      }
+      if (element === before) return;
+      const reference =
+        typeof before === 'object'
+          ? before
+          : (optionsIn(select)[Number(before) | 0] ?? null);
+      (reference ? reference.parentNode : select).insertBefore(
+        element,
+        reference,
+      );
+    }
+    remove(index: Any): void {
+      optionsIn(listState(this).select)[Number(index) | 0]?.remove();
+    }
+    get selectedIndex(): number {
+      return listState(this).select.selectedIndex;
+    }
+    set selectedIndex(v: Any) {
+      listState(this).select.selectedIndex = v;
+    }
+  }
+
   class HTMLSelectElement extends FormControl {
     declare multiple: boolean;
     get type(): string {
       return this.hasAttribute('multiple') ? 'select-multiple' : 'select-one';
     }
     get options(): Any {
-      const options = Array.from(this.querySelectorAll('option'));
-      const out: Any = list(options);
-      out.selectedIndex = this.selectedIndex;
-      out.add = (option: Any, before?: Any) =>
-        this.insertBefore(option, before ?? null);
-      out.remove = (i: number) => (options[i] as Any)?.remove();
-      return out;
+      return heldList(this, 'options', () => {
+        const made = liveCollection(
+          () => optionsIn(this),
+          false,
+          HTMLOptionsCollection,
+        );
+        const state = made[LIST];
+        state.select = this;
+        state.setItem = (index: number, option: Any) => {
+          if (option === null) {
+            made.remove(index);
+            return;
+          }
+          const options = optionsIn(this);
+          for (let i = options.length; i < index; i += 1) {
+            this.appendChild(this.ownerDocument.createElement('option'));
+          }
+          if (index < options.length) {
+            options[index].parentNode.replaceChild(option, options[index]);
+          } else this.appendChild(option);
+        };
+        return made;
+      });
     }
     get length(): number {
       return this.options.length;
     }
+    set length(v: Any) {
+      this.options.length = v;
+    }
     get value(): string {
-      return this.selectedOptions[0]?.value ?? '';
+      return chosenOptions(this)[0]?.value ?? '';
     }
     set value(v: Any) {
       call('setValue', this._id, str(v));
     }
-    /** The options chosen: those `selected`, as `<Html>` keeps them, and
-     *  in a list of one the last of those, or else the first that can be
-     *  (HTML 4.10.7, "selectedness setting algorithm"). */
     get selectedOptions(): Any {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      const marked = options.filter((o) => o.hasAttribute('selected'));
-      if (this.multiple) return list(marked);
-      const chosen =
-        marked[marked.length - 1] ??
-        (Number(this.getAttribute('size')) > 1
-          ? null
-          : options.find((o) => !o.disabled));
-      return list(chosen ? [chosen] : []);
+      return heldList(this, 'selectedOptions', () =>
+        liveCollection(() => chosenOptions(this), true),
+      );
     }
     get selectedIndex(): number {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
-      return options.indexOf(this.selectedOptions[0]);
+      return optionsIn(this).indexOf(chosenOptions(this)[0]);
     }
     set selectedIndex(i: number) {
-      const options = Array.from(this.querySelectorAll('option')) as Any[];
+      const options = optionsIn(this);
       const option = options[i];
       if (option) this.value = option.value;
       else for (const o of options) o.removeAttribute('selected');
     }
     item(i: number): Any {
-      return this.options[i] ?? null;
+      return this.options.item(i);
+    }
+    namedItem(name: Any): Any {
+      return this.options.namedItem(name);
     }
     add(option: Any, before?: Any): void {
-      this.insertBefore(
-        option,
-        typeof before === 'number' ? this.options[before] : (before ?? null),
-      );
+      this.options.add(option, before ?? null);
+    }
+    override remove(index?: Any): void {
+      if (arguments.length) this.options.remove(index);
+      else super.remove();
     }
     showPicker(): void {
       showPicker(this, 'HTMLSelectElement');
@@ -8946,9 +9525,51 @@ export function installDom(
 
   class HTMLFieldSetElement extends FormControl {
     get elements(): Any {
-      return list(Array.from(this.querySelectorAll(CONTROLS)));
+      return heldList(this, 'elements', () =>
+        liveCollection(() => wrapAll(call('query', this._id, CONTROLS, true))),
+      );
     }
   }
+
+  /** What a form's `elements` answers for a name more than one control goes
+   *  by (HTML 2.6.2.2): a radio group, and its one chosen value. */
+  class RadioNodeList extends NodeList {
+    get value(): string {
+      for (const el of itemsOf(listState(this))) {
+        if (el.localName === 'input' && el.type === 'radio' && el.checked) {
+          return el.value;
+        }
+      }
+      return '';
+    }
+    set value(v: Any) {
+      const value = str(v);
+      for (const el of itemsOf(listState(this))) {
+        if (
+          el.localName === 'input' &&
+          el.type === 'radio' &&
+          el.value === value
+        ) {
+          el.checked = true;
+          return;
+        }
+      }
+    }
+  }
+  class HTMLFormControlsCollection extends HTMLCollection {}
+  /** The control a name reaches, or the controls where it reaches several. */
+  const CONTROL_NAMED = (state: Any, key: string): Any => {
+    if (!key) return null;
+    const going = (): Any[] =>
+      itemsOf(state).filter(
+        (el) =>
+          call('attr', el._id, 'id') === key ||
+          call('attr', el._id, 'name') === key,
+      );
+    const found = going();
+    if (found.length < 2) return found[0] ?? null;
+    return liveList(going, true, RadioNodeList);
+  };
 
   const CONTROLS = 'button,fieldset,input,object,output,select,textarea';
 
@@ -8957,16 +9578,23 @@ export function installDom(
      *  that name it by its `form` attribute, in tree order — an image
      *  button not among them (HTML 4.10.18.1). */
     get elements(): Any {
-      const root = this.getRootNode();
-      const scope = root.querySelectorAll ? root : this;
-      const own = (
-        Array.from(scope.querySelectorAll(CONTROLS)) as Any[]
-      ).filter(
-        (el) =>
-          el.form === this &&
-          !(el.localName === 'input' && el.type === 'image'),
+      return heldList(this, 'elements', () =>
+        liveCollection(
+          () => {
+            const root = this.getRootNode();
+            const scope = root.querySelectorAll ? root : this;
+            const controls = wrapAll(call('query', scope._id, CONTROLS, true));
+            return controls.filter(
+              (el) =>
+                el.form === this &&
+                !(el.localName === 'input' && el.type === 'image'),
+            );
+          },
+          true,
+          HTMLFormControlsCollection,
+          CONTROL_NAMED,
+        ),
       );
-      return collection(own);
     }
     get length(): number {
       return this.elements.length;
@@ -9006,7 +9634,9 @@ export function installDom(
       if (dispatch(this, ev)) call('reset', this._id);
     }
     checkValidity(): boolean {
-      return this.elements.every((el: Any) => el.checkValidity?.() ?? true);
+      return Array.from(this.elements as Any[]).every(
+        (el) => el.checkValidity?.() ?? true,
+      );
     }
     reportValidity(): boolean {
       return !!call('validate', this._id, 0);
@@ -12598,7 +13228,7 @@ export function installDom(
 
   /** An element's HTML children of the names given. */
   const childrenNamed = (el: Any, names: string[]): Any[] =>
-    Array.from(el.children as Any[]).filter(
+    wrapAll(call('kids', el._id, 'elements')).filter(
       (k) => k.namespaceURI === HTML_NS && names.includes(k.localName),
     );
   const indexError = (index: number): DOMException =>
@@ -12707,7 +13337,9 @@ export function installDom(
       this.tFoot?.remove();
     }
     get tBodies(): Any {
-      return collection(childrenNamed(this, ['tbody']));
+      return heldList(this, 'tBodies', () =>
+        liveCollection(() => childrenNamed(this, ['tbody'])),
+      );
     }
     createTBody(): Any {
       const bodies = childrenNamed(this, ['tbody']);
@@ -12720,21 +13352,25 @@ export function installDom(
     /** The rows of the head, then the body's and the table's own, then
      *  the foot's, each in tree order. */
     get rows(): Any {
-      const kids = Array.from(this.children) as Any[];
-      const out: Any[] = [];
-      for (const k of kids) {
-        if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
-      }
-      for (const k of kids) {
-        if (k.localName === 'tr') out.push(k);
-        else if (k.localName === 'tbody') {
-          out.push(...childrenNamed(k, ['tr']));
-        }
-      }
-      for (const k of kids) {
-        if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
-      }
-      return collection(out);
+      return heldList(this, 'rows', () =>
+        liveCollection(() => {
+          const kids = wrapAll(call('kids', this._id, 'elements'));
+          const out: Any[] = [];
+          for (const k of kids) {
+            if (k.localName === 'thead') out.push(...childrenNamed(k, ['tr']));
+          }
+          for (const k of kids) {
+            if (k.localName === 'tr') out.push(k);
+            else if (k.localName === 'tbody') {
+              out.push(...childrenNamed(k, ['tr']));
+            }
+          }
+          for (const k of kids) {
+            if (k.localName === 'tfoot') out.push(...childrenNamed(k, ['tr']));
+          }
+          return out;
+        }),
+      );
     }
     insertRow(index?: Any): Any {
       const at = long(index, -1);
@@ -12760,7 +13396,9 @@ export function installDom(
   }
   class HTMLTableSectionElement extends HTMLElement {
     get rows(): Any {
-      return collection(childrenNamed(this, ['tr']));
+      return heldList(this, 'rows', () =>
+        liveCollection(() => childrenNamed(this, ['tr'])),
+      );
     }
     insertRow(index?: Any): Any {
       return insertAt(this, this.rows, long(index, -1), 'tr');
@@ -12787,10 +13425,12 @@ export function installDom(
       )) {
         return -1;
       }
-      return Array.from(parent.rows).indexOf(this);
+      return Array.prototype.indexOf.call(parent.rows, this);
     }
     get cells(): Any {
-      return collection(childrenNamed(this, ['td', 'th']));
+      return heldList(this, 'cells', () =>
+        liveCollection(() => childrenNamed(this, ['td', 'th'])),
+      );
     }
     insertCell(index?: Any): Any {
       return insertAt(this, this.cells, long(index, -1), 'td');
@@ -12837,15 +13477,34 @@ export function installDom(
   // not; a sheet a page constructs draws nothing, since nothing here
   // adopts one.
 
-  class CSSRuleList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class CSSRuleList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
   }
-  class StyleSheetList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class StyleSheetList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
     }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
+    }
+  }
+  for (const Kind of [CSSRuleList, StyleSheetList]) {
+    Object.defineProperty(Kind.prototype, Symbol.iterator, {
+      value: Array.prototype.values,
+      writable: true,
+      configurable: true,
+    });
   }
 
   /** Where a rule's block opens: its first `{` that no backslash
@@ -13328,7 +13987,7 @@ export function installDom(
     sheet.deleteRule(at);
     sheet.insertRule(text, at);
     const list = sheet.cssRules;
-    if (list && list[at] !== rule) list[at] = rule;
+    if (list && list[at] !== rule) list[LIST].items[at] = rule;
   };
   /** A `@position-try` rule (CSS Anchor Positioning 1, 8.1): its name, and
    *  its declarations, which a page may set. */
@@ -13607,11 +14266,11 @@ export function installDom(
     return rule;
   };
   const ruleList = (texts: string[], sheet: Any, parent: Any): Any => {
-    const list = new CSSRuleList();
+    const rules: Any[] = [];
     for (const text of texts) {
-      if (!droppedRule(text)) list.push(ruleOf(text, sheet, parent));
+      if (!droppedRule(text)) rules.push(ruleOf(text, sheet, parent));
     }
-    return list;
+    return listMade(CSSRuleList, rules, null, false, null);
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
@@ -13739,7 +14398,11 @@ export function installDom(
       // rules before the edit: a library that inserts a rule and reads
       // `cssRules.length` for the next one reads no list again
       if (this._list && this._version === Number(answer.slice(0, first))) {
-        this._list.splice(at, 0, ruleOf(answer.slice(second + 1), this));
+        this._list[LIST].items.splice(
+          at,
+          0,
+          ruleOf(answer.slice(second + 1), this),
+        );
         this._version = Number(answer.slice(first + 1, second));
       }
       return at;
@@ -13761,7 +14424,7 @@ export function installDom(
       const answer = String(call('sheetDelete', this._owner._id, at));
       const cut = answer.indexOf('\u0000');
       if (this._list && this._version === Number(answer.slice(0, cut))) {
-        this._list.splice(at, 1);
+        this._list[LIST].items.splice(at, 1);
         this._version = Number(answer.slice(cut + 1));
       }
     }
@@ -14245,9 +14908,8 @@ export function installDom(
   // `@font-face` rules declare, which `<Html>` loads — where a style wants
   // one, or where `load()` asks — and tells the page of through
   // `__fontsLoaded` and `__fontsSettled`. A face a script makes with `new
-  // FontFace` is not among them: nothing hands its data to the document's
-  // fonts yet, so there is no `FontFace` to construct, and `add()` takes
-  // none.
+  // FontFace` is the host's too, by a number (`fontFaceNew`), and joins the
+  // document's with `document.fonts.add`.
 
   let fontSeq = 0;
   /** The `load()`s waiting on `<Html>`, by id. */
@@ -14256,6 +14918,8 @@ export function installDom(
   const fontSettles = new Map<number, () => void>();
   const NETWORK_ERROR = () =>
     new DOMException('A network error occurred.', 'NetworkError');
+  /** The faces `new FontFace` made, by the number the host has them by. */
+  const scriptFaces = new Map<number, Any>();
 
   /**
    * A face of the document's, as `document.fonts` hands it over (CSS Font
@@ -14263,26 +14927,80 @@ export function installDom(
    * `<Html>`'s. One object a face, for as long as the document declares it
    * as it does (`FontFaceSet._face`). A descriptor a page sets reads back,
    * and changes nothing of the document's face.
+   *
+   * Or a face a page's script made (2.1.1), whose status is its own, held
+   * here and told by the host (`__fontFaceDone`), and which is the
+   * document's once `document.fonts.add` has it.
    */
   class FontFace {
-    _set: Any;
-    _key: string;
-    _desc: Record<string, string>;
+    _set: Any = null;
+    _key = '';
+    _desc: Record<string, string> = {};
     /** Its `loaded`, made as it is first asked for. */
     _loaded: Any = null;
     _settle: [Any, Any] | null = null;
-    constructor(set: Any, key: string, desc: Record<string, string>) {
-      this._set = set;
-      this._key = key;
-      this._desc = {
-        display: 'auto',
-        featureSettings: 'normal',
-        variationSettings: 'normal',
-        ascentOverride: 'normal',
-        descentOverride: 'normal',
-        lineGapOverride: 'normal',
-        ...desc,
-      };
+    /** The number the host has a script's face by, 0 for a rule's. */
+    _script = 0;
+    _status = 'unloaded';
+    /** The document whose base its URLs are read against, and who loads
+     *  it. */
+    _doc: Any = null;
+    constructor(family: Any, source: Any, descriptors: Any = {}) {
+      if (arguments.length < 2) {
+        throw new TypeError(
+          `Failed to construct 'FontFace': 2 arguments required, but only ${arguments.length} present.`,
+        );
+      }
+      const desc: Record<string, string> = { ...FACE_DEFAULTS };
+      const init: Record<string, string> = {};
+      for (const key of Object.keys(FACE_DEFAULTS)) {
+        const value = descriptors?.[key];
+        if (value === undefined) continue;
+        desc[key] = str(value);
+        init[key] = desc[key];
+      }
+      desc.family = str(family);
+      this._desc = desc;
+      this._script = fontSeq += 1;
+      this._doc = document;
+      scriptFaces.set(this._script, this);
+      // made here, and a rejection nobody asked for is no unhandled one
+      this._loaded = new Promise((resolve, reject) => {
+        this._settle = [resolve, reject];
+      });
+      this._loaded.catch(() => {});
+      const bytes = ArrayBuffer.isView(source)
+        ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+        : source instanceof ArrayBuffer
+          ? new Uint8Array(source)
+          : null;
+      const made = call(
+        'fontFaceNew',
+        this._doc._id,
+        this._script,
+        JSON.stringify({
+          family: desc.family,
+          src: bytes ? null : str(source),
+          init,
+        }),
+        bytes ? base64OfBytes(bytes) : null,
+      );
+      if (made !== true) {
+        this._status = 'error';
+        this._settle?.[1](
+          new DOMException(
+            "Failed to construct 'FontFace': The source or a descriptor could not be parsed.",
+            'SyntaxError',
+          ),
+        );
+        this._settle = null;
+      } else if (bytes) this._startLoad();
+    }
+    /** A script's face starts to load, once. */
+    _startLoad(): void {
+      this._status = 'loading';
+      this._set?._faceLoading(this);
+      call('fontFaceLoad', this._doc._id, this._script);
     }
     get family(): string {
       return this._desc.family;
@@ -14351,7 +15069,9 @@ export function installDom(
       this._desc.lineGapOverride = str(v);
     }
     get status(): string {
-      return this._set._statuses().get(this._key) ?? 'error';
+      return this._script
+        ? this._status
+        : (this._set._statuses().get(this._key) ?? 'error');
     }
     /** Settles once the face has loaded, or could not: pending while
      *  nothing has asked for it. */
@@ -14371,6 +15091,10 @@ export function installDom(
       return this._loaded;
     }
     load(): Any {
+      if (this._script) {
+        if (this._status === 'unloaded') this._startLoad();
+        return this._loaded;
+      }
       const loaded = this.loaded;
       if (this._settle) this._set._loadFaces([this]).catch(() => {});
       return loaded;
@@ -14380,8 +15104,46 @@ export function installDom(
       const settle = this._settle;
       if (!settle) return;
       this._settle = null;
+      if (this._script) this._status = ok ? 'loaded' : 'error';
       if (ok) settle[0](this);
       else settle[1](NETWORK_ERROR());
+      if (this._script) this._set?._faceDone(this, ok);
+    }
+  }
+  const FACE_DEFAULTS: Record<string, string> = {
+    style: 'normal',
+    weight: 'normal',
+    stretch: 'normal',
+    unicodeRange: 'U+0-10FFFF',
+    display: 'auto',
+    featureSettings: 'normal',
+    variationSettings: 'normal',
+    ascentOverride: 'normal',
+    descentOverride: 'normal',
+    lineGapOverride: 'normal',
+  };
+  /** A face of the document's own rules, for as long as it declares it. */
+  const ruleFace = (
+    set: Any,
+    key: string,
+    desc: Record<string, string>,
+  ): Any => {
+    const face = Object.create(FontFace.prototype);
+    face._set = set;
+    face._key = key;
+    face._desc = { ...FACE_DEFAULTS, ...desc };
+    face._loaded = null;
+    face._settle = null;
+    face._script = 0;
+    return face;
+  };
+
+  /** What a `document.fonts` event says loaded, or failed to (2.3). */
+  class FontFaceSetLoadEvent extends Event {
+    readonly fontfaces: readonly Any[];
+    constructor(type: Any, init: Any = {}) {
+      super(type, init);
+      this.fontfaces = Object.freeze(Array.from(init?.fontfaces ?? []));
     }
   }
 
@@ -14389,6 +15151,12 @@ export function installDom(
   class FontFaceSet extends EventTarget {
     _doc: Any;
     _faces = new Map<string, Any>();
+    /** The faces a script put here, in the order it did. */
+    _added = new Set<Any>();
+    /** What came of a script's faces since the set last started loading,
+     *  which `loadingdone` and `loadingerror` say. */
+    _came: Any[] = [];
+    _failed: Any[] = [];
     /** The `load()`s on their way to `<Html>` and back. */
     _loading = 0;
     /** What waits for the next of them to come back. */
@@ -14408,17 +15176,60 @@ export function installDom(
     _list(): Any[] {
       return JSON.parse(str(call('fontFaces', this._doc._id)) || '[]');
     }
-    /** The faces as objects, one a face. */
+    /** The faces as objects, one a face: the document's rules', then what
+     *  a script put here. */
     _all(): Any[] {
-      return this._list().map((d: Any) => this._face(d));
+      const rules = this._list()
+        .map((d: Any) => this._face(d))
+        .filter((face: Any) => !face._script);
+      return [...rules, ...this._added];
     }
     _face(desc: Any): Any {
+      if (desc.script) {
+        const made = scriptFaces.get(desc.script);
+        if (made) {
+          made._key = desc.key;
+          return made;
+        }
+      }
       let face = this._faces.get(desc.key);
       if (!face) {
         const { key, status: _status, ...rest } = desc;
-        this._faces.set(key, (face = new FontFace(this, key, rest)));
+        this._faces.set(key, (face = ruleFace(this, key, rest)));
       }
       return face;
+    }
+    /** A script's face here has started to load: the set is loading, and
+     *  says so where nothing here was (2.5, "switch the FontFaceSet to
+     *  loading"). */
+    _faceLoading(_face: Any): void {
+      if (!this._loading) {
+        dispatch(this, trusted(new FontFaceSetLoadEvent('loading')));
+      }
+      this._loading += 1;
+    }
+    /** A script's face here has loaded, or could not. */
+    _faceDone(face: Any, ok: boolean): void {
+      (ok ? this._came : this._failed).push(face);
+      this._loading -= 1;
+      for (const fn of this._afterLoad.splice(0)) fn();
+      if (this._loading) return;
+      const came = this._came;
+      const failed = this._failed;
+      this._came = [];
+      this._failed = [];
+      dispatch(
+        this,
+        trusted(new FontFaceSetLoadEvent('loadingdone', { fontfaces: came })),
+      );
+      if (failed.length) {
+        dispatch(
+          this,
+          trusted(
+            new FontFaceSetLoadEvent('loadingerror', { fontfaces: failed }),
+          ),
+        );
+      }
     }
     /** The keys of the faces a `font` matches, or null for a `font` that
      *  is none. */
@@ -14511,9 +15322,20 @@ export function installDom(
               );
               return;
             }
-            const all = new Map(this._all().map((f: Any) => [f._key, f]));
+            const all = new Map<string, Any>(
+              this._all().map((f: Any) => [f._key, f]),
+            );
             const faces = keys.map((k) => all.get(k)).filter(Boolean);
-            this._loadFaces(faces).then(resolve, reject);
+            // what a script handed over or asked for needs nothing of the
+            // host's: its own load settles it
+            const ownLoads = faces
+              .filter((f) => f._script)
+              .map((f) => f.load());
+            const rules = faces.filter((f) => !f._script);
+            Promise.all([this._loadFaces(rules), ...ownLoads]).then(
+              () => resolve(faces),
+              reject,
+            );
           } catch (error) {
             reject(error);
           }
@@ -14533,9 +15355,14 @@ export function installDom(
       return keys.every((k) => statuses.get(k) === 'loaded');
     }
     get size(): number {
-      return this._list().length;
+      return this._all().length;
     }
     has(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'has' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
       return this._all().includes(face);
     }
     forEach(fn: Any, thisArg?: Any): void {
@@ -14555,24 +15382,42 @@ export function installDom(
     [Symbol.iterator](): Any {
       return this.values();
     }
-    /** Every face here is its rule's, which a script cannot add again;
-     *  and one it makes is none of this document's yet (above). */
+    /** A face a script made joins the document's; a rule's is one already,
+     *  which a script cannot add again (2.5.1). */
     add(face: Any): Any {
-      if (face instanceof FontFace) {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!face._script) {
         throw new DOMException(
           "Failed to execute 'add' on 'FontFaceSet': Cannot add a CSS-connected FontFace.",
           'InvalidModificationError',
         );
       }
-      throw new TypeError(
-        "Failed to execute 'add' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
-      );
+      if (this._added.has(face)) return this;
+      this._added.add(face);
+      face._set = this;
+      call('fontFaceAdd', this._doc._id, face._script, true);
+      if (face._status === 'loading') this._faceLoading(face);
+      return this;
     }
-    /** A rule's face is not taken out by a script (2.5.1). */
-    delete(_face: Any): boolean {
-      return false;
+    /** Only what a script put here is taken out (2.5.1). */
+    delete(face: Any): boolean {
+      if (!(face instanceof FontFace)) {
+        throw new TypeError(
+          "Failed to execute 'delete' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
+        );
+      }
+      if (!this._added.delete(face)) return false;
+      face._set = null;
+      call('fontFaceAdd', this._doc._id, face._script, false);
+      return true;
     }
-    clear(): void {}
+    clear(): void {
+      for (const face of [...this._added]) this.delete(face);
+    }
   }
 
   // --- the document --------------------------------------------------------------
@@ -14653,12 +15498,15 @@ export function installDom(
       setAdopted(adoptedSheets, sheets, 'Document', adopt);
     }
     get styleSheets(): Any {
-      const list = new StyleSheetList();
-      const ids = String(call('sheets', this._id));
-      for (const id of ids ? ids.split(',') : []) {
-        list.push(sheetOf(wrap(Number(id))));
-      }
-      return list;
+      return heldList(this, 'styleSheets', () =>
+        listMade(
+          StyleSheetList,
+          [],
+          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
+          true,
+          null,
+        ),
+      );
     }
     get currentScript(): Any {
       return this._current;
@@ -14746,18 +15594,27 @@ export function installDom(
       return this.documentElement;
     }
     get forms(): Any {
-      return collection(Array.from(this.getElementsByTagName('form')));
+      return heldList(this, 'forms', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'form'))),
+      );
     }
     get images(): Any {
-      return collection(Array.from(this.getElementsByTagName('img')));
+      return heldList(this, 'images', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'img'))),
+      );
     }
     get links(): Any {
-      return collection(
-        Array.from(this.querySelectorAll('a[href],area[href]')),
+      return heldList(this, 'links', () =>
+        liveCollection(
+          () => wrapAll(call('query', this._id, 'a[href],area[href]', true)),
+          true,
+        ),
       );
     }
     get scripts(): Any {
-      return this.getElementsByTagName('script');
+      return heldList(this, 'scripts', () =>
+        liveCollection(() => wrapAll(call('byTag', this._id, 'script'))),
+      );
     }
     get doctype(): Any {
       for (const kid of this.childNodes) if (kid.nodeType === 10) return kid;
@@ -14776,8 +15633,40 @@ export function installDom(
     getElementById(id: Any): Any {
       return wrap(Number(call('byId', str(id), this._id)));
     }
+    execCommand(id: Any, _showUI?: Any, value: Any = ''): boolean {
+      if (this._type && this._type !== 'application/xhtml+xml') {
+        throw new DOMException(
+          "Failed to execute 'execCommand' on 'Document': execCommand is only supported on HTML documents.",
+          'InvalidStateError',
+        );
+      }
+      const name = commandName(id);
+      if (!commandEnabled(name)) return false;
+      if (name === 'selectall') selectAllCommand();
+      else COMMANDS[name](commandTarget(), str(value));
+      return true;
+    }
+    queryCommandEnabled(id: Any): boolean {
+      return commandEnabled(commandName(id));
+    }
+    queryCommandIndeterminate(_id: Any): boolean {
+      return false;
+    }
+    queryCommandState(_id: Any): boolean {
+      return false;
+    }
+    queryCommandSupported(id: Any): boolean {
+      return commandSupported(commandName(id));
+    }
+    queryCommandValue(_id: Any): string {
+      return '';
+    }
     getElementsByName(name: Any): Any {
-      return this.querySelectorAll(`[name="${cssEscape(str(name))}"]`);
+      const selector = `[name="${cssEscape(str(name))}"]`;
+      return liveList(
+        () => wrapAll(call('query', this._id, selector, true)),
+        true,
+      );
     }
     createElement(tag: Any, options?: Any): Any {
       // an XML document keeps the name's case, and makes it in no
@@ -15204,7 +16093,9 @@ export function installDom(
      *  document draws, the box of the element it is in. */
     getClientRects(): Any {
       const flat = String(call('rangeRects', this._id));
-      if (!flat) return list([this._elementRect()]);
+      if (!flat) {
+        return listMade(DOMRectList, [this._elementRect()], null, false, null);
+      }
       const n = flat.split(',').map(Number);
       const v = viewport();
       const out: Any[] = [];
@@ -15218,7 +16109,7 @@ export function installDom(
           ),
         );
       }
-      return list(out);
+      return listMade(DOMRectList, out, null, false, null);
     }
     getBoundingClientRect(): Any {
       const rects = Array.from(this.getClientRects() as Iterable<Any>);
@@ -18133,7 +19024,41 @@ export function installDom(
    * timeout covers a wait on a socket. What `responseType` reads is text,
    * JSON or an `ArrayBuffer`; a `document` and a `Blob` are not here.
    */
-  class XMLHttpRequest extends EventTarget {
+  class XMLHttpRequestEventTarget extends EventTarget {
+    constructor() {
+      super();
+      if (new.target === XMLHttpRequestEventTarget) {
+        throw new TypeError('Illegal constructor');
+      }
+    }
+  }
+  for (const type of [
+    'loadstart',
+    'progress',
+    'abort',
+    'error',
+    'load',
+    'timeout',
+    'loadend',
+  ]) {
+    handlerProperty(XMLHttpRequestEventTarget.prototype, type);
+  }
+  let makingUpload = false;
+  class XMLHttpRequestUpload extends XMLHttpRequestEventTarget {
+    constructor() {
+      super();
+      if (!makingUpload) throw new TypeError('Illegal constructor');
+    }
+  }
+  const madeUpload = (): Any => {
+    makingUpload = true;
+    try {
+      return new XMLHttpRequestUpload();
+    } finally {
+      makingUpload = false;
+    }
+  };
+  class XMLHttpRequest extends XMLHttpRequestEventTarget {
     static readonly UNSENT = 0;
     static readonly OPENED = 1;
     static readonly HEADERS_RECEIVED = 2;
@@ -18151,7 +19076,7 @@ export function installDom(
     responseType = '';
     timeout = 0;
     withCredentials = false;
-    readonly upload = new EventTarget();
+    readonly upload = madeUpload();
     _method = 'GET';
     _url = '';
     _headers = new Headers();
@@ -18375,26 +19300,7 @@ export function installDom(
       dispatch(this, ev);
     }
   }
-  for (const type of [
-    'readystatechange',
-    'loadstart',
-    'progress',
-    'load',
-    'error',
-    'abort',
-    'timeout',
-    'loadend',
-  ]) {
-    Object.defineProperty(XMLHttpRequest.prototype, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers[type] ?? null;
-      },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-    });
-  }
+  handlerProperty(XMLHttpRequest.prototype, 'readystatechange');
 
   // --- traversal (DOM 6) ---------------------------------------------------
 
@@ -20217,18 +21123,6 @@ export function installDom(
   /** `ready`'s, kept until a registration has an active worker. */
   let swReady: { promise: Promise<Any>; resolve: (r: Any) => void } | null =
     null;
-  const handlerProperty = (proto: Any, type: string): void => {
-    Object.defineProperty(proto, `on${type}`, {
-      get(this: Any): Any {
-        return this._handlers?.[type] ?? null;
-      },
-      set(this: Any, fn: Any) {
-        setHandler(this, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-      enumerable: true,
-    });
-  };
   class ServiceWorker extends EventTarget {
     _id = 0;
     _url = '';
@@ -20255,6 +21149,9 @@ export function installDom(
       for (const go of later) go();
     }
   }
+  handlerProperty(FontFaceSet.prototype, 'loading');
+  handlerProperty(FontFaceSet.prototype, 'loadingdone');
+  handlerProperty(FontFaceSet.prototype, 'loadingerror');
   handlerProperty(ServiceWorker.prototype, 'statechange');
   handlerProperty(ServiceWorker.prototype, 'error');
   class ServiceWorkerRegistration extends EventTarget {
@@ -21245,19 +22142,27 @@ export function installDom(
   const inRange = (range: Any, key: Any): boolean =>
     !range || range.includes(key);
 
-  class DOMStringList extends Array {
-    item(i: Any): Any {
-      return this[Number(i)] ?? null;
+  class DOMStringList {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+    get length(): number {
+      return itemsOf(listState(this)).length;
+    }
+    item(index: Any): Any {
+      return itemsOf(listState(this))[Number(index) >>> 0] ?? null;
     }
     contains(name: Any): boolean {
-      return this.includes(str(name));
+      return itemsOf(listState(this)).includes(str(name));
     }
   }
-  const stringList = (names: Iterable<string>): Any => {
-    const list = new DOMStringList();
-    for (const name of [...names].sort()) list.push(name);
-    return list;
-  };
+  Object.defineProperty(DOMStringList.prototype, Symbol.iterator, {
+    value: Array.prototype.values,
+    writable: true,
+    configurable: true,
+  });
+  const stringList = (names: Iterable<string>): Any =>
+    listMade(DOMStringList, [...names].sort(), null, false, null);
 
   class IDBVersionChangeEvent extends Event {
     readonly oldVersion: number;
@@ -22951,59 +23856,400 @@ export function installDom(
     },
   };
 
+  /** What only the steps below make: a page's `new` is refused (DOM 3.1). */
+  let makingSignal = false;
   class AbortSignal extends EventTarget {
-    aborted = false;
-    reason: Any = undefined;
-    onabort: Any = null;
-    static abort(reason?: Any): Any {
-      const c = new AbortController();
-      c.abort(reason);
-      return c.signal;
+    _aborted = false;
+    _reason: Any = undefined;
+    /** Whether it follows other signals (`any`), and which, and which
+     *  follow it (DOM 3.1, "source signals", "dependent signals"). Kept by
+     *  reference and let go as a signal aborts: one a page dropped may
+     *  still have a listener that has to hear. */
+    _dependent = false;
+    _sources: Any[] = [];
+    _dependents = new Set<Any>();
+    /** What is told as it aborts, ahead of the event ("abort algorithms"). */
+    _algorithms: (() => void)[] = [];
+    constructor() {
+      super();
+      if (!makingSignal) throw new TypeError('Illegal constructor');
     }
-    static timeout(ms: number): Any {
-      const c = new AbortController();
+    get aborted(): boolean {
+      return this._aborted;
+    }
+    get reason(): Any {
+      return this._reason;
+    }
+    static abort(reason?: Any): Any {
+      const signal = madeSignal(this);
+      signal._aborted = true;
+      signal._reason = abortReason(reason);
+      return signal;
+    }
+    static timeout(ms: Any): Any {
+      const delay = enforcedRange(ms, 'AbortSignal', 'timeout');
+      const signal = madeSignal(this);
       setTimer(
-        () => c.abort(new DOMException('signal timed out', 'TimeoutError')),
-        ms,
+        () =>
+          signalAbort(
+            signal,
+            new DOMException('signal timed out', 'TimeoutError'),
+          ),
+        delay,
         [],
         false,
       );
-      return c.signal;
+      return signal;
+    }
+    static any(signals: Any): Any {
+      return dependentSignal(signalsFrom(signals), this);
     }
     throwIfAborted(): void {
-      if (this.aborted) throw this.reason;
+      if (this._aborted) throw this._reason;
     }
   }
+  idlAttributes(AbortSignal);
+  /** A signal of `Kind`, with nothing asked of the page's `new`. */
+  const madeSignal = (Kind: Any): Any => {
+    makingSignal = true;
+    try {
+      return new Kind();
+    } finally {
+      makingSignal = false;
+    }
+  };
+  /** A `[EnforceRange] unsigned long long` (Web IDL 3.2.4). */
+  const enforcedRange = (v: Any, on: string, member: string): number => {
+    const n = Math.trunc(Number(v));
+    if (!Number.isFinite(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
+      throw new TypeError(
+        `Failed to execute '${member}' on '${on}': Value is outside the 'unsigned long long' value range.`,
+      );
+    }
+    return n;
+  };
+  /** Only a reason left out is the default one: `abort(null)` aborts with
+   *  null. */
+  const abortReason = (reason: Any): Any =>
+    reason === undefined
+      ? new DOMException('signal is aborted without reason', 'AbortError')
+      : reason;
+  /** "Run the abort steps" (DOM 3.1). */
+  const abortSteps = (signal: Any): void => {
+    for (const source of signal._sources) source._dependents.delete(signal);
+    signal._sources = [];
+    const algorithms = signal._algorithms;
+    signal._algorithms = [];
+    for (const algorithm of algorithms) algorithm();
+    dispatch(signal, trusted(new Event('abort')));
+  };
+  /** "Signal abort": what follows it aborts with it, each after it. */
+  const signalAbort = (signal: Any, reason: Any): void => {
+    if (signal._aborted) return;
+    signal._aborted = true;
+    signal._reason = abortReason(reason);
+    const following: Any[] = [];
+    for (const dependent of signal._dependents) {
+      if (dependent._aborted) continue;
+      dependent._aborted = true;
+      dependent._reason = signal._reason;
+      following.push(dependent);
+    }
+    signal._dependents.clear();
+    abortSteps(signal);
+    for (const dependent of following) abortSteps(dependent);
+  };
+  /** A `sequence<AbortSignal>` from what a page passed (Web IDL 3.2.19). */
+  const signalsFrom = (signals: Any): Any[] => {
+    if (typeof signals?.[Symbol.iterator] !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'any' on 'AbortSignal': The provided value cannot be converted to a sequence.",
+      );
+    }
+    const out = Array.from(signals as Any[]);
+    for (const signal of out) {
+      if (!(signal instanceof AbortSignal)) {
+        throw new TypeError(
+          "Failed to execute 'any' on 'AbortSignal': Failed to convert value to 'AbortSignal'.",
+        );
+      }
+    }
+    return out;
+  };
+  /** "Create a dependent abort signal" (DOM 3.1): one that follows signals
+   *  no signal follows, so that a chain of them holds no chain of signals. */
+  const dependentSignal = (signals: Any[], Kind: Any): Any => {
+    const result = madeSignal(Kind);
+    for (const signal of signals) {
+      if (signal._aborted) {
+        result._aborted = true;
+        result._reason = signal._reason;
+        return result;
+      }
+    }
+    result._dependent = true;
+    for (const signal of signals) {
+      for (const source of signal._dependent ? signal._sources : [signal]) {
+        if (result._sources.includes(source)) continue;
+        result._sources.push(source);
+        source._dependents.add(result);
+      }
+    }
+    return result;
+  };
   class AbortController {
-    readonly signal: Any = Object.create(AbortSignal.prototype);
-    constructor() {
-      Object.assign(this.signal, new EventTarget(), {
-        aborted: false,
-        reason: undefined,
-        onabort: null,
-      });
+    _signal: Any = madeSignal(AbortSignal);
+    get signal(): Any {
+      return this._signal;
     }
     abort(reason?: Any): void {
-      const s = this.signal;
-      if (s.aborted) return;
-      s.aborted = true;
-      // only a reason left out is the default one: `abort(null)` aborts
-      // with null
-      s.reason =
-        reason === undefined
-          ? new DOMException('signal is aborted without reason', 'AbortError')
-          : reason;
-      const ev = new Event('abort');
-      if (typeof s.onabort === 'function') {
-        try {
-          s.onabort(ev);
-        } catch (e) {
-          report(e);
-        }
-      }
-      dispatch(s, ev);
+      signalAbort(this._signal, reason);
     }
   }
+  idlAttributes(AbortController);
+
+  // --- prioritized task scheduling (WICG Scheduling APIs) --------------------
+
+  const PRIORITIES = ['user-blocking', 'user-visible', 'background'];
+  const priorityFrom = (v: Any, on: string): string => {
+    const priority = str(v);
+    if (!PRIORITIES.includes(priority)) {
+      throw new TypeError(
+        `Failed to execute '${on}': The provided value '${priority}' is not a valid enum value of type TaskPriority.`,
+      );
+    }
+    return priority;
+  };
+  class TaskPriorityChangeEvent extends Event {
+    readonly previousPriority: string;
+    constructor(type: Any, init: Any) {
+      super(type, init);
+      if (init?.previousPriority === undefined) {
+        throw new TypeError(
+          "Failed to construct 'TaskPriorityChangeEvent': required member previousPriority is undefined.",
+        );
+      }
+      this.previousPriority = priorityFrom(
+        init.previousPriority,
+        'TaskPriorityChangeEvent',
+      );
+    }
+  }
+  class TaskSignal extends AbortSignal {
+    _priority = 'user-visible';
+    _changing = false;
+    /** A priority that follows another signal's: what follows this one, and
+     *  whether it has one at all ("has fixed priority"). */
+    _priorityFollowers: Any[] = [];
+    _fixed = false;
+    get priority(): string {
+      return this._priority;
+    }
+    static override any(signals: Any, init: Any = {}): Any {
+      const result = dependentSignal(signalsFrom(signals), this);
+      const from = init?.priority ?? 'user-visible';
+      if (from instanceof TaskSignal) {
+        result._priority = from._priority;
+        if (from._fixed) result._fixed = true;
+        else from._priorityFollowers.push(result);
+      } else {
+        result._priority = priorityFrom(from, 'any');
+        result._fixed = true;
+      }
+      return result;
+    }
+  }
+  idlAttributes(TaskSignal);
+  handlerProperty(AbortSignal.prototype, 'abort');
+  handlerProperty(TaskSignal.prototype, 'prioritychange');
+  /** "Signal priority change". */
+  const signalPriority = (signal: Any, priority: string): void => {
+    if (signal._changing) {
+      throw new DOMException(
+        "Failed to execute 'setPriority' on 'TaskController': Cannot change the priority of a signal while it is changing.",
+        'NotAllowedError',
+      );
+    }
+    if (signal._priority === priority) return;
+    signal._changing = true;
+    const previousPriority = signal._priority;
+    signal._priority = priority;
+    dispatch(
+      signal,
+      trusted(
+        new TaskPriorityChangeEvent('prioritychange', { previousPriority }),
+      ),
+    );
+    for (const follower of signal._priorityFollowers) {
+      signalPriority(follower, priority);
+    }
+    signal._changing = false;
+  };
+  class TaskController extends AbortController {
+    constructor(init: Any = {}) {
+      super();
+      const priority =
+        init?.priority === undefined
+          ? 'user-visible'
+          : priorityFrom(init.priority, 'TaskController');
+      this._signal = madeSignal(TaskSignal);
+      this._signal._priority = priority;
+    }
+    setPriority(priority: Any): void {
+      signalPriority(this._signal, priorityFrom(priority, 'setPriority'));
+    }
+  }
+  /** One task of `postTask` or `yield`, in the order it was queued. */
+  interface ScheduledTask {
+    run(): void;
+    priority(): string;
+    continuation: boolean;
+    order: number;
+  }
+  const scheduledTasks: ScheduledTask[] = [];
+  let scheduledOrder = 0;
+  let taskQueued = false;
+  /** What the running task inherits to a `yield`, its priority and signal. */
+  let schedulingState: { priority: () => string; signal: Any } | null = null;
+  /** The next task: of the highest priority, a continuation ahead of a task
+   *  of the same one, the oldest of those (Scheduling APIs, "select the next
+   *  scheduler task queue"). */
+  const nextScheduled = (): ScheduledTask | undefined => {
+    let best: ScheduledTask | undefined;
+    let bestRank = Infinity;
+    for (const task of scheduledTasks) {
+      const rank =
+        PRIORITIES.indexOf(task.priority()) * 2 + (task.continuation ? 0 : 1);
+      if (rank < bestRank) {
+        best = task;
+        bestRank = rank;
+      }
+    }
+    return best;
+  };
+  /** One task to a turn, so that what a page queued from one runs after
+   *  anything of a higher priority it queued. */
+  const queueScheduled = (): void => {
+    if (taskQueued || !scheduledTasks.length) return;
+    taskQueued = true;
+    setTimer(
+      () => {
+        taskQueued = false;
+        const task = nextScheduled();
+        if (task) {
+          scheduledTasks.splice(scheduledTasks.indexOf(task), 1);
+          task.run();
+        }
+        queueScheduled();
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  const schedule = (task: Omit<ScheduledTask, 'order'>): (() => void) => {
+    const queued = { ...task, order: (scheduledOrder += 1) };
+    scheduledTasks.push(queued);
+    queueScheduled();
+    return () => {
+      const at = scheduledTasks.indexOf(queued);
+      if (at >= 0) scheduledTasks.splice(at, 1);
+    };
+  };
+  let makingScheduler = false;
+  class Scheduler {
+    constructor() {
+      if (!makingScheduler) throw new TypeError('Illegal constructor');
+    }
+    postTask(callback: Any, options: Any = {}): Any {
+      return new Promise((resolve, reject) => {
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': parameter 1 is not of type 'Function'.",
+          );
+        }
+        const signal = options?.signal;
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new TypeError(
+            "Failed to execute 'postTask' on 'Scheduler': member signal is not of type AbortSignal.",
+          );
+        }
+        const fixed =
+          options?.priority === undefined
+            ? null
+            : priorityFrom(options.priority, 'postTask');
+        const delay =
+          options?.delay === undefined
+            ? 0
+            : enforcedRange(options.delay, 'Scheduler', 'postTask');
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const priority = (): string =>
+          fixed ??
+          (signal instanceof TaskSignal ? signal._priority : 'user-visible');
+        const state = { priority, signal };
+        let cancel: () => void = () => {};
+        const enqueue = (): void => {
+          cancel = schedule({
+            priority,
+            continuation: false,
+            run() {
+              const was = schedulingState;
+              schedulingState = state;
+              try {
+                resolve(callback());
+              } catch (error) {
+                reject(error);
+              } finally {
+                schedulingState = was;
+              }
+            },
+          });
+        };
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+        if (delay > 0) {
+          const timer = setTimer(enqueue, delay, [], false);
+          cancel = () => clearTimer(timer);
+        } else enqueue();
+      });
+    }
+    yield(): Any {
+      return new Promise((resolve, reject) => {
+        const state = schedulingState;
+        const signal = state?.signal;
+        if (signal?._aborted) {
+          reject(signal._reason);
+          return;
+        }
+        const cancel = schedule({
+          priority: state?.priority ?? (() => 'user-visible'),
+          continuation: true,
+          run: () => resolve(undefined),
+        });
+        if (signal) {
+          signal._algorithms.push(() => {
+            cancel();
+            reject(signal._reason);
+          });
+        }
+      });
+    }
+  }
+  const madeScheduler = (): Any => {
+    makingScheduler = true;
+    try {
+      return new Scheduler();
+    } finally {
+      makingScheduler = false;
+    }
+  };
 
   /** `matchMedia`: a list answered by the host from `<Html>`'s own media
    *  queries, each time `matches` is read, and told of a change by the
@@ -24018,6 +25264,99 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
+  /** The features a permission can name: each one Chrome's `PermissionName`
+   *  takes, since a name past them is a `TypeError` a page can tell a
+   *  missing feature by. */
+  const PERMISSION_NAMES = new Set([
+    'accelerometer',
+    'accessibility-events',
+    'ambient-light-sensor',
+    'background-fetch',
+    'background-sync',
+    'camera',
+    'clipboard-read',
+    'clipboard-write',
+    'display-capture',
+    'fullscreen',
+    'geolocation',
+    'gyroscope',
+    'idle-detection',
+    'local-fonts',
+    'magnetometer',
+    'microphone',
+    'midi',
+    'nfc',
+    'notifications',
+    'payment-handler',
+    'periodic-background-sync',
+    'persistent-storage',
+    'push',
+    'screen-wake-lock',
+    'speaker-selection',
+    'storage-access',
+    'system-wake-lock',
+    'top-level-storage-access',
+    'window-management',
+  ]);
+  let makingPermissions = false;
+  class PermissionStatus extends EventTarget {
+    _name = '';
+    constructor() {
+      super();
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    get name(): string {
+      return this._name;
+    }
+    /** Nothing here has been granted, and nothing refused: the answer a
+     *  browser gives before it has asked. */
+    get state(): string {
+      return 'prompt';
+    }
+  }
+  idlAttributes(PermissionStatus);
+  handlerProperty(PermissionStatus.prototype, 'change');
+  class Permissions {
+    constructor() {
+      if (!makingPermissions) throw new TypeError('Illegal constructor');
+    }
+    query(descriptor: Any): Any {
+      return new Promise((resolve) => {
+        if (typeof descriptor !== 'object' || descriptor === null) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'PermissionDescriptor'.",
+          );
+        }
+        if (descriptor.name === undefined) {
+          throw new TypeError(
+            "Failed to execute 'query' on 'Permissions': Required member is undefined.",
+          );
+        }
+        const name = str(descriptor.name);
+        if (!PERMISSION_NAMES.has(name)) {
+          throw new TypeError(
+            `Failed to execute 'query' on 'Permissions': The provided value '${name}' is not a valid enum value of type PermissionName.`,
+          );
+        }
+        makingPermissions = true;
+        try {
+          const status = new PermissionStatus();
+          status._name = name;
+          resolve(status);
+        } finally {
+          makingPermissions = false;
+        }
+      });
+    }
+  }
+  const madePermissions = (): Any => {
+    makingPermissions = true;
+    try {
+      return new Permissions();
+    } finally {
+      makingPermissions = false;
+    }
+  };
   const navigator = {
     userAgent,
     appName: 'Netscape',
@@ -24044,6 +25383,7 @@ export function installDom(
     sendBeacon: () => false,
     javaEnabled: () => false,
     userActivation: new UserActivation(ACTIVATION_KEY),
+    permissions: madePermissions(),
   };
   // a page's service workers, where the host lets it have them and it is a
   // secure context; left out otherwise, as `clipboard` is
@@ -28264,6 +29604,96 @@ export function installDom(
     );
   };
 
+  /** What a command edits: the focused text field, or the editing host the
+   *  selection is in. */
+  const commandTarget = (): Any => {
+    const active = document.activeElement;
+    if (
+      (active?.localName === 'textarea' ||
+        (active?.localName === 'input' && selects(active))) &&
+      !active.readOnly &&
+      !active.disabled
+    ) {
+      return active;
+    }
+    const node = selection.anchorNode;
+    return node ? editingHostOf(node) : null;
+  };
+  /** A field's edit, as `edit` is a host's, by what it holds and where its
+   *  selection is. */
+  const editField = (
+    field: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data,
+    };
+    if (!dispatch(field, trusted(new InputEvent('beforeinput', init)))) return;
+    let from = field.selectionStart;
+    let to = field.selectionEnd;
+    if (from === to) {
+      if (inputType === 'deleteContentBackward') from = Math.max(0, from - 1);
+      else if (inputType === 'deleteContentForward') to += 1;
+    }
+    field.setRangeText(data ?? '', from, to, 'end');
+    dispatch(
+      field,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+  };
+  /** An edit a command makes, with a line of text a paragraph or a break as
+   *  a key would make it. */
+  const commandEdit = (
+    target: Any,
+    inputType: string,
+    data: string | null,
+  ): void => {
+    if (target instanceof HTMLElement && 'selectionStart' in target) {
+      editField(target, inputType, data);
+    } else edit(target, inputType, data);
+  };
+  /**
+   * What `execCommand` does (W3C execCommand, not a standard yet): the
+   * commands that are edits this page already makes for a key, and no
+   * other. `queryCommandSupported` says which, so a page that can do
+   * without `bold` is not told it has it: formatting commands, `undo` and
+   * `copy` answer false until something here can do them.
+   */
+  const COMMANDS: Record<string, (target: Any, value: string) => void> = {
+    delete: (target) => commandEdit(target, 'deleteContentBackward', null),
+    forwarddelete: (target) =>
+      commandEdit(target, 'deleteContentForward', null),
+    insertlinebreak: (target) => commandEdit(target, 'insertLineBreak', null),
+    insertparagraph: (target) => commandEdit(target, 'insertParagraph', null),
+    inserttext(target, value) {
+      const field = target instanceof HTMLElement && 'selectionStart' in target;
+      const lines = field ? [value] : value.split('\n');
+      lines.forEach((line, i) => {
+        if (i) commandEdit(target, 'insertParagraph', null);
+        if (line) commandEdit(target, 'insertText', line);
+      });
+    },
+  };
+  const selectAllCommand = (): void => {
+    const target = commandTarget();
+    if (target && 'selectionStart' in target) target.select();
+    else selection.selectAllChildren(target ?? document.body);
+  };
+  /** The name a page gave a command, as it is compared (ASCII caseless). */
+  const commandName = (id: Any): string => str(id).toLowerCase();
+  const commandSupported = (name: string): boolean =>
+    name === 'selectall' ||
+    Object.prototype.hasOwnProperty.call(COMMANDS, name);
+  const commandEnabled = (name: string): boolean =>
+    name === 'selectall' ||
+    (commandSupported(name) && commandTarget() !== null);
+
   /** What a key not cancelled does in an editing host: the edit it is, if
    *  any, and whether it was one — which keeps it from the host's own
    *  defaults, as Space scrolling the pane. */
@@ -28576,7 +30006,12 @@ export function installDom(
     DOMStringMap,
     ...GEOMETRY.classes,
     NodeList,
+    RadioNodeList,
     HTMLCollection,
+    HTMLOptionsCollection,
+    HTMLFormControlsCollection,
+    DOMRectList,
+    FileList,
     URL,
     URLSearchParams,
     Headers,
@@ -28594,6 +30029,14 @@ export function installDom(
     Response,
     AbortController,
     AbortSignal,
+    TaskController,
+    TaskSignal,
+    TaskPriorityChangeEvent,
+    Scheduler,
+    XMLHttpRequestEventTarget,
+    XMLHttpRequestUpload,
+    Permissions,
+    PermissionStatus,
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
@@ -28616,6 +30059,9 @@ export function installDom(
     TreeWalker,
     NodeIterator,
     DOMParser,
+    FontFace,
+    FontFaceSet,
+    FontFaceSetLoadEvent,
     PerformanceObserver,
     MessageEvent,
     MessageChannel,
@@ -28744,6 +30190,13 @@ export function installDom(
     });
   };
   secureGlobals(location.protocol === 'https:');
+  // `[Replaceable]`: a page's own `scheduler` takes its place
+  Object.defineProperty(G, 'scheduler', {
+    value: madeScheduler(),
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   // Bun's context has a `console` of its own that no definition on the
   // global replaces — a page reads it whatever this defines — but whose
   // methods are its to set: they are set where there is one, as they are
@@ -29581,6 +31034,8 @@ export function installDom(
     Object.defineProperty(G, name, {
       value: () => {
         taskEpoch += 1;
+        treeEpoch += 1;
+        attrEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();
@@ -29619,6 +31074,8 @@ export function installDom(
     document._current = outerScripts.length ? outerScripts.pop() : null;
     return true;
   });
+  // a module is about to run, which a task is: it enters through nothing else
+  entry('__task', () => true);
   // the parser put nodes in the document since a script ran — the host
   // has noted them for the page's observers (`parserInserted`), and the
   // entry has run what its custom elements owe. A `<body>` among them set
@@ -30558,6 +32015,13 @@ export function installDom(
     done(Array.isArray(loaded) ? loaded : []);
     return true;
   });
+  entry('__fontFaceDone', () => {
+    const [id, ok] = input();
+    const face = scriptFaces.get(id);
+    if (!face) return false;
+    face._done(ok === true);
+    return true;
+  });
   entry('__fontsSettled', () => {
     const [id] = input();
     const done = fontSettles.get(id);
@@ -31396,7 +32860,6 @@ export function installDom(
     // and the interfaces no global names, reached through a getter alone:
     // `document.fonts`'s, and the faces it hands over
     markFn(FontFaceSet, 8);
-    markFn(FontFace, 8);
 
     const realToString = Function.prototype.toString;
     const toString = function (this: Any): string {

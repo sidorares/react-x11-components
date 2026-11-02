@@ -1524,6 +1524,9 @@ export function useHtmlHandle(): HtmlHandle & { ref: React.Ref<unknown> } {
         nodeRef.current?.loadFonts(keys) ??
         Promise.resolve(keys.map(() => false)),
       fontsSettled: () => nodeRef.current?.fontsSettled() ?? Promise.resolve(),
+      scriptFonts: () => nodeRef.current?.scriptFonts() ?? null,
+      scriptFontsChanged: (id: number, added: boolean) =>
+        nodeRef.current?.scriptFontsChanged(id, added),
       svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
       mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
       scriptsUnblocked: (script?: Element | null) =>
