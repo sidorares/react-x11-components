@@ -21,6 +21,13 @@ import type {
   WorkerThreadsModule,
 } from './platform.js';
 
+import type {
+  HtmlNotificationEvents,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from '../notifications.js';
+import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
+
 declare const AbortController: AbortControllerClass;
 
 const { parentPort, receiveMessageOnPort, workerData } =
@@ -36,8 +43,17 @@ const WORKER_TIMEOUT_MS = 30_000;
  *  an `importScripts`. */
 const WORKER_CEILING_MS = 60_000;
 
-const { init, userAgent, language, sync, flag, frozen, stopped } =
-  workerData as WorkerThreadData;
+const {
+  init,
+  userAgent,
+  language,
+  sync,
+  flag,
+  frozen,
+  stopped,
+  permissions,
+  notifies,
+} = workerData as WorkerThreadData;
 const port = parentPort!;
 const word = new Int32Array(flag);
 const tell = (message: FromWorker): void => port.postMessage(message);
@@ -158,6 +174,66 @@ const transports = new TransportProxy((m) => tell(m));
 /** And its WebSockets (`socket-relay.ts`). */
 const sockets = new SocketProxy((m) => tell(m));
 
+/** Where each permission stands for the page, as the page last said: a read
+ *  of one is at once, and an answer from across a thread cannot be. */
+const permissionStates = new Map(Object.entries(permissions));
+const permissionWatchers = new Set<(name: string) => void>();
+const permissionsCopied: HtmlPermissions = {
+  state: (name) =>
+    (permissionStates.get(name) ?? 'denied') as HtmlPermissionState,
+  // a window's alone (`Notification.requestPermission`)
+  request: () => Promise.resolve('denied'),
+  watch: (listener) => {
+    permissionWatchers.add(listener);
+    return () => permissionWatchers.delete(listener);
+  },
+};
+
+/** A notification this worker made, on its way or showing. */
+interface ShownHere {
+  events: HtmlNotificationEvents;
+  shown(handle: HtmlShownNotification): void;
+  failed(reason: Error): void;
+}
+const showing = new Map<number, ShownHere>();
+let nextShown = 1;
+/** Its notifications are the page's to show (`PageWorkers._notification`). */
+const notificationsThrough: HtmlNotifications = {
+  show(notification, events) {
+    return new Promise((resolve, reject) => {
+      const id = nextShown;
+      nextShown += 1;
+      showing.set(id, {
+        events,
+        shown: resolve,
+        failed: reject,
+      });
+      tell({ kind: 'notification', id, show: notification });
+    });
+  },
+  focus: () => tell({ kind: 'notification', id: 0, focus: true }),
+};
+const heardNotification = (id: number, told: string): void => {
+  const here = showing.get(id);
+  if (!here) return;
+  if (told === 'show') {
+    here.shown({
+      close: () => {
+        showing.delete(id);
+        tell({ kind: 'notification', id, close: true });
+      },
+    });
+  } else if (told === 'click') {
+    here.events.click();
+  } else if (told === 'close') {
+    showing.delete(id);
+    here.events.close();
+  } else {
+    showing.delete(id);
+    here.failed(new Error('the notification was not shown'));
+  }
+};
+
 const seams: HostSeams = {
   handle: NO_VIEW,
   viewport: () => ({
@@ -179,6 +255,8 @@ const seams: HostSeams = {
   fetch: fetchThrough,
   webTransport: transports,
   webSocket: sockets,
+  permissions: permissionsCopied,
+  ...(notifies && { notifications: notificationsThrough }),
   userAgent,
   language,
   secureContext: init.secure,
@@ -259,6 +337,11 @@ const followPage = (): void => {
 port.on('message', (m: ToWorker) => {
   if (m.kind === 'message') {
     engine.call('__workerMessage', [0, m.data]);
+  } else if (m.kind === 'permission') {
+    permissionStates.set(m.name, m.state);
+    for (const listener of permissionWatchers) listener(m.name);
+  } else if (m.kind === 'notification') {
+    heardNotification(m.id, m.told);
   } else if (m.kind === 'suspended') {
     followPage();
   } else if (m.kind === 'fetched') {

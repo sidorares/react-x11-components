@@ -982,7 +982,8 @@ since this component navigates nowhere by itself:
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                 |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                         |
 | `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                           |
-| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` answers and what guards a read of the clipboard. See below.                                   |
+| `notifications`  | none: reaches none        | What a page's `Notification`s reach (`HtmlNotifications`). `useHtmlNotifications()` is the desktop's. See below.                                                             |
+| `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.     |
 | `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                   |
 | `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.        |
 | `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.         |
@@ -2031,9 +2032,9 @@ formatting command and `undo` answer false rather than pretending, and
 `cut` are there where the host handed a clipboard, under a user's press or
 key, and `paste` is not for a page to ask for.
 
-**`navigator.permissions` answers what `scripts.permissions` holds**, and
-`prompt` where it holds nothing, as a browser does before it has asked; a name
-it does not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
+**`navigator.permissions` answers what asking would come to**: see
+[Notifications and permissions](#notifications-and-permissions). A name it does
+not know is a `TypeError`. `scheduler.postTask`, `scheduler.yield` and
 `TaskController`
 are the Prioritized Task Scheduling API: one task to a turn, the highest
 priority first, a continuation ahead of a task of the same one.
@@ -2389,6 +2390,82 @@ is `:read-only`. Nothing here fills a form in, so `:autofill` matches nothing,
 and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
+
+### Notifications and permissions
+
+```tsx
+import { useHtmlNotifications } from '@react-x11/components/html';
+
+const notifications = useHtmlNotifications();
+<Html source={source} scripts={{ notifications }} />;
+```
+
+A page does not reach the desktop by itself. With no `scripts.notifications` it
+finds `Notification` all the same, as it does in a browser whose user said no:
+`Notification.permission` is `denied`, and one it makes fires `error`. A host
+that hands one and no `permissions` has decided, and a page is `granted`; one
+with a user to ask hands both.
+
+`useHtmlNotifications()` is core's `useNotifier()`, so a banner lands on
+whatever the machine has, and **what comes back depends on where it lands**:
+
+| Where it lands                                | Shown | `click` and `close`         |
+| --------------------------------------------- | ----- | --------------------------- |
+| The desktop's daemon over D-Bus, on Linux     | Yes   | Yes                         |
+| `notify-send`, on Linux with no bus transport | Yes   | No                          |
+| The system's centre, in a signed app on a Mac | Yes   | Yes                         |
+| `osascript`, on a Mac otherwise               | Yes   | No, and no `close()` either |
+
+A page hears `show` on all of them. An unbundled `node` process, which the
+example browser is, lands on `osascript`, in a `<Frame>` pane as much as out of
+one, and that banner is posted as Script Editor's.
+
+**The origin goes with the notification.** `HtmlNotification.origin` is the
+host's and not the page's: a page writes the title and the body, so what says
+who wrote them cannot be something else it writes. `useHtmlNotifications()`
+shows it as the subtitle and the application's name. Its `body` is escaped where
+the daemon reads markup, since a page's `<img>` there would be a request nobody
+made. An `icon` is handed over as a URL and asked for by nothing.
+
+`Notification.requestPermission()` asks `scripts.permissions` only with a press
+or a key behind it. Without one a page hears what it had, as Firefox and Safari
+have it, where Chrome asks with a smaller prompt: a page that can ask on load
+asks every reader before they have done anything. A `tag` replaces the document's
+last one of that tag, and a page's notifications go with it, as a closed tab's do
+in Chrome. A `click` the page does not cancel calls `HtmlNotifications.focus`.
+`ServiceWorkerRegistration.showNotification()` and `getNotifications()` are
+there, with `actions`, and `notificationclick` and `notificationclose` reach a
+service worker that showed its own. They last as long as the document's
+registration, so a reload forgets them, and a click on one the window showed
+calls `focus` rather than waking its worker. A worker's notifications go through
+its page's seam.
+
+**`navigator.permissions` answers what asking would come to**, in this order,
+which is `DomHost._permissionState`:
+
+1. Anything in a document that is not a secure context is `denied`.
+2. A feature a frame's `allow` leaves out is `denied`, whatever a host says.
+3. `camera` and `microphone` are `scripts.mediaDevices.permission`'s.
+4. Anything else is what `scripts.permissions.state` says.
+5. With no `permissions`, what a host handed a seam for has that seam's answer:
+   `notifications` is `granted` beside a `notifications` seam, and
+   `clipboard-write` is `prompt` beside a `clipboard`, since a press is all a
+   write needs. Everything else is `denied`, since there is nobody to ask.
+
+A `PermissionStatus` with a listener hears `change` when a state moves, which a
+host says through `HtmlPermissions.watch`, and a page's own `requestPermission()`
+says for itself. A worker has a copy of its page's answers, kept up to date, since
+a read is at once and an answer across a thread cannot be.
+
+The example browser asks in a bar above the tab, in its own process, since a
+pane draws the page and nothing around it. What is said is kept in the profile
+(`HtmlProfile.permissions`), which every tab's process reads for itself, and
+**Reset Site Permissions** in the page's menu lets an origin ask again. It can
+ask for `notifications` and `clipboard-read`, and anything else it has no feature
+behind is `denied`.
+
+`memoryNotifications()` reaches nothing, for a test: what is showing is its
+`shown`, each with its `click()` and `close()`.
 
 ### Downloads
 

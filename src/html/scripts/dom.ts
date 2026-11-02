@@ -45,6 +45,7 @@ import type { installGeometry } from './geometry.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installClipboard } from './clipboard.js';
+import type { installNotifications } from './notifications.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -83,6 +84,7 @@ export function installDom(
   webcrypto: typeof installWebCrypto,
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
+  notificationsApi: typeof installNotifications,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -21877,6 +21879,12 @@ export function installDom(
     update(): Promise<Any> {
       return Promise.resolve(this);
     }
+    showNotification(title: Any, options?: Any): Any {
+      return NOTE.showFor(this, title, options);
+    }
+    getNotifications(filter?: Any): Any {
+      return NOTE.listFor(this, filter);
+    }
     /** Service Workers 1, "Unregister": gone from the page's, and its
      *  workers ended. */
     unregister(): Promise<boolean> {
@@ -21884,6 +21892,7 @@ export function installDom(
         return Promise.resolve(false);
       }
       swRegistrations.delete(this._scope);
+      NOTE.forget(this);
       for (const worker of [this._installing, this._waiting, this._active]) {
         if (worker) swRedundant(worker);
       }
@@ -21891,6 +21900,11 @@ export function installDom(
     }
   }
   handlerProperty(ServiceWorkerRegistration.prototype, 'updatefound');
+  for (const name of ['showNotification', 'getNotifications']) {
+    Object.defineProperty(ServiceWorkerRegistration.prototype, name, {
+      enumerable: true,
+    });
+  }
   /** A worker that will do nothing more: its thread ended, its state
    *  `redundant`, and it is no registration's. */
   const swRedundant = (worker: Any): void => {
@@ -22134,6 +22148,25 @@ export function installDom(
       this._waits.push(Promise.resolve(promise));
     }
   }
+  class NotificationEvent extends ExtendableEvent {
+    _init: Any;
+    constructor(type: Any, init: Any) {
+      super(type, init);
+      if (typeof init?.notification !== 'object' || !init.notification) {
+        throw new TypeError(
+          "Failed to construct 'NotificationEvent': Required member is undefined.",
+        );
+      }
+      this._init = init;
+    }
+    get notification(): Any {
+      return this._init.notification;
+    }
+    get action(): string {
+      return `${this._init.action ?? ''}`;
+    }
+  }
+  idlAttributes(NotificationEvent);
   class ExtendableMessageEvent extends ExtendableEvent {
     _data: Any;
     _origin: string;
@@ -26059,41 +26092,18 @@ export function installDom(
         : /Windows/.test(userAgent)
           ? 'Win32'
           : 'Linux x86_64';
-  /** The features a permission can name: each one Chrome's `PermissionName`
-   *  takes, since a name past them is a `TypeError` a page can tell a
-   *  missing feature by. */
-  const PERMISSION_NAMES = new Set([
-    'accelerometer',
-    'accessibility-events',
-    'ambient-light-sensor',
-    'background-fetch',
-    'background-sync',
-    'camera',
-    'clipboard-read',
-    'clipboard-write',
-    'display-capture',
-    'fullscreen',
-    'geolocation',
-    'gyroscope',
-    'idle-detection',
-    'local-fonts',
-    'magnetometer',
-    'microphone',
-    'midi',
-    'nfc',
-    'notifications',
-    'payment-handler',
-    'periodic-background-sync',
-    'persistent-storage',
-    'push',
-    'screen-wake-lock',
-    'speaker-selection',
-    'storage-access',
-    'system-wake-lock',
-    'top-level-storage-access',
-    'window-management',
-  ]);
+  /** The features a permission can name, which are the host's to list
+   *  (`permissions.ts`), asked once. */
+  let permissionNames: Set<string> | null = null;
+  const isPermissionName = (name: string): boolean =>
+    (permissionNames ??= new Set(
+      JSON.parse(str(call('permissionNames'))) as string[],
+    )).has(name);
   let makingPermissions = false;
+  /** Those a page listens to, and where each last stood, which is what a
+   *  move is told by. Only one with a listener can hear of a move, so it is
+   *  the only one that has to outlive the page's own reference to it. */
+  const permissionsHeard = new Map<Any, string>();
   class PermissionStatus extends EventTarget {
     _name = '';
     constructor() {
@@ -26106,9 +26116,34 @@ export function installDom(
     get state(): string {
       return permissionState(this._name);
     }
+    override addEventListener(type: Any, ...rest: Any[]): void {
+      super.addEventListener(type, ...(rest as [Any]));
+      if (`${type}` === 'change') hearPermission(this);
+    }
   }
+  const hearPermission = (status: Any): void => {
+    if (!permissionsHeard.has(status)) {
+      permissionsHeard.set(status, permissionState(status._name));
+    }
+  };
   idlAttributes(PermissionStatus);
   handlerProperty(PermissionStatus.prototype, 'change');
+  {
+    // a handler is a listener as well, which `addEventListener` is not told of
+    const handler = Object.getOwnPropertyDescriptor(
+      PermissionStatus.prototype,
+      'onchange',
+    ) as Any;
+    const set = function (this: Any, fn: Any): void {
+      handler.set.call(this, fn);
+      if (typeof fn === 'function') hearPermission(this);
+    };
+    Object.defineProperty(set, 'name', { value: 'set onchange' });
+    Object.defineProperty(PermissionStatus.prototype, 'onchange', {
+      ...handler,
+      set,
+    });
+  }
   class Permissions {
     constructor() {
       if (!makingPermissions) throw new TypeError('Illegal constructor');
@@ -26120,15 +26155,25 @@ export function installDom(
             "Failed to execute 'query' on 'Permissions': parameter 1 is not of type 'PermissionDescriptor'.",
           );
         }
-        if (descriptor.name === undefined) {
+        const named = descriptor.name;
+        if (named === undefined) {
           throw new TypeError(
             "Failed to execute 'query' on 'Permissions': Required member is undefined.",
           );
         }
-        const name = str(descriptor.name);
-        if (!PERMISSION_NAMES.has(name)) {
+        const name = str(named);
+        if (!isPermissionName(name)) {
           throw new TypeError(
             `Failed to execute 'query' on 'Permissions': The provided value '${name}' is not a valid enum value of type PermissionName.`,
+          );
+        }
+        // a descriptor of `midi`'s is its own type, read over again
+        // (Permissions 7.1, Web MIDI 11)
+        if (name === 'midi') void descriptor.name;
+        if (call('fullyActive') === false) {
+          throw new DOMException(
+            'The document is not fully active.',
+            'InvalidStateError',
           );
         }
         makingPermissions = true;
@@ -26142,11 +26187,10 @@ export function installDom(
       });
     }
   }
-  /** What a permission is for this document, as the host has it: `prompt`
-   *  where nothing has been granted or refused, which is the answer a
-   *  browser gives before it has asked. */
+  /** What a permission is for this document, as the host has it. */
   const permissionState = (name: string): string =>
-    str(call('permission', name) ?? 'prompt');
+    str(call('permission', name) ?? 'denied');
+  Object.defineProperty(Permissions.prototype, 'query', { enumerable: true });
   const madePermissions = (): Any => {
     makingPermissions = true;
     try {
@@ -26180,6 +26224,50 @@ export function installDom(
   });
   /** Whether the host handed this document a clipboard. */
   const hasClipboard = (): boolean => call('clipboard', 'on') === true;
+
+  // --- notifications ----------------------------------------------------------
+  //
+  // `notifications.ts`, what shows them the host's (`scripts.notifications`,
+  // the `notification` op and the `__notification` entry).
+  const notificationEntries: [string, () => Primitive][] = [];
+  const NOTE = notificationsApi({
+    call: call as Any,
+    entry: (name: string, fn: () => Any) => {
+      notificationEntries.push([name, fn]);
+    },
+    input: () => input(),
+    EventTarget,
+    Event,
+    idlAttributes,
+    handlerProperty,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+    report: (error: Any) => report(error),
+    resolve: (url: string) => {
+      try {
+        const base = workerLocation
+          ? str(workerLocation.href)
+          : str(document.baseURI);
+        return new URL(url, base).href;
+      } catch {
+        return null;
+      }
+    },
+    clone: (value: Any) => (G as Any).structuredClone(value),
+    hasTransientActivation: () => hasTransientActivation(),
+    inServiceWorker: () => serviceRealm !== null,
+    permission: () => permissionState('notifications'),
+    noWorker: (registration: Any) =>
+      !serviceRealm && !registration._active && !registration._waiting,
+    workerEvent: (type: string, notification: Any, action: string) => {
+      if (!serviceRealm) return false;
+      const ev = new NotificationEvent(type, { notification, action });
+      ev.isTrusted = true;
+      dispatch(windowTarget, ev);
+      return true;
+    },
+  });
 
   const navigator = {
     userAgent,
@@ -31261,6 +31349,7 @@ export function installDom(
     XMLHttpRequestUpload,
     Permissions,
     PermissionStatus,
+    Notification: NOTE.Notification,
     IntersectionObserver,
     IntersectionObserverEntry,
     ResizeObserver,
@@ -32311,6 +32400,19 @@ export function installDom(
   for (const [name, fn] of transportEntries) entry(name, fn);
   for (const [name, fn] of cryptoEntries) entry(name, fn);
   for (const [name, fn] of clipboardEntries) entry(name, fn);
+  for (const [name, fn] of notificationEntries) entry(name, fn);
+  // a permission moved: each that listens is told, if it did for this page
+  entry('__permission', () => {
+    const name = str(input());
+    for (const [status, was] of [...permissionsHeard]) {
+      if (status._name !== name) continue;
+      const now = permissionState(name);
+      if (now === was) continue;
+      permissionsHeard.set(status, now);
+      status.dispatchEvent(new Event('change'));
+    }
+    return null;
+  });
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's
@@ -33120,6 +33222,8 @@ export function installDom(
     };
     define('WorkerGlobalScope', scope('WorkerGlobalScope'));
     define('name', str(name));
+    // a window's alone: it asks the user, who is not in a worker
+    delete (NOTE.Notification as Any).requestPermission;
     if (shared) {
       // a shared worker's global hears connections, and posts on their
       // ports alone (HTML 10.2.1.3)
@@ -33155,6 +33259,7 @@ export function installDom(
       define('clients', new Clients());
       define('skipWaiting', () => Promise.resolve());
       const own = serviceRealm.scope;
+      define('NotificationEvent', NotificationEvent);
       define('registration', {
         scope: own,
         installing: null,
@@ -33165,6 +33270,12 @@ export function installDom(
         unregister: () => Promise.resolve(true),
         addEventListener() {},
         removeEventListener() {},
+        showNotification(title: Any, options?: Any) {
+          return NOTE.showFor(this, title, options);
+        },
+        getNotifications(filter?: Any) {
+          return NOTE.listFor(this, filter);
+        },
       });
       for (const type of [
         'install',
@@ -33172,6 +33283,8 @@ export function installDom(
         'message',
         'messageerror',
         'fetch',
+        'notificationclick',
+        'notificationclose',
       ]) {
         Object.defineProperty(G, `on${type}`, {
           get: () => windowTarget._handlers?.[type] ?? null,

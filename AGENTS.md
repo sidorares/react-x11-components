@@ -4588,6 +4588,32 @@ closes a way out a DOM binding opens by accident:
   through `dragOut` and `HtmlDomEvent.drag`, and `offeredEntries` is what makes
   a store of what crossed. A store's entry can have no data: a `File` of
   another application's, known to be there and unreadable until the drop.
+- **Where a permission stands has one answer, and it is what asking would come
+  to** (`DomHost._permissionState`). `Notification.permission`,
+  `navigator.permissions`, the clipboard's gates and a worker's copy all read it,
+  so anything new that a user has to agree to asks it, and its name goes in
+  `PERMISSION_NAMES` and, where a Permissions Policy feature decides it too, in
+  `POLICY_FEATURES`. **With no host to ask the answer is `denied`, not `prompt`**:
+  a page that reads `prompt` asks and is refused, and only what a host handed a
+  seam for has an answer without one. A `PermissionStatus` joins
+  `permissionsHeard` only once it has a listener, since nothing else can hear
+  it move, and that is what keeps a page that polls `query()` from holding every
+  status it ever made. **Anything that moves a permission calls
+  `_permissionMoved`**: a host's `watch`, and a `request` a page made. A worker
+  has no way to ask its page at once, so it reads a copy made as it starts
+  (`WorkerThreadData.permissions`), which `permissionMoved` keeps current.
+- **`Notification` is there with no seam, and a seam's origin is the host's**
+  (`notifications.ts` twice: the seam in `src/html/`, the page's in `scripts/`).
+  Leaving it out would send a page down a path no browser takes, so a host with
+  nothing to show one with is a user who said no. **What a page writes never
+  says who wrote it**: `_notificationOp` adds `origin` itself, and a test holds
+  that an `origin` in the options goes nowhere. `data` stays in the realm, and
+  what crosses is a JSON string of text and numbers. `useHtmlNotifications`
+  escapes a body for the rungs that read markup: `dbus` and `notify-send`, and
+  any rung it does not know yet. A worker's go through its page's seam
+  (`PageWorkers._notification`), in the same words. A registration's
+  (`showFor`, `listFor`) are listed by the realm, since a registration is no
+  more than a realm's here, and nothing is kept across a reload.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells

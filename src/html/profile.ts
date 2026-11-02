@@ -44,6 +44,7 @@ import type {
   HtmlStorageArea,
   HtmlStorageChange,
 } from './storage.js';
+import type { HtmlPermissionState } from './permissions.js';
 import { nodeModule } from './scripts/platform.js';
 import type { ClearTimeout, SetTimeout } from './scripts/platform.js';
 
@@ -53,7 +54,7 @@ declare const crypto: { getRandomValues(array: Uint8Array): Uint8Array };
 
 /** The schema this module writes and reads. A file of a later one is not
  *  opened; an earlier one is brought up to this. */
-export const PROFILE_VERSION = 2;
+export const PROFILE_VERSION = 3;
 
 /** The file in a profile's directory. */
 export const PROFILE_FILE = 'profile.sqlite';
@@ -117,6 +118,12 @@ export interface HtmlProfileOptions {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS permissions (
+  origin TEXT NOT NULL,
+  name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  PRIMARY KEY (origin, name)
+);
 CREATE TABLE IF NOT EXISTS cookies (
   host_key TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -189,6 +196,8 @@ const WATCH_MS = 250;
 export class HtmlProfile {
   readonly cookies: HtmlCookieStore;
   readonly storage: HtmlStorage;
+  /** What the user said to each origin's questions. */
+  readonly permissions: HtmlProfilePermissions;
   /**
    * The HTTP cache's store (`HtmlNetworkOptions.httpCache`), which every
    * process that opens the profile shares; null where it was asked for no
@@ -261,6 +270,7 @@ export class HtmlProfile {
     this._dataVersion = db.prepare('PRAGMA data_version');
     this.cookies = new ProfileCookies(this, db);
     this.storage = new ProfileStorage(this, db, options.tab ?? null);
+    this.permissions = new ProfilePermissions(db);
     this._cache = cache;
     this.httpCache = cache;
   }
@@ -518,6 +528,42 @@ class ProfileHttpCache implements HtmlProfileHttpCache {
 // --- cookies --------------------------------------------------------------------
 
 /** `host_key` as Chrome writes it: a domain cookie's with a leading dot. */
+/** What a browser keeps of a user's answers: read as often as a page asks,
+ *  from whichever process the page is in. */
+export interface HtmlProfilePermissions {
+  /** What the user said, or null where they have not been asked. */
+  get(origin: string, name: string): HtmlPermissionState | null;
+  /** Keep what they said. */
+  set(origin: string, name: string, state: HtmlPermissionState): void;
+  /** Let an origin ask again. Says which names it had answers for. */
+  forget(origin: string): string[];
+}
+
+class ProfilePermissions implements HtmlProfilePermissions {
+  constructor(private readonly _db: Database) {}
+  get(origin: string, name: string): HtmlPermissionState | null {
+    const row = this._db
+      .prepare('SELECT state FROM permissions WHERE origin = ? AND name = ?')
+      .get(origin, name);
+    return (row?.state as HtmlPermissionState | undefined) ?? null;
+  }
+  set(origin: string, name: string, state: HtmlPermissionState): void {
+    this._db
+      .prepare(
+        'INSERT OR REPLACE INTO permissions (origin, name, state) VALUES (?, ?, ?)',
+      )
+      .run(origin, name, state);
+  }
+  forget(origin: string): string[] {
+    const names = this._db
+      .prepare('SELECT name FROM permissions WHERE origin = ?')
+      .all(origin)
+      .map((row) => String(row.name));
+    this._db.prepare('DELETE FROM permissions WHERE origin = ?').run(origin);
+    return names;
+  }
+}
+
 const hostKey = (c: { domain: string; hostOnly: boolean }) =>
   c.hostOnly ? c.domain : `.${c.domain}`;
 

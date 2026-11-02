@@ -208,6 +208,9 @@ export function useScripts(
     get clipboard() {
       return latest.current.clipboard;
     },
+    get notifications() {
+      return latest.current.notifications;
+    },
     get permissions() {
       return latest.current.permissions;
     },
