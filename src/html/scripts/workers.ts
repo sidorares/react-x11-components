@@ -258,8 +258,9 @@ export class PageWorkers implements PageWorkersLike {
   constructor(
     private readonly _seams: PageWorkersSeams,
     private readonly _limit: number = MAX_WORKERS,
-    /** Whether a thread keeps the process alive: a service worker's does
-     *  not, since it stays with no page to answer for it. */
+    /** Whether a thread keeps the process alive only while something waits
+     *  on it (`hold`): a service worker's stays with no page to answer for
+     *  it, and held the process 30 seconds past its last client. */
     private readonly _background: boolean = false,
   ) {}
 
@@ -336,6 +337,14 @@ export class PageWorkers implements PageWorkersLike {
   post(id: number, data: string): void {
     const message: ToWorker = { kind: 'message', data };
     this._running.get(id)?.thread.postMessage(message);
+  }
+
+  /** Whether something waits on a background thread, which keeps the process
+   *  alive for as long as it does. */
+  hold(id: number, waited: boolean): void {
+    const running = this._running.get(id);
+    if (waited) running?.thread.ref();
+    else running?.thread.unref();
   }
 
   /** A service worker's registry to its realm. */

@@ -752,6 +752,8 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       });
       version.thread = id;
       this._byThread.set(id, version);
+      // what asked to start it is waiting on it
+      threads.hold(id, true);
       const timer = setTimeout(() => {
         if (!version.started) return;
         version.started = null;
@@ -760,6 +762,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       timer.unref?.();
       version.started = (ran) => {
         clearTimeout(timer);
+        if (version.busy === 0) threads.hold(id, false);
         resolve(ran);
       };
     });
@@ -834,11 +837,13 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     version.busy += 1;
     if (version.idle !== null) clearTimeout(version.idle);
     version.idle = null;
+    if (version.thread !== null) this._threads?.hold(version.thread, true);
   }
 
   private _end(version: Version): void {
     version.busy = Math.max(0, version.busy - 1);
     if (version.busy > 0) return;
+    if (version.thread !== null) this._threads?.hold(version.thread, false);
     this._touch(version);
     const { registration } = version;
     if (registration.uninstalling) this._tryClear(registration);
