@@ -4958,6 +4958,10 @@ not before. Three things are load-bearing:
   and with a realm each it scored 92 where it scores 96. Such a frame is
   drawn, and told of what the page's scripts change in it, and runs nothing
   of its own.
+- **What a same-origin frame's realm made is of no class here**, so
+  `instanceof` says no of what a page hands its frame's window: a `Request`
+  was read as a URL and lost its method and body (`requestIn`). Anything new
+  that takes a platform object from a linked realm asks by what it holds.
 - **A change is told to the `<Html>` that draws its document, whichever
   realm made it** (`_tell`, `DomShared.changes`). What a realm's
   `MutationObserver` sees is still only what that realm changed. A change

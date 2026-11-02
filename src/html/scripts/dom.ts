@@ -19698,6 +19698,18 @@ export function installDom(
     return new Uint8Array(out);
   };
 
+  /** A `Request` as what it is, or null: one of a same-origin frame's realm
+   *  is a `Request` of no class here, and read as a URL its method and body
+   *  went. */
+  const requestIn = (input: Any): Any =>
+    input instanceof Request ||
+    (typeof input === 'object' &&
+      input !== null &&
+      '_raw' in input &&
+      '_stream' in input)
+      ? input
+      : null;
+
   /** The headers of a request the user agent makes, which a page's script
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
@@ -19705,7 +19717,7 @@ export function installDom(
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
-      const request = input instanceof Request ? input : null;
+      const request = requestIn(input);
       const url =
         typeof input === 'string' ? input : (input?.url ?? str(input));
       const mode = str(init.mode ?? request?.mode ?? 'cors');
@@ -19897,7 +19909,7 @@ export function installDom(
     _stream: Any = null;
     bodyUsed = false;
     constructor(input: Any, init: Any = {}) {
-      const from = input instanceof Request ? input : null;
+      const from = requestIn(input);
       // every member of the dictionary is read, as WebIDL converts one —
       // `duplex` among them, whose being read a page feature-detects a
       // stream body by
