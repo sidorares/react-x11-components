@@ -8674,6 +8674,7 @@ export function installDom(
     consumeActivation();
   };
 
+  const BOX_TYPES = new Set(['checkbox', 'radio']);
   class HTMLInputElement extends FormControl {
     get type(): string {
       const t = (this.getAttribute('type') ?? '').toLowerCase();
@@ -8681,6 +8682,24 @@ export function installDom(
     }
     set type(v: Any) {
       this.setAttribute('type', v);
+    }
+    /** A checkedness goes with an input from type to type (HTML 4.10.5), and
+     *  the widget of a box is what holds a box's. Vue's `v-model` sets
+     *  `checked` as it makes a radio, ahead of its `type`, and every radio on
+     *  JSFiddle was left unticked, so its form sent none of them. */
+    override _setAttr(n: string, value: Any): void {
+      if (n !== 'type') {
+        super._setAttr(n, value);
+        return;
+      }
+      const wasBox = BOX_TYPES.has(this.type);
+      const checked = wasBox ? this.checked : this._checkedness;
+      super._setAttr(n, value);
+      if (wasBox === BOX_TYPES.has(this.type)) return;
+      this._checkedness = wasBox ? checked : undefined;
+      if (!wasBox && checked !== undefined) {
+        call('setValue', this._id, checked);
+      }
     }
     // HTML 4.10.5.4's value modes: the attribute for a box and a radio
     // ("default/on") and for what is no field ("default"), nothing for a
