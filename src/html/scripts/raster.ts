@@ -125,6 +125,17 @@ export interface RasterInstall {
     style: StrokeStyle,
     draw: Draw,
   ): number[] | null;
+  /** A raster of coverage, a byte a pixel, painted through `m`: a string
+   *  of text, which the host sets (`canvasRaster`). `ink` is the part of it
+   *  anything covers. */
+  mask(
+    target: Bitmap,
+    mask: Uint8Array,
+    width: number,
+    ink: number[],
+    m: Matrix,
+    draw: Draw,
+  ): number[] | null;
   /** The coverage of a path over a whole bitmap, times the clip there was:
    *  what `clip()` leaves. */
   clipMask(
@@ -1648,6 +1659,71 @@ export function installRaster(
     data[o + 3] = ra * 255 + 0.5;
   };
 
+  /** How many points a side of each pixel a mask is read at: a mask set
+   *  four times as fine as it is drawn is read a raster pixel a point. */
+  const MASK_POINTS = 4;
+
+  /** A mask's coverage of the pixels it reaches, through a matrix from its
+   *  pixels to a bitmap's. Read at points rather than filtered, so that any
+   *  matrix is one path and a fraction of a pixel lands where it should. */
+  const coverMask = (
+    mask: Uint8Array,
+    maskWidth: number,
+    ink: number[],
+    m: Matrix,
+    width: number,
+    height: number,
+  ): Coverage | null => {
+    const [a, b, c, d, e, f] = m;
+    const det = a * d - b * c;
+    if (!det) return null;
+    const [u0, v0, u1, v1] = ink;
+    const xs = [
+      a * u0 + c * v0,
+      a * u1 + c * v0,
+      a * u0 + c * v1,
+      a * u1 + c * v1,
+    ];
+    const ys = [
+      b * u0 + d * v0,
+      b * u1 + d * v0,
+      b * u0 + d * v1,
+      b * u1 + d * v1,
+    ];
+    const x0 = Math.max(0, Math.floor(Math.min(...xs) + e));
+    const y0 = Math.max(0, Math.floor(Math.min(...ys) + f));
+    const x1 = Math.min(width, Math.ceil(Math.max(...xs) + e));
+    const y1 = Math.min(height, Math.ceil(Math.max(...ys) + f));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const ia = d / det;
+    const ib = -b / det;
+    const ic = -c / det;
+    const id = a / det;
+    const ie = -(ia * e + ic * f);
+    const iF = -(ib * e + id * f);
+    const w = x1 - x0;
+    const cov = new Float32Array(w * (y1 - y0));
+    const points = MASK_POINTS * MASK_POINTS * 255;
+    for (let y = y0, i = 0; y < y1; y += 1) {
+      for (let x = x0; x < x1; x += 1, i += 1) {
+        let sum = 0;
+        for (let q = 0; q < MASK_POINTS; q += 1) {
+          const py = y + (q + 0.5) / MASK_POINTS;
+          for (let p = 0; p < MASK_POINTS; p += 1) {
+            const px = x + (p + 0.5) / MASK_POINTS;
+            const u = Math.floor(ia * px + ic * py + ie);
+            const v = Math.floor(ib * px + id * py + iF);
+            if (u >= u0 && u < u1 && v >= v0 && v < v1) {
+              sum += mask[v * maskWidth + u];
+            }
+          }
+        }
+        cov[i] = sum / points;
+      }
+    }
+    return { x0, y0, x1, y1, cov };
+  };
+
   /** A shape's coverage painted into a bitmap: answers the rectangle it
    *  changed. */
   const paintCoverage = (
@@ -1733,6 +1809,10 @@ export function installRaster(
         target.width,
         target.height,
       );
+      return paintCoverage(target, shape, draw);
+    },
+    mask(target, mask, width, ink, m, draw) {
+      const shape = coverMask(mask, width, ink, m, target.width, target.height);
       return paintCoverage(target, shape, draw);
     },
     clipMask(width, height, path, m, rule, was) {

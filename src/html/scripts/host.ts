@@ -110,6 +110,7 @@ import {
 } from '../computed.js';
 import { declaredProperties, fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
+import type { CanvasText } from '../canvas-text.js';
 import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
 import type { FontFaceInit, Stylesheet } from '../css/parse.js';
 import {
@@ -224,6 +225,17 @@ declare const clearInterval: ClearTimeout;
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 declare const Buffer: BufferClass;
+
+/** A context's setting of its text as it crosses: its direction, its
+ *  spacings in CSS pixels, its kerning and its capitals. */
+const textSetting = ([direction, letter, word, kerning, caps]: string[]) => ({
+  direction: direction === 'rtl' ? ('rtl' as const) : ('ltr' as const),
+  letterSpacing: Number(letter) || 0,
+  wordSpacing: Number(word) || 0,
+  kerning: kerning ?? 'auto',
+  caps: caps || null,
+});
+
 /** The runtime's Web Crypto and its clock, which Node and Bun both have. */
 declare const crypto: {
   getRandomValues(array: Uint8Array): Uint8Array;
@@ -456,6 +468,8 @@ export interface HandleInternals {
   scriptFontsChanged(id: number, added: boolean): void;
   /** What `svg-geometry.ts` asks of the document. */
   svgMeasure(): SvgMeasure | null;
+  /** What a canvas's context asks of the fonts. */
+  canvasText(): CanvasText | null;
   /** Where what a `<foreignObject>` holds was laid out in it. */
   foreignRect(element: Element): { object: Element; rect: Rect } | null;
   /** The CSS animations under way on an element, or on what it holds as
@@ -4569,6 +4583,44 @@ export class DomHost {
       case 'fontFaceAdd':
         this._fontsOf(a)?.scriptFontsChanged?.(Number(b), c === true);
         return null;
+      // what a canvas's context asks of the fonts (`canvas-text.ts`): each
+      // is null where there is no text engine, and the context makes do
+      case 'canvasFont': {
+        this.flush();
+        const fonts = this._canvasFonts(a);
+        if (!fonts) return null;
+        const font = fonts.font(text(b), this._canvasOf(a));
+        return font ? JSON.stringify(font) : '';
+      }
+      case 'canvasTextNow': {
+        const fonts = this._canvasFonts(a);
+        if (!fonts) return null;
+        return `${fonts.generation},${fonts.direction(this._canvasOf(a))}`;
+      }
+      case 'canvasMeasure': {
+        const answer = this._canvasFonts(a)?.measure(
+          text(b),
+          text(c),
+          textSetting(text(d).split(',')),
+        );
+        return answer ? JSON.stringify(answer) : null;
+      }
+      // the bytes as a string of one byte a character, which crosses
+      // uncopied, where base64 would be a third more to decode
+      case 'canvasRaster': {
+        const [size, stroke, ...setting] = text(d).split(',');
+        const raster = this._canvasFonts(a)?.raster(
+          text(b),
+          text(c),
+          Number(size),
+          textSetting(setting),
+          Number(stroke),
+        );
+        if (!raster) return null;
+        const { data, ...head } = raster;
+        const bytes = Buffer.from(data.buffer, data.byteOffset, data.length);
+        return `${JSON.stringify(head)}\n${bytes.toString('latin1')}`;
+      }
       // where what an inline drawing holds is (`svg-geometry.ts`)
       case 'svg': {
         this.flush();
@@ -5851,6 +5903,19 @@ export class DomHost {
     void Promise.resolve().then(() => {
       if (!this._disposed) this.entries?.call('__fontFaceDone', [id, ok]);
     });
+  }
+
+  /** The fonts a canvas draws with: its document's, or the page's for one
+   *  in no document yet, which is where a chart measures its labels. */
+  private _canvasFonts(id: Primitive): CanvasText | null {
+    return (this._fontsOf(id) ?? this._seams.handle)?.canvasText?.() ?? null;
+  }
+
+  /** The canvas a context's id is, where it is one: an `OffscreenCanvas`'s
+   *  context goes by the document. */
+  private _canvasOf(id: Primitive): Element | null {
+    const node = this._node(id) as Element;
+    return node.attribs ? node : null;
   }
 
   /** Where what a `<foreignObject>` holds is drawn, through what the drawing
