@@ -2779,7 +2779,9 @@ test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker',
       'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
       '</script>',
   );
-  await waitFor(() => assert.ok(doc.text('thread')));
+  // a thread takes as long as a busy runner gives it, which is no timing
+  // of anything here: only a failure waits this out
+  await settled(doc, 'thread', (t) => t !== '', 30000);
   const answers = [
     '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
     // half the last place past the largest double is the even way up, and
