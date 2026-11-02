@@ -3739,7 +3739,10 @@ closes a way out a DOM binding opens by accident:
   `<head>`. Met at `<Html>`'s read of the tree, they ran backwards and a
   module ran before the one defining what it needs. **Anything new that
   makes a `<script>` element sets its `forceAsync`**, as `create` and a
-  copy do.
+  copy do. A frame goes the same way, whichever of the two it went in by
+  (`_connected`): one `innerHTML` put in after the parse loaded only if a
+  page read its `contentWindow`, so a player written in by a press on its
+  poster, an `<iframe>` of YouTube's embed, was an empty box.
 - **The page's time is its own code's, counted at the bridge.** The
   runtime's watchdog counts all of an entry and nothing pauses it, so it is
   only the ceiling, five times the page's time; the engine counts the

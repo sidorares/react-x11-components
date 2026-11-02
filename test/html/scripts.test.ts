@@ -14218,6 +14218,46 @@ test('a frame runs in a realm of its own, linked to the page: its window, its pa
   assert.equal(text('f', 'got'), '21:true:https://example.test');
 });
 
+test('a frame loads however a script put it in: innerHTML and replaceChildren as appendChild, with nothing reading its window', async () => {
+  const frame = (name: string): string =>
+    `<!doctype html><script>parent.postMessage("${name}", "*")</script>`;
+  const { text, logs } = await hostedFrames(
+    '<div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>' +
+      '<p id="out"></p><script>' +
+      'var heard = [];' +
+      'function by(id) { return document.getElementById(id); }' +
+      'addEventListener("message", function (e) {' +
+      '  heard.push(e.data); heard.sort();' +
+      '  by("out").textContent = heard.join(",");' +
+      '});' +
+      // after the parse, as a click is: what a script puts in while the
+      // parser runs is loaded with what the markup has (`loadFrames`)
+      'addEventListener("load", function () {' +
+      '  by("a").innerHTML = \'<iframe src="one.html"></iframe>\';' +
+      '  var two = document.createElement("iframe"); two.src = "two.html";' +
+      '  by("b").replaceChildren(two);' +
+      '  var three = document.createElement("iframe"); three.src = "three.html";' +
+      '  by("c").appendChild(three);' +
+      // put in nowhere, it loads as it goes in and not before
+      '  var held = document.createElement("div");' +
+      '  held.innerHTML = \'<iframe src="four.html"></iframe>\';' +
+      '  setTimeout(function () { by("d").appendChild(held); }, 0);' +
+      '});' +
+      '</script>',
+    {
+      'one.html': frame('one'),
+      'two.html': frame('two'),
+      'three.html': frame('three'),
+      'four.html': frame('four'),
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t.split(',').length === 4,
+  );
+  assert.equal(page, 'four,one,three,two', logs.join('\n'));
+});
+
 test("a key crosses to a frame's realm and back, and the frame's is the frame's", async () => {
   const frame =
     '<!doctype html><script>' +
