@@ -2865,6 +2865,57 @@ download under way ends it, and the shelf says so. `showSaveFilePicker` is left
 out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
 `<a download>`.
 
+### Range inputs
+
+```html
+<input type="range" min="0" max="100" step="10" value="30" />
+```
+
+An `<input type=range>` is core's `<Slider>`, the platform's own on a Mac, in a
+box 129 by 16 as Chrome's is, whatever its font. Its `min`, `max` and `step` are
+HTML's, so it holds what a browser makes of them: half way along where its value
+is no number, and always on a step, counted from `min`, or from its `value` where
+it has no `min`. A `max` that takes something from it does not give it back.
+What it holds is `FormState`'s, as a field's is, and it is what a form sends.
+
+`input` is told as it moves and `change` as it is let go, only where it ended
+somewhere other than where it was pressed. A key tells both at once. As in a
+browser, a press on the thumb moves nothing until the pointer does, the element
+takes a press on all of its box and a thumb that stands out of it, and a
+`mousedown` or a `keydown` a page cancels moves nothing. Page Up and Page Down
+go a tenth of the way, and `step=any` makes a hundredth of it an arrow's step. A
+press focuses it with no ring, and Tab with the element's own `outline`.
+
+**It runs as the writing mode runs.** In a vertical writing mode its box is 16 by
+129 and its value grows down the page, or up it at `direction: rtl` and in
+`sideways-lr`, and its keys are Chrome's in each, read from a range in each. Core's
+slider only runs across, so one that runs down is drawn here from the same tokens,
+and is never the platform's bezel. Neither is one at `direction: rtl`, since a
+bezel has no such thing.
+
+**What a page draws of one is what its rules for it say**, and these are Chromium's
+answers, which do not follow from reading its sheet:
+
+- `::-webkit-slider-thumb` is the page's only where a rule for it says
+  `appearance: none`. `appearance: none` on the range leaves the widget's thumb,
+  and a rule that keeps the thumb's `appearance` changes nothing.
+- `::-webkit-slider-runnable-track` is the page's wherever a rule reaches it. At
+  `appearance: none` on the range the widget draws no track at all.
+- The box is as thick as the track says, and else, at `appearance: none`, as the
+  thumb is with its margins.
+- A thumb stands from the top of its track, so one taller than the track stands
+  below it until the page's `margin-top` brings it back.
+- A range at `appearance: auto` draws no `background` and no `border` of the
+  page's, which still take room. At `appearance: none` it draws them, under the
+  widget.
+
+Each part is drawn in a flat colour, with a border, a radius, a shadow and an
+opacity. A gradient or an image on one is not drawn, nor is what a rule says of a
+part under `:hover` written after the pseudo-element. `accent-color` is not read,
+`::-moz-range-thumb` is nothing, as it is in Chrome, and a `list`'s tick marks are
+not drawn. A track at `appearance: auto` runs across the content box, where Chrome
+paints it across the border box, which only a range with padding or a border shows.
+
 ### File inputs
 
 ```jsx
@@ -3639,8 +3690,9 @@ was told: Monaco, told it had the focus, asks for nothing when it is pressed.
 **A checkbox, a `<select>` and a button's widget tell no `focusin`.** Core's
 widgets take an `onFocus` that replaces their own rather than one beside it,
 so the component cannot hear them take the focus: `activeElement` still
-answers for them, from the window's focus, and a text field, a link and a
-drawn button tell theirs.
+answers for them, from the window's focus, and a text field, a range, a link
+and a drawn button tell theirs. A range gives up its thumb's lit border for it,
+since the document draws its ring.
 
 ## What renders
 

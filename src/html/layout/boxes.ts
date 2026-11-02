@@ -69,6 +69,7 @@ import {
   firstLineParent,
   inherit,
   urlOf,
+  verticalMode,
 } from '../css/style.js';
 import { AUTO } from '../css/values.js';
 import { focusableElement } from '../focus.js';
@@ -610,6 +611,8 @@ export type ReplacedKind =
   | 'file'
   | 'checkbox'
   | 'radio'
+  /** An `<input type=range>`: a track and a thumb, and no text. */
+  | 'range'
   | 'hr'
   /** An `<iframe>`, `<video>`, `<embed>` or `<canvas>`: what it would
    *  show is never loaded or drawn, so it is a box of its size with nothing
@@ -637,8 +640,7 @@ function controlBaseline(
   style: ComputedStyle,
   options: BuildOptions,
 ): InlineDecoration | 'border' | null {
-  if (kind === 'checkbox' || kind === 'radio') return 'border';
-  if (kind === 'input' && (attr(el, 'type') ?? '').toLowerCase() === 'range') {
+  if (kind === 'checkbox' || kind === 'radio' || kind === 'range') {
     return 'border';
   }
   if (
@@ -4701,9 +4703,14 @@ class Builder {
     }
 
     const size = this._options.controlSize(el, replaced, style);
+    // a range runs along its own lines, and a frame is laid out across
+    // what it draws down the page (`makeFrame`)
+    const across =
+      replaced === 'range' &&
+      verticalMode(style.writingMode) !== this._inOrthogonal(into);
     box.intrinsic = {
-      width: size.width,
-      height: size.height,
+      width: across ? size.height : size.width,
+      height: across ? size.width : size.height,
       missing: 0,
       ratio: 0,
     };
@@ -4713,6 +4720,16 @@ class Builder {
     // A control's value is the widget's, not the document's: putting it in
     // the selection index would make Ctrl+A copy the contents of every text
     // field, which no document viewer does.
+  }
+
+  /** Whether what is built in `into` goes in a frame: `_orthogonal` holds
+   *  each box that will have one, and what it holds has none yet. */
+  private _inOrthogonal(into: Box): boolean {
+    if (!this._orthogonal.length) return false;
+    for (let at: Box | null = into; at; at = at.parent) {
+      if (this._orthogonal.includes(at)) return true;
+    }
+    return false;
   }
 
   /**
@@ -6433,6 +6450,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       const type = (attr(el, 'type') ?? 'text').toLowerCase();
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
+      if (type === 'range') return 'range';
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';
