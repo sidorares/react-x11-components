@@ -378,6 +378,104 @@ test('a key is derived, wrapped and unwrapped as the page may and no further', a
   );
 });
 
+/** Whether this runtime has what a test asks, as the page's host does. */
+const runtime = (globalThis.crypto.subtle as unknown as Record<string, unknown>)
+  .constructor as { supports?: (op: string, algorithm: string) => boolean };
+const has = (op: string, algorithm: string): boolean =>
+  !!runtime.supports?.(op, algorithm);
+
+test('what the runtime has of the later methods is there, and what it lacks is not', async () => {
+  const doc = await page(
+    'out([typeof crypto.subtle.getPublicKey, typeof crypto.subtle.encapsulateBits, typeof SubtleCrypto.supports].join(" "));',
+  );
+  const subtle = globalThis.crypto.subtle as unknown as Record<string, unknown>;
+  assert.equal(
+    await said(doc),
+    [
+      typeof subtle.getPublicKey,
+      typeof subtle.encapsulateBits,
+      typeof runtime.supports,
+    ].join(' '),
+  );
+});
+
+test('a modern key is sealed as any is, and comes back whole', async (t) => {
+  if (!has('generateKey', 'ML-DSA-44')) return t.skip('no ML-DSA here');
+  const doc = await page(
+    '(async function () {' +
+      'var pair = await crypto.subtle.generateKey("ML-DSA-44", false, ["sign", "verify"]);' +
+      'var copy = structuredClone(pair.privateKey);' +
+      'var signature = await crypto.subtle.sign("ML-DSA-44", copy, bytes("x"));' +
+      'var fine = await crypto.subtle.verify("ML-DSA-44", pair.publicKey, signature, bytes("x"));' +
+      'var made = await crypto.subtle.getPublicKey(pair.privateKey, ["verify"]);' +
+      'var r = [fine, made.type, made.extractable, await crypto.subtle.verify("ML-DSA-44", made, signature, bytes("x"))];' +
+      'await crypto.subtle.exportKey("raw-seed", pair.privateKey).catch(function (e) { r.push(e.name); });' +
+      'out(r.join(" "));' +
+      '})();',
+  );
+  assert.equal(await said(doc), 'true public true true InvalidAccessError');
+});
+
+test('a KEM shares a secret both ends read the same', async (t) => {
+  if (!has('generateKey', 'ML-KEM-768')) return t.skip('no ML-KEM here');
+  const doc = await page(
+    '(async function () {' +
+      'var pair = await crypto.subtle.generateKey("ML-KEM-768", false, ["encapsulateBits", "decapsulateBits", "encapsulateKey", "decapsulateKey"]);' +
+      'var sent = await crypto.subtle.encapsulateBits("ML-KEM-768", pair.publicKey);' +
+      'var got = await crypto.subtle.decapsulateBits("ML-KEM-768", pair.privateKey, sent.ciphertext);' +
+      'var key = await crypto.subtle.encapsulateKey("ML-KEM-768", pair.publicKey, "HKDF", false, ["deriveBits"]);' +
+      'var back = await crypto.subtle.decapsulateKey("ML-KEM-768", pair.privateKey, key.ciphertext, "HKDF", false, ["deriveBits"]);' +
+      'var params = { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(4), info: new Uint8Array(4) };' +
+      'var a = await crypto.subtle.deriveBits(params, key.sharedKey, 256);' +
+      'var b = await crypto.subtle.deriveBits(params, back, 256);' +
+      'out([hex(sent.sharedKey) === hex(got), hex(a) === hex(b), key.sharedKey.algorithm.name].join(" "));' +
+      '})();',
+  );
+  assert.equal(await said(doc), 'true true HKDF');
+});
+
+test('SHA-3 and ChaCha20-Poly1305 are there where the runtime has them', async (t) => {
+  if (!has('generateKey', 'ChaCha20-Poly1305')) {
+    return t.skip('no ChaCha20-Poly1305 here');
+  }
+  const doc = await page(
+    '(async function () {' +
+      'var d = await crypto.subtle.digest("SHA3-256", bytes("abc"));' +
+      'var key = await crypto.subtle.generateKey("ChaCha20-Poly1305", false, ["encrypt", "decrypt"]);' +
+      'var iv = new Uint8Array(12);' +
+      'var c = await crypto.subtle.encrypt({ name: "ChaCha20-Poly1305", iv: iv }, key, bytes("hi"));' +
+      'var p = await crypto.subtle.decrypt({ name: "ChaCha20-Poly1305", iv: iv }, structuredClone(key), c);' +
+      'out([hex(d).slice(0, 8), new TextDecoder().decode(p)].join(" "));' +
+      '})();',
+  );
+  assert.equal(await said(doc), '3a985da7 hi');
+});
+
+test('supports answers what a call would, as it is asked', async (t) => {
+  if (!runtime.supports) return t.skip('no supports here');
+  const doc = await page(
+    '(async function () {' +
+      'var pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);' +
+      'var S = SubtleCrypto;' +
+      'out([' +
+      '  S.supports("digest", "SHA-256"),' +
+      '  S.supports("digest", "no such"),' +
+      '  S.supports("no such", "SHA-256"),' +
+      '  S.supports("exportKey", "RSA-PSS"),' +
+      '  S.supports("deriveBits", { name: "ECDH", public: pair.publicKey }, 256),' +
+      '  S.supports("deriveBits", { name: "ECDH", public: pair.publicKey }, 257),' +
+      '  S.supports("deriveBits", { name: "HKDF", hash: "SHA-1", salt: new Uint8Array(1), info: new Uint8Array(1) }, 256 * 160),' +
+      '].join(" "));' +
+      '})();',
+  );
+  // what a runtime says of this differs: Bun's asks a hash of it
+  const exported = has('exportKey', 'RSA-PSS');
+  assert.equal(
+    await said(doc),
+    `true false false ${exported} true false false`,
+  );
+});
+
 test('what arrives for a frozen document waits for it, and is not lost', async () => {
   const logs: string[] = [];
   const seams = {

@@ -1071,8 +1071,11 @@ the real one at.
 (`Crypto`, `SubtleCrypto`, `CryptoKey`). `crypto.subtle` is the runtime's own,
 behind this realm's conversions and errors, so what a page can use is what its
 runtime has: SHA-1 to SHA-512, HMAC, AES-CBC, CTR, GCM and KW, PBKDF2, HKDF,
-ECDSA, ECDH, the RSA schemes, Ed25519 and X25519. It needs no seam and no
-network, and a document with scripts off has none of it.
+ECDSA, ECDH, the RSA schemes, Ed25519 and X25519 everywhere, and where the
+runtime has them SHA-3, AES-OCB, ChaCha20-Poly1305, KMAC, Argon2, Ed448, X448,
+ML-DSA and ML-KEM, with `getPublicKey`, the encapsulation methods and
+`SubtleCrypto.supports`. It needs no seam and no network, and a document with
+scripts off has none of it.
 
 `subtle`, `SubtleCrypto`, `CryptoKey` and `randomUUID` are a secure context's
 alone, and absent elsewhere: `https:`, `file:` and this machine are secure, and
@@ -1679,6 +1682,18 @@ macOS an element a script animates stays on the document's clock rather
 than going on a layer of the render server's, since a layer's frames are
 sampled ahead from a cycle that a page's script may seek, pause or cancel
 at any time.
+
+**A page's XML is read as XML.** `DOMParser` takes `text/xml`, `application/xml`,
+`application/xhtml+xml` and `image/svg+xml`; what is not well-formed is a
+document holding a `parsererror`. An element's attributes keep their case
+outside HTML, `getElementsByTagName` matches as it is written, an internal
+subset's entities and `<!ATTLIST>` defaults are read, and CDATA sections and
+processing instructions are nodes. `XMLSerializer` writes a node back, declaring
+what nothing around it declares. `document.evaluate`, `XPathEvaluator` and
+`XPathResult` are XPath 1.0 over the tree, on the host (`src/html/scripts/xpath.ts`),
+with the page's resolver asked for each prefix as the expression is compiled, not
+as it runs. `innerHTML` still reads and writes HTML in an XML document, and
+XSLT is not here.
 
 **The page's selection is the reader's** (Selection API 2). What the
 reader selects in the document — a press and a drag, a double click, Ctrl+A

@@ -12435,11 +12435,12 @@ export class HtmlViewNode extends Node {
     const reached = this._cascade!.addedReach(
       added.rules,
       this._source.document,
-      !!tree.impliedHtml,
+      !!tree.impliedHtml || tree.impliedRoot,
       namedBy(this._source.facts().drawings),
     );
     if (reached) {
       this._keptFor = this._cascade;
+      this._cascade!.keepsStylesOf(cascade);
       if (added.keyframes.size) runningAny(tree, added.keyframes, reached);
       for (const el of rebound) reached.add(el);
     }

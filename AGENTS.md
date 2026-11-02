@@ -2595,10 +2595,18 @@ out or written over, and one adding what reaches past its selectors — an
 `@counter-style` or layer, a rule at a shadow tree's edge or for a highlight.
 **Anything new a sheet can declare that reaches past the elements its
 selectors name joins `onlyRules`' and `rulesAfter`'s checks**, or a sheet
-bringing it restyles too little. A shadow tree's sheet reaches only what the
-tree's host holds, so a tree that comes to read otherwise, or to other
-rules, styles its host and all it holds (`_shadowKeys`), where GitHub's first
-`<tool-tip>` styled the whole document. A `<meta>` the
+bringing it restyles too little. The styles kept are the cascade before's,
+and the one made for the rules styles the root only if a rule reaches it, so
+**what is known of the root goes over with them** (`keepsStylesOf`): its
+style, which `KeptStyles.root` is not, that being the root box's, the initial
+style under an `<html>` the markup writes; and who reads its font, which only
+computing a style notes. Anything new a cascade notes of the root joins it, or
+a `rem` in an added rule comes to the initial size, and one a `<body>` of
+another size keeps from the root stays where it was when the root moves. A
+shadow tree's sheet reaches only what the tree's host holds, so a tree that
+comes to read otherwise, or to other rules, styles its host and all it holds
+(`_shadowKeys`), where GitHub's first `<tool-tip>` styled the whole document.
+A `<meta>` the
 cascade reads (`pragmaMeta`: a `color-scheme`, a `content-language`), a
 `<base>`, a `:has()` every element could anchor
 that reaches past it (`ANYWHERE_ANCHOR`), and one in `:nth-child(… of …)`
@@ -3805,6 +3813,18 @@ closes a way out a DOM binding opens by accident:
   the listeners already there off and hands them every rejection that is
   not a page's. A test needs no setting node:test's listener aside: that
   it fails no test is the check.
+- **XML is the host's and XPath is the host's** (`xml.ts`, `xpath.ts`). An
+  expression walks every node it can reach, and through the facade that would
+  be an op for each, so only the expression and the prefixes it names cross, a
+  page's resolver is asked as the expression is compiled, and an attribute,
+  which is no node of the tree, stands for itself as an `XAttr` and comes back
+  as its element and its name. `_xmlTree` is the one way XML reaches the tree:
+  htmlparser2 reads it leniently, so `readProlog` holds it to XML first, and a
+  CDATA section is a `Text` in `CDATA_SECTIONS`, a text to everything but a
+  serializer. A processing instruction and a doctype are both directives, so
+  **anything that asks whether a node is a doctype asks `isDoctype`**, never
+  `instanceof ProcessingInstruction`. **An attribute's name goes through
+  `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since
@@ -4344,7 +4364,10 @@ closes a way out a DOM binding opens by accident:
   **Anything new that carries a key's material leaves the host sealed**, and
   never through a field of the facade, since the realm can read all it holds.
   And **the buffers are copied after the algorithm is normalized**, which WPT
-  holds to a getter that changes one. Where a store keeps databases past the
+  holds to a getter that changes one. The table of algorithms is everything
+  a runtime might have, so one it lacks is its `NotSupportedError`, and
+  `offers` says which later methods it has, so a page that finds one finds it
+  working. Where a store keeps databases past the
   process it answers `keySecret()`, or a key in one opens for that process's
   life and reads back as no record after it.
 - **WebTransport's network is a seam whose default opens nothing**

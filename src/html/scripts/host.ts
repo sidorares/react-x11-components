@@ -22,6 +22,7 @@ import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
 import {
+  CDATA,
   Comment,
   Document,
   DomHandler,
@@ -134,6 +135,16 @@ import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
+import { readProlog, serializeXml } from './xml.js';
+import {
+  XAttr,
+  compileXPath,
+  evaluateXPath,
+  namespaceFor,
+  namespaceOf,
+  prefixesIn,
+} from './xpath.js';
+import type { CompiledXPath, XNode } from './xpath.js';
 import {
   checkedDefault,
   controlChange,
@@ -864,6 +875,9 @@ function parserError(): Element {
   DomUtils.appendChild(error, new Text('XML Parsing Error: not well-formed'));
   return error;
 }
+
+/** The texts a CDATA section made: a text to everything but a serializer. */
+const CDATA_SECTIONS = new WeakSet<AnyNode>();
 
 /** The content types a frame reads as XML (XML Media Types, 3). */
 const XML_TYPES = /^(?:text\/xml|application\/xml|[\w.+-]+\/[\w.-]+\+xml)$/;
@@ -2503,6 +2517,25 @@ export class DomHost {
     }
   }
 
+  /** An expression, compiled, or its `SyntaxError`. What is compiled is
+   *  kept, since a page runs one a great many times. */
+  private _xpaths = new Map<string, CompiledXPath>();
+  private _xpath(text: string): CompiledXPath {
+    let compiled = this._xpaths.get(text);
+    if (!compiled) {
+      try {
+        compiled = compileXPath(text);
+      } catch (error) {
+        throw new DomError(
+          'SyntaxError',
+          `The string '${text}' is not a valid XPath expression.`,
+        );
+      }
+      this._xpaths.set(text, compiled);
+    }
+    return compiled;
+  }
+
   /** A doctype's name, public id and system id: those it was made with,
    *  or what the markup it was parsed from says. */
   private _doctypeOf(node: AnyNode): [string, string, string] {
@@ -2611,7 +2644,12 @@ export class DomHost {
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
         }
-        if (node instanceof Text) return '3|#text';
+        if (node instanceof Text) {
+          return CDATA_SECTIONS.has(node) ? '4|#cdata-section' : '3|#text';
+        }
+        if (node instanceof ProcessingInstruction && !isDoctype(node)) {
+          return `7|${node.name.slice(1)}`;
+        }
         if (node instanceof ShadowRoot) return '11|#shadow-root';
         if (node instanceof Comment) return '8|#comment';
         if (this._isDocument(node)) {
@@ -2680,11 +2718,16 @@ export class DomHost {
       case 'text': {
         const node = this._node(a);
         if (node instanceof Text || node instanceof Comment) return node.data;
+        if (node instanceof ProcessingInstruction) return node.data;
         if (node === this.document) return null;
         return DomUtils.textContent(node);
       }
       case 'setText': {
         const node = this._node(a);
+        if (node instanceof ProcessingInstruction) {
+          node.data = text(b);
+          return null;
+        }
         if (node instanceof Text || node instanceof Comment) {
           this._replaceData(node, 0, node.data.length, text(b));
           return null;
@@ -2703,7 +2746,17 @@ export class DomHost {
           if (el.name === 'script') this._forceAsync.set(el, true);
           node = el;
         } else if (a === 'text') node = new Text(text(b));
-        else if (a === 'comment') node = new Comment(text(b));
+        else if (a === 'cdata') {
+          node = new Text(text(b));
+          CDATA_SECTIONS.add(node);
+        } else if (a === 'pi') {
+          const data = text(b);
+          const space = data.indexOf(' ');
+          node = new ProcessingInstruction(
+            `?${data.slice(0, space)}`,
+            data.slice(space + 1),
+          );
+        } else if (a === 'comment') node = new Comment(text(b));
         else node = new Document([]);
         const doc = c ? this._node(c) : this.document;
         if (doc !== this.document && this._isDocument(doc)) {
@@ -3481,11 +3534,71 @@ export class DomHost {
           )[0],
         );
       case 'byTag': {
-        const tag = text(b).toLowerCase();
         const root = this._node(a) as ParentNode;
+        const xml = this._xml.has(this._ownerOf(root) as Document);
+        const tag = xml ? text(b) : text(b).toLowerCase();
         return elementsIn(root, (el) => tag === '*' || el.name === tag)
           .map((el) => this.idOf(el))
           .join(',');
+      }
+      case 'byTagNS': {
+        const root = this._node(a) as ParentNode;
+        const ns = text(b);
+        const name = text(c);
+        return elementsIn(
+          root,
+          (el) =>
+            (ns === '*' || namespaceOf(el) === ns) &&
+            (name === '*' || el.name.slice(el.name.indexOf(':') + 1) === name),
+        )
+          .map((el) => this.idOf(el))
+          .join(',');
+      }
+      // the namespace a prefix reaches at a node
+      case 'lookupNamespace':
+        return namespaceFor(this._node(a), text(b));
+      // XML, parsed and serialized, and XPath over the tree
+      case 'parseXml': {
+        const xml = this._xmlTree(text(a));
+        const kids = xml.wellFormed ? xml.kids : [parserError()];
+        const doc = new Document(kids);
+        for (const kid of kids) kid.parent = doc;
+        this._documents.add(doc);
+        this._xml.set(doc, text(b));
+        return this.idOf(doc);
+      }
+      case 'serializeXml':
+        return serializeXml(this._node(a), {
+          doctype: (node) => this._doctypeOf(node),
+          cdata: (node) => CDATA_SECTIONS.has(node),
+        });
+      case 'xpathPrefixes':
+        return JSON.stringify(prefixesIn(this._xpath(text(a))));
+      case 'xpath': {
+        const { node, attr, namespaces } = JSON.parse(text(b)) as {
+          node: number;
+          attr: string | null;
+          namespaces: Record<string, string>;
+        };
+        const context =
+          attr === null
+            ? this._node(node)
+            : new XAttr(this._element(node), attr);
+        const root = attr === null ? context : this._node(node);
+        const owner = this._isDocument(root as AnyNode)
+          ? (root as Document)
+          : this._ownerOf(root as AnyNode);
+        const value = evaluateXPath(this._xpath(text(a)), context as XNode, {
+          namespaces,
+          html: !this._xml.has(owner as Document),
+        });
+        return JSON.stringify(
+          Array.isArray(value)
+            ? value.map((n) =>
+                n instanceof XAttr ? [this.idOf(n.el), n.name] : this.idOf(n),
+              )
+            : value,
+        );
       }
       case 'byClass': {
         const wanted = text(b)
@@ -5088,7 +5201,8 @@ export class DomHost {
       !doctype &&
       !(node instanceof Element) &&
       !(node instanceof Text) &&
-      !(node instanceof Comment)
+      !(node instanceof Comment) &&
+      !(node instanceof ProcessingInstruction)
     ) {
       throw hierarchy('That node cannot be inserted.');
     }
@@ -6236,12 +6350,14 @@ export class DomHost {
    * leniently, and a document that is not well-formed must run nothing —
    * Acid3's second XHTML frame has a stray `</strong>`.
    */
-  private _xmlTree(text: string): { kids: ChildNode[]; wellFormed: boolean } {
+  private _xmlTree(raw: string): { kids: ChildNode[]; wellFormed: boolean } {
     const handler = new DomHandler(null, {
       withStartIndices: false,
       withEndIndices: false,
     });
-    let wellFormed = !text.includes('\ufffd');
+    const prolog = readProlog(raw);
+    const { text, defaults } = prolog;
+    let wellFormed = prolog.wellFormed && !text.includes('\ufffd');
     const parser = new (class extends Parser {
       override onclosetag(start: number, endIndex: number): void {
         const self = this as unknown as XmlParserInternals;
@@ -6256,8 +6372,31 @@ export class DomHost {
       wellFormed = false;
     }
     parser.end();
-    const kids = handler.root.children.slice();
-    for (const kid of kids) kid.parent = null;
+    const kids = handler.root.children.filter(
+      // the prolog's declaration is no node (XML 1.0, 2.8)
+      (k) => !(k instanceof ProcessingInstruction && /^\?xml$/i.test(k.name)),
+    );
+    for (const kid of handler.root.children) kid.parent = null;
+    const fix = (parent: ParentNode, list: ChildNode[]): void => {
+      for (let i = 0; i < list.length; i += 1) {
+        const kid = list[i];
+        if (kid instanceof CDATA) {
+          // a CDATA section is one text, as the DOM has it
+          const text = new Text(DomUtils.textContent(kid));
+          CDATA_SECTIONS.add(text);
+          text.parent = parent === handler.root ? null : parent;
+          list[i] = text;
+        } else if (kid instanceof ProcessingInstruction) {
+          if (!kid.name.startsWith('!')) {
+            kid.data = kid.data
+              .slice(kid.name.length)
+              .replace(/\?$/, '')
+              .replace(/^\s+/, '');
+          }
+        } else if (kid instanceof Element) fix(kid, kid.children);
+      }
+    };
+    fix(handler.root, kids);
     const roots = kids.filter((k) => k instanceof Element);
     if (
       roots.length !== 1 ||
@@ -6272,8 +6411,20 @@ export class DomHost {
         if (own === scope) own = new Map(scope);
         own.set(name === 'xmlns' ? '' : name.slice(6), value);
       }
+      for (const [name, value] of defaults.get(el.name) ?? []) {
+        el.attribs[name] ??= value;
+      }
       const colon = el.name.indexOf(':');
-      el.namespace = own.get(colon < 0 ? '' : el.name.slice(0, colon)) ?? '';
+      const prefix = colon < 0 ? '' : el.name.slice(0, colon);
+      if (prefix && !own.has(prefix)) wellFormed = false;
+      for (const name of Object.keys(el.attribs)) {
+        const at = name.indexOf(':');
+        const of = at < 0 ? '' : name.slice(0, at);
+        if (of && of !== 'xml' && of !== 'xmlns' && !own.has(of)) {
+          wellFormed = false;
+        }
+      }
+      el.namespace = own.get(prefix) ?? '';
       // made, as the HTML parser makes one, of no registry where it says
       // so, and so what it holds (HTML's scoped registries)
       markParsedRegistry(el);
