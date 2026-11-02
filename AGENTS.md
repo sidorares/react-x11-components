@@ -5383,8 +5383,16 @@ and a nested `<a>` is not ended; foster parenting, so what is out of place in a
 table stays in it; `<template>`'s modes past the first tag it holds and
 `colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
 quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
-which ends no written `<head>`. A comment after `</body>` goes in the body, where
-HTML has it after it.
+which ends no written `<head>`.
+
+**A `</body>` and an `</html>` close nothing, and say so** (`Handler.ended`):
+what comes after them goes back in the body, and a comment after one goes
+outside it, in the `<html>` and the document, which is the one thing the two
+modes HTML keeps for this do differently. **A `<head>` ends with what stands in
+for it**: a second `<head>` or a stray `<html>` in one is a stand-in on the
+stack (`_ignored`), so the first thing that is no head content closes all of
+them, or the body opens inside the head. WPT's `scroll_support` tests write
+`<head>` twice, and their `200vh` body scrolled nothing.
 
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,

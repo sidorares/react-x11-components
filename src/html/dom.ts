@@ -2155,6 +2155,12 @@ class Handler extends DomHandler {
    *  of the stack to find there is none to close. */
   paragraphs = 0;
 
+  /** What end tag the parser last met of the two it leaves open, with only
+   *  comments and white space since: a comment then goes outside what ended
+   *  (13.2.6.4.19, "after body", and 13.2.6.4.22, "after after body"), and
+   *  anything else back in the body, which is why neither is closed. */
+  ended: 'body' | 'html' | null = null;
+
   /** HTML's form element pointer (13.2.4.4): the `<form>` the parser met
    *  last, which outlives its end on the stack, and until its own end tag
    *  turns another away and owns the controls that come. */
@@ -2212,6 +2218,7 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    this.ended = null;
     if (name === 'p') this.paragraphs += 1;
     if (name !== 'html') this._impliedHtml();
     if (this._ignored(name, attribs)) return;
@@ -2510,6 +2517,7 @@ class Handler extends DomHandler {
   }
 
   override onclosetag(name?: string): void {
+    this.ended = null;
     if (name === 'p') this.paragraphs -= 1;
     this._afterPre = false;
     // a close htmlparser2 makes is of what it opened, which the implied
@@ -2524,11 +2532,20 @@ class Handler extends DomHandler {
 
   override oncomment(data: string): void {
     this._afterPre = false;
+    const { ended, tagStack } = this;
+    if (!ended) {
+      super.oncomment(data);
+      return;
+    }
+    // a fragment's root stands for the `<html>` it was read in
+    tagStack.push(ended === 'body' ? (this._html ?? this.root) : this.root);
     super.oncomment(data);
+    tagStack.pop();
   }
 
   override ontext(data: string): void {
     if (NOT_SPACE.test(data)) {
+      this.ended = null;
       this._impliedHtml();
       this._openImpliedHead(null);
       this._closeImpliedHead(null);
@@ -3080,9 +3097,12 @@ class DocumentParser extends Parser {
   private _open(name: string): void {
     const self = this as unknown as ParserInternals;
     const { stack } = self;
-    // a head ends at the first thing that is not head content
-    if (
-      stack[0] === 'head' &&
+    // a head ends at the first thing that is not head content, with what
+    // stands in for it where the markup wrote another `<head>` or `<html>` in
+    // it (`_ignored`): with one of those left, the body opened in the head
+    while (
+      (stack[0] === 'head' ||
+        (stack[0] === 'html' && stack.includes('head'))) &&
       !HEAD_CONTENT.has(name) &&
       name !== 'head' &&
       name !== 'html'
@@ -3415,8 +3435,9 @@ class DocumentParser extends Parser {
       (closes < 0 || this._isHtml(closes))
     ) {
       // a body and a document end where the input does: what comes after
-      // them goes where the last of what they held left it
+      // them goes where the last of what they held left it, but for a comment
       if (name === 'form') this._closeForm(closes);
+      else if (closes >= 0) self.cbs.ended = name as 'body' | 'html';
     } else if (closes >= 0) {
       // the adoption agency would move a block out of this; it stays where
       // it is, and open, as its end tag expects
