@@ -74,7 +74,13 @@ export function DownloadShelf({
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
         >
           <box style={{ flexDirection: 'column', maxWidth: 220 }}>
-            <text style={{ textWrap: 'nowrap', textOverflow: 'ellipsis' }}>
+            <text
+              style={{
+                color: '$text',
+                textWrap: 'nowrap',
+                textOverflow: 'ellipsis',
+              }}
+            >
               {item.name}
             </text>
             <text
