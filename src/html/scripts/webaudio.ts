@@ -15,8 +15,9 @@
 // processing nothing but what a destination's track renders. That is the
 // posture a page that feature-detects `AudioContext` is owed: the whole
 // API, never a stub that throws, and silence where a browser with no
-// speakers would have silence. `decodeAudioData` decodes nothing yet, and
-// rejects with the `EncodingError` a browser gives what it cannot decode.
+// speakers would have silence. `decodeAudioData` reads WAV and rejects
+// anything else with the `EncodingError` a browser gives what it cannot
+// decode.
 //
 // What a destination's track renders is worked out here, from the graph:
 // each oscillator and constant source that reaches it through gains, at
@@ -2266,24 +2267,106 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
           ),
         );
       }
-      const error = domError('Unable to decode audio data.', 'EncodingError');
-      return new P((_: Any, reject: Any) => {
+      return new P((resolve: Any, reject: Any) => {
+        const decoded = decodeWav(audioData, c.sampleRate);
         setTimer(() => {
-          if (typeof errorCallback === 'function') {
+          const callback = decoded ? successCallback : errorCallback;
+          const error =
+            decoded ??
+            domError('Unable to decode audio data.', 'EncodingError');
+          if (typeof callback === 'function') {
             try {
-              errorCallback(error);
+              callback(error);
             } catch {
               // a callback's throw is the page's
             }
           }
-          reject(error);
+          if (decoded) resolve(decoded);
+          else reject(error);
         }, 0);
-        void c;
-        void successCallback;
       });
     }
   }
   handler(BaseAudioContext.prototype, 'statechange');
+
+  /**
+   * A WAV file as an `AudioBuffer` at a context's rate, by straight-line
+   * interpolation, and null for anything else: PCM of 8, 16, 24 or 32 bits,
+   * or floats of 32. That is the one format with no decoder to bring, which
+   * is the sound a page's interface makes: jspaint put a dialog over itself
+   * for each it could not read. Everything else is the `EncodingError` a
+   * browser gives what it cannot decode.
+   */
+  const decodeWav = (data: Any, rate: number): Any => {
+    const view = new DataView(data);
+    const tag = (at: number): string =>
+      String.fromCharCode(
+        view.getUint8(at),
+        view.getUint8(at + 1),
+        view.getUint8(at + 2),
+        view.getUint8(at + 3),
+      );
+    if (view.byteLength < 44 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') {
+      return null;
+    }
+    let format = 0;
+    let channels = 0;
+    let fileRate = 0;
+    let bits = 0;
+    let start = -1;
+    let bytes = 0;
+    for (let at = 12; at + 8 <= view.byteLength;) {
+      const size = view.getUint32(at + 4, true);
+      if (tag(at) === 'fmt ' && at + 24 <= view.byteLength) {
+        format = view.getUint16(at + 8, true);
+        channels = view.getUint16(at + 10, true);
+        fileRate = view.getUint32(at + 12, true);
+        bits = view.getUint16(at + 22, true);
+        // WAVE_FORMAT_EXTENSIBLE: the format is the sub-format's first word
+        if (format === 0xfffe && at + 34 <= view.byteLength) {
+          format = view.getUint16(at + 32, true);
+        }
+      } else if (tag(at) === 'data') {
+        start = at + 8;
+        bytes = Math.min(size, view.byteLength - start);
+        break;
+      }
+      at += 8 + size + (size & 1);
+    }
+    const width = bits >> 3;
+    const known =
+      (format === 1 && [1, 2, 3, 4].includes(width)) ||
+      (format === 3 && width === 4);
+    if (!known || start < 0 || !channels || !fileRate) return null;
+    const frames = floor(bytes / (width * channels));
+    if (frames < 1) return null;
+    const sample = (at: number): number => {
+      if (format === 3) return view.getFloat32(at, true);
+      if (width === 1) return (view.getUint8(at) - 128) / 128;
+      if (width === 2) return view.getInt16(at, true) / 32768;
+      if (width === 4) return view.getInt32(at, true) / 2147483648;
+      const low = view.getUint16(at, true);
+      return ((view.getInt8(at + 2) << 16) | low) / 8388608;
+    };
+    const length = max(1, floor((frames * rate) / fileRate));
+    const out = new AudioBuffer({
+      length,
+      numberOfChannels: channels,
+      sampleRate: rate,
+    });
+    for (let channel = 0; channel < channels; channel += 1) {
+      const samples = out.getChannelData(channel);
+      for (let i = 0; i < length; i += 1) {
+        const place = (i * fileRate) / rate;
+        const whole = floor(place);
+        const next = whole + 1 < frames ? whole + 1 : whole;
+        const a = sample(start + (whole * channels + channel) * width);
+        const b = sample(start + (next * channels + channel) * width);
+        samples[i] = a + (b - a) * (place - whole);
+      }
+    }
+    return out;
+  };
 
   const makeContext = (
     self: Any,

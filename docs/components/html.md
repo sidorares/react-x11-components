@@ -1188,8 +1188,9 @@ as WPT's tests make them, and to another peer the host can reach.
   `MediaStreamAudioDestinationNode`, whose track is a host source that
   renders the oscillators and constant sources reaching it through gains.
   Nothing else on a path is rendered, an analyser hears silence,
-  `decodeAudioData` rejects with the `EncodingError` a browser gives what
-  it cannot decode, and nothing is heard, since core has no audio output.
+  `decodeAudioData` reads WAV and gives anything else the `EncodingError` a
+  browser gives what it cannot decode, and nothing is heard, since core has
+  no audio output.
   A page that feature-detects `AudioContext` gets an API that never throws
   where a browser's would not, and silence where a browser with no
   speakers has silence; WPT's WebRTC tests make their audio from one.
