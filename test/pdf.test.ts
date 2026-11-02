@@ -630,6 +630,305 @@ for (const scale of [1, 2]) {
   });
 }
 
+// --- the pane's edges ---------------------------------------------------------
+
+/** What stands on each side of the pane in `fenced`. */
+const FENCE = {
+  top: '#123456',
+  left: '#654321',
+  right: '#226644',
+  bottom: '#664422',
+};
+
+const rgbOf = (hex: string) =>
+  [1, 3, 5].map((at) => parseInt(hex.slice(at, at + 2), 16));
+
+/** A page of lines one against the next, so a band crosses any edge. */
+const PAGE_OF_TEXT = (() => {
+  const lines = Array.from({ length: 36 }, (_, i) =>
+    lineOfText('x'.repeat(36), 0, i * 14, 12, 14),
+  );
+  return {
+    text: lines.map((line) => line.text).join(''),
+    boxes: Float32Array.from(lines.flatMap((line) => [...line.boxes])),
+  };
+})();
+
+/**
+ * `<Pdf>` with a solid box on every side, and the example's toolbar in the top
+ * one: its text says the page and the zoom, so either claims there as well as
+ * in the pane, in the colour of its box, so that no pixel of it changes.
+ */
+async function fenced(
+  engine: PdfEngine,
+  options: { scale?: number; zoom?: number; paneHeight?: number } = {},
+) {
+  const ref = React.createRef<PdfHandle>();
+  const data = new Uint8Array(4);
+  const h = React.createElement;
+  const side = (color: string, style: object) => ({
+    style: { backgroundColor: color, flexShrink: 0, ...style },
+  });
+  function Fence() {
+    const [page, setPage] = React.useState(0);
+    const [zoom, setZoom] = React.useState(1);
+    return h(
+      'box',
+      { style: { flexDirection: 'column', width: 800, height: 600 } },
+      h(
+        'box',
+        side(FENCE.top, {
+          height: 40,
+          flexDirection: 'row',
+          alignItems: 'center',
+          padding: 6,
+        }),
+        h(
+          'text',
+          { style: { color: FENCE.top, flexGrow: 1 } },
+          `Page ${page + 1} · ${Math.round(zoom * 100)}%`,
+        ),
+      ),
+      h(
+        'box',
+        {
+          style: {
+            flexDirection: 'row',
+            flexShrink: 0,
+            height: options.paneHeight ?? 530,
+          },
+        },
+        h('box', side(FENCE.left, { width: 60 })),
+        h(Pdf, {
+          ref,
+          data,
+          engine,
+          defaultZoom: options.zoom ?? 1,
+          gap: 10,
+          onPageChange: setPage,
+          onZoomChange: setZoom,
+        }),
+        h('box', side(FENCE.right, { width: 30 })),
+      ),
+      h('box', side(FENCE.bottom, { flexGrow: 1 })),
+    );
+  }
+  const scale = options.scale ?? 1;
+  const result = await renderX11(h(Fence), {
+    width: 800,
+    height: 600,
+    scale,
+  } as never);
+  await waitFor(() => assert.ok(ref.current?.node, 'no element yet'));
+  const handle = ref.current!;
+  const node = handle.node!;
+  await waitFor(() => assert.ok(node.abs.width > 0, 'not laid out yet'));
+  return { result, handle, node, scale };
+}
+
+/** Every pixel outside the pane is the colour of the box it is in. */
+async function fenceHolds(
+  fence: Awaited<ReturnType<typeof fenced>>,
+  what: string,
+): Promise<void> {
+  const { result, node, scale } = fence;
+  const { abs } = node;
+  const width = 800 * scale;
+  const height = 600 * scale;
+  const { data } = await (
+    result.ctx as unknown as {
+      getImageData(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+      ): Promise<{ data: Uint8ClampedArray }>;
+    }
+  ).getImageData(0, 0, width, height);
+  let stray = 0;
+  let first = '';
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const inRow = y >= abs.y && y < abs.y + abs.height;
+      if (inRow && x >= abs.x && x < abs.x + abs.width) continue;
+      const want = rgbOf(
+        y < abs.y
+          ? FENCE.top
+          : !inRow
+            ? FENCE.bottom
+            : x < abs.x
+              ? FENCE.left
+              : FENCE.right,
+      );
+      const at = (y * width + x) * 4;
+      if (want.some((value, i) => data[at + i] !== value)) {
+        if (!stray) first = ` from ${x},${y}`;
+        stray++;
+      }
+    }
+  }
+  assert.strictEqual(
+    stray,
+    0,
+    `${what}: ${stray} pixels past the pane${first}`,
+  );
+}
+
+/** The rect of every pass that paints the element from now on. */
+function recordPasses(node: object): Array<{ y: number } | null> {
+  const passes: Array<{ y: number } | null> = [];
+  const drawn = node as {
+    paint(ctx: unknown): void;
+    paintDamage(): { y: number } | null;
+  };
+  const paint = drawn.paint;
+  drawn.paint = function (this: typeof drawn, ctx: unknown) {
+    passes.push(this.paintDamage());
+    paint.call(this, ctx);
+  };
+  return passes;
+}
+
+/** A pass over all of the window, which core leaves unclipped. */
+async function wholeWindow(result: { windowNode: unknown }): Promise<void> {
+  await act(() => {
+    (result.windowNode as { invalidate(all: boolean): void }).invalidate(true);
+  });
+}
+
+for (const scale of [1, 2, 1.5]) {
+  test(`nothing is drawn past the pane, at ${scale}x`, async (t) => {
+    const rest = holdClock(t, restClock);
+    const engine = new FakePdfEngine(FOUR_PAGES, {
+      text: () => PAGE_OF_TEXT,
+    });
+    const fence = await fenced(engine, { scale, zoom: 3 });
+    const { result, handle, node } = fence;
+    await settled(engine, node);
+    // Every edge of the pane falls inside a tile from here on.
+    await act(async () => node.scrollBy({ x: 333, y: 333 }));
+    await settled(engine, node);
+    await fenceHolds(fence, 'a scroll');
+    await act(async () => node.scrollBy({ y: 1900 }));
+    await settled(engine, node);
+    // The toolbar says the new page, and its claim and the pane's are one
+    // pass, with the toolbar in it: a tile drawn whole lands there. Back
+    // over ground that has its tiles, or the pass has none to draw.
+    const passes = recordPasses(node);
+    await act(async () => node.scrollBy({ y: -1900 }));
+    await settled(engine, node);
+    assert.ok(
+      passes.some((pass) => pass && pass.y < node.abs.y),
+      'no pass reached past the pane',
+    );
+    await fenceHolds(fence, 'a new page');
+    await wholeWindow(result);
+    await fenceHolds(fence, 'a pass over the window');
+
+    await waitFor(() =>
+      assert.ok(
+        (node as unknown as { _texts: Map<number, unknown> })._texts.size > 0,
+        'no text yet',
+      ),
+    );
+    await userEvent.click(node as never);
+    await userEvent.key(0x0061, { modifiers: ['Control'] });
+    await wholeWindow(result);
+    await fenceHolds(fence, 'a selection');
+    await userEvent.key(0xff1b); // Escape
+
+    const asked = engine.requests.length;
+    await act(async () => handle.zoomTo(node.zoom * 1.25));
+    await fenceHolds(fence, 'a zoom');
+    await rest.finish();
+    await waitFor(() =>
+      assert.ok(engine.requests.length > asked, 'no tiles asked for yet'),
+    );
+    await settled(engine, node);
+    await wholeWindow(result);
+    await fenceHolds(fence, 'a zoom at rest');
+  });
+}
+
+for (const paneHeight of [20, 2]) {
+  test(`a pane ${paneHeight} tall keeps its thumbs`, async () => {
+    const engine = new FakePdfEngine(FOUR_PAGES);
+    const fence = await fenced(engine, { zoom: 3, paneHeight });
+    const { result, node } = fence;
+    await waitFor(() => assert.ok(node.stats.paints > 0, 'no paint yet'));
+    await act(async () => node.scrollBy({ x: 5000, y: 100000 }));
+    await wholeWindow(result);
+    await fenceHolds(fence, 'thumbs at the end of their tracks');
+  });
+}
+
+test('a stretched tile leaves the smoothing as it found it', async (t) => {
+  const rest = holdClock(t, restClock);
+  const engine = new FakePdfEngine(FOUR_PAGES);
+  const { node } = await mounted(engine);
+  await settled(engine, node);
+  // The window's own context: `result.ctx` is another, for reading pixels.
+  const ctx = (
+    node.root as unknown as { _ctx: { imageSmoothingQuality?: string } }
+  )._ctx;
+  ctx.imageSmoothingQuality = 'high';
+  const before = node.stats.staleComposited;
+  await act(async () => node.zoomTo(1.5));
+  await waitFor(() =>
+    assert.ok(node.stats.staleComposited > before, 'nothing stretched yet'),
+  );
+  await rest.finish();
+  assert.strictEqual(ctx.imageSmoothingQuality, 'high');
+});
+
+for (const scale of [1, 2, 1.5]) {
+  test(`a scroll leaves no image of its thumbs behind, at ${scale}x`, async () => {
+    const engine = new FakePdfEngine(FOUR_PAGES);
+    const { result, node } = await mounted(engine, { scale, zoom: 3 });
+    await settled(engine, node);
+    const wnd = (node.root as unknown as { window: unknown }).window as {
+      scrollRegion(rect: unknown, dx: number, dy: number): boolean;
+    };
+    let blits = 0;
+    const own = wnd.scrollRegion.bind(wnd);
+    wnd.scrollRegion = (rect, dx, dy) => {
+      blits++;
+      return own(rect, dx, dy);
+    };
+    const box = node.contentBox();
+    const read = async () =>
+      (
+        await (
+          result.ctx as unknown as {
+            getImageData(
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+            ): Promise<{ data: Uint8ClampedArray }>;
+          }
+        ).getImageData(box.x, box.y, box.width, box.height)
+      ).data;
+    // From the middle: at the top of the document the image of a thumb is
+    // dragged out of the pane, and nothing is left behind to see.
+    await act(async () => node.scrollBy({ x: 300, y: 3000 }));
+    await settled(engine, node);
+    const down = [{ y: 120 }, { y: 120 }, { x: 90 }, { x: 60, y: 40 }];
+    for (const by of [...down, { y: -150 }, { x: -70 }]) {
+      await act(async () => node.scrollBy(by));
+      await settled(engine, node);
+      const scrolled = await read();
+      await wholeWindow(result);
+      const whole = await read();
+      assert.ok(
+        Buffer.from(scrolled).equals(Buffer.from(whole)),
+        `after a scroll by ${JSON.stringify(by)} the copy and a repaint differ`,
+      );
+    }
+    assert.ok(blits >= 6, `only ${blits} of the scrolls were a copy`);
+  });
+}
+
 test('a whole first view asks for nothing the pane does not reach', async () => {
   const engine = new FakePdfEngine(FOUR_PAGES);
   const { node } = await mounted(engine);

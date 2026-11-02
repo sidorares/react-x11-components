@@ -139,6 +139,15 @@ interface Tile {
   surface: SurfaceLike;
 }
 
+/** What a paint may draw on, in device pixels: the part of the pane the pass
+ *  repaints. */
+interface Pass {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
 /** A place in the document's text. */
 interface TextPlace {
   page: number;
@@ -475,6 +484,7 @@ export class PdfViewNode extends Node {
     );
     const shiftX = Math.round((this._left - nx) * s);
     const shiftY = Math.round((this._top - ny) * s);
+    const thumbs = this._thumbRects();
     this._left = nx;
     this._top = ny;
     if (shiftX === 0 && shiftY === 0) return;
@@ -485,7 +495,13 @@ export class PdfViewNode extends Node {
       box.width > 64 &&
       box.height > 64
     ) {
-      this.scrollContents(box, shiftX, shiftY, null, this._thumbRects());
+      // A thumb moves against the content, so the copy drags the image of it
+      // away from where it is going: pinned at its new place alone, a sliver
+      // of the old image stays behind at every step.
+      this.scrollContents(box, shiftX, shiftY, null, [
+        ...thumbs,
+        ...this._thumbRects(),
+      ]);
     } else {
       this._repaint('scroll');
     }
@@ -1146,6 +1162,11 @@ export class PdfViewNode extends Node {
       box.y + box.height,
       Math.ceil(damage.y + damage.height),
     );
+    // Everything below is cut to this by hand. Core's clip is no bound on the
+    // pane: a claim beside the pane merges into one pass with it, which is
+    // what the toolbar's text does when it says the new page, and a pass over
+    // the whole window is not clipped at all.
+    const pass: Pass = { left, top, right, bottom };
     const { ground = '#525659' } = this._props();
     canvas.fillStyle = ground;
     canvas.fillRect(left, top, right - left, bottom - top);
@@ -1160,10 +1181,10 @@ export class PdfViewNode extends Node {
     const range = this._range();
     this._gaps = 0;
     for (const page of pagesIn(this._layout, view)) {
-      this._paintPage(canvas, page, level, box, { left, top, right, bottom });
-      if (range) this._paintSelection(canvas, page, box, range);
+      this._paintPage(canvas, page, level, box, pass);
+      if (range) this._paintSelection(canvas, page, box, range, pass);
     }
-    this._paintThumbs(canvas);
+    this._paintThumbs(canvas, pass);
     this._pump();
     const took = performance.now() - started;
     if (this._gaps > 0) this.stats.incomplete++;
@@ -1237,7 +1258,7 @@ export class PdfViewNode extends Node {
     page: PlacedPage,
     level: number,
     box: Rect,
-    damage: { left: number; top: number; right: number; bottom: number },
+    pass: Pass,
   ): void {
     const s = this._scale;
     const size = this._sizes[page.index]!;
@@ -1245,10 +1266,10 @@ export class PdfViewNode extends Node {
     const whole = pagePixels(size, shown);
     const x = box.x + Math.round((page.x - this._left) * s);
     const y = box.y + Math.round((page.y - this._top) * s);
-    const left = Math.max(damage.left, x);
-    const top = Math.max(damage.top, y);
-    const right = Math.min(damage.right, x + whole.width);
-    const bottom = Math.min(damage.bottom, y + whole.height);
+    const left = Math.max(pass.left, x);
+    const top = Math.max(pass.top, y);
+    const right = Math.min(pass.right, x + whole.width);
+    const bottom = Math.min(pass.bottom, y + whole.height);
     if (right <= left || bottom <= top) return;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect!(left, top, right - left, bottom - top);
@@ -1276,16 +1297,22 @@ export class PdfViewNode extends Node {
       const tile = this._tiles.get(address.key);
       if (!tile) continue;
       this._touch(tile);
+      const tileX = x + address.x;
+      const tileY = y + address.y;
+      const cx0 = Math.max(tileX, left);
+      const cy0 = Math.max(tileY, top);
+      const cx1 = Math.min(tileX + address.width, right);
+      const cy1 = Math.min(tileY + address.height, bottom);
       ctx.drawImage!(
         tile.surface,
-        0,
-        0,
-        address.width,
-        address.height,
-        x + address.x,
-        y + address.y,
-        address.width,
-        address.height,
+        cx0 - tileX,
+        cy0 - tileY,
+        cx1 - cx0,
+        cy1 - cy0,
+        cx0,
+        cy0,
+        cx1 - cx0,
+        cy1 - cy0,
       );
       this.stats.tilesComposited++;
     }
@@ -1312,6 +1339,8 @@ export class PdfViewNode extends Node {
         Math.abs(Math.log(b.address.level / shown)) -
         Math.abs(Math.log(a.address.level / shown)),
     );
+    // The window's context outlives this paint, so what is set on it goes back.
+    const quality = ctx.imageSmoothingQuality;
     if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'low';
     for (const tile of stale) {
       const { address } = tile;
@@ -1342,6 +1371,7 @@ export class PdfViewNode extends Node {
       );
       this.stats.staleComposited++;
     }
+    if (quality !== undefined) ctx.imageSmoothingQuality = quality;
   }
 
   private _paintSelection(
@@ -1349,6 +1379,7 @@ export class PdfViewNode extends Node {
     page: PlacedPage,
     box: Rect,
     range: { from: TextPlace; to: TextPlace },
+    pass: Pass,
   ): void {
     const index = page.index;
     if (index < range.from.page || index > range.to.page) return;
@@ -1364,7 +1395,9 @@ export class PdfViewNode extends Node {
     const alpha = ctx.globalAlpha;
     ctx.globalAlpha = 0.4;
     for (const band of rangeBands(text, start, end)) {
-      ctx.fillRect!(
+      fillWithin(
+        ctx,
+        pass,
         Math.floor(x + band.x * k),
         Math.floor(y + band.y * k),
         Math.ceil(band.width * k),
@@ -1374,7 +1407,7 @@ export class PdfViewNode extends Node {
     ctx.globalAlpha = alpha ?? 1;
   }
 
-  private _paintThumbs(ctx: PdfCanvas): void {
+  private _paintThumbs(ctx: PdfCanvas, pass: Pass): void {
     // A grey that shows on the ground and on a white page alike: past a page
     // as wide as the pane, the thumb is over the page.
     const { thumb = 'rgba(128, 128, 128, 0.65)' } = this._props();
@@ -1383,12 +1416,29 @@ export class PdfViewNode extends Node {
     const inset = 2 * s;
     const y = this._thumbY();
     if (y) {
-      ctx.fillRect!(y.x + inset, y.y, y.width - inset * 2, y.height);
+      fillWithin(ctx, pass, y.x + inset, y.y, y.width - inset * 2, y.height);
     }
     const x = this._thumbX();
     if (x) {
-      ctx.fillRect!(x.x, x.y + inset, x.width, x.height - inset * 2);
+      fillWithin(ctx, pass, x.x, x.y + inset, x.width, x.height - inset * 2);
     }
+  }
+}
+
+function fillWithin(
+  ctx: PdfCanvas,
+  pass: Pass,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): void {
+  const left = Math.max(x, pass.left);
+  const top = Math.max(y, pass.top);
+  const right = Math.min(x + width, pass.right);
+  const bottom = Math.min(y + height, pass.bottom);
+  if (right > left && bottom > top) {
+    ctx.fillRect!(left, top, right - left, bottom - top);
   }
 }
 
