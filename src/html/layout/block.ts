@@ -1989,9 +1989,9 @@ function layoutForeign(
     object.scale = unit;
     object.width = width;
     object.height = height;
-    if (width > 0 && height > 0) {
-      layoutDocument(object.tree, fonts, width, height, scale);
-    }
+    // one of no size draws nothing, and is laid out all the same: what it
+    // holds is measured, as mermaid sizes an object from its label
+    layoutDocument(object.tree, fonts, width, height, scale);
   }
 }
 
