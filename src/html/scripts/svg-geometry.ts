@@ -648,6 +648,19 @@ export function drawnBox(el: Element, measure: SvgMeasure): Box | null {
   return box && ctm ? through(ctm, box) : null;
 }
 
+/** Where a rectangle in an element, from its corner in its user units, is
+ *  drawn: what a `<foreignObject>` holds, in the document's CSS pixels. */
+export function drawnWithin(
+  el: Element,
+  rect: Box,
+  measure: SvgMeasure,
+): Box | null {
+  const box = bboxOf(el, measure);
+  const ctm = screenCtmOf(el, measure);
+  if (!box || !ctm) return null;
+  return through(ctm, { ...rect, x: box.x + rect.x, y: box.y + rect.y });
+}
+
 /** What the facade asks of a drawing, as the numbers it reads back. */
 export function svgAnswer(
   question: string,
