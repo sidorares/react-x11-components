@@ -118,6 +118,11 @@ import {
   supportsCondition,
 } from '../css/parse.js';
 import { closeBrackets, hasVar } from '../css/vars.js';
+import { svgAnswer } from './svg-geometry.js';
+import type { SvgMeasure } from './svg-geometry.js';
+import { matchesSyntax, validSyntax } from '../css/syntax.js';
+import { focusableElement } from '../focus.js';
+import { CONTROL_PSEUDOS } from '../control-state.js';
 import { readProlog, serializeXml } from './xml.js';
 import {
   XAttr,
@@ -128,11 +133,6 @@ import {
   prefixesIn,
 } from './xpath.js';
 import type { CompiledXPath, XNode } from './xpath.js';
-import { svgAnswer } from './svg-geometry.js';
-import type { SvgMeasure } from './svg-geometry.js';
-import { matchesSyntax, validSyntax } from '../css/syntax.js';
-import { focusableElement } from '../focus.js';
-import { CONTROL_PSEUDOS } from '../control-state.js';
 import {
   checkedDefault,
   controlChange,
