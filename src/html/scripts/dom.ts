@@ -6132,21 +6132,30 @@ export function installDom(
      *  kept under: its prefix is whatever it was written with. */
     _attrNS(ns: Any, local: Any): string | null {
       const name = str(local);
-      if (ns === null || ns === undefined || ns === '') {
-        return this.hasAttribute(name) ? name : null;
-      }
+      const held = this.getAttributeNames().includes(name) ? name : null;
+      if (ns === null || ns === undefined || ns === '') return held;
       const uri = str(ns);
       for (const key of this.getAttributeNames()) {
         const colon = key.indexOf(':');
         if (colon < 0 || key.slice(colon + 1) !== name) continue;
-        if (this.lookupNamespaceURI(key.slice(0, colon)) === uri) return key;
-        if (uri === XLINK_NS && key.startsWith('xlink:')) return key;
+        if (
+          this._attrSpaces?.get(key) === uri ||
+          this.lookupNamespaceURI(key.slice(0, colon)) === uri ||
+          (uri === XLINK_NS && key.startsWith('xlink:'))
+        ) {
+          return key;
+        }
       }
-      return null;
+      // the tree keeps no namespace for an attribute with no prefix, so one
+      // of the name is the one a page set with this namespace
+      return held;
     }
+    /** The namespaces `setAttributeNS` gave what the tree keeps none for. */
+    declare _attrSpaces: Map<string, string> | undefined;
     getAttributeNS(ns: Any, name: Any): string | null {
       const key = this._attrNS(ns, name);
-      return key === null ? null : this.getAttribute(key);
+      const v = key === null ? null : call('attr', this._id, key);
+      return typeof v === 'string' ? v : null;
     }
     hasAttributeNS(ns: Any, name: Any): boolean {
       return this._attrNS(ns, name) !== null;
@@ -6158,7 +6167,10 @@ export function installDom(
       return this.getAttributeNames().length > 0;
     }
     setAttribute(name: Any, value: Any): void {
-      const n = this._attrName(name);
+      this._setAttr(this._attrName(name), value);
+    }
+    /** An attribute set by the name it is kept under. */
+    _setAttr(n: string, value: Any): void {
       if (!/^[^\s"'>/=\u0000-\u001f]+$/.test(n)) {
         throw new DOMException(
           `'${n}' is not a valid attribute name.`,
@@ -6183,12 +6195,15 @@ export function installDom(
       // an existing attribute of the name, whatever its prefix, is the one
       // set; a name without a namespace has no use for one
       const held = this._attrNS(ns, qualified.slice(colon + 1));
-      if (held !== null) this.setAttribute(held, value);
-      else
-        this.setAttribute(ns ? qualified : qualified.slice(colon + 1), value);
+      const key = held ?? (ns ? qualified : qualified.slice(colon + 1));
+      if (ns && colon >= 0) (this._attrSpaces ??= new Map()).set(key, str(ns));
+      this._setAttr(key, value);
     }
     removeAttribute(name: Any): void {
-      const n = this._attrName(name);
+      this._removeAttr(this._attrName(name));
+    }
+    /** An attribute taken away by the name it is kept under. */
+    _removeAttr(n: string): void {
       const attr = attrNodes.get(this)?.get(n);
       if (attr) detachAttr(attr);
       if (n.startsWith('on') && this.getAttribute(n) !== null) {
@@ -6198,7 +6213,7 @@ export function installDom(
     }
     removeAttributeNS(ns: Any, name: Any): void {
       const key = this._attrNS(ns, name);
-      if (key !== null) this.removeAttribute(key);
+      if (key !== null) this._removeAttr(key);
     }
     toggleAttribute(name: Any, force?: boolean): boolean {
       const has = this.hasAttribute(name);
