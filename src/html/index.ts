@@ -98,6 +98,7 @@ import { useDocumentDrag } from './drag.js';
 import type { HtmlDownloadHandler, HtmlDownloadRequest } from './download.js';
 import type { HtmlDrop } from './drag.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
+import { readyFor } from './encoding.js';
 import { useScriptedHtml } from './scripts/scripted.js';
 import type {
   ConsoleProperty,
@@ -295,6 +296,13 @@ export {
   useHtmlNetwork,
   videoSource,
 } from './network.js';
+export {
+  encodingOf,
+  htmlTextDecoder,
+  readyFor,
+  sniffEncoding,
+} from './encoding.js';
+export type { HtmlTextDecoder } from './encoding.js';
 export { threadTransport } from './thread-transport.js';
 export type { ThreadTransportOptions } from './thread-transport.js';
 export type {
@@ -480,7 +488,10 @@ export interface HtmlProps {
    * The encoding the host decoded `source` from, as a label (`'shift_jis'`,
    * `'windows-1251'`). A stylesheet `onResource` hands over as bytes, with no
    * byte order mark, charset or `@charset` of its own, is decoded with it, as
-   * CSS says a sheet is in its document's encoding. Default UTF-8.
+   * CSS says a sheet is in its document's encoding. It is what a page reads
+   * in `document.characterSet`, what a form with no `accept-charset` is sent
+   * in, and what a URL's query is written in where a page's script resolves
+   * one. Default UTF-8.
    */
   charset?: string;
   /**
@@ -1238,6 +1249,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const forms = useForms({
     view: viewNode,
     baseUrl,
+    charset,
     onControlChange,
     onSubmit,
     onPickFiles: props.onPickFiles,
@@ -1294,6 +1306,10 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // render that mounts a widget or a stop for it, however long that is: no
   // count of turns is long enough on a page still loading
   React.useEffect(() => interactive.settleFocus());
+  // what its forms and its links are written in, where that is no UTF-8
+  React.useEffect(() => {
+    void readyFor(charset);
+  }, [charset]);
   // the parse's end, and the load behind it, told once core has laid the
   // element out: a host runs the page's scripts from them, and they measure
   // the document (`parsed.ts`)

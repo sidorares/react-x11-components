@@ -38,6 +38,7 @@ import type {
   ResourceResult,
   ScriptRequest,
 } from '../index.js';
+import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
@@ -458,8 +459,13 @@ function runtimeLanguage(): string {
   }
 }
 
-/** A script's text from what `onResource` answered. */
-function scriptText(result: unknown): string | null {
+/** A script's text from what `onResource` answered: bytes in what the
+ *  response names, then in what its element or its document does (HTML's
+ *  "fetch a classic script"). */
+async function scriptText(
+  result: unknown,
+  fallback: string | undefined,
+): Promise<string | null> {
   const r = result as
     | { kind?: string; text?: string; bytes?: Uint8Array; charset?: string }
     | null
@@ -467,19 +473,9 @@ function scriptText(result: unknown): string | null {
   if (!r || r.kind !== 'script') return null;
   if (typeof r.text === 'string') return r.text;
   if (!r.bytes) return null;
-  const Decoder = (
-    globalThis as {
-      TextDecoder?: new (label?: string) => {
-        decode(bytes: Uint8Array): string;
-      };
-    }
-  ).TextDecoder;
-  if (!Decoder) return null;
-  try {
-    return new Decoder(r.charset ?? 'utf-8').decode(r.bytes);
-  } catch {
-    return new Decoder('utf-8').decode(r.bytes);
-  }
+  const charset = r.charset ?? fallback;
+  await readyFor(charset);
+  return decodeInEncoding(r.bytes, charset);
 }
 
 /** A request no network answers: the default `fetch`. */
@@ -512,6 +508,9 @@ export function useScriptedHtml(
   const options: ScriptsOptions = {
     userAgent: config.userAgent ?? HTML_USER_AGENT,
     language: config.language ?? runtimeLanguage(),
+    get charset() {
+      return latest.current.props.charset;
+    },
     canPlayType: config.canPlayType,
     viewport: config.viewport ?? (() => viewportOf(node())),
     scrollTo:
@@ -539,7 +538,10 @@ export function useScriptedHtml(
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
-        return scriptText(await ask({ url, kind: 'script', element: owner }));
+        return scriptText(
+          await ask({ url, kind: 'script', element: owner }),
+          owner.attribs.charset || latest.current.props.charset,
+        );
       }),
     onTimeout: config.onTimeout ?? nothing,
     reserved: config.reserved,

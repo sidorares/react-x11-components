@@ -67,6 +67,7 @@ import type {
   DomEventInit,
   HtmlDomEventType,
 } from './dom-events.js';
+import { loadEncodings, loadedEncodings } from './encoding.js';
 import {
   FormState,
   buttonType,
@@ -76,6 +77,7 @@ import {
   controlsOf,
   firstInvalid,
   formOwner,
+  formEncoding,
   formSubmission,
   implicitSubmission,
   inputType,
@@ -100,6 +102,8 @@ export interface FormsOptions {
   view: React.RefObject<HtmlViewNode | null>;
   /** The URL the document came from: an empty `action` is it. */
   baseUrl: string | null | undefined;
+  /** The label of the document's encoding, which its forms are sent in. */
+  charset?: string;
   onControlChange?: (element: Element, value: string | boolean) => void;
   onSubmit?: (submission: FormSubmission) => void;
   /** Ask the user for files, for a file input: `HtmlProps.onPickFiles`. */
@@ -214,6 +218,7 @@ export function useForms(options: FormsOptions): Forms {
   const {
     view,
     baseUrl,
+    charset,
     onControlChange,
     onSubmit,
     onPickFiles,
@@ -453,12 +458,19 @@ export function useForms(options: FormsOptions): Forms {
   /** The entry list, built as the form is now, and sent. */
   const send = (form: Element, submitter: Element | null, point?: Point) => {
     if (!onSubmit) return;
+    // what a form names in `accept-charset` is the first its document asks
+    // for, and `<Html>` has loaded nothing for it
+    if (formEncoding(form, charset) !== 'UTF-8' && !loadedEncodings()) {
+      void loadEncodings().then(() => send(form, submitter, point));
+      return;
+    }
     const node = view.current;
     const submission = formSubmission(form, submitter, {
       base: node?.documentBase ?? baseUrl ?? null,
       documentUrl: baseUrl ?? null,
       live,
       point,
+      encoding: charset,
     });
     if (submission) onSubmit(submission);
   };

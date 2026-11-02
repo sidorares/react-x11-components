@@ -37,7 +37,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `reducedMotion`      | `boolean`                                        | What `prefers-reduced-motion` is answered from: true takes a page's `reduce` branch. Default: the desktop's setting, followed live — see [Selectors](#what-renders).                                                                                                                                |
 | `defaultColorScheme` | `'light' \| 'dark'`                              | The scheme a page that names none (`color-scheme: normal`) is drawn in. Default: the palette's. A host that shows the web names `'light'`, as every browser draws one — see [Colours](#what-renders).                                                                                               |
 | `stylesheet`         | `string \| string[]`                             | Author stylesheets applied after the document's own, so a host can restyle a document it does not control. Compared by the sheets it holds: an array made again at each render with the same ones is no change.                                                                                     |
-| `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it. Default UTF-8.                                                                                                                               |
+| `charset`            | `string`                                         | The encoding the host decoded `source` from, as a label (`'shift_jis'`). A stylesheet handed over as bytes that names no encoding of its own is in it, and so is what a page reads in `document.characterSet`, a form and a URL's query. Default UTF-8. See [Encodings](#encodings).                |
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` or `<audio>` playing — see [Video](#video) and [Audio](#audio). May return a promise. **Absent, nothing loads.**                                               |
 | `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
@@ -542,6 +542,49 @@ strings resolve as its `url()`s do, against the sheet they are written in
 One part is not done: a gradient an `image-set()` chooses for a list
 marker draws the `list-style-type`'s marker, as a gradient
 `list-style-image` does, where a browser draws a small square of it.
+
+### Encodings
+
+`charset` says what the host decoded `source` from, and everything in a
+document that turns on its encoding goes by it: `document.characterSet`, the
+encoding of a form with no `accept-charset`, and the query of a URL a page's
+script resolves, a link's among them, as URL's parser has it. A frame's
+document is found the way a browser finds it, in its own bytes and then its
+parent's encoding, and an external script with no charset of its own is in its
+element's `charset` and then its document's.
+
+A host that has a document's bytes finds its encoding with `sniffEncoding`,
+which is HTML's sniffing algorithm: a byte order mark, then the label the
+transport gave, then a `<meta>` in the first kilobyte, then the parent's
+encoding and windows-1252, as a browser falls back. It adds one step of its
+own, before the parent: a document with no label that is valid UTF-8 and is not
+ASCII is UTF-8, where Chrome shows its bytes as windows-1252. `HtmlNetwork.html`
+does all of this and answers with the name it found. A host streaming a
+document asks `sniffEncoding` of its first kilobyte, and `htmlTextDecoder` for
+a decoder that takes the rest a chunk at a time:
+
+```tsx
+const charset = sniffEncoding(head, response.charset);
+const decoder = await htmlTextDecoder(charset);
+let source = decoder.decode(head, { stream: true });
+```
+
+**Every encoding of the WHATWG Encoding Standard is here, and they are not the
+runtime's.** The decoders and encoders are the standard's, read off its own
+indexes (`src/html/encoding-codecs.ts`, the tables in `encoding-tables.ts`,
+written by `scripts/encoding-tables.mjs`). A runtime's would not do: no runtime
+encodes anything but UTF-8, and Node's decoders are ICU's, whose `euc-kr` has no
+UHC and whose `big5` has no HKSCS, so Korean and Hong Kong pages lost characters
+through them. So bytes read the same on Node and on Bun. The tables are a
+quarter of a megabyte and load only where a document is in a legacy encoding,
+or with a page's scripts, whose `TextDecoder` is a `new TextDecoder('big5')`
+away from them. An application that shows only UTF-8 and runs no scripts never
+loads them.
+
+A page's `TextDecoder` takes every label, with `fatal`, `ignoreBOM` and
+`stream`, and refuses `replacement`, which is an encoding of documents alone. A
+stylesheet's bytes are the exception to all this: `decodeStylesheet` still uses
+the runtime's decoder, and falls to UTF-8 where it has no such encoding.
 
 ### Fonts
 
@@ -2505,11 +2548,11 @@ box over it. A translucent veil leaves the widget whole, drawn over it
 rather than seen through it, and so does a box wholly inside the field — an
 icon the page sets in it, which is drawn under the widget.
 
-**Encoded in UTF-8, always.** A browser encodes a form in the document's
-own encoding, or its `accept-charset`, so a Shift_JIS page's form sends
-Shift_JIS; this has no encoder but UTF-8, and says so in `_charset_`. A
-page in a legacy encoding that takes non-ASCII input needs the host to
-re-encode `entries` itself.
+**Encoded as a browser encodes it.** A form goes in the first encoding its
+`accept-charset` names, UTF-8 where it names none, and with no `accept-charset`
+in its document's, the `charset` prop. So a Shift_JIS page's form sends
+Shift_JIS, a `_charset_` field says which, and what the encoding cannot hold
+goes as `&#NNN;`. See [Encodings](#encodings).
 
 **A file field sends no file.** `<input type=file>` is a text field here,
 and a submission carries it as a file with no name and no content, as a
