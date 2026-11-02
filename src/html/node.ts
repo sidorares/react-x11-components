@@ -737,6 +737,9 @@ interface TargetText {
  * mounted without it.
  */
 export interface DocumentInteraction {
+  /** A press's default action has just given core's focus to the document's
+   *  surface: `at` is what it landed on, which keeps the focus if it had it. */
+  pressLanded(at: Element | null): void;
   controlValue(el: Element): string | boolean | null;
   setControlValue(el: Element, value: string | boolean): boolean;
   controlSelection(el: Element): FieldSelection | null;
@@ -12836,6 +12839,13 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
   }
 
+  /** The focusable areas as the document stands now, where what was last
+   *  reported is a frame behind a page's script. */
+  stopsNow(): readonly FocusStop[] {
+    this.layoutNow();
+    return this._stops;
+  }
+
   /**
    * A page's script was stopped by its engine's watchdog inside something
    * it asked of the document (`HandleInternals.interrupted`): a style, a
@@ -14129,6 +14139,7 @@ export class HtmlViewNode extends Node {
   override defaultMouseDown(ev: X11MouseEvent): void {
     const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
     if (!hit) {
+      this.interactive?.pressLanded(this.elementAtPoint(ev.x, ev.y));
       if (ev.button !== 1 || this.startsSelectionAt(ev.x, ev.y)) {
         super.defaultMouseDown?.(ev);
       }

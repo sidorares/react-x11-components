@@ -110,7 +110,8 @@
 import { loadFont, openFont } from 'react-x11';
 import type { Element } from 'domhandler';
 
-import type { FontFaceRule } from './css/parse.js';
+import { faceMatching } from './css/parse.js';
+import type { FontFaceInit, FontFaceRule } from './css/parse.js';
 import type { ComputedStyle } from './css/style.js';
 import type { ResourceRequest, ResourceResult } from './resources.js';
 import { isWoff2, sfntFromWoff2 } from './woff2.js';
@@ -746,6 +747,16 @@ export class WebFonts implements FontFamilies {
     done: (ok: boolean) => void,
   ): void {
     this._scripted.set(id, { rule, element, added: false, done });
+  }
+
+  /** What a page set on a face after making it, which it is matched by from
+   *  then on. A value that is none is left out, as nothing can match it. */
+  setFace(id: number, init: FontFaceInit): void {
+    const face = this._scripted.get(id);
+    const matching = faceMatching(init);
+    if (!face || !matching) return;
+    face.rule = { ...face.rule, ...matching };
+    if (face.added) this._takeScripted(id);
   }
 
   /**
