@@ -47,6 +47,27 @@ export function navigableFor(
   );
 }
 
+/**
+ * Whether what a link or a form opens has its opener (HTML 7.3.1.7, "get an
+ * element's noopener"): not with `noopener` or `noreferrer` in its `rel`, nor
+ * for `_blank` unless its `rel` says `opener`. So a name has one by default,
+ * and a plain `target=_blank` does not.
+ */
+export function linkOpener(
+  target: string,
+  rel: string | undefined,
+): { noopener: boolean; noreferrer: boolean } {
+  const tokens = new Set((rel ?? '').toLowerCase().split(/[\t\n\f\r ]+/));
+  const noreferrer = tokens.has('noreferrer');
+  return {
+    noreferrer,
+    noopener:
+      noreferrer ||
+      tokens.has('noopener') ||
+      (target.toLowerCase() === '_blank' && !tokens.has('opener')),
+  };
+}
+
 /** A link's target (HTML 4.6.5, "get an element's target"): its own
  *  `target`, else the document's first `<base target>`. */
 export function linkTarget(

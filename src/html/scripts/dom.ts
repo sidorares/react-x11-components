@@ -46,6 +46,7 @@ import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
+import type { installWindows, WindowInternals } from './windows.js';
 import type { installServiceWorkers } from './serviceworkers.js';
 import type { installCaches } from './caches.js';
 
@@ -87,6 +88,7 @@ export function installDom(
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
   notificationsApi: typeof installNotifications,
+  windowing: typeof installWindows,
   serviceWorkersApi: typeof installServiceWorkers,
   cachesApi: typeof installCaches,
   namedAccess: boolean,
@@ -1111,7 +1113,8 @@ export function installDom(
     const own = windowMethods.get(self ?? G);
     if (own !== undefined) return own;
     if (self._listeners !== undefined) return null;
-    const proxied = windowMethods.get(self.window);
+    const proxied =
+      windowMethods.get(self.window) ?? windowMethods.get(self.__global);
     if (proxied !== undefined) return proxied;
     throw new TypeError('Illegal invocation');
   };
@@ -5036,6 +5039,13 @@ export function installDom(
   const idOf = (node: Any, what = 'parameter'): number => {
     if (!node || typeof node._id !== 'number') {
       throw new TypeError(`${what} is not of type 'Node'.`);
+    }
+    // a node of another realm of this group, whose id is that realm's: the
+    // host hands it across, as a same-origin frame's or popup's document
+    // takes a node a page made in its own (`handOver`)
+    if (!(node instanceof Node) && node.__handOver) {
+      node.__handOver();
+      return Number(call('takeNode'));
     }
     return node._id;
   };
@@ -9960,6 +9970,10 @@ export function installDom(
     'history',
     'navigation',
     'visualViewport',
+    'close',
+    'focus',
+    'blur',
+    'open',
     'scrollTo',
     'scroll',
     'scrollBy',
@@ -9980,6 +9994,15 @@ export function installDom(
       `Blocked a frame with origin "${location.origin}" from accessing a cross-origin frame.`,
       'SecurityError',
     );
+  /** The page's top-level windows (`./windows.ts`), made once what they
+   *  stand on is here. */
+  let WINDOWS: WindowInternals | null = null;
+  /** This window's origin: its address's, and `about:blank` is the origin of
+   *  what made it (HTML 7.1.1), which `location` does not say. */
+  const documentOrigin = (): string => {
+    const origin = str(G.location?.origin ?? location.origin);
+    return origin === 'null' ? str(call('documentOrigin')) : origin;
+  };
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
   const frameWindows = new WeakMap<object, Any>();
@@ -10031,6 +10054,8 @@ export function installDom(
     }
     return made;
   };
+  /** The window that sent each frame where it is, by the frame's name. */
+  const frameOpeners = new WeakMap<object, Any>();
   /** The window each frame's document was handed last, and whether that
    *  document is the frame's initial `about:blank` (`frameWindowOf`). */
   const keptFrameWindows = new WeakMap<
@@ -10101,10 +10126,9 @@ export function installDom(
       globalThis: () => proxy,
       parent: () => windowOfDocument(frame.ownerDocument) ?? proxy,
       top: () => G,
-      opener: () => null,
       frameElement: () => frame,
       document: () => current,
-      closed: () => false,
+      closed: () => !frame.isConnected,
       length: () => 0,
       innerWidth: () => size()[0],
       innerHeight: () => size()[1],
@@ -10129,6 +10153,24 @@ export function installDom(
         enumerable: false,
       });
     }
+    // what opened it, where a window of a name sent it here (HTML 7.2.2.2)
+    Object.defineProperty(win, 'opener', {
+      get: () => frameOpeners.get(frame) ?? null,
+      set(value: Any) {
+        if (value === null) frameOpeners.delete(frame);
+        else {
+          Object.defineProperty(win, 'opener', {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
+        }
+      },
+      configurable: true,
+      enumerable: true,
+    });
+    WINDOWS?.bars(win, () => frame.isConnected);
     // `location` set is a navigation, as the page's is
     Object.defineProperty(win, 'location', {
       get: () => frameLocationOf(frame),
@@ -10177,6 +10219,13 @@ export function installDom(
       },
       postMessage: (message: Any, options?: Any, transfer?: Any) =>
         postTo(target, message, options, transfer),
+      // nothing of a frame's is the page's to close (HTML 7.2.2.3), and what
+      // it opens the page opens
+      close() {},
+      focus() {},
+      blur() {},
+      open: (url?: Any, target?: Any, features?: Any) =>
+        current._unloadCounter > 0 ? null : G.open(url, target, features),
       scrollTo() {},
       scroll() {},
       scrollBy() {},
@@ -10265,7 +10314,9 @@ export function installDom(
     },
     top: G,
     opener: null,
-    closed: false,
+    get closed() {
+      return !frame.isConnected;
+    },
     length: 0,
     close() {},
     focus() {},
@@ -10284,8 +10335,9 @@ export function installDom(
    * scripts write to.
    */
   const linkedFrames = new Map<number, Any>();
-  /** Where this realm is a frame's: the global of the realm it is in, the
-   *  window that stands for that here, and its frame's id there. */
+  /** Where this realm is a frame's: the global of the realm it is in, which
+   *  is null where that is another origin's, the window that stands for
+   *  that here, and its frame's id there. */
   let parentLink: { global: Any; window: Any; frame: number } | null = null;
   /** A message posted to another page realm's window (`__message`), where
    *  it is cloned and told with the window that stands for this one there:
@@ -10316,9 +10368,39 @@ export function installDom(
         }
       });
     };
+  /**
+   * A message to a realm of another origin, of which this one holds nothing
+   * but a number: `name` is 0 for this realm's parent, a frame's id here, or
+   * a window's number made negative. What it says is made a string here, as a
+   * worker's is, and the host hands that over and says who it is from, so
+   * neither its `origin` nor its `source` is this realm's to say, and holds it
+   * to the origin it is meant for, which it knows of both.
+   */
+  const postAcross =
+    (name: number) =>
+    (message: Any, options?: Any, transfer?: Any): void => {
+      const byOptions = options !== null && typeof options === 'object';
+      // an origin that is none is thrown here, as for any window
+      originAllowed(options, '');
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, undefined, {
+        across: realmAcross(name),
+        moving: transfersOf(transferListOf(byOptions ? options : transfer)),
+        later,
+      });
+      giveUp(byOptions ? options : transfer);
+      const target = byOptions
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : options;
+      call('realmPost', name, data, str(target));
+      for (const go of later) go();
+    };
   /** Another of the page's realms, as a port can be across it: `name` 0
-   *  for this realm's parent, else its frame's id here. What crosses is a
-   *  string, to that realm's `__wire`, which names this one back. */
+   *  for this realm's parent, else its frame's id here, or a window's number
+   *  made negative. What crosses is a string: to that realm's `__wire`, which
+   *  names this one back, or, of another origin, through the host. */
   const realmsAcross = new Map<number, Across>();
   const realmAcross = (name: number): Across => {
     let across = realmsAcross.get(name);
@@ -10326,8 +10408,13 @@ export function installDom(
       across = {
         key: `r${name}`,
         send: (text) => {
-          if (name === 0) parentLink?.global.__wire(parentLink.frame, text);
-          else linkedFrames.get(name)?.__wire(0, text);
+          const parent = parentLink?.global;
+          const frame = linkedFrames.get(name);
+          if (name < 0) WINDOWS?.send(-name, text);
+          else if (name === 0 && parent) {
+            parent.__wire(parentLink!.frame, text);
+          } else if (name > 0 && frame) frame.__wire(0, text);
+          else call('realmWire', name, text);
         },
       };
       realmsAcross.set(name, across);
@@ -10348,24 +10435,56 @@ export function installDom(
       return doc ? frameWindowOf(doc, frame) : null;
     };
     let cross: Any = null;
-    const across = (): Any => (cross ??= crossOriginWindow(frame, proxy));
+    proxy = windowProxy({
+      current,
+      across: () => (cross ??= crossOriginWindow(frame, proxy)),
+      post() {
+        const linked = linkedFrames.get(frame._id);
+        if (linked) return deliverInto(linked, 0, frame._id);
+        return crossLinked.has(frame._id) ? postAcross(frame._id) : null;
+      },
+      closed: () => !frame.isConnected,
+      seen: (_key, value) => value,
+      quiet: () => false,
+    });
+    frameProxies.set(frame, proxy);
+    proxiedFrames.set(proxy, frame);
+    return proxy;
+  };
+  /**
+   * A WindowProxy (HTML 7.2.3): the window `current` answers, where one of
+   * this origin's is there, and else what `across` says may be reached across
+   * origins, the rest of it a `SecurityError`. A frame's, and a window's of
+   * this one's group (`./windows.ts`).
+   */
+  const windowProxy = (spec: {
+    current(): Any;
+    across(): Any;
+    post(): Any;
+    closed(): boolean;
+    seen(key: PropertyKey, value: Any, win: Any): Any;
+    quiet(): boolean;
+  }): Any => {
+    const { current, across } = spec;
     // what a cross-origin window answers undefined to rather than throwing,
     // so that `await` and `instanceof` do not (HTML 7.2.3.3)
     const silent = (key: PropertyKey): boolean =>
+      spec.quiet() ||
       key === 'then' ||
       key === Symbol.toStringTag ||
       key === Symbol.hasInstance ||
       key === Symbol.isConcatSpreadable;
-    proxy = new Proxy(
+    const proxy: Any = new Proxy(
       {},
       {
         get(_t, key) {
-          const linked = linkedFrames.get(frame._id);
-          if (linked && key === 'postMessage') {
-            return deliverInto(linked, 0, frame._id);
+          if (key === 'postMessage') {
+            const post = spec.post();
+            if (post) return post;
           }
+          if (key === 'closed' && spec.closed()) return true;
           const win = current();
-          if (win) return Reflect.get(win, key, win);
+          if (win) return spec.seen(key, Reflect.get(win, key, win), win);
           const others = across();
           if (Object.prototype.hasOwnProperty.call(others, key)) {
             return others[key as string];
@@ -10438,8 +10557,6 @@ export function installDom(
       removeEventListener: forward('removeEventListener'),
       dispatchEvent: forward('dispatchEvent'),
     });
-    frameProxies.set(frame, proxy);
-    proxiedFrames.set(proxy, frame);
     return proxy;
   };
   /** Each frame's `location`: where its document is from, and a way to
@@ -16252,7 +16369,7 @@ export function installDom(
       location.href = v;
     }
     get referrer(): string {
-      return '';
+      return this === document ? str(call('referrer')) : '';
     }
     get domain(): string {
       return location.hostname;
@@ -16656,6 +16773,10 @@ export function installDom(
      *  the document — it is refused. */
     write(...parts: Any[]): void {
       const text = parts.map((p) => str(p)).join('');
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.write(this, text);
+        return;
+      }
       if (this !== document) {
         // a document of the page's own, a frame's among them: what is
         // written since `open` is its markup at `close`, and a write to
@@ -16680,6 +16801,10 @@ export function installDom(
       return this;
     }
     close(): void {
+      if (this === document && WINDOWS?.blank()) {
+        WINDOWS.wrote(this);
+        return;
+      }
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
@@ -22113,6 +22238,13 @@ export function installDom(
     'frameElement',
     'history',
     'navigation',
+    'BarProp',
+    'locationbar',
+    'menubar',
+    'personalbar',
+    'scrollbars',
+    'statusbar',
+    'toolbar',
     'localStorage',
     'sessionStorage',
     'customElements',
@@ -26516,9 +26648,11 @@ export function installDom(
     });
   }
   // a page's service workers, where the host lets it have them and it is a
-  // secure context; left out otherwise, as `clipboard` is
+  // secure context; left out otherwise, as `clipboard` is. A window's
+  // `about:blank` is of what opened it, and under the same worker
   const serviceWorkersOn =
-    /^https?:$/.test(location.protocol) &&
+    (/^https?:$/.test(location.protocol) ||
+      (location.protocol === 'about:' && /^https?:/.test(documentOrigin()))) &&
     call('secureContext') === true &&
     call('serviceWorkers') === true;
   if (serviceWorkersOn) {
@@ -27897,6 +28031,9 @@ export function installDom(
    * of its own navigates in that realm. Null for a keyword, or a name no
    * frame here has.
    */
+  /** The frames a window's `length` and its indices count, in tree order. */
+  const windowFrames = (): Any[] =>
+    Array.from(document.querySelectorAll('iframe, frame'));
   const namedFrame = (name: string): { frame: Any; session: Any } | null => {
     if (!name || name.startsWith('_')) return null;
     for (const frame of Array.from(
@@ -27929,9 +28066,17 @@ export function installDom(
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
-      // own navigation; any other window is the host's to choose
+      // own navigation; a window of its group goes where it is sent, and
+      // any other is the host's to choose
       const framed = namedFrame(target);
-      if (!framed) return true;
+      if (!framed) {
+        return !WINDOWS!.follow(
+          address(),
+          target,
+          anchor.getAttribute('rel') ?? '',
+          userInitiated,
+        );
+      }
       const href = address();
       navigateTo(
         framed.session,
@@ -31988,7 +32133,7 @@ export function installDom(
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);
-  getter('origin', () => location.origin);
+  getter('origin', () => documentOrigin());
   // The window's own strings, made strings as they are set, as a
   // browser's are: a classic script's `var name = 1` sets the window's
   // name, and `typeof name` is a string after it, as it is there.
@@ -31998,6 +32143,7 @@ export function installDom(
     get: () => windowName,
     set: (v: Any) => {
       windowName = str(v);
+      WINDOWS?.named(windowName);
     },
     configurable: true,
     enumerable: false,
@@ -32010,11 +32156,12 @@ export function installDom(
     configurable: true,
     enumerable: false,
   });
-  getter('closed', () => false);
-  // no frames, which is what `length` counts
-  getter('length', () => 0);
+  getter('closed', () => WINDOWS?.closed() ?? false);
+  // the document's frames, which is what `length` counts
+  getter('length', () => windowFrames().length);
+  // where a window's features put it, there being no screen to read
   for (const at of ['screenX', 'screenY', 'screenLeft', 'screenTop']) {
-    getter(at, () => 0);
+    getter(at, () => WINDOWS?.screen(at.endsWith('X') || at.endsWith('Left')));
   }
   define('visualViewport', visualOf(ownViewport));
   // no check of its receiver: what a call on the global hands a getter is
@@ -32157,15 +32304,22 @@ export function installDom(
     );
     return null;
   });
-  // to where its name says, a new tab where it names none (HTML 7.2.2.1)
-  define('open', (url?: Any, target?: Any) => {
-    const name = target === undefined || target === '' ? '_blank' : str(target);
-    // a frame of this document's that the name names: navigated as its own
-    // session has it, and its window handed back (HTML 7.2.2.1)
+  // to where its name says, and a new window where it names none (HTML
+  // 7.2.2.1, `./windows.ts`)
+  define('open', (url?: Any, target?: Any, features?: Any) =>
+    WINDOWS!.open(url, target, features),
+  );
+  /** A frame of this document's that a name names: navigated as its own
+   *  session has it, and its window handed back (HTML 7.2.2.1). */
+  const openInFrame = (
+    name: string,
+    href: string | null,
+    noopener: boolean,
+  ): Any => {
     const framed = namedFrame(name);
     if (framed) {
-      if (url) {
-        const href = String(call('resolve', str(url)));
+      if (href) {
+        if (!noopener) frameOpeners.set(framed.frame, G);
         navigateTo(
           framed.session,
           href,
@@ -32179,23 +32333,25 @@ export function installDom(
       }
       return frameProxyOf(framed.frame);
     }
-    // this window: a navigation of its own, which the page hears first
-    if (/^_self$/i.test(name) && url) {
-      const s = pageSession.session;
-      const href = String(call('resolve', str(url)));
-      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
-        userInitiated: false,
-        sourceElement: null,
-        hostFollows: true,
-      });
-      if (went === 'other') call('open', href, name);
-      return G;
-    }
-    if (url) call('open', String(call('resolve', str(url))), name);
-    return null;
-  });
-  define('close', () => {});
-  define('focus', () => {});
+    // one that runs in a realm of its own, which that realm navigates
+    const id = Number(call('frameNamed', name));
+    if (!id) return null;
+    const frame = wrap(id);
+    if (href) call('frameNavigate', id, href);
+    return frameProxyOf(frame);
+  };
+  /** This window: a navigation of its own, which the page hears first. */
+  const openHere = (href: string, name: string): void => {
+    const s = pageSession.session;
+    const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+      userInitiated: false,
+      sourceElement: null,
+      hostFollows: true,
+    });
+    if (went === 'other') call('open', href, name);
+  };
+  define('close', () => WINDOWS!.close());
+  define('focus', () => WINDOWS!.focus());
   define('blur', () => {});
   define('print', () => {});
   define('stop', () => {});
@@ -32338,8 +32494,20 @@ export function installDom(
   // shadows it, as in a browser. A worker's global has none, and nor does
   // a window where the runtime refuses the proxy (`namedAccessWorks`).
   if (namedAccess) {
-    const lookup = (key: string | symbol): Any => {
+    const lookup = (key: string | symbol, receiver: Any = G): Any => {
       if (typeof key !== 'string' || !key || workerLocation) return undefined;
+      // an index is a frame's window, ahead of any name, and only on the
+      // window itself: on its prototype a number is a name (HTML 7.2.3.3)
+      const first = key.charCodeAt(0);
+      if (
+        first >= 48 &&
+        first <= 57 &&
+        receiver !== named &&
+        `${+key}` === key
+      ) {
+        const frame = windowFrames()[+key];
+        if (frame) return frame.contentWindow;
+      }
       const found = idList(call('named', key, document._id)).map(wrap);
       if (!found.length) return undefined;
       for (const el of found) {
@@ -32354,13 +32522,13 @@ export function installDom(
       }
       return found.length === 1 ? found[0] : collection(found);
     };
-    const named = new Proxy(Object.create(Object.getPrototypeOf(G)), {
+    const named: Any = new Proxy(Object.create(Object.getPrototypeOf(G)), {
       has: (target: Any, key: string | symbol) =>
         Reflect.has(target, key) || lookup(key) !== undefined,
       get: (target: Any, key: string | symbol, receiver: Any) =>
         Reflect.has(target, key)
           ? Reflect.get(target, key, receiver)
-          : lookup(key),
+          : lookup(key, receiver),
       getOwnPropertyDescriptor: (target: Any, key: string | symbol) => {
         const own = Reflect.getOwnPropertyDescriptor(target, key);
         if (own) return own;
@@ -33913,13 +34081,49 @@ export function installDom(
     G.__handed = undefined;
     return value;
   };
+  // a node of this realm's, for another realm's op to take (`idOf`)
+  Object.defineProperty(Node.prototype, '__handOver', {
+    value(this: Any) {
+      call('handOver', this._id);
+    },
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  WINDOWS = windowing({
+    G,
+    call,
+    entry,
+    input,
+    handed,
+    str,
+    DOMException,
+    hasTransientActivation,
+    consumeActivation,
+    deliverInto,
+    postAcross,
+    windowProxy,
+    openInFrame,
+    openHere,
+    unloading: () => !!document._unloaded || document._unloadCounter > 0,
+    windowTarget,
+    windowName: () => windowName,
+    setWindowName(name) {
+      windowName = name;
+    },
+    setTimer,
+  });
   // a frame of this page's runs in its own realm: its window here is that
   // realm's global from now on
   entry('__linkFrame', () => {
     const [id, cross] = input();
-    linkedFrames.set(Number(id), handed());
-    if (cross) crossLinked.add(Number(id));
-    else crossLinked.delete(Number(id));
+    if (cross) {
+      linkedFrames.delete(Number(id));
+      crossLinked.add(Number(id));
+    } else {
+      linkedFrames.set(Number(id), handed());
+      crossLinked.delete(Number(id));
+    }
     return true;
   });
   entry('__unlinkFrame', () => {
@@ -33932,7 +34136,6 @@ export function installDom(
   // a window that posts to it with this one as the source
   entry('__linkParent', () => {
     const [id, cross] = input();
-    const global = handed();
     const frame = Number(id);
     if (cross) {
       // a parent of another origin's: what crosses origins and no more
@@ -33943,7 +34146,7 @@ export function installDom(
           'SecurityError',
         );
       const allowed: Any = {
-        postMessage: deliverInto(global, frame, 0),
+        postMessage: postAcross(0),
         closed: false,
         length: 0,
         opener: null,
@@ -34007,7 +34210,7 @@ export function installDom(
         },
       );
       proxiedFrames.set(window, null);
-      parentLink = { global, window, frame };
+      parentLink = { global: null, window, frame };
       define('parent', window);
       define('top', window);
       Object.defineProperty(G, 'frameElement', {
@@ -34016,6 +34219,7 @@ export function installDom(
       });
       return true;
     }
+    const global = handed();
     const window: Any = new Proxy(
       {},
       {
@@ -34053,6 +34257,53 @@ export function installDom(
     });
     return true;
   });
+  /** A message of another realm's told here, as a task of its own: `from`
+   *  is what this realm calls that one. */
+  const tellMessage = (
+    data: Any,
+    origin: string,
+    from: number,
+    ports: Any[],
+  ): void => {
+    const source =
+      from < 0
+        ? WINDOWS!.proxyOf(-from)
+        : from === 0
+          ? (parentLink?.window ?? null)
+          : frameProxyOf(wrap(from));
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', { data, origin, source, ports });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  // A message from a realm of another origin, which the host hands over and
+  // says the origin and the source of (`postAcross`): a string made again
+  // here, the ports in it each at the end of a wire back to that realm
+  entry('__messageAcross', () => {
+    const [text, origin, from] = input();
+    const made = deserializeWith(str(text), realmAcross(Number(from)));
+    tellMessage(made.data, str(origin), Number(from), made.ports);
+    return true;
+  });
+  // and a port's along a wire from one, or a frame of a canvas it shows
+  entry('__wireAcross', () => {
+    const [text, from] = input();
+    const across = realmAcross(Number(from));
+    const said = str(text);
+    setTimer(
+      () => wireMessage(across, said) || canvasFrame(across, said),
+      0,
+      [],
+      false,
+    );
+    return true;
+  });
   // A message from another realm of this page: cloned here, as it is
   // posted, and told as a task of its own, its source the window that
   // stands for the realm it came from — `from` 0 for this realm's parent,
@@ -34079,24 +34330,7 @@ export function installDom(
           ports.push(port);
         });
       }
-      const data = structuredCopy(message, seen);
-      const source =
-        from === 0 ? (parentLink?.window ?? null) : frameProxyOf(wrap(from));
-      setTimer(
-        () => {
-          const ev = new MessageEvent('message', {
-            data,
-            origin: str(origin),
-            source,
-            ports,
-          });
-          ev.isTrusted = true;
-          dispatch(windowTarget, ev);
-        },
-        0,
-        [],
-        false,
-      );
+      tellMessage(structuredCopy(message, seen), str(origin), from, ports);
     },
     writable: false,
     configurable: false,
@@ -34118,7 +34352,7 @@ export function installDom(
   // this realm's origin, which a message posted to it from another realm
   // is held to (`deliverInto`)
   Object.defineProperty(G, '__origin', {
-    value: () => str(G.location?.origin ?? location.origin),
+    value: () => documentOrigin(),
     writable: false,
     configurable: false,
     enumerable: false,

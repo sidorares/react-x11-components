@@ -3901,6 +3901,47 @@ closes a way out a DOM binding opens by accident:
   **anything that asks whether a node is a doctype asks `isDoctype`**, never
   `instanceof ProcessingInstruction`. **An attribute's name goes through
   `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
+- **A window with an opener is a realm in its opener's process**
+  (`scripts/popups.ts` on the host, `scripts/windows.ts` in the page,
+  `src/html/popups.ts` for the seam, docs/prd-popups.md). `window.open` answers
+  at once with a document, which no process boundary could, so a window is a
+  `WindowSlot`: a number in a group that outlives every document it shows, each
+  of which comes into it as its runner is made (`adopt`), and in each realm a
+  proxy over that number. Eight things are load-bearing. **A window's first document
+  is made inside the op** (`Popup.seams`), before any `<Html>`, with its opener's
+  seams until a view lends its own, so anything new a realm asks of its seams as
+  it starts has an answer with no view there. **What reads as a window through a
+  proxy goes through `seen`**: `popup.opener === window` needs this realm's name
+  for it, since a proxy is a realm's own. **A slot is found by what a window's
+  documents share** (`windowKey`): a host's `session`, a frame's element, so an
+  opener's next document reaches its popups; `SLOTS` is by that key, and anything
+  new that makes a top-level document goes through `ScriptRunner`'s constructor.
+  **What a page holds of a same-origin window it may hand another realm's op**, so
+  a node's id is its realm's and `idOf` asks the host to hand it across
+  (`__handOver`, `takeNode`): anything new that takes a node as an op's argument
+  goes through `idOf`, never `node._id`, or it takes another node with no error.
+  **A page's top is its host's** (`DomHost.top`): a popup
+  shares its opener's tree and is a top of its own, so anything that reads the
+  site for cookies asks its host. **A context runs its microtasks only as the
+  host enters it**, so a promise of one realm that another's task resolves waits
+  for that realm's next task: `await new Promise((go) => (popup.onload = go))`
+  has nothing else to wake it. So windows join `_drainRealms`, as same-origin
+  frames do, but only as a proxy is first read through (`windowReached`), and
+  never for being in one group: linked in pairs, a page of ninety windows ran all
+  of them after every task and timed out. **A window's `about:blank` is of what
+  made it** (`DomHost.creator`), set before its realm is made, since a realm asks
+  what context it is as it installs: anything new that goes by a document's origin
+  or its security asks the host, never its address, which says `null` and not
+  secure, and a service worker's client answers `origin` for the same reason. And
+  **a group is
+  kept out of the back-forward cache** (`salvageable`): a window another reaches
+  stays where it can be reached. A host answers `popups.open`, and shows a window
+  by mounting `<Html>`
+  with `scripts.popup` for each of its documents, the first `source=""` at
+  `about:blank`, which `useScriptedHtml` turns into the document `window.open`
+  made. **Nothing but the seam says a window may open**: no `popups`, and
+  `window.open` is null, as "Nothing is fetched, by construction" has it.
+
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since
@@ -4332,13 +4373,36 @@ closes a way out a DOM binding opens by accident:
   page may have (`_ending`), or a page that starts and ends them in a loop
   has threads without end. **Anything new that ends a thread goes through
   `end`.**
-- **Another origin's frame is linked as another origin.** Its realm and
-  the page's hand each other their globals, as same-origin frames do, and
-  the facade keeps what either reaches to what crosses origins
-  (`crossLinked`, the cross-origin `parent`): a cross-origin frame's global
-  never answers a property read from the other realm. `postMessage`'s
-  `targetOrigin` is held to the window posted to (`__origin`), which is
-  not the sender's once two origins are linked.
+- **A realm never holds another origin's global, or any object of that
+  realm.** The facade runs in the page's realm, so a page can replace all it
+  calls: `String`, `Map.prototype.get`, `WeakMap.prototype.get`. An origin
+  compared there can be made to come out the same, and what a table there keeps
+  can be read as the facade reads it, so no check in the facade, and no copy of
+  a builtin under one, keeps a global from a page. **A page has every object the
+  facade's code touches.** So the host decides, by `host.origin`:
+  `ScriptEngine.link` and `WindowSlot.adopt` hand a global only to a realm of
+  one origin (`sameOrigin`, in which an opaque origin is no other's), and two
+  of different origins have each other by a number. What crosses origins goes
+  through ops on that number: `closed`, `length`, `close`, `focus`, a `location`
+  set, and `postMessage` and a port's messages as strings (`postAcross`,
+  `realmPost`, `realmWire`), delivered by entering the other realm
+  (`__messageAcross`, `__wireAcross`). Who sent a message and whether it is
+  meant for that origin are the host's to say (`post`). Three things are
+  load-bearing. **Anything that reaches another document is refused on the host
+  by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
+  `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
+  first. A facade's check is a courtesy, for the error a page should see.
+  **What an origin is read from cannot be moved by a page**: `setLocation`
+  stays in its origin, since every check of one, storage and cookies among them,
+  reads it, and `creator` is an `about:blank` document's alone, or a popup's
+  `data:` document is its opener's origin. A frame's origin is where it landed
+  (`response.url`), not what it asked for. And **a test of this replaces what
+  the facade calls** (`STEAL` in `test/html/popups.test.ts`), beside a control
+  of one origin that finds the global by the same reach: finding nothing proves
+  nothing until the same search finds something. **Anything new that reaches
+  another realm is an op on its number, refused on the host**, and a window
+  moving between origins links or unlinks in `adopt`, so nothing keeps a global
+  past it.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
@@ -4515,10 +4579,11 @@ closes a way out a DOM binding opens by accident:
 **A promise of one realm with a reaction of another's runs in the other's
 queue** (`_drainRealms`). `then` goes by the handler's realm, and a context's
 queue runs only as the host enters it, so `frame.contentWindow.fetch().then()`
-in a page, settled in the frame, waited for a timer of the page's to happen. An
-entry into a realm linked with others of its origin enters them after it, a few
-turns, and `__drain` is what never does that again. Anything that links realms
-goes through `link`.
+in a page, settled in the frame, waited for a timer of the page's to happen. Any
+entry into a realm with others in its set enters them after it, a few turns, and
+those entries never ask for that again (`_drainingRealms`). A same-origin frame
+joins the set as it is linked, and a window as a script first reaches it
+(`reached`), so anything that links realms goes through `link` or `reached`.
 
 **`caches` is a store and one function over it** (`../cache-storage.ts`,
 `caches.ts`). What a query matches, `Vary` and a batch's all-or-none are

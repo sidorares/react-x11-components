@@ -53,10 +53,14 @@ import type { HtmlServiceWorkers } from '../service-workers.js';
 import type {
   FetchRequest,
   FetchResponse,
+  FramePost,
   HostSeams,
   WorkerInit,
 } from './host.js';
+import type { Popup } from './popups.js';
 import { liveSession } from './session.js';
+import { slotFor, windowOps } from './popups.js';
+import type { WindowSlot } from './popups.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
 import type {
   AbortSignalLike,
@@ -152,6 +156,13 @@ export interface FrameLink {
   frame: Element;
 }
 
+/** What a view of a document it did not make binds to: a frame's page, or
+ *  the window whose first document it draws (`Popup`). */
+export interface ViewLink {
+  parent: Pick<ScriptRunner, 'bindFrame' | 'releaseFrame' | 'serviceKeeper'>;
+  frame: Element | null;
+}
+
 /**
  * A frame's document's runner, and the views that draw it. A frame keeps its
  * document running whether anything draws it or not — its view goes where
@@ -190,6 +201,9 @@ export class ScriptRunner {
   private _elementScrollOwed: ReturnType<typeof setTimeout> | null = null;
   /** The runners of the frames' documents in this one (`FrameSeat`). */
   private _seats = new Map<Document, FrameSeat>();
+  /** The window this document is shown in, where it has one of a group
+   *  (`./popups.ts`). */
+  slot: WindowSlot | null = null;
   private _seatsWatched: (() => void) | null = null;
   private _viewListeners = new Set<() => void>();
   private _viewsTold = false;
@@ -212,8 +226,28 @@ export class ScriptRunner {
      *  what its realm reads as it starts (`./session.ts`). */
     arrival: SessionArrival | null = null,
   ) {
-    this.host = new DomHost(document, _options, url, _link?.parent.host.shared);
+    // the window a document of a group comes into, which is its tab's or
+    // its popup's: a host's `session` is what a tab's documents share, and
+    // a frame's its element (`windowKey`)
+    const popup = _options.popup as Popup | null | undefined;
+    const slot = popup?.slot ?? slotFor(this.windowKey);
+    this.host = new DomHost(
+      document,
+      _options,
+      url,
+      _link?.parent.host.shared ?? slot?.group.shared,
+      _link?.parent.host.top,
+    );
     this.host.arrival = arrival;
+    // before its realm is made, which asks what context it is as it starts
+    if (popup && url === 'about:blank') this.host.creator = popup.creator;
+    // the host's to know, and never the facade's: it decides what a realm is
+    // handed, and what is refused it
+    const foreign =
+      !!_link &&
+      url !== 'about:blank' &&
+      (originOf(url) === 'null' || originOf(url) !== _link.parent.host.origin);
+    this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
@@ -297,16 +331,82 @@ export class ScriptRunner {
               ]),
           });
     this.host.workers = this._workers;
+    this._windows = windowOps(
+      this,
+      (blank, address, seams) => new ScriptRunner(blank, address, seams),
+    );
+    this.host.windows = this._windows;
+    slot?.adopt(this);
+    // a window goes by the name it was opened under, and a frame's by its
+    // element's, whichever document it shows
+    const name = _link
+      ? _link.frame.attribs.name
+      : !slot && _options.windowName;
+    if (name) {
+      this.engine.call('__windowNamed', [name]);
+      this._windows.named(name);
+    }
     this._attachService();
     if (_link) {
-      _link.parent.engine.link(
-        this.engine,
-        this._frameId(),
-        // `about:blank` is the origin of the document that opened it
-        url !== 'about:blank' &&
-          originOf(url) !== originOf(_link.parent.host.url),
-      );
+      _link.parent.engine.link(this.engine, this._frameId(), foreign);
     }
+  }
+
+  private readonly _windows: ReturnType<typeof windowOps>;
+
+  /** What the documents of this one's window share, which its slot is found
+   *  again by: a frame's element, the host's session, or what `<Html>` lent
+   *  it, the same for every document one `<Html>` shows. */
+  get windowKey(): object {
+    return this._link?.frame ?? this._options.session ?? this._options;
+  }
+
+  /** What this document was made with. */
+  get seams(): RunnerSeams {
+    return this._options;
+  }
+
+  /** The frame's element, where this document is a frame's. */
+  get frame(): Element | null {
+    return this._link?.frame ?? null;
+  }
+
+  /** The realm this document's frame is in, and its frame's id there. */
+  get parentRealm(): { runner: ScriptRunner; from: number } | null {
+    return this._link
+      ? { runner: this._link.parent, from: this._frameId() }
+      : null;
+  }
+
+  /** The realm of a frame of this document, by its id here. */
+  frameRealm(id: number): ScriptRunner | null {
+    const document = this.host.frameDocumentAt(id);
+    return (document && this._seats.get(document)?.runner) ?? null;
+  }
+
+  /**
+   * A link or a form asks for a target no frame has: a window of the group
+   * that goes by it, or a new one with this one its opener. False where it is
+   * none of the group's: a tab, the host's to open.
+   */
+  followTarget(
+    url: string,
+    target: string,
+    noopener: boolean,
+    noreferrer: boolean,
+    post: FramePost | null,
+  ): boolean {
+    if (this._disposed) return false;
+    return this._windows.follow(url, target, noopener, noreferrer, post);
+  }
+
+  /** A page closed the window it is in, which is the host's: one created by
+   *  a script, or with nothing to go back to, may be (HTML 7.2.2.3). Answers
+   *  whether it is closing. */
+  closeTab(): boolean {
+    if (this._link) return false;
+    const alone = (this._options.session?.entries.length ?? 1) <= 1;
+    return this._options.close?.(alone) === true;
   }
 
   /** What keeps this page's service workers, where it has any. */
@@ -325,14 +425,20 @@ export class ScriptRunner {
   private _attachService(): void {
     const keeper = this.serviceKeeper;
     if (!keeper || !this.host.secure) return;
-    const parent = this._link?.parent.host.serviceClient ?? null;
+    const popup = this._options.popup as Popup | null | undefined;
+    // a window's `about:blank` is its opener's client, as a frame's is its
+    // parent's: the document of no address that the opener made
+    const parent =
+      this._link?.parent.host.serviceClient ?? popup?.creatorClient ?? null;
     if (!/^https?:/i.test(this.host.url) && !parent) return;
     const options = this._options;
     this.host.serviceClient = registryOf(keeper).attach(
       {
         url: () => this.host.url,
+        origin: () => this.host.origin,
         type: 'window',
-        frameType: () => (this._link ? 'nested' : 'top-level'),
+        frameType: () =>
+          this._link ? 'nested' : popup ? 'auxiliary' : 'top-level',
         // a window has the focus here, and a frame where the page gave it
         focused: () =>
           this._link
@@ -881,6 +987,9 @@ export class ScriptRunner {
   salvageable(): boolean {
     if (this._disposed || this._ready !== 'complete') return false;
     if (this.host.connected) return false;
+    // a window another reaches stays where it can be reached, as Chrome
+    // keeps such a page out of its cache
+    if ((this.slot?.group.slots.size ?? 0) > 1) return false;
     for (const seat of this._seats.values()) {
       if (!seat.runner.salvageable()) return false;
     }
@@ -960,8 +1069,9 @@ export class ScriptRunner {
    * hidden already, and is told nothing more: it goes as it is (HTML,
    * "destroy a document").
    */
-  dispose(swap: PageSwap | null = null): void {
+  dispose(swap: PageSwap | null = null, quiet = false): void {
     if (this._disposed) return;
+    this.slot?.left(this);
     this._unlive?.();
     if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
     if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
@@ -971,7 +1081,7 @@ export class ScriptRunner {
     this._seats.clear();
     this._seatsWatched?.();
     this.host.leaving();
-    if (!this.engine.frozen) {
+    if (!this.engine.frozen && !quiet) {
       this.engine.call('__unload', swap ? [swap] : null);
     }
     this._workers?.dispose();

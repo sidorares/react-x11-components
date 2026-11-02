@@ -52,20 +52,29 @@ import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
 import type { HtmlClipboard, HtmlClipboardData } from '../clipboard.js';
 import type { HtmlNotifications } from '../notifications.js';
+import type { HtmlPopup, HtmlPopups } from '../popups.js';
 import type { HtmlPermissions } from '../permissions.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
 import { throughWorker, useScripts } from './hook.js';
-import type { FetchRequest, FetchResponse } from './host.js';
+import type { FetchRequest, FetchResponse, FramePost } from './host.js';
 import type { AbortSignalLike } from './platform.js';
-import type { ScriptsOptions } from './runner.js';
+import type { ScriptsOptions, ViewLink } from './runner.js';
 import type { FrameContext } from './frames.js';
 import type { HtmlSessionHistory } from './session.js';
-import { linkTarget, navigableFor } from './target.js';
+import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
+
+/** A window opened by a page, as an `<Html>` that draws its first document
+ *  reads it (`./popups.ts`). */
+type OpenedWindow = HtmlPopup &
+  ViewLink['parent'] & {
+    initialDocument: Document | null;
+    creator: string;
+  };
 
 /** The pane a document is shown in, as its scripts measure it: its size
  *  and its scroll in CSS pixels, the zoom between those and the window's
@@ -107,8 +116,40 @@ export interface HtmlScripts {
    */
   load?: (url: string, element: Element | null) => Promise<string | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
-   *  `location.replace`, or `window.open` (`'tab'`). Default: nowhere. */
-  navigate?: (url: string, how: 'here' | 'replace' | 'tab') => void;
+   *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
+   *  the form it goes with, where a form's `target` named this window, and
+   *  `name` what a tab was asked for under. Default: nowhere. */
+  navigate?: (
+    url: string,
+    how: 'here' | 'replace' | 'tab',
+    post?: FramePost | null,
+    name?: string,
+  ) => void;
+  /**
+   * What a page's windows reach: `window.open`, `opener`, and a link or a form
+   * whose `target` is a name (`HtmlPopups`). Default: none, and `window.open`
+   * answers null and hands its address to `navigate` as a tab.
+   */
+  popups?: HtmlPopups;
+  /**
+   * The window this document is shown in, where a page opened it: what the
+   * host was handed by `popups.open`, on every `<Html>` it shows there.
+   */
+  popup?: HtmlPopup;
+  /**
+   * What the window goes by, where the host opened it under a name that
+   * `navigate` was handed: `window.name`, and what a later target finds. A
+   * name is kept across the documents of a `session`.
+   */
+  windowName?: string;
+  /**
+   * A page closed the window it is in, with `window.close()`, where that is
+   * no window a page opened. HTML lets it where a script opened the window, or
+   * its history has one entry (7.2.2.3, script-closable), which `alone` says
+   * and the host knows the rest of. True where it closes, which `closed` then
+   * reads. Default: nothing.
+   */
+  close?: (alone: boolean) => boolean | void;
   /** `location.reload()`. Default: nothing. */
   reload?: () => void;
   /** `history.go`, `back` and `forward`, past the page's own
@@ -480,6 +521,10 @@ export function useScriptedHtml(
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,
+    popups: config.popups,
+    popup: config.popup ?? null,
+    close: config.close,
+    windowName: config.windowName,
     reload: config.reload ?? nothing,
     go: config.go ?? nothing,
     promptToUnload: config.promptToUnload,
@@ -514,7 +559,20 @@ export function useScriptedHtml(
     drawsFrames: frames,
   };
   const url = props.baseUrl ?? 'about:blank';
-  const scripts = useScripts(true, handle, url, options);
+  // the document a window opened with is the one `window.open` made, which
+  // this `<Html>` draws and binds to as a frame's view does (`Popup`)
+  const popup = config.popup as OpenedWindow | undefined;
+  const opening =
+    url === 'about:blank' && popup?.initialDocument
+      ? { document: popup.initialDocument, base: popup.creator }
+      : null;
+  const scripts = useScripts(
+    true,
+    handle,
+    url,
+    options,
+    opening ? { parent: popup!, frame: null } : null,
+  );
 
   // What a frame of the page is drawn with: the page's look, and its
   // resources. Asked as each is mounted (`embeddedMounts`).
@@ -571,6 +629,20 @@ export function useScriptedHtml(
     [scripts.runner],
   );
 
+  // a target that is no frame may be a window of the page's group, or a new
+  // one with this one its opener
+  const follow = (
+    href: string,
+    target: string,
+    rel: string | undefined,
+    post: FramePost | null,
+  ): boolean => {
+    const { noopener, noreferrer } = linkOpener(target, rel);
+    return !!scripts
+      .runner?.()
+      ?.followTarget(href, target, noopener, noreferrer, post);
+  };
+
   // a link or a form whose target names one of the page's frames loads it
   // there; anything else is the application's, as it is with scripts off
   const onLink = useCallback(
@@ -592,17 +664,26 @@ export function useScriptedHtml(
   const onSubmit = useCallback(
     (submission: FormSubmission) => {
       const to = navigableFor(handle.document, submission.target);
+      const post =
+        submission.method === 'post'
+          ? {
+              body: submission.body ?? '',
+              contentType: submission.contentType ?? '',
+            }
+          : null;
       if (typeof to !== 'string' && scripts.navigateFrame) {
-        scripts.navigateFrame(
-          to,
+        scripts.navigateFrame(to, submission.url, post);
+        return;
+      }
+      if (
+        to === 'tab' &&
+        follow(
           submission.url,
-          submission.method === 'post'
-            ? {
-                body: submission.body ?? '',
-                contentType: submission.contentType ?? '',
-              }
-            : null,
-        );
+          submission.target,
+          submission.form.attribs.rel,
+          post,
+        )
+      ) {
         return;
       }
       latest.current.props.onSubmit?.(submission);
@@ -719,6 +800,7 @@ export function useScriptedHtml(
     onElementScroll,
     canvasImage,
     canvasOpaque: scripts.canvasOpaque,
+    ...(opening && { document: opening.document, baseUrl: opening.base }),
     onLink,
     onSubmit,
     stylesheet,

@@ -173,7 +173,10 @@ import {
   isDoctype,
 } from './ranges.js';
 import type { CharacterData } from './ranges.js';
-import { navigableFor } from './target.js';
+import { linkOpener, navigableFor } from './target.js';
+import { parseWindowFeatures } from '../popups.js';
+import type { HtmlPopup, HtmlPopups } from '../popups.js';
+import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
@@ -702,8 +705,26 @@ export interface HostSeams {
     top: number;
   };
   scrollTo(x: number, y: number): void;
-  /** A navigation the page asked for: an address assigned, `open`. */
-  navigate(url: string, how: 'here' | 'replace' | 'tab'): void;
+  /** A navigation the page asked for: an address assigned, `open`. `post`
+   *  is the form a link's or a form's target sends it with, into a window
+   *  of the group; `name` what a tab is opened with. */
+  navigate(
+    url: string,
+    how: 'here' | 'replace' | 'tab',
+    post?: FramePost | null,
+    name?: string,
+  ): void;
+  /** What a page's `window.open` reaches (`HtmlPopups`). */
+  popups?: HtmlPopups;
+  /** The window this document is shown in, where a page opened it. */
+  popup?: HtmlPopup | null;
+  /** What the window this document is shown in goes by, where a host opened
+   *  it under a name. */
+  windowName?: string;
+  /** A page closed the window it is in, a tab of its host's: `alone` where
+   *  its history has one entry, which is what lets a page close a window no
+   *  script opened. Answers whether it closes. */
+  close?(alone: boolean): boolean | void;
   reload(): void;
   go(delta: number): void;
   /** A page that is being left asked to be confirmed first (HTML 7.4.2.4,
@@ -1727,9 +1748,12 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
-  /** The top-level document's address: the page's, whose site is the site
-   *  for cookies of every frame in it. */
-  top: string | null = null;
+  /** The windows that can reach each other over this tree, once one has
+   *  opened another (`./popups.ts`). */
+  windows: WindowGroup | null = null;
+  /** A node one realm hands another (`handOver`), and that realm's origin:
+   *  another origin's takes nothing. */
+  handed: { node: AnyNode; origin: string } | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -1928,6 +1952,9 @@ export class DomHost {
     private readonly _seams: HostSeams,
     url: string,
     shared: DomShared = new DomShared(),
+    /** The top-level document's address: the page's, whose site is the site
+     *  for cookies of every frame in it. Its own, for a page. */
+    top: string | null = null,
   ) {
     // a fragment directive is the user agent's, and no part of the URL a
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
@@ -1956,7 +1983,7 @@ export class DomHost {
     this._unwatchPermissions =
       _seams.permissions?.watch?.((name) => this._permissionMoved(name)) ??
       null;
-    shared.top ??= this.url;
+    this.top = top ?? this.url;
     // what another document of the origin does to its storage, which this
     // one hears as a `storage` event
     this._unwatchStorage =
@@ -2141,6 +2168,35 @@ export class DomHost {
       this._dragOut = null;
     }
     return answer !== false;
+  }
+
+  /** The address of the document this one's window is at the top of. */
+  readonly top: string;
+  /** A page's windows, where the host may open any (`./popups.ts`). */
+  windows: ReturnType<typeof windowOps> | null = null;
+  /** What made this document, where it is `about:blank`: its origin and its
+   *  base are that document's (HTML 7.1.1). */
+  creator: string | null = null;
+  /** What `document.referrer` reads. */
+  referrer = '';
+  /** Whether the document around this one's frame is of another origin:
+   *  what the frame's element is, and all it reaches, is refused it. */
+  foreignParent = false;
+
+  /** This document's origin. */
+  get origin(): string {
+    return this._origin();
+  }
+
+  /** The document a frame of this document shows, by the frame's id. */
+  frameDocumentAt(id: number): Document | null {
+    const frame = this._nodes.get(id);
+    return (frame && this._frames.get(frame as Element)) ?? null;
+  }
+
+  /** A document of nothing, `about:blank`'s, for a window's first. */
+  blankDocument(): Document {
+    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -4175,23 +4231,49 @@ export class DomHost {
         return doc ? this.idOf(doc) : 0;
       }
       case 'frameElement': {
-        const frame = this._frameOf.get(this._node(a) as Document);
-        return frame ? this.idOf(frame) : 0;
+        const doc = this._node(a) as Document;
+        const frame = this._frameOf.get(doc);
+        // of the document around this one, which is not this one's to reach
+        // where it is another origin's
+        if (!frame || (doc === this.document && this.foreignParent)) return 0;
+        return this.idOf(frame);
       }
-      // where a frame's document is from, another origin's as well: its
-      // window's `location`, which the page may set whoever's it is
+      // where a frame's document is from, read only of this one's origin: the
+      // page may set another origin's window's `location`, and not read it
       case 'frameLocation': {
         const frame = this._element(a);
         this._frameDocument(frame);
-        return this._frameAt.get(frame) ?? 'about:blank';
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        if (!this._sameOrigin(at)) {
+          throw new DomError(
+            'SecurityError',
+            "A frame of another origin's address is none of this document's.",
+          );
+        }
+        return at;
       }
       case 'frameNavigate':
         this.navigateFrame(this._element(a), text(b), null);
         return null;
-      // a frame's address changed by its own history, with no navigation
-      case 'setFrameLocation':
-        this._frameAt.set(this._element(a), text(b));
+      // a frame's address changed by its own history, with no navigation:
+      // never to or from another origin, since what the address says is what
+      // `frameDocument` hands a page a document by
+      case 'setFrameLocation': {
+        const frame = this._element(a);
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        const to = text(b);
+        if (
+          !this._sameOrigin(at) ||
+          !(this._sameOrigin(to) || originOf(to) === originOf(at))
+        ) {
+          throw new DomError(
+            'SecurityError',
+            "A frame's history stays in its origin.",
+          );
+        }
+        this._frameAt.set(frame, to);
         return null;
+      }
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
@@ -5079,9 +5161,19 @@ export class DomHost {
         return this._seams.handle.base ?? this.url;
       case 'location':
         return this.url;
-      case 'setLocation':
-        this.url = text(a);
+      // the document's address changed by its own history. Never to another
+      // origin: this is what every check of a document's origin reads
+      case 'setLocation': {
+        const to = text(a);
+        if (originOf(to) !== originOf(this.url)) {
+          throw new DomError(
+            'SecurityError',
+            "A document's history stays in its origin.",
+          );
+        }
+        this.url = to;
         return null;
+      }
       case 'resolve':
         return this._resolve(text(a));
       case 'url':
@@ -5097,6 +5189,106 @@ export class DomHost {
       }
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
+        return null;
+      // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
+      case 'windowFeatures':
+        return JSON.stringify(parseWindowFeatures(text(a)));
+      case 'windowBase':
+        return this._seams.handle.base ?? this.creator ?? this.url;
+      case 'windowPopups':
+        return !this._seams.popups
+          ? 'none'
+          : this._seams.popups.unblocked
+            ? 'any'
+            : 'gesture';
+      case 'windowBlocked':
+        this._seams.popups?.blocked?.(text(a));
+        return null;
+      case 'windowOpen':
+        return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
+      case 'windowTab':
+        this._seams.navigate(
+          text(a),
+          'tab',
+          null,
+          /^_blank$/i.test(text(c)) ? '' : text(c),
+        );
+        return null;
+      case 'windowFind':
+        return this.windows?.find(text(a)) ?? 0;
+      case 'windowClose':
+        this.windows?.close(Number(a));
+        return null;
+      case 'windowFocus':
+        this.windows?.focus(Number(a));
+        return null;
+      case 'windowNavigate':
+        this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        return null;
+      case 'windowName':
+        this.windows?.named(text(a));
+        return null;
+      case 'windowDisown':
+        this.windows?.disown();
+        return null;
+      case 'windowReached':
+        this.windows?.reached(Number(a));
+        return null;
+      case 'windowOpener':
+        return this.windows?.openerOf(Number(a)) ?? 0;
+      case 'windowLength':
+        return this.windows?.lengthOf(Number(a)) ?? 0;
+      case 'windowFollow': {
+        const { noopener, noreferrer } = linkOpener(text(b), text(c));
+        const made = this.windows?.follow(
+          text(a),
+          text(b),
+          noopener,
+          noreferrer,
+          null,
+        );
+        return made ?? false;
+      }
+      // what a page writes into the `about:blank` a window opened with: read
+      // back as it is written, and the scripts in it run at the end
+      case 'writeWindow': {
+        const markup = text(a);
+        if (!b) this._fill(this.document, markup);
+        else if (/<script/i.test(markup)) {
+          this._replaceAll(this.document, this._htmlTree(markup, true));
+        }
+        return null;
+      }
+      case 'documentOrigin':
+        return this._origin();
+      case 'referrer':
+        return this.referrer;
+      case 'frameNamed': {
+        const frame = navigableFor(this.document, text(a));
+        return typeof frame === 'string' ? 0 : this.idOf(frame);
+      }
+      case 'handOver':
+        this._s.handed = { node: this._node(a), origin: this._origin() };
+        return null;
+      case 'takeNode': {
+        const handed = this._s.handed;
+        this._s.handed = null;
+        if (!handed) return 0;
+        if (handed.origin !== this._origin()) {
+          throw new DomError(
+            'SecurityError',
+            "A node of another origin's is none of this document's.",
+          );
+        }
+        return this.idOf(handed.node);
+      }
+      // what crosses to a realm of another origin, which this one holds
+      // nothing of (`ScriptEngine.link`)
+      case 'realmPost':
+        this.windows?.post(Number(a), text(b), text(c));
+        return null;
+      case 'realmWire':
+        this.windows?.wire(Number(a), text(b));
         return null;
       // `window.open`, to where its name says (`navigableFor`): a frame of
       // the page's, the page's own tab, or a new one
@@ -6554,8 +6746,9 @@ export class DomHost {
           );
           scripts = false;
         }
-        // another origin's scripts never run in this realm
-        if (foreign) scripts = false;
+        // another origin's scripts never run in this realm, where it was
+        // asked for or where it sent the frame
+        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
         this._frameLoaded(
           frame,
           doc,
@@ -7117,7 +7310,8 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.url).href;
+      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
+        .href;
     } catch {
       return url;
     }
@@ -7125,7 +7319,11 @@ export class DomHost {
 
   private _origin(): string {
     try {
-      return new URL(this.url).origin;
+      const origin = new URL(this.url).origin;
+      // `about:blank` alone is of what made it: `data:` has no origin to share
+      return this.creator && this.url.startsWith('about:')
+        ? new URL(this.creator).origin
+        : origin;
     } catch {
       return 'null';
     }
@@ -7279,7 +7477,7 @@ export class DomHost {
       return this._seams.secureContext;
     }
     return (
-      trustworthy(this._s.top ?? this.url) &&
+      trustworthy(this.creator ?? this.top) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
   }
@@ -7525,8 +7723,7 @@ export class DomHost {
   private _featureAllowed(feature: string): boolean {
     const frame = this._frameOf.get(this.document);
     if (!frame) return true;
-    const top = this._s.top;
-    if (top && originOf(top) === this._origin()) return true;
+    if (originOf(this.top) === this._origin()) return true;
     return (frame.attribs.allow ?? '')
       .split(';')
       .some((entry) => entry.trim().split(/\s+/)[0] === feature);
@@ -7645,7 +7842,7 @@ export class DomHost {
     if (op === 'enabled') return !!jar;
     const averse =
       !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
-    const top = this._s.top;
+    const { top } = this;
     switch (op) {
       case 'get':
         return averse ? '' : jar.documentCookie(url, top);
