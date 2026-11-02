@@ -494,6 +494,8 @@ interface Doc {
    *  it where it is saved from there. */
   viewer?: Viewer;
   filename?: string;
+  /** Its response's headers, for what it says of itself to its engine. */
+  headers?: [string, string][];
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -521,6 +523,8 @@ interface View {
   number?: number;
   /** What it asks of the pane that scrolls it, once it has been laid out. */
   overflow?: ViewportOverflow;
+  /** Its response's headers (`Doc.headers`). */
+  headers?: [string, string][];
 }
 
 /** The documents the tab has an `<Html>` for, and which of them is shown. */
@@ -900,6 +904,7 @@ export default function Page(props: PageProps): ReactElement {
       url: at,
       scripted: runs && engine !== false,
       zoom: live.current.zoom,
+      headers: doc.headers,
     };
     setViews(({ views }) => ({
       views: [...overtaken(views, again), view],
@@ -1557,6 +1562,7 @@ export default function Page(props: PageProps): ReactElement {
   // and what its workers ask of the network waits for it to be shown again.
   const scriptsOf = (view: View): HtmlScripts | false =>
     view.scripted && {
+      headers: view.headers,
       userAgent: props.userAgent ?? DEFAULT_USER_AGENT,
       language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
       // what the platform's player opens, where there is one: a stream's
@@ -2309,6 +2315,7 @@ async function loadDocument(
     charset,
     baseUrl: at,
     url: at,
+    headers: response.headers,
   };
   on.commit(at, first, null, posted);
   let last = Date.now();

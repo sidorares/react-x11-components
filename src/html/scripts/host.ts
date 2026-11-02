@@ -191,6 +191,19 @@ import { linkOpener, navigableFor } from './target.js';
 import { parseWindowFeatures } from '../popups.js';
 import type { HtmlPopup, HtmlPopups } from '../popups.js';
 import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
+import { readDataUrl } from '../network.js';
+import {
+  SB_DOWNLOADS,
+  SB_ORIGIN,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_SCRIPTS,
+  SB_TOP,
+  SB_TOP_GESTURE,
+  parseSandbox,
+  sandboxOfPolicy,
+} from './sandbox.js';
+import { framingRefused } from './framing.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
@@ -329,6 +342,9 @@ export interface FetchRequest {
    * held to, and its address the `Referer`. Absent, the page's.
    */
   client?: string;
+  /** Whether its `Origin` is `null`, whatever its client's is: a sandboxed
+   *  document's, whose address says nothing of who it is. */
+  opaqueOrigin?: boolean;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -1852,6 +1868,9 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
+  /** Each document's sandboxing flags, where it has any (`./sandbox.ts`):
+   *  kept here, by the document, where no realm can reach them. */
+  readonly sandboxes = new WeakMap<Document, number>();
   /** The windows that can reach each other over this tree, once one has
    *  opened another (`./popups.ts`). */
   windows: WindowGroup | null = null;
@@ -2287,6 +2306,12 @@ export class DomHost {
   /** What made this document, where it is `about:blank`: its origin and its
    *  base are that document's (HTML 7.1.1). */
   creator: string | null = null;
+  /** The opaque origin that made it, where one did: an address says nothing
+   *  of that, and a sandbox's address is a real origin's. */
+  creatorOrigin: object | null = null;
+  /** This document's opaque origin, where it has one: `'null'` is what it
+   *  serializes to, and this is which it is. */
+  private readonly _opaqueOwn = {};
   /** What `document.referrer` reads. */
   referrer = '';
   /** Whether the document around this one's frame is of another origin:
@@ -2298,6 +2323,33 @@ export class DomHost {
     return this._origin();
   }
 
+  /** Which opaque origin this document has, or null for one of a scheme, a
+   *  host and a port: what two documents of no address's origin compare. */
+  get opaqueOrigin(): object | null {
+    if (this._origin() !== 'null') return null;
+    return this.creatorOrigin ?? this._opaqueOwn;
+  }
+
+  /** What this document's sandbox takes from it (`./sandbox.ts`). */
+  get sandbox(): number {
+    return this._s.sandboxes.get(this.document) ?? 0;
+  }
+
+  /** The document around this one's frame, where that is a realm's. */
+  frameParent: DomHost | null = null;
+
+  /** The flags a window this document opens starts with: its own, unless it
+   *  lets its windows out of its sandbox. */
+  get popupSandbox(): number {
+    return this.sandbox & SB_PROPAGATES ? this.sandbox : 0;
+  }
+
+  /** Whether this document may send the window at the top of it somewhere
+   *  (HTML 7.4.2.3, "allowed by sandboxing to navigate"), a gesture behind it
+   *  or not. */
+  mayNavigateTop(gesture: boolean): boolean {
+    return !(this.sandbox & (gesture ? SB_TOP_GESTURE : SB_TOP));
+  }
   /** The document a frame of this document shows, by the frame's id. */
   frameDocumentAt(id: number): Document | null {
     const frame = this._nodes.get(id);
@@ -4109,6 +4161,14 @@ export class DomHost {
           WorkerInit,
           'source' | 'origin'
         >;
+        // the facade asks first, for the error a page should see, and what
+        // it hands over is a page's to change
+        if (!this._workerAllowed(String(init.url))) {
+          throw new DomError(
+            'SecurityError',
+            "A worker's script is its own origin's.",
+          );
+        }
         return this.workers.start({
           ...init,
           source: typeof b === 'string' ? b : null,
@@ -4408,7 +4468,7 @@ export class DomHost {
         const frame = this._element(a);
         this._frameDocument(frame);
         const at = this._frameAt.get(frame) ?? 'about:blank';
-        if (!this._sameOrigin(at)) {
+        if (!this._reaches(frame)) {
           throw new DomError(
             'SecurityError',
             "A frame of another origin's address is none of this document's.",
@@ -4436,7 +4496,7 @@ export class DomHost {
         const at = this._frameAt.get(frame) ?? 'about:blank';
         const to = text(b);
         if (
-          !this._sameOrigin(at) ||
+          !this._reaches(frame) ||
           !(this._sameOrigin(to) || originOf(to) === originOf(at))
         ) {
           throw new DomError(
@@ -5390,12 +5450,33 @@ export class DomHost {
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
         return null;
+      // this frame sends the window it is in somewhere, which it has no
+      // address of and may not read: a frame of another origin only behind a
+      // gesture, as Chromium keeps a frame from taking a page away, and a
+      // sandboxed one as its flags say (HTML 7.4.2.3)
+      case 'navigateTop': {
+        const to = this._resolve(text(a));
+        const parent = this.frameParent;
+        if (!parent || parent.frameParent || /^javascript:/i.test(to)) {
+          return null;
+        }
+        const gesture = this.entries?.call('__windowActivation', null) === true;
+        if (!this.mayNavigateTop(gesture) || (!this.sandbox && !gesture)) {
+          throw new DomError(
+            'SecurityError',
+            `Blocked a frame from navigating the top window to '${to}'.`,
+          );
+        }
+        parent._seams.navigate(to, 'here');
+        return null;
+      }
       // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
       case 'windowFeatures':
         return JSON.stringify(parseWindowFeatures(text(a)));
       case 'windowBase':
         return this._seams.handle.base ?? this.creator ?? this.url;
       case 'windowPopups':
+        if (this.sandbox & SB_POPUPS) return 'sandboxed';
         return !this._seams.popups
           ? 'none'
           : this._seams.popups.unblocked
@@ -5405,8 +5486,10 @@ export class DomHost {
         this._seams.popups?.blocked?.(text(a));
         return null;
       case 'windowOpen':
+        if (this.sandbox & SB_POPUPS) return 0;
         return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
       case 'windowTab':
+        if (this.sandbox & SB_POPUPS) return null;
         this._seams.navigate(
           text(a),
           'tab',
@@ -5423,7 +5506,11 @@ export class DomHost {
         this.windows?.focus(Number(a));
         return null;
       case 'windowNavigate':
-        this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        // nothing runs a script in another window's document here, and HTML
+        // has it do nothing for another origin's
+        if (!/^javascript:/i.test(text(b))) {
+          this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        }
         return null;
       case 'windowName':
         this.windows?.named(text(a));
@@ -5439,6 +5526,7 @@ export class DomHost {
       case 'windowLength':
         return this.windows?.lengthOf(Number(a)) ?? 0;
       case 'windowFollow': {
+        if (this.sandbox & SB_POPUPS) return true;
         const { noopener, noreferrer } = linkOpener(text(b), text(c));
         const made = this.windows?.follow(
           text(a),
@@ -5474,7 +5562,7 @@ export class DomHost {
         const handed = this._s.handed;
         this._s.handed = null;
         if (!handed) return 0;
-        if (handed.origin !== this._origin()) {
+        if (handed.origin !== this._origin() || handed.origin === 'null') {
           throw new DomError(
             'SecurityError',
             "A node of another origin's is none of this document's.",
@@ -5494,6 +5582,7 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
+        if (to === 'tab' && this.sandbox & SB_POPUPS) return null;
         if (to === 'here') this._seams.navigate(text(a), 'here');
         else if (to === 'tab') this._seams.navigate(text(a), 'tab');
         else this.navigateFrame(to, text(a), null);
@@ -5638,7 +5727,9 @@ export class DomHost {
         );
       // a page's `BroadcastChannel`s, by origin and name
       case 'bcOpen': {
-        const key = `${this._origin()} ${text(b)}`;
+        // an opaque origin talks to itself, whatever else is opaque
+        const origin = this._origin();
+        const key = `${origin === 'null' ? this._token : origin} ${text(b)}`;
         const end = { id: Number(a), tell: this._channelTold };
         this._channels.set(Number(a), { key, end });
         openChannel(key, end);
@@ -5738,6 +5829,7 @@ export class DomHost {
       case 'fileChunk':
         return this._fileChunk(Number(a), Number(b));
       case 'download':
+        if (this.sandbox & SB_DOWNLOADS) return false;
         return (
           this._seams.handle.download?.({
             url: text(a),
@@ -6790,7 +6882,52 @@ export class DomHost {
       this._initialBlank.add(doc);
       this._loadFrame(frame);
     }
-    return this._sameOrigin(this._frameAt.get(frame)!) ? doc : null;
+    return this._reaches(frame) ? doc : null;
+  }
+
+  /** Whether a frame's document is of this document's origin: where it was
+   *  loaded from, unless its sandbox gave it an origin of its own. */
+  private _reaches(frame: Element): boolean {
+    const doc = this._frames.get(frame);
+    if (doc && (this._s.sandboxes.get(doc) ?? 0) & SB_ORIGIN) return false;
+    return this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank');
+  }
+
+  /** The flags a document loaded in a frame now has: what the document the
+   *  frame is in has, and what its `sandbox` says. An attribute changed after
+   *  a load is read at the next (HTML 4.8.5). */
+  private _frameSandbox(frame: Element): number {
+    const around = this._s.sandboxes.get(this._ownerOf(frame)) ?? 0;
+    return frame.name === 'iframe' && frame.attribs.sandbox !== undefined
+      ? around | parseSandbox(frame.attribs.sandbox)
+      : around;
+  }
+
+  /** The origin of each document around a frame of this realm's, nearest
+   *  first, for what a document asks of what frames it (`./framing.ts`). */
+  private _ancestorOrigins(frame: Element): string[] {
+    const out: string[] = [];
+    let doc: Document | undefined = this._ownerOf(frame);
+    // a document of this realm's that has no realm of its own
+    while (doc && doc !== this.document) {
+      const holder = this._frameOf.get(doc);
+      if (!holder) break;
+      const flags = this._s.sandboxes.get(doc) ?? 0;
+      const at = this._frameAt.get(holder) ?? 'about:blank';
+      const blank = at === 'about:blank' || at === 'about:srcdoc';
+      out.push(
+        flags & SB_ORIGIN
+          ? 'null'
+          : blank
+            ? this.origin
+            : originOf(at) || 'null',
+      );
+      doc = this._ownerOf(holder);
+    }
+    for (let host: DomHost | null = this; host; host = host.frameParent) {
+      out.push(host.origin);
+    }
+    return out;
   }
 
   /** Each frame's first `about:blank` document, its initial one (HTML
@@ -6803,6 +6940,7 @@ export class DomHost {
     const doc = this._documentOf('');
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
+    this._s.sandboxes.set(doc, this._frameSandbox(frame));
     this._frameAt.set(frame, 'about:blank');
     this._s.frameList.add(frame);
     this._s.framesChanged();
@@ -6812,11 +6950,11 @@ export class DomHost {
   /** Whether an address is the page's own origin's: `about:blank` is the
    *  origin of the document that made it (HTML 7.1.1). */
   private _sameOrigin(url: string): boolean {
-    return (
-      url === 'about:blank' ||
-      url === 'about:srcdoc' ||
-      originOf(url) === this._origin()
-    );
+    if (url === 'about:blank' || url === 'about:srcdoc') return true;
+    // an opaque origin is no other, a `file:` page's frame included, as
+    // Chromium and Firefox have them
+    const origin = this._origin();
+    return origin !== 'null' && originOf(url) === origin;
   }
 
   /**
@@ -6883,13 +7021,15 @@ export class DomHost {
     if (srcdoc !== undefined) {
       setTimeout(() => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox = this._frameSandbox(frame);
         this._frameLoaded(
           frame,
           this._documentOf(srcdoc, true, !!this._seams.drawsFrames),
           'about:srcdoc',
           'text/html',
-          true,
+          !(sandbox & (SB_SCRIPTS | SB_ORIGIN)),
           loaded,
+          sandbox,
         );
       }, 0);
       return;
@@ -6904,10 +7044,7 @@ export class DomHost {
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
     const foreign = !!src && !this._sameOrigin(src);
-    if (
-      !src ||
-      (foreign && !(this._seams.drawsFrames && /^https?:/i.test(src)))
-    ) {
+    if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
         setTimeout(loaded, 0);
@@ -6924,21 +7061,38 @@ export class DomHost {
       }, 0);
       return;
     }
-    this._navigationFetch(
-      post
-        ? {
-            url: src,
-            method: 'POST',
-            headers: [['content-type', post.contentType]],
-            ...(typeof post.body === 'string'
-              ? { body: post.body }
-              : { body: null, bytes: post.body }),
-          }
-        : { url: src, method: 'GET', headers: [], body: null },
-      new AbortController().signal,
-    )
+    const landed = /^data:/i.test(src)
+      ? Promise.resolve(this._dataResponse(src))
+      : this._navigationFetch(
+          post
+            ? {
+                url: src,
+                method: 'POST',
+                headers: [['content-type', post.contentType]],
+                ...(typeof post.body === 'string'
+                  ? { body: post.body }
+                  : { body: null, bytes: post.body }),
+              }
+            : { url: src, method: 'GET', headers: [], body: null },
+          new AbortController().signal,
+          this._frameSandbox(frame),
+        );
+    landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox =
+          this._frameSandbox(frame) | sandboxOfPolicy(response.headers);
+        const refused = this._refusedFraming(
+          frame,
+          response,
+          response.url || src!,
+          sandbox,
+        );
+        if (refused) {
+          release(response);
+          this._frameRefused(frame, response.url || src!, refused, loaded);
+          return;
+        }
         const type = (headerOf(response.headers, 'content-type') ?? '')
           .split(';')[0]
           .trim()
@@ -6971,15 +7125,23 @@ export class DomHost {
         }
         this._s.encodings.set(doc, encoding);
         // another origin's scripts never run in this realm, where it was
-        // asked for or where it sent the frame
-        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
+        // asked for or where it sent the frame, and a sandbox's, of an origin
+        // of their own or none to run, no more than they
+        if (
+          foreign ||
+          sandbox & (SB_SCRIPTS | SB_ORIGIN) ||
+          !this._sameOrigin(response.url || src)
+        ) {
+          scripts = false;
+        }
         this._frameLoaded(
           frame,
           doc,
-          response.url || src,
+          response.url || src!,
           type,
           scripts,
           loaded,
+          sandbox,
         );
       })
       .catch((error: unknown) => {
@@ -6991,6 +7153,76 @@ export class DomHost {
         );
         loaded();
       });
+  }
+
+  /** Whether a document that is not this one's to read is loaded for a frame:
+   *  one of the network's, a `data:` URL, which is its own body, and a `file:`
+   *  one for a `file:` page, which the host's network has the say over. */
+  private _framed(src: string): boolean {
+    return (
+      /^(?:https?|data):/i.test(src) ||
+      (/^file:/i.test(src) && /^file:/i.test(this.url))
+    );
+  }
+
+  /** A `data:` URL as a frame's document is read: no network has one. */
+  private _dataResponse(url: string): FetchResponse {
+    const read = readDataUrl(url);
+    if (!read) throw new TypeError('A data: URL with nothing in it.');
+    return {
+      url,
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: [['content-type', read.type]],
+      body: new TextDecoder().decode(read.bytes),
+    };
+  }
+
+  /** Why a response may not be shown in a frame, or null: read from its
+   *  headers, of every document around the frame, before any of it is. */
+  private _refusedFraming(
+    frame: Element,
+    response: FetchResponse,
+    url: string,
+    sandbox: number,
+  ): 'frame-ancestors' | 'x-frame-options' | null {
+    return framingRefused(
+      response.headers,
+      url,
+      sandbox & SB_ORIGIN ? 'null' : originOf(url) || 'null',
+      this._ancestorOrigins(frame),
+    );
+  }
+
+  /**
+   * A frame whose document refused it shows what a browser shows, a page of
+   * its own that says so and none of the document, of no origin but its own,
+   * and hears `load` as it would for any failure to show one.
+   */
+  private _frameRefused(
+    frame: Element,
+    url: string,
+    why: string,
+    loaded: () => void,
+  ): void {
+    this._seams.log(
+      'error',
+      `Refused to display '${url}' in a frame: its ${why} forbids it.`,
+    );
+    const host = /^[a-z]+:\/\/([^/]*)/i.exec(url)?.[1] ?? url;
+    this._frameLoaded(
+      frame,
+      this._documentOf(
+        `<!doctype html><body style="font:14px sans-serif;color:#666;margin:16px">${escapeText(host)} refused to connect.`,
+        true,
+      ),
+      'about:blank',
+      'text/html',
+      false,
+      loaded,
+      SB_ORIGIN | SB_SCRIPTS,
+    );
   }
 
   /**
@@ -7032,6 +7264,7 @@ export class DomHost {
     type: string,
     scripts: boolean,
     loaded: () => void,
+    sandbox = 0,
   ): void {
     // a frame the browser draws runs its own scripts, and tells its own
     // `load` once they have, in a realm of its own — where it has any: a
@@ -7041,11 +7274,14 @@ export class DomHost {
     // — and where a service worker can have it for a client, which a secure
     // page's frame of its own origin is, whether or not a scope holds it yet:
     // its `navigator` has to answer for it, and it can be claimed
+    this._s.sandboxes.set(doc, sandbox);
     const realm =
       !!this._seams.drawsFrames &&
+      !(sandbox & SB_SCRIPTS) &&
       ((type === 'text/html' && hasScripts(doc)) ||
         (!!this._seams.serviceWorkers &&
           this._secureContext() &&
+          !(sandbox & SB_ORIGIN) &&
           this._sameOrigin(address)));
     if (realm) this._s.realms.add(doc);
     // the one it shows unloads first, while it is still the frame's
@@ -7621,6 +7857,7 @@ export class DomHost {
   }
 
   private _origin(): string {
+    if (this.sandbox & SB_ORIGIN || this.creatorOrigin) return 'null';
     try {
       const origin = new URL(this.url).origin;
       // `about:blank` alone is of what made it: `data:` has no origin to share
@@ -8070,6 +8307,14 @@ export class DomHost {
   ): Primitive {
     const storage = this._storageOf();
     const origin = this._origin();
+    // an opaque origin has none of its own, and sharing `null` would be every
+    // sandbox's store in one (HTML 12.2.3)
+    if (origin === 'null') {
+      throw new DomError(
+        'SecurityError',
+        "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+      );
+    }
     const area =
       kind === 'session' ? storage.session(origin) : storage.local(origin);
     const tell = (
@@ -8143,6 +8388,12 @@ export class DomHost {
   private _cookie(op: string, url: string, arg: string): Primitive {
     const jar = this._seams.cookies;
     if (op === 'enabled') return !!jar;
+    if (this.sandbox & SB_ORIGIN && op !== 'list' && op !== 'store') {
+      throw new DomError(
+        'SecurityError',
+        "The document is sandboxed and lacks the 'allow-same-origin' flag.",
+      );
+    }
     const averse =
       !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
     const { top } = this;
@@ -8192,6 +8443,12 @@ export class DomHost {
       default:
         return null;
     }
+  }
+
+  /** Whether a worker may run from an address: of this document's origin,
+   *  which a blob this realm made is, and `blob:null` where that is opaque. */
+  private _workerAllowed(url: string): boolean {
+    return originOf(url) === this._origin();
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
@@ -8461,7 +8718,13 @@ export class DomHost {
       ...(request.bytes ? { bytes: request.bytes } : {}),
       ...(request.stream ? { stream: true } : {}),
       ...(request.streamedBody ? { streamedBody: true } : {}),
-      credentials: request.credentials,
+      // a document of no origin has no `same-origin` to go by, and says who
+      // it is as `null`, wherever its address is
+      credentials:
+        page === 'null' && request.credentials === 'same-origin'
+          ? 'omit'
+          : request.credentials,
+      ...(page === 'null' ? { opaqueOrigin: true } : {}),
     };
     if (own) {
       const response = await this._seams.fetch(plain, signal);
@@ -8512,9 +8775,11 @@ export class DomHost {
   private async _navigationFetch(
     request: FetchRequest,
     signal: AbortSignalLike,
+    sandbox = 0,
   ): Promise<FetchResponse> {
     const keeper = this._seams.serviceWorkers;
-    if (keeper?.controls(request.url)) {
+    // no origin of its own to be a client of any scope in
+    if (!(sandbox & SB_ORIGIN) && keeper?.controls(request.url)) {
       const answered = await keeper.navigation(
         {
           ...request,

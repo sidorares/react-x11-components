@@ -261,6 +261,9 @@ export function useScripts(
     get timeout() {
       return latest.current.timeout;
     },
+    get headers() {
+      return latest.current.headers;
+    },
     get workers() {
       return latest.current.workers;
     },
