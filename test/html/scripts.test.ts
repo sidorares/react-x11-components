@@ -2779,7 +2779,8 @@ test('Math.sumPrecise is the exact sum rounded once, in a page and in a worker',
       'w.onmessage = function (e) { document.getElementById("thread").textContent = e.data; };' +
       '</script>',
   );
-  await waitFor(() => assert.ok(doc.text('thread')));
+  // a worker takes most of `waitFor`'s two seconds to start on Node 20 and 22
+  await settled(doc, 'thread', (t) => t !== '', 15000);
   const answers = [
     '-0 -0 -0 0 6 0.30000000000000004 1 2 1e+308 Infinity',
     // half the last place past the largest double is the even way up, and
@@ -14219,12 +14220,13 @@ async function hostedFrames(
   return { text, logs, runner: page, result };
 }
 
-/** What `read` answers once `done` holds of it, or by three seconds. */
+/** What `read` answers once `done` holds of it, or by `ms`. */
 async function until(
   read: () => string,
   done: (text: string) => boolean,
+  ms = 3000,
 ): Promise<string> {
-  const end = Date.now() + 3000;
+  const end = Date.now() + ms;
   let text = read();
   while (!done(text) && Date.now() < end) {
     await settle(20);
@@ -14258,6 +14260,7 @@ test('Math.sumPrecise is in the page, in a frame’s realm and in a worker, each
         ? 'in'
         : '',
     (t) => t === 'in',
+    15000,
   );
   assert.equal(held, 'in', logs.join('\n'));
   assert.equal(text('page', 'page'), '0.1,true,true');
