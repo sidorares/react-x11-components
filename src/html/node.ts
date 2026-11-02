@@ -620,6 +620,9 @@ export interface HtmlViewProps {
    *  windows answer may have moved by — the pane's, which the element is
    *  laid out and painted again for, and an `<iframe>`'s box in it. */
   onPaint?: () => void;
+  /** The colour scheme of what it is embedded in, for a frame's document,
+   *  which a root in another is drawn on an opaque canvas against. */
+  embedderScheme?: 'light' | 'dark';
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -14395,7 +14398,7 @@ export class HtmlViewNode extends Node {
   override opaqueRect(): Rect | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
-    if (!tree || !opaqueCanvas(tree)) return null;
+    if (!tree || !opaqueCanvas(tree, this._props().embedderScheme)) return null;
     this._promisedOpaque = true;
     return this.abs;
   }
@@ -15147,6 +15150,7 @@ export class HtmlViewNode extends Node {
       // the root's background covers the whole element, not only the
       // document: an element grown past its content is canvas too
       canvas: this.abs,
+      embedderScheme: this._props().embedderScheme,
       viewport: this._viewport() ?? undefined,
       scale: this._scale,
       damage,
@@ -16455,6 +16459,7 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
     const q = b[i];
     if (
       p.element !== q.element ||
+      p.colorScheme !== q.colorScheme ||
       p.x !== q.x ||
       p.y !== q.y ||
       p.width !== q.width ||
