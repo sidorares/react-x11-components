@@ -34,6 +34,7 @@ import type { Popup } from './popups.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
+import { readyFor } from '../encoding.js';
 import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceRequest, ResourceResult } from '../resources.js';
@@ -227,6 +228,9 @@ export function useScripts(
     get syncNetwork() {
       return latest.current.syncNetwork;
     },
+    get charset() {
+      return latest.current.charset;
+    },
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
@@ -249,9 +253,9 @@ export function useScripts(
       );
       if (answered === undefined) return latest.current.load(src, element);
       if (answered?.kind !== 'script') return null;
-      return 'text' in answered
-        ? answered.text
-        : decodeText(answered.bytes, answered.charset ?? null);
+      if ('text' in answered) return answered.text;
+      await readyFor(answered.charset);
+      return decodeText(answered.bytes, answered.charset ?? null);
     },
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,

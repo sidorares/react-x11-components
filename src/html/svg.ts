@@ -31,6 +31,7 @@ import { isUse, quotedFamilies, urlIds, useHref } from './css/shapes.js';
 import type { DrawingUnits, ShapeStyle, ShapeStyles } from './css/shapes.js';
 import type { RootLook } from './css/style.js';
 import { parseMath } from './css/calc.js';
+import { LIGHT_DARK, lightDark } from './css/color.js';
 import {
   AUTO,
   inkColor,
@@ -527,6 +528,10 @@ export class SvgDrawing {
   /** Whether the tree names an element outside it by a `url(#…)`
    *  (`refersOutside`), which its copy brings. */
   private _outside = false;
+  /** Whether it sets a colour only the cascade reads (`coloursToWorkOut`),
+   *  and the scheme it was last drawn in, which that may turn on. */
+  private _colours = false;
+  private _scheme: 'light' | 'dark' = 'light';
   /** The document's last node when a `<use>` was last looked up and its
    *  element not found: a streamed document may bring it yet, and has
    *  when its last node is another. Undefined where none was missing. */
@@ -639,6 +644,9 @@ export class SvgDrawing {
      *  `overflow` is not `visible` there, which is every one the page says
      *  nothing of (`svg:not(:root) { overflow: hidden }`, SVG 2, 6.14). */
     cut: DrawingCut = CUT_BOTH,
+    /** The colour scheme a `light-dark()` in it picks by: the box's, for an
+     *  inline drawing, and for an image that of what embeds it. */
+    scheme: 'light' | 'dark' = 'light',
   ): void {
     if (this._failed || !(w > 0 && h > 0)) return;
     // the mock backend has no path API, and SvgView draws paths
@@ -688,6 +696,7 @@ export class SvgDrawing {
         vh = own.height;
       }
     }
+    this._scheme = scheme;
     const paint =
       (fill === null ? '' : `fill:${fill};`) +
       (stroke === null ? '' : `stroke:${stroke};`);
@@ -864,6 +873,7 @@ export class SvgDrawing {
     em: number,
     inherited: string,
     units: DrawingUnits | null,
+    scheme: 'light' | 'dark' = 'light',
   ): string | null {
     if (this._failed || !(w > 0 && h > 0)) return null;
     if (!this._from || this._from.ends.some(moved)) {
@@ -874,7 +884,7 @@ export class SvgDrawing {
     if (!from.source || shapes?.key.includes('url(')) return null;
     let key =
       `inline|${from.source}|${w}x${h}|${scale}|${color}|${fill}|${stroke}` +
-      `|${em}|${inherited}|${shapes?.key ?? ''}`;
+      `|${em}|${inherited}|${scheme}|${shapes?.key ?? ''}`;
     if (from.units) key += `|${units?.rem}|${units?.vw}|${units?.vh}`;
     return key;
   }
@@ -957,6 +967,12 @@ export class SvgDrawing {
       own?.stroke ?? null,
       own?.shapes ?? null,
       surface,
+      null,
+      '',
+      null,
+      null,
+      CUT_BOTH,
+      scheme,
     );
   }
 
@@ -1057,6 +1073,7 @@ export class SvgDrawing {
       this._lengths = lengthsToWorkOut(root);
       this._uses = needsExpanding(root);
       this._outside = refersOutside(root);
+      this._colours = coloursToWorkOut(root);
     }
     const sized = this._lengths || this._uses;
     // and, for a drawing with lengths to work out, what they are of
@@ -1065,7 +1082,8 @@ export class SvgDrawing {
       : this._lengths
         ? `${width}x${height}|${lengths.em}|${lengths.rem}|${lengths.vw}x${lengths.vh}`
         : `${width}x${height}`;
-    const painted = `${paint}|${inherited}|${shapes?.key ?? ''}`;
+    const scheme = this._colours ? this._scheme : null;
+    const painted = `${paint}|${inherited}|${scheme}|${shapes?.key ?? ''}`;
     if (
       this._view &&
       !grown &&
@@ -1083,13 +1101,18 @@ export class SvgDrawing {
       const view = this._view ?? new View(null);
       const named: Named = new Map();
       const tree =
-        sized || shapes || this._outside || root.name.includes(':')
+        sized ||
+        shapes ||
+        this._outside ||
+        this._colours ||
+        root.name.includes(':')
           ? copyTree(
               root,
               sized ? [width, height] : null,
               named,
               shapes,
               lengths,
+              scheme,
             )
           : root;
       noteNamed(root, named);
@@ -1800,6 +1823,94 @@ function lengthsToWorkOut(root: Element): boolean {
   return walk(root);
 }
 
+/** What sets a colour on an element of a drawing. */
+const COLOUR_PROPERTIES = new Set([
+  'color',
+  'fill',
+  'flood-color',
+  'lighting-color',
+  'stop-color',
+  'stroke',
+]);
+
+/** A colour no drawing context reads: `SvgView` hands a paint to the context
+ *  as it is written, and a context takes what `rgb()`, `hsl()` and a hex
+ *  say. */
+const WORKED_COLOUR =
+  /(?:^|[^\w-])(?:color|color-mix|contrast-color|device-cmyk|hwb|lab|lch|light-dark|oklab|oklch)\(|\bfrom\s/i;
+
+/**
+ * Whether an element under a root sets a colour only the cascade can read
+ * (`WORKED_COLOUR`), so that the drawing is drawn from a copy that says what
+ * it comes to (`workOutColours`). Figma writes a colour in P3 after the same
+ * colour in sRGB, `style="fill:#2E2E2E;fill:color(display-p3 …)"`, and the
+ * later one, unread, painted nothing: tldraw's logo is a mask of such a
+ * drawing, and draw.io's grid a `light-dark()`.
+ */
+function coloursToWorkOut(root: Element): boolean {
+  const walk = (el: Element): boolean => {
+    const attribs = el.attribs;
+    for (const name in attribs) {
+      if (name !== 'style' && !COLOUR_PROPERTIES.has(name)) continue;
+      if (WORKED_COLOUR.test(attribs[name])) return true;
+    }
+    for (const child of el.children) {
+      if (child.type !== 'tag') continue;
+      const local = localName((child as Element).name);
+      // what a `<foreignObject>` holds is HTML, and not the drawing's
+      if (local !== 'foreignobject' && walk(child as Element)) return true;
+    }
+    return false;
+  };
+  return walk(root);
+}
+
+/** A colour as a drawing context reads it, or null for no colour. */
+function workedColour(value: string, scheme: 'light' | 'dark'): string | null {
+  const text = value.trim().replace(/\s*!important$/i, '');
+  const picked = LIGHT_DARK.test(text) ? lightDark(text, scheme) : text;
+  return picked === null ? null : parseColor(picked);
+}
+
+/**
+ * An element's attributes with what `coloursToWorkOut` finds worked out, and
+ * what comes to no colour dropped, as CSS drops an invalid declaration: an
+ * earlier `fill` in the same `style` then stands, as it does in a browser.
+ */
+function workOutColours(
+  attribs: Record<string, string>,
+  scheme: 'light' | 'dark',
+): void {
+  for (const name in attribs) {
+    if (!COLOUR_PROPERTIES.has(name) || !WORKED_COLOUR.test(attribs[name])) {
+      continue;
+    }
+    const colour = workedColour(attribs[name], scheme);
+    if (colour !== null) attribs[name] = colour;
+    else if (!attribs[name].includes('url(')) delete attribs[name];
+  }
+  const style = attribs.style;
+  if (!style || !WORKED_COLOUR.test(style)) return;
+  const kept: string[] = [];
+  for (const declaration of style.split(';')) {
+    const colon = declaration.indexOf(':');
+    const name = declaration.slice(0, colon).trim().toLowerCase();
+    if (
+      colon <= 0 ||
+      !COLOUR_PROPERTIES.has(name) ||
+      !WORKED_COLOUR.test(declaration)
+    ) {
+      kept.push(declaration);
+      continue;
+    }
+    const value = declaration.slice(colon + 1);
+    const colour = workedColour(value, scheme);
+    if (colour !== null) kept.push(`${name}:${colour}`);
+    else if (value.includes('url(')) kept.push(declaration);
+  }
+  attribs.style = kept.join(';');
+}
+
 /** Whether an element under a root is a `<text>`. */
 function holdsText(root: Element): boolean {
   const stack: Element[] = [root];
@@ -2055,6 +2166,9 @@ function copyTree(
   named: Named,
   shapes: ShapeStyles | null = null,
   lengths: Lengths = DEFAULT_LENGTHS,
+  /** The scheme its colours are worked out in, where any has to be
+   *  (`coloursToWorkOut`). */
+  scheme: 'light' | 'dark' | null = null,
 ): Element {
   const colon = root.name.indexOf(':');
   const prefix = colon < 0 ? null : `${root.name.slice(0, colon)}:`;
@@ -2216,6 +2330,7 @@ function copyTree(
     const own = styles?.get(el);
     hidden = hiddenIn(own, hidden);
     const attribs = { ...el.attribs };
+    if (scheme) workOutColours(attribs, scheme);
     if (own) restyle(attribs, own);
     // its own font size, which an `em` in its lengths is of, written out
     // where `SvgView` would read it otherwise

@@ -778,6 +778,49 @@ test('a script the parser meets runs there, and sees the document only as far as
   );
 });
 
+test('document.open starts a document again from nothing, and what a page builds in it stays through close', async () => {
+  // an analytics loader on tldraw makes a frame, and `open()`, an `<html>`,
+  // `appendChild` and `close()` in its document: the `<html>` about:blank
+  // came with was still there, so `appendChild` threw
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var n = f.contentDocument;' +
+      'n.open();' +
+      'r.push(n.childNodes.length, n.documentElement, n.body);' +
+      'var h = n.createElement("html");' +
+      'h.append(n.createElement("head"), n.createElement("body"));' +
+      'n.appendChild(h);' +
+      'r.push(n.childNodes.length, n.documentElement === h, n.head === h.firstChild);' +
+      'n.close();' +
+      'r.push(n.childNodes.length, n.documentElement === h);' +
+      'var g = document.createElement("iframe"); document.body.appendChild(g);' +
+      'var m = g.contentDocument; m.open(); m.close();' +
+      'r.push(m.childNodes.length, m.documentElement.outerHTML);' +
+      'var d = document.implementation.createHTMLDocument("t");' +
+      'r.push(d.childNodes.length); d.open(); r.push(d.childNodes.length);' +
+      'd.write("<b>x</b>"); d.close(); r.push(d.documentElement.outerHTML);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '',
+    '',
+    '1',
+    'true',
+    'true',
+    '1',
+    'true',
+    '1',
+    '<html><head></head><body></body></html>',
+    '2',
+    '0',
+    '<html><head></head><body><b>x</b></body></html>',
+  ]);
+});
+
 test('what document.write writes is parsed where the script is, before what follows it, and is there when write returns', async () => {
   const doc = await hosted(
     '<!doctype html><html id="root"><head><script>' +
@@ -3869,6 +3912,72 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
   });
 });
 
+test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
+  // Grafana's global styles, by emotion, a rule at a time: `\\f` in a
+  // JavaScript string is a form feed, a newline to CSS, which breaks the
+  // string, and what comes after it opens one that runs to the end of the
+  // rule. Every browser ends it there; written back beside the rules after
+  // it, it ate them, `.grafana-app` among them.
+  const doc = await hosted(
+    '<div id="a" class="a"></div><p id="b" class="b"></p>' +
+      '<p id="out"></p><p id="adopted"></p><script>' +
+      'var r = [], s = document.createElement("style");' +
+      'document.body.append(s);' +
+      'var sheet = s.sheet;' +
+      'function add(rule) {' +
+      '  try { sheet.insertRule(rule, sheet.cssRules.length);' +
+      '    var it = sheet.cssRules[sheet.cssRules.length - 1];' +
+      '    r.push(it.selectorText || it.conditionText || it.cssText);' +
+      '  } catch (e) { r.push(e.name); } }' +
+      'add(".a::after{position:absolute;color:rgb(1, 2, 3);content:\\"\\f0d7\\";pointer-events:none;}");' +
+      'add(".b{color:rgb(4, 5, 6)}");' +
+      'add("@media (min-width: 1px) { .c { color: red");' +
+      'add(".d { color: red /* open");' +
+      'add(".e { background: url(a");' +
+      'add(".f { content: \\"a\\\\");' +
+      'add(".g");' +
+      'add("@layer l");' +
+      'add(".h{margin-left:7px}");' +
+      'r.push(sheet.cssRules.length, sheet.cssRules[0].style.pointerEvents,' +
+      '  sheet.cssRules[0].style.position);' +
+      'var b = document.getElementById("b");' +
+      'r.push(getComputedStyle(b).color);' +
+      'b.className = "b h";' +
+      'r.push(getComputedStyle(b).marginLeft);' +
+      'var made = new CSSStyleSheet();' +
+      'made.insertRule(".k{content:\\"\\f0d7\\";color:red}");' +
+      'made.insertRule(".b{outline-color:rgb(1, 1, 1)}", 1);' +
+      'document.adoptedStyleSheets = [made];' +
+      'r.push(made.cssRules.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      'setInterval(function () {' +
+      '  document.getElementById("adopted").textContent = getComputedStyle(b).outlineColor;' +
+      '}, 10);' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '.a::after',
+    '.b',
+    '(min-width: 1px)',
+    '.d',
+    '.e',
+    '.f',
+    'SyntaxError',
+    '@layer l;',
+    '.h',
+    '8',
+    '',
+    'absolute',
+    'rgb(4, 5, 6)',
+    '7px',
+    '2',
+  ]);
+  assert.equal(
+    await settled(doc, 'adopted', (t) => t === 'rgb(1, 1, 1)'),
+    'rgb(1, 1, 1)',
+  );
+});
+
 test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
   const doc = await hosted(
     '<style id="s">/* lead */ p { margin: 0 } @media (min-width: 1px) { .m { color: blue } }</style>' +
@@ -5680,6 +5789,69 @@ test("what a template holds is its content's, and no search of the document find
     '|0|1|0||2|undefined|true|[object HTMLDivElement]',
     doc.logs.join('\n'),
   );
+});
+
+test('a template set again has what it was set to in its content, the same fragment, as Vue uses one for each static tree', async () => {
+  // Vue's `insertStaticContent` keeps one <template>, and for each static
+  // tree sets its `innerHTML` and moves its `content` out: from the second
+  // on there was nothing to move, and one in a drawing took `firstChild` of
+  // null, which left JSFiddle's editors empty
+  const doc = await hosted(
+    '<main id="m"></main><p id="out"></p><script>' +
+      'var r = [], m = document.getElementById("m");' +
+      'var t = document.createElement("template");' +
+      't.innerHTML = "<a id=\\"one\\"></a>";' +
+      'var f = t.content;' +
+      'm.insertBefore(f, null);' +
+      'r.push(f.childNodes.length, m.children.length);' +
+      't.innerHTML = "<b id=\\"two\\"></b>";' +
+      'r.push(t.content === f, t.content.childNodes.length, t.content.firstChild.nodeName, t.childNodes.length);' +
+      'm.insertBefore(t.content, null);' +
+      'r.push(m.children.length, m.lastChild.id);' +
+      // as Vue unwraps what goes in a drawing
+      't.innerHTML = "<svg><path d=\\"M0 0\\"></path></svg>";' +
+      'var content = t.content, wrapper = content.firstChild;' +
+      'while (wrapper.firstChild) content.appendChild(wrapper.firstChild);' +
+      'content.removeChild(wrapper);' +
+      'r.push(content.childNodes.length, content.firstChild.nodeName);' +
+      // what is in its content is what it holds, to all that reads it
+      't.innerHTML = "<u></u>";' +
+      't.content.appendChild(document.createElement("i"));' +
+      'r.push(t.innerHTML, t.outerHTML, t.cloneNode(true).content.childNodes.length,' +
+      '  t.cloneNode(true).innerHTML, t.cloneNode(false).content.childNodes.length);' +
+      'var d = document.createElement("div");' +
+      'd.innerHTML = "<template><i></i></template>";' +
+      'd.firstChild.content.appendChild(document.createElement("b"));' +
+      'r.push(d.innerHTML, d.cloneNode(true).firstChild.content.childNodes.length);' +
+      // setting one's `innerHTML` is a change to its content
+      'var seen = new MutationObserver(function () {});' +
+      'seen.observe(t.content, { childList: true });' +
+      't.innerHTML = "";' +
+      'r.push(seen.takeRecords().length, t.content.childNodes.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '1',
+    'true',
+    '1',
+    'B',
+    '0',
+    '2',
+    'two',
+    '1',
+    'path',
+    '<u></u><i></i>',
+    '<template><u></u><i></i></template>',
+    '2',
+    '<u></u><i></i>',
+    '0',
+    '<template><i></i><b></b></template>',
+    '2',
+    '1',
+    '0',
+  ]);
 });
 
 test("a template's content is walked by its children's siblings, as Polymer walks it", async () => {
@@ -11459,6 +11631,50 @@ test('a box a script checked keeps its checkedness when its attribute changes, a
   );
 });
 
+test('a checkedness a script set before an input was a box is the box’s once it is one', async () => {
+  // Vue's `v-model` sets `checked` as it makes a radio, ahead of its `type`,
+  // so every radio on JSFiddle was unticked and its form sent none of them:
+  // the server turned down every Run
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function make(checked, value) {' +
+      '  var el = document.createElement("input");' +
+      '  el.checked = checked;' +
+      '  el.type = "radio"; el.name = "panel"; el.value = value;' +
+      '  return el; }' +
+      'var off = make(false, "0"), on = make(true, "1");' +
+      'r.push(off.checked, on.checked, on.hasAttribute("checked"));' +
+      'var form = document.createElement("form");' +
+      'form.append(off, on); document.body.append(form);' +
+      'r.push(on.checked, Array.from(new FormData(form).entries()).join());' +
+      'r.push(form.querySelector(":checked") === on);' +
+      'var box = document.createElement("input"); box.checked = true;' +
+      'box.setAttribute("type", "checkbox"); r.push(box.checked);' +
+      'var back = document.createElement("input");' +
+      'back.type = "checkbox"; back.checked = true;' +
+      'back.type = "text"; r.push(back.checked);' +
+      'back.type = "radio"; r.push(back.checked);' +
+      'var unset = document.createElement("input");' +
+      'unset.setAttribute("checked", ""); unset.type = "radio";' +
+      'r.push(unset.checked);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'false',
+    'true',
+    'false',
+    'true',
+    'panel,1',
+    'true',
+    'true',
+    'true',
+    'true',
+    'true',
+  ]);
+});
+
 test('a text field has a checkedness of its own, which is never its text', async () => {
   // React sets `checked` on every input it mounts (`initInput`), a text
   // field's included, and facebook.com's login fields showed `false`
@@ -12317,6 +12533,45 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
     true,
   );
   assert.equal(navigableFor(drawn.document, 'side'), 'tab');
+});
+
+test('isContentEditable says whether an element can be edited, as all three engines have it', async () => {
+  // it said false of everything, so a page's shortcuts, which leave alone
+  // what a person is typing in, took the keys of its editors
+  const doc = await hosted(
+    '<div id="a" contenteditable><span id="b">x<i id="c" contenteditable="false">' +
+      '<u id="d" contenteditable="true">y</u></i></span></div>' +
+      '<div id="e" contenteditable="plaintext-only"><b id="f"></b></div>' +
+      '<div id="g" contenteditable="bogus"><b id="h"></b></div>' +
+      '<div id="i"></div><div id="z" contenteditable></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      '"abcdefghi".split("").forEach(function (id) {' +
+      '  r.push(document.getElementById(id).isContentEditable); });' +
+      'var root = document.getElementById("z").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<p id=s>in</p>";' +
+      'r.push(root.getElementById("s").isContentEditable);' +
+      'var out = document.createElement("div");' +
+      'out.setAttribute("contenteditable", "true");' +
+      'var kid = document.createElement("b"); out.append(kid);' +
+      'r.push(out.isContentEditable, kid.isContentEditable);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'true',
+    'true',
+    'false',
+    'true',
+    'true',
+    'true',
+    'false',
+    'false',
+    'false',
+    'false',
+    'true',
+    'true',
+  ]);
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {

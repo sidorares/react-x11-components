@@ -3559,6 +3559,26 @@ runs from the request whether or not anyone reads it, so **anything new that
 keeps a response waiting calls `hold()`**, which the save dialog does, or
 it is given up as stalled while the user is choosing.
 
+**An encoding is one name, and its tables load only where one is used.**
+What a label names and which encoding a document is in is `encoding.ts`,
+which `<Html>` imports whatever it shows, so it holds no table. The decoders
+and encoders are `encoding-codecs.ts`, reached by a dynamic `import()`
+(`loadEncodings`), and statically from the script runtime's chunk, since an op
+is synchronous. `test/treeshake.test.ts` fails if `<Html>` reaches them. They
+are written from the standard and read off its indexes rather than being the
+runtime's, for reasons that are facts and not tastes: nothing encodes anything
+but UTF-8, and ICU's `euc-kr` and `big5` are not the standard's, so an inverse of
+them would have been wrong the same way. Four things are load-bearing. **The
+tables are written by `scripts/encoding-tables.mjs` from the standard's own
+JSON, and never by hand.** **Anything sync that decodes a legacy encoding
+awaits `readyFor` first**, in an async path before it, since `decodeInEncoding`
+falls to the runtime's decoder without them. **A UTF-8 path stays as it was**:
+a query, a form and a document in UTF-8 touch none of this, and a page's UTF-8
+`TextDecoder` is the realm's own, which nearly every decoder a page makes is.
+And **an op's answer that a page's bytes can start is marked** (`textDecode`,
+`=`): an answer starting with U+0001 is a host error, so a byte 1 decoded came
+out as a `DOMException` with no message.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
@@ -5504,6 +5524,19 @@ tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
 the cascade, and the cascade must not import `svg.ts` back — which is why
 `svgSizeHint` lives in `cascade.ts`.
 
+**A colour no context reads is worked out in the drawing's copy**
+(`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
+it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so
+`color()`, `oklch()`, `color-mix()` and `light-dark()` in an attribute or a
+`style` painted nothing, where a rule's reach it worked out already
+(`css/shapes.ts`). Figma writes each colour twice,
+`style="fill:#2E2E2E;fill:color(display-p3 …)"`, so a browser with no P3 keeps
+the first: tldraw's logo is a mask of such a drawing and was not there. What
+comes to no colour is dropped, as CSS drops it, and the earlier one stands.
+**Anything new a drawing can paint with joins `COLOUR_PROPERTIES`**, and the scheme
+a `light-dark()` picks by is in `keptAs`, since a raster is kept by what it was
+drawn from.
+
 **A `<use>`'s copy is matched in a tree of its own.** A selector sees
 nothing above the element the `<use>` names and nothing beside it, and the
 copy inherits from the `<use>` (SVG 2, 5.5.3). So one element can have two
@@ -6674,6 +6707,16 @@ holding an absolute box. Lifting those out takes laying them apart, a line at
 a time, for a box that moves nowhere, so one still goes under an absolute box
 before it, where all three engines draw it over.
 
+**A template's content is one list with the template.** The parser and
+`innerHTML` put what a template holds in its `children`, which no page walks,
+and `content` is a fragment over that same array (`templateContent`), made the
+first time a page asks. So the array is never replaced, only changed in place,
+and what reads a template — its `innerHTML`, a serialization of what it is in, a
+clone — reads what a page left in its content. Made as a copy, it was what the
+template held the first time, and from the second time on Vue moved nothing out
+of the one `<template>` it keeps for its static trees. **Anything new that puts
+a template's children somewhere else takes `content` with it.**
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
@@ -6699,6 +6742,16 @@ place asks, so one that tests the pointer or the focus builds the boxes
 again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
+
+**A rule's text stands alone.** A `<style>`'s rules are kept as text and
+written back as the element's text, one after another (`_writeSheets`), and a
+constructed sheet's are joined the same way, where a browser keeps rules parsed
+and what one leaves open ends with it. So `cssRulesOf` closes what a rule leaves
+open in its text: a string, a comment, its brackets. **Anything new that keeps a
+rule's text goes through `cssRulesOf`**, or a rule with a broken string holds
+every rule after it with no error anywhere: emotion inserts Grafana's global
+styles a rule at a time, one had a form feed in a string, and the 246 rules
+after it were lost, `.grafana-app` among them, so no dashboard had a height.
 
 **A sheet a shadow root adopts is the tree's last sheet, and the host has it
 once.** `root.adoptedStyleSheets` is the document's array (`adoptedArray`,

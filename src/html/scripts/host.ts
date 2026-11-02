@@ -18,6 +18,17 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import * as encodingCodecs from '../encoding-codecs.js';
+import type { LegacyDecoder } from '../encoding-codecs.js';
+import {
+  adoptEncodings,
+  bomEncoding,
+  decodeInEncoding,
+  encodingOf,
+  outputEncoding,
+  sniffEncoding,
+  xmlEncoding,
+} from '../encoding.js';
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
@@ -209,7 +220,7 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
-import { chosenFiles } from '../form.js';
+import { chosenFiles, formEncoding, urlencoded } from '../form.js';
 import type { HtmlSyncNetwork } from '../network.js';
 import { fetchSync } from './sync-fetch.js';
 import type { HtmlDownloadRequest } from '../download.js';
@@ -747,6 +758,8 @@ export interface HostSeams {
   fetchSync?(request: FetchRequest, timeout: number): FetchResponse;
   userAgent: string;
   language: string;
+  /** The label of the encoding the host decoded the document from. */
+  charset?: string;
   /** What a media element's `canPlayType` answers: whether what plays the
    *  page's media can play the type. None, `''` for every type. */
   canPlayType?(type: string): string;
@@ -935,6 +948,34 @@ const NAMED_BY_NAME = new Set([
  *  and no part of the tree a page walks (HTML 4.12.3). */
 function isTemplate(node: AnyNode): boolean {
   return node instanceof Element && node.name === 'template';
+}
+
+/** Each `<template>`'s content, once a page has asked for it, and the
+ *  fragments that are one. Kept by the node rather than a realm's number
+ *  for it: the realms over one document share its templates. */
+const TEMPLATE_CONTENTS = new WeakMap<Element, Document>();
+const CONTENT_FRAGMENTS = new WeakSet<AnyNode>();
+
+/**
+ * A `<template>`'s content (HTML 4.12.3): a fragment over the template's own
+ * list of children, so there is one list. What the parser and `innerHTML`
+ * put in a template and what a page puts in its content are the same
+ * nodes, and whatever reads the template — its `innerHTML`, the serializing
+ * of what it is in, a clone — reads what is there now. As a copy made once,
+ * it was what the template held the first time a page asked: Vue keeps one
+ * `<template>` for its static trees, sets its `innerHTML` and moves its
+ * `content` out each time, and from the second on it moved out nothing,
+ * which took JSFiddle's editors with it.
+ */
+function templateContent(template: Element): Document {
+  let content = TEMPLATE_CONTENTS.get(template);
+  if (!content) {
+    content = new Document(template.children);
+    for (const kid of template.children) kid.parent = content;
+    TEMPLATE_CONTENTS.set(template, content);
+    CONTENT_FRAGMENTS.add(content);
+  }
+  return content;
 }
 
 /**
@@ -1546,7 +1587,10 @@ const RAW_TEXT = new Set([
 export function cssRulesOf(css: string): string[] {
   const out: string[] = [];
   const n = css.length;
-  let depth = 0;
+  // the closing bracket of each block open, innermost last
+  const open: string[] = [];
+  // what the text ends inside, past its brackets: a string or a comment
+  let inside = '';
   let start = 0;
   const end = (at: number, statement: boolean): void => {
     const rule = css.slice(start, at).trim();
@@ -1559,27 +1603,56 @@ export function cssRulesOf(css: string): string[] {
     const ch = css[i];
     if (ch === '/' && css[i + 1] === '*') {
       const close = css.indexOf('*/', i + 2);
+      if (close < 0) inside = '*/';
       const after = close < 0 ? n : close + 2;
       // a comment before a rule is not the rule's
       if (!css.slice(start, i).trim()) start = after;
       i = after - 1;
     } else if (ch === '"' || ch === "'") {
-      for (i += 1; i < n && css[i] !== ch && css[i] !== '\n'; i++) {
-        if (css[i] === '\\') i += 1;
+      // a newline ends a string that has not ended, and a form feed is one
+      i += 1;
+      while (
+        i < n &&
+        css[i] !== ch &&
+        css[i] !== '\n' &&
+        css[i] !== '\r' &&
+        css[i] !== '\f'
+      ) {
+        i += css[i] === '\\' ? 2 : 1;
       }
+      if (i >= n) inside = ch;
     } else if (ch === '\\') {
       i += 1;
     } else if (ch === '{' || ch === '(' || ch === '[') {
-      depth += 1;
+      open.push(ch === '{' ? '}' : ch === '(' ? ')' : ']');
     } else if (ch === '}' || ch === ')' || ch === ']') {
-      if (depth > 0) depth -= 1;
-      if (depth === 0 && ch === '}') end(i + 1, false);
-    } else if (ch === ';' && depth === 0) {
+      // a closing bracket of another kind inside is only a token
+      if (open[open.length - 1] === ch) open.pop();
+      if (!open.length && ch === '}') end(i + 1, false);
+    } else if (ch === ';' && !open.length) {
       end(i + 1, true);
     }
   }
-  // an unclosed block is closed where the text ends
+  // What the text ends inside is closed there, as CSS's tokenizer closes it
+  // (CSS Syntax 3, 5.4.9), and the rule says so in its text: rules are
+  // written back beside each other (`_writeSheets`), where what one left
+  // open would hold the rest. Grafana's global styles set `content: "\f0d7"`
+  // in a JavaScript string, a form feed and so a broken string, one rule of
+  // 578 that each go in by `insertRule`: the 246 after it were lost in it,
+  // `.grafana-app` among them, and no dashboard had a height.
+  const before = out.length;
   end(n, false);
+  if (out.length > before) {
+    let rule = out.pop() as string;
+    const atRule = rule[0] === '@';
+    // what has no block by then is no rule, but for an at-rule
+    if (!atRule && !open.includes('}')) return out;
+    if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
+      rule = rule.slice(0, -1);
+    }
+    rule += inside + open.reverse().join('');
+    out.push(atRule && !rule.endsWith('}') ? `${rule};` : rule);
+  }
   return out;
 }
 
@@ -1772,8 +1845,18 @@ function preflightRefusal(
   return null;
 }
 
+/** The document an element is in, if any. */
+function documentHolding(element: Element): Document | null {
+  let node: AnyNode = element;
+  while (node.parent) node = node.parent;
+  return node instanceof Document ? node : null;
+}
+
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** Each document's encoding where its bytes came through here, by its
+   *  name. One a host handed over is the host's to say (`charset`). */
+  readonly encodings = new WeakMap<Document, string>();
   /** The `<script>`s a page's script made, and whether each still has its
    *  `async` forced on (HTML 4.12.1, "force async"): true until a script
    *  sets `async` or adds the attribute. A script the parser made has
@@ -1880,7 +1963,6 @@ export class DomHost {
   >();
   /** The bodies being handed to the page a chunk at a time (`_pump`). */
   private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
-  private _contents = new Map<number, number>();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
   /** The page's `MutationObserver`s, by id in the order they were made: the
@@ -1900,7 +1982,6 @@ export class DomHost {
   /** The `<template>`s' contents (`content`), whose node document is an
    *  inert one in a browser: nothing in them is a custom element, and a
    *  copy of them none either, until it is put in the document. */
-  private _templateContents = new WeakSet<AnyNode>();
   /** The address the document is at, which `history.pushState` moves. */
   url: string;
   /** Scripts that are never run: what `innerHTML` and
@@ -2027,6 +2108,7 @@ export class DomHost {
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
     // `location.hash` ''
     this.url = withoutFragmentDirective(url);
+    adoptEncodings(encodingCodecs);
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
@@ -2719,17 +2801,6 @@ export class DomHost {
     return clone;
   }
 
-  /** A deep copy of a child: a clone's, or a template content's with
-   *  every shadow root in it (`_cloneShadows`'s `every`). */
-  private _copyOf(child: ChildNode, every: boolean): ChildNode {
-    if (!every) return this._clone(child, true);
-    const copy = child.cloneNode(true) as ChildNode;
-    copyMadeAsHtml(child, copy);
-    this._cloneShadows(child, copy, true, true);
-    this._copiedScripts(child, copy, true);
-    return copy;
-  }
-
   /** A copy's scripts, which a script made, so `async` is forced on in
    *  each (`forceAsync`), and which have started where the scripts they
    *  copy have (HTML 4.12.1, the script element's cloning steps): a script
@@ -2764,18 +2835,11 @@ export class DomHost {
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
    *  whose shadow root is clonable gives its copy a root of the same kind
    *  and a copy of the tree in it, whether or not the clone is deep, and
-   *  a deep clone does so for every host in what it copies. `every` is a
-   *  template's content, which stands for what the template's children
-   *  are and so takes every root as it is, clonable or not. */
-  private _cloneShadows(
-    node: AnyNode,
-    copy: AnyNode,
-    deep: boolean,
-    every = false,
-  ): void {
+   *  a deep clone does so for every host in what it copies. */
+  private _cloneShadows(node: AnyNode, copy: AnyNode, deep: boolean): void {
     if (node instanceof Element && copy instanceof Element) {
       const root = shadowRootOf(node);
-      if (root && (every || root.clonable) && !shadowRootOf(copy)) {
+      if (root && root.clonable && !shadowRootOf(copy)) {
         const made = attachShadow(copy, {
           mode: root.mode,
           delegatesFocus: root.delegatesFocus,
@@ -2784,9 +2848,8 @@ export class DomHost {
         });
         if (made) {
           made.registryNull = root.registryNull;
-          if (every) made.declarative = root.declarative;
           for (const child of root.children) {
-            DomUtils.appendChild(made, this._copyOf(child, every));
+            DomUtils.appendChild(made, this._clone(child, true));
           }
         }
       }
@@ -2795,7 +2858,7 @@ export class DomHost {
     const from = (node as { children?: AnyNode[] }).children ?? [];
     const to = (copy as { children?: AnyNode[] }).children ?? [];
     for (let i = 0; i < from.length && i < to.length; i += 1) {
-      this._cloneShadows(from[i], to[i], true, every);
+      this._cloneShadows(from[i], to[i], true);
     }
   }
 
@@ -3531,7 +3594,7 @@ export class DomHost {
         if (parsedWithNullRegistry(el)) return true;
         const parent = el.parent;
         return (parent instanceof Element && parent.name === 'template') ||
-          (parent !== null && this._templateContents.has(parent))
+          (parent !== null && CONTENT_FRAGMENTS.has(parent))
           ? 'template'
           : false;
       }
@@ -3730,7 +3793,14 @@ export class DomHost {
         const parent = this._parent(a);
         // `setHTMLUnsafe` takes declarative shadow roots, as the document's
         // parser does (HTML 8.5.1)
-        this._replaceAll(parent, this._parseIn(parent, text(b), c === true));
+        const kids = this._parseIn(parent, text(b), c === true);
+        // and what a template is handed is its content's, one that has one
+        // keeping it (HTML 8.4, the `innerHTML` setter)
+        this._replaceAll(
+          (parent instanceof Element && TEMPLATE_CONTENTS.get(parent)) ||
+            parent,
+          kids,
+        );
         if (!this._inDocument(parent)) this._imagesMade(parent.children);
         return null;
       }
@@ -3752,28 +3822,8 @@ export class DomHost {
         }
         return null;
       }
-      case 'content': {
-        // a `<template>`'s content: a fragment of what it holds, made once
-        const id = Number(a);
-        let fragment = this._contents.get(id);
-        if (fragment === undefined) {
-          const template = this._element(a);
-          const kids = template.children.map((kid) => this._copyOf(kid, true));
-          const holder = new Document(kids);
-          // a copy is linked to no sibling, and `nextSibling` reads the
-          // links: Polymer walks a template's content by them, and found
-          // only its first child
-          kids.forEach((kid, i) => {
-            kid.parent = holder;
-            kid.prev = kids[i - 1] ?? null;
-            kid.next = kids[i + 1] ?? null;
-          });
-          this._templateContents.add(holder);
-          fragment = this.idOf(holder);
-          this._contents.set(id, fragment);
-        }
-        return fragment;
-      }
+      case 'content':
+        return this.idOf(templateContent(this._element(a)));
 
       // --- selectors
       case 'query': {
@@ -4395,7 +4445,9 @@ export class DomHost {
             ? ''
             : `<title>${DomUtils.getOuterHTML(new Text(text(a)))}</title>`;
         return this.idOf(
-          this._documentOf(`<html><head>${title}</head><body></body></html>`),
+          this._documentOf(
+            `<!doctype html><html><head>${title}</head><body></body></html>`,
+          ),
         );
       }
       case 'parseDocument':
@@ -5259,6 +5311,24 @@ export class DomHost {
       }
       case 'resolve':
         return this._resolve(text(a));
+      case 'characterSet':
+        return this._encodingOf(
+          a ? (this._node(a) as Document) : this.document,
+        );
+      case 'encodingLabel':
+        return encodingOf(text(a)) ?? '';
+      case 'textDecode':
+        return this._textDecode(Number(a), text(b), text(c), Number(d));
+      case 'decodeResponse':
+        // marked, as `_textDecode`'s is
+        return `=${decodeInEncoding(
+          new Uint8Array(Buffer.from(text(a), 'base64')),
+          text(b),
+        )}`;
+      case 'formEncoding':
+        return formEncoding(this._element(a), this._encodingOf(this.document));
+      case 'formQuery':
+        return urlencoded(JSON.parse(text(a)) as [string, string][], text(b));
       case 'url':
         return urlJson(text(a), text(b));
       case 'setUrl': {
@@ -6255,7 +6325,7 @@ export class DomHost {
   private _inTemplate(node: AnyNode): boolean {
     let at = node;
     while (at.parent) at = at.parent;
-    return this._templateContents.has(at);
+    return CONTENT_FRAGMENTS.has(at);
   }
 
   /**
@@ -6810,14 +6880,11 @@ export class DomHost {
           .toLowerCase();
         let doc: Document;
         let scripts = true;
+        const { text, encoding } = this._frameText(response, type, frame);
         if (type === 'text/html') {
-          doc = this._documentOf(
-            response.body,
-            true,
-            !!this._seams.drawsFrames,
-          );
+          doc = this._documentOf(text, true, !!this._seams.drawsFrames);
         } else if (XML_TYPES.test(type)) {
-          const xml = this._xmlTree(response.body);
+          const xml = this._xmlTree(text);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
           // byte UTF-8 has no character for
@@ -6832,11 +6899,12 @@ export class DomHost {
           doc = this._documentOf(
             type.startsWith('image/')
               ? `<img src="${escapeAttribute(response.url || src)}">`
-              : `<pre>${escapeText(response.body)}</pre>`,
+              : `<pre>${escapeText(text)}</pre>`,
             true,
           );
           scripts = false;
         }
+        this._s.encodings.set(doc, encoding);
         // another origin's scripts never run in this realm, where it was
         // asked for or where it sent the frame
         if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
@@ -7401,11 +7469,90 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
-        .href;
+      const base = this._seams.handle.base ?? this.creator ?? this.url;
+      // a query is in the document's encoding (URL's "encoding-parse")
+      const encoding = outputEncoding(this._encodingOf(this.document));
+      return encoding === 'UTF-8'
+        ? new URL(url, base).href
+        : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
       return url;
     }
+  }
+
+  /** The label `charset` last was and what it names, which `_resolve` asks
+   *  for every URL a page's script reads. */
+  private _charset: [string | undefined, string] = [undefined, 'UTF-8'];
+
+  /** A document's encoding (DOM's, by its name): what its bytes were decoded
+   *  with, what the host says of the one it handed over, and for a frame's
+   *  first `about:blank` what made it. UTF-8 for anything else, a page's
+   *  own `createHTMLDocument` among them. */
+  private _encodingOf(doc: Document): string {
+    const known = this._s.encodings.get(doc);
+    if (known) return known;
+    if (doc === this.document) {
+      const label = this._seams.charset;
+      if (this._charset[0] !== label) {
+        this._charset = [label, (label && encodingOf(label)) || 'UTF-8'];
+      }
+      return this._charset[1];
+    }
+    const frame = this._initialBlank.has(doc) ? this._frameOf.get(doc) : null;
+    const holder = frame ? documentHolding(frame) : null;
+    return holder ? this._encodingOf(holder) : 'UTF-8';
+  }
+
+  /** A `TextDecoder`'s bytes, in any encoding but UTF-8, which the realm
+   *  decodes itself. A decoder lasts while a stream is going through it. */
+  private _textDecoders = new Map<number, LegacyDecoder>();
+  private _textDecode(
+    id: number,
+    name: string,
+    base64: string,
+    flags: number,
+  ): string | null {
+    const stream = (flags & 1) !== 0;
+    const decoder =
+      this._textDecoders.get(id) ?? encodingCodecs.decoderFor(name);
+    if (!decoder) return null;
+    const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
+    const text = decoder.decode(bytes, stream, (flags & 2) !== 0);
+    if (stream) this._textDecoders.set(id, decoder);
+    else this._textDecoders.delete(id);
+    // marked, since an answer that starts with U+0001 is a host error
+    return text === null ? null : `=${text}`;
+  }
+
+  /**
+   * A frame's response as text, and the encoding it comes to, kept with the
+   * document it makes (`_encodedAs`): a frame with no label of its own is in
+   * its parent's encoding (HTML's "encoding sniffing algorithm", step 8), and
+   * XML has no parent to go by, its own declaration or UTF-8 instead. A
+   * response with no bytes was text before it got here.
+   */
+  private _frameText(
+    response: FetchResponse,
+    type: string,
+    frame: Element,
+  ): { text: string; encoding: string } {
+    const transport = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(
+      headerOf(response.headers, 'content-type') ?? '',
+    )?.[1];
+    const named = transport ? encodingOf(transport) : null;
+    if (!response.bytes) {
+      return { text: response.body, encoding: named ?? 'UTF-8' };
+    }
+    const bytes = response.bytes;
+    // JSON is UTF-8 whatever anything says (RFC 8259, 8.1)
+    if (/[/+]json$/.test(type)) {
+      return { text: decodeInEncoding(bytes, 'utf-8'), encoding: 'UTF-8' };
+    }
+    const holder = documentHolding(frame);
+    const encoding = XML_TYPES.test(type)
+      ? (bomEncoding(bytes) ?? named ?? xmlEncoding(bytes) ?? 'UTF-8')
+      : sniffEncoding(bytes, named, holder && this._encodingOf(holder));
+    return { text: decodeInEncoding(bytes, encoding), encoding };
   }
 
   private _origin(): string {

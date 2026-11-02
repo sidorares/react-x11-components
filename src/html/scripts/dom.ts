@@ -284,6 +284,9 @@ export function installDom(
     'location',
     'resolve',
     'syncRequests',
+    'characterSet',
+    'encodingLabel',
+    'textDecode',
     'url',
     'random',
     'uuid',
@@ -7311,7 +7314,7 @@ export function installDom(
       }
     }
     get isContentEditable(): boolean {
-      return false;
+      return editingHostOf(this) !== null;
     }
     get innerText(): string {
       return String(call('text', this._id, 'rendered'));
@@ -8675,6 +8678,7 @@ export function installDom(
     consumeActivation();
   };
 
+  const BOX_TYPES = new Set(['checkbox', 'radio']);
   class HTMLInputElement extends FormControl {
     get type(): string {
       const t = (this.getAttribute('type') ?? '').toLowerCase();
@@ -8682,6 +8686,24 @@ export function installDom(
     }
     set type(v: Any) {
       this.setAttribute('type', v);
+    }
+    /** A checkedness goes with an input from type to type (HTML 4.10.5), and
+     *  the widget of a box is what holds a box's. Vue's `v-model` sets
+     *  `checked` as it makes a radio, ahead of its `type`, and every radio on
+     *  JSFiddle was left unticked, so its form sent none of them. */
+    override _setAttr(n: string, value: Any): void {
+      if (n !== 'type') {
+        super._setAttr(n, value);
+        return;
+      }
+      const wasBox = BOX_TYPES.has(this.type);
+      const checked = wasBox ? this.checked : this._checkedness;
+      super._setAttr(n, value);
+      if (wasBox === BOX_TYPES.has(this.type)) return;
+      this._checkedness = wasBox ? checked : undefined;
+      if (!wasBox && checked !== undefined) {
+        call('setValue', this._id, checked);
+      }
     }
     // HTML 4.10.5.4's value modes: the attribute for a box and a radio
     // ("default/on") and for what is no field ("default"), nothing for a
@@ -16433,16 +16455,16 @@ export function installDom(
       return windowOfDocument(this);
     }
     get characterSet(): string {
-      return 'UTF-8';
+      return String(call('characterSet', this._id));
     }
     get charset(): string {
-      return 'UTF-8';
+      return this.characterSet;
     }
     get contentType(): string {
       return this._type ?? 'text/html';
     }
     get inputEncoding(): string {
-      return 'UTF-8';
+      return this.characterSet;
     }
     get compatMode(): string {
       return 'CSS1Compat';
@@ -16835,7 +16857,12 @@ export function installDom(
     }
     open(): Any {
       // `== null`: a wrapper is made without its class's fields
-      if (this !== document && this._written == null) this._written = '';
+      if (this !== document && this._written == null) {
+        this._written = '';
+        // it starts again from nothing (HTML 8.4.2): a loader tldraw uses
+        // builds an `<html>` of its own in a frame's document after `open`
+        this.replaceChildren();
+      }
       return this;
     }
     close(): void {
@@ -16846,7 +16873,11 @@ export function installDom(
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
-      call('fillDocument', this._id, markup);
+      // nothing written leaves what the page put there, or the empty
+      // document the parser makes of no input
+      if (markup || !this.documentElement) {
+        call('fillDocument', this._id, markup);
+      }
     }
   }
   /** A document made of XML's rules: `createDocument`'s. */
@@ -20445,7 +20476,18 @@ export function installDom(
       });
       return lines.sort().join('');
     }
-    overrideMimeType(): void {}
+    /** What `overrideMimeType` was handed, which the response's type gives
+     *  way to (XHR 3.6.8). */
+    _override: string | null = null;
+    overrideMimeType(mime: Any): void {
+      if (this.readyState === 3 || this.readyState === 4) {
+        throw new DOMException(
+          "Failed to execute 'overrideMimeType' on 'XMLHttpRequest': MimeType cannot be overridden when the state is LOADING or DONE.",
+          'InvalidStateError',
+        );
+      }
+      this._override = str(mime);
+    }
     get responseText(): string {
       if (this.responseType !== '' && this.responseType !== 'text') {
         throw new DOMException(
@@ -20476,16 +20518,23 @@ export function installDom(
     }
     /** The body's bytes, which `arraybuffer` and `blob` are made of. */
     _raw: Uint8Array = new Uint8Array(0);
-    /** A text response (XHR 3.6.9): the bytes decoded as the response's
-     *  charset says, and as UTF-8 where it names none this decodes. */
+    /** A text response (XHR 3.6.9): Encoding's "decode", by the response's
+     *  charset, where a byte order mark wins and a label that names nothing
+     *  is UTF-8. `replacement` is no `TextDecoder`'s, so this is the host's
+     *  wherever a label is given. */
     _decode(bytes: Uint8Array): string {
-      const type = this._response?.headers.get('content-type') ?? '';
-      const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type)?.[1];
-      try {
-        return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-      } catch {
-        return new TextDecoder().decode(bytes);
-      }
+      const named = (type: Any): string | undefined =>
+        /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type ?? '')?.[1];
+      // an override that is no MIME type says nothing of its charset
+      const override = /^[^\s/;]+\/[^\s/;]+/.test(this._override ?? '')
+        ? this._override
+        : null;
+      const charset =
+        named(override) ?? named(this._response?.headers.get('content-type'));
+      if (!charset) return new TextDecoder().decode(bytes);
+      return String(
+        call('decodeResponse', base64OfBytes(bytes), charset),
+      ).slice(1);
     }
     get responseXML(): null {
       return null;
@@ -21120,6 +21169,9 @@ export function installDom(
       return 'utf-8';
     }
     encode(input: Any = ''): Uint8Array {
+      if (!(this instanceof TextEncoder)) {
+        throw new TypeError('Illegal invocation');
+      }
       const s = str(input);
       const out: number[] = [];
       for (let i = 0; i < s.length;) {
@@ -21133,6 +21185,14 @@ export function installDom(
       input: Any,
       dest: Uint8Array,
     ): { read: number; written: number } {
+      if (!(this instanceof TextEncoder)) {
+        throw new TypeError('Illegal invocation');
+      }
+      if (Object.prototype.toString.call(dest) !== '[object Uint8Array]') {
+        throw new TypeError(
+          "Failed to execute 'encodeInto' on 'TextEncoder': parameter 2 is not of type 'Uint8Array'.",
+        );
+      }
       const s = str(input);
       let read = 0;
       let written = 0;
@@ -21149,58 +21209,74 @@ export function installDom(
     }
   }
 
-  /** windows-1252's bytes 0x80 to 0x9F, where it is not latin-1. */
-  const CP1252 =
-    '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
-    '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+  /** Each `TextDecoder` of another encoding than UTF-8, to the host. */
+  let textDecoders = 0;
 
   /**
-   * `TextDecoder` (Encoding 8.1): UTF-8, with WHATWG's replacement of a
-   * malformed sequence by its maximal subpart, streaming, `fatal` and the
-   * BOM; UTF-16LE; and windows-1252, which `latin1` and `ascii` name.
+   * `TextDecoder` (Encoding 8.1). UTF-8 is here, with WHATWG's replacement of
+   * a malformed sequence by its maximal subpart, streaming, `fatal` and the
+   * BOM, since nearly every decoder a page makes is one. Anything else is the
+   * host's (`textDecode`), whose tables a realm should not have to hold, with
+   * its bytes across the bridge as base64.
    */
   class TextDecoder {
-    readonly encoding: string;
-    readonly fatal: boolean;
-    readonly ignoreBOM: boolean;
+    _encoding: string;
+    _fatal: boolean;
+    _ignoreBOM: boolean;
     _pending: number[] = [];
     _started = false;
+    /** The encoding's name, for what is not UTF-8, and which decoder the host
+     *  keeps a stream's state under. */
+    _legacy: string | null = null;
+    _id = 0;
     constructor(label: Any = 'utf-8', options: Any = {}) {
-      const name = str(label).trim().toLowerCase();
-      if (['utf-8', 'utf8', 'unicode-1-1-utf-8'].includes(name)) {
-        this.encoding = 'utf-8';
-      } else if (['utf-16le', 'utf-16'].includes(name)) {
-        this.encoding = 'utf-16le';
-      } else if (
-        ['windows-1252', 'latin1', 'iso-8859-1', 'ascii', 'us-ascii'].includes(
-          name,
-        )
-      ) {
-        this.encoding = 'windows-1252';
-      } else {
+      const written = str(label);
+      const name =
+        written === 'utf-8' ? 'UTF-8' : String(call('encodingLabel', written));
+      // `replacement` is an encoding of documents, and no decoder's to name
+      if (!name || name === 'replacement') {
         throw new RangeError(
-          `Failed to construct 'TextDecoder': The encoding label provided ('${str(label)}') is invalid.`,
+          `Failed to construct 'TextDecoder': The encoding label provided ('${written}') is invalid.`,
         );
       }
-      this.fatal = !!options?.fatal;
-      this.ignoreBOM = !!options?.ignoreBOM;
+      this._encoding = name.toLowerCase();
+      if (name !== 'UTF-8') {
+        this._legacy = name;
+        this._id = ++textDecoders;
+      }
+      this._fatal = !!options?.fatal;
+      this._ignoreBOM = !!options?.ignoreBOM;
     }
-    decode(input?: Any, options: Any = {}): string {
+    get encoding(): string {
+      return this._encoding;
+    }
+    get fatal(): boolean {
+      return this._fatal;
+    }
+    get ignoreBOM(): boolean {
+      return this._ignoreBOM;
+    }
+    decode(input: Any = undefined, options: Any = undefined): string {
       let bytes: Uint8Array;
+      // a detached buffer reads as nothing
       if (input === undefined || input === null) bytes = new Uint8Array(0);
       else if (ArrayBuffer.isView(input)) {
-        bytes = new Uint8Array(
-          input.buffer,
-          input.byteOffset,
-          input.byteLength,
-        );
-      } else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
-      else {
+        bytes = input.byteLength
+          ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+          : new Uint8Array(0);
+      } else if (
+        /^\[object (?:Shared)?ArrayBuffer\]$/.test(
+          Object.prototype.toString.call(input),
+        )
+      ) {
+        bytes = input.byteLength ? new Uint8Array(input) : new Uint8Array(0);
+      } else {
         throw new TypeError(
           "Failed to execute 'decode' on 'TextDecoder': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
         );
       }
       const stream = !!options?.stream;
+      if (this._legacy) return this._host(bytes, stream);
       const all = this._pending.length
         ? Uint8Array.from([...this._pending, ...bytes])
         : bytes;
@@ -21222,67 +21298,54 @@ export function installDom(
       };
       const n = all.length;
       let i = 0;
-      if (this.encoding === 'windows-1252') {
-        for (; i < n; i += 1) {
-          const b = all[i];
-          units.push(b >= 0x80 && b < 0xa0 ? CP1252.charCodeAt(b - 0x80) : b);
+      while (i < n) {
+        const b = all[i];
+        if (b < 0x80) {
+          units.push(b);
+          i += 1;
+          continue;
         }
-      } else if (this.encoding === 'utf-16le') {
-        for (; i + 1 < n; i += 2) units.push(all[i] | (all[i + 1] << 8));
-        if (i < n) {
-          if (stream) this._pending = [all[i]];
-          else bad();
+        let need = 0;
+        let code = 0;
+        let lower = 0x80;
+        let upper = 0xbf;
+        if (b >= 0xc2 && b <= 0xdf) {
+          need = 1;
+          code = b & 0x1f;
+        } else if (b >= 0xe0 && b <= 0xef) {
+          need = 2;
+          code = b & 0xf;
+          if (b === 0xe0) lower = 0xa0;
+          if (b === 0xed) upper = 0x9f;
+        } else if (b >= 0xf0 && b <= 0xf4) {
+          need = 3;
+          code = b & 0x7;
+          if (b === 0xf0) lower = 0x90;
+          if (b === 0xf4) upper = 0x8f;
+        } else {
+          bad();
+          i += 1;
+          continue;
         }
-      } else {
-        while (i < n) {
-          const b = all[i];
-          if (b < 0x80) {
-            units.push(b);
-            i += 1;
-            continue;
-          }
-          let need = 0;
-          let code = 0;
-          let lower = 0x80;
-          let upper = 0xbf;
-          if (b >= 0xc2 && b <= 0xdf) {
-            need = 1;
-            code = b & 0x1f;
-          } else if (b >= 0xe0 && b <= 0xef) {
-            need = 2;
-            code = b & 0xf;
-            if (b === 0xe0) lower = 0xa0;
-            if (b === 0xed) upper = 0x9f;
-          } else if (b >= 0xf0 && b <= 0xf4) {
-            need = 3;
-            code = b & 0x7;
-            if (b === 0xf0) lower = 0x90;
-            if (b === 0xf4) upper = 0x8f;
-          } else {
-            bad();
-            i += 1;
-            continue;
-          }
-          let j = 1;
-          for (; j <= need && i + j < n; j += 1) {
-            const c = all[i + j];
-            if (c < lower || c > upper) break;
-            lower = 0x80;
-            upper = 0xbf;
-            code = (code << 6) | (c & 0x3f);
-          }
-          if (j > need) {
-            push(code);
-            i += j;
-          } else if (i + j >= n && stream) {
-            // a sequence the next chunk finishes
-            this._pending = Array.from(all.subarray(i));
-            break;
-          } else {
-            // the bytes that began well, as one replacement
-            bad();
-            i += j;
-          }
+        let j = 1;
+        for (; j <= need && i + j < n; j += 1) {
+          const c = all[i + j];
+          if (c < lower || c > upper) break;
+          lower = 0x80;
+          upper = 0xbf;
+          code = (code << 6) | (c & 0x3f);
+        }
+        if (j > need) {
+          push(code);
+          i += j;
+        } else if (i + j >= n && stream) {
+          // a sequence the next chunk finishes
+          this._pending = Array.from(all.subarray(i));
+          break;
+        } else {
+          // the bytes that began well, as one replacement
+          bad();
+          i += j;
         }
       }
       if (!stream && this._pending.length) {
@@ -21293,6 +21356,30 @@ export function installDom(
       for (let k = 0; k < units.length; k += 8192) {
         text += String.fromCharCode(...units.slice(k, k + 8192));
       }
+      return this._unmarked(text, stream);
+    }
+    /** What the host's decoder makes of `bytes`. A BOM is only the Unicode
+     *  encodings' to take off: gb18030's stays in the text. */
+    _host(bytes: Uint8Array, stream: boolean): string {
+      const text = call(
+        'textDecode',
+        this._id,
+        this._legacy,
+        base64OfBytes(bytes),
+        (stream ? 1 : 0) | (this.fatal ? 2 : 0),
+      );
+      if (text === null) {
+        throw new TypeError(
+          "Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+        );
+      }
+      const decoded = String(text).slice(1);
+      const marked = this._legacy === 'UTF-16LE' || this._legacy === 'UTF-16BE';
+      return marked ? this._unmarked(decoded, stream) : decoded;
+    }
+    /** Encoding's "serialize I/O queue": a BOM at the start of a stream. */
+    _unmarked(decoded: string, stream: boolean): string {
+      let text = decoded;
       if (
         !this._started &&
         text &&
@@ -21301,7 +21388,7 @@ export function installDom(
       ) {
         text = text.slice(1);
       }
-      this._started = stream ? this._started || text.length > 0 : false;
+      this._started = stream ? this._started || decoded.length > 0 : false;
       return text;
     }
   }
@@ -23331,14 +23418,20 @@ export function installDom(
   idlAttributes(CompressionStream);
   idlAttributes(DecompressionStream);
 
-  class TextDecoderStream extends TransformStream {
-    readonly encoding: string;
-    readonly fatal: boolean;
-    readonly ignoreBOM: boolean;
-    constructor(label?: Any, options?: Any) {
+  class TextDecoderStream {
+    _decoder: TextDecoder;
+    _stream: Any;
+    constructor(label: Any = undefined, options: Any = undefined) {
       const decoder = new TextDecoder(label, options);
-      super({
+      this._decoder = decoder;
+      this._stream = new TransformStream({
         transform(chunk: Any, c: Any) {
+          // no chunk is a call with none to `decode`, and an error here
+          if (chunk === undefined || chunk === null) {
+            throw new TypeError(
+              "Failed to execute 'write' on 'TextDecoderStream': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+            );
+          }
           const text = decoder.decode(chunk, { stream: true });
           if (text) c.enqueue(text);
         },
@@ -23347,22 +23440,65 @@ export function installDom(
           if (text) c.enqueue(text);
         },
       });
-      this.encoding = decoder.encoding;
-      this.fatal = decoder.fatal;
-      this.ignoreBOM = decoder.ignoreBOM;
+    }
+    get encoding(): string {
+      return this._decoder.encoding;
+    }
+    get fatal(): boolean {
+      return this._decoder.fatal;
+    }
+    get ignoreBOM(): boolean {
+      return this._decoder.ignoreBOM;
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
     }
   }
-  class TextEncoderStream extends TransformStream {
-    readonly encoding = 'utf-8';
+  class TextEncoderStream {
+    _stream: Any;
     constructor() {
       const encoder = new TextEncoder();
-      super({
+      /** A leading surrogate a chunk ended on, which the next may finish. */
+      let leading = '';
+      this._stream = new TransformStream({
         transform(chunk: Any, c: Any) {
-          const bytes = encoder.encode(str(chunk));
-          if (bytes.length) c.enqueue(bytes);
+          let text = leading + str(chunk);
+          leading = '';
+          const last = text.charCodeAt(text.length - 1);
+          if (last >= 0xd800 && last <= 0xdbff) {
+            leading = text.slice(-1);
+            text = text.slice(0, -1);
+          }
+          if (text) c.enqueue(encoder.encode(text));
+        },
+        flush(c: Any) {
+          if (leading) c.enqueue(encoder.encode('\ufffd'));
         },
       });
     }
+    get encoding(): string {
+      return 'utf-8';
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  idlAttributes(TextDecoder);
+  idlAttributes(TextEncoder);
+  idlAttributes(TextDecoderStream);
+  idlAttributes(TextEncoderStream);
+  for (const [Interface, name] of [
+    [TextDecoder, 'decode'],
+    [TextEncoder, 'encode'],
+    [TextEncoder, 'encodeInto'],
+  ] as const) {
+    Object.defineProperty(Interface.prototype, name, { enumerable: true });
   }
   // --- IndexedDB -------------------------------------------------------------------
   //
@@ -28410,10 +28546,19 @@ export function installDom(
       const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
       // what is a file in the entry list is its name in a query
       const query = new URLSearchParams();
+      const entries: [string, string][] = [];
       for (const [name, value] of (formData as Any)._entries) {
-        query.append(name, value instanceof File ? value.name : value);
+        const text = value instanceof File ? value.name : value;
+        query.append(name, text);
+        entries.push([name, text]);
       }
-      url = `${base}?${query}${fragment}`;
+      // in the encoding `accept-charset` or the document says, the host's
+      const encoding = String(call('formEncoding', form._id));
+      const written =
+        encoding === 'UTF-8'
+          ? String(query)
+          : String(call('formQuery', JSON.stringify(entries), encoding));
+      url = `${base}?${written}${fragment}`;
     }
     // replaced where it is made while the document loads, unless a user
     // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
