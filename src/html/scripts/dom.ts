@@ -19737,6 +19737,17 @@ export function installDom(
         headers.set('content-type', extracted.type);
       }
       if (signal?.aborted) {
+        // fetch makes its `Request` first (Fetch 5.5), so what one turns down
+        // is that TypeError whatever the signal says; asked only here, since
+        // a request that goes on is the host's to refuse, and to resolve
+        if (!request) {
+          try {
+            new Request(input, { ...init, body: undefined, signal: undefined });
+          } catch (e) {
+            reject(e);
+            return;
+          }
+        }
         if (extracted?.stream) extracted.stream.cancel?.(aborted());
         reject(aborted());
         return;

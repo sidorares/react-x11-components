@@ -2391,6 +2391,85 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
   });
 });
 
+test('what a Request turns down is a TypeError from fetch, whatever the signal says', async () => {
+  // fetch makes its `Request` first, so the abort comes after it; and only
+  // where it would come, since a request that goes on is the host's to read
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const c = new AbortController();
+       c.abort();
+       const name = (p) => p.then(() => 'went', (e) => e.constructor.name + ':' + e.name);
+       Promise.all([
+         name(fetch('http://user:secret@example.test/', { signal: c.signal })),
+         name(fetch('', { mode: 'navigate', signal: c.signal })),
+         name(fetch('', { mode: 'no-cors', method: 'PUT', signal: c.signal })),
+         name(fetch('http://', { signal: c.signal })),
+         name(fetch('/fine', { signal: c.signal })),
+         name(fetch(new Request('/fine'), { signal: c.signal })),
+         name(fetch('/fine', { method: 'POST', body: 'x', signal: c.signal })),
+       ]).then((r) => { document.getElementById('out').textContent = r.join(' '); });
+     </script>`,
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split(' '), [
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'DOMException:AbortError',
+    'DOMException:AbortError',
+    'DOMException:AbortError',
+  ]);
+});
+
+test('pipeTo takes an AbortSignal, and what only looks like one is a TypeError', async () => {
+  // it asked for an own `aborted`, which went when a signal's state came to
+  // be no field a page can write: every pipeTo with a signal threw
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const pipe = (signal) => {
+         const readable = new ReadableStream({ start(c) { c.enqueue('a'); } });
+         return readable.pipeTo(new WritableStream(), { signal });
+       };
+       const c = new AbortController();
+       const name = (p) => p.then(() => 'went', (e) => e.name);
+       const aborted = name(pipe(c.signal));
+       c.abort();
+       Promise.all([
+         aborted,
+         name(pipe(Object.create(AbortSignal.prototype))),
+         name(pipe('AbortSignal')),
+       ]).then((r) => { document.getElementById('out').textContent = r.join(' '); });
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'AbortError TypeError TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
+test('queueMicrotask is a TypeError for what is no function, where it failed later, as an uncaught error in the task after', async () => {
+  // and a service worker whose script did that at evaluation was no worker
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const r = [undefined, null, 0, {}, 'x', 'none'].map((v, i) => {
+         try { i === 5 ? queueMicrotask() : queueMicrotask(v); return 'queued'; }
+         catch (e) { return e.name; }
+       });
+       queueMicrotask(() => r.push('ran'));
+       setTimeout(() => { document.getElementById('out').textContent = r.join(' '); }, 0);
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TypeError TypeError TypeError TypeError TypeError TypeError ran',
+  );
+  assert.deepEqual(
+    doc.logs.filter((l) => l.startsWith('error')),
+    [],
+  );
+});
+
 test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
   // pdf.js makes every request's signal with `any`
   const doc = await hosted(
