@@ -388,6 +388,9 @@ export interface EmbeddedRect {
   element: Element;
   /** Which embedded element it is. */
   kind: EmbeddedKind;
+  /** The used colour scheme of the element: a frame's document that is in
+   *  another is on an opaque canvas of its own (CSS Color Adjust 1, 2.2). */
+  colorScheme: 'light' | 'dark';
   /** Its content box, which what is mounted fills. */
   x: number;
   y: number;
@@ -557,6 +560,7 @@ function placementOf(
   covering: Cover[] | null = null,
 ): {
   element: Element;
+  colorScheme: 'light' | 'dark';
   x: number;
   y: number;
   width: number;
@@ -670,6 +674,7 @@ function placementOf(
   const heldBy = heldShift(tree, box, scaleAround);
   return {
     element: el,
+    colorScheme: box.style.colorScheme,
     ...picture,
     ...(radius > 0 && { radius }),
     // a rounded clip is the box it is the edge of, corners and all

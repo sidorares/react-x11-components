@@ -10694,6 +10694,15 @@ function presentationHints(
       (type && BULLETS.has(type.toLowerCase()) ? type.toLowerCase() : null);
     if (mapped) push('list-style-type', mapped);
   }
+  if (tag === 'iframe') {
+    // what it does not read as a number other than zero takes the border
+    // the UA sheet gives every frame away (HTML 15.4.4), as Chromium reads
+    // it, and `frameborder="0"` is on every embed there has ever been
+    const border = attr(el, 'frameborder');
+    if (border !== undefined && !parseInt(border, 10)) {
+      push('border-width', '0');
+    }
+  }
   if (tag === 'img' || tag === 'object') {
     const hspace = attr(el, 'hspace');
     if (hspace) {

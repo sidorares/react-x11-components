@@ -532,6 +532,9 @@ export interface PaintOptions {
    *  root element's image in a view transition, which is opaque as a
    *  browser's window is (CSS View Transitions 1, 3.5). */
   groundCanvas?: boolean;
+  /** The colour scheme of the element it is embedded in, where it is a
+   *  frame's document (`groundScheme`). */
+  embedderScheme?: 'light' | 'dark';
   /** The boxes of the elements a view transition captured (CSS View
    *  Transitions 1, 3.5): each is drawn in its image in the transition's
    *  tree, it and all it holds, and is a hole where it is laid out — a
@@ -1468,7 +1471,8 @@ export function paintDocument(
   // under a canvas of a colour of its own with no transparency, which
   // covers all of it, the scheme's is a fill nobody sees
   if (
-    (scheme !== tree.paletteScheme || options.groundCanvas) &&
+    (scheme !== groundScheme(tree, options.embedderScheme) ||
+      options.groundCanvas) &&
     !coloursCanvas(canvas) &&
     !options.noCanvas
   ) {
@@ -1662,11 +1666,28 @@ function coloursCanvas(canvas: CanvasBackground | null): boolean {
  * in an opaque colour of its own (`paintDocument`). What `<Html>` promises
  * core in `opaqueRect()`, which skips every fill under the element.
  */
-export function opaqueCanvas(tree: BoxTree): boolean {
+export function opaqueCanvas(
+  tree: BoxTree,
+  embedder?: 'light' | 'dark',
+): boolean {
   return (
-    rootScheme(tree) !== tree.paletteScheme ||
+    rootScheme(tree) !== groundScheme(tree, embedder) ||
     coloursCanvas(canvasBackground(tree))
   );
+}
+
+/**
+ * The scheme of what a document is drawn on, which a root of another puts an
+ * opaque canvas over: the window's palette, or the `<iframe>` it is in, whose
+ * scheme is the page's and not the palette's. JSFiddle's page is dark and a
+ * fiddle's document says it is light, which a browser shows on white, and
+ * which was drawn dark on dark.
+ */
+function groundScheme(
+  tree: BoxTree,
+  embedder?: 'light' | 'dark',
+): 'light' | 'dark' {
+  return embedder ?? tree.paletteScheme;
 }
 
 /** The used colour scheme of the document's root element: the `<html>`'s,

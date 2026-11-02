@@ -1369,6 +1369,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onElementScroll: props.onElementScroll,
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
+    embedderScheme: props._embedderScheme,
     onCssEvents: props._onCssEvents,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,

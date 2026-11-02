@@ -73,7 +73,11 @@ export function embeddedMounts(
   return (rect) => {
     const known = rect.kind === 'iframe' ? context() : null;
     if (!known) return null;
-    return h(FramePage, { frame: rect.element, context: known });
+    return h(FramePage, {
+      frame: rect.element,
+      context: known,
+      scheme: rect.colorScheme,
+    });
   };
 }
 
@@ -147,9 +151,11 @@ function keyOf(document: Document): number {
 function FramePage({
   frame,
   context,
+  scheme,
 }: {
   frame: Element;
   context: FrameContext;
+  scheme: 'light' | 'dark';
 }): ReactElement | null {
   const host = context.parent.host;
   const find = () => host.frames().find((f) => f.frame === frame) ?? null;
@@ -168,6 +174,7 @@ function FramePage({
     url: shown.url,
     realm: shown.realm,
     context,
+    scheme,
   });
 }
 
@@ -177,6 +184,7 @@ function FrameDocument({
   url,
   realm,
   context,
+  scheme,
   undrawn = false,
 }: {
   frame: Element;
@@ -184,6 +192,8 @@ function FrameDocument({
   url: string;
   realm: boolean;
   context: FrameContext;
+  /** The element's colour scheme, where it is drawn. */
+  scheme?: 'light' | 'dark';
   undrawn?: boolean;
 }): ReactElement {
   const handle = useHtmlHandle();
@@ -342,6 +352,7 @@ function FrameDocument({
       // query lists' `change`; and its own CSS transitions' events, which
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
+        _embedderScheme: scheme,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,
