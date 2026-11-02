@@ -1923,6 +1923,11 @@ and repaints it. **Anything new that leaves core's focus nowhere while the
 page has been told something has it calls `hold`.** Text typed before a field's
 widget is there is heard and not typed, which nothing has yet asked for.
 
+**Tab goes by the stops as the document stands** (`stopsNow`). What is
+reported reaches React a layout and a render later, and a Tab straight after a
+page's script changed the document found none, and went nowhere. Anything new
+that steps through the stops from a key asks `stopsNow` and not the state.
+
 **A press on what has the focus leaves it there** (`pressLanded`, from
 `defaultMouseDown`). Core's press goes to the nearest node that takes the
 focus, and all the document draws has the root for that, after the page's

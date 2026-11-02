@@ -174,7 +174,12 @@ export function useFocusStops(options: StopsOptions): Stops {
     // Ctrl+Tab and its kin are the application's chords, not traversal
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
     const node = view.current;
-    if (!node || !stops.length) return;
+    if (!node) return;
+    // as the document stands now, since a Tab straight after a page's script
+    // changed it comes before the next report: it went nowhere, and from
+    // there out of the document
+    const current = node.stopsNow();
+    if (!current.length) return;
     const target = ev.target as DrawnNode;
     let from =
       boxes.elementOf(target) ??
@@ -186,7 +191,7 @@ export function useFocusStops(options: StopsOptions): Stops {
       if (!surface && target !== standIn.current) return;
       from = start.current;
     }
-    const next = stepFrom(stops, from, ev.shiftKey);
+    const next = stepFrom(current, from, ev.shiftKey);
     // off the end: the window's order takes it on out of the document
     if (!next) return;
     ev.preventDefault();

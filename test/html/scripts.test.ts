@@ -26,6 +26,7 @@ import {
   XK_ESCAPE,
   XK_LEFT,
   XK_RETURN,
+  XK_TAB,
 } from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
@@ -7519,6 +7520,21 @@ test('a key on a button a focus is owed to does what it does on the button', asy
     doc.text('out'),
     'in b | down Enter at b | clicked | up Enter at b',
   );
+});
+
+test('Tab straight after a script put a focusable element in goes to it, before the layout that would report it', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>function add() { var b = document.createElement("button"); b.id = "b"; b.textContent = "b"; document.body.appendChild(b); }</script>',
+  );
+  await settle();
+  await act(async () => void (doc.view.parent as unknown as DrawnNode).focus());
+  await act(async () => {
+    doc.run('add()');
+    fireEvent.key(XK_TAB);
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+  assert.equal(doc.handle.activeElement?.attribs.id, 'b');
 });
 
 test('a key typed once what a focus was owed to has gone reaches the page at the body, as nothing has the focus', async () => {

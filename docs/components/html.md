@@ -3216,6 +3216,9 @@ at that element, and does what it does on a link or a button; only text typed
 at a field whose widget is still to come is heard and not typed. A press
 elsewhere takes such a focus back, as it takes any.
 
+Tab goes by the document as it stands, so a Tab straight after a script put
+something focusable in reaches it.
+
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed
 the link's `href` and a `MouseEvent` whose `detail` is 0, with the key's

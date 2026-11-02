@@ -12839,6 +12839,13 @@ export class HtmlViewNode extends Node {
     this._prepare(this.abs.width || 1);
   }
 
+  /** The focusable areas as the document stands now, where what was last
+   *  reported is a frame behind a page's script. */
+  stopsNow(): readonly FocusStop[] {
+    this.layoutNow();
+    return this._stops;
+  }
+
   /**
    * A page's script was stopped by its engine's watchdog inside something
    * it asked of the document (`HandleInternals.interrupted`): a style, a
