@@ -10614,10 +10614,11 @@ export function installDom(
         const { width, height, data } = source;
         return { width, height, data: new Uint8Array(data.buffer) };
       }
-      const state = source instanceof HTMLCanvasElement && canvases.get(source);
-      if (!state || !state.data) return null;
-      const { width, height, data } = state;
-      return { width, height, data: new Uint8Array(data.buffer) };
+      if (!(source instanceof HTMLCanvasElement) || !canvases.has(source)) {
+        return null;
+      }
+      const { width, height, data } = canvasBitmap(source);
+      return data ? { width, height, data: new Uint8Array(data.buffer) } : null;
     },
   });
 
@@ -10686,6 +10687,15 @@ export function installDom(
       resetCanvas(canvas, state, width, height);
     }
     return state;
+  };
+  /** A canvas as an image, as `drawImage` and `toDataURL` read one. A WebGL
+   *  context's pixels are the GL's, and read in as the document paints the
+   *  canvas, so one the document does not show held none: jspaint draws its
+   *  shapes on such a canvas and copies them, and a pencil left no mark. */
+  const canvasBitmap = (canvas: Any): Any => {
+    const state = canvasState(canvas);
+    const gl = state.kind === 'webgl' || state.kind === 'webgl2';
+    return (gl && WEBGL.pixels(state.context)) || state;
   };
   /** Whether a context is a 2d one, a canvas's or an `OffscreenCanvas`'s. */
   const is2d = (context: Any): boolean =>
@@ -12110,7 +12120,7 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      from = canvasState(source);
+      from = canvasBitmap(source);
     } else {
       return null;
     }
@@ -12851,7 +12861,7 @@ export function installDom(
         "Failed to execute 'toDataURL'",
         'Cannot read from a canvas that has transferred its control to offscreen.',
       );
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const bytes = encodedBitmap(state.width, state.height, state.data);
       return bytes ? `data:image/png;base64,${base64OfBytes(bytes)}` : 'data:,';
     }
@@ -12869,7 +12879,7 @@ export function installDom(
           `${what} on 'HTMLCanvasElement': The callback provided as parameter 1 is not a function.`,
         );
       }
-      const state = canvasState(this);
+      const state = canvasBitmap(this);
       const { width, height } = state;
       const data = state.data.slice();
       setTimer(
