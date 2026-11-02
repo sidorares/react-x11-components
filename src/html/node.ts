@@ -8132,9 +8132,10 @@ export class HtmlViewNode extends Node {
    * Whether a press at a logical window point may start a selection: not
    * on text or a box `user-select: none` keeps out of one, which a
    * `::before` and an `::after` are unless a rule says otherwise (CSS UI 4,
-   * 6.1). The root turns such a press down, and the selection there was
-   * stays, as Blink keeps it (`CanStartSelection`): a toolbar's button
-   * pressed with a paragraph selected does not take the selection away.
+   * 6.1). Such a press starts none, and the selection there was stays, as
+   * Blink keeps it (`CanStartSelection`): a toolbar's button pressed with a
+   * paragraph selected does not take the selection away. It is no cancelled
+   * press: it moves the focus as any press does, in all three engines.
    */
   startsSelectionAt(x: number, y: number): boolean {
     this._followViewport();
@@ -14118,11 +14119,13 @@ export class HtmlViewNode extends Node {
 
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
-   *  selection's. */
+   *  selection's, where it can start one (`startsSelectionAt`). */
   override defaultMouseDown(ev: X11MouseEvent): void {
     const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
     if (!hit) {
-      super.defaultMouseDown?.(ev);
+      if (ev.button !== 1 || this.startsSelectionAt(ev.x, ev.y)) {
+        super.defaultMouseDown?.(ev);
+      }
       return;
     }
     const local = this._toDocument(ev.x, ev.y);

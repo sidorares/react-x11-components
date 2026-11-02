@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.1` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.1` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.56.3` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.56.3` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -857,6 +857,16 @@ it up. **The floor is a running one and moves often** — every move since
   behind the text a line by the twenty-fifth. A core before it reads no
   `lineHeight` on a field and sets it at its font's own, so the floor
   moves with the fix.
+- `^2.56.3` — a press moves the focus after its `mousedown`, and not where
+  a handler cancelled it (react-x11#1029, over #1028). Core moved it first,
+  so a page's `preventDefault()` kept nothing, and a click on Monaco, in
+  vscode.dev and the TS Playground, left the editor unfocused. `<Html>` and
+  `<RichTextEditor>` each cancelled a press for a reason of their own, and
+  stopped, since a press cancelled on this core moves no focus. A core
+  before it tells a page the focus has gone before it hears the press, so
+  the floor moves with the fix. 2.56.2 under it keeps pinned repairs apart
+  (#1022), so a sticky header over a sticky sidebar is no repaint of the
+  window at every scroll, which needed no change here.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -3542,6 +3552,20 @@ press, which the root then leaves alone. The handle's `interactive` reaches
 the hooks' state through one object made once and a ref every render sets
 (`documentInteraction`), so a host calling it between renders is answered
 from the last one.
+
+**A press's focus is `mousedown`'s default action, and that is core's**
+(react-x11#1028). Core moved it before dispatching the press, so a page
+heard `mousedown` with the focus already gone and `preventDefault()` could
+keep nothing: Monaco cancels a press and asks for the focus only where it
+believes it has none, so a press on the editor took the focus for good.
+Nothing here could have put that right. The root's capture phase is inside
+core's dispatch, and an undo after it would have told the page `focusin`
+ahead of `mousedown`, and scrolled and rung as a `'script'` focus does.
+**So nothing of `<Html>`'s own cancels a press**: a `preventDefault()` here
+is a page's, and keeps the focus. What the document turns down of a press
+goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
+`user-select: none` starts no selection and moves the focus in all three
+engines.
 
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
@@ -7480,9 +7504,12 @@ What to know before changing it:
   `toDOM` returns `remoteCaret`'s description (`collab.ts`); the view asks a
   text-less widget's `toDOM` once, cached by the widget's type, and a
   builder that reaches for `document` throws and is skipped.
-- **A press on the selection is left to core, so that it can arm a
-  drag.** The root is `draggable`; `mouseDown` claims every other press,
-  and `onDragStart` cancels a drag whose press was not on the selection.
+- **No press is cancelled**, since a cancelled press moves no focus, and
+  core's focus is the one a press wants: a `'script'` focus from a handler
+  would light a ring and scroll a tall editor to its top. So core arms a
+  drag from every press on the `draggable` root, and `onDragStart` cancels
+  one whose press was not on the selection (`dragCandidate`), after which
+  the gesture goes on as ordinary mouse events.
   An in-app drop reaches its target with no modifiers — core builds it
   with `buttons: 0` — so the copy modifier travels in the slice payload
   from the source's last `onDrag`; and an in-app drop must answer

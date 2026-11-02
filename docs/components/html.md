@@ -2887,6 +2887,14 @@ no listeners, since nothing runs in it. A host that has some — a script
 engine over the DOM, as the browser example's is, or an application wiring
 behaviour onto a document with `domutils` — dispatches them, and answers.
 
+**A press moves the focus after its `mousedown`**, as its default action,
+which is the order all three engines have. The host hears the press with
+`activeElement` where it was, then `focusout` and `focusin`, and a `false`
+leaves the focus where it is. That is what lets a toolbar keep the caret in
+a field, and what keeps Monaco's editor focused when it is pressed. A press
+on what `user-select: none` keeps out of a selection starts none and still
+moves the focus, since nothing cancelled it.
+
 | `type`                 | When                                                                                                     | Cancelling it                                    |
 | ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
