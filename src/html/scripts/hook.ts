@@ -24,10 +24,10 @@ import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
 import type { FramePost } from './host.js';
 import type {
-  FrameLink,
   PageSwap,
   RunnerSeams,
   ScriptRunner,
+  ViewLink,
 } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
 import { arriveAt } from './session.js';
@@ -143,7 +143,7 @@ export function useScripts(
   handle: HtmlHandle,
   url: string,
   options: ScriptsOptions,
-  link: FrameLink | null = null,
+  link: ViewLink | null = null,
 ): ScriptProps {
   const runner = useRef<ScriptRunner | null>(null);
   // the sheets the page adopted, applied after the document's own
@@ -177,7 +177,8 @@ export function useScripts(
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
-    navigate: (to, how) => latest.current.navigate(to, how),
+    navigate: (to, how, post, name) =>
+      latest.current.navigate(to, how, post, name),
     reload: () => latest.current.reload(),
     go: (delta) => latest.current.go(delta),
     promptToUnload: () => latest.current.promptToUnload?.() ?? true,
@@ -198,6 +199,19 @@ export function useScripts(
     },
     get serviceWorkers() {
       return latest.current.serviceWorkers;
+    },
+    get popups() {
+      return latest.current.popups;
+    },
+    get popup() {
+      return latest.current.popup;
+    },
+    close: (alone) => latest.current.close?.(alone),
+    get windowName() {
+      return latest.current.windowName;
+    },
+    get session() {
+      return latest.current.session;
     },
     get webTransport() {
       return latest.current.webTransport;
@@ -240,7 +254,7 @@ export function useScripts(
   linked.current = link;
   // the runner of a frame's document is the frame's, which this view is
   // bound to and hands back (`FrameSeat`); a page's is this view's own
-  const bound = useRef<ScriptRunner | null>(null);
+  const bound = useRef<ViewLink['parent'] | null>(null);
   // a render once there is a runner, for what is drawn from it: the frames
   const [, ran] = useReducer((n: number) => n + 1, 0);
 
@@ -298,7 +312,7 @@ export function useScripts(
       runner.current = link.parent.bindFrame(
         document,
         address.current,
-        link.frame,
+        link.frame!,
         seams.current,
       );
       bound.current = runner.current && link.parent;

@@ -25,7 +25,7 @@ import { hx } from '../hx.js';
 import { useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
-import { linkTarget, navigableFor } from './target.js';
+import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
 
@@ -208,11 +208,15 @@ function FrameDocument({
       scroller.current?.scrollTo({ x: x * zoom, y: y * zoom });
     },
     // a frame's `location` goes on in the frame, and its `open` in a tab
-    navigate: (to, how) =>
+    navigate: (to, how, post, name) =>
       how === 'tab'
-        ? outer.navigate(to, 'tab')
-        : host.navigateFrame(frame, to, null),
+        ? outer.navigate(to, 'tab', post, name)
+        : host.navigateFrame(frame, to, post ?? null),
     reload: () => host.navigateFrame(frame, url, null),
+    // nothing of the window it is in is a frame's
+    popup: null,
+    close: undefined,
+    windowName: undefined,
     // what the frame asks for is the frame's, its `Origin` and `Referer`:
     // made as the page's, a CORS answer to the page's origin was held to
     // the frame's, and refused
@@ -249,15 +253,25 @@ function FrameDocument({
   // a frame its target names in the frame's document, a new tab, or the
   // page — `_top`, and `_parent`, which in a frame in a frame is the frame
   // around it and is taken for the page here.
-  const send = (target: string, to: string, post: FramePost | null) => {
+  const send = (
+    target: string,
+    to: string,
+    post: FramePost | null,
+    rel: string | undefined,
+  ) => {
     const keyword = target.toLowerCase();
     if (keyword === '_top' || keyword === '_parent') {
       outer.navigate(to, 'here');
       return;
     }
     const where = navigableFor(document, target);
-    if (where === 'tab') outer.navigate(to, 'tab');
-    else if (where === 'here') host.navigateFrame(frame, to, post);
+    if (where === 'tab') {
+      const { noopener, noreferrer } = linkOpener(target, rel);
+      const runner = scripts.runner?.();
+      if (!runner?.followTarget(to, target, noopener, noreferrer, post)) {
+        outer.navigate(to, 'tab');
+      }
+    } else if (where === 'here') host.navigateFrame(frame, to, post);
     else scripts.navigateFrame?.(where, to, post);
   };
   const { look } = context;
@@ -285,7 +299,7 @@ function FrameDocument({
         while (link && link.name !== 'a' && link.name !== 'area') {
           link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
         }
-        send(linkTarget(link, document), href, null);
+        send(linkTarget(link, document), href, null, link?.attribs.rel);
       },
       onSubmit: (submission) => {
         const { url: to, method, body, contentType, target } = submission;
@@ -296,6 +310,7 @@ function FrameDocument({
           method === 'post'
             ? { body: body ?? '', contentType: contentType ?? '' }
             : null,
+          submission.form.attribs.rel,
         );
       },
       scripting: scripts.scripting,

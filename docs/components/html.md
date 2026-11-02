@@ -962,7 +962,10 @@ since this component navigates nowhere by itself:
 | ---------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                 |
 | `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                      |
-| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or `window.open` (`'tab'`).                                                         |
+| `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                      |
+| `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                |
+| `popup`          | none                      | The window this document is shown in, where a page opened it.                                                                                                                |
+| `close`          | nothing                   | A page closed the tab it is in, with `window.close()`.                                                                                                                       |
 | `reload`         | nothing                   | `location.reload()`.                                                                                                                                                         |
 | `go`             | nothing                   | `history.go`, `back` and `forward` past the page's own entries; with a `session`, to another document's entry `delta` from the current one, which `session.go(delta)` names. |
 | `session`        | none                      | The `HtmlSessionHistory` the document is shown in: one history across the documents the host shows in one place. See below.                                                  |
@@ -1856,9 +1859,8 @@ HTML 4.13.4).
 - **`customelementregistry`.** An element the parser makes with the
   attribute has no registry, and so does what it holds. That holds for the
   HTML parser, and for the XML parser that reads a frame's XHTML.
-- **What doesn't work yet:**
-  - a window `window.open()` opens, which a page gets no handle to;
-  - a top-level XHTML document, which `<Html>` parses as HTML.
+- **What doesn't work yet:** a top-level XHTML document, which `<Html>`
+  parses as HTML.
 
 `setHTMLUnsafe()` parses declarative shadow roots, as the document's
 parser does, where `innerHTML` doesn't. An element of an HTML name no
@@ -2057,6 +2059,115 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
+
+### Windows
+
+```js
+const [windows, setWindows] = useState([]);
+
+<Html
+  source={source}
+  baseUrl={url}
+  scripts={{
+    ...network,
+    popups: {
+      open(popup) {
+        setWindows((all) => [...all, popup]);
+        return true;
+      },
+    },
+  }}
+/>;
+{
+  windows.map((popup) => <Popup key={popup.id} popup={popup} />);
+}
+```
+
+A page's `window.open` reaches `scripts.popups`. With none it answers null and
+hands the address to `navigate` as `'tab'`, so nothing opens by construction.
+
+**A window with an opener runs in its opener's process**, as a realm of its own
+linked to it, whatever its origin. A same-origin page reads `popup.document` in
+the call that opened it, which no process boundary could answer
+([the design](../prd-popups.md)). So a host shows one by mounting `<Html>` in
+that process, for each document it goes to, with `scripts.popup` set to what it
+was handed:
+
+```js
+function Popup({ popup }) {
+  const [doc, setDoc] = useState({ source: '', baseUrl: 'about:blank' });
+  const load = (url) =>
+    network.html(url).then((d) => setDoc({ source: d.source, baseUrl: d.url }));
+  useEffect(() => {
+    if (popup.url !== 'about:blank') void load(popup.url);
+    return popup.onClose(() => removeWindow(popup));
+  }, []);
+  return (
+    <Html
+      key={doc.baseUrl}
+      source={doc.source}
+      baseUrl={doc.baseUrl}
+      scripts={{ ...network, popup, navigate: load }}
+    />
+  );
+}
+```
+
+The first `<Html>` is `source=""` at `about:blank`, which draws the document
+`window.open` made as it was called: a page may write it or listen on it before
+React has heard of the window. A `session` makes the window's documents one
+history, as a tab's, and keeps its `opener` across them.
+
+| `HtmlPopup`   | What it is                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `id`          | A key to mount it by.                                                                         |
+| `url`         | Where it goes, absolute, or `about:blank`. Read it as you load: a page may send it elsewhere. |
+| `name`        | What a later `window.open` or a `target` finds it by.                                         |
+| `features`    | `popup`, HTML's "is a popup window requested", and `width`, `height`, `left`, `top`.          |
+| `referrer`    | The address of what opened it, or null with `noreferrer`.                                     |
+| `post`        | The form to post, where a form's `target` opened it.                                          |
+| `closed`      | Whether it has closed or is closing.                                                          |
+| `close()`     | The user closed it: its document unloads, and the page's `closed` reads true.                 |
+| `onClose(fn)` | The page closed it. Stop showing it.                                                          |
+| `onFocus(fn)` | A script asked for it to come to the front.                                                   |
+
+**What has no opener is a tab.** `noopener`, `noreferrer` and a plain
+`target=_blank` go to `navigate(url, 'tab')` or `onLink`, and `window.open`
+answers null. A `target` that is a name, or `_blank` with `rel=opener`, has an
+opener, so `<a target=side>` opens a window as `window.open(url, 'side')` does,
+and a form's `target` carries its POST there (`navigate`'s third argument).
+
+**A name finds the window it names**: this window, `_parent`, `_top`, a frame of
+the document, then any window of its group, by `window.name`. It never reaches
+another tab. With `noopener` a name still finds its window and sends it there,
+and `window.open` answers null, which is what WPT holds.
+
+**A window needs a press or a key behind it**, read from the page's activation.
+One press opens one window, and with none `window.open` answers null and
+`popups.blocked(url)` is told. `popups.unblocked` lets everything through, as
+wptrunner runs a browser.
+
+**What a reference answers** is what HTML has it answer. Of the page's own origin
+it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
+`location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
+from one to the other as the window navigates, so one object stands for a window
+through a popup login. `closed` is true from the moment `close()` is called, and
+the window goes in a task after it: `opener` reads null then, and a name no longer
+finds it.
+
+An opener that navigates keeps its popups, and they reach its next document, where
+the host shows a tab's documents with one `session`. A popup that is the first of a
+page's to be opened keeps a document out of the back-forward cache, as Chrome does,
+for as long as its group has another window in it.
+
+`window.close()` in a window no page opened goes to `scripts.close(alone)`, `alone`
+where its history has one entry, which is what lets a page close a window no script
+opened; a host knows the rest, and answers true where it closes, which `closed` then
+reads. A tab a host opened under a name, the fourth argument of `navigate`, goes by it
+through `scripts.windowName`.
+
+Not done: `Cross-Origin-Opener-Policy`, `sandbox`'s `allow-popups`, `moveTo` and
+`resizeTo` ([the design](../prd-popups.md#left-out)).
 
 ### The clipboard
 

@@ -3901,6 +3901,42 @@ closes a way out a DOM binding opens by accident:
   **anything that asks whether a node is a doctype asks `isDoctype`**, never
   `instanceof ProcessingInstruction`. **An attribute's name goes through
   `_attrName`**: `toLowerCase()` on one made draw.io's `vertexLabel` unreadable.
+- **A window with an opener is a realm in its opener's process**
+  (`scripts/popups.ts` on the host, `scripts/windows.ts` in the page,
+  `src/html/popups.ts` for the seam, docs/prd-popups.md). `window.open` answers
+  at once with a document, which no process boundary could, so a window is a
+  `WindowSlot`: a number in a group that outlives every document it shows, each
+  of which comes into it as its runner is made (`adopt`), and in each realm a
+  proxy over that number. Seven things are load-bearing. **A window's first document
+  is made inside the op** (`Popup.seams`), before any `<Html>`, with its opener's
+  seams until a view lends its own, so anything new a realm asks of its seams as
+  it starts has an answer with no view there. **What reads as a window through a
+  proxy goes through `seen`**: `popup.opener === window` needs this realm's name
+  for it, since a proxy is a realm's own. **A slot is found by what a window's
+  documents share** (`windowKey`): a host's `session`, a frame's element, so an
+  opener's next document reaches its popups; `SLOTS` is by that key, and anything
+  new that makes a top-level document goes through `ScriptRunner`'s constructor.
+  **What a page holds of a same-origin window it may hand another realm's op**, so
+  a node's id is its realm's and `idOf` asks the host to hand it across
+  (`__handOver`, `takeNode`): anything new that takes a node as an op's argument
+  goes through `idOf`, never `node._id`, or it takes another node with no error.
+  **A page's top is its host's** (`DomHost.top`): a popup
+  shares its opener's tree and is a top of its own, so anything that reads the
+  site for cookies asks its host. **A context runs its microtasks only as the
+  host enters it**, so a promise of one realm that another's task resolves waits
+  for that realm's next task: `await new Promise((go) => (popup.onload = go))`
+  has nothing else to wake it. So a task's end runs the realms it has reached
+  (`_drainLinked`), which a proxy notes as it is first read through
+  (`windowReached`), and never every realm of the group: linked in pairs, a page
+  of ninety windows ran all of them at every task and timed out. And **a group is
+  kept out of the back-forward cache** (`salvageable`): a window another reaches
+  stays where it can be reached. A host answers `popups.open`, and shows a window
+  by mounting `<Html>`
+  with `scripts.popup` for each of its documents, the first `source=""` at
+  `about:blank`, which `useScriptedHtml` turns into the document `window.open`
+  made. **Nothing but the seam says a window may open**: no `popups`, and
+  `window.open` is null, as "Nothing is fetched, by construction" has it.
+
 - **A frame's window holds the page's realm.** `contentWindow` is a
   WindowProxy over the window of the frame's current document, with the
   page's globals as they were before page code ran (`realmGlobals`), since

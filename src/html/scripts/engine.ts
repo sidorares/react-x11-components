@@ -65,6 +65,7 @@ import { installWebCrypto } from './webcrypto.js';
 import { installDataTransfer } from './datatransfer.js';
 import { installClipboard } from './clipboard.js';
 import { installNotifications } from './notifications.js';
+import { installWindows } from './windows.js';
 import { installWebTransport } from './webtransport.js';
 import { installWebSocket } from './websocket.js';
 import { installWebGL } from './webgl.js';
@@ -288,11 +289,12 @@ const INSTALL = `(function () {
   const transfers = (${installDataTransfer.toString()});
   const clipboards = (${installClipboard.toString()});
   const notifying = (${installNotifications.toString()});
+  const windowing = (${installWindows.toString()});
   const bridge = globalThis.__bridge;
   const named = globalThis.__named === true;
   delete globalThis.__bridge;
   delete globalThis.__named;
-  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, notifying, named);
+  install(bridge, webgl, raster, streams, transport, socket, media, channels, webrtc, rtcTransports, webaudio, mse, geometry, webcrypto, transfers, clipboards, notifying, windowing, named);
 })()`;
 
 /**
@@ -1278,6 +1280,7 @@ export class ScriptEngine {
       this._inPage = false;
       this._busy += performance.now() - this._taskFrom;
       this._options.left?.();
+      this._drainLinked();
     }
   }
 
@@ -1314,12 +1317,69 @@ export class ScriptEngine {
     this.call('__linkFrame', [frameId, crossOrigin]);
     into(frame, this._global);
     frame.call('__linkParent', [frameId, crossOrigin]);
+    this._reached.add(frame);
+    frame._reached.add(this);
+  }
+
+  /** The realms this one's page can reach. A context runs its microtasks
+   *  only as the host enters it, so a promise of one that another realm's
+   *  code resolved waits for that one's next task, which may never come:
+   *  `await new Promise((go) => (popup.onload = go))` has nothing else to
+   *  wake it. Each task's end runs theirs. */
+  private readonly _reached = new Set<ScriptEngine>();
+  /** Whether one realm's task is running those of others. */
+  private static _drainingLinked = false;
+
+  private _drainLinked(): void {
+    if (!this._reached.size || ScriptEngine._drainingLinked) return;
+    ScriptEngine._drainingLinked = true;
+    try {
+      for (const other of this._reached) {
+        if (other._disposed) this._reached.delete(other);
+        else if (!other._depth && !other._held) other.call('__drain', null);
+      }
+    } finally {
+      ScriptEngine._drainingLinked = false;
+    }
   }
 
   /** A frame's realm is gone, or has gone on to another document: the
    *  page's window for it stands for nothing of it any more. */
   unlink(frameId: number): void {
     this.call('__unlinkFrame', [frameId]);
+  }
+
+  /** Reach another window's realm of this one's group (`./popups.ts`):
+   *  handed its global, as a frame's parent is, under its window's number. */
+  linkWindow(id: number, other: ScriptEngine): void {
+    if (this._broken || this._disposed || other._disposed) return;
+    (this._context as Record<string, unknown>).__handed = other._global;
+    this.call('__linkWindow', [id]);
+  }
+
+  /** A script of this realm reached into another's window, and from now on
+   *  either may hold what the other's task resolves (`_drainLinked`). Noted
+   *  as it happens and not as they are linked: a page with many windows that
+   *  it never touches would otherwise run them all at every task. */
+  reached(other: ScriptEngine): void {
+    this._reached.add(other);
+    other._reached.add(this);
+  }
+
+  /** That window's document has gone, and it may be for good. */
+  unlinkWindow(id: number, discarded: boolean): void {
+    this.call('__unlinkWindow', [id, discarded]);
+  }
+
+  /** This realm's document came after `was`, the `about:blank` its window
+   *  opened with, of its origin: what a page put on that window is this
+   *  window's. */
+  reuseWindow(was: ScriptEngine): void {
+    if (this._broken || this._disposed || was._disposed) return;
+    (this._context as Record<string, unknown>).__handed = was._global;
+    this.call('__reuseWindow', null);
+    // and whoever reached that window holds what this one's task resolves
+    for (const other of was._reached) this.reached(other);
   }
 
   /** A promise of the page's rejected and nothing caught it: told in the
