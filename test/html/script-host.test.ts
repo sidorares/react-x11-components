@@ -244,6 +244,7 @@ metric(
     assert.deepStrictEqual(doc.told(), [
       'mousemove:b',
       'mousedown:b',
+      'selectstart:b',
       'mouseup:b',
       'click:b',
     ]);
