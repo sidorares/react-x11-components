@@ -2,7 +2,8 @@
 //
 // A form control in a document is **not drawn here**. It is a real core
 // widget — `<button>`, `<select>`, `<checkbox>`, `<radio>`, `<textinput>`,
-// `<textarea>` — mounted beside the element at the rectangle layout gave it.
+// `<textarea>`, a `<Slider>` — mounted beside the element at the rectangle
+// layout gave it.
 //
 // That is the same escape hatch `<Flow>` opened for a node whose body is a
 // form, and it exists for the same reason: a drawn control is a picture of a
@@ -23,13 +24,18 @@ import type { Element } from 'domhandler';
 
 import { attr, blockedByModal, tagOf } from './dom.js';
 import {
+  controlValue,
   optionElements,
   optionLabel,
   optionValue,
+  rangeLine,
   selectedOptions,
+  typedText,
 } from './form.js';
+import type { RangeLine } from './form.js';
 import { fadeColor } from './css/color.js';
 import { inkColor } from './css/values.js';
+import { verticalMode } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
 import { invert, mapRect } from './css/transform.js';
 import { heldBack, heldShift, placedMatrix } from './layout/block.js';
@@ -99,12 +105,14 @@ export interface ControlRect {
    * as the page around it is. Missing is the palette's.
    */
   colorScheme?: 'light' | 'dark';
+  /** A range's: what its widget is handed (`rangeLook`). */
+  range?: RangeLook;
   /**
    * Set on a text field or a `<select>` whose own box the author styled —
    * gave it a border or a background (`styledField`). The document draws
    * that box, and the widget goes bare inside its content box, here, with
    * no frame or fill of its own and its text in the element's colour and
-   * font.
+   * font. And on every range, whose box a widget never draws.
    */
   bare?: BareField;
   /**
@@ -194,6 +202,55 @@ export interface BareField {
   chevron?: boolean;
 }
 
+/**
+ * An `<input type=range>`: what the widget shows of it, which is what a
+ * script's change to it has to move (`key`), and how it runs. Its value is
+ * `FormState`'s, as a field's is.
+ */
+export interface RangeLook {
+  line: RangeLine;
+  /** Its track runs down the page: a vertical writing mode's. */
+  vertical: boolean;
+  /** Its value grows up the page, or to the left: against the way a
+   *  horizontal line reads, and a vertical one where its inline axis runs
+   *  up. */
+  flipped: boolean;
+  /** The left arrow raises it: Chrome's, on a line that runs right to left
+   *  and in `sideways-lr`, however its value runs. */
+  leftRaises: boolean;
+  /**
+   * What its pseudo-elements draw, where the page has taken each from the
+   * widget (`rangePart`), as Chrome has it, which is no reading of Blink's
+   * sheet. The thumb is the page's where a rule for it says `appearance:
+   * none`, and stays the widget's where only the range does. The track is
+   * the page's where a rule reaches it, whatever the range's `appearance`,
+   * and at `appearance: none` it is the page's with or without one, and
+   * draws nothing without.
+   */
+  thumb?: RangePart;
+  track?: RangePart;
+  /** All of this as a string, for what is reported to compare, with the
+   *  value it holds, which a script may change with no render. */
+  key: string;
+}
+
+/** A part of a range the page draws, as core's slider's slots take it, in
+ *  logical pixels. A length it does not say is its content's, so a thumb
+ *  with none is not there, and a track with none is as thick as its thumb. */
+export interface RangePart {
+  width?: number;
+  height?: number;
+  /** How far down the track it stands, where it says: the `margin-top` a
+   *  page gives a thumb taller than its track, to centre it. */
+  marginTop?: number;
+  backgroundColor?: string;
+  borderWidth?: number;
+  borderColor?: string;
+  borderRadius?: number;
+  boxShadow?: string;
+  opacity?: number;
+}
+
 /** The rectangles every control in a laid-out document landed on. `scale`
  *  is the document's device pixels to a CSS one, `placeholderOf` a text
  *  field's `::placeholder` style (`Cascade.placeholderStyle`), and
@@ -212,6 +269,7 @@ export function controlRectsOf(
   covered: Map<Element, CoverAnswer> | null = null,
   /** What a field's line is measured in (`BareField.lineHeight`). */
   fonts: FontsLike | null = null,
+  sliderOf?: SliderStyles,
 ): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
@@ -286,12 +344,26 @@ export function controlRectsOf(
       covered?.set(box.el, { shows, left });
       if (left) rect.clip = left;
     }
-    if (styledField(box.replaced, box.style)) {
+    // a range is always in its content box, the document drawing the rest
+    // of it (`styledField`)
+    if (box.replaced === 'range') rect.range = rangeLook(box, scale, sliderOf);
+    if (rect.range || styledField(box.replaced, box.style)) {
+      const content = turn
+        ? mapRect(
+            turn,
+            box.contentX,
+            box.contentY,
+            box.contentWidth,
+            box.contentHeight,
+          )
+        : {
+            x: box.contentX,
+            y: box.contentY,
+            width: box.contentWidth,
+            height: box.contentHeight,
+          };
       rect.bare = {
-        x: box.contentX,
-        y: box.contentY,
-        width: box.contentWidth,
-        height: box.contentHeight,
+        ...content,
         color: box.style.color,
         ...(box.style.textFillColor !== null && {
           fill: inkColor(box.style.textFillColor, box.style.color),
@@ -341,6 +413,80 @@ export function heldAtRest<R extends Rect & { clip?: Rect; held?: true }>(
     ...shiftedBack(rect, by),
     held: true,
     ...(rect.clip && { clip: shiftedBack(rect.clip, by) }),
+  };
+}
+
+/** What a range's widget is told of it. */
+function rangeLook(
+  box: Box,
+  scale: number,
+  sliderOf?: SliderStyles,
+): RangeLook {
+  const el = box.el!;
+  const { style } = box;
+  const vertical = verticalMode(style.writingMode);
+  const upward = style.writingMode === 'sideways-lr';
+  const flipped = (style.direction === 'rtl') !== upward;
+  const thumb = sliderOf?.(el, style, 'slider-thumb');
+  const track = sliderOf?.(el, style, 'slider-track');
+  const look = {
+    line: rangeLine(el),
+    vertical,
+    flipped,
+    leftRaises: vertical ? upward : flipped,
+    ...(thumb?.appearance === 'none' && { thumb: rangePart(thumb, scale) }),
+    ...(track
+      ? { track: rangePart(track, scale) }
+      : style.appearance === 'none' && { track: {} }),
+  };
+  return {
+    ...look,
+    key: JSON.stringify([look, controlValue(el, typedText)]),
+  };
+}
+
+/** A range's thumb's or track's style (`Cascade.sliderStyle`). */
+type SliderStyles = (
+  el: Element,
+  style: ComputedStyle,
+  part: 'slider-thumb' | 'slider-track',
+) => ComputedStyle | null;
+
+/** What a range's thumb or track draws, as its rules leave it: a page sets
+ *  each in a flat colour and a radius, nearly always. A gradient or an image
+ *  on one is not drawn. */
+function rangePart(style: ComputedStyle, scale: number): RangePart {
+  if (style.display === 'none' || style.visibility !== 'visible') {
+    return { width: 0, height: 0 };
+  }
+  const px = (length: ComputedStyle['width']): number | undefined =>
+    typeof length === 'number' ? length / scale : undefined;
+  const [radius] = style.borderRadius;
+  const width = px(style.width);
+  const height = px(style.height);
+  // a share of the box, the round thumb's `50%`, which a slot has no word for
+  const round = typeof radius === 'object' && radius.pct >= 50;
+  const shadow = style.boxShadow?.find((s) => !s.inset);
+  return {
+    ...(width !== undefined && { width }),
+    ...(height !== undefined && { height }),
+    ...(style.marginTop !== 0 && { marginTop: px(style.marginTop) }),
+    ...(style.backgroundColor !== null && {
+      backgroundColor: inkColor(style.backgroundColor, style.color),
+    }),
+    ...(style.borderTopStyle !== 'none' && {
+      borderWidth: style.borderTopWidth / scale,
+      borderColor: inkColor(style.borderTopColor, style.color),
+    }),
+    ...(round
+      ? { borderRadius: Math.min(width ?? 0, height ?? 0) / 2 }
+      : typeof radius === 'number' && { borderRadius: radius / scale }),
+    ...(shadow && {
+      boxShadow: `${shadow.x / scale}px ${shadow.y / scale}px ${
+        shadow.blur / scale
+      }px ${shadow.spread / scale}px ${inkColor(shadow.color, style.color)}`,
+    }),
+    ...(style.opacity < 1 && { opacity: style.opacity }),
   };
 }
 
@@ -596,6 +742,11 @@ export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
 /** How wide an `<input type=file>` is, in the width of a digit. */
 const FILE_WIDTH_CHARS = 34;
 
+/** How long and how thick an `<input type=range>` is: Blink's, which Safari
+ *  shares but for a pixel of thickness. */
+const RANGE_LENGTH = 129;
+const RANGE_THICKNESS = 16;
+
 /**
  * The size a control's box takes in the flow.
  *
@@ -611,6 +762,9 @@ export function measureControl(
   style: ComputedStyle,
   fonts: FontsLike | null,
   look: ControlChrome,
+  /** The document's device pixels to a CSS one. */
+  scale = 1,
+  sliderOf?: SliderStyles,
 ): { width: number; height: number } {
   const em = style.fontSize;
   const ch = charWidth(style, fonts);
@@ -634,6 +788,16 @@ export function measureControl(
           Math.round(em * 3),
         ),
         height: lineHeight + chrome,
+      };
+    }
+    // Blink's, in CSS pixels whatever its font, and the same way round
+    // whichever way it runs: `Builder._replaced` turns one that runs down
+    // the page
+    case 'range': {
+      const unit = scale * style.effectiveZoom;
+      return {
+        width: RANGE_LENGTH * unit,
+        height: ownThickness(el, style, sliderOf) ?? RANGE_THICKNESS * unit,
       };
     }
     // thirty-four of the digit zero, as Blink's is, whatever it holds
@@ -698,6 +862,36 @@ export function measureControl(
     default:
       return { width: 0, height: 0 };
   }
+}
+
+/**
+ * How thick the page's rules make a range, in device pixels, or null where
+ * they leave it the widget's. Blink's box holds its track and the track its
+ * thumb, so it is as thick as the track says, and else, at `appearance: none`,
+ * as the thumb and its margins are where a rule draws the thumb. These are
+ * Chromium's answers, and at `appearance: auto` it reads only the track: a
+ * thumb's size comes to nothing there but for its margins, which are left out.
+ */
+function ownThickness(
+  el: Element,
+  style: ComputedStyle,
+  sliderOf?: SliderStyles,
+): number | null {
+  if (!sliderOf) return null;
+  const down = verticalMode(style.writingMode);
+  const across = down ? 'width' : 'height';
+  const track = sliderOf(el, style, 'slider-track')?.[across];
+  if (typeof track === 'number') return track;
+  if (style.appearance !== 'none') return null;
+  const thumb = sliderOf(el, style, 'slider-thumb');
+  if (thumb?.appearance !== 'none') return null;
+  const sides = down
+    ? [thumb.width, thumb.marginLeft, thumb.marginRight]
+    : [thumb.height, thumb.marginTop, thumb.marginBottom];
+  return sides.reduce<number>(
+    (sum, length) => sum + (typeof length === 'number' ? length : 0),
+    0,
+  );
 }
 
 /**

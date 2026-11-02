@@ -8,10 +8,17 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import { act, cleanup, renderX11 } from 'react-x11/test';
 
-import { Html, HtmlViewNode } from '../../src/html/index.js';
+import {
+  Html,
+  HtmlViewNode,
+  preloadHtmlScripts,
+} from '../../src/html/index.js';
 import { FONTS } from './harness.js';
 
 afterEach(cleanup);
+// the engine is a chunk of its own, and a page's listeners are there only once
+// it is: read on a slow runner after the wait below, the first test heard nothing
+await preloadHtmlScripts();
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

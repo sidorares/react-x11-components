@@ -15,14 +15,9 @@
 //   server would send it; Ahem is also registered under its family name,
 //   with the system faces the palette names, for a test that names it
 //   without the sheet — the way an application brings its fonts.
-// - **XHTML is read as HTML.** Most of the CSS 2.1 suite is `.xht`, which a
-//   browser parses as XML. Two XML constructs change what an HTML parser
-//   sees in a style sheet: the CDATA markers round one, which are removed,
-//   and the entities outside them, which XML decodes and HTML reads raw —
-//   a selector written `div &gt; span` is a `>` to a browser — so they are
-//   decoded first. A third is in the markup: XML closes a `<div/>`, which
-//   HTML's parser opens, so each element but a void one written that way
-//   is written out closed.
+// - **A document is read as what WPT's server would serve it as.** `.xht`,
+//   `.xhtml`, `.svg` and `.xml` are XML, so <Html> is handed the type and
+//   reads them by XML's rules, with nothing rewritten first.
 // - **The palette is a browser's**: black text on white, links #0000ee, a
 //   16px serif. The rest of the user-agent sheet is <Html>'s own — themed
 //   rules for `blockquote` and `pre` included — and costs what it costs.
@@ -109,12 +104,13 @@ export interface Outcome {
   error?: string;
 }
 
-/** A test's references: `<link rel=match|mismatch href>`. */
+/** A test's references: `<link rel=match|mismatch href>`, under a prefix
+ *  in a drawing, `<html:link>`. */
 function referencesOf(
   source: string,
 ): Array<{ kind: 'match' | 'mismatch'; href: string }> {
   const out: Array<{ kind: 'match' | 'mismatch'; href: string }> = [];
-  for (const tag of source.match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of source.match(/<(?:[\w.-]+:)?link\b[^>]*>/gi) ?? []) {
     const rel = /\brel\s*=\s*["']?(match|mismatch)\b/i.exec(tag);
     const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag);
     if (rel && href) {
@@ -135,7 +131,7 @@ function fuzzyOf(
 ): { maxDifference: number; totalPixels: number } {
   let allowed = { maxDifference: 0, totalPixels: 0 };
   for (const tag of source.match(
-    /<meta\b[^>]*name\s*=\s*["']fuzzy["'][^>]*>/gi,
+    /<(?:[\w.-]+:)?meta\b[^>]*name\s*=\s*["']fuzzy["'][^>]*>/gi,
   ) ?? []) {
     const content = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
     if (!content) continue;
@@ -263,7 +259,7 @@ function servedAsCss(file: string): boolean {
 function pageOf(path: string): { text: string; charset: string } {
   if (path === BLANK) return { text: '', charset: 'utf-8' };
   const bytes = readFileSync(path);
-  const xml = /\.xht(ml)?$/i.test(path);
+  const xml = servedType(path) !== 'text/html';
   const head = bytes.subarray(0, 1024).toString('latin1');
   const bom =
     bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf
@@ -288,80 +284,33 @@ function pageOf(path: string): { text: string; charset: string } {
   return { text: bytes.toString('utf8'), charset: 'utf-8' };
 }
 
-/** The source <Html> is handed: XHTML's style sheets as XML reads them,
- *  entities decoded outside CDATA, the CDATA markers dropped, and an
- *  element XML closes with `/>` closed. */
-function sourceOf(path: string, text = pageOf(path).text): string {
-  if (!/\.xht(ml)?$/i.test(path)) return text;
-  return text
-    .replace(
-      /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
-      (_, open: string, body: string, close: string) =>
-        open +
-        body
-          .split(/(<!\[CDATA\[[\s\S]*?\]\]>)/)
-          .map((part, i) => (i % 2 ? part : decodeXml(part)))
-          .join('') +
-        close,
-    )
-    .replace(/<!\[CDATA\[/g, '')
-    .replace(/\]\]>/g, '')
-    .replace(SELF_CLOSING, (all, name: string, attributes: string) =>
-      VOID.has(name.toLowerCase()) ? all : `<${name}${attributes}></${name}>`,
+/** The type WPT's server sends a document with: as its `.headers` says, else
+ *  as its extension does (`tools/serve`'s table, the ones a document has). */
+function servedType(file: string): string {
+  const headers = `${file}.headers`;
+  if (existsSync(headers)) {
+    const type = /^content-type:\s*([^;\s]+)/im.exec(
+      readFileSync(headers, 'utf8'),
     );
+    if (type) return type[1].toLowerCase();
+  }
+  return DOCUMENT_TYPES[extname(file).toLowerCase()] ?? 'text/html';
 }
 
-/** A start tag closed as XML closes one, `<td class="a"/>`. */
-const SELF_CLOSING =
-  /<([A-Za-z][\w:.-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*\/>/g;
-
-/** HTML's void elements, which a `/>` closes in either syntax. */
-const VOID = new Set([
-  'area',
-  'base',
-  'br',
-  'col',
-  'embed',
-  'hr',
-  'img',
-  'input',
-  'link',
-  'meta',
-  'param',
-  'source',
-  'track',
-  'wbr',
-]);
-
-/** XML's five entities, and character references. */
-function decodeXml(text: string): string {
-  return text.replace(
-    /&(?:(lt|gt|amp|quot|apos)|#(\d+)|#x([0-9a-f]+));/gi,
-    (
-      all,
-      name: string | undefined,
-      dec: string | undefined,
-      hex: string | undefined,
-    ) => {
-      if (name) return XML_ENTITIES[name.toLowerCase()] ?? all;
-      const code = dec ? Number(dec) : parseInt(hex!, 16);
-      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : all;
-    },
-  );
-}
-
-const XML_ENTITIES: Record<string, string> = {
-  lt: '<',
-  gt: '>',
-  amp: '&',
-  quot: '"',
-  apos: "'",
+const DOCUMENT_TYPES: Record<string, string> = {
+  '.xht': 'application/xhtml+xml',
+  '.xhtml': 'application/xhtml+xml',
+  '.svg': 'image/svg+xml',
+  '.xml': 'application/xml',
 };
 
 /** Whether a page's rendering depends on code: a script element, or an
  *  event handler attribute that would have run one. */
 function scripted(source: string): boolean {
-  return /<script\b/i.test(source) || /<[a-z][^>]*\son[a-z]+\s*=/i.test(source);
+  return (
+    /<(?:[\w.-]+:)?script\b/i.test(source) ||
+    /<[a-z][^>]*\son[a-z]+\s*=/i.test(source)
+  );
 }
 
 let serial = 0;
@@ -384,7 +333,8 @@ function tree(path: string): React.ReactElement {
       },
       h(Html, {
         key: `${serial++}`,
-        source: sourceOf(path, page.text),
+        source: page.text,
+        contentType: servedType(path),
         charset: page.charset,
         partial: false,
         selectable: false,
@@ -641,7 +591,7 @@ async function against(
   if (refPath !== BLANK && !existsSync(refPath)) {
     return { test, ref, kind, result: 'error', error: 'reference missing' };
   }
-  const refSource = sourceOf(refPath);
+  const refSource = pageOf(refPath).text;
   if (scripted(source) || scripted(refSource)) {
     return { test, ref, kind, result: 'script' };
   }

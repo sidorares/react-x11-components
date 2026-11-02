@@ -244,17 +244,29 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element) => {
+    load: async (src, element, cors) => {
       const answered = await workerResource(
         src,
         'script',
         element?.attribs.crossorigin !== undefined,
       );
-      if (answered === undefined) return latest.current.load(src, element);
+      if (answered === undefined) {
+        return latest.current.load(src, element, cors);
+      }
       if (answered?.kind !== 'script') return null;
-      if ('text' in answered) return answered.text;
+      if ('text' in answered) {
+        return {
+          text: answered.text,
+          url: answered.url,
+          headers: answered.headers,
+        };
+      }
       await readyFor(answered.charset);
-      return decodeText(answered.bytes, answered.charset ?? null);
+      return {
+        text: decodeText(answered.bytes, answered.charset ?? null),
+        url: answered.url,
+        headers: answered.headers,
+      };
     },
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,

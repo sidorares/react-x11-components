@@ -220,6 +220,9 @@ video { object-fit: contain; }
 /* an inline drawing is cut to its box unless the page shows what overflows
    it (SVG 2, 6.14), as every engine's sheet has it */
 svg:not(:root) { overflow: hidden; }
+/* and one that is its document fills the window, which its attributes say
+   otherwise of, as they do of any drawing */
+svg:root { width: 100%; height: 100%; }
 figure { margin: 1em 40px; }
 
 table { display: table; border-collapse: separate; border-spacing: 2px; box-sizing: border-box; }

@@ -86,6 +86,10 @@ import {
   shadowRootOf,
   tagOf,
   treeGeneration,
+  isRootElement,
+  isXmlDocument,
+  isXmlType,
+  scriptUrlOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
@@ -114,7 +118,6 @@ import {
   TARGET_TEXT,
   VIEWPORT_HEIGHT,
   VIEWPORT_WIDTH,
-  isRootElement,
   readsFace,
   highlightKey,
 } from './css/cascade.js';
@@ -540,6 +543,8 @@ export interface HtmlViewProps {
   source: string;
   /** A tree to draw in place of parsing `source` (`HtmlSource.adopt`). */
   document?: Document;
+  /** What `source` was served as, where that is not HTML (`HtmlProps`). */
+  contentType?: string;
   /** False while more source may still arrive. */
   complete?: boolean;
   /** Author stylesheets applied after the document's own. */
@@ -794,6 +799,7 @@ export function registerHtmlView(): void {
     // assertion honest if core's vocabulary grows underneath us.
     semanticNames: [
       'source',
+      'contentType',
       'look',
       'stylesheet',
       'charset',
@@ -2186,9 +2192,12 @@ export class HtmlViewNode extends Node {
     // a parse that waits for its scripts, where a host runs them: turned
     // off while it waits, it reads on to the end of what it has
     const released = this._source.setYields(!!props.onParserBlocked);
+    const complete = props.complete !== false;
     const changed = props.document
       ? this._source.adopt(props.document)
-      : this._source.setSource(props.source ?? '', props.complete !== false);
+      : props.contentType && isXmlType(props.contentType)
+        ? this._source.setXml(props.source ?? '', props.contentType, complete)
+        : this._source.setSource(props.source ?? '', complete);
     if (changed) {
       // A stream's chunk restyles and builds what it reaches, as a change
       // an application tells of does (`touchDocument`): the nodes the
@@ -2400,7 +2409,7 @@ export class HtmlViewNode extends Node {
         // its text: it is handed over once, whole, after its end tag
         if (this._source.isOpen(el)) continue;
         this._scriptsSeen.add(el);
-        const src = attr(el, 'src') ?? null;
+        const src = scriptUrlOf(el);
         props.onScript({
           type: (attr(el, 'type') ?? 'text/javascript').toLowerCase(),
           src: src ? this._urls.resolve(src) : src,
@@ -3200,6 +3209,7 @@ export class HtmlViewNode extends Node {
       kept.look === look &&
       kept.scale === this._scale &&
       kept.fonts === fonts &&
+      kept.cascade.xml === isXmlDocument(this._source.document) &&
       this._sameSheets(kept, read, extras) &&
       this._sameShadows(kept, shadowRead)
     ) {
@@ -3323,6 +3333,7 @@ export class HtmlViewNode extends Node {
         this._target,
         shadows,
         kept?.cascade ?? null,
+        isXmlDocument(this._source.document),
       );
       this._cascade.laidOutSize = this._laidOutSize;
       this._cascade.laidOutScroll = this._laidOutScroll;
@@ -4601,7 +4612,15 @@ export class HtmlViewNode extends Node {
             return fonts ? faceExtentOf(fonts, style) : undefined;
           },
           controlSize: (el, kind, style) =>
-            measureControl(el, kind, style, this._fonts(), look),
+            measureControl(
+              el,
+              kind,
+              style,
+              this._fonts(),
+              look,
+              this._scale,
+              this._sliderOf,
+            ),
         });
         const boxes = () => buildBoxes(this._source.document, options());
         // Where every change the build is for said which elements its boxes
@@ -5398,6 +5417,14 @@ export class HtmlViewNode extends Node {
     return shown && size ? atDensity(size, shown.density) : null;
   }
 
+  /** What a range's thumb and track are styled as (`Cascade.sliderStyle`). */
+  private readonly _sliderOf = (
+    el: Element,
+    style: ComputedStyle,
+    part: 'slider-thumb' | 'slider-track',
+  ): ComputedStyle | null =>
+    this._cascade?.sliderStyle(el, style, part) ?? null;
+
   /** `near`: only the controls within it are asked what is over them,
    *  for a scroll, which moves boxes over the viewport alone. */
   private _reportControls(near: Rect | null = null): void {
@@ -5429,6 +5456,7 @@ export class HtmlViewNode extends Node {
       near,
       this._covered,
       this._fonts(),
+      this._sliderOf,
     ).map((r) =>
       s === 1
         ? r
@@ -6218,6 +6246,7 @@ export class HtmlViewNode extends Node {
     }
     if (
       next.source !== prev.source ||
+      next.contentType !== prev.contentType ||
       next.complete !== prev.complete ||
       !next.onParserBlocked !== !prev.onParserBlocked
     ) {
@@ -8344,7 +8373,7 @@ export class HtmlViewNode extends Node {
     const root = tree.root;
     const html = root.el
       ? root
-      : root.children.find((c) => c.el && tagOf(c.el) === 'html');
+      : root.children.find((c) => c.el && isRootElement(c.el));
     return html?.el ?? null;
   }
 
@@ -8550,7 +8579,7 @@ export class HtmlViewNode extends Node {
           found.follows ? found.reach : null,
         )
       ) {
-        if (cascade.placeholderFollows('hoverSensitive')) {
+        if (cascade.widgetPartsFollow('hoverSensitive')) {
           this._reportControls();
         }
         // an animation the move started, or let go of, wants its frames
@@ -8630,8 +8659,8 @@ export class HtmlViewNode extends Node {
         )
       ) {
         // what a field's placeholder is drawn in is its widget's, which no
-        // restyle of a box tells (`Cascade.placeholderFollows`)
-        if (cascade.placeholderFollows('focusSensitive')) {
+        // restyle of a box tells (`Cascade.widgetPartsFollow`)
+        if (cascade.widgetPartsFollow('focusSensitive')) {
           this._reportControls();
         }
         this._scheduleFrame();
@@ -9841,7 +9870,7 @@ export class HtmlViewNode extends Node {
     // the root element, which the pane scrolls for: a fragment has none
     const root = this._tree
       ? this.document.children.find(
-          (c): c is Element => isElement(c) && tagOf(c) === 'html',
+          (c): c is Element => isElement(c) && isRootElement(c),
         )
       : undefined;
     if (!viewport || !root) return false;
@@ -12858,7 +12887,7 @@ export class HtmlViewNode extends Node {
       if (!box) continue;
       SHAPE_STYLES.delete(box);
       this._drawnOtherwise(box, inks);
-      if (drawingOverflows(box.style)) reaching.push(box);
+      if (drawingOverflows(box)) reaching.push(box);
     }
     if (this._stale !== Stale.Nothing) return;
     for (const box of reaching) tree.shapeStyler?.(box);
@@ -12914,7 +12943,7 @@ export class HtmlViewNode extends Node {
       if (shapes?.key !== was?.key) moved.push([box, shapes]);
     }
     const inks: Rect[] = [];
-    const reaches = moved.some(([box]) => drawingOverflows(box.style));
+    const reaches = moved.some(([box]) => drawingOverflows(box));
     if (reaches) {
       computePaintBounds(tree.root, tree.movedInline);
       for (const [box] of moved) {
@@ -13265,7 +13294,7 @@ export class HtmlViewNode extends Node {
     return (
       (root?.el
         ? root
-        : root?.children.find((c) => c.el && tagOf(c.el) === 'html')) ?? null
+        : root?.children.find((c) => c.el && isRootElement(c.el))) ?? null
     );
   }
 
@@ -16548,6 +16577,7 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.placeholderColor !== q.placeholderColor ||
       p.atViewport !== q.atViewport ||
       p.held !== q.held ||
+      p.range?.key !== q.range?.key ||
       !sameClip(p.clip, q.clip) ||
       !sameBare(p.bare, q.bare)
     ) {
@@ -17482,7 +17512,8 @@ function deepestAt(
     // what is in a stacking context is ordered in its layers, the root
     // element's too (`hoistNegative`), over its own box
     const ground =
-      stacks || (child.parent === tree.root && child.el?.name === 'html');
+      stacks ||
+      (child.parent === tree.root && !!child.el && isRootElement(child.el));
     if (ground) stack = context;
     if (clipped.length !== 0 && child.outOfFlow) {
       const containing = containingBlockOf(child);
@@ -18913,6 +18944,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'file',
   'checkbox',
   'radio',
+  'range',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

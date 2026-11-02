@@ -54,6 +54,7 @@ import {
   metaEncoding,
   readyFor,
   sniffEncoding,
+  sniffXmlEncoding,
 } from './encoding.js';
 import type { CookieJar } from './cookies.js';
 import type { HtmlServiceWorkers } from './service-workers.js';
@@ -68,7 +69,11 @@ import {
   varyMatches,
 } from './http-cache.js';
 import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
-import type { ResourceRequest, ResourceResult } from './resources.js';
+import type {
+  ResourceCors,
+  ResourceRequest,
+  ResourceResult,
+} from './resources.js';
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
 import type { HtmlWebRTC } from './rtc.js';
 import { offeredCapabilities } from './rtc-codecs.js';
@@ -83,6 +88,7 @@ import type {
 } from './socket.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { nodeModule } from './scripts/platform.js';
+import { isXmlType } from './xml-prolog.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
@@ -345,6 +351,8 @@ export interface Fetched {
   /** The `charset` parameter, when the server named one. */
   charset: string | null;
   bytes: Uint8Array;
+  /** Its response's headers, where it came over HTTP. */
+  headers?: [string, string][];
 }
 
 /**
@@ -476,7 +484,14 @@ function fetchedOf(url: string, response: HtmlCachedResponse): Fetched {
   const { type, charset } = contentType(
     headerOf(response.headers, 'content-type'),
   );
-  return { url, status: response.status, type, charset, bytes: response.bytes };
+  return {
+    url,
+    status: response.status,
+    type,
+    charset,
+    bytes: response.bytes,
+    headers: response.headers,
+  };
 }
 
 interface Queued {
@@ -729,12 +744,18 @@ export class HtmlNetwork {
     url: string,
     init: Omit<Parameters<HtmlTransport>[1], 'redirect'>,
     cookies: CookieRequest | null,
+    /** Whether a redirect is answered as it is, for whoever takes the next
+     *  hop to take it (`FetchRequest.redirect`). */
+    manual = false,
     hops: HtmlDocumentHop[] | null = null,
   ): Promise<ResponseLike> {
     const jar = cookies?.credentials === 'omit' ? null : this._cookies;
     const carrying = jar && cookies ? { jar, cookies } : null;
     if (!carrying && !hops) {
-      return this._send(url, { ...init, redirect: 'follow' });
+      return this._send(url, {
+        ...init,
+        redirect: manual ? 'manual' : 'follow',
+      });
     }
     let at = url;
     let method = init.method;
@@ -777,7 +798,7 @@ export class HtmlNetwork {
         sending.jar.store(at, setCookies(response.headers), sending.context);
       }
       const location = response.headers.get('location');
-      if (!REDIRECTS.has(response.status) || location === null) {
+      if (manual || !REDIRECTS.has(response.status) || location === null) {
         return answered(
           response,
           response.url || at,
@@ -1039,8 +1060,9 @@ export class HtmlNetwork {
     kind: ResourceKind,
     page: string,
     signal?: AbortSignalLike,
+    cors?: ResourceCors,
   ): Promise<Fetched | null> {
-    return this.load(url, kind, page, signal).then((loaded) =>
+    return this.load(url, kind, page, signal, cors).then((loaded) =>
       'fetched' in loaded ? loaded.fetched : null,
     );
   }
@@ -1051,21 +1073,26 @@ export class HtmlNetwork {
     kind: ResourceKind,
     page: string,
     signal?: AbortSignalLike,
+    cors?: ResourceCors,
   ): Promise<Loaded> {
     const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
-    if (allowed !== url) return this.load(allowed, kind, page, signal);
+    if (allowed !== url) return this.load(allowed, kind, page, signal, cors);
     const scheme = schemeOf(url);
     if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
       return refused;
     }
     if (!['http', 'https', 'data', 'file'].includes(scheme)) return refused;
     const http = scheme === 'http' || scheme === 'https';
-    const key = this._cacheKey(url, page);
+    // what a CORS request is answered is its own: another origin's answer to
+    // a request with an `Origin` is no answer to one with none
+    const key =
+      this._cacheKey(url, page) +
+      (cors ? ` cors ${cors.origin} ${cors.mode}` : '');
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
-    const headers = http ? this._headers(kind, url, page) : null;
+    const headers = http ? this._headers(kind, url, page, cors) : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
     if (kept && this._answers(kept, headers)) {
@@ -1104,6 +1131,7 @@ export class HtmlNetwork {
               signal,
               kept?.response ?? null,
               id,
+              cors,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1185,6 +1213,7 @@ export class HtmlNetwork {
     kind: ResourceKind,
     url: string,
     page: string,
+    cors?: ResourceCors,
   ): Record<string, string> {
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
@@ -1193,6 +1222,7 @@ export class HtmlNetwork {
     };
     const referrer = referrerFor(page, url);
     if (referrer) headers.referer = referrer;
+    if (cors) headers.origin = cors.origin;
     return headers;
   }
 
@@ -1238,6 +1268,7 @@ export class HtmlNetwork {
     candidate: HtmlCachedResponse | null,
     /** Its observers' id for it (`observe`), 0 for none. */
     id = 0,
+    cors?: ResourceCors,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1256,6 +1287,7 @@ export class HtmlNetwork {
         limit: this._resourceLimit,
         page,
         id,
+        cors,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1452,6 +1484,7 @@ export class HtmlNetwork {
                 ? post.from
                 : null,
         },
+        false,
         redirects,
       );
     } catch (error) {
@@ -1570,6 +1603,8 @@ export class HtmlNetwork {
       /** The document it is made from, where that is not `page`: a
        *  frame's (`FetchRequest.client`). */
       client?: string;
+      /** A redirect answered as it is (`FetchRequest.redirect`). */
+      redirect?: 'follow' | 'error' | 'manual';
       /** An `Origin` of `null` (`FetchRequest.opaqueOrigin`). */
       opaqueOrigin?: boolean;
     },
@@ -1665,6 +1700,7 @@ export class HtmlNetwork {
             topLevel: false,
             initiator: null,
           },
+          request.redirect === 'manual',
         );
       });
     } catch (error) {
@@ -1726,9 +1762,13 @@ export class HtmlNetwork {
         );
       }
       const kind = request.kind;
-      return this.resource(request.url, kind, page, options.signal).then(
-        (fetched) => (fetched ? resourceResult(fetched, kind) : null),
-      );
+      return this.resource(
+        request.url,
+        kind,
+        page,
+        options.signal,
+        request.cors,
+      ).then((fetched) => (fetched ? resourceResult(fetched, kind) : null));
     };
   }
 
@@ -1782,7 +1822,9 @@ export class HtmlNetwork {
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const bytes = concat(chunks);
-    const charset = sniffEncoding(bytes, response.charset);
+    const charset = isXmlType(response.type)
+      ? sniffXmlEncoding(bytes, response.charset)
+      : sniffEncoding(bytes, response.charset);
     await readyFor(charset);
     return {
       url: response.url,
@@ -1861,6 +1903,7 @@ export class HtmlNetwork {
       limit: number;
       page: string;
       id: number;
+      cors?: ResourceCors;
     },
   ): Promise<Answer> {
     try {
@@ -1880,6 +1923,7 @@ export class HtmlNetwork {
       limit: number;
       page: string;
       id: number;
+      cors?: ResourceCors;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -1888,12 +1932,19 @@ export class HtmlNetwork {
       const requestTime = Date.now();
       this._sent(id);
       // a page's subresource carries its cookies, as a browser's `no-cors`
-      // request does (credentials mode `include`)
+      // request does (credentials mode `include`); one asked for by CORS, as
+      // a module is, only as far as it says
+      const { cors } = options;
       const response = await this._exchange(
         url,
         { method: 'GET', headers: options.headers, signal: stall.signal },
         {
-          credentials: 'include',
+          credentials:
+            !cors ||
+            cors.mode === 'use-credentials' ||
+            originOf(url) === cors.origin
+              ? 'include'
+              : 'omit',
           origin: originOf(options.page),
           site: options.page,
           topLevel: false,
@@ -1920,6 +1971,7 @@ export class HtmlNetwork {
           type,
           charset,
           bytes: concat(chunks),
+          headers: [...response.headers.entries()],
         },
         redirected: response.redirected,
         headers: [...response.headers.entries()],
@@ -2251,6 +2303,8 @@ export function resourceResult(
       kind: 'script',
       bytes: fetched.bytes,
       charset: fetched.charset ?? undefined,
+      url: fetched.url,
+      headers: fetched.headers,
     };
   }
   // a page or text where an image was asked for is a document, which an
@@ -2736,6 +2790,7 @@ const TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.htm': 'text/html',
   '.xhtml': 'application/xhtml+xml',
+  '.xht': 'application/xhtml+xml',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',

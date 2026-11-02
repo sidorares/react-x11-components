@@ -69,6 +69,7 @@ import {
   HtmlServiceWorkers,
   HtmlSessionHistory,
   fakeMediaDevices,
+  isXmlType,
   memoryClipboard,
   memoryNotifications,
   useHtmlHandle,
@@ -375,6 +376,8 @@ interface Loaded {
   source: string;
   baseUrl: string;
   charset: string;
+  /** What the server sent it as. */
+  contentType: string;
   headers?: [string, string][];
   redirects?: HtmlDocumentHop[];
 }
@@ -583,7 +586,12 @@ function Tab(props: {
         [
           {
             n: 0,
-            doc: { source: '', baseUrl: 'about:blank', charset: 'utf-8' },
+            doc: {
+              source: '',
+              baseUrl: 'about:blank',
+              charset: 'utf-8',
+              contentType: 'text/html',
+            },
             number: 0,
           },
         ]
@@ -611,6 +619,7 @@ function Tab(props: {
     const blank = {
       source: '',
       url,
+      type: 'text/html',
       charset: 'utf-8',
       headers: [],
       redirects: [],
@@ -640,6 +649,7 @@ function Tab(props: {
                 source: doc.source,
                 baseUrl: at,
                 charset: doc.charset,
+                contentType: doc.type,
                 headers: doc.headers,
                 redirects: doc.redirects,
               },
@@ -821,6 +831,7 @@ function Tab(props: {
       }),
       key: n,
       source: doc.source,
+      contentType: doc.contentType,
       charset: doc.charset,
       partial: false,
       baseUrl: doc.baseUrl,
@@ -1075,12 +1086,13 @@ async function perform(
   return '{}';
 }
 
-/** A test's references: `<link rel=match|mismatch href>`. */
+/** A test's references: `<link rel=match|mismatch href>`, under a prefix
+ *  in a drawing, `<html:link>`. */
 function referencesOf(
   source: string,
 ): Array<{ kind: 'match' | 'mismatch'; href: string }> {
   const out: Array<{ kind: 'match' | 'mismatch'; href: string }> = [];
-  for (const tag of source.match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of source.match(/<(?:[\w.-]+:)?link\b[^>]*>/gi) ?? []) {
     const rel = /\brel\s*=\s*["']?(match|mismatch)\b/i.exec(tag);
     const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag);
     if (rel && href) {
@@ -1102,7 +1114,7 @@ function fuzzyOf(source: string): {
   let allowed = { maxDifference: 0, totalPixels: 0 };
   // the name's quotes are optional, as an attribute's are
   for (const tag of source.match(
-    /<meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
+    /<(?:[\w.-]+:)?meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
   ) ?? []) {
     let spec = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
     if (!spec) continue;
@@ -1151,21 +1163,24 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
  * loaded (`test-wait.js`): two frames, then `TestRendered` at the root,
  * which a test that waits for its first rendering listens for. Appended as
  * a script that takes itself out as it runs, since the runner has no
- * other way into the page.
+ * other way into the page. In an XML document it has to be in the root, and
+ * in XHTML's namespace to be a script at all.
  */
-function withTestRendered(source: string): string {
+function withTestRendered(source: string, type: string): string {
   if (!/\bclass\s*=\s*["']?[^"'>]*\breftest-wait\b/i.test(source))
     return source;
   const script =
-    '<script>(function(){var s=document.currentScript;if(s)s.remove();' +
+    '(function(){var s=document.currentScript;if(s)s.remove();' +
     'function go(){var r=document.documentElement;' +
     'if(!/\\breftest-wait\\b/.test(r.className))return;' +
     'requestAnimationFrame(function(){requestAnimationFrame(function(){' +
     "r.dispatchEvent(new Event('TestRendered'));});});}" +
     "if(document.readyState==='complete')setTimeout(go,0);" +
     "else addEventListener('load',function(){setTimeout(go,0);},{once:true});" +
-    '})();</script>';
-  return source + script;
+    '})();';
+  if (!isXmlType(type)) return `${source}<script>${script}</script>`;
+  const end = source.lastIndexOf('</');
+  return `${source.slice(0, end)}<script xmlns="http://www.w3.org/1999/xhtml"><![CDATA[${script}]]></script>${source.slice(end)}`;
 }
 
 /** Whether the root still says `reftest-wait` or `test-wait`. */
@@ -1227,9 +1242,10 @@ async function render(
     h(Run, {
       key: `${serial++}`,
       first: {
-        source: withTestRendered(doc.source),
+        source: withTestRendered(doc.source, doc.type),
         baseUrl: doc.url,
         charset: doc.charset,
+        contentType: doc.type,
         headers: doc.headers,
         redirects: doc.redirects,
       },
@@ -1392,6 +1408,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
         source: doc.source,
         baseUrl: doc.url,
         charset: doc.charset,
+        contentType: doc.type,
         headers: doc.headers,
         redirects: doc.redirects,
       },
