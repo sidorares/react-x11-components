@@ -116,6 +116,14 @@ timed out on it and after, in the same nine seconds when they passed; why
 is not settled. Every other area is the same as or higher than its last
 figure below.
 
+`dialog-closedby-corner-cases.html` came back the other way in the
+fourteenth run, and that one is settled: from #1246 a focus owed answered
+`activeElement`, so the runner's "the document has the keyboard where nothing
+in it has the focus" no longer fired, and with nothing focused core sent the
+first Escape to the window. It hung nine runs in fifteen, more under load, and
+the 16 ms it looked like a race against was no part of it. A key is held in the
+document from the moment the focus is told now.
+
 By focus area, from the first run to the eleventh. Six areas have been
 measured again since, each by the PR that moved it, and their "now" is that
 PR's run, which the last column names.

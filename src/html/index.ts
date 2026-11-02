@@ -1376,6 +1376,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
 
   const children: ReactNode[] = [
     h(ELEMENT, { key: 'view', ...viewProps } as Record<string, unknown>),
+    // what keeps a key in the document while a focus a script asked for
+    // has nothing to take it, which only a page that hears keys needs
+    ...(onDomEvent ? [stops.keyHolder()] : []),
     // over the document and under its widgets: a video a control is drawn
     // over is no video a player is mounted for
     ...videos.render(),
@@ -1459,7 +1462,16 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         if (!view || !key || ev.ctrlKey || ev.metaKey || ev.altKey) return;
         const target = ev.target as DrawnNode;
         const on = stops.elementOf(target);
-        if (!on && target !== rootNode.current && target !== (view as unknown))
+        const held = stops.holds(target);
+        // and not where a focus is owed: what will take it may keep its
+        // arrows, as a field's widget does
+        if (held && on) return;
+        if (
+          !on &&
+          !held &&
+          target !== rootNode.current &&
+          target !== (view as unknown)
+        )
           return;
         const [axis, how, sign] = key;
         const back = ev.keysym === XK_SPACE && ev.shiftKey;
@@ -1815,9 +1827,10 @@ function documentInteraction(
       return took;
     },
     told: (el) => {
-      const forms = live.current?.forms;
-      forms?.focused(el, true);
-      forms?.owe(el);
+      const now = live.current;
+      now?.forms.focused(el, true);
+      now?.forms.owe(el);
+      now?.stops.hold();
     },
     settleFocus: () => {
       const now = live.current;
@@ -1918,8 +1931,9 @@ function useDocumentEvents(
     button: domButton(ev.button),
     ...modifiersOf(ev),
   });
-  /** What a key is typed at: a control's widget, a stop's element, or the
-   *  document's body where the document itself has the focus. */
+  /** What a key is typed at: a control's widget, a stop's element, the
+   *  element a focus is owed to (`stops.ts`), or the document's body where
+   *  the document itself has the focus. */
   const keyedAt = (target: DrawnNode): Element | null => {
     const node = view.current;
     if (!node) return null;

@@ -7314,6 +7314,180 @@ test('a field taken out before its widget was mounted has nothing to come for it
   assert.equal(doc.handle.activeElement, null);
 });
 
+/** What the page heard of the keys, at what, for the tests below. */
+const LISTEN_FOR_KEYS =
+  'function at(e) { return e.target.id || e.target.nodeName; }' +
+  'document.addEventListener("keydown", function (e) { say("down " + e.key + " at " + at(e)); });' +
+  'document.addEventListener("keyup", function (e) { say("up " + e.key + " at " + at(e)); });';
+
+/** `withWidgetHeld`, with a key typed while nothing is rendered: the key
+ *  reaches core through the server, a few turns later, as a real one does. */
+async function keyWithWidgetHeld(
+  doc: Hosted,
+  code: string,
+  keysym: number,
+): Promise<void> {
+  await act(() => doc.run(LISTEN_FOR_KEYS));
+  await act(async () => {
+    doc.run(code);
+    fireEvent.key(keysym);
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+}
+
+test('a key typed while a focus is owed reaches the page, at the element it was told has the focus', async () => {
+  // with no focused node core sends a key to the window, and the page heard
+  // the release of a key whose press it never had: the first Escape of
+  // dialog-closedby-corner-cases.html, which then waited for good
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await keyWithWidgetHeld(doc, 'late().focus()', XK_ESCAPE);
+  assert.equal(
+    doc.text('out'),
+    'in late | down Escape at late | up Escape at late',
+  );
+  assert.ok(
+    screen.getAllByRole('textbox').find((n) => n.focused),
+    'and the widget took the focus after it',
+  );
+});
+
+test('a key on a button a focus is owed to does what it does on the button', async () => {
+  const doc = await hosted(
+    LATE_FIELD +
+      '<script>function button() { var b = document.createElement("button"); b.id = "b"; b.textContent = "b";' +
+      ' b.addEventListener("click", function () { say("clicked"); });' +
+      ' document.getElementById("box").appendChild(b); return b; }</script>',
+  );
+  await settle();
+  await keyWithWidgetHeld(doc, 'button().focus()', XK_RETURN);
+  assert.equal(
+    doc.text('out'),
+    'in b | down Enter at b | clicked | up Enter at b',
+  );
+});
+
+test('a key typed once what a focus was owed to has gone reaches the page at the body, as nothing has the focus', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await keyWithWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.remove()',
+    XK_ESCAPE,
+  );
+  assert.ok(
+    doc.text('out').endsWith('down Escape at BODY | up Escape at BODY'),
+    doc.text('out'),
+  );
+});
+
+test('a focus owed holds the keys with nothing moved: the page stays scrolled where it was, and no ring is drawn', async () => {
+  const doc = await hosted(
+    LATE_FIELD.replace(
+      '</style>',
+      'body{margin:0;height:3000px}#box{position:absolute;top:950px}</style>',
+    ),
+    { pane: 200 },
+  );
+  await settle();
+  await act(() => doc.run('window.scrollTo(0, 900)'));
+  await settle();
+  assert.equal(doc.pane?.scrollY, 900);
+  // the root is what a script's focus would ring, round all of the document
+  const root = doc.view.parent as unknown as {
+    states: Record<string, boolean>;
+  };
+  await act(async () => {
+    doc.run('late().focus()');
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(root.states[':focus-visible'], false, 'a ring round it');
+  });
+  await settle();
+  assert.equal(doc.pane?.scrollY, 900);
+});
+
+test("an option is a select's however deep it stands, in a wrapper as much as in an optgroup", async () => {
+  // HTML 4.10.7, the list of options. Held in a list made before it moved,
+  // an option in a `<div>` read as one until the list came to be live
+  const doc = await hosted(
+    `<p id="out"></p><select id="s"><option selected value="1">a</option></select>
+     <select id="g"><optgroup id="group"><div><option value="2" selected>b</option></div></optgroup>
+       <hr><datalist><option value="no">in a list</option></datalist></select>
+     <script>
+       const s = document.getElementById('s');
+       const option = s.options[0];
+       const div = document.createElement('div');
+       s.appendChild(div);
+       div.appendChild(option);
+       const g = document.getElementById('g');
+       const nested = document.createElement('optgroup');
+       nested.appendChild(new Option('in an optgroup in one', 'no'));
+       document.getElementById('group').appendChild(nested);
+       document.getElementById('out').textContent = [
+         s.value, s.options.length, s.selectedIndex,
+         g.value, g.options.length, [...g.options].map((o) => o.value).join(),
+       ].join(' ');
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '1 1 0 2 1 2', doc.logs.join('\n'));
+});
+
+test('an element of a drawing is focused and given a tabIndex as an HTML one is', async () => {
+  // HTMLOrSVGElement: `focus` was HTMLElement's, so a page's generic
+  // `el.focus()` threw on every element of a drawing, and `tabIndex` said
+  // nothing to anything
+  const doc = await hosted(
+    `<p id="out"></p><svg><a id="a" tabindex="0"><text id="t">x</text></a></svg>
+     <script>
+       const a = document.getElementById('a');
+       const t = document.getElementById('t');
+       const r = [typeof SVGElement.prototype.focus, typeof SVGElement.prototype.blur];
+       r.push(a.tabIndex);
+       a.tabIndex = -1;
+       r.push(a.getAttribute('tabindex'), a.tabIndex);
+       t.focus();
+       r.push(document.activeElement === t);
+       a.focus();
+       r.push(document.activeElement === a);
+       a.blur();
+       r.push(document.activeElement === document.body);
+       document.getElementById('out').textContent = r.join(' ');
+     </script>`,
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    'function function 0 -1 -1 false true true',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a worker's time starts with it, after its page's, where both read the process's clock", async () => {
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const before = performance.now();
+       const made = Date.now();
+       const src = 'postMessage([performance.timeOrigin, performance.now()]);';
+       const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+       w.onmessage = (e) => {
+         const [origin, now] = e.data;
+         document.getElementById('out').textContent = JSON.stringify({
+           after: origin >= made - 1 && origin > performance.timeOrigin,
+           own: now < performance.now(),
+           ordered: performance.timeOrigin + before < origin + now,
+         });
+       };
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    '{"after":true,"own":true,"ordered":true}',
+    doc.logs.join('\n'),
+  );
+});
+
 test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
   const doc = await hosted(
     '<style>body{margin:0;font-size:16px}</style>' +

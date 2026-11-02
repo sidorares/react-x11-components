@@ -1905,7 +1905,33 @@ did nothing. The render that mounts a widget or a stop hands the focus on,
 and `activeElement` answers for it until then. **Wait for what takes it, as
 for a layout, and never for a count of turns.** Anything that moves the focus
 before then goes through `Forms.focused` or `letGo`, which take the debt
-back.
+back, and a press on the document does, as it lands (`pressLanded`).
+
+**And the keys are held while it is owed** (`stops.hold`, `keyHolder`). With
+no focused node core sends a key to the window, past `<Html>`'s root, so a
+key typed in that gap reached no page: `dialog-closedby-corner-cases.html`
+heard the release of an Escape whose press it never had, and waited for good.
+So core's focus goes to a box that stands in for the element as the focus is
+told, in the op and not in a render: nothing races it, whatever the machine is
+doing. A key then comes through the root, is told at the owed element
+(`keyedAt`, through `elementOf`) and does what it does on a stop. The box is
+of no size, so taking the focus damages nothing, and in a box of no size that
+scrolls, since core scrolls what it focuses into view through the nearest
+scroll container around it and the document's would be taken to the top. The
+root will not do: core rings what a script focuses, round the whole document,
+and repaints it. **Anything new that leaves core's focus nowhere while the
+page has been told something has it calls `hold`.** Text typed before a field's
+widget is there is heard and not typed, which nothing has yet asked for.
+
+**A press on what has the focus leaves it there** (`pressLanded`, from
+`defaultMouseDown`). Core's press goes to the nearest node that takes the
+focus, and all the document draws has the root for that, after the page's
+`mousedown` since 2.56.3. So a `button.focus()` in the handler lasted until
+the handler returned. A browser keeps the focus where the nearest focusable
+area around the press has it. The blur is told a microtask later, so one put
+right here is one the page never hears. **Nothing else about a press on what
+the document draws focuses it**, as a click focuses a `<button>` in Chrome and
+does not in Safari: the page's `mousedown` is the way in.
 
 **A control's state has one answer, which a rule and a page both ask for**
 (`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,

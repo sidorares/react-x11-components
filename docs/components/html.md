@@ -3184,6 +3184,13 @@ click opens, whose script focuses its first link, draws no ring round it,
 where Tab and Enter, or no input yet, draw one. A modifier alone, and a
 chord with Ctrl, Alt or Meta, is no input that changes the answer.
 
+**A focus a script asks for is the keyboard's at once.** `focus()` is told
+before it returns, and what takes it for a control or a link may be a render
+or two away on a page still loading. A key typed until then reaches the page
+at that element, and does what it does on a link or a button; only text typed
+at a field whose widget is still to come is heard and not typed. A press
+elsewhere takes such a focus back, as it takes any.
+
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed
 the link's `href` and a `MouseEvent` whose `detail` is 0, with the key's

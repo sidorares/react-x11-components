@@ -21,6 +21,15 @@
 // focused, which is the last of the document's in tree order — the boxes
 // and the widgets are mounted in the document's order — so it leaves the
 // document as it would leave any subtree.
+//
+// **A focus told is held until something takes it.** A script's `focus()`
+// is told at once, and what will take it may be a render or two away. With
+// no focused node core sends a key to the window, past everything here, so
+// while a focus is owed (`Forms.owe`) core's focus is on a box that stands
+// in for the element: a key comes through the root, the page hears it at
+// the element it was told has the focus, and a stop's default action runs
+// (`keyHolder`). It is taken as the focus is told, not a render later,
+// which is what leaves no race for a key to lose.
 import React from 'react';
 import type { ReactNode } from 'react';
 import { useClipboard } from 'react-x11';
@@ -68,6 +77,14 @@ export interface Stops {
   watch: readonly Element[];
   /** The boxes mounted, in the document's order, each with its element. */
   render(): { element: Element; node: ReactNode }[];
+  /** The box that has core's focus while a focus is owed: mounted for as
+   *  long as a page can owe one. */
+  keyHolder(): ReactNode;
+  /** Core's focus to that box, keeping the keys in the document until what
+   *  was told of it takes them. */
+  hold(): void;
+  /** Whether `node` is that box. */
+  holds(node: DrawnNode | null): boolean;
   /** Where an element stands among the document's focusable areas. */
   orderOf(el: Element): number | undefined;
   /** The root's: Tab, and where a press leaves Tab to go on from. */
@@ -79,7 +96,8 @@ export interface Stops {
   /** Give a focusable area the focus, as Tab gives it: false where the
    *  element is none, or has no box. */
   focus(el: Element): boolean;
-  /** The element whose stop `node` is, or null. */
+  /** The element whose stop `node` is, or the one it stands in for, or
+   *  null. */
   elementOf(node: DrawnNode | null): Element | null;
 }
 
@@ -98,6 +116,8 @@ export function useFocusStops(options: StopsOptions): Stops {
   const [pending, setPending] = React.useState<Element | null>(null);
   // where a press in the document last landed, which Tab goes on from
   const start = React.useRef<Element | null>(null);
+  // what has core's focus while a focus is owed (`keyHolder`)
+  const standIn = React.useRef<DrawnNode | null>(null);
   const boxes = React.useMemo(
     () =>
       new StopBoxes((el) => {
@@ -156,10 +176,14 @@ export function useFocusStops(options: StopsOptions): Stops {
     const node = view.current;
     if (!node || !stops.length) return;
     const target = ev.target as DrawnNode;
-    let from = boxes.elementOf(target) ?? forms.controlOf(target);
+    let from =
+      boxes.elementOf(target) ??
+      forms.controlOf(target) ??
+      (target === standIn.current ? forms.owed() : null);
     if (!from) {
       // the document itself, focused by a press: on from where it landed
-      if (target !== root.current && target !== (node as unknown)) return;
+      const surface = target === root.current || target === (node as unknown);
+      if (!surface && target !== standIn.current) return;
       from = start.current;
     }
     const next = stepFrom(stops, from, ev.shiftKey);
@@ -176,9 +200,10 @@ export function useFocusStops(options: StopsOptions): Stops {
     start.current = node.elementAtPoint(ev.x, ev.y);
   };
 
-  /** A key on a stop: Enter follows a link, Enter or Space presses a
-   *  button, and the selection's chords reach the document's selection. */
-  const keyDown = (el: Element, ev: X11KeyboardEvent<DrawnNode>) => {
+  /** A key on a stop, or on what stands in for one: Enter follows a link,
+   *  Enter or Space presses a button, and the selection's chords reach the
+   *  document's selection. */
+  const keyDown = (el: Element | null, ev: X11KeyboardEvent<DrawnNode>) => {
     if (ev.defaultPrevented) return;
     // Core runs Ctrl+A and Ctrl+C as the surface's own default action, on
     // the surface focused (`TextSelection.keyDown`, by the same rule); a
@@ -202,7 +227,7 @@ export function useFocusStops(options: StopsOptions): Stops {
     const enter = ev.keysym === XK_RETURN || ev.keysym === XK_KP_ENTER;
     const space = ev.keysym === XK_SPACE || ev.codepoint === 32;
     const node = view.current;
-    if (!node || !(enter || space)) return;
+    if (!node || !el || !(enter || space)) return;
     const href = node.hrefOf(el);
     // a link is followed by Enter alone: Space is the page's
     if (href !== null && !enter) return;
@@ -274,10 +299,44 @@ export function useFocusStops(options: StopsOptions): Stops {
     return out;
   };
 
+  // A box of no size, so that taking the focus and giving it up damages
+  // nothing, with no ring, inside one of no size that scrolls: core scrolls
+  // what it focuses into view through the nearest scroll container around
+  // it, and that one has nothing to move. The document's own would be taken
+  // to the box, at its top. The root will not do here: core rings what a
+  // script focuses, round the whole document, and repaints all of it.
+  const keyHolder = () =>
+    hx(
+      'box',
+      {
+        key: 'keys',
+        style: {
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: 0,
+          height: 0,
+          overflow: 'scroll',
+          pointerEvents: 'none',
+        },
+      },
+      hx('box', {
+        ref: standIn,
+        tabIndex: -1,
+        selectable: false,
+        style: { width: 0, height: 0, outlineWidth: 0 },
+        onKeyDown: (ev: X11KeyboardEvent<DrawnNode>) =>
+          keyDown(forms.owed(), ev),
+      } as Record<string, unknown>),
+    );
+
   return {
     onFocusStops: setStops,
     watch,
     render,
+    keyHolder,
+    hold: () => void standIn.current?.focus(),
+    holds: (node) => node !== null && node === standIn.current,
     orderOf: (el) => index.get(el),
     onKeyDown,
     onMouseDown,
@@ -286,16 +345,22 @@ export function useFocusStops(options: StopsOptions): Stops {
       const stop = stops[index.get(el) ?? -1];
       if (stop) {
         // a stop whose box is still to be mounted has the document told
-        // now, as a browser's `focus()` tells it before it returns; core's
-        // focus follows the box, and tells it nothing new
+        // now, as a browser's `focus()` tells it before it returns, and
+        // the focus is owed until the box takes it; core's focus follows
+        // the box, and tells it nothing new
         if (!stop.widget && !boxes.node(stop.element)) {
           forms.focused(el, true);
+          forms.owe(el);
+          standIn.current?.focus();
         }
         return go(stop);
       }
       return false;
     },
-    elementOf: (node) => boxes.elementOf(node),
+    elementOf: (node) =>
+      node !== null && node === standIn.current
+        ? forms.owed()
+        : boxes.elementOf(node),
   };
 }
 
