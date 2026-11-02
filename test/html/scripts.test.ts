@@ -2359,6 +2359,11 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
        out.point2 = [moved.x, moved.y];
        out.inverse = m($('s').getScreenCTM().inverse().multiply($('s').getScreenCTM()));
        out.viewBox = box($('s').viewBox.baseVal);
+       out.owners = [
+         $('r').ownerSVGElement === $('s'),
+         $('s').ownerSVGElement,
+         $('g').viewportElement === $('s'),
+       ];
        document.getElementById('out').textContent = JSON.stringify(out);
      </script>`,
   );
@@ -2380,6 +2385,7 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
     point2: [14, 26],
     inverse: [1, 0, 0, 1, 0, 0],
     viewBox: [0, 0, 100, 50],
+    owners: [true, null, true],
   });
 });
 
@@ -2575,6 +2581,27 @@ test("execCommand makes the edits a key makes, in an editing host and a text fie
     selected: 'a',
     field: ['xQy', 2, ['insertText:Q']],
   });
+});
+
+test('a click on an <a> in a drawing goes where it says, as one in the document does', async () => {
+  const doc = await hosted(
+    `<p id=out></p>
+     <svg><a id=a href="#there"></a></svg>
+     <script>
+       const a = document.getElementById('a');
+       navigation.onnavigate = (e) => {
+         e.preventDefault();
+         document.getElementById('out').textContent = [
+           new URL(e.destination.url).hash,
+           e.sourceElement === a,
+           a instanceof SVGAElement,
+         ].join();
+       };
+       a.dispatchEvent(new MouseEvent('click'));
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '#there,true,true');
 });
 
 test('an XMLHttpRequest and its upload are XMLHttpRequestEventTargets', async () => {

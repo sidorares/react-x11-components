@@ -7200,6 +7200,18 @@ export function installDom(
     }
   }
   class SVGElement extends Element {
+    /** The `<svg>` around an element, past which what it says is drawn
+     *  (SVG 2, 4.6.2): d3 reads a point through this one's matrix. */
+    get ownerSVGElement(): Any {
+      for (let at = this.parentElement; at; at = at.parentElement) {
+        if (at instanceof SVGSVGElement) return at;
+        if (!(at instanceof SVGElement)) return null;
+      }
+      return null;
+    }
+    get viewportElement(): Any {
+      return this.ownerSVGElement;
+    }
     get style(): Any {
       return (this._style ??= styleOf(this));
     }
@@ -14916,7 +14928,9 @@ export function installDom(
         break;
       }
       if (
-        (at instanceof HTMLAnchorElement || at instanceof HTMLAreaElement) &&
+        (at instanceof HTMLAnchorElement ||
+          at instanceof HTMLAreaElement ||
+          at instanceof SVGAElement) &&
         !followLink(at, false)
       ) {
         break;
@@ -14924,6 +14938,7 @@ export function installDom(
       if (call('activate', at._id)) break;
       if (
         at instanceof HTMLAnchorElement ||
+        at instanceof SVGAElement ||
         at instanceof HTMLButtonElement ||
         at instanceof HTMLInputElement
       ) {
@@ -26813,13 +26828,18 @@ export function installDom(
     if (!anchor.hasAttribute('href') || anchor.hasAttribute('download')) {
       return true;
     }
+    // an `<a>` in a drawing has its `href` as an animated string
+    const address = (): string =>
+      anchor instanceof SVGAElement
+        ? new URL(anchor.href.baseVal, str(document.baseURI)).href
+        : anchor.href;
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
       // own navigation; any other window is the host's to choose
       const framed = namedFrame(target);
       if (!framed) return true;
-      const href = anchor.href;
+      const href = address();
       navigateTo(
         framed.session,
         href,
@@ -26833,7 +26853,7 @@ export function installDom(
       return false;
     }
     const s = pageSession.session;
-    const href = anchor.href;
+    const href = address();
     const went = navigateTo(s, href, pushOrReplace(s, href, false), {
       userInitiated,
       sourceElement: anchor,
