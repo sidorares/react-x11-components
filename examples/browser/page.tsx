@@ -114,7 +114,10 @@ import {
   readHtmlFiles,
   resourceResult,
   schemeOf,
+  htmlTextDecoder,
+  readyFor,
   sniffCharset,
+  sniffEncoding,
   threadTransport,
   useHtmlClipboard,
   useHtmlNotifications,
@@ -2070,11 +2073,12 @@ export default function Page(props: PageProps): ReactElement {
               loadSource={(source, kind) =>
                 network
                   .resource(source, kind, withoutHash(url))
-                  .then((f) =>
-                    f
-                      ? decode(f.bytes, f.charset ?? sniffCharset(f.bytes))
-                      : null,
-                  )
+                  .then(async (f) => {
+                    if (!f) return null;
+                    const charset = f.charset ?? sniffCharset(f.bytes);
+                    await readyFor(charset);
+                    return decode(f.bytes, charset);
+                  })
               }
               url={url}
               cookies={cookies}
@@ -2259,7 +2263,9 @@ async function loadDocument(
       return own(imagePage(response.url), fileName(response.url), url, posted);
     }
     if (kind === 'pdf') return viewed({ kind, bytes });
-    const text = decode(bytes, response.charset ?? sniffCharset(bytes));
+    const charset = response.charset ?? sniffCharset(bytes);
+    await readyFor(charset);
+    const text = decode(bytes, charset);
     // text that says it is JSON or XML and is not is shown as what it is
     const tree =
       kind === 'json' ? readJson(text) : kind === 'xml' ? readXml(text) : null;
@@ -2272,8 +2278,8 @@ async function loadDocument(
     );
   }
 
-  // HTML: stream it. The encoding is the response's, or the one a `<meta>`
-  // in the first kilobyte names, or UTF-8 — found before a byte is decoded.
+  // HTML: stream it. The encoding is found before a byte is decoded, from
+  // the first kilobyte (`sniffEncoding`).
   let head: Uint8Array = new Uint8Array(0);
   const iterator = response.body[Symbol.asyncIterator]();
   let ended = false;
@@ -2291,15 +2297,12 @@ async function loadDocument(
     if (signal.aborted) return;
     return own(errorPage(target, ...failure(error)), null);
   }
-  const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
+  const charset = sniffEncoding(head, response.charset);
   const at = landedAt(response.url, target);
-  let decoder: TextDecoder;
-  try {
-    decoder = new TextDecoder(charset);
-  } catch {
-    decoder = new TextDecoder('utf-8');
-  }
-  let source = decoder.decode(head, { stream: true });
+  const decoder = await htmlTextDecoder(charset);
+  if (signal.aborted) return;
+  // a byte order mark says which encoding this is, and is no part of its text
+  let source = decoder.decode(head, { stream: true }).replace(/^\ufeff/, '');
   const first: Doc = {
     source,
     partial: !ended,

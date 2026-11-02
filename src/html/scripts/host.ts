@@ -18,6 +18,17 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import * as encodingCodecs from '../encoding-codecs.js';
+import type { LegacyDecoder } from '../encoding-codecs.js';
+import {
+  adoptEncodings,
+  bomEncoding,
+  decodeInEncoding,
+  encodingOf,
+  outputEncoding,
+  sniffEncoding,
+  xmlEncoding,
+} from '../encoding.js';
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
@@ -209,7 +220,7 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
-import { chosenFiles } from '../form.js';
+import { chosenFiles, formEncoding, urlencoded } from '../form.js';
 import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
@@ -737,6 +748,8 @@ export interface HostSeams {
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
   userAgent: string;
   language: string;
+  /** The label of the encoding the host decoded the document from. */
+  charset?: string;
   /** What a media element's `canPlayType` answers: whether what plays the
    *  page's media can play the type. None, `''` for every type. */
   canPlayType?(type: string): string;
@@ -1765,8 +1778,18 @@ export interface Entries {
  * realm changes may be drawn by another's `<Html>`. What is a realm's own
  * — its ids, its timers, its observers, its address — stays its host's.
  */
+/** The document an element is in, if any. */
+function documentHolding(element: Element): Document | null {
+  let node: AnyNode = element;
+  while (node.parent) node = node.parent;
+  return node instanceof Document ? node : null;
+}
+
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** Each document's encoding where its bytes came through here, by its
+   *  name. One a host handed over is the host's to say (`charset`). */
+  readonly encodings = new WeakMap<Document, string>();
   /** The `<script>`s a page's script made, and whether each still has its
    *  `async` forced on (HTML 4.12.1, "force async"): true until a script
    *  sets `async` or adds the attribute. A script the parser made has
@@ -2018,6 +2041,7 @@ export class DomHost {
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
     // `location.hash` ''
     this.url = withoutFragmentDirective(url);
+    adoptEncodings(encodingCodecs);
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
@@ -5220,6 +5244,24 @@ export class DomHost {
       }
       case 'resolve':
         return this._resolve(text(a));
+      case 'characterSet':
+        return this._encodingOf(
+          a ? (this._node(a) as Document) : this.document,
+        );
+      case 'encodingLabel':
+        return encodingOf(text(a)) ?? '';
+      case 'textDecode':
+        return this._textDecode(Number(a), text(b), text(c), Number(d));
+      case 'decodeResponse':
+        // marked, as `_textDecode`'s is
+        return `=${decodeInEncoding(
+          new Uint8Array(Buffer.from(text(a), 'base64')),
+          text(b),
+        )}`;
+      case 'formEncoding':
+        return formEncoding(this._element(a), this._encodingOf(this.document));
+      case 'formQuery':
+        return urlencoded(JSON.parse(text(a)) as [string, string][], text(b));
       case 'url':
         return urlJson(text(a), text(b));
       case 'setUrl': {
@@ -6763,14 +6805,11 @@ export class DomHost {
           .toLowerCase();
         let doc: Document;
         let scripts = true;
+        const { text, encoding } = this._frameText(response, type, frame);
         if (type === 'text/html') {
-          doc = this._documentOf(
-            response.body,
-            true,
-            !!this._seams.drawsFrames,
-          );
+          doc = this._documentOf(text, true, !!this._seams.drawsFrames);
         } else if (XML_TYPES.test(type)) {
-          const xml = this._xmlTree(response.body);
+          const xml = this._xmlTree(text);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
           // byte UTF-8 has no character for
@@ -6785,11 +6824,12 @@ export class DomHost {
           doc = this._documentOf(
             type.startsWith('image/')
               ? `<img src="${escapeAttribute(response.url || src)}">`
-              : `<pre>${escapeText(response.body)}</pre>`,
+              : `<pre>${escapeText(text)}</pre>`,
             true,
           );
           scripts = false;
         }
+        this._s.encodings.set(doc, encoding);
         // another origin's scripts never run in this realm, where it was
         // asked for or where it sent the frame
         if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
@@ -7354,11 +7394,90 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
-        .href;
+      const base = this._seams.handle.base ?? this.creator ?? this.url;
+      // a query is in the document's encoding (URL's "encoding-parse")
+      const encoding = outputEncoding(this._encodingOf(this.document));
+      return encoding === 'UTF-8'
+        ? new URL(url, base).href
+        : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
       return url;
     }
+  }
+
+  /** The label `charset` last was and what it names, which `_resolve` asks
+   *  for every URL a page's script reads. */
+  private _charset: [string | undefined, string] = [undefined, 'UTF-8'];
+
+  /** A document's encoding (DOM's, by its name): what its bytes were decoded
+   *  with, what the host says of the one it handed over, and for a frame's
+   *  first `about:blank` what made it. UTF-8 for anything else, a page's
+   *  own `createHTMLDocument` among them. */
+  private _encodingOf(doc: Document): string {
+    const known = this._s.encodings.get(doc);
+    if (known) return known;
+    if (doc === this.document) {
+      const label = this._seams.charset;
+      if (this._charset[0] !== label) {
+        this._charset = [label, (label && encodingOf(label)) || 'UTF-8'];
+      }
+      return this._charset[1];
+    }
+    const frame = this._initialBlank.has(doc) ? this._frameOf.get(doc) : null;
+    const holder = frame ? documentHolding(frame) : null;
+    return holder ? this._encodingOf(holder) : 'UTF-8';
+  }
+
+  /** A `TextDecoder`'s bytes, in any encoding but UTF-8, which the realm
+   *  decodes itself. A decoder lasts while a stream is going through it. */
+  private _textDecoders = new Map<number, LegacyDecoder>();
+  private _textDecode(
+    id: number,
+    name: string,
+    base64: string,
+    flags: number,
+  ): string | null {
+    const stream = (flags & 1) !== 0;
+    const decoder =
+      this._textDecoders.get(id) ?? encodingCodecs.decoderFor(name);
+    if (!decoder) return null;
+    const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
+    const text = decoder.decode(bytes, stream, (flags & 2) !== 0);
+    if (stream) this._textDecoders.set(id, decoder);
+    else this._textDecoders.delete(id);
+    // marked, since an answer that starts with U+0001 is a host error
+    return text === null ? null : `=${text}`;
+  }
+
+  /**
+   * A frame's response as text, and the encoding it comes to, kept with the
+   * document it makes (`_encodedAs`): a frame with no label of its own is in
+   * its parent's encoding (HTML's "encoding sniffing algorithm", step 8), and
+   * XML has no parent to go by, its own declaration or UTF-8 instead. A
+   * response with no bytes was text before it got here.
+   */
+  private _frameText(
+    response: FetchResponse,
+    type: string,
+    frame: Element,
+  ): { text: string; encoding: string } {
+    const transport = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(
+      headerOf(response.headers, 'content-type') ?? '',
+    )?.[1];
+    const named = transport ? encodingOf(transport) : null;
+    if (!response.bytes) {
+      return { text: response.body, encoding: named ?? 'UTF-8' };
+    }
+    const bytes = response.bytes;
+    // JSON is UTF-8 whatever anything says (RFC 8259, 8.1)
+    if (/[/+]json$/.test(type)) {
+      return { text: decodeInEncoding(bytes, 'utf-8'), encoding: 'UTF-8' };
+    }
+    const holder = documentHolding(frame);
+    const encoding = XML_TYPES.test(type)
+      ? (bomEncoding(bytes) ?? named ?? xmlEncoding(bytes) ?? 'UTF-8')
+      : sniffEncoding(bytes, named, holder && this._encodingOf(holder));
+    return { text: decodeInEncoding(bytes, encoding), encoding };
   }
 
   private _origin(): string {

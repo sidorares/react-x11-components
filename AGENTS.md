@@ -3559,6 +3559,26 @@ runs from the request whether or not anyone reads it, so **anything new that
 keeps a response waiting calls `hold()`**, which the save dialog does, or
 it is given up as stalled while the user is choosing.
 
+**An encoding is one name, and its tables load only where one is used.**
+What a label names and which encoding a document is in is `encoding.ts`,
+which `<Html>` imports whatever it shows, so it holds no table. The decoders
+and encoders are `encoding-codecs.ts`, reached by a dynamic `import()`
+(`loadEncodings`), and statically from the script runtime's chunk, since an op
+is synchronous. `test/treeshake.test.ts` fails if `<Html>` reaches them. They
+are written from the standard and read off its indexes rather than being the
+runtime's, for reasons that are facts and not tastes: nothing encodes anything
+but UTF-8, and ICU's `euc-kr` and `big5` are not the standard's, so an inverse of
+them would have been wrong the same way. Four things are load-bearing. **The
+tables are written by `scripts/encoding-tables.mjs` from the standard's own
+JSON, and never by hand.** **Anything sync that decodes a legacy encoding
+awaits `readyFor` first**, in an async path before it, since `decodeInEncoding`
+falls to the runtime's decoder without them. **A UTF-8 path stays as it was**:
+a query, a form and a document in UTF-8 touch none of this, and a page's UTF-8
+`TextDecoder` is the realm's own, which nearly every decoder a page makes is.
+And **an op's answer that a page's bytes can start is marked** (`textDecode`,
+`=`): an answer starting with U+0001 is a host error, so a byte 1 decoded came
+out as a `DOMException` with no message.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides

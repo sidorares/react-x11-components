@@ -322,6 +322,33 @@ test('the script engine is a lazy chunk, not part of <Html>', async () => {
   );
 });
 
+/**
+ * The legacy encodings' tables are a quarter of a megabyte, for documents
+ * most applications never show: `encoding.ts` reaches them by a dynamic
+ * `import()` where a document turns out to be in one, whether or not anything
+ * runs its scripts. The marker is the start of gb18030's ranges, which a
+ * minifier leaves as it is.
+ */
+test('the legacy encodings are a lazy chunk, part of neither <Html> nor HtmlNetwork', async () => {
+  const chunks = await bundleChunks(
+    "import { Html, HtmlNetwork } from './dist/html/index.js';\n" +
+      'globalThis.__keep = [Html, new HtmlNetwork()];\n',
+  );
+  const marker = '0,128,36,165';
+  const holder = staticClosure(chunks).find((chunk) =>
+    chunk.text.includes(marker),
+  );
+  assert.ok(
+    !holder,
+    `loading <Html> should load no legacy encoding (the tables are in ` +
+      `${holder?.path.split('/').pop()})`,
+  );
+  assert.ok(
+    chunks.some((chunk) => chunk.text.includes(marker)),
+    'and the tables should still be reachable, in a chunk of their own',
+  );
+});
+
 test('the werift adapter is a lazy chunk, not part of HtmlNetwork', async () => {
   const chunks = await bundleChunks(
     "import { HtmlNetwork } from './dist/html/index.js';\n" +
