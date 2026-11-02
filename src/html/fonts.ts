@@ -128,6 +128,18 @@ export interface FontFamilies {
 export interface DeclaredFace {
   rule: FontFaceRule;
   element: Element;
+  /** The `FontFace` a page's script made it with, by the number it has. */
+  script?: number;
+}
+
+/** A face `new FontFace` made (CSS Font Loading 3, 2.1), which only
+ *  `document.fonts.add` puts among the document's. */
+interface ScriptFace {
+  rule: FontFaceRule;
+  element: Element;
+  added: boolean;
+  /** Told what came of a load no `load()` asked for: text in it did. */
+  done: (ok: boolean) => void;
 }
 
 type Ask = (
@@ -154,6 +166,8 @@ const READABLE = new Set([
 interface Face {
   rule: FontFaceRule;
   element: Element;
+  /** The `FontFace` a page's script made it with, by the number it has. */
+  script?: number;
   group: Group;
   family: Family;
   /** Where loading got to. `idle` has not been asked for. */
@@ -290,6 +304,9 @@ export class WebFonts implements FontFamilies {
   private _waiting: (() => void)[] = [];
   /** The faces that came since `arrivals` was last asked. */
   private _arrived: Face[] = [];
+  /** What the sheets declare, and what a page's scripts made. */
+  private _sheetFaces: DeclaredFace[] = [];
+  private _scripted = new Map<number, ScriptFace>();
 
   constructor(app: unknown, ask: Ask, changed: () => void, fallback: string) {
     this._app = app !== null && typeof app === 'object' ? app : null;
@@ -312,7 +329,14 @@ export class WebFonts implements FontFamilies {
    * what it had loaded, and so does one another document on the connection
    * declared the same way.
    */
-  setFaces(declared: DeclaredFace[]): void {
+  setFaces(sheets: DeclaredFace[]): void {
+    this._sheetFaces = sheets;
+    const declared = [...sheets];
+    for (const [script, face] of this._scripted) {
+      if (face.added) {
+        declared.push({ rule: face.rule, element: face.element, script });
+      }
+    }
     const signature = declared
       .map(
         (d) => `${d.rule.family.toLowerCase()}\u0001${faceSignature(d.rule)}`,
@@ -324,6 +348,7 @@ export class WebFonts implements FontFamilies {
       return;
     }
     this._declared = signature;
+    this._keys = null;
 
     // a family's faces, by range, in the order they were declared
     const byFamily = new Map<string, Map<string, DeclaredFace[]>>();
@@ -391,6 +416,7 @@ export class WebFonts implements FontFamilies {
           const face: Face = {
             rule: m.rule,
             element: m.element,
+            ...(m.script === undefined ? null : { script: m.script }),
             group,
             family,
             state: 'idle',
@@ -700,9 +726,100 @@ export class WebFonts implements FontFamilies {
           ? rule.unicodeRange.map(([lo, hi]) => rangeText(lo, hi)).join(', ')
           : 'U+0-10FFFF',
         status: STATUS[face.state],
+        ...(face.script === undefined ? null : { script: face.script }),
       });
     }
     return out;
+  }
+
+  /** Whether a page's script has put a face among the document's. */
+  get scripted(): boolean {
+    for (const face of this._scripted.values()) if (face.added) return true;
+    return false;
+  }
+
+  /** A face `new FontFace` made. Nothing is asked for yet. */
+  makeFace(
+    id: number,
+    rule: FontFaceRule,
+    element: Element,
+    done: (ok: boolean) => void,
+  ): void {
+    this._scripted.set(id, { rule, element, added: false, done });
+  }
+
+  /**
+   * Load a face `new FontFace` made, in the document's faces or not yet:
+   * its sources tried in order, and what the first that loads comes to
+   * kept as the font, so that `document.fonts.add` after it registers
+   * what came. Settles with whether one did.
+   */
+  async loadFace(id: number): Promise<boolean> {
+    const face = this._scripted.get(id);
+    if (!face || !this._app) return false;
+    for (const source of face.rule.sources) {
+      if ('local' in source) {
+        if (localFamily(this._app, source.local, face.rule) === null) continue;
+        return true;
+      }
+      let bytes: Uint8Array | null = null;
+      if ('bytes' in source) bytes = source.bytes;
+      else if (source.format === null || READABLE.has(source.format)) {
+        const url = source.url;
+        const answer = await Promise.resolve(
+          this._ask({ url, kind: 'font', element: face.element }),
+        ).catch(() => null);
+        if (answer?.kind === 'font') bytes = answer.bytes;
+      }
+      const font = bytes && (await this._readable(bytes));
+      if (!font || this._destroyed) continue;
+      face.rule = { ...face.rule, sources: [{ bytes: font }] };
+      if (face.added) this._takeScripted(id);
+      return true;
+    }
+    return false;
+  }
+
+  /** Put a face `new FontFace` made among the document's, or take it out.
+   *  Whether that changed anything. */
+  addFace(id: number, added: boolean): boolean {
+    const face = this._scripted.get(id);
+    if (!face || face.added === added) return false;
+    face.added = added;
+    this._takeScripted(id);
+    return true;
+  }
+
+  /** The faces as a script left them, and a font it has handed over
+   *  registered at once: nothing is left to wait for. */
+  private _takeScripted(id: number): void {
+    this.setFaces(this._sheetFaces);
+    for (const face of this._faces) {
+      if (
+        face.script === id &&
+        face.state === 'idle' &&
+        'bytes' in face.rule.sources[0]
+      ) {
+        this._load(face);
+      }
+    }
+  }
+
+  /** The bytes as the engine takes them, or the font inside a WOFF2 where
+   *  it takes that (`_register`), or null for no font it can set text in. */
+  private async _readable(bytes: Uint8Array): Promise<Uint8Array | null> {
+    const app = this._app as Parameters<typeof loadFont>[0];
+    const opens = (font: Uint8Array): boolean => {
+      try {
+        return refusal(app, openFont(app, font), this._fallback) === null;
+      } catch {
+        return false;
+      }
+    };
+    if (opens(bytes)) return bytes;
+    if (!isWoff2(bytes)) return null;
+    const sfnt = await sfntFromWoff2(bytes);
+    return sfnt && opens(sfnt) ? sfnt : null;
   }
 
   /**
@@ -937,7 +1054,11 @@ export class WebFonts implements FontFamilies {
     };
 
     const sources = face.rule.sources.filter(
-      (s) => 'local' in s || s.format === null || READABLE.has(s.format),
+      (s) =>
+        'local' in s ||
+        'bytes' in s ||
+        s.format === null ||
+        READABLE.has(s.format),
     );
     let i = 0;
     let sync = true;
@@ -953,6 +1074,21 @@ export class WebFonts implements FontFamilies {
             : localFamily(app, source.local, face.rule);
           if (family === null) continue;
           registry.locals.set(key, family);
+          finish(true);
+          if (sync) {
+            arrive(face, registry);
+            this._arrived.push(face);
+          } else this._settled(face, true);
+          return 'ready';
+        }
+        if ('bytes' in source) {
+          const result = { kind: 'font' as const, bytes: source.bytes };
+          const registered = this._register(face, result, face.rule.family);
+          if (isPromise(registered)) {
+            registered.then(after, () => after(false));
+            return 'waiting';
+          }
+          if (!registered) continue;
           finish(true);
           if (sync) {
             arrive(face, registry);
@@ -1099,6 +1235,7 @@ export class WebFonts implements FontFamilies {
     else face.state = ok ? 'ready' : 'failed';
     if (ok) this._arrived.push(face);
     else face.family.asked.clear();
+    if (face.script !== undefined) this._scripted.get(face.script)?.done(ok);
     this._forget();
     this._changed();
     if (!this.loading) for (const resolve of this._waiting.splice(0)) resolve();
@@ -1117,6 +1254,8 @@ export interface DocumentFontFace {
   stretch: string;
   unicodeRange: string;
   status: 'unloaded' | 'loading' | 'loaded' | 'error';
+  /** The `FontFace` a page's script made it with, by the number it has. */
+  script?: number;
 }
 
 /** The faces a `font` matches (`WebFonts.match`). */
@@ -1405,10 +1544,27 @@ function faceKey(name: string, rule: FontFaceRule): string {
   return `${name}\u0000${faceSignature(rule)}`;
 }
 
+/** A number for each font a page handed over, which a signature names it
+ *  by: the bytes are no string to compare. */
+const FONT_SERIALS = new WeakMap<Uint8Array, number>();
+let fontSerial = 0;
+function serialOf(bytes: Uint8Array): number {
+  let serial = FONT_SERIALS.get(bytes);
+  if (serial === undefined) {
+    serial = fontSerial += 1;
+    FONT_SERIALS.set(bytes, serial);
+  }
+  return serial;
+}
+
 function faceSignature(rule: FontFaceRule): string {
   const range = rangeKey(rule.unicodeRange);
   const sources = rule.sources.map((s) =>
-    'local' in s ? `local(${s.local})` : s.url,
+    'local' in s
+      ? `local(${s.local})`
+      : 'bytes' in s
+        ? `bytes(${serialOf(s.bytes)})`
+        : s.url,
   );
   return `${sources.join(' ')}@${rule.weight.join('-')}${rule.style}~${widthKey(rule)}#${range}`;
 }
