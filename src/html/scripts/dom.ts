@@ -18258,7 +18258,10 @@ export function installDom(
     return { width, height, scrollX, scrollY, dpr };
   };
 
-  const now = (): number => Number(bridge('now'));
+  /** Where this realm's clock starts on the host's, which is the process's:
+   *  a worker's, whose time is its own (`__becomeWorker`). */
+  let clockFrom = 0;
+  const now = (): number => Number(bridge('now')) - clockFrom;
 
   // --- viewports, as the rendering steps see them -------------------------
   //
@@ -33522,6 +33525,11 @@ export function installDom(
    */
   entry('__becomeWorker', () => {
     const { url, name, shared, service } = input();
+    // a worker's time starts with it (HR Time 3, the time origin), where one
+    // read off the process's clock came to its page's, and which of the two
+    // was first was a coin toss
+    clockFrom = Number(bridge('now'));
+    (G as Any).performance.timeOrigin = Date.now();
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();
