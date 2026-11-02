@@ -75,6 +75,7 @@ import {
   indicatedElement,
   isElement,
   isForeign,
+  isStyleOrScript,
   isInputButton,
   isText,
   loadsLazily,
@@ -474,12 +475,16 @@ import {
   namersOf,
 } from './svg.js';
 import {
+  around,
   askMedia,
   cutByFixed,
   embeddedRectsOf,
+  fixedCoversOf,
   FIXED_OVER,
   HELD_BY,
   HELD_OVER,
+  inPaintOrder,
+  MAX_COVERS,
   mediaRectsOf,
   sameSounds,
   videoCandidates,
@@ -1321,6 +1326,9 @@ export class HtmlViewNode extends Node {
   /** What the document paints over each player, as the last layout left
    *  it (`coversOf`, `paintCovers`). */
   private _covers = new Map<Element, Cover[]>();
+  /** The boxes fixed to the viewport painted over each player too, asked
+   *  as the players are told, at each paint (`fixedCoversOf`). */
+  private _fixedCovers = new Map<Element, Cover[]>();
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
@@ -5492,13 +5500,49 @@ export class HtmlViewNode extends Node {
     if (!tree || !report) return;
     const fixed = FIXED_BOXES.get(tree);
     const rects = this._mediaLaid.map((laid) => {
-      const rect = this._viewportRect(laid, FIXED_OVER.get(laid) ?? fixed);
+      const over = FIXED_OVER.get(laid) ?? fixed;
+      const drawn = this._fixedOver(tree, laid, over);
+      const rect = this._viewportRect(
+        laid,
+        drawn?.cutting ?? over,
+        NO_BOXES,
+        drawn?.over,
+      );
       const asked = this._mediaAsked.get(rect.element);
       return asked ? { ...rect, ...asked } : rect;
     });
     if (sameMedia(rects, this._media)) return;
     this._media = rects;
     report(rects);
+  }
+
+  /** Which of the boxes fixed over a player are painted over it again
+   *  (`fixedCoversOf`), noted for `paintCovers`: where it paints over the
+   *  player with them, and what is left to cut it. Null where none is. */
+  private _fixedOver(
+    tree: BoxTree,
+    laid: MediaRect,
+    fixed: readonly Box[] | undefined,
+  ): { over: Rect; cutting: readonly Box[] } | null {
+    const el = laid.element;
+    this._fixedCovers.delete(el);
+    if (!fixed?.length || 'atViewport' in laid || laid.hidden) return null;
+    const { covers, cutting } = fixedCoversOf(
+      tree,
+      fixed,
+      laid.clip ?? laid,
+      this._fixedShift(),
+      this._viewportInDocument(),
+      this._scale,
+      MAX_COVERS - (this._covers.get(el)?.length ?? 0),
+    );
+    if (!covers.length) return null;
+    this._fixedCovers.set(el, covers);
+    const rects = covers.map((c) => c.rect);
+    return {
+      over: around(laid.over ? [...rects, laid.over] : rects),
+      cutting,
+    };
   }
 
   /** What a host mounts over the embedded elements, to `onEmbedded` where
@@ -5539,6 +5583,9 @@ export class HtmlViewNode extends Node {
     laid: R,
     fixed: readonly Box[] | undefined,
     held: readonly Box[] = NO_BOXES,
+    /** Where the document paints over a player with the boxes fixed over
+     *  it as well (`_fixedOver`). */
+    over: Rect | undefined = undefined,
   ): R {
     let r = laid;
     // one in a box fixed to the viewport goes where the viewport is, with
@@ -5558,6 +5605,7 @@ export class HtmlViewNode extends Node {
       if (cut === 'hidden') r = { ...laid, hidden: true };
       else if (!sameClip(cut, shows)) r = { ...laid, clip: cut };
     }
+    if (over) r = { ...r, over };
     // and in a sticky box the viewport keeps, where the flow has it, which
     // core moves it from with the box (`HELD_AT_VIEWPORT`)
     const by = HELD_BY.get(laid);
@@ -5609,7 +5657,9 @@ export class HtmlViewNode extends Node {
     at: { x: number; y: number },
   ): void {
     const tree = this._tree;
-    const covers = this._covers.get(element);
+    const laid = this._covers.get(element);
+    const fixed = this._fixedCovers.get(element);
+    const covers = fixed ? inPaintOrder([...(laid ?? []), ...fixed]) : laid;
     const c = ctx as PaintContext;
     if (!tree || !covers || !c.save || !c.beginPath || !c.rect || !c.clip) {
       return;
@@ -5619,6 +5669,15 @@ export class HtmlViewNode extends Node {
       originX: this.abs.x - at.x,
       originY: this.abs.y - at.y,
     };
+    // the context's origin is `at`, where a box fixed to the viewport is
+    // placed from the viewport (`atViewport`)
+    if (options.viewport) {
+      options.viewport = {
+        ...options.viewport,
+        x: options.viewport.x - at.x,
+        y: options.viewport.y - at.y,
+      };
+    }
     for (const { box, rect } of covers) {
       c.save();
       c.beginPath();
@@ -6989,6 +7048,36 @@ export class HtmlViewNode extends Node {
     this._settle();
     this._followViewport();
     return this._rectOf(element);
+  }
+
+  /**
+   * Where an element a `<foreignObject>` holds was laid out, in the object's
+   * user units from its corner, with the object: null for one in no object.
+   * It is in no box of the document's, and what the drawing's matrices do
+   * to the object is `svg-geometry.ts`'s to say.
+   */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null {
+    this._settle();
+    const objects = this._tree?.foreign;
+    if (!objects) return null;
+    for (let at = elementParent(element); at; at = elementParent(at)) {
+      const object = objects.get(at);
+      if (!object) continue;
+      const box = boxFor(object.tree.root, element);
+      const rect = box && this._drawnRect(object.tree, box, false);
+      if (!rect) return null;
+      const unit = object.scale || 1;
+      return {
+        object: at,
+        rect: {
+          x: rect.x / unit,
+          y: rect.y / unit,
+          width: rect.width / unit,
+          height: rect.height / unit,
+        },
+      };
+    }
+    return null;
   }
 
   /**
@@ -11568,7 +11657,9 @@ export class HtmlViewNode extends Node {
       // what a `<style>` holds is its sheet: a CSS-in-JS library writes its
       // rules into one as their components first render
       if (tagOf(parent) !== 'style') return false;
-      if (!this._sheetsKept(parent, scope)) scope.sheets = true;
+      if (isStyleOrScript(parent) && !this._sheetsKept(parent, scope)) {
+        scope.sheets = true;
+      }
     }
     if (change.type !== 'childList') return true;
     for (const nodes of [change.addedNodes, change.removedNodes]) {
@@ -17567,7 +17658,7 @@ function changesCascade(
 ): boolean {
   switch (tagOf(el)) {
     case 'style':
-      return name === 'media';
+      return name === 'media' && isStyleOrScript(el);
     case 'link':
       return (
         (name === 'rel' && !isForeign(el)) ||
@@ -17884,7 +17975,10 @@ function cascadeHeld(node: AnyNode): number {
     ) {
       return HELD_PRAGMA;
     }
-    if (tag === 'style' || (tag === 'link' && isSheetLink(el))) {
+    if (
+      (tag === 'style' && isStyleOrScript(el)) ||
+      (tag === 'link' && isSheetLink(el))
+    ) {
       held |= HELD_SHEET;
     }
     if (shadowRootOf(el)) held |= HELD_TREE;
