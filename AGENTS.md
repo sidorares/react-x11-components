@@ -1884,6 +1884,19 @@ selection goes through `Forms.setSelection`.** It keeps the selection for a
 widget not mounted yet, and it notes it as `seen`, so the user's next key
 is not told as `select` for the script's selection.
 
+**A focus told is owed until something takes it** (`Forms.owe`,
+`settleFocus`). A control has no widget until a render after it is laid out,
+and a script's `focus()` is told at once, as HTML has it (`told`), so the
+page goes by what it heard from there. It was asked of `<Html>` once more,
+16 ms later, and let go of with nothing told: on a page still loading,
+Monaco's textarea had no widget by then one load in five, and Monaco, told
+it had the focus, asked for nothing when it was pressed, so a click on it
+did nothing. The render that mounts a widget or a stop hands the focus on,
+and `activeElement` answers for it until then. **Wait for what takes it, as
+for a layout, and never for a count of turns.** Anything that moves the focus
+before then goes through `Forms.focused` or `letGo`, which take the debt
+back.
+
 **A control's state has one answer, which a rule and a page both ask for**
 (`CONTROL_PSEUDOS`, `control-state.ts`, over `form.ts`). `:valid`, `:invalid`,
 `:user-valid`, `:user-invalid`, `:in-range`, `:out-of-range`,
@@ -4184,6 +4197,28 @@ closes a way out a DOM binding opens by accident:
   replaces the streaming forms, which on Node are the host's and refuse a
   page's `Response` with an error of the host's realm: a way out of the
   context, which the escape test reads.
+- **A canvas's text is set by the engine and painted by the realm**
+  (`src/html/canvas-text.ts`, `canvasRaster`). `layout.coverage()` is the
+  one thing every engine answers for text drawn where a 2d context is not,
+  so the host hands a string's coverage across, as a string of a byte a
+  character, set up to four times finer than it is drawn. The realm reads
+  it at points through the matrix (`coverMask`) and hands that to
+  `paintCoverage`, so a clip, an alpha, an operator and a gradient reach
+  text as they reach a path, and a letter lands at a quarter of a pixel,
+  which is how near pdf.js's letter-at-a-time placing needs it. Three things
+  are load-bearing. **A raster is kept by all it was set from**, the faces'
+  `generation` among them, which a context reads once a task (`_textNow`):
+  anything new a string is set from joins `canvasRaster`'s key and the
+  `textSetting` that crosses, or a page draws what it drew before.
+  **A context's units are nobody's display's**: `Cascade.canvasFont` works
+  at a scale of 1, and a `font` is kept written out in pixels, so a raster
+  of the same font is the same raster at 2x. **A face a page's `load()`
+  answered for is one it draws in at once**, which a build otherwise reads
+  at the next layout, so `canvasText()` brings the sheets up to date first.
+  A worker has no fonts to ask: its text is drawn as nothing and its
+  measures are a guess, as all of a canvas's were. `strokeText` is a band of
+  the coverage's distance field, since no engine hands over outlines on
+  every backend, so its joins are round and it draws no dash.
 - **A canvas's pixels are the page realm's** (`CanvasState` in `dom.ts`),
   and the host is told what changed once a task (`markCanvas`,
   `canvasPut`). Anything new that draws on a canvas marks the rectangle it

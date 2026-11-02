@@ -138,16 +138,15 @@ export function useFocusStops(options: StopsOptions): Stops {
     boxes.node(pending)?.focus();
   }, [pending, boxes]);
 
-  /** Tab arrives at a stop, or at a control's widget. */
-  const go = (stop: FocusStop) => {
+  /** Tab arrives at a stop, or at a control's widget: false where the
+   *  widget is not mounted, which nothing will do on its behalf. */
+  const go = (stop: FocusStop): boolean => {
     setAnchor(stop.element);
-    if (stop.widget) {
-      forms.focusControl(stop.element);
-      return;
-    }
+    if (stop.widget) return forms.focusControl(stop.element);
     const node = boxes.node(stop.element);
     if (node) node.focus();
     else setPending(stop.element);
+    return true;
   };
 
   const onKeyDown = (ev: X11KeyboardEvent<DrawnNode>) => {
@@ -292,8 +291,7 @@ export function useFocusStops(options: StopsOptions): Stops {
         if (!stop.widget && !boxes.node(stop.element)) {
           forms.focused(el, true);
         }
-        go(stop);
-        return true;
+        return go(stop);
       }
       return false;
     },
