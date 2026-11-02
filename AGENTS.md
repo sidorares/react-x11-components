@@ -5437,6 +5437,19 @@ tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
 the cascade, and the cascade must not import `svg.ts` back — which is why
 `svgSizeHint` lives in `cascade.ts`.
 
+**A colour no context reads is worked out in the drawing's copy**
+(`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
+it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so
+`color()`, `oklch()`, `color-mix()` and `light-dark()` in an attribute or a
+`style` painted nothing, where a rule's reach it worked out already
+(`css/shapes.ts`). Figma writes each colour twice,
+`style="fill:#2E2E2E;fill:color(display-p3 …)"`, so a browser with no P3 keeps
+the first: tldraw's logo is a mask of such a drawing and was not there. What
+comes to no colour is dropped, as CSS drops it, and the earlier one stands.
+**Anything new a drawing can paint with joins `COLOUR_PROPERTIES`**, and the scheme
+a `light-dark()` picks by is in `keptAs`, since a raster is kept by what it was
+drawn from.
+
 **A `<use>`'s copy is matched in a tree of its own.** A selector sees
 nothing above the element the `<use>` names and nothing beside it, and the
 copy inherits from the `<use>` (SVG 2, 5.5.3). So one element can have two
