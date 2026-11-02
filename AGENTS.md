@@ -4463,6 +4463,28 @@ closes a way out a DOM binding opens by accident:
   `test/html/webgl-gpu.test.ts` that reads it from pixels.** A page's GL
   reaches the driver with none of ANGLE's validation, which `src/html/webgl.ts`
   says at its top, and is why this is the host's to hand in.
+- **A synchronous request sleeps, and something else has to be awake.** The
+  page's thread cannot wait for its own network, since nothing in JavaScript
+  waits for a promise, and it cannot run the request while it sleeps either, so
+  `fetchSync` (`sync-fetch.ts`) makes it on a thread that runs `HtmlNetwork`, made
+  again there from `syncNetwork()`, and sleeps with `Atomics.wait`. A worker's
+  thread sleeps the same way and the page's network answers it (`SyncAsk`), which
+  is why only a window needs the seam. Five things are load-bearing. **`_hops` is
+  what a page's request is allowed at each hop, whichever way it is waited
+  for**: a generator that yields each request and is resumed with its answer,
+  which `_fetchFor` steps with `await` and `_fetchNow` with `send`. Anything new
+  that decides on a request goes in it, or a synchronous one is let do what an
+  asynchronous one is not. **What the page's thread would have to
+  run is out of reach while it sleeps**: a `fetch` transport a host wrote, which is
+  why `syncNetwork()` answers null for one, and a service worker. Anything a
+  network reads must go in what `syncNetwork()` says of it, as data, or the
+  thread's network is another network. **The jar crosses both ways**: its cookies
+  go with the job, and what the request did to the copy comes back through
+  `CookieJar.take` before `send()` returns, so a page that reads `document.cookie`
+  on the next line sees it. **The wait stops short of the watchdog** (`waitLeft`):
+  it counts the sleep and nothing pauses it, and a task it cuts takes the page's
+  script with it, where a timeout is one exception. And **a test's server cannot
+  be on the thread that sleeps** (`test/html/sync-xhr.test.ts`).
 - **A worker is a thread, and a string is all that reaches it.** Each
   `Worker` is a `worker_threads` thread with an engine, a host over an
   empty document and the facade made a worker's global
@@ -5071,8 +5093,8 @@ out at one pixel, with `innerWidth` 0. Three more things:
   import of a helper is unreachable at run time.
 - **A worker's entry is found beside the module that starts it**, as
   `worker-thread.js` in `dist/` and `worker-thread.ts` in the source the
-  suite runs (`workers.ts`'s `ENTRY`); a bundler that moves the engine has
-  to carry that file with it.
+  suite runs (`threadEntry` in `platform.ts`); a bundler that moves the engine
+  has to carry that file with it, and `sync-fetch-thread` beside it.
 
 **A frame a page's scripts load as HTML is drawn over its box, and one
 with a script in it runs in a realm of its own, which is the frame's**

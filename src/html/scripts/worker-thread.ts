@@ -31,6 +31,7 @@ import type { HtmlPermissions, HtmlPermissionState } from '../permissions.js';
 import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const AbortController: AbortControllerClass;
+declare const performance: { now(): number };
 
 const { parentPort, receiveMessageOnPort, workerData } =
   await nodeModule<WorkerThreadsModule>('worker_threads');
@@ -278,6 +279,33 @@ const seams: HostSeams = {
   userAgent,
   language,
   secureContext: init.secure,
+};
+
+/** What this thread's synchronous requests are numbered by, so that one a
+ *  timeout gave up on answers nothing. */
+let syncSeq = 0;
+seams.fetchSync = (request, timeout) => {
+  const id = ++syncSeq;
+  Atomics.store(word, 0, 0);
+  sync.postMessage({ id, request });
+  const end = performance.now() + timeout;
+  for (;;) {
+    const left = end - performance.now();
+    if (left <= 0) {
+      sync.postMessage({ id, abort: true });
+      const error = new Error(`${request.url} took too long.`);
+      error.name = 'TimeoutError';
+      throw error;
+    }
+    Atomics.wait(word, 0, 0, left);
+    const answer = receiveMessageOnPort(sync)?.message as
+      { id: number; response?: FetchResponse; failed?: string } | undefined;
+    if (answer?.id === id) {
+      if (answer.response) return answer.response;
+      throw new Error(answer.failed ?? 'The request failed.');
+    }
+    Atomics.store(word, 0, 0);
+  }
 };
 
 const host = new DomHost(new Document([]), seams, init.url);

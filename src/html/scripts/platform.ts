@@ -123,7 +123,7 @@ export interface UtilModule {
 // --- node:worker_threads -----------------------------------------------------
 
 export interface MessagePortLike {
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: unknown[]): void;
   on(event: 'message', listener: (message: never) => void): void;
   close(): void;
   unref?(): void;
@@ -162,6 +162,46 @@ export interface WorkerThreadsModule {
   parentPort: MessagePortLike | null;
   workerData: unknown;
   receiveMessageOnPort(port: MessagePortLike): { message: unknown } | undefined;
+}
+
+/**
+ * What a thread is started from, for the entry `name` beside the module at
+ * `here`: `dist/`'s JavaScript, or, run from the source, as the suite runs it,
+ * the TypeScript. A bundler that moves this code has to carry the file with it.
+ *
+ * Bun reads TypeScript as it is, and Node from 22 on passes the main thread's
+ * module hooks, tsx's, on to a worker, but Node 20 does not, and a thread there
+ * could not load its own entry. So on a Node that does not, the thread registers
+ * tsx's hooks itself before it imports the entry, where tsx is to be had.
+ */
+export function threadEntry(
+  here: string,
+  name: string,
+): () => UrlLike | string {
+  const typed = here.endsWith('.ts');
+  const entry = new (globalThis as unknown as { URL: UrlClass }).URL(
+    `./${name}.${typed ? 'ts' : 'js'}`,
+    here,
+  );
+  return () => {
+    const node = isBun()
+      ? null
+      : Number(runtimeProcess()?.versions.node?.split('.')[0] ?? 0);
+    if (node === null || node >= 22 || !typed) return entry;
+    let tsx: string | null = null;
+    try {
+      tsx = (import.meta as { resolve(specifier: string): string }).resolve(
+        'tsx/esm/api',
+      );
+    } catch {
+      return entry;
+    }
+    return (
+      `import(${JSON.stringify(tsx)})` +
+      '.then((api) => api.register())' +
+      `.then(() => import(${JSON.stringify(entry.href)}));`
+    );
+  };
 }
 
 /**

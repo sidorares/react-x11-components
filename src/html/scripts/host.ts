@@ -232,7 +232,7 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { parseCsp } from '../csp.js';
+import { connectAllowed, parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
@@ -253,6 +253,8 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles, formEncoding, urlencoded } from '../form.js';
+import type { HtmlSyncNetwork } from '../network.js';
+import { fetchSync } from './sync-fetch.js';
 import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
@@ -809,6 +811,14 @@ export interface HostSeams {
   /** The document's title changed. */
   title(title: string | null): void;
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
+  /** What a page's synchronous requests are made through, on a thread that
+   *  stays awake while this one sleeps (`sync-fetch.ts`). Absent, a page
+   *  has only asynchronous ones. */
+  syncNetwork?: HtmlSyncNetwork | null;
+  /** A synchronous request where this realm makes them its own way: a web
+   *  worker's, whose page has a network to answer it with. Throws what it
+   *  came to, a `TimeoutError` by name where `timeout` ms ran out. */
+  fetchSync?(request: FetchRequest, timeout: number): FetchResponse;
   userAgent: string;
   language: string;
   /** The label of the encoding the host decoded the document from. */
@@ -1760,6 +1770,9 @@ type Pseudos = Record<
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** How long the task under way may still wait on an op, in ms
+   *  (`ScriptEngine.waitLeft`). */
+  readonly waitLeft?: number;
   /** How long the page's tasks have taken, in ms (`ScriptEngine.busy`). */
   readonly busy?: number;
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
@@ -1792,6 +1805,10 @@ export interface Entries {
  * realm changes may be drawn by another's `<Html>`. What is a realm's own
  * — its ids, its timers, its observers, its address — stays its host's.
  */
+/** How long a synchronous request may hold a page, at most: the task's own
+ *  limit comes first, and only a host that raised it gets this far. */
+const SYNC_REQUEST_MS = 30_000;
+
 /** The document an element is in, if any. */
 function documentHolding(element: Element): Document | null {
   let node: AnyNode = element;
@@ -5893,6 +5910,14 @@ export class DomHost {
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
+      case 'syncRequests':
+        return this._seams.fetchSync
+          ? 'worker'
+          : this._seams.syncNetwork
+            ? 'page'
+            : '';
+      case 'fetchSync':
+        return this._syncRequest(text(a), Number(b));
       // a page's WebGL contexts, where the host has a GL (`gl.ts`)
       case 'glOpen':
         return this._contexts.open(JSON.parse(text(a)) as HtmlGLOptions);
@@ -8528,47 +8553,7 @@ export class DomHost {
     };
     let request: PageRequest;
     try {
-      const raw = JSON.parse(json) as Partial<PageRequest>;
-      const method = String(raw.method ?? 'GET').toUpperCase();
-      // what a page may not set, which a browser drops (Fetch 2.2.2)
-      const headers = Array.isArray(raw.headers)
-        ? raw.headers
-            .map(([k, v]) => [String(k), String(v)] as [string, string])
-            .filter(([k]) => !forbiddenRequestHeader(k))
-        : [];
-      const agent = agentHeaders(raw.uaHeaders, method, headers);
-      request = {
-        url: this._resolve(String(raw.url ?? '')),
-        method,
-        headers,
-        body: typeof raw.body === 'string' ? raw.body : null,
-        ...(raw.stream === true ? { stream: true } : {}),
-        ...(agent ? { uaHeaders: agent } : {}),
-        ...(raw.streamedBody === true ? { streamedBody: true } : {}),
-        ...(typeof (raw as { base64?: unknown }).base64 === 'string'
-          ? {
-              bytes: new Uint8Array(
-                Buffer.from((raw as { base64: string }).base64, 'base64'),
-              ),
-            }
-          : {}),
-        mode:
-          raw.mode === 'no-cors' || raw.mode === 'same-origin'
-            ? raw.mode
-            : 'cors',
-        credentials:
-          raw.credentials === 'omit' || raw.credentials === 'include'
-            ? raw.credentials
-            : 'same-origin',
-        cache: raw.cache,
-        redirect:
-          raw.redirect === 'error' || raw.redirect === 'manual'
-            ? raw.redirect
-            : 'follow',
-        integrity: raw.integrity,
-        referrerPolicy: raw.referrerPolicy,
-        destination: raw.destination,
-      };
+      request = this._pageRequest(json);
     } catch {
       return;
     }
@@ -8613,6 +8598,117 @@ export class DomHost {
     }
     if (!this._fetches.delete(id) || this._disposed) return;
     this.entries?.call('__fetchEnd', [id, failed]);
+  }
+
+  /** A request as the facade sends it. */
+  private _pageRequest(json: string): PageRequest {
+    const raw = JSON.parse(json) as Partial<PageRequest>;
+    const method = String(raw.method ?? 'GET').toUpperCase();
+    // what a page may not set, which a browser drops (Fetch 2.2.2)
+    const headers = Array.isArray(raw.headers)
+      ? raw.headers
+          .map(([k, v]) => [String(k), String(v)] as [string, string])
+          .filter(([k]) => !forbiddenRequestHeader(k))
+      : [];
+    const agent = agentHeaders(raw.uaHeaders, method, headers);
+    return {
+      url: this._resolve(String(raw.url ?? '')),
+      method,
+      headers,
+      body: typeof raw.body === 'string' ? raw.body : null,
+      ...(raw.stream === true ? { stream: true } : {}),
+      ...(agent ? { uaHeaders: agent } : {}),
+      ...(raw.streamedBody === true ? { streamedBody: true } : {}),
+      ...(typeof (raw as { base64?: unknown }).base64 === 'string'
+        ? {
+            bytes: new Uint8Array(
+              Buffer.from((raw as { base64: string }).base64, 'base64'),
+            ),
+          }
+        : {}),
+      mode:
+        raw.mode === 'no-cors' || raw.mode === 'same-origin'
+          ? raw.mode
+          : 'cors',
+      credentials:
+        raw.credentials === 'omit' || raw.credentials === 'include'
+          ? raw.credentials
+          : 'same-origin',
+      cache: raw.cache,
+      redirect:
+        raw.redirect === 'error' || raw.redirect === 'manual'
+          ? raw.redirect
+          : 'follow',
+      integrity: raw.integrity,
+      referrerPolicy: raw.referrerPolicy,
+      destination: raw.destination,
+    };
+  }
+
+  /**
+   * A synchronous `XMLHttpRequest`: what `_fetchFor` does, with the thread
+   * asleep where that awaits. What comes back is JSON, the bytes as base64,
+   * and what fails is the `NetworkError` the page's `send()` throws, or a
+   * `TimeoutError`. It waits for no longer than `limit` ms, a worker's
+   * `timeout`, nor than the task may wait: the runtime's watchdog counts this
+   * and cannot be paused, and past it the whole task goes. So a request that
+   * takes too long is one failed request, and the page goes on.
+   */
+  private _syncRequest(json: string, limit: number): string {
+    const timeout = Math.min(
+      limit > 0 ? limit : SYNC_REQUEST_MS,
+      SYNC_REQUEST_MS,
+      this.entries?.waitLeft ?? SYNC_REQUEST_MS,
+    );
+    try {
+      const request = this._pageRequest(json);
+      const {
+        bytes,
+        chunks: _chunks,
+        ...rest
+      } = this._fetchNow(request, timeout);
+      return JSON.stringify({
+        ...rest,
+        body: bytes ? '' : rest.body,
+        ...(bytes && { base64: base64Of(bytes) }),
+      });
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      // the page's exception says nothing of why, as a browser's does not
+      this._seams.log('error', message);
+      throw new DomError(
+        (error as Error)?.name === 'TimeoutError'
+          ? 'TimeoutError'
+          : 'NetworkError',
+        message,
+      );
+    }
+  }
+
+  /** `_fetchFor`, for `_syncRequest`: the same hops, with this thread asleep
+   *  where that awaits. A service worker hears nothing of it: its registry is
+   *  on this thread. */
+  private _fetchNow(request: PageRequest, timeout: number): FetchResponse {
+    this._checkRequest(request);
+    const until = performance.now() + timeout;
+    const send = (plain: FetchRequest): FetchResponse => {
+      if (!connectAllowed(this._cspPolicies(), plain.url, this._origin())) {
+        throw new TypeError(
+          `${plain.url} is refused by the document's Content Security Policy.`,
+        );
+      }
+      const left = until - performance.now();
+      if (this._seams.fetchSync) return this._seams.fetchSync(plain, left);
+      const network = this._seams.syncNetwork;
+      if (!network) throw new TypeError('Failed to fetch');
+      // a frame's request is the frame's, and its site for cookies the page's
+      const client = { ...plain, client: this.url };
+      return fetchSync(network, client, this.top ?? this.url, left);
+    };
+    const hops = this._hops(request);
+    let step = hops.next();
+    while (!step.done) step = hops.next(send(step.value));
+    return step.value;
   }
 
   /** What CORS remembers of the preflights this page made. */
@@ -8740,15 +8836,7 @@ export class DomHost {
     request: PageRequest,
     signal: AbortSignalLike,
   ): Promise<FetchResponse> {
-    const page = this._origin();
-    try {
-      new URL(request.url);
-    } catch {
-      throw new TypeError('Failed to fetch');
-    }
-    if (forbiddenMethod(request.method)) {
-      throw new TypeError('Failed to fetch');
-    }
+    this._checkRequest(request);
     // a controlled client's request goes to its worker before CORS asks
     // anything of it (Fetch 4.3, "HTTP fetch")
     if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
@@ -8758,6 +8846,37 @@ export class DomHost {
       );
       if (answered) return this._fromWorker(answered, request);
     }
+    const hops = this._hops(request);
+    let step = hops.next();
+    while (!step.done) {
+      step = hops.next(await this._seams.fetch(step.value, signal));
+    }
+    return step.value;
+  }
+
+  /** What no page's request may be, whichever way it is waited for. */
+  private _checkRequest(request: PageRequest): void {
+    try {
+      new URL(request.url);
+    } catch {
+      throw new TypeError('Failed to fetch');
+    }
+    if (forbiddenMethod(request.method)) {
+      throw new TypeError('Failed to fetch');
+    }
+  }
+
+  /**
+   * A page's request a hop at a time, as one body for both ways of waiting
+   * for it: this yields each request the network has to make and is resumed
+   * with what it answered. So a synchronous request (`_fetchNow`) is held to
+   * every rule an asynchronous one (`_fetchFor`) is, at every hop, and the
+   * two differ only in how they wait.
+   */
+  private *_hops(
+    request: PageRequest,
+  ): Generator<FetchRequest, FetchResponse, FetchResponse> {
+    const page = this._origin();
     const urls: string[] = [];
     let hop: Hop = {
       url: request.url,
@@ -8804,30 +8923,27 @@ export class DomHost {
           hop.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
         );
         if (!SIMPLE_METHODS.has(hop.method) || unsafe.length) {
-          await this._preflight(hop, request, unsafe, origin, signal);
+          yield* this._preflight(hop, request, unsafe, origin);
         }
       }
-      const response = await this._seams.fetch(
-        {
-          url: hop.url,
-          method: hop.method,
-          headers: hop.headers,
-          body: hop.body,
-          ...(hop.bytes ? { bytes: hop.bytes } : {}),
-          ...(request.stream ? { stream: true } : {}),
-          ...(hop.streamedBody ? { streamedBody: true } : {}),
-          // `same-origin`'s are a request's while it has not left its origin
-          // (Fetch 4.5): one that came back from another carries none
-          credentials:
-            request.credentials === 'include' ||
-            (request.credentials === 'same-origin' && tainting === 'basic')
-              ? 'include'
-              : 'omit',
-          redirect: 'manual',
-          ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
-        },
-        signal,
-      );
+      const response: FetchResponse = yield {
+        url: hop.url,
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body,
+        ...(hop.bytes ? { bytes: hop.bytes } : {}),
+        ...(request.stream ? { stream: true } : {}),
+        ...(hop.streamedBody ? { streamedBody: true } : {}),
+        // `same-origin`'s are a request's while it has not left its origin
+        // (Fetch 4.5): one that came back from another carries none
+        credentials:
+          request.credentials === 'include' ||
+          (request.credentials === 'same-origin' && tainting === 'basic')
+            ? 'include'
+            : 'omit',
+        redirect: 'manual',
+        ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
+      };
       if (response.redirected && request.redirect === 'error') {
         release(response);
         throw new TypeError('Failed to fetch');
@@ -9141,13 +9257,12 @@ export class DomHost {
 
   /** Ask another origin whether a request that is not a simple one may be
    *  made (Fetch 4.9, "CORS-preflight fetch"), unless it said so lately. */
-  private async _preflight(
+  private *_preflight(
     hop: Hop,
     request: PageRequest,
     unsafe: string[],
     origin: string,
-    signal: AbortSignalLike,
-  ): Promise<void> {
+  ): Generator<FetchRequest, void, FetchResponse> {
     const include = request.credentials === 'include';
     const key = `${origin}\u0000${hop.url}\u0000${include}`;
     const kept = this._preflights.get(key);
@@ -9174,18 +9289,15 @@ export class DomHost {
       headers.push(['access-control-request-headers', unsafe.join(',')]);
     }
     // a preflight carries no cookies (Fetch 4.9)
-    const response = await this._seams.fetch(
-      {
-        url: hop.url,
-        method: 'OPTIONS',
-        headers,
-        body: null,
-        credentials: 'omit',
-        redirect: 'manual',
-        ...(origin === 'null' ? { opaqueOrigin: true } : {}),
-      },
-      signal,
-    );
+    const response: FetchResponse = yield {
+      url: hop.url,
+      method: 'OPTIONS',
+      headers,
+      body: null,
+      credentials: 'omit',
+      redirect: 'manual',
+      ...(origin === 'null' ? { opaqueOrigin: true } : {}),
+    };
     const failed = (why: string) =>
       new CorsError(
         `Response to preflight request doesn't pass access control check: ${why}`,

@@ -12,16 +12,16 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
-import { isBun, nodeModule, runtimeProcess } from './platform.js';
+import { nodeModule, threadEntry } from './platform.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
   MessagePortLike as MessagePort,
   UrlClass,
-  UrlLike,
   WorkerLike,
   WorkerThreadsModule,
 } from './platform.js';
+import { wholeBytes } from './host.js';
 import type {
   FetchRequest,
   FetchResponse,
@@ -170,41 +170,10 @@ export type ToWorker =
   | SocketTell
   | ChannelRelay;
 
-/** Where this module is, and so the thread's: `dist/`'s JavaScript, or —
- *  run from the source, as the suite runs it — the TypeScript beside it. */
-const HERE = (import.meta as { url: string }).url;
-const ENTRY = new URL(
-  HERE.endsWith('.ts') ? './worker-thread.ts' : './worker-thread.js',
-  HERE,
+const threadSource = threadEntry(
+  (import.meta as { url: string }).url,
+  'worker-thread',
 );
-
-/**
- * How a thread is started where the runtime does not hand a thread the
- * hooks that load TypeScript: Bun reads it as it is, and Node from 22 on
- * passes the main thread's module hooks — tsx's — on to a worker, but
- * Node 20 does not, and a thread there could not load its own entry. So on
- * a Node that does not, the thread registers tsx's hooks itself before it
- * imports the entry, where tsx is to be had.
- */
-function threadSource(): UrlLike | string {
-  const node = isBun()
-    ? null
-    : Number(runtimeProcess()?.versions.node?.split('.')[0] ?? 0);
-  if (node === null || node >= 22 || !HERE.endsWith('.ts')) return ENTRY;
-  let tsx: string | null = null;
-  try {
-    tsx = (import.meta as { resolve(specifier: string): string }).resolve(
-      'tsx/esm/api',
-    );
-  } catch {
-    return ENTRY;
-  }
-  return (
-    `import(${JSON.stringify(tsx)})` +
-    '.then((api) => api.register())' +
-    `.then(() => import(${JSON.stringify(ENTRY.href)}));`
-  );
-}
 
 /** Take a notification down, whatever the host's hook makes of it. */
 function closeNotification(shown: HtmlShownNotification | null | undefined) {
@@ -214,6 +183,14 @@ function closeNotification(shown: HtmlShownNotification | null | undefined) {
     // nothing is left to hear it did not close
   }
 }
+
+/** What a thread asks on its synchronous port, where it sleeps until it is
+ *  answered: an `importScripts`, or a synchronous `XMLHttpRequest`, which the
+ *  page's network is awake to make. */
+type SyncAsk =
+  | { url: string }
+  | { id: number; request: FetchRequest }
+  | { id: number; abort: true };
 
 interface Running {
   thread: WorkerLike;
@@ -321,13 +298,40 @@ export class PageWorkers implements PageWorkersLike {
     });
     if (this._background) thread.unref();
     const word = new Int32Array(flag);
-    port1.on('message', (m: { url: string }) => {
+    /** What a synchronous request of the thread's is waiting on. */
+    let waited: AbortController | null = null;
+    const answer = (message: unknown): void => {
+      port1.postMessage(message);
+      Atomics.store(word, 0, 1);
+      Atomics.notify(word, 0);
+    };
+    port1.on('message', (m: SyncAsk) => {
+      if ('abort' in m) {
+        waited?.abort();
+        return;
+      }
+      if ('request' in m) {
+        const controller = new AbortController();
+        waited = controller;
+        void this._seams
+          .fetch(m.request, controller.signal, id)
+          .then(async (response) => {
+            const { chunks: _chunks, ...rest } = response;
+            const bytes = await wholeBytes(response);
+            return { ...rest, bytes };
+          })
+          .then(
+            (response) => answer({ id: m.id, response }),
+            (error: unknown) =>
+              answer({
+                id: m.id,
+                failed: String((error as Error)?.message ?? error),
+              }),
+          );
+        return;
+      }
       void (this._seams.script?.(id, m.url) ?? this._load(m.url, id)).then(
-        (source) => {
-          port1.postMessage({ source });
-          Atomics.store(word, 0, 1);
-          Atomics.notify(word, 0);
-        },
+        (source) => answer({ source }),
       );
     });
     if (this._background) port1.unref?.();

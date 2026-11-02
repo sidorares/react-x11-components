@@ -227,6 +227,9 @@ export function useScripts(
     get language() {
       return latest.current.language;
     },
+    get syncNetwork() {
+      return latest.current.syncNetwork;
+    },
     get charset() {
       return latest.current.charset;
     },

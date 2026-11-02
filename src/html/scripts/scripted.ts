@@ -23,6 +23,7 @@
 // Light on purpose: `<Html>` imports it whether or not a document turns
 // scripts on, and the engine is loaded only once one does (`./hook.ts`).
 import React, { useCallback, useMemo, useRef } from 'react';
+import type { HtmlSyncNetwork } from '../network.js';
 import type { ReactNode } from 'react';
 import type { DrawnNode, MouseEvent as X11MouseEvent } from 'react-x11';
 
@@ -254,6 +255,14 @@ export interface HtmlScripts {
    * is asked.
    */
   webSocket?: HtmlWebSocket;
+  /**
+   * What a page's synchronous `XMLHttpRequest`s are made through, on a thread
+   * that stays awake while the page's sleeps (`HtmlNetwork.syncNetwork`, which
+   * `useHtmlNetwork(url)` hands). Default: none, and a page has only
+   * asynchronous ones: `open` with `async` false throws, as it always did. A
+   * web worker's are the page's `fetch`'s, and need none of this.
+   */
+  syncNetwork?: HtmlSyncNetwork | null;
   /**
    * The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard`
    * reach (`HtmlClipboard`). Default: none, so a `copy` a page cancels puts
@@ -596,6 +605,7 @@ export function useScriptedHtml(
     serviceWorkers: config.serviceWorkers ?? false,
     webTransport: config.webTransport ?? NO_WEBTRANSPORT,
     webSocket: config.webSocket ?? NO_WEBSOCKET,
+    syncNetwork: config.syncNetwork ?? null,
     clipboard: config.clipboard,
     notifications: config.notifications,
     permissions: config.permissions,
