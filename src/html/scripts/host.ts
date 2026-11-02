@@ -30,6 +30,7 @@ import {
   ProcessingInstruction,
   Text,
 } from 'domhandler';
+import { isTag } from 'domhandler';
 import type { AnyNode, ChildNode, ParentNode } from 'domhandler';
 import type { Rect } from 'react-x11';
 
@@ -58,6 +59,7 @@ import {
   assignedSlot,
   isDefinedElement,
   isForeign,
+  isStyleOrScript,
   inActiveTransition,
   isModal,
   setActiveTransition,
@@ -85,6 +87,7 @@ import {
   treeGeneration,
   treesChanged,
   isClassicScriptType,
+  namespaceIn,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -104,7 +107,7 @@ import {
   cssomShorthands,
   cssomStyle,
 } from '../computed.js';
-import { fontQuery } from '../css/style.js';
+import { declaredProperties, fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { CanvasText } from '../canvas-text.js';
 import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
@@ -130,7 +133,7 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
-import { svgAnswer } from './svg-geometry.js';
+import { drawnWithin, svgAnswer } from './svg-geometry.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
@@ -190,6 +193,9 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
+import { clipboardOfWire, clipboardWire } from '../clipboard.js';
+import type { HtmlClipboard } from '../clipboard.js';
+import type { HtmlPermissions } from '../permissions.js';
 import * as ntk from 'react-x11/ntk';
 import { decodeGif } from '../gif.js';
 import { encodePng } from './png.js';
@@ -399,6 +405,9 @@ export interface HandleInternals {
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** What is selected in the document, as it is drawn: what a copy of it
+   *  puts on the clipboard. */
+  selectedText(): string;
   /** `document.write` from the script the parse waits at, into the input
    *  stream after it (`HtmlViewNode.parserWrite`): false where the parse
    *  waits at no such script. */
@@ -442,6 +451,8 @@ export interface HandleInternals {
   svgMeasure(): SvgMeasure | null;
   /** What a canvas's context asks of the fonts. */
   canvasText(): CanvasText | null;
+  /** Where what a `<foreignObject>` holds was laid out in it. */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null;
   /** The CSS animations under way on an element, or on what it holds as
    *  well, or in the whole document for null, as a page's
    *  `getAnimations()` lists them (`HtmlViewNode.cssAnimationsOf`). */
@@ -677,6 +688,12 @@ export interface HostSeams {
   /** What a page's `WebSocket`s are carried over (`HtmlScripts`'
    *  `webSocket`). Absent, every socket fails, as with no network. */
   webSocket?: HtmlWebSocket;
+  /** The clipboard a page's `copy`, `paste` and `navigator.clipboard` reach
+   *  (`HtmlScripts`' `clipboard`). Absent, they reach none. */
+  clipboard?: HtmlClipboard;
+  /** What a page has been allowed (`HtmlScripts`' `permissions`). Absent,
+   *  nothing has, and asking refuses. */
+  permissions?: HtmlPermissions;
   /** What a page's `RTCPeerConnection`s are carried over (`HtmlScripts`'
    *  `webRTC`). Absent, no stack: an operation that needs one rejects. */
   webRTC?: HtmlWebRTC;
@@ -842,18 +859,69 @@ function elementsIn(
  *  parent's tree. */
 let edits = 0;
 
-/** The names HTML and SVG both have, which the parser keeps no namespace
- *  for: what is around such an element says whose it is. */
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const HOMONYMS = new Set(['a', 'title']);
-const inDrawing = (el: Element): boolean => {
-  for (let at = el.parent; at instanceof Element; at = at.parent) {
-    const name = at.name.toLowerCase();
-    if (name === 'svg') return true;
-    if (name === 'foreignobject') return false;
-  }
-  return false;
+/** css-select's view of a tree for a page's own query. A selector's type is
+ *  lowercased and the parser keeps SVG's capitals, so without this
+ *  `querySelector('foreignObject')` and d3's `select` found nothing. */
+const QUERY_ADAPTER = {
+  ...DomUtils,
+  isTag,
+  getName: (el: Element): string =>
+    el.name.length < 6 || !/[A-Z]/.test(el.name)
+      ? el.name
+      : el.name.toLowerCase(),
 };
+
+/** Whether an element the parser made stands in a drawing: the parser keeps
+ *  a namespace only for what an HTML document reads otherwise, so what is
+ *  around it says whose it is. A `<script>` is HTML's here, which is where
+ *  a page's scripts are run from. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const inDrawing = (el: Element): boolean =>
+  el.name !== 'script' &&
+  !MADE_AS_HTML.has(el) &&
+  namespaceIn(el.parent) === SVG_NS;
+
+/** What a page's `createElement` made, and each copy of it: HTML's, wherever
+ *  it goes, and in a drawing nothing else says so, as a copy first heard of
+ *  there is no wrapper that already knows. */
+const MADE_AS_HTML = new WeakSet<Element>();
+/** The same of a copy, which is a tree alike to what it copies. */
+const copyMadeAsHtml = (from: AnyNode, to: AnyNode): void => {
+  if (from instanceof Element && MADE_AS_HTML.has(from)) {
+    MADE_AS_HTML.add(to as Element);
+  }
+  const kids = (from as ParentNode).children;
+  const copies = (to as ParentNode).children;
+  if (!kids || !copies) return;
+  for (let i = 0; i < copies.length; i += 1) {
+    copyMadeAsHtml(kids[i], copies[i]);
+  }
+};
+
+/** A document's element where it is a drawing: a document of SVG's own, as
+ *  no document HTML's parser makes is. */
+function drawingRootOf(doc: ParentNode): Element | null {
+  const root = doc.children.find((k) => k instanceof Element) as
+    Element | undefined;
+  return root?.name === 'svg' && root.namespace === SVG_NS ? root : null;
+}
+
+/** The element a document's title is read from (HTML 3.1.3): the first
+ *  `<title>` of HTML's, wherever it stands, and in a drawing that is a
+ *  document, the first `<title>` of the drawing's own. */
+function titleOf(doc: ParentNode): Element | null {
+  const root = drawingRootOf(doc);
+  if (root) {
+    return (root.children.find(
+      (k) =>
+        k instanceof Element && k.name === 'title' && k.namespace === SVG_NS,
+    ) ?? null) as Element | null;
+  }
+  return DomUtils.findOne(
+    (el) => el.name === 'title' && !isForeign(el),
+    doc.children,
+  );
+}
 
 /** The document an XML parser that met a fatal error makes: Gecko's. */
 function parserError(): Element {
@@ -1014,6 +1082,11 @@ function base64Of(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     'base64',
   );
+}
+
+/** Bytes from what crossed as base64. */
+function bytesOf(text: string): Uint8Array {
+  return Buffer.from(text, 'base64');
 }
 
 /** The methods a request may have and be a simple one (Fetch 2.2.1). */
@@ -1947,6 +2020,7 @@ export class DomHost {
       metaKey: event.metaKey,
       submitter: event.submitter ? this.idOf(event.submitter) : 0,
       relatedTarget: event.relatedTarget ? this.idOf(event.relatedTarget) : 0,
+      clipboard: event.clipboard && clipboardWire(event.clipboard, base64Of),
     });
     return answer !== false;
   }
@@ -2380,6 +2454,7 @@ export class DomHost {
   /** A copy of a node, its document's (DOM 4.5, "clone"). */
   private _clone(node: AnyNode, deep: boolean): ChildNode {
     const clone = node.cloneNode(deep) as ChildNode;
+    copyMadeAsHtml(node, clone);
     this._cloneShadows(node, clone, deep);
     this._copiedScripts(node, clone, deep);
     const owner = this._ownerOf(node);
@@ -2399,6 +2474,7 @@ export class DomHost {
   private _copyOf(child: ChildNode, every: boolean): ChildNode {
     if (!every) return this._clone(child, true);
     const copy = child.cloneNode(true) as ChildNode;
+    copyMadeAsHtml(child, copy);
     this._cloneShadows(child, copy, true, true);
     this._copiedScripts(child, copy, true);
     return copy;
@@ -2626,9 +2702,7 @@ export class DomHost {
         if (node instanceof Element) {
           // a namespace the element was made in, where it says one: `~`
           // for none
-          const ns =
-            node.namespace ??
-            (HOMONYMS.has(node.name) && inDrawing(node) ? SVG_NS : undefined);
+          const ns = node.namespace ?? (inDrawing(node) ? SVG_NS : undefined);
           return ns === undefined
             ? `1|${node.name}`
             : `1|${node.name}\u0000${ns || '~'}`;
@@ -2732,6 +2806,7 @@ export class DomHost {
         if (a === 'element') {
           const el = new Element(text(b), {}, []);
           if (typeof d === 'string' && d) el.namespace = d === '~' ? '' : d;
+          else MADE_AS_HTML.add(el);
           if (el.name === 'script') this._forceAsync.set(el, true);
           node = el;
         } else if (a === 'text') node = new Text(text(b));
@@ -3837,6 +3912,8 @@ export class DomHost {
             ])
           : '';
       }
+      case 'selectedText':
+        return this._seams.handle.selectedText?.() ?? null;
       // the page's selection, drawn as the reader's is
       case 'setDocumentSelection': {
         const points = text(a)
@@ -3926,7 +4003,7 @@ export class DomHost {
         return (
           DomUtils.findAll(
             (el) =>
-              el.name === 'style' ||
+              (el.name === 'style' && isStyleOrScript(el)) ||
               (el.name === 'link' &&
                 !isForeign(el) &&
                 /(?:^|\s)stylesheet(?:\s|$)/i.test(el.attribs.rel ?? '') &&
@@ -4042,9 +4119,8 @@ export class DomHost {
         return null;
       }
       case 'title': {
-        const title = DomUtils.findOne(
-          (el) => el.name === 'title',
-          (a ? (this._node(a) as ParentNode) : this.document).children,
+        const title = titleOf(
+          a ? (this._node(a) as ParentNode) : this.document,
         );
         return title
           ? DomUtils.textContent(title).replace(/\s+/g, ' ').trim()
@@ -4052,15 +4128,18 @@ export class DomHost {
       }
       case 'setTitle': {
         const doc = b ? (this._node(b) as ParentNode) : this.document;
-        let title = DomUtils.findOne((el) => el.name === 'title', doc.children);
+        let title = titleOf(doc);
         if (!title) {
+          const root = drawingRootOf(doc);
           const head =
+            root ??
             DomUtils.findOne((el) => el.name === 'head', doc.children) ??
             (doc.children.find((k) => k instanceof Element) as
               Element | undefined);
           if (!head) return null;
           title = new Element('title', {}, []);
-          this._put(head, [title], null);
+          if (root) title.namespace = SVG_NS;
+          this._put(head, [title], root ? (root.children[0] ?? null) : null);
         }
         this._replaceAll(title, [new Text(text(a))]);
         if (doc === this.document) this._seams.title(text(a) || null);
@@ -4169,7 +4248,9 @@ export class DomHost {
       }
       case 'rect': {
         this.flush();
-        const rect = this._seams.handle.elementRect(this._element(a));
+        const element = this._element(a);
+        const rect =
+          this._seams.handle.elementRect(element) ?? this._foreignRect(element);
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
       // whether no scroll of the viewport moves an element: one fixed to
@@ -4211,6 +4292,17 @@ export class DomHost {
         return r
           ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
           : '';
+      }
+      // every name a style has an attribute for, a computed style's list
+      // with what it leaves out
+      case 'styleProperties': {
+        const style = this._seams.handle.computedStyle(this._element(a), null);
+        if (!style) return '';
+        return [
+          ...Object.keys(style),
+          ...SHORTHAND_NAMES,
+          ...declaredProperties(),
+        ].join(',');
       }
       case 'computed': {
         this.flush();
@@ -5103,6 +5195,16 @@ export class DomHost {
         return crypto.randomUUID();
       case 'secureContext':
         return this._secureContext();
+      case 'clipboard':
+        return this._clipboardOp(text(a), b, text(c));
+      case 'permission':
+        return (
+          this._seams.permissions?.state(text(a), this._origin()) ?? 'prompt'
+        );
+      case 'featureAllowed':
+        return this._featureAllowed(text(a));
+      case 'fullyActive':
+        return this._fullyActive();
       // a page's `crypto.subtle` (`subtle.ts`): what it asks the runtime,
       // whose errors are told, and what opens a key
       case 'crypto':
@@ -5389,7 +5491,7 @@ export class DomHost {
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
-    this._connected(nodes, false);
+    this._connected(nodes);
   }
 
   private _childList(
@@ -5640,10 +5742,12 @@ export class DomHost {
   /** The options a page's own query is compiled with (`_query`). */
   private _queryOptions(): ReturnType<DomHost['_selectOptions']> & {
     relativeSelector: false;
+    adapter: typeof QUERY_ADAPTER;
   } {
     return (this._queryOpts ??= {
       ...this._selectOptions(),
       relativeSelector: false,
+      adapter: QUERY_ADAPTER,
     });
   }
   private _queryOpts: ReturnType<DomHost['_queryOptions']> | null = null;
@@ -5728,6 +5832,16 @@ export class DomHost {
   private _canvasOf(id: Primitive): Element | null {
     const node = this._node(id) as Element;
     return node.attribs ? node : null;
+  }
+
+  /** Where what a `<foreignObject>` holds is drawn, through what the drawing
+   *  does to the object: mermaid and d3 size their labels from this. */
+  private _foreignRect(element: Element): Rect | null {
+    const handle = this._drawing(element) as Partial<HandleInternals> | null;
+    const measure = handle?.svgMeasure?.();
+    const inside = handle?.foreignRect?.(element);
+    if (!measure || !inside) return null;
+    return drawnWithin(inside.object, inside.rect, measure);
   }
 
   private _fontsOf(id: Primitive): Partial<HandleInternals> | null {
@@ -5919,7 +6033,9 @@ export class DomHost {
     };
     for (const el of elementsIn(doc, () => true)) {
       add(el.attribs.id, el);
-      if (NAMED_BY_NAME.has(el.name)) add(el.attribs.name, el);
+      if (NAMED_BY_NAME.has(el.name) && !isForeign(el)) {
+        add(el.attribs.name, el);
+      }
     }
     this._names.set(doc, { at, names });
     return names;
@@ -6510,7 +6626,9 @@ export class DomHost {
   /** A frame put in, loaded where it is in the document and has no
    *  document yet. */
   private _frameIn(frame: Element): void {
-    if (frame.name === 'object' && !frame.attribs.data) return;
+    if (isForeign(frame) || (frame.name === 'object' && !frame.attribs.data)) {
+      return;
+    }
     if (!this._frames.has(frame) && this._inDocument(frame)) {
       this._frameDocument(frame);
     }
@@ -6518,11 +6636,13 @@ export class DomHost {
 
   /** What a page's script put into its tree, as HTML's post-connection
    *  steps take it (DOM 4.2.3, "insert"), in tree order once all of it is
-   *  in: a frame loaded, a script prepared. What replaces all a parent
-   *  holds loads no frame here (`frames`), as it never has. */
-  private _connected(nodes: readonly AnyNode[], frames = true): void {
+   *  in: a frame loaded, a script prepared. `innerHTML` and
+   *  `replaceChildren` insert as `appendChild` does: a video site's player
+   *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
+   *  once a page read its `contentWindow`, and was an empty box. */
+  private _connected(nodes: readonly AnyNode[]): void {
     const found = DomUtils.findAll(
-      (el) => el.name === 'script' || (frames && FRAME_TAGS.has(el.name)),
+      (el) => el.name === 'script' || FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
     for (const el of found) {
@@ -6557,7 +6677,7 @@ export class DomHost {
    */
   private _prepareScript(el: Element): void {
     const exec = this.entries?.exec;
-    if (!exec || this.inert.has(el) || el.namespace) return;
+    if (!exec || this.inert.has(el) || !isStyleOrScript(el)) return;
     if (!this._inDocument(el)) return;
     const { attribs } = el;
     const type = attribs.type ?? '';
@@ -6614,7 +6734,10 @@ export class DomHost {
     while (top.parent) top = top.parent;
     const doc = top as Document;
     if (!this._frameOf.has(doc)) return null;
-    const styles = DomUtils.findAll((e) => e.name === 'style', doc.children);
+    const styles = DomUtils.findAll(
+      (e) => e.name === 'style' && isStyleOrScript(e),
+      doc.children,
+    );
     const texts = styles.map((s) => DomUtils.textContent(s));
     // its viewport is the frame's content box, where the frame is drawn:
     // Acid3's media queries ask a frame of 0 by 0, then of 100 by 100
@@ -6743,7 +6866,8 @@ export class DomHost {
     markup: string,
     declarative = false,
   ): ChildNode[] {
-    const name = context instanceof Element ? context.name : '';
+    const name =
+      context instanceof Element && !isForeign(context) ? context.name : '';
     if (RAW_TEXT.has(name)) return markup ? [new Text(markup)] : [];
     if (name === 'textarea' || name === 'title') {
       const held = parseFragment(`<${name}>${markup}</${name}>`).find(
@@ -6932,6 +7056,80 @@ export class DomHost {
       trustworthy(this._s.top ?? this.url) &&
       (!/^(http|ws):/i.test(this.url) || trustworthy(this.url))
     );
+  }
+
+  /**
+   * A page's clipboard: whether the host handed one, a read and a write of
+   * it, and a request for what guards the read. The answer comes as
+   * `__clipboard`, under the number the page asked with: a write told as 0
+   * is a `copy`'s, whose page has nothing waiting on it.
+   */
+  private _clipboardOp(
+    what: string,
+    id: Primitive,
+    payload: string,
+  ): Primitive {
+    const seam = this._seams.clipboard;
+    if (what === 'on') return seam !== undefined;
+    const tell = (ok: boolean, value?: string): void => {
+      if (!this._disposed && id) {
+        this.entries?.call('__clipboard', [id, ok, value ?? null]);
+      }
+    };
+    if (what === 'request') {
+      const asked = this._seams.permissions?.request(payload, this._origin());
+      if (!asked) tell(true, 'denied');
+      else {
+        asked.then(
+          (state) => tell(true, state),
+          () => tell(true, 'denied'),
+        );
+      }
+      return null;
+    }
+    if (!seam) {
+      tell(false, 'There is no clipboard.');
+      return null;
+    }
+    const done =
+      what === 'read'
+        ? seam
+            .read()
+            .then((data) => JSON.stringify(clipboardWire(data, base64Of)))
+        : seam
+            .write(clipboardOfWire(JSON.parse(payload), bytesOf))
+            .then(() => undefined);
+    done.then(
+      (value) => tell(true, value),
+      () =>
+        tell(
+          false,
+          what === 'read'
+            ? 'Read permission denied.'
+            : 'Write permission denied.',
+        ),
+    );
+    return null;
+  }
+
+  /** Whether a feature whose default allowlist is the document's own origin
+   *  reaches this document (Permissions Policy 8.8): every document of the
+   *  top's origin, and any other whose frame names it in `allow`. */
+  private _featureAllowed(feature: string): boolean {
+    const frame = this._frameOf.get(this.document);
+    if (!frame) return true;
+    const top = this._s.top;
+    if (top && originOf(top) === this._origin()) return true;
+    return (frame.attribs.allow ?? '')
+      .split(';')
+      .some((entry) => entry.trim().split(/\s+/)[0] === feature);
+  }
+
+  /** Whether the document is still where a user can see it: not one whose
+   *  frame has gone. */
+  private _fullyActive(): boolean {
+    const frame = this._frameOf.get(this.document);
+    return !frame || this._inDocument(frame);
   }
 
   private _crypto: PageCrypto | null = null;

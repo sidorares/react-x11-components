@@ -43,6 +43,8 @@ import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
 import type { installWebCrypto } from './webcrypto.js';
+import type { installDataTransfer } from './datatransfer.js';
+import type { installClipboard } from './clipboard.js';
 
 // The page context's own built-ins this reaches by name, for the type
 // checker alone: they are the context's at run time (see above), and
@@ -79,6 +81,8 @@ export function installDom(
   mse: typeof installMse,
   geometry: typeof installGeometry,
   webcrypto: typeof installWebCrypto,
+  transfers: typeof installDataTransfer,
+  clipboards: typeof installClipboard,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -824,11 +828,16 @@ export function installDom(
     readonly data: string | null;
     readonly inputType: string;
     readonly isComposing: boolean;
+    readonly dataTransfer: Any;
     constructor(type: string, init: Any = {}) {
       super(type, init);
       this.data = init.data ?? null;
       this.inputType = String(init.inputType ?? '');
       this.isComposing = !!init.isComposing;
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+    getTargetRanges(): Any[] {
+      return [];
     }
   }
   class SubmitEvent extends Event {
@@ -5040,7 +5049,8 @@ export function installDom(
   const itemsOf = (state: Any): Any[] => {
     if (
       state.read &&
-      state.at !== (state.readsAttributes ? attrEpoch : treeEpoch)
+      (state.unkept ||
+        state.at !== (state.readsAttributes ? attrEpoch : treeEpoch))
     ) {
       state.items = state.read();
       state.at = state.readsAttributes ? attrEpoch : treeEpoch;
@@ -6137,6 +6147,20 @@ export function installDom(
    *  `float`, a word JavaScript once kept for itself. */
   const blockProperty = (key: string): string =>
     key === 'cssFloat' ? 'float' : cssName(kebab(key));
+  /** The names of the properties a style has, once a page looks for one. */
+  let styleProperties: Set<string> | null = null;
+  /** Whether a style has an attribute of a name, which a page asks with
+   *  `in`: Vue 2 writes `style[name]` only where it finds `name` there, or a
+   *  prefixed one, and jQuery the same, so a style that had none took every
+   *  `:style` binding for a property with no name. */
+  const isStyleProperty = (key: string): boolean => {
+    if (!styleProperties) {
+      const names = str(call('styleProperties', document.documentElement?._id));
+      if (!names) return false;
+      styleProperties = new Set(names.split(','));
+    }
+    return !key.startsWith('--') && styleProperties.has(blockProperty(key));
+  };
   /**
    * A declaration block a page may write, an element's or a rule's: its
    * names by index, and each property read and set as an attribute of its
@@ -6165,6 +6189,12 @@ export function installDom(
           '',
         );
         return true;
+      },
+      has(t, key) {
+        if (key in t) return true;
+        if (typeof key !== 'string') return false;
+        const at = index(key);
+        return at >= 0 ? at < block.names().length : isStyleProperty(key);
       },
       ownKeys(t) {
         return [
@@ -15251,6 +15281,15 @@ export function installDom(
   for (const name of ['media', 'type']) {
     Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
   }
+  // an HTML element's `title` is every HTML element's
+  for (const name of ['media', 'type', 'title']) {
+    Object.defineProperty(SVGStyleElement.prototype, name, reflect(name));
+  }
+  Object.defineProperty(
+    SVGStyleElement.prototype,
+    'sheet',
+    Object.getOwnPropertyDescriptor(HTMLStyleElement.prototype, 'sheet')!,
+  );
   Object.defineProperty(HTMLLinkElement.prototype, 'sheet', {
     get(this: Any): Any {
       return this.isConnected &&
@@ -16221,7 +16260,11 @@ export function installDom(
     }
     get scripts(): Any {
       return heldList(this, 'scripts', () =>
-        liveCollection(() => wrapAll(call('byTag', this._id, 'script'))),
+        liveCollection(() =>
+          wrapAll(call('byTag', this._id, 'script')).filter(
+            (el: Any) => el.namespaceURI === HTML_NS,
+          ),
+        ),
       );
     }
     get doctype(): Any {
@@ -16249,6 +16292,7 @@ export function installDom(
         );
       }
       const name = commandName(id);
+      if (CLIPBOARD_COMMANDS.has(name)) return clipboardCommand(name);
       if (!commandEnabled(name)) return false;
       if (name === 'selectall') selectAllCommand();
       else COMMANDS[name](commandTarget(), str(value));
@@ -17752,6 +17796,9 @@ export function installDom(
     'keydown',
     'keyup',
     'keypress',
+    'copy',
+    'cut',
+    'paste',
     'input',
     'change',
     'select',
@@ -19190,19 +19237,22 @@ export function installDom(
     let closing = false;
     const hand = (): void => {
       wanted = false;
-      if (held.length === 1) controller.enqueue(held[0]);
+      // taken first: with a second read waiting, `enqueue` pulls from inside
+      // itself, and `pulled` must find nothing left to hand that read
+      const pieces = held;
+      held = [];
+      if (pieces.length === 1) controller.enqueue(pieces[0]);
       else {
         let size = 0;
-        for (const piece of held) size += piece.length;
+        for (const piece of pieces) size += piece.length;
         const whole = new Uint8Array(size);
         let at = 0;
-        for (const piece of held) {
+        for (const piece of pieces) {
           whole.set(piece, at);
           at += piece.length;
         }
         controller.enqueue(whole);
       }
-      held = [];
     };
     return {
       arrived(bytes: Uint8Array): void {
@@ -21690,6 +21740,13 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone: a worker has no clipboard and nothing dragged to it
+    'DataTransfer',
+    'DataTransferItem',
+    'DataTransferItemList',
+    'ClipboardEvent',
+    'Clipboard',
+    'ClipboardItem',
     // WebRTC's and Media Capture's interfaces but the data channel's
     // (`webrtc.ts`, `mediastream.ts`), which a worker can be handed
     'RTCPeerConnection',
@@ -22468,6 +22525,27 @@ export function installDom(
       this.lastModified = Number(options?.lastModified ?? Date.now());
     }
   }
+
+  // --- what a clipboard and a drag carry -----------------------------------------
+  //
+  // `datatransfer.ts`: the data store, its mode what the event carrying it
+  // says, and the events.
+  const TRANSFER = transfers({
+    DOMException,
+    Event,
+    File,
+    FileList,
+    // what a store holds is no tree's, so no count says it moved
+    listOf: (Proto: Any, read: () => Any[]) => {
+      const list = listMade(Proto, [], read, false, null);
+      listState(list).unkept = true;
+      return list;
+    },
+    idlAttributes,
+    task: (fn: () => void) => {
+      setTimer(fn, 0, [], false);
+    },
+  });
 
   /** A blob's bytes as text in the encoding a label names, else its
    *  type's charset, else UTF-8 (File API 6.6, "package data"). */
@@ -26211,10 +26289,8 @@ export function installDom(
     get name(): string {
       return this._name;
     }
-    /** Nothing here has been granted, and nothing refused: the answer a
-     *  browser gives before it has asked. */
     get state(): string {
-      return 'prompt';
+      return permissionState(this._name);
     }
   }
   idlAttributes(PermissionStatus);
@@ -26252,6 +26328,11 @@ export function installDom(
       });
     }
   }
+  /** What a permission is for this document, as the host has it: `prompt`
+   *  where nothing has been granted or refused, which is the answer a
+   *  browser gives before it has asked. */
+  const permissionState = (name: string): string =>
+    str(call('permission', name) ?? 'prompt');
   const madePermissions = (): Any => {
     makingPermissions = true;
     try {
@@ -26260,6 +26341,32 @@ export function installDom(
       makingPermissions = false;
     }
   };
+  // --- the Async Clipboard API ---------------------------------------------------
+  //
+  // `clipboard.ts`, what it reads and writes the host's (`scripts.clipboard`,
+  // the `clipboard` op and the `__clipboard` entry).
+  const clipboardEntries: [string, () => Primitive][] = [];
+  const CLIP = clipboards({
+    call: call as Any,
+    // its entries are registered with the rest, below
+    entry: (name: string, fn: () => Any) => {
+      clipboardEntries.push([name, fn]);
+    },
+    input: () => input(),
+    DOMException,
+    EventTarget,
+    Blob,
+    bytesOfBase64,
+    base64OfBytes,
+    textOf: (bytes: Uint8Array) => new TextDecoder().decode(bytes),
+    hasTransientActivation: () => hasTransientActivation(),
+    allowed: (feature: string) => call('featureAllowed', feature) === true,
+    fullyActive: () => call('fullyActive') !== false,
+    sanitize: (html: string) => sanitizedHtml(html),
+  });
+  /** Whether the host handed this document a clipboard. */
+  const hasClipboard = (): boolean => call('clipboard', 'on') === true;
+
   const navigator = {
     userAgent,
     appName: 'Netscape',
@@ -26288,6 +26395,14 @@ export function installDom(
     userActivation: new UserActivation(ACTIVATION_KEY),
     permissions: madePermissions(),
   };
+  // a secure context's alone, and only where the host has one to give
+  if (call('secureContext') === true && hasClipboard()) {
+    Object.defineProperty(navigator, 'clipboard', {
+      get: () => CLIP.clipboard,
+      enumerable: true,
+      configurable: true,
+    });
+  }
   // a page's service workers, where the host lets it have them and it is a
   // secure context; left out otherwise, as `clipboard` is
   const serviceWorkersOn =
@@ -30391,6 +30506,9 @@ export function installDom(
     return !before || breaksLine(before, keeps) ? after : null;
   };
 
+  /** Where text goes from one line to the next. */
+  const LINE_BREAK = /\r\n?|\n/;
+
   /** Put a line break in at a boundary point: a `<br>`, or a line feed
    *  where the host keeps them. The point after it. */
   const putBreak = (
@@ -30448,7 +30566,12 @@ export function installDom(
    * cancelled, and told as an `input`. Whether anything was told: false
    * where the selection is in no editing host.
    */
-  const edit = (host: Any, inputType: string, data: string | null): void => {
+  const edit = (
+    host: Any,
+    inputType: string,
+    data: string | null,
+    pasted: { text: string; transfer: Any } | null = null,
+  ): void => {
     const range = editRange(host);
     if (!range) return;
     const init = {
@@ -30458,6 +30581,7 @@ export function installDom(
       view: G,
       inputType,
       data,
+      dataTransfer: pasted?.transfer ?? null,
     };
     if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
     const back = inputType === 'deleteContentBackward';
@@ -30490,7 +30614,29 @@ export function installDom(
       if (!range.collapsed) range.deleteContents();
       const node = range.startContainer;
       const offset = range.startOffset;
-      if (inputType === 'insertText' && data !== null) {
+      if (pasted) {
+        const held = placeholderAfter(host, keeps, node, offset);
+        if (held) dropUnit(held);
+        const lines = keeps ? [pasted.text] : pasted.text.split(LINE_BREAK);
+        let n = node;
+        let o = offset;
+        lines.forEach((line, i) => {
+          if (i) [n, o] = putBreak(keeps, n, o);
+          if (!line) return;
+          const [text, at] = textAt(n, o);
+          text.insertData(at, line);
+          n = text;
+          o = at + line.length;
+        });
+        if (
+          lines.length > 1 &&
+          !lines[lines.length - 1] &&
+          !unitBeside(host, keeps, n, o, false, true)
+        ) {
+          putBreak(keeps, n, o);
+        }
+        selection.collapse(n, o);
+      } else if (inputType === 'insertText' && data !== null) {
         // what is typed on a line a placeholder holds takes its place
         const held = placeholderAfter(host, keeps, node, offset);
         if (held) dropUnit(held);
@@ -30597,10 +30743,240 @@ export function installDom(
   const commandName = (id: Any): string => str(id).toLowerCase();
   const commandSupported = (name: string): boolean =>
     name === 'selectall' ||
+    (CLIPBOARD_COMMANDS.has(name) && hasClipboard()) ||
     Object.prototype.hasOwnProperty.call(COMMANDS, name);
   const commandEnabled = (name: string): boolean =>
     name === 'selectall' ||
-    (commandSupported(name) && commandTarget() !== null);
+    (CLIPBOARD_COMMANDS.has(name)
+      ? hasClipboard() && hasTransientActivation()
+      : commandSupported(name) && commandTarget() !== null);
+
+  // --- copy, cut and paste ---------------------------------------------------------
+  //
+  // Clipboard API and events, 5: the chord, or `execCommand`, is told as an
+  // event a page may cancel, with a data store the page writes to or reads
+  // from. Its text goes to the clipboard or comes off it through the host's
+  // `scripts.clipboard`; with none, a `copy` a page cancelled reaches nothing
+  // and a `paste` is told empty, and what the chord does in a field is core's
+  // as it always was.
+
+  /** `document.execCommand`'s, a user's gesture behind each. A page cannot
+   *  ask for a paste (Clipboard API and events, 11, "paste"). */
+  const CLIPBOARD_COMMANDS = new Set(['copy', 'cut']);
+
+  /** A field whose text a user can edit. */
+  const editableField = (el: Any): Any =>
+    (el?.localName === 'textarea' ||
+      (el?.localName === 'input' && selects(el))) &&
+    !el.readOnly &&
+    !el.disabled
+      ? el
+      : null;
+
+  /** What a clipboard event is fired at (5.3.2): what has the focus where it
+   *  is an element of the document's own, else what the selection starts
+   *  in, else the body. */
+  const clipboardTargetOf = (told: Any): Any => {
+    if (told && told !== document.body) return told;
+    const range = selection._range;
+    if (range && !range.collapsed) {
+      const node = range.startContainer;
+      return node.nodeType === 1 ? node : node.parentNode;
+    }
+    return document.body ?? document.documentElement;
+  };
+
+  /** What was offered as the entries of a store: text as it is, and what is
+   *  no text as a file, which is how a pasted picture reaches a page. */
+  const offeredEntries = (offered: Any): Any[] => {
+    const entries: Any[] = [];
+    for (const item of offered) {
+      if (item.b === undefined) {
+        entries[entries.length] = {
+          kind: 'text',
+          type: item.t,
+          data: item.s ?? '',
+        };
+        continue;
+      }
+      const type = str(item.t);
+      entries[entries.length] = {
+        kind: 'file',
+        type,
+        data: new File(
+          [bytesOfBase64(item.b)],
+          `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
+          { type },
+        ),
+      };
+    }
+    return entries;
+  };
+  /** A store's text as it crosses to the clipboard. */
+  const storeWire = (transfer: Any): Any[] => {
+    const out: Any[] = [];
+    for (const held of TRANSFER.entriesOf(transfer)) {
+      if (held.kind === 'text') {
+        out[out.length] = { t: held.type, s: held.data };
+      }
+    }
+    return out;
+  };
+
+  /** What is selected where an element has the focus, as text: as it is
+   *  drawn, white space collapsed and lines broken, since that is what a
+   *  user selected and what a copy of it is (5.3.1). */
+  const selectedTextIn = (at: Any): string => {
+    const field = at?.localName === 'textarea' || at?.localName === 'input';
+    if (field && selects(at)) {
+      return at.value.slice(at.selectionStart ?? 0, at.selectionEnd ?? 0);
+    }
+    // `_range` first: it tells the host of a selection this realm made
+    if (!selection._range) return '';
+    return str(call('selectedText') ?? '') || selection.toString();
+  };
+
+  /** A paste no listener cancelled: into the field that has the focus, or
+   *  at the selection of the host it is in. Text alone, and the structure of
+   *  `text/html` is a listener's to use (5.3.1). */
+  const pasteInto = (at: Any, entries: Any[]): void => {
+    let text = '';
+    for (const held of entries) {
+      if (held.kind === 'text' && held.type === 'text/plain') text = held.data;
+    }
+    if (!text) return;
+    const field = editableField(at);
+    if (field) {
+      let value = text;
+      if (field.localName === 'input') {
+        value = value.replace(/\r\n?|\n/g, ' ');
+        const room =
+          field.maxLength < 0
+            ? Infinity
+            : field.maxLength -
+              field.value.length +
+              (field.selectionEnd - field.selectionStart);
+        value = value.slice(0, Math.max(0, room));
+      }
+      if (value) editField(field, 'insertFromPaste', value);
+      return;
+    }
+    const host = editingHostOf(at);
+    if (host) {
+      edit(host, 'insertFromPaste', null, {
+        text,
+        transfer: TRANSFER.made('read-only', entries),
+      });
+    }
+  };
+
+  /**
+   * A cut no listener cancelled, where the document does it: what is
+   * selected goes to the clipboard and out of the field or the host.
+   */
+  const cutFrom = (at: Any): boolean => {
+    const field = editableField(at);
+    if (field && field.selectionStart === field.selectionEnd) return false;
+    const host = field ? null : editingHostOf(at);
+    if (!field && (!host || editRange(host).collapsed)) return false;
+    CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
+    if (field) editField(field, 'deleteByCut', null);
+    else edit(host, 'deleteByCut', null);
+    return true;
+  };
+
+  /**
+   * `copy`, `cut` or `paste`, told at what has the focus, with a store
+   * that holds what is on the clipboard for a paste and takes what a page
+   * means to put there for the others. Whether the host's own default goes
+   * on: core's, on a chord, which puts a selection on the clipboard and
+   * edits a field. `offered` is what was on the clipboard, where the host
+   * has one: that paste is this realm's, since core's was stopped before the
+   * read. `own` is a command, which has no core behind it.
+   */
+  const clipboardEvent = (
+    type: string,
+    told: Any,
+    offered: Any,
+    own: boolean,
+  ): boolean => {
+    const at = clipboardTargetOf(told);
+    const entries = offered ? offeredEntries(offered) : [];
+    const data = TRANSFER.made(
+      type === 'paste' ? 'read-only' : 'read/write',
+      entries,
+    );
+    const go = dispatch(
+      at,
+      trusted(
+        new (TRANSFER.interfaces.ClipboardEvent as Any)(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clipboardData: data,
+        }),
+      ),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'paste') {
+      if (!offered) return go;
+      if (go) pasteInto(at, entries);
+      return false;
+    }
+    if (!go) {
+      const written = storeWire(data);
+      if (written.length) CLIP.write(written);
+      return false;
+    }
+    const editable = !!editableField(at) || !!editingHostOf(at);
+    if (type === 'cut' && editable && (own || !editableField(at))) {
+      if (hasClipboard()) cutFrom(at);
+      return false;
+    }
+    if (own) {
+      const text = selectedTextIn(at);
+      if (text) CLIP.write([{ t: 'text/plain', s: text }]);
+      return false;
+    }
+    return true;
+  };
+
+  /** A clipboard command: `execCommand('copy')` under a user's gesture. */
+  const clipboardCommand = (name: string): boolean => {
+    if (!commandEnabled(name)) return false;
+    clipboardEvent(name, document.activeElement, undefined, true);
+    return true;
+  };
+
+  /** Markup with what would run, or load, taken out: what a page reads of
+   *  `text/html` off the clipboard, which any application may have put
+   *  there (7.2.3.1). A second pass takes what the first turned into
+   *  something, since a serialized tree may parse into another. */
+  const sanitizedHtml = (html: string): string => {
+    let out = html;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const parsed = new DOMParser().parseFromString(out, 'text/html');
+      for (const el of parsed.querySelectorAll(
+        'script,iframe,object,embed,link,meta,base,noscript,xmp,noembed,noframes,plaintext,template,math,svg',
+      )) {
+        el.remove();
+      }
+      for (const el of parsed.querySelectorAll('*')) {
+        for (const name of el.getAttributeNames()) {
+          if (
+            /^on/i.test(name) ||
+            /^\s*(?:javascript|data|vbscript):/i.test(el.getAttribute(name))
+          ) {
+            el.removeAttribute(name);
+          }
+        }
+      }
+      const next = parsed.body?.innerHTML ?? '';
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  };
 
   /** What a key not cancelled does in an editing host: the edit it is, if
    *  any, and whether it was one — which keeps it from the host's own
@@ -31418,6 +31794,14 @@ export function installDom(
   for (const name of Object.getOwnPropertyNames(CRYPTO.interfaces)) {
     define(name, CRYPTO.interfaces[name]);
   }
+  for (const name of Object.getOwnPropertyNames(TRANSFER.interfaces)) {
+    define(name, TRANSFER.interfaces[name]);
+  }
+  if (call('secureContext') === true && hasClipboard()) {
+    for (const name of Object.getOwnPropertyNames(CLIP.interfaces)) {
+      define(name, CLIP.interfaces[name]);
+    }
+  }
   // `new Image()`, `new Option()` and `new Audio()`: the elements, made
   // as `createElement` makes them (HTML 4.8.4.1, 4.10.10, 4.8.10)
   const Image = function (width?: Any, height?: Any): Any {
@@ -31676,6 +32060,9 @@ export function installDom(
     'blur',
     'keydown',
     'click',
+    'copy',
+    'cut',
+    'paste',
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
@@ -31978,6 +32365,7 @@ export function installDom(
   };
   for (const [name, fn] of transportEntries) entry(name, fn);
   for (const [name, fn] of cryptoEntries) entry(name, fn);
+  for (const [name, fn] of clipboardEntries) entry(name, fn);
 
   // a page's classic script is about to run: the host runs it as a script
   // of its own (`ScriptEngine.exec`), its declarations the window's
@@ -32478,6 +32866,10 @@ export function installDom(
         if (go && e.type === 'keydown' && editForKey(target, e)) return false;
         return go;
       }
+      case 'copy':
+      case 'cut':
+      case 'paste':
+        return clipboardEvent(e.type, target, e.clipboard, false);
       case 'input':
         return dispatch(
           target,

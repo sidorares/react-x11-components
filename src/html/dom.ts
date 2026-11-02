@@ -92,7 +92,7 @@ export function isClassicScriptType(type: string): boolean {
  * import map, a deferred or an `async` script is no reason to wait.
  */
 export function blocksParser(el: Element, scripting: boolean): boolean {
-  if (el.name !== 'script') return false;
+  if (el.name !== 'script' || !isStyleOrScript(el)) return false;
   const { attribs } = el;
   if (!isClassicScriptType(attribs.type ?? 'text/javascript')) return false;
   if (attribs.nomodule !== undefined) return false;
@@ -224,15 +224,25 @@ export function isSvgRoot(el: Element): boolean {
 /**
  * Whether an element says it is no HTML element, which only an element whose
  * name means something in HTML has to. A `<path>` is told by its name and says
- * nothing; a `<link>` or a `<base>` that HTML's parser made in a drawing says
- * so (`namespaceIn`), as whatever a script makes with `createElementNS` does.
- * It stays with the element wherever it is put and in every copy, so this is
- * no question of where an element stands: a `<link>` a script puts in a drawing
- * is a sheet, and one the parser made there, moved to the `<head>`, is not.
+ * nothing; what `MARKED` names, that HTML's parser made in a drawing or a
+ * `<math>`, says so (`namespaceIn`), as whatever a script makes with
+ * `createElementNS` does. It stays with the element wherever it is put and in
+ * every copy, so this is no question of where an element stands: a `<link>` a
+ * script puts in a drawing is a sheet, and one the parser made there, moved to
+ * the `<head>`, is not.
  */
 export function isForeign(el: Element): boolean {
   const { namespace } = el;
   return namespace !== undefined && namespace !== HTML_NAMESPACE;
+}
+
+/**
+ * Whether a `<style>` or a `<script>` is one. SVG has both, so one the parser
+ * made in a drawing says nothing and is one wherever it goes, and one in
+ * MathML or anywhere else is only a name, in all three engines.
+ */
+export function isStyleOrScript(el: Element): boolean {
+  return !isForeign(el) || el.namespace === SVG_NS;
 }
 
 /** What HTML's parser reads as HTML in SVG and in MathML, each in its own
@@ -246,7 +256,7 @@ const HTML_ENCODINGS = new Set(['text/html', 'application/xhtml+xml']);
  * The namespace HTML's parser makes an element in that goes in `parent`, or
  * undefined for HTML's (13.2.6.5): that of the nearest `<svg>`, `<math>` or
  * element that says, unless an integration point of its language stands
- * between. A walk up, which a `<link>`, a `<base>` or an `innerHTML` pays for
+ * between. A walk up, which a name `MARKED` holds or an `innerHTML` pays for
  * as it is parsed, and a scan of the document never does.
  */
 export function namespaceIn(parent: AnyNode | null): string | undefined {
@@ -262,7 +272,7 @@ export function namespaceIn(parent: AnyNode | null): string | undefined {
         HTML_ENCODINGS.has((at.attribs.encoding ?? '').toLowerCase()));
     const namespace =
       at.namespace ??
-      (name === 'svg' ? SVG_NS : name === 'math' ? MATHML_NS : undefined);
+      (name === 'svg' || name === 'math' ? rootNamespace(at, name) : undefined);
     if (namespace === SVG_NS) return svgPoint ? undefined : namespace;
     if (namespace === MATHML_NS) return mathPoint ? undefined : namespace;
     if (namespace !== undefined) {
@@ -272,6 +282,25 @@ export function namespaceIn(parent: AnyNode | null): string | undefined {
     if (BREAKS_OUT.has(name)) return undefined;
   }
   return undefined;
+}
+
+/**
+ * The namespace of an `<svg>` or a `<math>` the parser made, which starts its
+ * language only outside the other's: `<math><svg>` is a MathML element and all
+ * it holds is MathML's, a `<script>` that does not run among it, and
+ * `<svg><math>` the same way round. An `<annotation-xml>` takes an `<svg>` as
+ * one (13.2.6.5).
+ */
+function rootNamespace(el: Element, name: string): string {
+  const around = namespaceIn(el.parent);
+  const own = name === 'svg' ? SVG_NS : MATHML_NS;
+  if (around === undefined) return own;
+  const parent = el.parent;
+  return own === SVG_NS &&
+    isElement(parent) &&
+    parent.name.toLowerCase() === 'annotation-xml'
+    ? own
+    : around;
 }
 
 export function isElement(node: AnyNode | null | undefined): node is Element {
@@ -1955,7 +1984,7 @@ function scanElements(
       trees.push(tree);
     }
     const tag = tagOf(el);
-    if (tag === 'style') {
+    if (tag === 'style' && isStyleOrScript(el)) {
       // A sheet whose `media` can hold nowhere here, `print`, is left
       // out; any other is under it, as though an `@media` block of it
       // were around all of it (HTML 4.2.6, 4.2.4).
@@ -1981,7 +2010,7 @@ function scanElements(
           facts.resources.push(el);
         }
       } else if (isStylePreload(el)) facts.resources.push(el);
-    } else if (tag === 'script') {
+    } else if (tag === 'script' && isStyleOrScript(el)) {
       facts.scripts.push(el);
     } else if (tag === 'img' && choosesSource(el)) {
       facts.pictures.push(el);
@@ -1994,12 +2023,12 @@ function scanElements(
       (tag === 'input' &&
         (attr(el, 'type') ?? '').trim().toLowerCase() === 'image')
     ) {
-      if (imageUrlOf(el)) facts.resources.push(el);
+      if (imageUrlOf(el) && !isForeign(el)) facts.resources.push(el);
     } else if (tag === 'svg') {
       if (!inDrawing(el)) facts.drawings.push(el);
     } else if (shadow) {
       continue;
-    } else if (tag === 'title' && facts.title === null) {
+    } else if (tag === 'title' && facts.title === null && !isForeign(el)) {
       facts.title = rawTextOf(el).trim();
     } else if (tag === 'base' && facts.base === null && !isForeign(el)) {
       const href = attr(el, 'href');
@@ -2197,9 +2226,14 @@ class Handler extends DomHandler {
     if (this.marksSheets && (name === 'link' || name === 'style')) {
       PARSER_SHEETS.add(opened);
     }
-    if (name === 'link' || name === 'base') {
+    if (MARKED.has(name)) {
       const namespace = namespaceIn(opened.parent);
-      if (namespace !== undefined) opened.namespace = namespace;
+      if (
+        namespace !== undefined &&
+        !(namespace === SVG_NS && (name === 'style' || name === 'script'))
+      ) {
+        opened.namespace = namespace;
+      }
     }
     if (attribs.customelementregistry !== undefined) {
       NULL_REGISTRY.add(opened);
@@ -2237,6 +2271,8 @@ class Handler extends DomHandler {
     const top = stack[stack.length - 1];
     if (name === 'html') {
       if (top === this.root && !this._html && !this._body) return false;
+      // in SVG or MathML it is an element like any, and no document's
+      if (namespaceIn(top) !== undefined) return false;
       if (this._html) this._mergeAttributes(this._html, attribs);
     } else if (name === 'head') {
       if (
@@ -2569,15 +2605,21 @@ function createParser(declarative = true): {
 }
 
 /** What `DocumentParser` reads of htmlparser2's parser beyond its typed
- *  surface: the stack of open tag names, top first, and the two steps an
- *  open tag is made in. Held to htmlparser2 12 by `test/html/document.test.ts`. */
+ *  surface: the stack of open tag names, top first, its frames of what those
+ *  hold, and the steps a tag is made in. Held to htmlparser2 12 by
+ *  `test/html/document.test.ts`. */
 interface ParserInternals {
   readonly stack: string[];
   readonly foreignContext: number[];
+  attribs: Record<string, string> | null;
+  tagname: string;
+  openTagStart: number;
+  startIndex: number;
   endIndex: number;
   readTagName(start: number, endIndex: number): string;
   emitOpenTag(name: string): void;
   endOpenTag(isImplied: boolean): void;
+  closeCurrentTag(isOpenImplied: boolean): void;
   popElement(implied: boolean): void;
 }
 
@@ -2586,15 +2628,60 @@ interface ParserInternals {
 const SECTIONS = new Set(['tbody', 'thead', 'tfoot']);
 const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
 
+/** The end tags HTML takes in a table, which go by its table scope. */
+const TABLE_END_TAGS = new Set([
+  ...SECTIONS,
+  'caption',
+  'table',
+  'td',
+  'th',
+  'tr',
+]);
+
 /** htmlparser2's foreign contexts, which it does not export. */
 const NOT_FOREIGN = 0;
 const IN_SVG = 1;
 const IN_MATHML = 2;
 
+/** The names htmlparser2 keeps a frame of `foreignContext` for, which go by
+ *  the name and not the language: `popElement` drops one for each. */
+const FRAMED = new Set([
+  'annotation-xml',
+  'desc',
+  'foreignObject',
+  'math',
+  'mi',
+  'mn',
+  'mo',
+  'ms',
+  'mtext',
+  'svg',
+  'title',
+]);
+
+/**
+ * What the parser says of an element it made in a drawing or a `<math>`
+ * (`isForeign`): the names the scan and a page's reads take as HTML's, each of
+ * which HTML's parser makes something else there. An `<img>` and an `<embed>`
+ * end foreign content instead (`BREAKS_OUT`). SVG has a `<style>` and a
+ * `<script>` of its own, so those say so in MathML alone (`isStyleOrScript`).
+ */
+const MARKED = new Set([
+  'base',
+  'image',
+  'input',
+  'link',
+  'object',
+  'script',
+  'style',
+  'title',
+  'video',
+]);
+
 /**
  * The start tags that end foreign content, as all three engines have them
  * (HTML 13.2.6.5). A `<font>` with a `color`, a `face` or a `size` is one too,
- * which is not here: its attributes come after the name this is asked of.
+ * which `_tagEnds` asks: its attributes come after the name this is asked of.
  */
 const BREAKS_OUT = new Set([
   'b',
@@ -2644,20 +2731,34 @@ const BREAKS_OUT = new Set([
 ]);
 
 /**
- * htmlparser2's parser, deciding a `/>` from the context its tag was read
- * in, as HTML's does. htmlparser2 decides from the context the tag opens,
- * and an integration point — SVG's `<title>`, `<desc>` and
- * `<foreignObject>`, MathML's `<mi>` and its kin — opens an HTML one, so
- * an `<svg><title/><path/>` took its path into the title.
+ * htmlparser2's parser, with what HTML's does in foreign content: a tree
+ * builder goes by the language an element is in, where htmlparser2 goes by its
+ * name. Each difference is at its own method: what a start tag opens
+ * (`_openForeign`), what its attributes decide (`_tagEnds`), what ends foreign
+ * content (`_breakOut`) and what an end tag closes (`_closedBy`). HTML content
+ * is read as htmlparser2 reads it.
+ *
+ * It decides a `/>` from the context its tag was read in, as HTML's does.
+ * htmlparser2 decides from the context the tag opens, and an integration point
+ * — SVG's `<title>`, `<desc>` and `<foreignObject>`, MathML's `<mi>` and its
+ * kin — opens an HTML one, so an `<svg><title/><path/>` took its path into the
+ * title.
  */
 class DocumentParser extends Parser {
   private _foreignTag = false;
   private _acknowledging = false;
+  /** Whether `_tagEnds` has anything to ask of the tag being read. */
+  private _tagDecides = false;
   /** What a fragment is read in (`readIn`). */
   private _context = NOT_FOREIGN;
 
   override isInForeignContext(): boolean {
     return this._acknowledging || super.isInForeignContext();
+  }
+
+  /** A name is void in HTML alone: `<svg><input><g>` puts the `<g>` in it. */
+  protected override isVoidElement(name: string): boolean {
+    return super.isVoidElement(name) && !this.isInForeignContext();
   }
 
   /** Read what comes as what an element of `namespace` holds, as `innerHTML`
@@ -2679,12 +2780,172 @@ class DocumentParser extends Parser {
     // what broke out of a fragment's context left it until it closed
     if (!self.stack.length) self.foreignContext[0] = this._context;
     // read once, for all of this: every tag of a drawing comes through here
-    const name = self.readTagName(start, endIndex);
-    if (this.isInForeignContext() && BREAKS_OUT.has(name)) this._breakOut();
-    this._foreignTag = this.isInForeignContext();
-    if (!this._foreignTag) this._impliedBy(name);
+    let name = self.readTagName(start, endIndex);
+    const { foreignContext } = self;
+    // SVG's casing, which it finds for an element open anywhere, as an end
+    // tag wants, is only in SVG for a start tag
+    if (foreignContext.length > 1 && foreignContext[0] !== IN_SVG) {
+      name = name.toLowerCase();
+    }
+    if (foreignContext[0] !== NOT_FOREIGN && BREAKS_OUT.has(name)) {
+      this._breakOut();
+    }
     self.endIndex = endIndex;
-    self.emitOpenTag(name);
+    if (foreignContext[0] !== NOT_FOREIGN) {
+      this._foreignTag = true;
+      this._tagDecides =
+        name === 'font' ||
+        (name === 'annotation-xml' && foreignContext[0] === IN_MATHML);
+      this._openForeign(name);
+    } else {
+      // a MathML text point takes these two as MathML's, and `/>` ends them
+      this._foreignTag =
+        foreignContext.length > 1 &&
+        (name === 'mglyph' || name === 'malignmark') &&
+        MATHML_POINTS.has(self.stack[0]) &&
+        foreignContext[1] === IN_MATHML;
+      this._impliedBy(name);
+      self.emitOpenTag(name);
+    }
+  }
+
+  /**
+   * `emitOpenTag` for an element in SVG or MathML, where what HTML implies is
+   * nothing to do with the name: a `<td>` in a `<td>` nests and a second
+   * `<form>` is an element. The frame htmlparser2 keeps goes by the name
+   * alone, in one list for both languages, where a name is an integration
+   * point in its own language only: in SVG an `<mi>` and a `<math>` are SVG's,
+   * and in MathML a `<title>` and an `<svg>` MathML's, but for an `<svg>` an
+   * `<annotation-xml>` opens, which HTML's rules take (13.2.6.5).
+   */
+  private _openForeign(name: string): void {
+    const self = this as unknown as ParserInternals;
+    self.openTagStart = self.startIndex;
+    self.tagname = name;
+    if (FRAMED.has(name)) {
+      const around = self.foreignContext[0];
+      self.foreignContext.unshift(
+        around === IN_SVG
+          ? SVG_POINTS.has(name.toLowerCase())
+            ? NOT_FOREIGN
+            : IN_SVG
+          : name === 'svg' && self.stack[0] === 'annotation-xml'
+            ? IN_SVG
+            : MATHML_POINTS.has(name)
+              ? NOT_FOREIGN
+              : IN_MATHML,
+      );
+    }
+    self.stack.unshift(name);
+    self.attribs = {};
+  }
+
+  /** What only a tag's attributes can decide, known as its tag ends: an
+   *  `<annotation-xml>` that says it holds HTML is an integration point, and
+   *  a `<font>` with a `color`, a `face` or a `size` ends foreign content. */
+  private _tagEnds(): void {
+    this._tagDecides = false;
+    const self = this as unknown as ParserInternals;
+    const { color, encoding, face, size } = self.attribs!;
+    if (self.tagname !== 'font') {
+      if (HTML_ENCODINGS.has((encoding ?? '').toLowerCase())) {
+        self.foreignContext[0] = NOT_FOREIGN;
+      }
+    } else if (
+      color !== undefined ||
+      face !== undefined ||
+      size !== undefined
+    ) {
+      // it has no element yet, so it stands where what it ended leaves it
+      self.stack.shift();
+      this._breakOut();
+      self.stack.unshift('font');
+      this._foreignTag = false;
+    }
+  }
+
+  override onopentagend(endIndex: number): void {
+    if (this._tagDecides) this._tagEnds();
+    super.onopentagend(endIndex);
+  }
+
+  /**
+   * HTML's end tag where a foreign element is open (13.2.6.5, 13.2.6.4.7).
+   * htmlparser2 closes the nearest element of the name, whatever stands
+   * between, so a `</svg>` after an inner drawing ended closed the outer one
+   * from inside its `<foreignObject>`. A `</p>` and a `</br>` end foreign
+   * content, as the start tags in `BREAKS_OUT` do. Where no foreign element
+   * is open nothing changes, and an end tag that closes what is current, as
+   * nearly all do, costs what htmlparser2's would.
+   */
+  override onclosetag(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    if (
+      self.foreignContext.length === 1 &&
+      self.foreignContext[0] === NOT_FOREIGN
+    ) {
+      super.onclosetag(start, endIndex);
+      return;
+    }
+    const name = self.readTagName(start, endIndex);
+    if ((name === 'p' || name === 'br') && this.isInForeignContext()) {
+      this._breakOut();
+    }
+    if (name === 'br') {
+      super.onclosetag(start, endIndex);
+      return;
+    }
+    self.endIndex = endIndex;
+    const closes = this._closedBy(name);
+    if (closes >= 0) {
+      for (let k = 0; k < closes; k++) self.popElement(true);
+      self.popElement(false);
+    } else if (name === 'p') {
+      self.emitOpenTag('p');
+      self.closeCurrentTag(true);
+    }
+    self.startIndex = endIndex + 1;
+  }
+
+  /**
+   * Where in the stack the end tag of `name` closes, or -1 where HTML's rules
+   * ignore it. From a foreign element it closes the nearest element of the
+   * name up to the first HTML one. From an HTML one, or from that first one,
+   * it is HTML's, which closes HTML elements alone and reaches nothing past a
+   * foreign element its scopes stop at, an `<annotation-xml>` whatever that
+   * holds, but for a table's own end tags, whose scope has none of them. An
+   * entry stands in the frame under its own, if it has one, and an `<svg>` or
+   * a `<math>` in any frame is no HTML element.
+   */
+  private _closedBy(name: string): number {
+    const { stack, foreignContext } = this as unknown as ParserInternals;
+    if (stack[0] === name) return 0;
+    const lower = name.toLowerCase();
+    const scoped = !TABLE_END_TAGS.has(name);
+    let frame = 0;
+    let html = false;
+    let stopped = false;
+    for (let at = 0; at < stack.length; at++) {
+      const el = stack[at].toLowerCase();
+      if (FRAMED.has(stack[at])) frame++;
+      const language = foreignContext[frame];
+      if (language === NOT_FOREIGN && el !== 'svg' && el !== 'math') {
+        if (stopped) return -1;
+        html = true;
+        if (el === lower) return at;
+        continue;
+      }
+      if (!html && el === lower) return at;
+      if (
+        scoped &&
+        (language === IN_SVG
+          ? SVG_POINTS.has(el)
+          : MATHML_POINTS.has(el) || el === 'annotation-xml')
+      ) {
+        stopped = true;
+      }
+    }
+    return -1;
   }
 
   /**
@@ -2735,6 +2996,7 @@ class DocumentParser extends Parser {
   }
 
   override onselfclosingtag(endIndex: number): void {
+    if (this._tagDecides) this._tagEnds();
     this._acknowledging = this._foreignTag;
     try {
       super.onselfclosingtag(endIndex);
