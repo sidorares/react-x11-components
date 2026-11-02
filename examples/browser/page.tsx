@@ -896,6 +896,7 @@ export default function Page(props: PageProps): ReactElement {
         url: props.loadUrl,
         fresh: props.loadFresh,
         scripts: props.scripts,
+        reload: how === 'reload' || how === 'pageReload',
         post: props.loadPost,
         // a link or a script's navigation is the document's, whose site
         // decides which cookies go with it; the browser's own are
@@ -1937,6 +1938,8 @@ interface Navigation {
   /** Whether the site's scripts run: where they do not, neither does its
    *  worker. */
   scripts: boolean;
+  /** Whether a reload asked for it, which a worker reads. */
+  reload: boolean;
   post: PostData | null;
   /** The document that started it, or null for the browser. */
   initiator: string | null;
@@ -1995,6 +1998,7 @@ async function loadDocument(
       initiator: nav.initiator,
       // a hard reload asks past a worker, and what it brings is uncontrolled
       serviceWorkers: !nav.scripts ? false : nav.fresh ? 'bypass' : true,
+      reload: nav.reload,
     });
   } catch (error) {
     if (signal.aborted) return;

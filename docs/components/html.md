@@ -871,9 +871,11 @@ charset }` — the `<script>` is the request's `element`, and the root
   `res.body` reads each chunk as it comes — a model's reply, a stream of
   events. A host that answers whole is answered whole. The page aborting,
   or cancelling the body, calls the iterator's `return()`, and a body
-  nothing will read — a `no-cors` answer, one CORS refuses — is let go the
-  same way. `HtmlNetwork` answers so, and bounds only the wait for the
-  headers.
+  nothing will read — one CORS refuses, a `no-cors` answer on a page that
+  is no secure context — is let go the same way; a secure page's `no-cors`
+  answer is held for it a while, unread, since `caches` and a service
+  worker can hand it on. `HtmlNetwork` answers so, and bounds only the
+  wait for the headers.
 
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
@@ -986,7 +988,7 @@ since this component navigates nowhere by itself:
 | `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.         |
 | `webgl`          | none: draws nothing       | What a page's WebGL contexts draw through (`HtmlWebGL`). `await gpuWebGL()` is one, on the GPU through x11-dri. See below.                                                       |
 | `cookies`        | none: no cookies          | What `document.cookie`, `navigator.cookieEnabled` and `cookieStore` read and write (`HtmlDocumentCookies`): a `CookieJar`, the one the network sends with. See below.            |
-| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage` and IndexedDB are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.             |
+| `storage`        | memory, per process       | Where `localStorage`, `sessionStorage`, IndexedDB and `caches` are kept (`HtmlStorage`). `HtmlProfile`'s keeps them on disk, shared by every process that opens it. See below.   |
 | `viewport`       | the pane around `<Html>`  | Where the page is shown, in CSS pixels.                                                                                                                                          |
 | `scrollTo`       | the pane around `<Html>`  | `window.scrollTo`, in CSS pixels.                                                                                                                                                |
 | `reserved`       | none                      | Whether a key is the host's own chord, which no listener of the page's may cancel.                                                                                               |

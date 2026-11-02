@@ -126,6 +126,8 @@ interface Version {
   idle: unknown;
   /** Fetches waiting for it to be activated. */
   activated: (() => void)[];
+  /** Its `skipWaiting()` promises, kept as `activate` goes to it. */
+  skipped: (() => void)[];
 }
 
 interface Registration {
@@ -527,6 +529,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       busy: 0,
       idle: null,
       activated: [],
+      skipped: [],
     };
     this._versions.set(id, version);
     return version;
@@ -858,6 +861,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     version: Version,
     type: string,
     fields: Record<string, unknown> = {},
+    posted?: () => void,
   ): Promise<boolean> {
     if (!(await this._start(version))) return false;
     const n = ++this._serial;
@@ -871,6 +875,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         },
       });
       this._post(version, JSON.stringify({ event: type, n, ...fields }));
+      posted?.();
     });
   }
 
@@ -1095,7 +1100,8 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         {
           url,
           method: 'GET',
-          headers: [['service-worker', 'script']],
+          // the main script's alone: an import is any other script
+          headers: main ? [['service-worker', 'script']] : [],
           body: null,
           credentials: 'same-origin',
         },
@@ -1229,7 +1235,9 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       }
       if (client.readyAsked !== null) this._ready(client);
     }
-    await this._extendable(next, 'activate');
+    await this._extendable(next, 'activate', {}, () => {
+      for (const go of next.skipped.splice(0)) go();
+    });
     if (next.state === 'activating') this._setState(next, 'activated');
     if (registration.uninstalling) this._tryClear(registration);
   }
@@ -1563,11 +1571,21 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         }
         return;
       }
-      case 'skipWaiting':
+      case 'skipWaiting': {
+        // a waiting worker hears its promise kept once `activate` is on its
+        // way to it, with its state still `activating`
         version.skipWaiting = true;
-        answer({});
-        void this._tryActivate(version.registration);
+        const { registration } = version;
+        if (registration.waiting !== version) {
+          answer({});
+          return;
+        }
+        version.skipped.push(() => answer({}));
+        void this._tryActivate(registration).then(() => {
+          for (const go of version.skipped.splice(0)) go();
+        });
         return;
+      }
       case 'clients':
         this._clientsAsk(version, m, answer);
         return;

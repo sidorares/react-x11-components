@@ -45,7 +45,7 @@ import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import { ScriptEngine } from './engine.js';
-import { DomHost } from './host.js';
+import { DomHost, wholeBytes } from './host.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
 import type { ServiceClient } from './sw-registry.js';
@@ -69,6 +69,7 @@ declare const setTimeout: SetTimeout;
 declare const clearTimeout: ClearTimeout;
 declare const queueMicrotask: (fn: () => void) => void;
 declare const URL: UrlClass;
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** A frame of the page's clock, which `scroll` is told at most once in. */
 const FRAME_MS = 16;
@@ -414,7 +415,17 @@ export class ScriptRunner {
         { ...request, mode: 'cors', destination: '' },
         signal,
       );
-      if (answered) return answered;
+      if (answered) {
+        // whole, with its text: what a worker's script is read from
+        const bytes = await wholeBytes(answered);
+        return {
+          ...answered,
+          url: answered.url || request.url,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
     }
     return this._options.fetch(request, signal);
   }

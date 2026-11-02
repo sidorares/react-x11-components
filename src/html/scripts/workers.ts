@@ -322,7 +322,7 @@ export class PageWorkers implements PageWorkersLike {
     if (this._background) thread.unref();
     const word = new Int32Array(flag);
     port1.on('message', (m: { url: string }) => {
-      void (this._seams.script?.(id, m.url) ?? this._load(m.url)).then(
+      void (this._seams.script?.(id, m.url) ?? this._load(m.url, id)).then(
         (source) => {
           port1.postMessage({ source });
           Atomics.store(word, 0, 1);
@@ -505,11 +505,12 @@ export class PageWorkers implements PageWorkersLike {
 
   /** A script's source, through the page's network: null where there is
    *  none to be had. */
-  private async _load(url: string): Promise<string | null> {
+  private async _load(url: string, id: number): Promise<string | null> {
     try {
       const response = await this._seams.fetch(
         { url, method: 'GET', headers: [], body: null },
         new AbortController().signal,
+        id,
       );
       return response.status >= 200 && response.status < 300
         ? response.body

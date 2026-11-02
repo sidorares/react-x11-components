@@ -4502,9 +4502,15 @@ closes a way out a DOM binding opens by accident:
   alive.** `PageWorkers`' `background` unrefs a service worker's thread: it has no
   page to answer for it, and held the process 30 seconds past its last client.
 - **A frame a worker can have for a client has a realm.** A secure page's frame of
-  its own origin has one whether or not it holds a script (`_frameLoaded`), since
-  its `navigator` has to answer for it, and a claim reaches it. `DomShared.realms`
-  was documents with scripts alone, and a frame's `controller` read the page's.
+  its own origin has one whatever it holds (`_frameLoaded`), a script or none, a
+  page or a 404's JSON, since its `navigator` has to answer for it and a claim
+  reaches it, and `fetch` from its window has to be its own. `DomShared.realms`
+  was HTML with scripts alone, and a frame's `controller` read the page's.
+- **`_held` is a field a page can write**, so the host never believes what came
+  with it: a body held by number goes on under `OPAQUE_HEAD` whatever head the
+  realm sent (`_serviceSaid`, `_cacheOp`), and a forged number can draw an image
+  and never read one. The same goes for what a realm's `URL` said: the registry
+  holds a `register` and a post to the realm's origin itself.
 
 **A promise of one realm with a reaction of another's runs in the other's
 queue** (`_drainRealms`). `then` goes by the handler's realm, and a context's
