@@ -6268,6 +6268,69 @@ test('getComputedStyle answers a shorthand by its name, in either spelling, and 
   ]);
 });
 
+test('a style has an attribute for each property a page can set, and says so to `in`', async () => {
+  // Vue 2 looks a name up with `in` and writes nothing it does not find, so
+  // every `:style` binding came out as `undefined: 44px`, and StackEdit's
+  // bars filled its window. jQuery looks the same way
+  const doc = await hosted(
+    `<!doctype html><style>p { color: red }</style><p id="p" style="color: red"></p>
+    <pre id="out"></pre><script>
+    var s = document.getElementById('p').style;
+    var rule = document.styleSheets[0].cssRules[0].style;
+    var has = function (of, names) {
+      return names.filter(function (n) { return n in of; });
+    };
+    var ask = ['height', 'width', 'fontSize', 'font', 'margin', 'transform',
+      'backgroundColor', 'background-color', 'cssFloat', 'float', 'display',
+      'webkitTransform', 'WebkitTransition', 'length', 'setProperty', 'cssText',
+      '0', 'bogus', 'HEIGHT', '--x', '1', 'mozBogus'];
+    var vue = document.createElement('div');
+    // Vue 2's own normalize, as its bundle has it
+    var norm = function (name) {
+      var empty = vue.style;
+      if (name in empty) return name;
+      var up = name.charAt(0).toUpperCase() + name.slice(1);
+      for (var v of ['Webkit', 'Moz', 'ms']) if (v + up in empty) return v + up;
+    };
+    var n = norm('height'); vue.style[n] = '44px';
+    document.getElementById('out').textContent = JSON.stringify({
+      element: has(s, ask),
+      rule: has(rule, ask),
+      computed: has(getComputedStyle(document.body), ['height', 'bogus']),
+      symbol: Symbol.iterator in s,
+      vue: [n, vue.getAttribute('style'), vue.style.height],
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const everywhere = [
+    'height',
+    'width',
+    'fontSize',
+    'font',
+    'margin',
+    'transform',
+    'backgroundColor',
+    'background-color',
+    'cssFloat',
+    'float',
+    'display',
+    'webkitTransform',
+    'WebkitTransition',
+    'length',
+    'setProperty',
+    'cssText',
+    '0',
+  ];
+  assert.deepStrictEqual(out, {
+    element: everywhere,
+    rule: everywhere,
+    computed: ['height'],
+    symbol: true,
+    vue: ['height', 'height: 44px;', '44px'],
+  });
+});
+
 test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
   // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
   // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),
