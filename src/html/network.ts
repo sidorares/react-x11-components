@@ -29,11 +29,13 @@
 //     and every response's `Set-Cookie` is stored — on each redirect too,
 //     which is why such a network follows redirects itself. Without one
 //     nothing is stored between requests, as before.
-//   - **No downloads.** Anything that is not a document, an image, a
-//     stylesheet, a font or a script is not fetched at all — but a script's
+//   - **No download by itself.** Anything that is not a document, an image,
+//     a stylesheet, a font or a script is not fetched at all — but a script's
 //     own `fetch`, of the page's own origin, or of another where CORS lets
 //     the page read it (the engine keeps to that; this keeps the host's
-//     headers on it).
+//     headers on it). A host that saves files asks `download`, and a
+//     response that should be saved says so (`DocumentResponse.disposition`):
+//     what it does about it is the host's.
 //   - **A form's POST says where it came from.** Its `Origin` and `Referer`
 //     are the page's, as a browser's are, because a server tells a form's
 //     POST from a forged one by them.
@@ -47,6 +49,8 @@ import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
 import type { CookieJar } from './cookies.js';
+import { downloadName } from './download.js';
+import type { HtmlDownloadRequest, HtmlDownloadSource } from './download.js';
 import {
   cachedResponse,
   conditionalHeaders,
@@ -362,6 +366,13 @@ export interface DocumentResponse {
   type: string;
   charset: string | null;
   body: AsyncIterable<Uint8Array>;
+  /** Its `Content-Disposition`, which may say it is to be saved, not shown. */
+  disposition?: string | null;
+  /** Its `Content-Length`, where it said. */
+  size?: number | null;
+  /** Its body with no limit on it, for a host that saves it: read this or
+   *  `body`, and never both. */
+  whole?: AsyncIterable<Uint8Array>;
 }
 
 /** What a form sends with a POST: its body as `<Html>` encoded it, the type
@@ -1360,8 +1371,37 @@ export class HtmlNetwork {
       status: response.status,
       type,
       charset,
+      disposition: response.headers.get('content-disposition'),
+      size: Number(response.headers.get('content-length')) || null,
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
+      whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
     };
+  }
+
+  /**
+   * What a page asked to have saved, as it arrives, for a host to write:
+   * from the bytes a page already has, or through the network as a document
+   * is, with the page's cookies. A document's limit is no limit here.
+   */
+  async download(
+    request: HtmlDownloadRequest,
+    signal: AbortSignalLike,
+    from: string | null = null,
+  ): Promise<HtmlDownloadSource> {
+    if (request.bytes) {
+      const type = request.type ?? '';
+      return {
+        url: request.url,
+        filename: downloadName(request.url, request.filename, null, type),
+        type,
+        size: request.bytes.length,
+        body: once(request.bytes),
+      };
+    }
+    const response = await this.document(request.url, signal, null, {
+      initiator: from,
+    });
+    return downloadSource(response, request.filename);
   }
 
   /**
@@ -2297,6 +2337,25 @@ async function* bodyOf(
   } finally {
     reader.cancel().catch(() => {});
   }
+}
+
+/** A response as a host saves it, called what it should be. */
+export function downloadSource(
+  response: DocumentResponse,
+  suggested: string,
+): HtmlDownloadSource {
+  return {
+    url: response.url,
+    filename: downloadName(
+      response.url,
+      suggested,
+      response.disposition,
+      response.type,
+    ),
+    type: response.type,
+    size: response.size ?? null,
+    body: response.whole ?? response.body,
+  };
 }
 
 /**

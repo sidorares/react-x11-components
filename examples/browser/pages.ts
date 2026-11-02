@@ -134,19 +134,6 @@ export function errorPage(url: string, message: string, code: string): string {
 </main></body></html>`;
 }
 
-/** A response of a kind this browser does not render. */
-export function unsupportedPage(url: string, type: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8">
-<title>${escapeHtml(fileName(url))}</title><style>${PAGE_STYLE}
-  main { padding-top: 96px; }
-</style></head><body><main>
-<h1>Nothing to show</h1>
-<p>This is <code>${escapeHtml(type || 'something with no type')}</code>, which
-this browser does not display, and it does not download files.</p>
-<p class="lead">${escapeHtml(url)}</p>
-</main></body></html>`;
-}
-
 /** Plain text, as a browser shows it: preformatted, in the document's own
  *  lines. */
 export function textPage(url: string, text: string): string {
