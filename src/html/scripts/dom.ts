@@ -10335,8 +10335,9 @@ export function installDom(
    * scripts write to.
    */
   const linkedFrames = new Map<number, Any>();
-  /** Where this realm is a frame's: the global of the realm it is in, the
-   *  window that stands for that here, and its frame's id there. */
+  /** Where this realm is a frame's: the global of the realm it is in, which
+   *  is null where that is another origin's, the window that stands for
+   *  that here, and its frame's id there. */
   let parentLink: { global: Any; window: Any; frame: number } | null = null;
   /** A message posted to another page realm's window (`__message`), where
    *  it is cloned and told with the window that stands for this one there:
@@ -10367,9 +10368,39 @@ export function installDom(
         }
       });
     };
+  /**
+   * A message to a realm of another origin, of which this one holds nothing
+   * but a number: `name` is 0 for this realm's parent, a frame's id here, or
+   * a window's number made negative. What it says is made a string here, as a
+   * worker's is, and the host hands that over and says who it is from, so
+   * neither its `origin` nor its `source` is this realm's to say, and holds it
+   * to the origin it is meant for, which it knows of both.
+   */
+  const postAcross =
+    (name: number) =>
+    (message: Any, options?: Any, transfer?: Any): void => {
+      const byOptions = options !== null && typeof options === 'object';
+      // an origin that is none is thrown here, as for any window
+      originAllowed(options, '');
+      const later: Array<() => void> = [];
+      const data = serializeClone(message, undefined, {
+        across: realmAcross(name),
+        moving: transfersOf(transferListOf(byOptions ? options : transfer)),
+        later,
+      });
+      giveUp(byOptions ? options : transfer);
+      const target = byOptions
+        ? (options.targetOrigin ?? '/')
+        : options === undefined
+          ? '/'
+          : options;
+      call('realmPost', name, data, str(target));
+      for (const go of later) go();
+    };
   /** Another of the page's realms, as a port can be across it: `name` 0
-   *  for this realm's parent, else its frame's id here. What crosses is a
-   *  string, to that realm's `__wire`, which names this one back. */
+   *  for this realm's parent, else its frame's id here, or a window's number
+   *  made negative. What crosses is a string: to that realm's `__wire`, which
+   *  names this one back, or, of another origin, through the host. */
   const realmsAcross = new Map<number, Across>();
   const realmAcross = (name: number): Across => {
     let across = realmsAcross.get(name);
@@ -10377,10 +10408,13 @@ export function installDom(
       across = {
         key: `r${name}`,
         send: (text) => {
+          const parent = parentLink?.global;
+          const frame = linkedFrames.get(name);
           if (name < 0) WINDOWS?.send(-name, text);
-          else if (name === 0) {
-            parentLink?.global.__wire(parentLink.frame, text);
-          } else linkedFrames.get(name)?.__wire(0, text);
+          else if (name === 0 && parent) {
+            parent.__wire(parentLink!.frame, text);
+          } else if (name > 0 && frame) frame.__wire(0, text);
+          else call('realmWire', name, text);
         },
       };
       realmsAcross.set(name, across);
@@ -10406,7 +10440,8 @@ export function installDom(
       across: () => (cross ??= crossOriginWindow(frame, proxy)),
       post() {
         const linked = linkedFrames.get(frame._id);
-        return linked ? deliverInto(linked, 0, frame._id) : null;
+        if (linked) return deliverInto(linked, 0, frame._id);
+        return crossLinked.has(frame._id) ? postAcross(frame._id) : null;
       },
       closed: () => !frame.isConnected,
       seen: (_key, value) => value,
@@ -34066,6 +34101,7 @@ export function installDom(
     hasTransientActivation,
     consumeActivation,
     deliverInto,
+    postAcross,
     windowProxy,
     openInFrame,
     openHere,
@@ -34081,9 +34117,13 @@ export function installDom(
   // realm's global from now on
   entry('__linkFrame', () => {
     const [id, cross] = input();
-    linkedFrames.set(Number(id), handed());
-    if (cross) crossLinked.add(Number(id));
-    else crossLinked.delete(Number(id));
+    if (cross) {
+      linkedFrames.delete(Number(id));
+      crossLinked.add(Number(id));
+    } else {
+      linkedFrames.set(Number(id), handed());
+      crossLinked.delete(Number(id));
+    }
     return true;
   });
   entry('__unlinkFrame', () => {
@@ -34096,7 +34136,6 @@ export function installDom(
   // a window that posts to it with this one as the source
   entry('__linkParent', () => {
     const [id, cross] = input();
-    const global = handed();
     const frame = Number(id);
     if (cross) {
       // a parent of another origin's: what crosses origins and no more
@@ -34107,7 +34146,7 @@ export function installDom(
           'SecurityError',
         );
       const allowed: Any = {
-        postMessage: deliverInto(global, frame, 0),
+        postMessage: postAcross(0),
         closed: false,
         length: 0,
         opener: null,
@@ -34171,7 +34210,7 @@ export function installDom(
         },
       );
       proxiedFrames.set(window, null);
-      parentLink = { global, window, frame };
+      parentLink = { global: null, window, frame };
       define('parent', window);
       define('top', window);
       Object.defineProperty(G, 'frameElement', {
@@ -34180,6 +34219,7 @@ export function installDom(
       });
       return true;
     }
+    const global = handed();
     const window: Any = new Proxy(
       {},
       {
@@ -34217,6 +34257,53 @@ export function installDom(
     });
     return true;
   });
+  /** A message of another realm's told here, as a task of its own: `from`
+   *  is what this realm calls that one. */
+  const tellMessage = (
+    data: Any,
+    origin: string,
+    from: number,
+    ports: Any[],
+  ): void => {
+    const source =
+      from < 0
+        ? WINDOWS!.proxyOf(-from)
+        : from === 0
+          ? (parentLink?.window ?? null)
+          : frameProxyOf(wrap(from));
+    setTimer(
+      () => {
+        const ev = new MessageEvent('message', { data, origin, source, ports });
+        ev.isTrusted = true;
+        dispatch(windowTarget, ev);
+      },
+      0,
+      [],
+      false,
+    );
+  };
+  // A message from a realm of another origin, which the host hands over and
+  // says the origin and the source of (`postAcross`): a string made again
+  // here, the ports in it each at the end of a wire back to that realm
+  entry('__messageAcross', () => {
+    const [text, origin, from] = input();
+    const made = deserializeWith(str(text), realmAcross(Number(from)));
+    tellMessage(made.data, str(origin), Number(from), made.ports);
+    return true;
+  });
+  // and a port's along a wire from one, or a frame of a canvas it shows
+  entry('__wireAcross', () => {
+    const [text, from] = input();
+    const across = realmAcross(Number(from));
+    const said = str(text);
+    setTimer(
+      () => wireMessage(across, said) || canvasFrame(across, said),
+      0,
+      [],
+      false,
+    );
+    return true;
+  });
   // A message from another realm of this page: cloned here, as it is
   // posted, and told as a task of its own, its source the window that
   // stands for the realm it came from — `from` 0 for this realm's parent,
@@ -34243,28 +34330,7 @@ export function installDom(
           ports.push(port);
         });
       }
-      const data = structuredCopy(message, seen);
-      const source =
-        from < 0
-          ? WINDOWS!.proxyOf(-from)
-          : from === 0
-            ? (parentLink?.window ?? null)
-            : frameProxyOf(wrap(from));
-      setTimer(
-        () => {
-          const ev = new MessageEvent('message', {
-            data,
-            origin: str(origin),
-            source,
-            ports,
-          });
-          ev.isTrusted = true;
-          dispatch(windowTarget, ev);
-        },
-        0,
-        [],
-        false,
-      );
+      tellMessage(structuredCopy(message, seen), str(origin), from, ports);
     },
     writable: false,
     configurable: false,

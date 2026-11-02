@@ -13,9 +13,13 @@
 // login: the opener holds the same object through the provider's pages and
 // reads `location.href` again once the popup is back on its own origin.
 //
-// Windows of one group are linked in pairs, as a frame and its page are
-// (`ScriptEngine.link`): each realm is handed the other's global, and only
-// what is the window's own origin's is read from it.
+// Windows of one group and one origin hold each other's globals, as a frame
+// and its page do (`ScriptEngine.link`). Of two origins they hold a number and
+// nothing else, and what crosses goes through the host. That is the whole of
+// what keeps them apart: this runs in the page's realm, where a page can
+// replace what it calls, so a global `links` held would be a global it has,
+// however it was checked on the way out. The host decides which it is
+// (`WindowSlot.adopt`), and tells a realm which window it may reach.
 
 /** What `installDom` hands this. */
 export interface WindowDeps {
@@ -35,6 +39,10 @@ export interface WindowDeps {
   deliverInto(
     global: any,
     from: number,
+    name: number,
+  ): (message: any, options?: any, transfer?: any) => void;
+  /** A message to a realm of another origin, by its name here. */
+  postAcross(
     name: number,
   ): (message: any, options?: any, transfer?: any) => void;
   /** A WindowProxy over what `spec` says (`frameProxyOf`'s). */
@@ -122,7 +130,8 @@ export function installWindows(deps: WindowDeps): WindowInternals {
   /** Where its features put it on the screen. */
   let screenLeft = 0;
   let screenTop = 0;
-  /** Each other window's global, while it has a document. */
+  /** Each other window's global, while it has a document of this realm's
+   *  origin, and only then (`WindowSlot.adopt`). */
   const links = new Map<number, Any>();
   /** The windows whose document this realm's scripts have reached. */
   const touched = new Set<number>();
@@ -225,9 +234,7 @@ export function installWindows(deps: WindowDeps): WindowInternals {
     proxy = deps.windowProxy({
       current() {
         const global = held();
-        if (!global || str(global.__origin()) !== str(G.__origin())) {
-          return null;
-        }
+        if (!global) return null;
         if (!touched.has(id)) {
           touched.add(id);
           call('windowReached', id);
@@ -237,7 +244,9 @@ export function installWindows(deps: WindowDeps): WindowInternals {
       across: () => (cross ??= crossWindow(id, () => proxy)),
       post() {
         const global = held();
-        return global ? deps.deliverInto(global, -selfId, -id) : null;
+        return global
+          ? deps.deliverInto(global, -selfId, -id)
+          : deps.postAcross(-id);
       },
       closed: () => closing.has(id),
       // a window reads as this realm's name for it: one object for a window,
@@ -524,7 +533,9 @@ export function installWindows(deps: WindowDeps): WindowInternals {
     closed: () => closing.has(selfId),
     proxyOf: windowOf,
     send(id, text) {
-      links.get(id)?.__wire(-selfId, text);
+      const global = links.get(id);
+      if (global) global.__wire(-selfId, text);
+      else call('realmWire', -id, text);
     },
     named(name) {
       call('windowName', name);

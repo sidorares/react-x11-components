@@ -6,8 +6,12 @@
 // same-origin page reads `popup.document` in the call that opened it, and
 // whether a window stays same-origin is not known until it has gone
 // somewhere. So every window of a browsing context group is a `ScriptRunner`
-// here, linked in pairs with the rest through `WindowSlot`, and a window with
-// no opener, `noopener`, is the host's to put anywhere.
+// here, and a window with no opener, `noopener`, is the host's to put anywhere.
+//
+// **Another origin is a number.** `WindowSlot.adopt` hands a realm the global
+// of a window of its own origin, which the host decides, and of no other: what
+// a realm is handed its page has, since a page can replace all the facade
+// calls. What crosses origins goes through the ops here, by the window's number.
 //
 // **A window is born with a realm.** `window.open` answers at once, and what
 // it answers has a document, so its initial `about:blank` is made here, inside
@@ -28,9 +32,10 @@ import type { ServiceClient } from './sw-registry.js';
 import { makeHtmlHandle } from '../index.js';
 import type { FramePost, DomShared } from './host.js';
 import type { RunnerSeams, ScriptRunner } from './runner.js';
-import type { SetTimeout } from './platform.js';
+import type { SetTimeout, UrlClass } from './platform.js';
 
 declare const setTimeout: SetTimeout;
+declare const URL: UrlClass;
 
 /** What the host's ops ask of a page's windows (`DomHost.windows`). */
 export interface WindowOps {
@@ -49,6 +54,13 @@ export interface WindowOps {
   disown(): void;
   /** A script of this document reached a window's document. */
   reached(id: number): void;
+  /** A message to another realm, by what this one calls it: `name` is 0 for
+   *  a frame's parent, a frame's id here, or a window's number made negative.
+   *  Who it is from is the host's to say, and it goes only where the origin
+   *  it is meant for is that realm's. */
+  post(name: number, text: string, targetOrigin: string): void;
+  /** A port's message to another realm. */
+  wire(name: number, text: string): void;
   /** A window's opener's number. */
   openerOf(id: number): number;
   /** How many frames a window has. */
@@ -135,11 +147,19 @@ export class WindowSlot {
         ]) ?? this.name,
       ) || this.name;
     if (this.popup && was) runner.host.referrer = this.popup.takeReferrer();
+    // a global is handed across only where the host knows the two are of
+    // one origin. What a realm is handed its page has, however the facade
+    // means to keep it, so another origin's window is a number there
     for (const other of this.group.slots) {
       const there = other.runner;
       if (other === this || !there) continue;
-      runner.engine.linkWindow(other.id, there.engine);
-      there.engine.linkWindow(this.id, runner.engine);
+      if (sameOrigin(runner, there)) {
+        runner.engine.linkWindow(other.id, there.engine);
+        there.engine.linkWindow(this.id, runner.engine);
+      } else {
+        runner.engine.unlinkWindow(other.id, false);
+        there.engine.unlinkWindow(this.id, false);
+      }
     }
     if (this.blank && was && was !== runner) {
       this.blank = false;
@@ -200,9 +220,9 @@ export class WindowSlot {
 }
 
 /** Whether two documents are of one origin, one of `about:blank` being the
- *  origin of what made it. */
+ *  origin of what made it, and an opaque origin being no other's. */
 function sameOrigin(a: ScriptRunner, b: ScriptRunner): boolean {
-  return a.host.origin === b.host.origin;
+  return a.host.origin === b.host.origin && a.host.origin !== 'null';
 }
 
 /** The slot of a document, which is made for it the first time something
@@ -220,6 +240,15 @@ function slotOf(runner: ScriptRunner): WindowSlot {
 /** The slot a window's next document comes into, where it has one. */
 export function slotFor(key: object): WindowSlot | null {
   return SLOTS.get(key) ?? null;
+}
+
+/** The origin of an address, or `null` for none. */
+function originOfUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return 'null';
+  }
 }
 
 /** A handle on no `<Html>`, which answers nothing: a window's until the host
@@ -386,6 +415,22 @@ export function windowOps(
     }
     return null;
   };
+  /** The realm a name is, and what that one calls this one. */
+  const realmAt = (
+    name: number,
+  ): { runner: ScriptRunner; from: number } | null => {
+    if (name < 0) {
+      const there = slotById(-name)?.runner;
+      return there && runner.slot
+        ? { runner: there, from: -runner.slot.id }
+        : null;
+    }
+    if (name > 0) {
+      const there = runner.frameRealm(name);
+      return there && { runner: there, from: 0 };
+    }
+    return runner.parentRealm;
+  };
   const find = (name: string): WindowSlot | null => {
     const group = runner.host.shared.windows;
     if (!name || !group) return null;
@@ -438,7 +483,30 @@ export function windowOps(
     },
     reached(id) {
       const there = slotById(id)?.runner;
-      if (there) runner.engine.reached(there.engine);
+      if (there && sameOrigin(runner, there)) {
+        runner.engine.reached(there.engine);
+      }
+    },
+    post(name, text, targetOrigin) {
+      const to = realmAt(name);
+      if (!to) return;
+      const origin = to.runner.host.origin;
+      // `/` is this realm's own origin, which that one is not, or this would
+      // have its global; a message for another origin goes nowhere
+      if (targetOrigin !== '*') {
+        const meant =
+          targetOrigin === '/' ? runner.host.origin : originOfUrl(targetOrigin);
+        if (meant === 'null' || meant !== origin) return;
+      }
+      to.runner.engine.call('__messageAcross', [
+        text,
+        runner.host.origin,
+        to.from,
+      ]);
+    },
+    wire(name, text) {
+      const to = realmAt(name);
+      to?.runner.engine.call('__wireAcross', [text, to.from]);
     },
     openerOf: (id) => slotById(id)?.opener?.id ?? 0,
     lengthOf: (id) => slotById(id)?.runner?.host.frames().length ?? 0,

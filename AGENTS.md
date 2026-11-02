@@ -4373,13 +4373,36 @@ closes a way out a DOM binding opens by accident:
   page may have (`_ending`), or a page that starts and ends them in a loop
   has threads without end. **Anything new that ends a thread goes through
   `end`.**
-- **Another origin's frame is linked as another origin.** Its realm and
-  the page's hand each other their globals, as same-origin frames do, and
-  the facade keeps what either reaches to what crosses origins
-  (`crossLinked`, the cross-origin `parent`): a cross-origin frame's global
-  never answers a property read from the other realm. `postMessage`'s
-  `targetOrigin` is held to the window posted to (`__origin`), which is
-  not the sender's once two origins are linked.
+- **A realm never holds another origin's global, or any object of that
+  realm.** The facade runs in the page's realm, so a page can replace all it
+  calls: `String`, `Map.prototype.get`, `WeakMap.prototype.get`. An origin
+  compared there can be made to come out the same, and what a table there keeps
+  can be read as the facade reads it, so no check in the facade, and no copy of
+  a builtin under one, keeps a global from a page. **A page has every object the
+  facade's code touches.** So the host decides, by `host.origin`:
+  `ScriptEngine.link` and `WindowSlot.adopt` hand a global only to a realm of
+  one origin (`sameOrigin`, in which an opaque origin is no other's), and two
+  of different origins have each other by a number. What crosses origins goes
+  through ops on that number: `closed`, `length`, `close`, `focus`, a `location`
+  set, and `postMessage` and a port's messages as strings (`postAcross`,
+  `realmPost`, `realmWire`), delivered by entering the other realm
+  (`__messageAcross`, `__wireAcross`). Who sent a message and whether it is
+  meant for that origin are the host's to say (`post`). Three things are
+  load-bearing. **Anything that reaches another document is refused on the host
+  by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
+  `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
+  first. A facade's check is a courtesy, for the error a page should see.
+  **What an origin is read from cannot be moved by a page**: `setLocation`
+  stays in its origin, since every check of one, storage and cookies among them,
+  reads it, and `creator` is an `about:blank` document's alone, or a popup's
+  `data:` document is its opener's origin. A frame's origin is where it landed
+  (`response.url`), not what it asked for. And **a test of this replaces what
+  the facade calls** (`STEAL` in `test/html/popups.test.ts`), beside a control
+  of one origin that finds the global by the same reach: finding nothing proves
+  nothing until the same search finds something. **Anything new that reaches
+  another realm is an op on its number, refused on the host**, and a window
+  moving between origins links or unlinks in `adopt`, so nothing keeps a global
+  past it.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as

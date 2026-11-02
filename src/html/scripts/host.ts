@@ -1751,8 +1751,9 @@ export class DomShared {
   /** The windows that can reach each other over this tree, once one has
    *  opened another (`./popups.ts`). */
   windows: WindowGroup | null = null;
-  /** A node one realm hands another (`handOver`). */
-  handed: AnyNode | null = null;
+  /** A node one realm hands another (`handOver`), and that realm's origin:
+   *  another origin's takes nothing. */
+  handed: { node: AnyNode; origin: string } | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -2178,10 +2179,19 @@ export class DomHost {
   creator: string | null = null;
   /** What `document.referrer` reads. */
   referrer = '';
+  /** Whether the document around this one's frame is of another origin:
+   *  what the frame's element is, and all it reaches, is refused it. */
+  foreignParent = false;
 
   /** This document's origin. */
   get origin(): string {
     return this._origin();
+  }
+
+  /** The document a frame of this document shows, by the frame's id. */
+  frameDocumentAt(id: number): Document | null {
+    const frame = this._nodes.get(id);
+    return (frame && this._frames.get(frame as Element)) ?? null;
   }
 
   /** A document of nothing, `about:blank`'s, for a window's first. */
@@ -4221,23 +4231,49 @@ export class DomHost {
         return doc ? this.idOf(doc) : 0;
       }
       case 'frameElement': {
-        const frame = this._frameOf.get(this._node(a) as Document);
-        return frame ? this.idOf(frame) : 0;
+        const doc = this._node(a) as Document;
+        const frame = this._frameOf.get(doc);
+        // of the document around this one, which is not this one's to reach
+        // where it is another origin's
+        if (!frame || (doc === this.document && this.foreignParent)) return 0;
+        return this.idOf(frame);
       }
-      // where a frame's document is from, another origin's as well: its
-      // window's `location`, which the page may set whoever's it is
+      // where a frame's document is from, read only of this one's origin: the
+      // page may set another origin's window's `location`, and not read it
       case 'frameLocation': {
         const frame = this._element(a);
         this._frameDocument(frame);
-        return this._frameAt.get(frame) ?? 'about:blank';
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        if (!this._sameOrigin(at)) {
+          throw new DomError(
+            'SecurityError',
+            "A frame of another origin's address is none of this document's.",
+          );
+        }
+        return at;
       }
       case 'frameNavigate':
         this.navigateFrame(this._element(a), text(b), null);
         return null;
-      // a frame's address changed by its own history, with no navigation
-      case 'setFrameLocation':
-        this._frameAt.set(this._element(a), text(b));
+      // a frame's address changed by its own history, with no navigation:
+      // never to or from another origin, since what the address says is what
+      // `frameDocument` hands a page a document by
+      case 'setFrameLocation': {
+        const frame = this._element(a);
+        const at = this._frameAt.get(frame) ?? 'about:blank';
+        const to = text(b);
+        if (
+          !this._sameOrigin(at) ||
+          !(this._sameOrigin(to) || originOf(to) === originOf(at))
+        ) {
+          throw new DomError(
+            'SecurityError',
+            "A frame's history stays in its origin.",
+          );
+        }
+        this._frameAt.set(frame, to);
         return null;
+      }
       // a frame document's viewport, its window's `innerWidth`
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
@@ -5125,9 +5161,19 @@ export class DomHost {
         return this._seams.handle.base ?? this.url;
       case 'location':
         return this.url;
-      case 'setLocation':
-        this.url = text(a);
+      // the document's address changed by its own history. Never to another
+      // origin: this is what every check of a document's origin reads
+      case 'setLocation': {
+        const to = text(a);
+        if (originOf(to) !== originOf(this.url)) {
+          throw new DomError(
+            'SecurityError',
+            "A document's history stays in its origin.",
+          );
+        }
+        this.url = to;
         return null;
+      }
       case 'resolve':
         return this._resolve(text(a));
       case 'url':
@@ -5222,13 +5268,28 @@ export class DomHost {
         return typeof frame === 'string' ? 0 : this.idOf(frame);
       }
       case 'handOver':
-        this._s.handed = this._node(a);
+        this._s.handed = { node: this._node(a), origin: this._origin() };
         return null;
       case 'takeNode': {
-        const node = this._s.handed;
+        const handed = this._s.handed;
         this._s.handed = null;
-        return this.idOf(node);
+        if (!handed) return 0;
+        if (handed.origin !== this._origin()) {
+          throw new DomError(
+            'SecurityError',
+            "A node of another origin's is none of this document's.",
+          );
+        }
+        return this.idOf(handed.node);
       }
+      // what crosses to a realm of another origin, which this one holds
+      // nothing of (`ScriptEngine.link`)
+      case 'realmPost':
+        this.windows?.post(Number(a), text(b), text(c));
+        return null;
+      case 'realmWire':
+        this.windows?.wire(Number(a), text(b));
+        return null;
       // `window.open`, to where its name says (`navigableFor`): a frame of
       // the page's, the page's own tab, or a new one
       case 'open': {
@@ -6685,8 +6746,9 @@ export class DomHost {
           );
           scripts = false;
         }
-        // another origin's scripts never run in this realm
-        if (foreign) scripts = false;
+        // another origin's scripts never run in this realm, where it was
+        // asked for or where it sent the frame
+        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
         this._frameLoaded(
           frame,
           doc,
@@ -7258,7 +7320,8 @@ export class DomHost {
   private _origin(): string {
     try {
       const origin = new URL(this.url).origin;
-      return origin === 'null' && this.creator
+      // `about:blank` alone is of what made it: `data:` has no origin to share
+      return this.creator && this.url.startsWith('about:')
         ? new URL(this.creator).origin
         : origin;
     } catch {

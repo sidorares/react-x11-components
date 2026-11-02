@@ -2151,7 +2151,9 @@ hands the address to `navigate` as `'tab'`, so nothing opens by construction.
 **A window with an opener runs in its opener's process**, as a realm of its own
 linked to it, whatever its origin. A same-origin page reads `popup.document` in
 the call that opened it, which no process boundary could answer
-([the design](../prd-popups.md)). So a host shows one by mounting `<Html>` in
+([the design](../prd-popups.md)). Being in one process gives a page no more of
+another origin: its realm is handed nothing of that window but a number, and the
+host carries what crosses origins. So a host shows one by mounting `<Html>` in
 that process, for each document it goes to, with `scripts.popup` set to what it
 was handed:
 

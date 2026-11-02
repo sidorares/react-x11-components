@@ -1313,23 +1313,31 @@ export class ScriptEngine {
 
   /**
    * Join this realm and another page realm, a frame's and the page it is
-   * in: each handed the other's global through a data slot, and told
-   * through an entry (`__linkFrame`, `__linkParent`) to make the window
-   * that stands for it there. Both are page realms: what one reaches of the
-   * other is what a same-origin frame reaches of its parent, or, where they
-   * are of two origins (`crossOrigin`), what crosses origins — `postMessage`
-   * and little else. Nothing of the host's is handed to either.
+   * in. Of one origin, each is handed the other's global through a data
+   * slot, as a same-origin frame reaches its parent. Of two (`crossOrigin`,
+   * which the host decides), neither is handed anything: each has the other
+   * by a number, and what crosses origins goes through the host (`post`,
+   * `wire` in `./popups.ts`). The facade runs in the page's realm, where a
+   * page can replace what it calls, so a global it was handed is a global the
+   * page has. Told through an entry (`__linkFrame`, `__linkParent`) to make
+   * the window that stands for it there. Nothing of the host's is handed to
+   * either.
    */
   link(frame: ScriptEngine, frameId: number, crossOrigin = false): void {
     if (this._broken || this._disposed) return;
+    if (crossOrigin) {
+      this.call('__linkFrame', [frameId, true]);
+      frame.call('__linkParent', [frameId, true]);
+      return;
+    }
     const into = (engine: ScriptEngine, value: object): void => {
       (engine._context as Record<string, unknown>).__handed = value;
     };
     into(this, frame._global);
-    this.call('__linkFrame', [frameId, crossOrigin]);
+    this.call('__linkFrame', [frameId, false]);
     into(frame, this._global);
-    frame.call('__linkParent', [frameId, crossOrigin]);
-    if (!crossOrigin) this.reached(frame);
+    frame.call('__linkParent', [frameId, false]);
+    this.reached(frame);
   }
 
   /** A frame's realm is gone, or has gone on to another document: the
@@ -1338,8 +1346,9 @@ export class ScriptEngine {
     this.call('__unlinkFrame', [frameId]);
   }
 
-  /** Reach another window's realm of this one's group (`./popups.ts`):
-   *  handed its global, as a frame's parent is, under its window's number. */
+  /** Reach another window's realm of this one's group and origin
+   *  (`./popups.ts`, which decides that): handed its global, as a frame's
+   *  parent is, under its window's number. */
   linkWindow(id: number, other: ScriptEngine): void {
     if (this._broken || this._disposed || other._disposed) return;
     (this._context as Record<string, unknown>).__handed = other._global;

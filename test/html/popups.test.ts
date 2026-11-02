@@ -7,8 +7,16 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, test as nodeTest } from 'node:test';
+import { Document, Element } from 'domhandler';
+import { appendChild } from 'domutils';
 import React, { useEffect, useRef, useState } from 'react';
-import { act, cleanup, fireEvent, renderX11 } from 'react-x11/test';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  renderX11,
+  waitForPixel,
+} from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
 import {
@@ -27,10 +35,12 @@ import type {
   HtmlScripts,
 } from '../../src/html/index.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
+import { DomHost, DomShared } from '../../src/html/scripts/host.js';
 import type {
   FetchRequest,
   FetchResponse,
   FramePost,
+  HostSeams,
 } from '../../src/html/scripts/host.js';
 import { FONTS, h } from './harness.js';
 
@@ -47,6 +57,7 @@ type Answer = string | { redirect: string };
 
 interface Scene {
   logs: string[];
+  ctx: Awaited<ReturnType<typeof renderX11>>['ctx'];
   /** What the host was handed, in order. */
   popups: HtmlPopup[];
   /** The URLs asked for, in order, with their method. */
@@ -85,6 +96,7 @@ async function scene(
     popups?: Partial<HtmlPopups> | null;
     refuse?: boolean;
     close?: (alone: boolean) => boolean | void;
+    frames?: boolean;
   } = {},
 ): Promise<Scene> {
   const logs: string[] = [];
@@ -161,6 +173,7 @@ async function scene(
       ...(popup && { popup }),
       popups: seam,
       close: options.close,
+      ...(options.frames === false && { frames: false }),
       navigate: (to, how, post) => {
         if (how === 'tab') {
           tabs.push(to);
@@ -230,7 +243,7 @@ async function scene(
     );
   }
 
-  await renderX11(
+  const rendered = await renderX11(
     h(Host),
     FONTS
       ? { width: 640, height: 400, fonts: FONTS }
@@ -248,6 +261,7 @@ async function scene(
     popups,
     requests,
     tabs,
+    ctx: rendered.ctx,
     shown: () => [...showing.values()],
     when,
     async until(prefix) {
@@ -974,6 +988,411 @@ test("a worker's clients.openWindow is a tab with no opener, whatever a page's w
   }
   assert.deepEqual(s.tabs, [s.url('/opened')]);
   assert.equal(s.popups.length, 0);
+});
+
+/**
+ * What a page of one origin tries on a window it should have only by number:
+ * with what the facade calls replaced, it looks through every object those
+ * show it for the victim's global, and reads what it finds. `reach` is the
+ * expression for the window, and the facade is walked through what crosses.
+ */
+const STEAL = (reach: string, say: string): string => `
+  const target = ${reach};
+  const hits = [];
+  let route = 'plain';
+  const look = (found) => {
+    if (found === window || found === null) return;
+    if (typeof found !== 'object' && typeof found !== 'function') return;
+    try {
+      if (found.secret === 'victim-secret') hits.push(route + ':global');
+      if (found.document?.title === 'victim-title') hits.push(route + ':title');
+      if (found.title === 'victim-title') hits.push(route + ':document');
+    } catch {}
+  };
+  let shown = 0;
+  const seen = (found) => { shown += 1; look(found); return found; };
+  const real = {
+    get: Map.prototype.get,
+    weak: WeakMap.prototype.get,
+    has: Set.prototype.has,
+    own: Object.prototype.hasOwnProperty,
+    str: String,
+    set: Map.prototype.set,
+  };
+  const touch = () => {
+    for (const walk of [
+      () => target.postMessage('x', '*'),
+      () => target.closed,
+      () => target.document,
+      () => target.secret,
+      () => target.location.href,
+      () => target.length,
+      () => target.opener,
+      () => target.parent,
+      () => target.top,
+      () => { const f = document.querySelector('iframe'); return f && f.contentDocument; },
+    ]) {
+      try { look(walk()); } catch {}
+    }
+  };
+  touch();
+  // Map, WeakMap: what the facade reads a window by hands it to the page
+  route = 'map';
+  Map.prototype.get = function (key) { return seen(real.get.call(this, key)); };
+  WeakMap.prototype.get = function (key) { return seen(real.weak.call(this, key)); };
+  Map.prototype.set = function (key, value) { seen(value); return real.set.call(this, key, value); };
+  touch();
+  Map.prototype.get = real.get;
+  WeakMap.prototype.get = real.weak;
+  Map.prototype.set = real.set;
+  // String: every comparison of two origins goes through it
+  route = 'string';
+  window.String = () => 'same';
+  touch();
+  window.String = real.str;
+  // a set says no, and a table says yes
+  route = 'set';
+  Set.prototype.has = () => false;
+  touch();
+  Set.prototype.has = real.has;
+  route = 'own';
+  Object.prototype.hasOwnProperty = () => true;
+  touch();
+  Object.prototype.hasOwnProperty = real.own;
+  ${say}('attacked', shown > 0, JSON.stringify([...new Set(hits)]));
+`;
+
+/** The document whose global, title and address are what is after. */
+const VICTIM = `document.title = 'victim-title'; window.secret = 'victim-secret';`;
+
+test('another origin is a number: an opener gets nothing of its popup, whatever it replaces', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${PROVIDER}side');
+      addEventListener('message', () => { ${STEAL('self.w', 'console.log')} }, { once: true });
+    `),
+    { [`${PROVIDER}side`]: page(`${VICTIM} opener.postMessage('up', '*');`) },
+  );
+  await s.press();
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('another origin is a number: a popup gets nothing of its opener, whatever it replaces', async () => {
+  const s = await scene(pressed(`${VICTIM} window.open('${PROVIDER}side');`), {
+    [`${PROVIDER}side`]: page(STEAL('opener', 'console.log')),
+  });
+  await s.press();
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('another origin is a number: a page gets nothing of its frame, whatever it replaces', async () => {
+  const s = await scene(
+    page(`
+      addEventListener('message', () => { ${STEAL("document.querySelector('iframe').contentWindow", 'console.log')} }, { once: true });
+      const f = document.createElement('iframe');
+      f.src = '${PROVIDER}side';
+      document.body.append(f);
+    `),
+    { [`${PROVIDER}side`]: page(`${VICTIM} parent.postMessage('up', '*');`) },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('another origin is a number: a frame gets nothing of its page, whatever it replaces', async () => {
+  const s = await scene(
+    page(`
+      ${VICTIM}
+      const f = document.createElement('iframe');
+      f.src = '${PROVIDER}side';
+      document.body.append(f);
+    `),
+    { [`${PROVIDER}side`]: page(STEAL('parent', 'console.log')) },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until(`[frame ${PROVIDER}side] attacked`), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('another origin is a number: a frame with no script of its own stays out of reach, whatever the page replaces', async () => {
+  const s = await scene(
+    page(`
+      const f = document.createElement('iframe');
+      f.src = '${PROVIDER}side';
+      f.onload = () => { ${STEAL("document.querySelector('iframe').contentWindow", 'console.log')} };
+      document.body.append(f);
+    `),
+    {
+      [`${PROVIDER}side`]: `<!doctype html><title>victim-title</title><p>victim-text</p>`,
+    },
+  );
+  assert.equal(await s.until('attacked'), 'true []');
+});
+
+test('a frame sent to another origin by a redirect is of that origin, whatever it asked for', async () => {
+  const s = await scene(
+    page(`
+      const f = document.createElement('iframe');
+      f.src = '${APP}go';
+      f.onload = () => { ${STEAL("document.querySelector('iframe').contentWindow", 'console.log')} };
+      document.body.append(f);
+    `),
+    {
+      [`${APP}go`]: { redirect: `${PROVIDER}side` },
+      [`${PROVIDER}side`]: `<!doctype html><title>victim-title</title><p>victim-text</p>`,
+    },
+  );
+  assert.equal(await s.until('attacked'), 'true []');
+});
+
+test('where frames run in the page, a frame a redirect sent to another origin runs nothing there, and hands it nothing', async () => {
+  const watch = `
+    for (const [kind, name] of [[Map, 'Map'], [WeakMap, 'WeakMap']]) {
+      const real = kind.prototype.set;
+      let busy = false;
+      kind.prototype.set = function (key, value) {
+        if (!busy && value !== null && typeof value === 'object') {
+          busy = true;
+          try {
+            if (value.title === 'victim-title') console.log('stolen', name);
+          } catch {}
+          busy = false;
+        }
+        return real.call(this, key, value);
+      };
+    }
+  `;
+  const s = await scene(
+    page(`
+      ${watch}
+      for (const src of ['${APP}own', '${APP}go']) {
+        const f = document.createElement('iframe');
+        f.src = src;
+        f.onload = () => console.log('loaded', src);
+        document.body.append(f);
+      }
+    `),
+    {
+      [`${APP}own`]: page(`console.log('ran', 'own');`),
+      [`${APP}go`]: { redirect: `${PROVIDER}side` },
+      [`${PROVIDER}side`]: `<!doctype html><title>victim-title</title><script>console.log('ran', 'theirs');</script>`,
+    },
+    { frames: false },
+  );
+  assert.equal(await s.until('ran'), 'own');
+  await s.when(
+    () => s.logs.includes(`log: loaded ${APP}go`),
+    'the frame that goes elsewhere',
+  );
+  assert.ok(!s.logs.some((l) => /theirs|stolen/.test(l)), s.logs.join('\n'));
+});
+
+test('a popup that goes to a data: address has no origin, and its opener least of all', async () => {
+  const data = 'data:text/html,side';
+  const s = await scene(pressed(`${VICTIM} window.open('${PROVIDER}side');`), {
+    [`${PROVIDER}side`]: page(`location.href = '${data}';`),
+    [data]: page(`
+      console.log('there', self.origin, self.isSecureContext);
+      ${STEAL('opener', 'console.log')}
+    `),
+  });
+  await s.press();
+  assert.equal(await s.until('there'), 'null false');
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('an opaque origin is no other: two data: windows, and a data: frame in one, are numbers to each other', async () => {
+  const first = 'data:text/html,first';
+  const second = 'data:text/html,second';
+  const frame = 'data:text/html,frame';
+  const s = await scene(
+    pressed(`window.open('${first}');`),
+    {
+      [first]: page(`
+        self.w = window.open('${second}');
+        addEventListener('message', (e) => {
+          if (e.data !== 'up') return;
+          ${STEAL('self.w', 'console.log')}
+          self.w.postMessage('to my own origin', '/');
+          self.w.postMessage('to anyone', '*');
+          const f = document.createElement('iframe');
+          f.src = '${frame}';
+          document.body.append(f);
+        });
+      `),
+      [second]: page(`
+        ${VICTIM}
+        addEventListener('message', (e) => console.log('heard', e.data));
+        opener.postMessage('up', '*');
+      `),
+      [frame]: page(
+        `console.log('framed', ${JSON.stringify('x')}); try { console.log('parent', parent.secret, parent.document.title); } catch (x) { console.log('parent', x.name); }`,
+      ),
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.equal(await s.until(`[frame ${frame}] parent`), 'SecurityError');
+  await s.when(
+    () => s.logs.includes('log: heard to anyone'),
+    'the message for anyone',
+  );
+  assert.ok(!s.logs.includes('log: heard to my own origin'));
+});
+
+test('the same reach finds a window of one origin, so what finds nothing above can find something', async () => {
+  const s = await scene(
+    pressed(`
+      self.w = window.open('${APP}side');
+      addEventListener('message', () => { ${STEAL('self.w', 'console.log')} }, { once: true });
+    `),
+    { [`${APP}side`]: page(`${VICTIM} opener.postMessage('up', '*');`) },
+  );
+  await s.press();
+  const found = JSON.parse((await s.until('attacked')).slice('true '.length));
+  for (const route of ['plain', 'map', 'string', 'set', 'own']) {
+    assert.ok(found.includes(`${route}:global`), found.join(' '));
+  }
+});
+
+test('what crosses origins still crosses: a clone, a port and what it answers, a canvas and what it draws', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}side');
+      const shown = document.createElement('canvas');
+      shown.width = 4;
+      shown.height = 2;
+      shown.style.cssText = 'display:block;width:80px;height:40px';
+      document.body.prepend(shown);
+      addEventListener('message', (e) => {
+        console.log('source', e.source === w, e.origin);
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (m) => console.log('reply', m.data);
+        const off = shown.transferControlToOffscreen();
+        const bytes = new Uint8Array([1, 2, 3]);
+        w.postMessage(
+          { hello: 'there', bytes, map: new Map([[1, 'one']]), off },
+          '*',
+          [channel.port2, off],
+        );
+      });
+    `),
+    {
+      [`${PROVIDER}side`]: page(`
+        addEventListener('message', (e) => {
+          const { hello, bytes, map, off } = e.data;
+          console.log('got', e.origin, e.source === opener, hello, bytes.length, map.get(1), e.ports.length);
+          e.ports[0].postMessage('through the port');
+          const x = off.getContext('2d');
+          x.fillStyle = '#ff0000';
+          x.fillRect(0, 0, 4, 2);
+        });
+        opener.postMessage('ready', '*');
+      `),
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('source'), `true ${PROVIDER.slice(0, -1)}`);
+  assert.equal(await s.until('got'), `${APP.slice(0, -1)} true there 3 one 1`);
+  assert.equal(await s.until('reply'), 'through the port');
+  if (FONTS) {
+    await waitForPixel(s.ctx, 20, 20, '#ff0000', {
+      message: 'what the popup drew on the canvas it was handed',
+    });
+  }
+});
+
+test('a message goes only to the origin it is meant for, and says who sent it as the host knows', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}side');
+      addEventListener('message', (e) => {
+        if (e.data !== 'ready') return;
+        w.postMessage('to me', '/');
+        w.postMessage('to another', 'https://other.test');
+        w.postMessage('to it', '${PROVIDER.slice(0, -1)}');
+        try { w.postMessage('bad', 'not a url'); } catch (x) { console.log('threw', x.name); }
+      });
+    `),
+    {
+      [`${PROVIDER}side`]: page(`
+        addEventListener('message', (e) => console.log('got', e.data, e.origin));
+        opener.postMessage('ready', '*');
+      `),
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('threw'), 'SyntaxError');
+  assert.equal(await s.until('got'), `to it ${APP.slice(0, -1)}`);
+  await act(() => new Promise((r) => setTimeout(r, 40)));
+  assert.equal(s.logs.filter((l) => l.startsWith('log: got')).length, 1);
+});
+
+/** A host by itself, as its bridge is asked by a facade a page has bent. */
+function hostAt(url: string, shared = new DomShared()): DomHost {
+  const seams = new Proxy(
+    {},
+    {
+      get: (_, key) =>
+        key === 'handle'
+          ? { base: null }
+          : key === 'log'
+            ? () => {}
+            : undefined,
+    },
+  );
+  return new DomHost(new Document([]), seams as HostSeams, url, shared);
+}
+
+const refused = (answer: unknown): boolean =>
+  typeof answer === 'string' && answer.startsWith('\u0001SecurityError');
+
+test('the host refuses what reaches another origin, whatever the facade asks', () => {
+  const page = hostAt(`${APP}page`);
+  // its own address, which every check of its origin reads
+  assert.ok(refused(page.bridge('setLocation', `${PROVIDER}page`)));
+  assert.equal(page.url, `${APP}page`);
+  assert.equal(page.bridge('setLocation', `${APP}other`), null);
+  assert.equal(page.url, `${APP}other`);
+
+  // a frame of another origin: its address, and its document by rewriting it
+  const frame = new Element('iframe', {});
+  appendChild(page.document, frame);
+  const held = new Document([]);
+  page.shared.frames.set(frame, held);
+  page.shared.frameAt.set(frame, `${PROVIDER}side`);
+  const id = page.idOf(frame);
+  assert.equal(page.bridge('frameDocument', id), 0);
+  assert.ok(refused(page.bridge('frameLocation', id)));
+  assert.ok(refused(page.bridge('setFrameLocation', id, `${APP}mine`)));
+  assert.equal(page.bridge('frameDocument', id), 0);
+  assert.equal(page.shared.frameAt.get(frame), `${PROVIDER}side`);
+
+  // and one of its own, which keeps to its origin
+  page.shared.frameAt.set(frame, `${APP}side`);
+  assert.equal(page.bridge('frameLocation', id), `${APP}side`);
+  assert.equal(page.bridge('setFrameLocation', id, `${APP}side#x`), null);
+  assert.ok(refused(page.bridge('setFrameLocation', id, `${PROVIDER}side`)));
+
+  // the element a frame's document is in, from another origin's realm
+  const inside = hostAt(`${PROVIDER}side`, page.shared);
+  page.shared.frameOf.set(inside.document, frame);
+  inside.foreignParent = true;
+  assert.equal(inside.bridge('frameElement', 1), 0);
+  inside.foreignParent = false;
+  assert.notEqual(inside.bridge('frameElement', 1), 0);
+
+  // a node handed across realms, only to its own origin
+  inside.bridge('handOver', 1);
+  assert.ok(refused(page.bridge('takeNode')));
+  const same = hostAt(`${APP}again`, page.shared);
+  page.bridge('handOver', 1);
+  assert.equal(typeof same.bridge('takeNode'), 'number');
 });
 
 test('features read as HTML reads them', () => {

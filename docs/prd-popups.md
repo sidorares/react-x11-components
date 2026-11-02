@@ -39,8 +39,9 @@ messages, and nothing shared lets one process read another's DOM.
 So **a window with an opener runs in its opener's process**, as a realm of its
 own, whatever its origin. That is what browsers do for a browsing context
 group's same-site windows, and it is what a frame here already does: another
-origin's frame is a realm in the page's process, linked as another origin, and
-kept to what crosses origins (`crossLinked`). It also answers the question
+origin's frame is a realm in the page's process, which the page has by a
+number, and what crosses origins goes through the host. It also answers the
+question
 site isolation has to answer with a process swap: whether a window stays
 same-origin is not known until it has gone somewhere, and a popup login crosses
 twice. Here nothing moves. The opener's object stands for the same window
@@ -99,6 +100,31 @@ A frame can be an opener. A sign-in button in an iframe opens the popup, and
 the popup posts to `window.opener`, which is the iframe. That is why a slot is a
 window of any kind, and the group hangs off `DomShared`, the tree of nodes every
 realm of a page shares.
+
+### Another origin is a number
+
+Being in one process is only safe if a realm never holds another origin's
+global, or any object of that realm. The facade runs in the page's realm, so a
+page can replace what it calls, down to `String` and `Map.prototype.get`: an
+origin compared there can be made to come out the same, and an object kept there
+can be read as the facade reads it. So nothing in the facade decides this.
+
+`WindowSlot.adopt` and `ScriptEngine.link` ask the host whether two documents
+are of one origin, and an opaque origin is no other's. Of one, each realm is
+handed the other's global. Of two, each has the other by a number, and every
+thing that crosses is an op on it: `closed`, `length`, `close`, `focus`, a
+`location` set, and `postMessage` and a port's messages as strings the host
+delivers by entering the other realm. The host says who a message is from and
+holds it to the origin it is meant for, so `event.origin` and `targetOrigin` are
+out of a page's hands. A window that goes between origins links or unlinks as
+each document comes in, which is why the object a page holds can stand for it
+through a login.
+
+What reaches another document is refused on the host as well, whatever the
+facade checked: a frame's document, its address and its element, and a node handed
+between realms. And what an origin is read from cannot be moved by a page: a
+document's history stays in its origin, a frame's origin is where it landed after
+its redirects, and an `about:blank` is the only document that is of what made it.
 
 ### A window is born with a realm
 
@@ -265,8 +291,9 @@ the prototype, frames nested in frames, `document.domain`, and a window's
 - **Cross-Origin-Opener-Policy.** A provider that sends `same-origin` severs the
   opener in a browser, and does not here. Login flows that work in a browser
   send `same-origin-allow-popups`, which this already behaves as.
-- **`sandbox`'s `allow-popups`.** A frame's `sandbox` is read for what it
-  supports and enforced nowhere, so a sandboxed frame opens a window.
+- **`sandbox`.** A frame's `sandbox` is read for what it supports and enforced
+  nowhere: a sandboxed frame opens a window, runs its scripts and keeps its
+  origin, so one of the page's origin is handed the page's global.
 - **A window opened from a realm-less frame** opens as its page: such a frame
   has no script of its own to call it, only the page reaching in.
 - **`resizeTo` and `moveTo`** on a popup, and `screenX` and `screenY`: a popup

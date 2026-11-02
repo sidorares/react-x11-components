@@ -240,7 +240,14 @@ export class ScriptRunner {
     );
     this.host.arrival = arrival;
     // before its realm is made, which asks what context it is as it starts
-    if (popup) this.host.creator = popup.creator;
+    if (popup && url === 'about:blank') this.host.creator = popup.creator;
+    // the host's to know, and never the facade's: it decides what a realm is
+    // handed, and what is refused it
+    const foreign =
+      !!_link &&
+      url !== 'about:blank' &&
+      (originOf(url) === 'null' || originOf(url) !== _link.parent.host.origin);
+    this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
       onTimeout: _options.onTimeout,
@@ -341,13 +348,7 @@ export class ScriptRunner {
     }
     this._attachService();
     if (_link) {
-      _link.parent.engine.link(
-        this.engine,
-        this._frameId(),
-        // `about:blank` is the origin of the document that opened it
-        url !== 'about:blank' &&
-          originOf(url) !== originOf(_link.parent.host.url),
-      );
+      _link.parent.engine.link(this.engine, this._frameId(), foreign);
     }
   }
 
@@ -368,6 +369,19 @@ export class ScriptRunner {
   /** The frame's element, where this document is a frame's. */
   get frame(): Element | null {
     return this._link?.frame ?? null;
+  }
+
+  /** The realm this document's frame is in, and its frame's id there. */
+  get parentRealm(): { runner: ScriptRunner; from: number } | null {
+    return this._link
+      ? { runner: this._link.parent, from: this._frameId() }
+      : null;
+  }
+
+  /** The realm of a frame of this document, by its id here. */
+  frameRealm(id: number): ScriptRunner | null {
+    const document = this.host.frameDocumentAt(id);
+    return (document && this._seats.get(document)?.runner) ?? null;
   }
 
   /**
