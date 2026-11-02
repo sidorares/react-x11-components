@@ -54,6 +54,7 @@ import type { AdoptedSheet } from '../dom.js';
 import {
   HtmlSource,
   ShadowRoot,
+  parsedForm,
   indicatedElement,
   isCustomized,
   assignedSlot,
@@ -3573,6 +3574,13 @@ export class DomHost {
             `'${text(b)}' is not a valid selector.`,
           );
         }
+      }
+      case 'parsedForm': {
+        const from = this._element(a);
+        const form = parsedForm(from);
+        return form && this._ownerOf(form) === this._ownerOf(from)
+          ? this.idOf(form)
+          : 0;
       }
       case 'closest': {
         if (this._transitionSelector(text(b))) return 0;

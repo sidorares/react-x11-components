@@ -130,6 +130,7 @@ export function installDom(
       op !== 'computedShorthands' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
+      op !== 'parsedForm' &&
       op !== 'selection' &&
       op !== 'fontFaces' &&
       op !== 'fontMatch' &&
@@ -235,6 +236,7 @@ export function installDom(
     'query',
     'matches',
     'closest',
+    'parsedForm',
     'named',
     'byId',
     'byTag',
@@ -7761,11 +7763,11 @@ export function installDom(
   };
 
   /** The form a control is in: the one its `form` attribute names, or the
-   *  one around it. */
+   *  one around it, or the one the parser gave it. */
   const formOf = (el: Any): Any => {
     const named = el.getAttribute('form');
     if (named !== null) return document.getElementById(named);
-    return el.closest('form');
+    return el.closest('form') ?? wrap(call('parsedForm', el._id));
   };
 
   /** Where a URL is: its parts, as `location` and `a.pathname` read them. */

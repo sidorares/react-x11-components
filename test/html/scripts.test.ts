@@ -10732,6 +10732,27 @@ test('a <script> or a <style> a <math> holds is only a name, wherever it goes, a
   );
 });
 
+test('a control has the form the parser gave it, and the form has the control', async () => {
+  // the row is no child of the form, which closed as it opened, as in all
+  // three engines
+  assert.deepEqual(
+    await reads(
+      '<table><form id="f"><tr><td><input id="i" name="n"></td></tr></form></table>',
+      'var f=by("f"),i=by("i");return [i.form===f,i.closest("form"),' +
+        'f.elements.length,f.elements[0]===i,f.children.length]',
+    ),
+    [true, null, 1, true, 0],
+  );
+  assert.deepEqual(
+    await reads(
+      '<div><form id="f"></div><form id="g"><input id="i"></form>',
+      'return [by("i").form===by("f"),by("g")]',
+    ),
+    [true, null],
+    'the second form was turned away',
+  );
+});
+
 test('what the parser made of an HTML name in a drawing or a <math> is no HTML element to a page', async () => {
   // every value here is what Chromium, Firefox and WebKit each answer
   assert.deepEqual(
