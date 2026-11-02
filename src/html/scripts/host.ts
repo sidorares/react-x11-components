@@ -927,6 +927,34 @@ function isTemplate(node: AnyNode): boolean {
   return node instanceof Element && node.name === 'template';
 }
 
+/** Each `<template>`'s content, once a page has asked for it, and the
+ *  fragments that are one. Kept by the node rather than a realm's number
+ *  for it: the realms over one document share its templates. */
+const TEMPLATE_CONTENTS = new WeakMap<Element, Document>();
+const CONTENT_FRAGMENTS = new WeakSet<AnyNode>();
+
+/**
+ * A `<template>`'s content (HTML 4.12.3): a fragment over the template's own
+ * list of children, so there is one list. What the parser and `innerHTML`
+ * put in a template and what a page puts in its content are the same
+ * nodes, and whatever reads the template — its `innerHTML`, the serializing
+ * of what it is in, a clone — reads what is there now. As a copy made once,
+ * it was what the template held the first time a page asked: Vue keeps one
+ * `<template>` for its static trees, sets its `innerHTML` and moves its
+ * `content` out each time, and from the second on it moved out nothing,
+ * which took JSFiddle's editors with it.
+ */
+function templateContent(template: Element): Document {
+  let content = TEMPLATE_CONTENTS.get(template);
+  if (!content) {
+    content = new Document(template.children);
+    for (const kid of template.children) kid.parent = content;
+    TEMPLATE_CONTENTS.set(template, content);
+    CONTENT_FRAGMENTS.add(content);
+  }
+  return content;
+}
+
 /**
  * The elements under `root` that pass `test`, in tree order — or the
  * first, for `one` — leaving out what a `<template>` holds, which is its
@@ -1845,7 +1873,6 @@ export class DomHost {
   >();
   /** The bodies being handed to the page a chunk at a time (`_pump`). */
   private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
-  private _contents = new Map<number, number>();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
   /** The page's `MutationObserver`s, by id in the order they were made: the
@@ -1865,7 +1892,6 @@ export class DomHost {
   /** The `<template>`s' contents (`content`), whose node document is an
    *  inert one in a browser: nothing in them is a custom element, and a
    *  copy of them none either, until it is put in the document. */
-  private _templateContents = new WeakSet<AnyNode>();
   /** The address the document is at, which `history.pushState` moves. */
   url: string;
   /** Scripts that are never run: what `innerHTML` and
@@ -2684,17 +2710,6 @@ export class DomHost {
     return clone;
   }
 
-  /** A deep copy of a child: a clone's, or a template content's with
-   *  every shadow root in it (`_cloneShadows`'s `every`). */
-  private _copyOf(child: ChildNode, every: boolean): ChildNode {
-    if (!every) return this._clone(child, true);
-    const copy = child.cloneNode(true) as ChildNode;
-    copyMadeAsHtml(child, copy);
-    this._cloneShadows(child, copy, true, true);
-    this._copiedScripts(child, copy, true);
-    return copy;
-  }
-
   /** A copy's scripts, which a script made, so `async` is forced on in
    *  each (`forceAsync`), and which have started where the scripts they
    *  copy have (HTML 4.12.1, the script element's cloning steps): a script
@@ -2729,18 +2744,11 @@ export class DomHost {
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
    *  whose shadow root is clonable gives its copy a root of the same kind
    *  and a copy of the tree in it, whether or not the clone is deep, and
-   *  a deep clone does so for every host in what it copies. `every` is a
-   *  template's content, which stands for what the template's children
-   *  are and so takes every root as it is, clonable or not. */
-  private _cloneShadows(
-    node: AnyNode,
-    copy: AnyNode,
-    deep: boolean,
-    every = false,
-  ): void {
+   *  a deep clone does so for every host in what it copies. */
+  private _cloneShadows(node: AnyNode, copy: AnyNode, deep: boolean): void {
     if (node instanceof Element && copy instanceof Element) {
       const root = shadowRootOf(node);
-      if (root && (every || root.clonable) && !shadowRootOf(copy)) {
+      if (root && root.clonable && !shadowRootOf(copy)) {
         const made = attachShadow(copy, {
           mode: root.mode,
           delegatesFocus: root.delegatesFocus,
@@ -2749,9 +2757,8 @@ export class DomHost {
         });
         if (made) {
           made.registryNull = root.registryNull;
-          if (every) made.declarative = root.declarative;
           for (const child of root.children) {
-            DomUtils.appendChild(made, this._copyOf(child, every));
+            DomUtils.appendChild(made, this._clone(child, true));
           }
         }
       }
@@ -2760,7 +2767,7 @@ export class DomHost {
     const from = (node as { children?: AnyNode[] }).children ?? [];
     const to = (copy as { children?: AnyNode[] }).children ?? [];
     for (let i = 0; i < from.length && i < to.length; i += 1) {
-      this._cloneShadows(from[i], to[i], true, every);
+      this._cloneShadows(from[i], to[i], true);
     }
   }
 
@@ -3496,7 +3503,7 @@ export class DomHost {
         if (parsedWithNullRegistry(el)) return true;
         const parent = el.parent;
         return (parent instanceof Element && parent.name === 'template') ||
-          (parent !== null && this._templateContents.has(parent))
+          (parent !== null && CONTENT_FRAGMENTS.has(parent))
           ? 'template'
           : false;
       }
@@ -3695,7 +3702,14 @@ export class DomHost {
         const parent = this._parent(a);
         // `setHTMLUnsafe` takes declarative shadow roots, as the document's
         // parser does (HTML 8.5.1)
-        this._replaceAll(parent, this._parseIn(parent, text(b), c === true));
+        const kids = this._parseIn(parent, text(b), c === true);
+        // and what a template is handed is its content's, one that has one
+        // keeping it (HTML 8.4, the `innerHTML` setter)
+        this._replaceAll(
+          (parent instanceof Element && TEMPLATE_CONTENTS.get(parent)) ||
+            parent,
+          kids,
+        );
         if (!this._inDocument(parent)) this._imagesMade(parent.children);
         return null;
       }
@@ -3717,28 +3731,8 @@ export class DomHost {
         }
         return null;
       }
-      case 'content': {
-        // a `<template>`'s content: a fragment of what it holds, made once
-        const id = Number(a);
-        let fragment = this._contents.get(id);
-        if (fragment === undefined) {
-          const template = this._element(a);
-          const kids = template.children.map((kid) => this._copyOf(kid, true));
-          const holder = new Document(kids);
-          // a copy is linked to no sibling, and `nextSibling` reads the
-          // links: Polymer walks a template's content by them, and found
-          // only its first child
-          kids.forEach((kid, i) => {
-            kid.parent = holder;
-            kid.prev = kids[i - 1] ?? null;
-            kid.next = kids[i + 1] ?? null;
-          });
-          this._templateContents.add(holder);
-          fragment = this.idOf(holder);
-          this._contents.set(id, fragment);
-        }
-        return fragment;
-      }
+      case 'content':
+        return this.idOf(templateContent(this._element(a)));
 
       // --- selectors
       case 'query': {
@@ -6214,7 +6208,7 @@ export class DomHost {
   private _inTemplate(node: AnyNode): boolean {
     let at = node;
     while (at.parent) at = at.parent;
-    return this._templateContents.has(at);
+    return CONTENT_FRAGMENTS.has(at);
   }
 
   /**
