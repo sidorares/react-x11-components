@@ -1081,7 +1081,9 @@ a request whose site for cookies is `page`'s. Where the runtime says what
 the handshake was answered with — Node's from 24, through undici's
 `undici:websocket:open` diagnostics channel — its `Set-Cookie` is kept in
 the jar before the page hears `open`; Bun's says nothing of it. Node 20 has
-no `WebSocket`, and there every socket fails as with no network.
+no `WebSocket`, and there every socket fails as with no network. One
+opening handshake to a host and port goes at a time, as RFC 6455 has it, each
+waiting for the one before to be answered or to fail, or for 30 seconds.
 `webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
