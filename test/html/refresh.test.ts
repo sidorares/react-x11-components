@@ -5123,17 +5123,6 @@ test('sheets put in, written to, extended, replaced and taken out come to the st
   assert.ok(tookOver > 20, `${tookOver} cascades took over the one before`);
 });
 
-/** `css` written after what a `<style id="css">` holds, as a CSS-in-JS
- *  library writes a component's rules, and told. */
-function writeRules(el: HtmlViewNode, css: string): void {
-  const sheet = byId(el, 'css');
-  const text = createText(css);
-  appendChild(sheet, text);
-  el.touchDocument([
-    { type: 'childList', target: sheet, addedNodes: [text], removedNodes: [] },
-  ]);
-}
-
 /** What `read` says and what is drawn, held to a refresh of everything,
  *  which styles the root, where `rebuilt` keeps every style there is. */
 async function asRefreshed<T>(
@@ -5419,6 +5408,31 @@ metric(
     // 8px either side of the edge at 30: three and a half at the initial size
     await expectPixel(result.ctx, 24, 60, '#ff0000');
     await expectPixel(result.ctx, 60, 4, '#0000ff');
+  },
+);
+
+metric(
+  'a rem in a rule that reaches a drawing through what it names is of the root',
+  async () => {
+    // asked once the build is over (`namersOf`), of a cascade that styled
+    // no root: 16px either side of the edge at 30, 3.5 at the initial size
+    const sprite =
+      '<symbol id="s" viewBox="0 0 100 100"><rect x="30" y="30" width="40"' +
+      ' height="40" fill="none" stroke="#ff0000"/></symbol>';
+    const { result, node } = await render(
+      blocked(
+        SIZED_ROOT,
+        hidden(sprite),
+        '<svg id="d" width="100" height="100"><use href="#s"/></svg>',
+      ),
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    writeRules(el, 'rect{stroke-width:.5rem}');
+    await asRefreshed(result, el, () => null, 'a named shape');
+    const [x, y] = pointIn(el, 'd');
+    await expectPixel(result.ctx, x - 26, y, '#ff0000');
   },
 );
 
