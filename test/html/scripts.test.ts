@@ -14233,6 +14233,38 @@ async function until(
   return text;
 }
 
+test('Math.sumPrecise is in the page, in a frame’s realm and in a worker, each its realm’s own and each a builtin to read', async () => {
+  // `math.test.ts` has what it answers; this has where it is
+  const read =
+    '[Math.sumPrecise([1e20, 0.1, -1e20]), Object.is(Math.sumPrecise([]), -0),' +
+    ' /native code/.test(String(Math.sumPrecise))].join(",")';
+  const frame =
+    '<!DOCTYPE html><p id="sum">-</p><script>' +
+    `document.getElementById("sum").textContent = ${read} + "," + (Math !== parent.Math);` +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe>' +
+      '<p id="page"></p><p id="worker"></p><script>' +
+      `document.getElementById("page").textContent = ${read};` +
+      `var src = ${JSON.stringify(`postMessage(${read} + "," + (typeof document));`)};` +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("worker").textContent = e.data; };' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  const held = await until(
+    () =>
+      text('page', 'page') && text('page', 'worker') && text('f', 'sum') !== '-'
+        ? 'in'
+        : '',
+    (t) => t === 'in',
+  );
+  assert.equal(held, 'in', logs.join('\n'));
+  assert.equal(text('page', 'page'), '0.1,true,true');
+  assert.equal(text('f', 'sum'), '0.1,true,true,true');
+  assert.equal(text('page', 'worker'), '0.1,true,true,undefined');
+});
+
 test('a frame runs in a realm of its own, linked to the page: its window, its parent and messages both ways', async () => {
   const frame =
     '<!DOCTYPE html><p id="got">-</p><script type="module">' +

@@ -31055,57 +31055,6 @@ export function installDom(
       }
     });
   });
-  // `Math.sumPrecise` (ES2026), which no V8 under Node has yet and pdf.js's
-  // font compiler calls: every font a document embedded threw, and it was
-  // set in what the machine had. A finite double is a whole number of
-  // 2^-1074, so the sum is a BigInt of those, and is rounded once
-  if (!(Math as Any).sumPrecise) {
-    const double = new Float64Array(1);
-    const bits = new BigUint64Array(double.buffer);
-    Object.defineProperty(Math, 'sumPrecise', {
-      writable: true,
-      configurable: true,
-      value: {
-        sumPrecise(items: Any): number {
-          let sum = 0n;
-          let negativeZero = true;
-          let nan = false;
-          let up = false;
-          let down = false;
-          for (const item of items) {
-            if (typeof item !== 'number') {
-              throw new TypeError('Math.sumPrecise adds numbers');
-            }
-            if (item !== item) nan = true;
-            else if (item === Infinity) up = true;
-            else if (item === -Infinity) down = true;
-            else if (item !== 0 || 1 / item > 0) {
-              negativeZero = false;
-              double[0] = item;
-              const word = bits[0];
-              const exponent = Number((word >> 52n) & 0x7ffn);
-              const fraction = word & 0xfffffffffffffn;
-              const units = exponent
-                ? (fraction | (1n << 52n)) << BigInt(exponent - 1)
-                : fraction;
-              sum += word >> 63n ? -units : units;
-            }
-          }
-          if (nan || (up && down)) return NaN;
-          if (up) return Infinity;
-          if (down) return -Infinity;
-          if (negativeZero) return -0;
-          const size = sum < 0n ? -sum : sum;
-          // 55 bits, the last of them set if anything is cut off below,
-          // which is all that rounding to 53 reads
-          const cut = Math.max(size.toString(2).length - 55, 0);
-          let kept = size >> BigInt(cut);
-          if (kept << BigInt(cut) !== size) kept |= 1n;
-          return (sum < 0n ? -1 : 1) * Number(kept) * 2 ** (cut - 1074);
-        },
-      }.sumPrecise,
-    });
-  }
   // what the options transfer is given up once it is copied, as a
   // `postMessage`'s is
   define('createImageBitmap', createImageBitmap);
