@@ -18,6 +18,17 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import * as encodingCodecs from '../encoding-codecs.js';
+import type { LegacyDecoder } from '../encoding-codecs.js';
+import {
+  adoptEncodings,
+  bomEncoding,
+  decodeInEncoding,
+  encodingOf,
+  outputEncoding,
+  sniffEncoding,
+  xmlEncoding,
+} from '../encoding.js';
 import * as DomUtils from 'domutils';
 import { Parser } from 'htmlparser2';
 import { compile, selectAll, selectOne } from 'css-select';
@@ -84,6 +95,7 @@ import {
   setModal,
   setPopoverOpen,
   shadowRootAround,
+  flatParentOf,
   topLayerIn,
   topLayerOf,
   treeGeneration,
@@ -100,6 +112,8 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
+import { eventPath, shadowIncludingHolds } from './event-path.js';
+import { NO_MODIFIERS } from '../dom-events.js';
 import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
@@ -188,6 +202,19 @@ import {
   redirectTainted,
 } from './fetch-hops.js';
 import type { Hop } from './fetch-hops.js';
+import { readDataUrl } from '../network.js';
+import {
+  SB_DOWNLOADS,
+  SB_ORIGIN,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_SCRIPTS,
+  SB_TOP,
+  SB_TOP_GESTURE,
+  parseSandbox,
+  sandboxOfPolicy,
+} from './sandbox.js';
+import { framingRefused } from './framing.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
@@ -220,7 +247,7 @@ import type { HtmlMediaDevices } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
-import { chosenFiles } from '../form.js';
+import { chosenFiles, formEncoding, urlencoded } from '../form.js';
 import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
@@ -335,7 +362,8 @@ export interface FetchRequest {
    * `manual` alone: `error` is a page's, kept for a worker's `fetch` event.
    */
   redirect?: 'follow' | 'error' | 'manual';
-  /** Whether its `Origin` is `null`, whatever its client's is: one a redirect
+  /** Whether its `Origin` is `null`, whatever its client's is: a sandboxed
+   *  document's, whose address says nothing of who it is, or one a redirect
    *  through another origin tainted (`redirectTainted`). */
   opaqueOrigin?: boolean;
 }
@@ -466,6 +494,24 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** What is under the pointer now, where it is over the document. */
+  pointerElement(): Element | null;
+  /** What was under the pointer as the document was last laid out. */
+  pointerDrawn(): Element | null;
+  /** What the reader's selection is, to compare. */
+  selectionKey(): string;
+  /** What is under a pointer that did not move is `:hover` now. */
+  hoverAgain(): void;
+  /** `:hover` is on what has the pointer's capture, whatever it is over. */
+  hoverOn(element: Element | null): void;
+  /** A point of the page in an element's own coordinates
+   *  (`HtmlViewNode.pointIn`). */
+  pointIn(
+    how: 'offset' | 'layer',
+    element: Element,
+    x: number,
+    y: number,
+  ): [number, number] | null;
   /** Hand the host what a page asked to have saved: whether it takes it. */
   download(request: HtmlDownloadRequest): boolean;
   /** A file input's dialog (`HtmlProps.onPickFiles`). */
@@ -760,6 +806,8 @@ export interface HostSeams {
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
   userAgent: string;
   language: string;
+  /** The label of the encoding the host decoded the document from. */
+  charset?: string;
   /** What a media element's `canPlayType` answers: whether what plays the
    *  page's media can play the type. None, `''` for every type. */
   canPlayType?(type: string): string;
@@ -960,6 +1008,34 @@ const NAMED_BY_NAME = new Set([
  *  and no part of the tree a page walks (HTML 4.12.3). */
 function isTemplate(node: AnyNode): boolean {
   return node instanceof Element && node.name === 'template';
+}
+
+/** Each `<template>`'s content, once a page has asked for it, and the
+ *  fragments that are one. Kept by the node rather than a realm's number
+ *  for it: the realms over one document share its templates. */
+const TEMPLATE_CONTENTS = new WeakMap<Element, Document>();
+const CONTENT_FRAGMENTS = new WeakSet<AnyNode>();
+
+/**
+ * A `<template>`'s content (HTML 4.12.3): a fragment over the template's own
+ * list of children, so there is one list. What the parser and `innerHTML`
+ * put in a template and what a page puts in its content are the same
+ * nodes, and whatever reads the template — its `innerHTML`, the serializing
+ * of what it is in, a clone — reads what is there now. As a copy made once,
+ * it was what the template held the first time a page asked: Vue keeps one
+ * `<template>` for its static trees, sets its `innerHTML` and moves its
+ * `content` out each time, and from the second on it moved out nothing,
+ * which took JSFiddle's editors with it.
+ */
+function templateContent(template: Element): Document {
+  let content = TEMPLATE_CONTENTS.get(template);
+  if (!content) {
+    content = new Document(template.children);
+    for (const kid of template.children) kid.parent = content;
+    TEMPLATE_CONTENTS.set(template, content);
+    CONTENT_FRAGMENTS.add(content);
+  }
+  return content;
 }
 
 /**
@@ -1520,7 +1596,10 @@ const RAW_TEXT = new Set([
 export function cssRulesOf(css: string): string[] {
   const out: string[] = [];
   const n = css.length;
-  let depth = 0;
+  // the closing bracket of each block open, innermost last
+  const open: string[] = [];
+  // what the text ends inside, past its brackets: a string or a comment
+  let inside = '';
   let start = 0;
   const end = (at: number, statement: boolean): void => {
     const rule = css.slice(start, at).trim();
@@ -1533,27 +1612,56 @@ export function cssRulesOf(css: string): string[] {
     const ch = css[i];
     if (ch === '/' && css[i + 1] === '*') {
       const close = css.indexOf('*/', i + 2);
+      if (close < 0) inside = '*/';
       const after = close < 0 ? n : close + 2;
       // a comment before a rule is not the rule's
       if (!css.slice(start, i).trim()) start = after;
       i = after - 1;
     } else if (ch === '"' || ch === "'") {
-      for (i += 1; i < n && css[i] !== ch && css[i] !== '\n'; i++) {
-        if (css[i] === '\\') i += 1;
+      // a newline ends a string that has not ended, and a form feed is one
+      i += 1;
+      while (
+        i < n &&
+        css[i] !== ch &&
+        css[i] !== '\n' &&
+        css[i] !== '\r' &&
+        css[i] !== '\f'
+      ) {
+        i += css[i] === '\\' ? 2 : 1;
       }
+      if (i >= n) inside = ch;
     } else if (ch === '\\') {
       i += 1;
     } else if (ch === '{' || ch === '(' || ch === '[') {
-      depth += 1;
+      open.push(ch === '{' ? '}' : ch === '(' ? ')' : ']');
     } else if (ch === '}' || ch === ')' || ch === ']') {
-      if (depth > 0) depth -= 1;
-      if (depth === 0 && ch === '}') end(i + 1, false);
-    } else if (ch === ';' && depth === 0) {
+      // a closing bracket of another kind inside is only a token
+      if (open[open.length - 1] === ch) open.pop();
+      if (!open.length && ch === '}') end(i + 1, false);
+    } else if (ch === ';' && !open.length) {
       end(i + 1, true);
     }
   }
-  // an unclosed block is closed where the text ends
+  // What the text ends inside is closed there, as CSS's tokenizer closes it
+  // (CSS Syntax 3, 5.4.9), and the rule says so in its text: rules are
+  // written back beside each other (`_writeSheets`), where what one left
+  // open would hold the rest. Grafana's global styles set `content: "\f0d7"`
+  // in a JavaScript string, a form feed and so a broken string, one rule of
+  // 578 that each go in by `insertRule`: the 246 after it were lost in it,
+  // `.grafana-app` among them, and no dashboard had a height.
+  const before = out.length;
   end(n, false);
+  if (out.length > before) {
+    let rule = out.pop() as string;
+    const atRule = rule[0] === '@';
+    // what has no block by then is no rule, but for an at-rule
+    if (!atRule && !open.includes('}')) return out;
+    if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
+      rule = rule.slice(0, -1);
+    }
+    rule += inside + open.reverse().join('');
+    out.push(atRule && !rule.endsWith('}') ? `${rule};` : rule);
+  }
   return out;
 }
 
@@ -1693,8 +1801,18 @@ export interface Entries {
  * realm changes may be drawn by another's `<Html>`. What is a realm's own
  * — its ids, its timers, its observers, its address — stays its host's.
  */
+/** The document an element is in, if any. */
+function documentHolding(element: Element): Document | null {
+  let node: AnyNode = element;
+  while (node.parent) node = node.parent;
+  return node instanceof Document ? node : null;
+}
+
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** Each document's encoding where its bytes came through here, by its
+   *  name. One a host handed over is the host's to say (`charset`). */
+  readonly encodings = new WeakMap<Document, string>();
   /** The `<script>`s a page's script made, and whether each still has its
    *  `async` forced on (HTML 4.12.1, "force async"): true until a script
    *  sets `async` or adds the attribute. A script the parser made has
@@ -1736,6 +1854,9 @@ export class DomShared {
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
+  /** Each document's sandboxing flags, where it has any (`./sandbox.ts`):
+   *  kept here, by the document, where no realm can reach them. */
+  readonly sandboxes = new WeakMap<Document, number>();
   /** The windows that can reach each other over this tree, once one has
    *  opened another (`./popups.ts`). */
   windows: WindowGroup | null = null;
@@ -1801,7 +1922,6 @@ export class DomHost {
   >();
   /** The bodies being handed to the page a chunk at a time (`_pump`). */
   private _bodies = new Map<number, AsyncIterator<Uint8Array>>();
-  private _contents = new Map<number, number>();
   /** The changes since `<Html>` was last told, as `refresh` takes them. */
   private _changes: HtmlChange[] = [];
   /** The page's `MutationObserver`s, by id in the order they were made: the
@@ -1821,7 +1941,6 @@ export class DomHost {
   /** The `<template>`s' contents (`content`), whose node document is an
    *  inert one in a browser: nothing in them is a custom element, and a
    *  copy of them none either, until it is put in the document. */
-  private _templateContents = new WeakSet<AnyNode>();
   /** The address the document is at, which `history.pushState` moves. */
   url: string;
   /** Scripts that are never run: what `innerHTML` and
@@ -1948,6 +2067,7 @@ export class DomHost {
     // page reads (HTML, "remove the fragment directive"): `#:~:text=…` is
     // `location.hash` ''
     this.url = withoutFragmentDirective(url);
+    adoptEncodings(encodingCodecs);
     this._ids.set(document, 1);
     this._nodes.set(1, document);
     this._s = shared;
@@ -2123,11 +2243,16 @@ export class DomHost {
   /** An event `<Html>` told of, dispatched in the page; whether its default
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
+    if (event.type.startsWith('mouse')) this._under = event.target;
     const answer = this.entries?.call('__event', {
       type: event.type,
       target: this.idOf(event.target),
       x: event.x,
       y: event.y,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      samples: event.samples,
+      locks: event.locks,
       button: event.button,
       buttons: event.buttons,
       deltaX: event.deltaX,
@@ -2135,6 +2260,8 @@ export class DomHost {
       detail: event.detail,
       key: event.key,
       code: event.code,
+      repeat: event.repeat,
+      data: event.data,
       shiftKey: event.shiftKey,
       ctrlKey: event.ctrlKey,
       altKey: event.altKey,
@@ -2165,6 +2292,12 @@ export class DomHost {
   /** What made this document, where it is `about:blank`: its origin and its
    *  base are that document's (HTML 7.1.1). */
   creator: string | null = null;
+  /** The opaque origin that made it, where one did: an address says nothing
+   *  of that, and a sandbox's address is a real origin's. */
+  creatorOrigin: object | null = null;
+  /** This document's opaque origin, where it has one: `'null'` is what it
+   *  serializes to, and this is which it is. */
+  private readonly _opaqueOwn = {};
   /** What `document.referrer` reads. */
   referrer = '';
   /** Whether the document around this one's frame is of another origin:
@@ -2176,6 +2309,33 @@ export class DomHost {
     return this._origin();
   }
 
+  /** Which opaque origin this document has, or null for one of a scheme, a
+   *  host and a port: what two documents of no address's origin compare. */
+  get opaqueOrigin(): object | null {
+    if (this._origin() !== 'null') return null;
+    return this.creatorOrigin ?? this._opaqueOwn;
+  }
+
+  /** What this document's sandbox takes from it (`./sandbox.ts`). */
+  get sandbox(): number {
+    return this._s.sandboxes.get(this.document) ?? 0;
+  }
+
+  /** The document around this one's frame, where that is a realm's. */
+  frameParent: DomHost | null = null;
+
+  /** The flags a window this document opens starts with: its own, unless it
+   *  lets its windows out of its sandbox. */
+  get popupSandbox(): number {
+    return this.sandbox & SB_PROPAGATES ? this.sandbox : 0;
+  }
+
+  /** Whether this document may send the window at the top of it somewhere
+   *  (HTML 7.4.2.3, "allowed by sandboxing to navigate"), a gesture behind it
+   *  or not. */
+  mayNavigateTop(gesture: boolean): boolean {
+    return !(this.sandbox & (gesture ? SB_TOP_GESTURE : SB_TOP));
+  }
   /** The document a frame of this document shows, by the frame's id. */
   frameDocumentAt(id: number): Document | null {
     const frame = this._nodes.get(id);
@@ -2333,6 +2493,15 @@ export class DomHost {
    * whether the facade was woken since it last asked.
    */
   private _viewports = new Map<number, string>([[1, '']]);
+  /** Whether a page listens for what a pointer's moves make: until one
+   *  does `<Html>` tells it nothing of them (`noteHeard`). */
+  movesHeard = false;
+  /** The element the last of the pointer's events was told at. */
+  private _under: Element | null = null;
+  /** What the pointer is over and around it, once a kind (`pointers.ts`),
+   *  and how far up that a removal has moved it, or -1. */
+  private _pointerChains: (Element[] | null)[] = [null, null];
+  private _pointerCut = [-1, -1];
   private _viewportsWoken = false;
 
   /** `<Html>` painted (`ScriptRunner.painted`): the facade is woken for a
@@ -2341,6 +2510,34 @@ export class DomHost {
    *  `<iframe>`'s box the page laid out again — so that the frame runs its
    *  resize steps and reports its media queries (HTML's "update the
    *  rendering") whether or not anything else asked for one. */
+  /** The pointer did not move and what is under it may have: told as the
+   *  boundary events it comes to, as a browser's fake move is
+   *  (`MouseEventManager`'s), and only where a page listens for them. */
+  askUnder(): void {
+    if (this._disposed || !this.entries || !this.movesHeard) return;
+    const el = this._seams.handle.pointerElement?.() ?? null;
+    if (!el || el === this._under) return;
+    this.dispatch({
+      ...NO_MODIFIERS,
+      type: 'mouseover',
+      target: el,
+      cancelable: false,
+    });
+    this._seams.handle.hoverAgain?.();
+  }
+
+  /** The reader's selection moved, which a page that listens hears as it
+   *  moves and not only as it next reads it. */
+  askSelection(): void {
+    if (this._disposed || !this.entries || !this._selectionHeard) return;
+    const key = this._seams.handle.selectionKey?.() ?? '';
+    if (key === this._selectionSeen) return;
+    this._selectionSeen = key;
+    this.entries.call('__selectionMoved', null);
+  }
+  private _selectionHeard = false;
+  private _selectionSeen = '';
+
   renderingMoved(): void {
     if (this._disposed || !this.entries || this._viewportsWoken) return;
     for (const [id, was] of this._viewports) {
@@ -2640,17 +2837,6 @@ export class DomHost {
     return clone;
   }
 
-  /** A deep copy of a child: a clone's, or a template content's with
-   *  every shadow root in it (`_cloneShadows`'s `every`). */
-  private _copyOf(child: ChildNode, every: boolean): ChildNode {
-    if (!every) return this._clone(child, true);
-    const copy = child.cloneNode(true) as ChildNode;
-    copyMadeAsHtml(child, copy);
-    this._cloneShadows(child, copy, true, true);
-    this._copiedScripts(child, copy, true);
-    return copy;
-  }
-
   /** A copy's scripts, which a script made, so `async` is forced on in
    *  each (`forceAsync`), and which have started where the scripts they
    *  copy have (HTML 4.12.1, the script element's cloning steps): a script
@@ -2685,18 +2871,11 @@ export class DomHost {
   /** The shadow trees a clone takes (DOM 4.4, "clone a node"): a host
    *  whose shadow root is clonable gives its copy a root of the same kind
    *  and a copy of the tree in it, whether or not the clone is deep, and
-   *  a deep clone does so for every host in what it copies. `every` is a
-   *  template's content, which stands for what the template's children
-   *  are and so takes every root as it is, clonable or not. */
-  private _cloneShadows(
-    node: AnyNode,
-    copy: AnyNode,
-    deep: boolean,
-    every = false,
-  ): void {
+   *  a deep clone does so for every host in what it copies. */
+  private _cloneShadows(node: AnyNode, copy: AnyNode, deep: boolean): void {
     if (node instanceof Element && copy instanceof Element) {
       const root = shadowRootOf(node);
-      if (root && (every || root.clonable) && !shadowRootOf(copy)) {
+      if (root && root.clonable && !shadowRootOf(copy)) {
         const made = attachShadow(copy, {
           mode: root.mode,
           delegatesFocus: root.delegatesFocus,
@@ -2705,9 +2884,8 @@ export class DomHost {
         });
         if (made) {
           made.registryNull = root.registryNull;
-          if (every) made.declarative = root.declarative;
           for (const child of root.children) {
-            DomUtils.appendChild(made, this._copyOf(child, every));
+            DomUtils.appendChild(made, this._clone(child, true));
           }
         }
       }
@@ -2716,7 +2894,7 @@ export class DomHost {
     const from = (node as { children?: AnyNode[] }).children ?? [];
     const to = (copy as { children?: AnyNode[] }).children ?? [];
     for (let i = 0; i < from.length && i < to.length; i += 1) {
-      this._cloneShadows(from[i], to[i], true, every);
+      this._cloneShadows(from[i], to[i], true);
     }
   }
 
@@ -2897,6 +3075,55 @@ export class DomHost {
       case 'parent': {
         const node = this._node(a);
         return this._isDocument(node) ? 0 : this.idOf(node.parent);
+      }
+      // an event's whole path, in one answer (`event-path.ts`)
+      case 'eventPath':
+        return eventPath(
+          this._node(a),
+          b === true,
+          c ? this._node(c) : null,
+          (node) => this.idOf(node),
+        );
+      // what a pointer is over and around it (`pointers.ts`), and how far
+      // up that a removal has moved it since it was last asked
+      case 'pointerChain': {
+        const chain: Element[] = [];
+        let at: Element | null = b ? this._element(b) : null;
+        for (; at; at = flatParentOf(at)) chain.push(at);
+        this._pointerChains[a as number] = chain;
+        this._pointerCut[a as number] = -1;
+        return chain.map((el) => this.idOf(el)).join(',');
+      }
+      // a pointer's capture has `:hover` go with it
+      case 'pointerHover':
+        this._seams.handle.hoverOn?.(a ? this._element(a) : null);
+        return null;
+      case 'pointerOver': {
+        const cut = this._pointerCut.join(',');
+        this._pointerCut = [-1, -1];
+        return cut;
+      }
+      // a page came to listen for its selection's changes
+      case 'selectionHeard':
+        this._selectionHeard = true;
+        this._selectionSeen = this._seams.handle.selectionKey?.() ?? '';
+        return null;
+      // a page came to listen for what a pointer's moves make
+      case 'movesHeard': {
+        this.movesHeard = true;
+        const el = this._seams.handle.pointerDrawn?.() ?? null;
+        this._under = el;
+        return el ? this.idOf(el) : 0;
+      }
+      case 'pointIn': {
+        const v = this._seams.viewport();
+        const at = this._seams.handle.pointIn?.(
+          a as 'offset' | 'layer',
+          this._element(b),
+          (c as number) + v.scrollX,
+          (d as number) + v.scrollY,
+        );
+        return at ? `${at[0]},${at[1]}` : '';
       }
       // the document a node is in, and none for a document
       case 'owner': {
@@ -3452,7 +3679,7 @@ export class DomHost {
         if (parsedWithNullRegistry(el)) return true;
         const parent = el.parent;
         return (parent instanceof Element && parent.name === 'template') ||
-          (parent !== null && this._templateContents.has(parent))
+          (parent !== null && CONTENT_FRAGMENTS.has(parent))
           ? 'template'
           : false;
       }
@@ -3651,7 +3878,14 @@ export class DomHost {
         const parent = this._parent(a);
         // `setHTMLUnsafe` takes declarative shadow roots, as the document's
         // parser does (HTML 8.5.1)
-        this._replaceAll(parent, this._parseIn(parent, text(b), c === true));
+        const kids = this._parseIn(parent, text(b), c === true);
+        // and what a template is handed is its content's, one that has one
+        // keeping it (HTML 8.4, the `innerHTML` setter)
+        this._replaceAll(
+          (parent instanceof Element && TEMPLATE_CONTENTS.get(parent)) ||
+            parent,
+          kids,
+        );
         if (!this._inDocument(parent)) this._imagesMade(parent.children);
         return null;
       }
@@ -3673,28 +3907,8 @@ export class DomHost {
         }
         return null;
       }
-      case 'content': {
-        // a `<template>`'s content: a fragment of what it holds, made once
-        const id = Number(a);
-        let fragment = this._contents.get(id);
-        if (fragment === undefined) {
-          const template = this._element(a);
-          const kids = template.children.map((kid) => this._copyOf(kid, true));
-          const holder = new Document(kids);
-          // a copy is linked to no sibling, and `nextSibling` reads the
-          // links: Polymer walks a template's content by them, and found
-          // only its first child
-          kids.forEach((kid, i) => {
-            kid.parent = holder;
-            kid.prev = kids[i - 1] ?? null;
-            kid.next = kids[i + 1] ?? null;
-          });
-          this._templateContents.add(holder);
-          fragment = this.idOf(holder);
-          this._contents.set(id, fragment);
-        }
-        return fragment;
-      }
+      case 'content':
+        return this.idOf(templateContent(this._element(a)));
 
       // --- selectors
       case 'query': {
@@ -4248,7 +4462,7 @@ export class DomHost {
         const frame = this._element(a);
         this._frameDocument(frame);
         const at = this._frameAt.get(frame) ?? 'about:blank';
-        if (!this._sameOrigin(at)) {
+        if (!this._reaches(frame)) {
           throw new DomError(
             'SecurityError',
             "A frame of another origin's address is none of this document's.",
@@ -4276,7 +4490,7 @@ export class DomHost {
         const at = this._frameAt.get(frame) ?? 'about:blank';
         const to = text(b);
         if (
-          !this._sameOrigin(at) ||
+          !this._reaches(frame) ||
           !(this._sameOrigin(to) || originOf(to) === originOf(at))
         ) {
           throw new DomError(
@@ -4332,7 +4546,9 @@ export class DomHost {
             ? ''
             : `<title>${DomUtils.getOuterHTML(new Text(text(a)))}</title>`;
         return this.idOf(
-          this._documentOf(`<html><head>${title}</head><body></body></html>`),
+          this._documentOf(
+            `<!doctype html><html><head>${title}</head><body></body></html>`,
+          ),
         );
       }
       case 'parseDocument':
@@ -5197,6 +5413,24 @@ export class DomHost {
       }
       case 'resolve':
         return this._resolve(text(a));
+      case 'characterSet':
+        return this._encodingOf(
+          a ? (this._node(a) as Document) : this.document,
+        );
+      case 'encodingLabel':
+        return encodingOf(text(a)) ?? '';
+      case 'textDecode':
+        return this._textDecode(Number(a), text(b), text(c), Number(d));
+      case 'decodeResponse':
+        // marked, as `_textDecode`'s is
+        return `=${decodeInEncoding(
+          new Uint8Array(Buffer.from(text(a), 'base64')),
+          text(b),
+        )}`;
+      case 'formEncoding':
+        return formEncoding(this._element(a), this._encodingOf(this.document));
+      case 'formQuery':
+        return urlencoded(JSON.parse(text(a)) as [string, string][], text(b));
       case 'url':
         return urlJson(text(a), text(b));
       case 'setUrl': {
@@ -5211,12 +5445,33 @@ export class DomHost {
       case 'navigate':
         this._seams.navigate(text(a), b ? 'replace' : 'here');
         return null;
+      // this frame sends the window it is in somewhere, which it has no
+      // address of and may not read: a frame of another origin only behind a
+      // gesture, as Chromium keeps a frame from taking a page away, and a
+      // sandboxed one as its flags say (HTML 7.4.2.3)
+      case 'navigateTop': {
+        const to = this._resolve(text(a));
+        const parent = this.frameParent;
+        if (!parent || parent.frameParent || /^javascript:/i.test(to)) {
+          return null;
+        }
+        const gesture = this.entries?.call('__windowActivation', null) === true;
+        if (!this.mayNavigateTop(gesture) || (!this.sandbox && !gesture)) {
+          throw new DomError(
+            'SecurityError',
+            `Blocked a frame from navigating the top window to '${to}'.`,
+          );
+        }
+        parent._seams.navigate(to, 'here');
+        return null;
+      }
       // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
       case 'windowFeatures':
         return JSON.stringify(parseWindowFeatures(text(a)));
       case 'windowBase':
         return this._seams.handle.base ?? this.creator ?? this.url;
       case 'windowPopups':
+        if (this.sandbox & SB_POPUPS) return 'sandboxed';
         return !this._seams.popups
           ? 'none'
           : this._seams.popups.unblocked
@@ -5226,8 +5481,10 @@ export class DomHost {
         this._seams.popups?.blocked?.(text(a));
         return null;
       case 'windowOpen':
+        if (this.sandbox & SB_POPUPS) return 0;
         return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
       case 'windowTab':
+        if (this.sandbox & SB_POPUPS) return null;
         this._seams.navigate(
           text(a),
           'tab',
@@ -5244,7 +5501,11 @@ export class DomHost {
         this.windows?.focus(Number(a));
         return null;
       case 'windowNavigate':
-        this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        // nothing runs a script in another window's document here, and HTML
+        // has it do nothing for another origin's
+        if (!/^javascript:/i.test(text(b))) {
+          this.windows?.navigate(Number(a), this._resolve(text(b)), !!c);
+        }
         return null;
       case 'windowName':
         this.windows?.named(text(a));
@@ -5260,6 +5521,7 @@ export class DomHost {
       case 'windowLength':
         return this.windows?.lengthOf(Number(a)) ?? 0;
       case 'windowFollow': {
+        if (this.sandbox & SB_POPUPS) return true;
         const { noopener, noreferrer } = linkOpener(text(b), text(c));
         const made = this.windows?.follow(
           text(a),
@@ -5295,7 +5557,7 @@ export class DomHost {
         const handed = this._s.handed;
         this._s.handed = null;
         if (!handed) return 0;
-        if (handed.origin !== this._origin()) {
+        if (handed.origin !== this._origin() || handed.origin === 'null') {
           throw new DomError(
             'SecurityError',
             "A node of another origin's is none of this document's.",
@@ -5315,6 +5577,7 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
+        if (to === 'tab' && this.sandbox & SB_POPUPS) return null;
         if (to === 'here') this._seams.navigate(text(a), 'here');
         else if (to === 'tab') this._seams.navigate(text(a), 'tab');
         else this.navigateFrame(to, text(a), null);
@@ -5459,7 +5722,9 @@ export class DomHost {
         );
       // a page's `BroadcastChannel`s, by origin and name
       case 'bcOpen': {
-        const key = `${this._origin()} ${text(b)}`;
+        // an opaque origin talks to itself, whatever else is opaque
+        const origin = this._origin();
+        const key = `${origin === 'null' ? this._token : origin} ${text(b)}`;
         const end = { id: Number(a), tell: this._channelTold };
         this._channels.set(Number(a), { key, end });
         openChannel(key, end);
@@ -5559,6 +5824,7 @@ export class DomHost {
       case 'fileChunk':
         return this._fileChunk(Number(a), Number(b));
       case 'download':
+        if (this.sandbox & SB_DOWNLOADS) return false;
         return (
           this._seams.handle.download?.({
             url: text(a),
@@ -5881,6 +6147,31 @@ export class DomHost {
     this._connected(nodes);
   }
 
+  /** What a pointer is over moves to what held what was taken out, as
+   *  Chromium's `BoundaryEventDispatchTracksNodeRemoval` has it, whether or
+   *  not it comes back in the same task. */
+  private _pointerLost(parent: AnyNode, removed: readonly AnyNode[]): void {
+    for (let kind = 0; kind < 2; kind += 1) {
+      const chain = this._pointerChains[kind];
+      if (!chain?.length) continue;
+      if (
+        !(parent instanceof ShadowRoot) &&
+        !chain.includes(parent as Element)
+      ) {
+        continue;
+      }
+      // what is out is what was around it as the tree has it: a light child
+      // whose slot went is where it was, in no box
+      for (const node of removed) {
+        const at = chain.indexOf(node as Element);
+        if (at < 0 || at + 1 <= this._pointerCut[kind]) continue;
+        if (shadowIncludingHolds(node, chain[0])) {
+          this._pointerCut[kind] = at + 1;
+        }
+      }
+    }
+  }
+
   private _childList(
     parent: ParentNode,
     added: readonly AnyNode[],
@@ -5896,6 +6187,7 @@ export class DomHost {
       previousSibling: previous,
       nextSibling: next,
     });
+    if (removed.length) this._pointerLost(parent, removed);
     // a policy a `<meta>` brings is the document's once the element is in
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
     // security policy" state)
@@ -6185,7 +6477,7 @@ export class DomHost {
   private _inTemplate(node: AnyNode): boolean {
     let at = node;
     while (at.parent) at = at.parent;
-    return this._templateContents.has(at);
+    return CONTENT_FRAGMENTS.has(at);
   }
 
   /**
@@ -6585,7 +6877,52 @@ export class DomHost {
       this._initialBlank.add(doc);
       this._loadFrame(frame);
     }
-    return this._sameOrigin(this._frameAt.get(frame)!) ? doc : null;
+    return this._reaches(frame) ? doc : null;
+  }
+
+  /** Whether a frame's document is of this document's origin: where it was
+   *  loaded from, unless its sandbox gave it an origin of its own. */
+  private _reaches(frame: Element): boolean {
+    const doc = this._frames.get(frame);
+    if (doc && (this._s.sandboxes.get(doc) ?? 0) & SB_ORIGIN) return false;
+    return this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank');
+  }
+
+  /** The flags a document loaded in a frame now has: what the document the
+   *  frame is in has, and what its `sandbox` says. An attribute changed after
+   *  a load is read at the next (HTML 4.8.5). */
+  private _frameSandbox(frame: Element): number {
+    const around = this._s.sandboxes.get(this._ownerOf(frame)) ?? 0;
+    return frame.name === 'iframe' && frame.attribs.sandbox !== undefined
+      ? around | parseSandbox(frame.attribs.sandbox)
+      : around;
+  }
+
+  /** The origin of each document around a frame of this realm's, nearest
+   *  first, for what a document asks of what frames it (`./framing.ts`). */
+  private _ancestorOrigins(frame: Element): string[] {
+    const out: string[] = [];
+    let doc: Document | undefined = this._ownerOf(frame);
+    // a document of this realm's that has no realm of its own
+    while (doc && doc !== this.document) {
+      const holder = this._frameOf.get(doc);
+      if (!holder) break;
+      const flags = this._s.sandboxes.get(doc) ?? 0;
+      const at = this._frameAt.get(holder) ?? 'about:blank';
+      const blank = at === 'about:blank' || at === 'about:srcdoc';
+      out.push(
+        flags & SB_ORIGIN
+          ? 'null'
+          : blank
+            ? this.origin
+            : originOf(at) || 'null',
+      );
+      doc = this._ownerOf(holder);
+    }
+    for (let host: DomHost | null = this; host; host = host.frameParent) {
+      out.push(host.origin);
+    }
+    return out;
   }
 
   /** Each frame's first `about:blank` document, its initial one (HTML
@@ -6598,6 +6935,7 @@ export class DomHost {
     const doc = this._documentOf('');
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
+    this._s.sandboxes.set(doc, this._frameSandbox(frame));
     this._frameAt.set(frame, 'about:blank');
     this._s.frameList.add(frame);
     this._s.framesChanged();
@@ -6607,11 +6945,11 @@ export class DomHost {
   /** Whether an address is the page's own origin's: `about:blank` is the
    *  origin of the document that made it (HTML 7.1.1). */
   private _sameOrigin(url: string): boolean {
-    return (
-      url === 'about:blank' ||
-      url === 'about:srcdoc' ||
-      originOf(url) === this._origin()
-    );
+    if (url === 'about:blank' || url === 'about:srcdoc') return true;
+    // an opaque origin is no other, a `file:` page's frame included, as
+    // Chromium and Firefox have them
+    const origin = this._origin();
+    return origin !== 'null' && originOf(url) === origin;
   }
 
   /**
@@ -6678,13 +7016,15 @@ export class DomHost {
     if (srcdoc !== undefined) {
       setTimeout(() => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox = this._frameSandbox(frame);
         this._frameLoaded(
           frame,
           this._documentOf(srcdoc, true, !!this._seams.drawsFrames),
           'about:srcdoc',
           'text/html',
-          true,
+          !(sandbox & (SB_SCRIPTS | SB_ORIGIN)),
           loaded,
+          sandbox,
         );
       }, 0);
       return;
@@ -6699,10 +7039,7 @@ export class DomHost {
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
     const foreign = !!src && !this._sameOrigin(src);
-    if (
-      !src ||
-      (foreign && !(this._seams.drawsFrames && /^https?:/i.test(src)))
-    ) {
+    if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
         setTimeout(loaded, 0);
@@ -6719,35 +7056,49 @@ export class DomHost {
       }, 0);
       return;
     }
-    this._navigationFetch(
-      post
-        ? {
-            url: src,
-            method: 'POST',
-            headers: [['content-type', post.contentType]],
-            ...(typeof post.body === 'string'
-              ? { body: post.body }
-              : { body: null, bytes: post.body }),
-          }
-        : { url: src, method: 'GET', headers: [], body: null },
-      new AbortController().signal,
-    )
+    const landed = /^data:/i.test(src)
+      ? Promise.resolve(this._dataResponse(src))
+      : this._navigationFetch(
+          post
+            ? {
+                url: src,
+                method: 'POST',
+                headers: [['content-type', post.contentType]],
+                ...(typeof post.body === 'string'
+                  ? { body: post.body }
+                  : { body: null, bytes: post.body }),
+              }
+            : { url: src, method: 'GET', headers: [], body: null },
+          new AbortController().signal,
+          this._frameSandbox(frame),
+        );
+    landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox =
+          this._frameSandbox(frame) | sandboxOfPolicy(response.headers);
+        const refused = this._refusedFraming(
+          frame,
+          response,
+          response.url || src!,
+          sandbox,
+        );
+        if (refused) {
+          release(response);
+          this._frameRefused(frame, response.url || src!, refused, loaded);
+          return;
+        }
         const type = (headerOf(response.headers, 'content-type') ?? '')
           .split(';')[0]
           .trim()
           .toLowerCase();
         let doc: Document;
         let scripts = true;
+        const { text, encoding } = this._frameText(response, type, frame);
         if (type === 'text/html') {
-          doc = this._documentOf(
-            response.body,
-            true,
-            !!this._seams.drawsFrames,
-          );
+          doc = this._documentOf(text, true, !!this._seams.drawsFrames);
         } else if (XML_TYPES.test(type)) {
-          const xml = this._xmlTree(response.body);
+          const xml = this._xmlTree(text);
           // one that is not well-formed is the error and nothing of it, as
           // Firefox shows it: Acid3's test 70 looks for what came after a
           // byte UTF-8 has no character for
@@ -6762,21 +7113,30 @@ export class DomHost {
           doc = this._documentOf(
             type.startsWith('image/')
               ? `<img src="${escapeAttribute(response.url || src)}">`
-              : `<pre>${escapeText(response.body)}</pre>`,
+              : `<pre>${escapeText(text)}</pre>`,
             true,
           );
           scripts = false;
         }
+        this._s.encodings.set(doc, encoding);
         // another origin's scripts never run in this realm, where it was
-        // asked for or where it sent the frame
-        if (foreign || !this._sameOrigin(response.url || src)) scripts = false;
+        // asked for or where it sent the frame, and a sandbox's, of an origin
+        // of their own or none to run, no more than they
+        if (
+          foreign ||
+          sandbox & (SB_SCRIPTS | SB_ORIGIN) ||
+          !this._sameOrigin(response.url || src)
+        ) {
+          scripts = false;
+        }
         this._frameLoaded(
           frame,
           doc,
-          response.url || src,
+          response.url || src!,
           type,
           scripts,
           loaded,
+          sandbox,
         );
       })
       .catch((error: unknown) => {
@@ -6788,6 +7148,76 @@ export class DomHost {
         );
         loaded();
       });
+  }
+
+  /** Whether a document that is not this one's to read is loaded for a frame:
+   *  one of the network's, a `data:` URL, which is its own body, and a `file:`
+   *  one for a `file:` page, which the host's network has the say over. */
+  private _framed(src: string): boolean {
+    return (
+      /^(?:https?|data):/i.test(src) ||
+      (/^file:/i.test(src) && /^file:/i.test(this.url))
+    );
+  }
+
+  /** A `data:` URL as a frame's document is read: no network has one. */
+  private _dataResponse(url: string): FetchResponse {
+    const read = readDataUrl(url);
+    if (!read) throw new TypeError('A data: URL with nothing in it.');
+    return {
+      url,
+      status: 200,
+      statusText: 'OK',
+      redirected: false,
+      headers: [['content-type', read.type]],
+      body: new TextDecoder().decode(read.bytes),
+    };
+  }
+
+  /** Why a response may not be shown in a frame, or null: read from its
+   *  headers, of every document around the frame, before any of it is. */
+  private _refusedFraming(
+    frame: Element,
+    response: FetchResponse,
+    url: string,
+    sandbox: number,
+  ): 'frame-ancestors' | 'x-frame-options' | null {
+    return framingRefused(
+      response.headers,
+      url,
+      sandbox & SB_ORIGIN ? 'null' : originOf(url) || 'null',
+      this._ancestorOrigins(frame),
+    );
+  }
+
+  /**
+   * A frame whose document refused it shows what a browser shows, a page of
+   * its own that says so and none of the document, of no origin but its own,
+   * and hears `load` as it would for any failure to show one.
+   */
+  private _frameRefused(
+    frame: Element,
+    url: string,
+    why: string,
+    loaded: () => void,
+  ): void {
+    this._seams.log(
+      'error',
+      `Refused to display '${url}' in a frame: its ${why} forbids it.`,
+    );
+    const host = /^[a-z]+:\/\/([^/]*)/i.exec(url)?.[1] ?? url;
+    this._frameLoaded(
+      frame,
+      this._documentOf(
+        `<!doctype html><body style="font:14px sans-serif;color:#666;margin:16px">${escapeText(host)} refused to connect.`,
+        true,
+      ),
+      'about:blank',
+      'text/html',
+      false,
+      loaded,
+      SB_ORIGIN | SB_SCRIPTS,
+    );
   }
 
   /**
@@ -6829,6 +7259,7 @@ export class DomHost {
     type: string,
     scripts: boolean,
     loaded: () => void,
+    sandbox = 0,
   ): void {
     // a frame the browser draws runs its own scripts, and tells its own
     // `load` once they have, in a realm of its own — where it has any: a
@@ -6838,11 +7269,14 @@ export class DomHost {
     // — and where a service worker can have it for a client, which a secure
     // page's frame of its own origin is, whether or not a scope holds it yet:
     // its `navigator` has to answer for it, and it can be claimed
+    this._s.sandboxes.set(doc, sandbox);
     const realm =
       !!this._seams.drawsFrames &&
+      !(sandbox & SB_SCRIPTS) &&
       ((type === 'text/html' && hasScripts(doc)) ||
         (!!this._seams.serviceWorkers &&
           this._secureContext() &&
+          !(sandbox & SB_ORIGIN) &&
           this._sameOrigin(address)));
     if (realm) this._s.realms.add(doc);
     // the one it shows unloads first, while it is still the frame's
@@ -7331,14 +7765,94 @@ export class DomHost {
 
   private _resolve(url: string): string {
     try {
-      return new URL(url, this._seams.handle.base ?? this.creator ?? this.url)
-        .href;
+      const base = this._seams.handle.base ?? this.creator ?? this.url;
+      // a query is in the document's encoding (URL's "encoding-parse")
+      const encoding = outputEncoding(this._encodingOf(this.document));
+      return encoding === 'UTF-8'
+        ? new URL(url, base).href
+        : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
       return url;
     }
   }
 
+  /** The label `charset` last was and what it names, which `_resolve` asks
+   *  for every URL a page's script reads. */
+  private _charset: [string | undefined, string] = [undefined, 'UTF-8'];
+
+  /** A document's encoding (DOM's, by its name): what its bytes were decoded
+   *  with, what the host says of the one it handed over, and for a frame's
+   *  first `about:blank` what made it. UTF-8 for anything else, a page's
+   *  own `createHTMLDocument` among them. */
+  private _encodingOf(doc: Document): string {
+    const known = this._s.encodings.get(doc);
+    if (known) return known;
+    if (doc === this.document) {
+      const label = this._seams.charset;
+      if (this._charset[0] !== label) {
+        this._charset = [label, (label && encodingOf(label)) || 'UTF-8'];
+      }
+      return this._charset[1];
+    }
+    const frame = this._initialBlank.has(doc) ? this._frameOf.get(doc) : null;
+    const holder = frame ? documentHolding(frame) : null;
+    return holder ? this._encodingOf(holder) : 'UTF-8';
+  }
+
+  /** A `TextDecoder`'s bytes, in any encoding but UTF-8, which the realm
+   *  decodes itself. A decoder lasts while a stream is going through it. */
+  private _textDecoders = new Map<number, LegacyDecoder>();
+  private _textDecode(
+    id: number,
+    name: string,
+    base64: string,
+    flags: number,
+  ): string | null {
+    const stream = (flags & 1) !== 0;
+    const decoder =
+      this._textDecoders.get(id) ?? encodingCodecs.decoderFor(name);
+    if (!decoder) return null;
+    const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
+    const text = decoder.decode(bytes, stream, (flags & 2) !== 0);
+    if (stream) this._textDecoders.set(id, decoder);
+    else this._textDecoders.delete(id);
+    // marked, since an answer that starts with U+0001 is a host error
+    return text === null ? null : `=${text}`;
+  }
+
+  /**
+   * A frame's response as text, and the encoding it comes to, kept with the
+   * document it makes (`_encodedAs`): a frame with no label of its own is in
+   * its parent's encoding (HTML's "encoding sniffing algorithm", step 8), and
+   * XML has no parent to go by, its own declaration or UTF-8 instead. A
+   * response with no bytes was text before it got here.
+   */
+  private _frameText(
+    response: FetchResponse,
+    type: string,
+    frame: Element,
+  ): { text: string; encoding: string } {
+    const transport = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(
+      headerOf(response.headers, 'content-type') ?? '',
+    )?.[1];
+    const named = transport ? encodingOf(transport) : null;
+    if (!response.bytes) {
+      return { text: response.body, encoding: named ?? 'UTF-8' };
+    }
+    const bytes = response.bytes;
+    // JSON is UTF-8 whatever anything says (RFC 8259, 8.1)
+    if (/[/+]json$/.test(type)) {
+      return { text: decodeInEncoding(bytes, 'utf-8'), encoding: 'UTF-8' };
+    }
+    const holder = documentHolding(frame);
+    const encoding = XML_TYPES.test(type)
+      ? (bomEncoding(bytes) ?? named ?? xmlEncoding(bytes) ?? 'UTF-8')
+      : sniffEncoding(bytes, named, holder && this._encodingOf(holder));
+    return { text: decodeInEncoding(bytes, encoding), encoding };
+  }
+
   private _origin(): string {
+    if (this.sandbox & SB_ORIGIN || this.creatorOrigin) return 'null';
     try {
       const origin = new URL(this.url).origin;
       // `about:blank` alone is of what made it: `data:` has no origin to share
@@ -7788,6 +8302,14 @@ export class DomHost {
   ): Primitive {
     const storage = this._storageOf();
     const origin = this._origin();
+    // an opaque origin has none of its own, and sharing `null` would be every
+    // sandbox's store in one (HTML 12.2.3)
+    if (origin === 'null') {
+      throw new DomError(
+        'SecurityError',
+        "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+      );
+    }
     const area =
       kind === 'session' ? storage.session(origin) : storage.local(origin);
     const tell = (
@@ -7861,6 +8383,12 @@ export class DomHost {
   private _cookie(op: string, url: string, arg: string): Primitive {
     const jar = this._seams.cookies;
     if (op === 'enabled') return !!jar;
+    if (this.sandbox & SB_ORIGIN && op !== 'list' && op !== 'store') {
+      throw new DomError(
+        'SecurityError',
+        "The document is sandboxed and lacks the 'allow-same-origin' flag.",
+      );
+    }
     const averse =
       !jar || !/^https?:/i.test(url) || originOf(url) !== this._origin();
     const { top } = this;
@@ -8233,8 +8761,10 @@ export class DomHost {
         }
         tainting = 'opaque';
       } else tainting = 'cors';
-      // asked of this hop, in whoever's name is left to it
-      const opaqueOrigin = redirectTainted([...urls, hop.url], page);
+      // asked of this hop, in whoever's name is left to it: a sandbox has
+      // none from the start, wherever its address is
+      const opaqueOrigin =
+        page === 'null' || redirectTainted([...urls, hop.url], page);
       const origin = opaqueOrigin ? 'null' : page;
       if (tainting === 'cors') {
         const unsafe = unsafeRequestHeaders(
@@ -8327,9 +8857,11 @@ export class DomHost {
   private async _navigationFetch(
     request: FetchRequest,
     signal: AbortSignalLike,
+    sandbox = 0,
   ): Promise<FetchResponse> {
     const keeper = this._seams.serviceWorkers;
-    if (keeper?.controls(request.url)) {
+    // no origin of its own to be a client of any scope in
+    if (!(sandbox & SB_ORIGIN) && keeper?.controls(request.url)) {
       const answered = await keeper.navigation(
         {
           ...request,

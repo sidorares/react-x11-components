@@ -48,6 +48,13 @@
 import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
+import {
+  bomEncoding,
+  decodeInEncoding,
+  metaEncoding,
+  readyFor,
+  sniffEncoding,
+} from './encoding.js';
 import type { CookieJar } from './cookies.js';
 import type { HtmlServiceWorkers } from './service-workers.js';
 import { downloadName } from './download.js';
@@ -383,6 +390,9 @@ export interface DocumentResponse {
   disposition?: string | null;
   /** Its `Content-Length`, where it said. */
   size?: number | null;
+  /** Its response's headers, for what a document says of itself
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
@@ -1468,6 +1478,7 @@ export class HtmlNetwork {
       charset,
       disposition: response.headers.get('content-disposition'),
       size: Number(response.headers.get('content-length')) || null,
+      headers: [...response.headers.entries()],
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
@@ -1512,6 +1523,7 @@ export class HtmlNetwork {
       charset,
       disposition: header('content-disposition'),
       size: Number(header('content-length')) || null,
+      headers: response.headers,
       body: chunks,
       whole: chunks,
     };
@@ -1655,8 +1667,9 @@ export class HtmlNetwork {
           },
           {
             credentials: request.credentials ?? 'same-origin',
-            origin: originOf(client),
-            site: page,
+            origin: request.opaqueOrigin ? 'null' : originOf(client),
+            // no document of no origin is same-site with anything
+            site: request.opaqueOrigin ? 'about:blank' : page,
             topLevel: false,
             initiator: null,
           },
@@ -1751,15 +1764,16 @@ export class HtmlNetwork {
         const { bytes: _none, ...streamed } = answer;
         return { ...streamed, body: '' };
       }
+      await readyFor(charset);
       return { ...answer, body: decodeText(answer.bytes, charset) };
     };
   }
 
   /**
    * A document, all of it, as text: where the address ended up after
-   * redirects, its status, its type and the encoding it was decoded from —
-   * the response's, a `<meta>`'s in its first kilobyte, or UTF-8. What a
-   * host that shows one page hands `<Html source baseUrl>`; one that wants
+   * redirects, its status, its type and the name of the encoding it was
+   * decoded from (`sniffEncoding`). What a host that shows one page hands
+   * `<Html source baseUrl charset>`; one that wants
    * a page to appear as it arrives streams it from `document`. Throws a
    * `NetworkError` where there is no response at all; an HTTP error is a
    * response, and its page is answered.
@@ -1773,19 +1787,22 @@ export class HtmlNetwork {
     type: string;
     charset: string;
     source: string;
+    headers: [string, string][];
   }> {
     const signal = options.signal ?? new AbortController().signal;
     const response = await this.document(url, signal, options.post ?? null);
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const bytes = concat(chunks);
-    const charset = response.charset ?? sniffCharset(bytes) ?? 'utf-8';
+    const charset = sniffEncoding(bytes, response.charset);
+    await readyFor(charset);
     return {
       url: response.url,
       status: response.status,
       type: response.type,
       charset,
       source: decodeText(bytes, charset),
+      headers: response.headers ?? [],
     };
   }
 
@@ -2977,23 +2994,14 @@ export function escapeHtml(text: string): string {
 /** The encoding a document names in its first kilobyte: a byte order mark,
  *  or a `<meta charset>` or its `http-equiv` spelling (HTML 13.2.3.2). */
 export function sniffCharset(bytes: Uint8Array): string | null {
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-    return 'utf-8';
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head);
-  return m ? m[1].toLowerCase() : null;
+  return bomEncoding(bytes) ?? metaEncoding(bytes);
 }
 
-/** Bytes as text in an encoding by its label, or UTF-8 where it names none
- *  the runtime knows. */
+/** Bytes as text in an encoding by its label, or UTF-8 where the label names
+ *  none. A legacy encoding wants `readyFor` awaited first: see
+ *  `decodeInEncoding`. */
 export function decodeText(bytes: Uint8Array, charset: string | null): string {
-  try {
-    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-  } catch {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
+  return decodeInEncoding(bytes, charset);
 }
 
 // --- for a component -----------------------------------------------------------

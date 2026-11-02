@@ -114,7 +114,10 @@ import {
   readHtmlFiles,
   resourceResult,
   schemeOf,
+  htmlTextDecoder,
+  readyFor,
   sniffCharset,
+  sniffEncoding,
   threadTransport,
   useHtmlClipboard,
   useHtmlNotifications,
@@ -491,6 +494,8 @@ interface Doc {
    *  it where it is saved from there. */
   viewer?: Viewer;
   filename?: string;
+  /** Its response's headers, for what it says of itself to its engine. */
+  headers?: [string, string][];
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -518,6 +523,8 @@ interface View {
   number?: number;
   /** What it asks of the pane that scrolls it, once it has been laid out. */
   overflow?: ViewportOverflow;
+  /** Its response's headers (`Doc.headers`). */
+  headers?: [string, string][];
 }
 
 /** The documents the tab has an `<Html>` for, and which of them is shown. */
@@ -897,6 +904,7 @@ export default function Page(props: PageProps): ReactElement {
       url: at,
       scripted: runs && engine !== false,
       zoom: live.current.zoom,
+      headers: doc.headers,
     };
     setViews(({ views }) => ({
       views: [...overtaken(views, again), view],
@@ -1554,6 +1562,7 @@ export default function Page(props: PageProps): ReactElement {
   // and what its workers ask of the network waits for it to be shown again.
   const scriptsOf = (view: View): HtmlScripts | false =>
     view.scripted && {
+      headers: view.headers,
       userAgent: props.userAgent ?? DEFAULT_USER_AGENT,
       language: (process.env.LANG ?? 'en-US').split('.')[0].replace('_', '-'),
       // what the platform's player opens, where there is one: a stream's
@@ -2070,11 +2079,12 @@ export default function Page(props: PageProps): ReactElement {
               loadSource={(source, kind) =>
                 network
                   .resource(source, kind, withoutHash(url))
-                  .then((f) =>
-                    f
-                      ? decode(f.bytes, f.charset ?? sniffCharset(f.bytes))
-                      : null,
-                  )
+                  .then(async (f) => {
+                    if (!f) return null;
+                    const charset = f.charset ?? sniffCharset(f.bytes);
+                    await readyFor(charset);
+                    return decode(f.bytes, charset);
+                  })
               }
               url={url}
               cookies={cookies}
@@ -2259,7 +2269,9 @@ async function loadDocument(
       return own(imagePage(response.url), fileName(response.url), url, posted);
     }
     if (kind === 'pdf') return viewed({ kind, bytes });
-    const text = decode(bytes, response.charset ?? sniffCharset(bytes));
+    const charset = response.charset ?? sniffCharset(bytes);
+    await readyFor(charset);
+    const text = decode(bytes, charset);
     // text that says it is JSON or XML and is not is shown as what it is
     const tree =
       kind === 'json' ? readJson(text) : kind === 'xml' ? readXml(text) : null;
@@ -2272,8 +2284,8 @@ async function loadDocument(
     );
   }
 
-  // HTML: stream it. The encoding is the response's, or the one a `<meta>`
-  // in the first kilobyte names, or UTF-8 — found before a byte is decoded.
+  // HTML: stream it. The encoding is found before a byte is decoded, from
+  // the first kilobyte (`sniffEncoding`).
   let head: Uint8Array = new Uint8Array(0);
   const iterator = response.body[Symbol.asyncIterator]();
   let ended = false;
@@ -2291,21 +2303,19 @@ async function loadDocument(
     if (signal.aborted) return;
     return own(errorPage(target, ...failure(error)), null);
   }
-  const charset = response.charset ?? sniffCharset(head) ?? 'utf-8';
+  const charset = sniffEncoding(head, response.charset);
   const at = landedAt(response.url, target);
-  let decoder: TextDecoder;
-  try {
-    decoder = new TextDecoder(charset);
-  } catch {
-    decoder = new TextDecoder('utf-8');
-  }
-  let source = decoder.decode(head, { stream: true });
+  const decoder = await htmlTextDecoder(charset);
+  if (signal.aborted) return;
+  // a byte order mark says which encoding this is, and is no part of its text
+  let source = decoder.decode(head, { stream: true }).replace(/^\ufeff/, '');
   const first: Doc = {
     source,
     partial: !ended,
     charset,
     baseUrl: at,
     url: at,
+    headers: response.headers,
   };
   on.commit(at, first, null, posted);
   let last = Date.now();

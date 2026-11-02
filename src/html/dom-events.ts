@@ -29,6 +29,8 @@ import type { HtmlDragData } from './drag.js';
 /** What can happen to a document that `<Html>` tells its host about. */
 export type HtmlDomEventType =
   | 'click'
+  // a click of any button but the main one
+  | 'auxclick'
   | 'dblclick'
   | 'mousedown'
   | 'mouseup'
@@ -36,6 +38,10 @@ export type HtmlDomEventType =
   // over it, and the menu a secondary press asks for — what a page drawing
   // on a `<canvas>` listens for
   | 'mousemove'
+  // what is under a pointer that did not move changed, and the pointer left
+  // the document
+  | 'mouseover'
+  | 'mouseleave'
   | 'wheel'
   | 'contextmenu'
   | 'keydown'
@@ -44,6 +50,11 @@ export type HtmlDomEventType =
   | 'copy'
   | 'cut'
   | 'paste'
+  // text still being typed, which a dead key, the Compose key or an input
+  // method makes
+  | 'compositionstart'
+  | 'compositionupdate'
+  | 'compositionend'
   | 'input'
   | 'change'
   | 'submit'
@@ -63,6 +74,8 @@ export type HtmlDomEventType =
   | 'dragend'
   // a text field's text selected, by a key, a press or a release in it
   | 'select'
+  // a press that is about to start a selection of what the document draws
+  | 'selectstart'
   // told after the fact: a `<link rel=stylesheet>`'s sheet applied, or not
   // to be had
   | 'load'
@@ -84,6 +97,16 @@ export interface HtmlDomEvent {
    *  the element's first fragment. */
   x?: number;
   y?: number;
+  /** Where the pointer was on the screen, in logical pixels. */
+  screenX?: number;
+  screenY?: number;
+  /** A move's samples since the last one told, oldest first, the last the
+   *  move itself: each `[x, y, ms]`, `ms` how long before the move it was.
+   *  Motion is told once a frame, and a drawing tool reads what is between
+   *  (`PointerEvent.getCoalescedEvents`). */
+  samples?: [number, number, number][];
+  /** The locks and shifts on, as `LOCK_` bits. */
+  locks?: number;
   /** The DOM's numbering: 0 the main button, 1 the middle, 2 the other. */
   button?: number;
   /** The buttons held, as the DOM's mask: 1 the main, 2 the other, 4 the
@@ -98,6 +121,10 @@ export interface HtmlDomEvent {
   /** A key's `KeyboardEvent.key` and `code`, as the DOM names them. */
   key?: string;
   code?: string;
+  /** Whether a key is down and has been: its own repeat. */
+  repeat?: boolean;
+  /** What a composition is at. */
+  data?: string;
   shiftKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
@@ -148,7 +175,10 @@ export function modifiersOf(
  *  `input`, `change`, the focus's, `toggle`, `load` and `error` report
  *  what is done. */
 const CANCELABLE = new Set<HtmlDomEventType>([
+  'selectstart',
+  'compositionstart',
   'click',
+  'auxclick',
   'dblclick',
   'mousedown',
   'mouseup',
@@ -214,9 +244,34 @@ export function clipboardChord(
 }
 
 /** A core button's number as the DOM numbers it: X's 1, 2, 3 are the
- *  DOM's 0, 1, 2 (UI Events 5.2.3). */
+ *  DOM's 0, 1, 2, and its back and forward 8 and 9 the DOM's 3 and 4 (UI
+ *  Events 5.2.3). */
 export function domButton(button: number): number {
-  return button === 2 ? 1 : button === 3 ? 2 : 0;
+  return button === 2
+    ? 1
+    : button === 3
+      ? 2
+      : button === 8
+        ? 3
+        : button === 9
+          ? 4
+          : 0;
+}
+
+/** Bits of `HtmlDomEvent.locks`. */
+export const LOCK_CAPS = 1;
+export const LOCK_NUM = 2;
+export const LOCK_ALT_GRAPH = 4;
+
+/** What an event's X state mask says of the locks and of AltGr: X's Lock is
+ *  Caps Lock, and Mod2 and Mod5 are Num Lock and ISO_Level3_Shift by the
+ *  convention every toolkit ships, as core reads Mod1 and Mod4. */
+export function domLocks(state: number): number {
+  return (
+    (state & 0x02 ? LOCK_CAPS : 0) |
+    (state & 0x10 ? LOCK_NUM : 0) |
+    (state & 0x80 ? LOCK_ALT_GRAPH : 0)
+  );
 }
 
 /** The buttons an X state mask holds, as the DOM's mask: X's Button1Mask,
@@ -265,6 +320,11 @@ const NAMED: Record<number, [key: string, code: string]> = {
   0xffe3: ['Control', 'ControlLeft'],
   0xffe4: ['Control', 'ControlRight'],
   0xffe5: ['CapsLock', 'CapsLock'],
+  0xff7f: ['NumLock', 'NumLock'],
+  0xff14: ['ScrollLock', 'ScrollLock'],
+  0xff13: ['Pause', 'Pause'],
+  0xff61: ['PrintScreen', 'PrintScreen'],
+  0xfe03: ['AltGraph', 'AltRight'], // ISO_Level3_Shift
   0xffe9: ['Alt', 'AltLeft'],
   0xffea: ['Alt', 'AltRight'],
   0xffe7: ['Meta', 'MetaLeft'],
@@ -303,6 +363,26 @@ const PUNCTUATION: Record<number, string> = {
   0x2f: 'Slash',
 };
 
+/** A key on the numeric keypad, by its X keysym: a digit or an operator as
+ *  it types, an arrow or the like with Num Lock off. */
+const KEYPAD: Record<number, [key: string, code: string]> = {
+  0xffaa: ['*', 'NumpadMultiply'],
+  0xffab: ['+', 'NumpadAdd'],
+  0xffad: ['-', 'NumpadSubtract'],
+  0xffae: ['.', 'NumpadDecimal'],
+  0xffaf: ['/', 'NumpadDivide'],
+  0xff95: ['Home', 'Numpad7'],
+  0xff96: ['ArrowLeft', 'Numpad4'],
+  0xff97: ['ArrowUp', 'Numpad8'],
+  0xff98: ['ArrowRight', 'Numpad6'],
+  0xff99: ['ArrowDown', 'Numpad2'],
+  0xff9a: ['PageUp', 'Numpad9'],
+  0xff9b: ['PageDown', 'Numpad3'],
+  0xff9c: ['End', 'Numpad1'],
+  0xff9e: ['Insert', 'Numpad0'],
+  0xff9f: ['Delete', 'NumpadDecimal'],
+};
+
 /** Whether a key is a modifier's alone — Shift, Control, Caps Lock, Alt,
  *  Meta, Super, Hyper, AltGr and its ISO kin, Mode_switch: X's keysyms for
  *  them, which the DOM names `Shift`, `Control` and the rest. */
@@ -316,14 +396,46 @@ export function isModifierKey(
   );
 }
 
+/** What X's state mask leaves out of a key event: a modifier's own key is
+ *  not in its press's mask and is in its release's, where the DOM has it
+ *  down at the first and up at the second (UI Events 5.6.3). */
+export function modifiersOfKey(
+  mods: {
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    altKey: boolean;
+    metaKey: boolean;
+  },
+  key: string,
+  down: boolean,
+): typeof mods {
+  switch (key) {
+    case 'Shift':
+      return { ...mods, shiftKey: down };
+    case 'Control':
+      return { ...mods, ctrlKey: down };
+    case 'Alt':
+      return { ...mods, altKey: down };
+    case 'Meta':
+      return { ...mods, metaKey: down };
+    default:
+      return mods;
+  }
+}
+
 /** A core key event's `key` and `code` as the DOM names them. A key the
  *  DOM has no name for is `Unidentified`, as it says. */
 export function domKey(
   ev: Pick<X11KeyboardEvent<DrawnNode>, 'keysym' | 'key' | 'codepoint'>,
 ): { key: string; code: string } {
   const keysym = ev.keysym;
-  const named = keysym === undefined ? undefined : NAMED[keysym];
+  const named =
+    keysym === undefined ? undefined : (NAMED[keysym] ?? KEYPAD[keysym]);
   if (named) return { key: named[0], code: named[1] };
+  if (keysym !== undefined && keysym >= 0xffb0 && keysym <= 0xffb9) {
+    const digit = keysym - 0xffb0;
+    return { key: `${digit}`, code: `Numpad${digit}` };
+  }
   if (keysym !== undefined && keysym >= 0xffbe && keysym <= 0xffc9) {
     const n = `F${keysym - 0xffbe + 1}`;
     return { key: n, code: n };

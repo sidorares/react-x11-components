@@ -559,6 +559,82 @@ metric(
   },
 );
 
+test('a frameborder that says none takes away the border every frame has, and a style wins over it', async () => {
+  const { asked } = await renderEmbedded(
+    '<style>body{margin:0}iframe{display:block;width:40px;height:10px}</style>' +
+      '<iframe id="zero" frameborder="0"></iframe>' +
+      '<iframe id="word" frameborder="no"></iframe>' +
+      '<iframe id="one" frameborder="1"></iframe>' +
+      '<iframe id="none"></iframe>' +
+      '<iframe id="styled" frameborder="0" style="border:3px solid #000"></iframe>',
+  );
+  const edge = Object.fromEntries(
+    asked.map((rect) => [rect.element.attribs.id, rect.width]),
+  );
+  assert.deepStrictEqual(
+    {
+      zero: edge.zero,
+      word: edge.word,
+      one: edge.one,
+      none: edge.none,
+      styled: edge.styled,
+    },
+    { zero: 40, word: 40, one: 40, none: 40, styled: 40 },
+  );
+  const left = Object.fromEntries(
+    asked.map((rect) => [rect.element.attribs.id, rect.x]),
+  );
+  assert.deepStrictEqual(
+    {
+      zero: left.zero,
+      word: left.word,
+      one: left.one,
+      none: left.none,
+      styled: left.styled,
+    },
+    { zero: 0, word: 0, one: 2, none: 2, styled: 3 },
+  );
+});
+
+test('a frame says the colour scheme of its element, and a document in another is on a canvas of its own', async () => {
+  // JSFiddle's page is dark and a fiddle's document says it is light, which
+  // a browser shows on white and which was drawn dark on dark
+  const { asked } = await renderEmbedded(
+    '<style>:root{color-scheme:dark}body{margin:0}iframe{border:0;display:block}</style>' +
+      '<iframe id="f" width="50" height="50"></iframe>',
+  );
+  assert.strictEqual(asked.at(-1)?.colorScheme, 'dark');
+  cleanup();
+  const inner = (root: string, around?: 'light' | 'dark') =>
+    h(
+      'box',
+      {
+        style: {
+          width: 60,
+          height: 60,
+          flexDirection: 'column',
+          backgroundColor: '#ff0000',
+        },
+      },
+      h(Html, {
+        source: `<style>:root{color-scheme:${root}}</style>`,
+        partial: false,
+        style: { flexGrow: 1 },
+        ...({ _embedderScheme: around } as object),
+      }),
+    );
+  const sizes = { width: 100, height: 100, ...(FONTS && { fonts: FONTS }) };
+  const light = await renderX11(inner('light', 'dark'), sizes);
+  await expectPixel(light.ctx, 30, 30, '#ffffff', {
+    message: 'a light document in a dark frame',
+  });
+  cleanup();
+  const same = await renderX11(inner('dark', 'dark'), sizes);
+  await expectPixel(same.ctx, 30, 30, '#ff0000', {
+    message: 'and one of its scheme shows what is under it',
+  });
+});
+
 test('a box over the viewport that draws nothing of its own keeps no frame from being mounted under it', async () => {
   // up.com.au's menu overlay: fixed over the whole viewport, transparent
   // until the menu opens, with the menu's button inside it at its foot
@@ -590,11 +666,80 @@ test('a box fixed to the viewport that the document paints before a frame is und
   assert.ok(!under.asked.at(-1)?.hidden, 'and shown, over the box');
   cleanup();
   const over = await renderEmbedded(page(true));
-  assert.ok(
-    over.asked.at(-1)?.hidden,
-    'hidden by one painted over it inside its rect, as before',
+  const frame = over.asked.at(-1);
+  assert.ok(!frame?.hidden, 'and shown under one painted after it');
+  assert.deepStrictEqual(
+    frame?.over,
+    { x: 80, y: 30, width: 20, height: 20 },
+    'which is painted over it again',
   );
 });
+
+for (const position of ['absolute', 'fixed']) {
+  test(`what a page puts ${position} over part of a frame is drawn over its mount, and a press on it is the page's`, async () => {
+    // JSFiddle's ad sits in a corner of its result pane, and left no
+    // rectangle of the frame to mount, so a page's result was never shown
+    const links: string[] = [];
+    const presses: string[] = [];
+    const source =
+      '<style>body{margin:0}iframe{border:0;display:block;width:200px;height:200px}' +
+      `.ad{position:${position};left:120px;top:120px;width:60px;height:40px;` +
+      'background:rgb(0,0,255)}.wrap{position:relative;width:200px}</style>' +
+      '<div class="wrap"><iframe id="f"></iframe>' +
+      '<a class="ad" href="https://example.test/close"></a></div>';
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 200, height: 200, flexDirection: 'column' } },
+        h(Html, {
+          source,
+          partial: false,
+          baseUrl: 'https://example.test/',
+          onLink: (href: string) => void links.push(href),
+
+          renderEmbedded: () =>
+            h('box', {
+              'data-testname': 'in-f',
+              style: { flexGrow: 1, backgroundColor: '#ff0000' },
+              onMouseDown: () => void presses.push('frame'),
+            }),
+        }),
+      ),
+      { width: 240, height: 240, ...(FONTS && { fonts: FONTS }) },
+    );
+    await act();
+    assert.ok(mounted('f'), 'the frame is mounted');
+    await expectPixel(result.ctx, 20, 20, '#ff0000', { message: 'the frame' });
+    await expectPixel(result.ctx, 190, 190, '#ff0000', {
+      message: 'the frame beyond it',
+    });
+    await expectPixel(result.ctx, 150, 140, '#0000ff', {
+      message: 'what is over it',
+    });
+    // through the server, which finds what is under the point
+    const { server } = result as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    };
+    const press = async (x: number, y: number) => {
+      server.injectPointerMove(x, y);
+      await act();
+      server.injectButton(1, true);
+      await act();
+      server.injectButton(1, false);
+      await act();
+    };
+    await press(20, 20);
+    await waitFor(() => assert.deepStrictEqual(presses, ['frame']));
+    await press(150, 140);
+    await waitFor(() =>
+      assert.deepStrictEqual(links, ['https://example.test/close']),
+    );
+    assert.deepStrictEqual(presses, ['frame'], 'and the frame heard no more');
+  });
+}
 
 test('a box fixed to the viewport that draws nothing where it reaches a frame hides none of it', async () => {
   // joshwcomeau.com's popup, fixed over its article: a wrapper with nothing

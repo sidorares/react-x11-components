@@ -40,13 +40,13 @@
 // a count in the rect, and the player is sought once each time it moves.
 import React from 'react';
 import type { ReactNode } from 'react';
-import type { VideoNode } from 'react-x11';
+import type { DrawnNode, VideoNode } from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import { hx } from './hx.js';
 import { keptMount } from './widgets.js';
 import type { Element } from './dom.js';
-import type { MediaRect } from './media.js';
+import type { EmbeddedRect, MediaRect } from './media.js';
 import type { HtmlViewNode } from './node.js';
 
 export interface Videos {
@@ -103,10 +103,15 @@ export function useVideos(view: {
  *  stops, which is the document's. Not at the video's opacity, which fades
  *  the video and not what is painted over it: a box that fades both keeps
  *  the poster (`coversOf`), and a cover's own is painted with it. */
-function renderCovers(
-  rect: MediaRect,
+export function renderCovers(
+  rect: MediaRect | EmbeddedRect,
   id: string,
   view: { readonly current: HtmlViewNode | null },
+  /** Whether what is mounted under it takes presses, as a frame does, so
+   *  that a press has to be handed to the document here: it finds what is
+   *  under the point itself, and what is over a frame is the page's, whose
+   *  close button a press through the canvas would never reach. */
+  takesPresses = false,
 ): ReactNode {
   if (!rect.over || rect.hidden) return null;
   const el = rect.element;
@@ -120,16 +125,41 @@ function renderCovers(
   if (!(width > 0 && height > 0)) return null;
   return hx('canvas', {
     key: `over:${id}`,
+    ref: takesPresses ? (node: Cover | null) => coverOf(node, view) : undefined,
     style: {
       position: 'absolute',
       left: x,
       top: y,
       width,
       height,
-      pointerEvents: 'none',
+      ...(!takesPresses && { pointerEvents: 'none' as const }),
     },
     onDraw: (ctx, info) => view.current?.paintCovers(el, ctx, info.node.abs),
   });
+}
+
+/** What core asks of a node for the node under a point, which `DrawnNode`
+ *  does not declare. */
+type Cover = DrawnNode & {
+  hitTest?: (x: number, y: number) => DrawnNode | null;
+};
+
+/** A press on a cover is the document's, which every path a press takes
+ *  goes by: what is under the point it finds for itself. */
+function coverOf(
+  node: Cover | null,
+  view: { readonly current: HtmlViewNode | null },
+): void {
+  if (!node) return;
+  node.hitTest = (x, y) => {
+    const { abs } = node;
+    const inside =
+      x >= abs.x &&
+      y >= abs.y &&
+      x < abs.x + abs.width &&
+      y < abs.y + abs.height;
+    return inside ? (view.current as DrawnNode | null) : null;
+  };
 }
 
 function renderVideo(

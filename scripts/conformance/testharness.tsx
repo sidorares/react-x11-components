@@ -208,9 +208,19 @@ const DRIVER = `(function () {
       .then(function (r) { return r.text(); })
       .then(function (t) { var o = JSON.parse(t || '{}'); if (o.error) throw new Error(o.error); return o; });
   }
+  // in the top document's viewport, which is what WebDriver's origin is: an
+  // element of a frame is that far in
   function centre(el) {
     var r = el.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    var at = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    try {
+      for (var w = el.ownerDocument.defaultView; w && w.frameElement; w = w.parent) {
+        var f = w.frameElement.getBoundingClientRect();
+        at.x += f.left;
+        at.y += f.top;
+      }
+    } catch (e) {}
+    return at;
   }
   internal.in_automation = true;
   internal.click = function (el) {
@@ -220,8 +230,15 @@ const DRIVER = `(function () {
   };
   internal.send_keys = function (el, keys) {
     if (el && el.focus) el.focus();
-    var seq = [];
-    for (var i = 0; i < keys.length; i++) { seq.push({ type: 'keyDown', value: keys[i] }); seq.push({ type: 'keyUp', value: keys[i] }); }
+    // a modifier in the keys is held for the rest of them, as WebDriver's
+    // Element Send Keys has it
+    var seq = [], held = [];
+    for (var i = 0; i < keys.length; i++) {
+      seq.push({ type: 'keyDown', value: keys[i] });
+      if (/[\\uE008-\\uE00A\\uE03D\\uE050-\\uE053]/.test(keys[i])) held.push(keys[i]);
+      else seq.push({ type: 'keyUp', value: keys[i] });
+    }
+    while (held.length) seq.push({ type: 'keyUp', value: held.pop() });
     return post('actions', { actions: [{ type: 'key', actions: seq }] });
   };
   internal.action_sequence = function (sources) {
@@ -265,6 +282,36 @@ const SPECIAL_KEYS: Record<string, number> = {
   '': 0xff54, // Down
   '': 0xffff, // Delete
   '': 0xffeb, // Meta
+  '': 0xffe2, // right Shift
+  '': 0xffe4, // right Control
+  '': 0xffea, // right Alt
+  '': 0xffec, // right Meta
+  '⌘': 0xffeb, // what a test asks a Mac's Command key with
+};
+
+/** What a US keyboard types a shifted character with. */
+const SHIFTED: Record<string, string> = {
+  '!': '1',
+  '@': '2',
+  '#': '3',
+  $: '4',
+  '%': '5',
+  '^': '6',
+  '&': '7',
+  '*': '8',
+  '(': '9',
+  ')': '0',
+  _: '-',
+  '+': '=',
+  '{': '[',
+  '}': ']',
+  '|': '\\',
+  ':': ';',
+  '"': "'",
+  '<': ',',
+  '>': '.',
+  '?': '/',
+  '~': '`',
 };
 
 function keysymOf(value: string): number {
@@ -327,6 +374,7 @@ interface Loaded {
   source: string;
   baseUrl: string;
   charset: string;
+  headers?: [string, string][];
 }
 
 /**
@@ -575,7 +623,12 @@ function Tab(props: {
             ...w.docs,
             {
               n,
-              doc: { source: doc.source, baseUrl: at, charset: doc.charset },
+              doc: {
+                source: doc.source,
+                baseUrl: at,
+                charset: doc.charset,
+                headers: doc.headers,
+              },
               number,
             },
           ],
@@ -626,6 +679,7 @@ function Tab(props: {
     };
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
+      headers: doc.headers,
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
@@ -880,9 +934,45 @@ async function driver(what: string, body: string | null): Promise<string> {
   const { actions } = JSON.parse(body ?? '{}') as {
     actions: Array<{ type: string; actions: Array<Record<string, unknown>> }>;
   };
+  // one sequence at a time, as WebDriver takes them: a test that goes on as
+  // its `keydown` is heard asks for the next while the last has a `keyUp`
+  // to go, and interleaved they hold each other's modifiers
+  const turn = sequences.then(() => perform(server, actions));
+  sequences = turn.catch(() => {});
+  return turn;
+}
+
+/** Where the last action sequence is. */
+let sequences: Promise<unknown> = Promise.resolve();
+/** The buttons and keys actions left down, which a test that ended early
+ *  would leave down for the next: wptrunner releases them between tests. */
+const buttonsDown = new Set<number>();
+const keysDown = new Set<number>();
+
+function releaseActions(): void {
+  const server = harness?.server;
+  if (!server) return;
+  for (const button of buttonsDown) server.injectButton(button, false);
+  for (const key of keysDown) server.injectKey(key, false);
+  buttonsDown.clear();
+  keysDown.clear();
+}
+/** Where the pointer was left: a sequence relative to it goes on from there. */
+let pointerX = 0;
+let pointerY = 0;
+
+type Server = NonNullable<RenderX11Result['server']>;
+
+async function perform(
+  server: Server,
+  actions: Array<{ type: string; actions: Array<Record<string, unknown>> }>,
+): Promise<string> {
+  // a driver is a round trip away: what a page asked for just now, a frame's
+  // worth of focus among it, has been done by the time it arrives
+  await pump(20);
   const ticks = Math.max(0, ...actions.map((s) => s.actions.length));
-  let px = 0;
-  let py = 0;
+  let px = pointerX;
+  let py = pointerY;
   for (let tick = 0; tick < ticks; tick++) {
     for (const source of actions) {
       const a = source.actions[tick];
@@ -893,12 +983,25 @@ async function driver(what: string, body: string | null): Promise<string> {
       } else if (type === 'pointerMove' || type === 'scroll') {
         const x = Number(a.x ?? 0);
         const y = Number(a.y ?? 0);
+        const fromX = px;
+        const fromY = py;
         if (a.origin === 'pointer') {
           px += x;
           py += y;
         } else {
           px = x;
           py = y;
+        }
+        // a move over a time is a move at each frame of it, as WebDriver's
+        // "perform a pointer move" interpolates it
+        const steps =
+          type === 'pointerMove' ? Math.floor(Number(a.duration ?? 0) / 16) : 0;
+        for (let i = 1; i < steps; i++) {
+          server.injectPointerMove(
+            Math.round(fromX + ((px - fromX) * i) / steps),
+            Math.round(fromY + ((py - fromY) * i) / steps),
+          );
+          await pump(16);
         }
         server.injectPointerMove(Math.round(px), Math.round(py));
         if (type === 'scroll') {
@@ -917,17 +1020,42 @@ async function driver(what: string, body: string | null): Promise<string> {
         }
       } else if (type === 'pointerDown' || type === 'pointerUp') {
         const button = Number(a.button ?? 0);
-        server.injectButton(
-          button === 1 ? 2 : button === 2 ? 3 : 1,
-          type === 'pointerDown',
-        );
+        const x =
+          button === 1
+            ? 2
+            : button === 2
+              ? 3
+              : button === 3
+                ? 8
+                : button === 4
+                  ? 9
+                  : 1;
+        server.injectButton(x, type === 'pointerDown');
+        if (type === 'pointerDown') buttonsDown.add(x);
+        else buttonsDown.delete(x);
       } else if (type === 'keyDown' || type === 'keyUp') {
-        const code = server.keymap.keycodeForKeysym(keysymOf(String(a.value)));
-        if (code) server.injectKey(code, type === 'keyDown');
+        // a character on a key's shifted level is that key with Shift, which
+        // WebDriver's virtual keyboard presses by itself and this one must
+        const value = String(a.value);
+        const shifted =
+          SHIFTED[value] ??
+          (/^[A-Z]$/.test(value) ? value.toLowerCase() : null);
+        const sym = keysymOf(shifted ?? value);
+        const code = server.keymap.keycodeForKeysym(sym);
+        const shift = server.keymap.keycodeForKeysym(0xffe1);
+        if (code) {
+          if (shifted && type === 'keyDown') server.injectKey(shift, true);
+          server.injectKey(code, type === 'keyDown');
+          if (shifted && type === 'keyUp') server.injectKey(shift, false);
+          if (type === 'keyDown') keysDown.add(code);
+          else keysDown.delete(code);
+        }
       }
     }
     await pump(16);
   }
+  pointerX = px;
+  pointerY = py;
   await pump(30);
   return '{}';
 }
@@ -1087,6 +1215,7 @@ async function render(
         source: withTestRendered(doc.source),
         baseUrl: doc.url,
         charset: doc.charset,
+        headers: doc.headers,
       },
       network,
       page,
@@ -1301,6 +1430,9 @@ process.on('uncaughtException', (error) => {
 
 const tests = readFileSync(listFile, 'utf8').split('\n').filter(Boolean);
 for (const test of tests) {
+  // what a test that ended early left running would be pressed into the next
+  await sequences;
+  releaseActions();
   let outcome: Outcome;
   try {
     const head = await new HtmlNetwork().html(urlFor(test));

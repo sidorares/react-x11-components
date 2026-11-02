@@ -44,6 +44,8 @@ import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
+import type { installUIEvents } from './ui-events.js';
+import type { installPointers } from './pointers.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -91,6 +93,8 @@ export function installDom(
   windowing: typeof installWindows,
   serviceWorkersApi: typeof installServiceWorkers,
   cachesApi: typeof installCaches,
+  uiEventsApi: typeof installUIEvents,
+  pointersApi: typeof installPointers,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -147,6 +151,7 @@ export function installDom(
       op !== 'crypto' &&
       op !== 'random' &&
       op !== 'uuid' &&
+      op !== 'eventPath' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
@@ -207,6 +212,12 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'eventPath',
+    'pointerChain',
+    'pointerOver',
+    'pointIn',
+    'movesHeard',
+    'selectionHeard',
     'parent',
     'owner',
     'doctype',
@@ -283,6 +294,9 @@ export function installDom(
     'base',
     'location',
     'resolve',
+    'characterSet',
+    'encodingLabel',
+    'textDecode',
     'url',
     'random',
     'uuid',
@@ -553,6 +567,25 @@ export function installDom(
   const CAPTURING_PHASE = 1;
   const AT_TARGET = 2;
   const BUBBLING_PHASE = 3;
+  // a step's flags, as `event-path.ts` numbers them
+  const ROOT_OF_CLOSED_TREE = 1;
+  const SLOT_IN_CLOSED_TREE = 2;
+  const IN_SHADOW_TREE = 4;
+  const CLOSED_STEPS = ROOT_OF_CLOSED_TREE | SLOT_IN_CLOSED_TREE;
+  /** A step of an event's path (DOM 2.9): what it is at, as listeners hear
+   *  it (`seen`); the shadow-adjusted target where it has one, and what
+   *  `target` and `relatedTarget` read there. */
+  interface PathStep {
+    at: Any;
+    seen: Any;
+    adjusted: Any;
+    target: Any;
+    related: Any;
+    flags: number;
+  }
+  /** The event a window's global is handling (DOM 2.10, `window.event`):
+   *  none of a listener in a shadow tree's. */
+  let currentEvent: Any = undefined;
 
   /** An event's attributes are accessors on `Event.prototype`, as WebIDL
    *  makes every attribute, over state of the event's own that only the
@@ -566,10 +599,6 @@ export function installDom(
    *  setter, which is why the dispatch writes the state and never the
    *  attribute. */
   class Event {
-    static readonly NONE = NONE;
-    static readonly CAPTURING_PHASE = CAPTURING_PHASE;
-    static readonly AT_TARGET = AT_TARGET;
-    static readonly BUBBLING_PHASE = BUBBLING_PHASE;
     /** The event's own, not the prototype's: `[LegacyUnforgeable]`. */
     isTrusted = false;
     _type: string;
@@ -648,43 +677,111 @@ export function installDom(
       this._stop = true;
       this._stopNow = true;
     }
+    // DOM 2.9.1: the path from where a listener stands, without what is in
+    // a closed shadow tree it is outside
     composedPath(): Any[] {
-      return this._phase === NONE ? [] : this._path.slice();
+      const path: PathStep[] = this._path;
+      if (this._phase === NONE || !path.length) return [];
+      if (!path.some((step) => step.flags & CLOSED_STEPS)) {
+        return path.map((step) => step.seen);
+      }
+      const out: Any[] = [this._currentTarget];
+      let at = 0;
+      let hidden = 0;
+      for (let i = path.length - 1; i >= 0; i -= 1) {
+        if (path[i].flags & ROOT_OF_CLOSED_TREE) hidden += 1;
+        if (path[i].seen === this._currentTarget) {
+          at = i;
+          break;
+        }
+        if (path[i].flags & SLOT_IN_CLOSED_TREE) hidden -= 1;
+      }
+      let level = hidden;
+      let most = hidden;
+      for (let i = at - 1; i >= 0; i -= 1) {
+        if (path[i].flags & ROOT_OF_CLOSED_TREE) level += 1;
+        if (level <= most) out.unshift(path[i].seen);
+        if (path[i].flags & SLOT_IN_CLOSED_TREE) {
+          level -= 1;
+          if (level < most) most = level;
+        }
+      }
+      level = hidden;
+      most = hidden;
+      for (let i = at + 1; i < path.length; i += 1) {
+        if (path[i].flags & SLOT_IN_CLOSED_TREE) level += 1;
+        if (level <= most) out.push(path[i].seen);
+        if (path[i].flags & ROOT_OF_CLOSED_TREE) {
+          level -= 1;
+          if (level < most) most = level;
+        }
+      }
+      return out;
     }
     initEvent(type: string, bubbles = false, cancelable = false): void {
+      if (this._phase !== NONE) return;
       this._type = String(type);
       this._bubbles = !!bubbles;
       this._cancelable = !!cancelable;
     }
   }
-  class UIEvent extends Event {
-    readonly detail: number;
-    readonly view: Any;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.detail = Number(init.detail ?? 0);
-      this.view = init.view ?? null;
-    }
-    /** The legacy initializer a `createEvent('UIEvents')` is set with. */
-    initUIEvent(
-      type: string,
-      bubbles = false,
-      cancelable = false,
-      view: Any = null,
-      detail = 0,
-    ): void {
-      this.initEvent(type, bubbles, cancelable);
-      (this as Any).view = view ?? null;
-      (this as Any).detail = Number(detail) | 0;
+  // an interface's constants are its prototype's as well (Web IDL 3.7.3):
+  // `event.AT_TARGET` is how a listener asks where it is
+  for (const on of [Event, Event.prototype]) {
+    for (const [name, value] of [
+      ['NONE', NONE],
+      ['CAPTURING_PHASE', CAPTURING_PHASE],
+      ['AT_TARGET', AT_TARGET],
+      ['BUBBLING_PHASE', BUBBLING_PHASE],
+    ] as const) {
+      Object.defineProperty(on, name, { value, enumerable: true });
     }
   }
-  class FocusEvent extends UIEvent {
-    readonly relatedTarget: Any;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.relatedTarget = init.relatedTarget ?? null;
-    }
-  }
+  /** UI Events' and Pointer Events' interfaces (`ui-events.ts`). */
+  const UI_EVENTS: Any = uiEventsApi({
+    Event,
+    isWindow: (v) => {
+      try {
+        return v === G || v instanceof Window || (v as Any)?.window === v;
+      } catch {
+        return false;
+      }
+    },
+    isTarget: (v) =>
+      v instanceof EventTarget ||
+      typeof (v as Any)?.addEventListener === 'function',
+    scrolled: () => {
+      const v = viewport();
+      return { x: v.scrollX, y: v.scrollY };
+    },
+    offsetIn: (target, x, y) => pointIn('offset', target, x, y),
+    layerIn: (target, x, y) => pointIn('layer', target, x, y),
+  });
+  const {
+    UIEvent,
+    FocusEvent,
+    MouseEvent,
+    PointerEvent,
+    WheelEvent,
+    KeyboardEvent,
+    InputEvent,
+    CompositionEvent,
+    TextEvent,
+  } = UI_EVENTS;
+  /** A viewport point in an element's own coordinates, as the host works
+   *  it out through what is around it (`MouseEvent`'s `offsetX`). */
+  const pointIn = (
+    how: string,
+    target: Any,
+    x: number,
+    y: number,
+  ): [number, number] | null => {
+    if (!(target instanceof Element)) return null;
+    const at = String(call('pointIn', how, target._id, x, y));
+    if (!at) return null;
+    const [a, b] = at.split(',').map(Number);
+    return [a, b];
+  };
   /** A CSS animation's event (CSS Animations 1, 4.2): its name, the time
    *  it had run, in seconds, and its pseudo-element. */
   class AnimationEvent extends Event {
@@ -737,148 +834,6 @@ export function installDom(
     }
     get pseudoElement(): string {
       return this._pseudoElement;
-    }
-  }
-  class MouseEvent extends UIEvent {
-    readonly screenX: number;
-    readonly screenY: number;
-    readonly clientX: number;
-    readonly clientY: number;
-    readonly button: number;
-    readonly buttons: number;
-    readonly ctrlKey: boolean;
-    readonly shiftKey: boolean;
-    readonly altKey: boolean;
-    readonly metaKey: boolean;
-    readonly relatedTarget: Any;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.clientX = Number(init.clientX ?? 0);
-      this.clientY = Number(init.clientY ?? 0);
-      this.screenX = Number(init.screenX ?? this.clientX);
-      this.screenY = Number(init.screenY ?? this.clientY);
-      this.button = Number(init.button ?? 0);
-      this.buttons = Number(init.buttons ?? 0);
-      this.ctrlKey = !!init.ctrlKey;
-      this.shiftKey = !!init.shiftKey;
-      this.altKey = !!init.altKey;
-      this.metaKey = !!init.metaKey;
-      this.relatedTarget = init.relatedTarget ?? null;
-    }
-    get x(): number {
-      return this.clientX;
-    }
-    get y(): number {
-      return this.clientY;
-    }
-    get pageX(): number {
-      return this.clientX + viewport().scrollX;
-    }
-    get pageY(): number {
-      return this.clientY + viewport().scrollY;
-    }
-    get offsetX(): number {
-      const r = this.target?.getBoundingClientRect?.();
-      return r ? this.clientX - r.left : this.clientX;
-    }
-    get offsetY(): number {
-      const r = this.target?.getBoundingClientRect?.();
-      return r ? this.clientY - r.top : this.clientY;
-    }
-    getModifierState(key: string): boolean {
-      return (
-        (key === 'Shift' && this.shiftKey) ||
-        (key === 'Control' && this.ctrlKey) ||
-        (key === 'Alt' && this.altKey) ||
-        (key === 'Meta' && this.metaKey)
-      );
-    }
-  }
-  class PointerEvent extends MouseEvent {
-    readonly pointerId: number;
-    readonly pointerType: string;
-    readonly isPrimary: boolean;
-    readonly width: number;
-    readonly height: number;
-    readonly pressure: number;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.pointerId = Number(init.pointerId ?? 1);
-      this.pointerType = String(init.pointerType ?? 'mouse');
-      this.isPrimary = init.isPrimary ?? true;
-      this.width = Number(init.width ?? 1);
-      this.height = Number(init.height ?? 1);
-      // a mouse's is half with a button held and none without (4.1.3)
-      this.pressure = Number(init.pressure ?? (this.buttons ? 0.5 : 0));
-    }
-  }
-  class WheelEvent extends MouseEvent {
-    static readonly DOM_DELTA_PIXEL = 0;
-    static readonly DOM_DELTA_LINE = 1;
-    static readonly DOM_DELTA_PAGE = 2;
-    readonly deltaX: number;
-    readonly deltaY: number;
-    readonly deltaZ: number;
-    readonly deltaMode: number;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.deltaX = Number(init.deltaX ?? 0);
-      this.deltaY = Number(init.deltaY ?? 0);
-      this.deltaZ = Number(init.deltaZ ?? 0);
-      this.deltaMode = Number(init.deltaMode ?? 0);
-    }
-  }
-  class KeyboardEvent extends UIEvent {
-    readonly key: string;
-    readonly code: string;
-    readonly location: number;
-    readonly repeat: boolean;
-    readonly isComposing: boolean;
-    readonly ctrlKey: boolean;
-    readonly shiftKey: boolean;
-    readonly altKey: boolean;
-    readonly metaKey: boolean;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.key = String(init.key ?? '');
-      this.code = String(init.code ?? '');
-      this.location = Number(init.location ?? 0);
-      this.repeat = !!init.repeat;
-      this.isComposing = !!init.isComposing;
-      this.ctrlKey = !!init.ctrlKey;
-      this.shiftKey = !!init.shiftKey;
-      this.altKey = !!init.altKey;
-      this.metaKey = !!init.metaKey;
-    }
-    get keyCode(): number {
-      return keyCodeOf(this.key);
-    }
-    get which(): number {
-      return keyCodeOf(this.key);
-    }
-    get charCode(): number {
-      return this.type === 'keypress' && this.key.length === 1
-        ? this.key.charCodeAt(0)
-        : 0;
-    }
-    getModifierState(key: string): boolean {
-      return MouseEvent.prototype.getModifierState.call(this, key);
-    }
-  }
-  class InputEvent extends UIEvent {
-    readonly data: string | null;
-    readonly inputType: string;
-    readonly isComposing: boolean;
-    readonly dataTransfer: Any;
-    constructor(type: string, init: Any = {}) {
-      super(type, init);
-      this.data = init.data ?? null;
-      this.inputType = String(init.inputType ?? '');
-      this.isComposing = !!init.isComposing;
-      this.dataTransfer = init.dataTransfer ?? null;
-    }
-    getTargetRanges(): Any[] {
-      return [];
     }
   }
   class SubmitEvent extends Event {
@@ -1088,6 +1043,16 @@ export function installDom(
     }
   }
 
+  /** The kinds of `<input>` a key types text in. */
+  const TYPED_INPUTS = new Set([
+    'text',
+    'search',
+    'url',
+    'tel',
+    'email',
+    'password',
+    'number',
+  ]);
   /** The legacy `keyCode` a page still branches on, from the key. */
   const KEY_CODES: Record<string, number> = {
     Backspace: 8,
@@ -1111,7 +1076,27 @@ export function installDom(
     Delete: 46,
     Meta: 91,
   };
-  const keyCodeOf = (key: string): number => {
+  /** Where a key is, as a US keyboard has it: `keyCode` is the key's and
+   *  not what it typed, so `!` is the 1's 49. */
+  const CODE_KEY_CODES: Record<string, number> = {
+    Semicolon: 186,
+    Equal: 187,
+    Comma: 188,
+    Minus: 189,
+    Period: 190,
+    Slash: 191,
+    Backquote: 192,
+    BracketLeft: 219,
+    Backslash: 220,
+    BracketRight: 221,
+    Quote: 222,
+  };
+  const keyCodeOf = (key: string, code = ''): number => {
+    if (code.startsWith('Key') && code.length === 4) {
+      return code.charCodeAt(3);
+    }
+    if (code.startsWith('Digit')) return 48 + Number(code.slice(5));
+    if (code in CODE_KEY_CODES) return CODE_KEY_CODES[code];
     if (key in KEY_CODES) return KEY_CODES[key];
     if (key.length === 1) {
       const c = key.toUpperCase().charCodeAt(0);
@@ -1120,6 +1105,19 @@ export function installDom(
     const f = /^F(\d+)$/.exec(key);
     return f ? 111 + Number(f[1]) : 0;
   };
+  /** Where on the keyboard a key is (UI Events 6.2.1): a `code` says. */
+  const keyLocationOf = (code: string): number =>
+    code.startsWith('Numpad')
+      ? 3
+      : code.endsWith('Left') && !code.startsWith('Arrow')
+        ? code.startsWith('Bracket')
+          ? 0
+          : 1
+        : code.endsWith('Right') && !code.startsWith('Arrow')
+          ? code.startsWith('Bracket')
+            ? 0
+            : 2
+          : 0;
 
   /** Where `on<type>` handlers are compiled from attributes, by text. */
   const compiled = new Map<string, Any>();
@@ -1159,6 +1157,7 @@ export function installDom(
       if (!fn) return;
       const opts =
         typeof options === 'boolean' ? { capture: options } : options || {};
+      noteHeard(String(type));
       const list = (this._listeners[type] ??= []);
       const capture = !!opts.capture;
       if (list.some((l) => l.fn === fn && l.capture === capture)) return;
@@ -1204,6 +1203,39 @@ export function installDom(
       return dispatch(this, event);
     }
   }
+  /** The events a pointer's moves make, which the host goes on telling
+   *  only once a page listens for one (`movesHeard`). */
+  const MOVE_EVENTS = new Set([
+    'pointermove',
+    'pointerrawupdate',
+    'pointerover',
+    'pointerout',
+    'pointerenter',
+    'pointerleave',
+    'gotpointercapture',
+    'lostpointercapture',
+    'mousemove',
+    'mouseover',
+    'mouseout',
+    'mouseenter',
+    'mouseleave',
+  ]);
+  let movesHeard = false;
+  let selectionHeard = false;
+  /** A page came to listen for `type`. Told once, however many listen, with
+   *  what the pointer is over answered, so that it hears nothing of having
+   *  been there all along. */
+  const noteHeard = (type: string): void => {
+    if (type === 'pointerrawupdate') rawUpdateHeard = true;
+    if (type === 'selectionchange' && !selectionHeard) {
+      selectionHeard = true;
+      call('selectionHeard');
+    }
+    if (movesHeard || !MOVE_EVENTS.has(type)) return;
+    movesHeard = true;
+    const over = Number(call('movesHeard'));
+    if (over) POINTERS.seed(wrap(over));
+  };
   /** `EventTarget`'s own methods, which a window's are passed on to: a page
    *  that patches the prototype, as zone.js does, hears a window's call
    *  once, and not again as it reaches the window's target. */
@@ -1315,6 +1347,7 @@ export function installDom(
    *  listener — the front — unless `now` says the parser set it just now.
    *  Called before the value is set, so that it reads the one before. */
   const activateHandler = (target: Any, type: string, now = false): void => {
+    noteHeard(type);
     const list: Listener[] = ((target._listeners ??= Object.create(null))[
       type
     ] ??= []);
@@ -1424,25 +1457,38 @@ export function installDom(
     }
   };
 
-  const invoke = (target: Any, event: Any, phase: number): void => {
+  const invoke = (
+    step: PathStep,
+    event: Any,
+    phase: number,
+    capture: boolean,
+  ): void => {
+    if (event._stop) return;
+    const target = step.at;
     // the window's listeners are kept on a target of their own, and hear
     // the window as what they are on, as `this` and `currentTarget`
-    const self = listenedAs(target);
+    const self = step.seen;
+    event._target = step.target;
+    if (event._related !== undefined) event._related = step.related;
     event._currentTarget = self;
     event._phase = phase;
     const list: Listener[] | undefined = target._listeners[event._type];
     // what runs is the list as it was: one a listener adds is not heard
     const listeners = list?.length ? list.slice() : NO_LISTENERS;
+    const was = currentEvent;
+    if (!(step.flags & IN_SHADOW_TREE)) currentEvent = event;
     // a handler is a listener in the place it was first set in
     // (`activateHandler`), but for an `on…` attribute the parser set, which
     // has had the first place since before anything could listen
-    if (phase !== CAPTURING_PHASE && !listeners.some((l) => l.handler)) {
+    if (!capture && !listeners.some((l) => l.handler)) {
       runHandler(target, self, event);
-      if (event._stopNow) return;
+      if (event._stopNow) {
+        currentEvent = was;
+        return;
+      }
     }
     for (const l of listeners) {
-      if (phase === CAPTURING_PHASE && !l.capture) continue;
-      if (phase === BUBBLING_PHASE && l.capture) continue;
+      if (l.capture !== capture) continue;
       if (!list!.includes(l)) continue;
       if (l.handler) runHandler(target, self, event);
       else {
@@ -1458,38 +1504,90 @@ export function installDom(
         }
         event._passive = false;
       }
-      if (event._stopNow) return;
+      if (event._stopNow) break;
     }
+    currentEvent = was;
   };
 
-  /** DOM 2.9, "dispatch": capture down the path, the target, and up again
-   *  where the event bubbles. A node's path runs through its document to the
-   *  window, but for a `load`. Whether it was not cancelled. */
+  /** An event's path at `target`, with what each step of it reads. A node's
+   *  runs through its document to the window, but for a `load`: the rest is
+   *  the host's, which sees the slots and the hosts in one answer
+   *  (`event-path.ts`). */
+  const pathOf = (target: Any, event: Any): [PathStep[], boolean] => {
+    const related = event._related ?? null;
+    if (!(target instanceof Node)) {
+      const seen = listenedAs(target);
+      return [
+        [{ at: target, seen, adjusted: seen, target: seen, related, flags: 0 }],
+        false,
+      ];
+    }
+    const given = related instanceof Node;
+    const packed = String(
+      call('eventPath', target._id, event._composed, given ? related._id : 0),
+    );
+    if (!packed) return [[], false];
+    const n = packed.split(',').map(Number);
+    const path: PathStep[] = [];
+    let adjusted: Any = null;
+    let rel: Any = related;
+    for (let i = 1; i < n.length; i += 4) {
+      const at = wrap(n[i]);
+      if (given) rel = n[i + 2] ? wrap(n[i + 2]) : null;
+      const own = n[i + 1] ? wrap(n[i + 1]) : null;
+      if (own) adjusted = own;
+      path.push({
+        at,
+        seen: at,
+        adjusted: own,
+        target: adjusted,
+        related: rel,
+        flags: n[i + 3],
+      });
+    }
+    const last = path[path.length - 1];
+    if (last.at === document && event._type !== 'load') {
+      path.push({
+        at: windowTarget,
+        seen: G,
+        adjusted: null,
+        target: adjusted,
+        related: rel,
+        flags: 0,
+      });
+    }
+    return [path, n[0] === 1];
+  };
+
+  /** DOM 2.9, "dispatch": capture down the path, and up again where the
+   *  event bubbles, and at each shadow-adjusted target its capturing
+   *  listeners before the rest, as AT_TARGET. Whether it was not
+   *  cancelled. */
   const dispatch = (target: Any, event: Any): boolean => {
-    const path: Any[] = [target];
-    if (target instanceof Node) {
-      for (let at = parentFor(target, event); at; at = parentFor(at, event)) {
-        path.push(at);
-      }
-      if (path[path.length - 1] === document && event._type !== 'load') {
-        path.push(windowTarget);
-      }
-    }
+    const [path, clear] = pathOf(target, event);
     event._target = listenedAs(target);
-    event._path = path.map(listenedAs);
-    event._stop = false;
-    event._stopNow = false;
-    for (let i = path.length - 1; i > 0 && !event._stop; i -= 1) {
-      invoke(path[i], event, CAPTURING_PHASE);
+    return runPath(path, event, clear);
+  };
+  const runPath = (path: PathStep[], event: Any, clear: boolean): boolean => {
+    event._path = path;
+    for (let i = path.length - 1; i >= 0; i -= 1) {
+      const step = path[i];
+      invoke(step, event, step.adjusted ? AT_TARGET : CAPTURING_PHASE, true);
     }
-    if (!event._stop) invoke(path[0], event, AT_TARGET);
-    if (event._bubbles) {
-      for (let i = 1; i < path.length && !event._stop; i += 1) {
-        invoke(path[i], event, BUBBLING_PHASE);
-      }
+    for (let i = 0; i < path.length; i += 1) {
+      const step = path[i];
+      if (step.adjusted) invoke(step, event, AT_TARGET, false);
+      else if (event._bubbles) invoke(step, event, BUBBLING_PHASE, false);
     }
     event._phase = NONE;
     event._currentTarget = null;
+    event._path = [];
+    event._stop = false;
+    event._stopNow = false;
+    if (clear) {
+      event._target = null;
+      if (event._related !== undefined) event._related = null;
+    }
     return !event._canceled;
   };
 
@@ -3497,6 +3595,8 @@ export function installDom(
   };
   idlAttributes(ScrollTimeline);
   idlAttributes(ViewTimeline);
+  idlAttributes(Event);
+  UI_EVENTS.shape(idlAttributes);
   /** A view timeline's insets, from a string of one or two
    *  `<length-percentage>` or `auto`, or a list of one or two values
    *  (Scroll Animations 1, 3.3), `auto` where none is given. `auto` is the
@@ -4977,18 +5077,27 @@ export function installDom(
       .sort((a, b) => a._hostId - b._hostId),
   ];
 
-  /** The mouse, the one pointer there is (Pointer Events 3): the buttons
-   *  held, as the DOM's mask, kept from the presses and releases told
-   *  rather than from a move's, which carry none on macOS; and its capture,
-   *  the element asked for (`pending`) and the one its events go to; and
-   *  whether a cancelled pointerdown keeps the mouse's events back. */
-  const MOUSE_ID = 1;
-  const pointer: { held: number; pending: Any; target: Any; quiet: boolean } = {
-    held: 0,
-    pending: null,
-    target: null,
-    quiet: false,
-  };
+  /** The mouse, the one pointer there is, and what a page hears of it
+   *  (`pointers.ts`). */
+  const POINTERS: Any = pointersApi({
+    PointerEvent,
+    MouseEvent,
+    dispatch,
+    call,
+    wrap: (id) => wrap(id),
+    view: G,
+    document: () => document,
+    scrolled: () => viewport(),
+    treeEpoch: () => treeEpoch,
+    rawHeard: () => rawUpdateHeard,
+    secure: () => call('secureContext') === true,
+    disabled: (el) => el instanceof HTMLElement && isDisabled(el),
+    lightDismiss: (type, to, x, y) => lightDismiss(type, to, x, y),
+    editForPress: (to, x, y) => editForPress(to, x, y),
+  });
+  /** Whether a page listens for `pointerrawupdate`, which is only made
+   *  for one that does (Pointer Events 3, 5.2.2). */
+  let rawUpdateHeard = false;
 
   // --- nodes -------------------------------------------------------------------
 
@@ -5945,6 +6054,12 @@ export function installDom(
     );
   };
   class ShadowRoot extends DocumentFragment {
+    override get nodeName(): string {
+      return '#document-fragment';
+    }
+    get pointerLockElement(): Any {
+      return null;
+    }
     get host(): Any {
       return wrap(Number(call('shadowHost', this._id)));
     }
@@ -5996,13 +6111,6 @@ export function installDom(
   }
   /** Where an event goes from a node: its parent, and out of a shadow tree
    *  to its host where the event is composed, as most a user makes are. */
-  const parentFor = (node: Any, event: Any): Any =>
-    node instanceof ShadowRoot
-      ? event._composed
-        ? node.host
-        : null
-      : node.parentNode;
-
   // --- elements ------------------------------------------------------------------
 
   /** A `DOMTokenList` over an attribute: `classList`, `relList`, and the
@@ -6863,12 +6971,29 @@ export function installDom(
         !!(o.checkVisibilityCSS || o.visibilityProperty),
       );
     }
-    // Pointer Events 3, 10.1: the pointer's events go to this element until
-    // it lets go or the buttons are released. A pointer with no button held
-    // is not captured, as Chrome has it, and the capture changes hands
-    // before the pointer's next event (`takeCapture`).
+    // Pointer Lock 2: core has nothing to confine or hide a pointer with, so
+    // no lock is ever granted, which is an answer the API has: a failure
+    // told at the document and a rejected promise
+    requestPointerLock(options?: Any): Any {
+      void options;
+      const fail = new DOMException(
+        'Pointer lock is not available.',
+        hasTransientActivation() ? 'NotSupportedError' : 'NotAllowedError',
+      );
+      setTimer(
+        () =>
+          dispatch(
+            document,
+            trusted(new Event('pointerlockerror', { bubbles: true })),
+          ),
+        0,
+        [],
+        false,
+      );
+      return Promise.reject(fail);
+    }
     setPointerCapture(pointerId: Any): void {
-      if (Number(pointerId) !== MOUSE_ID) {
+      if (Number(pointerId) !== POINTERS.id) {
         throw new DOMException(
           'No active pointer with that id',
           'NotFoundError',
@@ -6880,19 +7005,21 @@ export function installDom(
           'InvalidStateError',
         );
       }
-      if (pointer.held) pointer.pending = this;
+      // a capture changes hands at the pointer's next event, a move or not
+      noteHeard('pointermove');
+      POINTERS.setCapture(this);
     }
     releasePointerCapture(pointerId: Any): void {
-      if (Number(pointerId) !== MOUSE_ID) {
+      if (Number(pointerId) !== POINTERS.id) {
         throw new DOMException(
           'No active pointer with that id',
           'NotFoundError',
         );
       }
-      if (pointer.pending === this) pointer.pending = null;
+      POINTERS.releaseCapture(this);
     }
     hasPointerCapture(pointerId: Any): boolean {
-      return Number(pointerId) === MOUSE_ID && pointer.pending === this;
+      return Number(pointerId) === POINTERS.id && POINTERS.hasCapture(this);
     }
     // A scroll container's are its scrollport's and its content's
     // (`scrollState`); the viewport's are the document's scrolling
@@ -7341,7 +7468,7 @@ export function installDom(
       }
     }
     get isContentEditable(): boolean {
-      return false;
+      return editingHostOf(this) !== null;
     }
     get innerText(): string {
       return String(call('text', this._id, 'rendered'));
@@ -7395,6 +7522,7 @@ export function installDom(
           cancelable: true,
           composed: true,
           view: G,
+          pointerId: -1,
         }),
       );
     }
@@ -8478,8 +8606,11 @@ export function installDom(
       out.valid = !flag;
       return out;
     }
+    // HTML 4.10.21.3: a control that is not valid is told so
     checkValidity(): boolean {
-      return !validityOf(this)[0];
+      if (!validityOf(this)[0]) return true;
+      dispatch(this, trusted(new Event('invalid', { cancelable: true })));
+      return false;
     }
     reportValidity(): boolean {
       return this.checkValidity();
@@ -8551,13 +8682,21 @@ export function installDom(
     const direction = dir === 'forward' || dir === 'backward' ? dir : 'none';
     call('setSelection', el._id, from, to, direction);
     if (was.start === from && was.end === to && was.dir === direction) return;
+    // told once, however many changes a task makes (HTML 4.10.5.2.10)
+    if (selectOwed.has(el)) return;
+    selectOwed.add(el);
     setTimer(
-      () => dispatch(el, new Event('select', { bubbles: true })),
+      () => {
+        selectOwed.delete(el);
+        dispatch(el, trusted(new Event('select', { bubbles: true })));
+      },
       0,
       [],
       false,
     );
   };
+  /** The fields a `select` is on its way to. */
+  const selectOwed = new WeakSet<object>();
   /** A value set that changed it puts the caret at its end (HTML
    *  4.10.5.4), and selects nothing. */
   const valueSet = (el: Any, was: string): void => {
@@ -8705,6 +8844,7 @@ export function installDom(
     consumeActivation();
   };
 
+  const BOX_TYPES = new Set(['checkbox', 'radio']);
   class HTMLInputElement extends FormControl {
     get type(): string {
       const t = (this.getAttribute('type') ?? '').toLowerCase();
@@ -8712,6 +8852,24 @@ export function installDom(
     }
     set type(v: Any) {
       this.setAttribute('type', v);
+    }
+    /** A checkedness goes with an input from type to type (HTML 4.10.5), and
+     *  the widget of a box is what holds a box's. Vue's `v-model` sets
+     *  `checked` as it makes a radio, ahead of its `type`, and every radio on
+     *  JSFiddle was left unticked, so its form sent none of them. */
+    override _setAttr(n: string, value: Any): void {
+      if (n !== 'type') {
+        super._setAttr(n, value);
+        return;
+      }
+      const wasBox = BOX_TYPES.has(this.type);
+      const checked = wasBox ? this.checked : this._checkedness;
+      super._setAttr(n, value);
+      if (wasBox === BOX_TYPES.has(this.type)) return;
+      this._checkedness = wasBox ? checked : undefined;
+      if (!wasBox && checked !== undefined) {
+        call('setValue', this._id, checked);
+      }
     }
     // HTML 4.10.5.4's value modes: the attribute for a box and a radio
     // ("default/on") and for what is no field ("default"), nothing for a
@@ -10041,7 +10199,9 @@ export function installDom(
    *  what made it (HTML 7.1.1), which `location` does not say. */
   const documentOrigin = (): string => {
     const origin = str(G.location?.origin ?? location.origin);
-    return origin === 'null' ? str(call('documentOrigin')) : origin;
+    // a sandbox's is no origin, whatever its address says, and only the host
+    // knows of its sandbox
+    return workerLocation ? origin : str(call('documentOrigin'));
   };
   /** The window each frame's document has (HTML 7.2.2), made as it is
    *  first reached. */
@@ -16334,7 +16494,9 @@ export function installDom(
           "Failed to execute 'has' on 'FontFaceSet': parameter 1 is not of type 'FontFace'.",
         );
       }
-      return this._all().includes(face);
+      // what a script made is here by this set's own list: Excalidraw asks
+      // before it adds each of its 230 faces, in the one task
+      return face._script ? this._added.has(face) : this._all().includes(face);
     }
     forEach(fn: Any, thisArg?: Any): void {
       for (const face of this._all()) fn.call(thisArg, face, face, this);
@@ -16498,11 +16660,18 @@ export function installDom(
       return this === document ? str(call('referrer')) : '';
     }
     get domain(): string {
-      return location.hostname;
+      return documentOrigin() === 'null' ? '' : location.hostname;
     }
     // what a tag manager sets to share a document with its frames, which
     // here are all the page's origin's or nothing of the page's
-    set domain(_v: Any) {}
+    set domain(_v: Any) {
+      if (documentOrigin() === 'null') {
+        throw new DOMException(
+          "Failed to set the 'domain' property on 'Document': Assignment is forbidden for sandboxed iframes.",
+          'SecurityError',
+        );
+      }
+    }
     // the host's jar, where it has one, for this document's address: a
     // document that is not on the web, or one a page made of its own, is
     // cookie-averse (HTML 3.1.3) and reads ''
@@ -16521,16 +16690,16 @@ export function installDom(
       return windowOfDocument(this);
     }
     get characterSet(): string {
-      return 'UTF-8';
+      return String(call('characterSet', this._id));
     }
     get charset(): string {
-      return 'UTF-8';
+      return this.characterSet;
     }
     get contentType(): string {
       return this._type ?? 'text/html';
     }
     get inputEncoding(): string {
-      return 'UTF-8';
+      return this.characterSet;
     }
     get compatMode(): string {
       return 'CSS1Compat';
@@ -16803,18 +16972,22 @@ export function installDom(
     createDocumentFragment(): Any {
       return wrap(Number(call('create', 'fragment', '', this._id)));
     }
+    get pointerLockElement(): Any {
+      return null;
+    }
+    exitPointerLock(): void {}
+    // DOM 4.5: the names it has for each interface, and nothing else
     createEvent(kind: Any): Any {
       const k = str(kind).toLowerCase();
       if (k === 'beforeunloadevent') return new BeforeUnloadEvent(UNLOADING);
-      const Kind = k.startsWith('mouse')
-        ? MouseEvent
-        : k.startsWith('keyboard')
-          ? KeyboardEvent
-          : k.startsWith('custom')
-            ? CustomEvent
-            : k.startsWith('ui')
-              ? UIEvent
-              : Event;
+      if (k === 'textevent') return UI_EVENTS.textEvent('');
+      const Kind = CREATED_EVENTS[k]?.();
+      if (!Kind) {
+        throw new DOMException(
+          `The provided event type ('${str(kind)}') is invalid.`,
+          'NotSupportedError',
+        );
+      }
       return new Kind('');
     }
     createRange(): Any {
@@ -16923,7 +17096,12 @@ export function installDom(
     }
     open(): Any {
       // `== null`: a wrapper is made without its class's fields
-      if (this !== document && this._written == null) this._written = '';
+      if (this !== document && this._written == null) {
+        this._written = '';
+        // it starts again from nothing (HTML 8.4.2): a loader tldraw uses
+        // builds an `<html>` of its own in a frame's document after `open`
+        this.replaceChildren();
+      }
       return this;
     }
     close(): void {
@@ -16934,7 +17112,11 @@ export function installDom(
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
-      call('fillDocument', this._id, markup);
+      // nothing written leaves what the page put there, or the empty
+      // document the parser makes of no input
+      if (markup || !this.documentElement) {
+        call('fillDocument', this._id, markup);
+      }
     }
   }
   /** A document made of XML's rules: `createDocument`'s. */
@@ -18126,15 +18308,54 @@ export function installDom(
     configurable: true,
   });
 
+  /** What `createEvent` makes, by the names DOM 4.5 has for each interface
+   *  this one has. */
+  const CREATED_EVENTS: Record<string, () => Any> = Object.assign(
+    Object.create(null),
+    {
+      compositionevent: () => CompositionEvent,
+      customevent: () => CustomEvent,
+      dragevent: () => TRANSFER.interfaces.DragEvent,
+      event: () => Event,
+      events: () => Event,
+      focusevent: () => FocusEvent,
+      hashchangeevent: () => HashChangeEvent,
+      htmlevents: () => Event,
+      keyboardevent: () => KeyboardEvent,
+      messageevent: () => MessageEvent,
+      mouseevent: () => MouseEvent,
+      mouseevents: () => MouseEvent,
+      storageevent: () => StorageEvent,
+      svgevents: () => Event,
+      uievent: () => UIEvent,
+      uievents: () => UIEvent,
+    },
+  );
+
+  /** A window's `on<type>`, which is kept by its target of its own. */
+  const windowHandler = (type: string): PropertyDescriptor => ({
+    get: () => handlerOf(windowTarget, type),
+    set: (fn: Any) => {
+      setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
+    },
+    configurable: true,
+    enumerable: true,
+  });
   /** The `on<type>` properties a page sets, for the events it can have. */
   for (const type of [
     'click',
+    'auxclick',
     'dblclick',
     'mousedown',
     'mouseup',
+    'mouseenter',
+    'mouseleave',
     'mouseover',
     'mouseout',
     'mousemove',
+    'beforeinput',
+    'beforetoggle',
+    'cancel',
     'keydown',
     'keyup',
     'keypress',
@@ -18172,6 +18393,7 @@ export function installDom(
     'pointerout',
     'pointerenter',
     'pointerleave',
+    'pointercancel',
     'gotpointercapture',
     'lostpointercapture',
     'play',
@@ -18195,16 +18417,24 @@ export function installDom(
   ]) {
     const property = {
       get(this: Any): Any {
-        return this._handlers[type] ?? null;
+        return handlerOf(this, type) ?? null;
       },
       set(this: Any, fn: Any) {
         setHandler(this, type, typeof fn === 'function' ? fn : null);
       },
       configurable: true,
+      enumerable: true,
     };
     Object.defineProperty(HTMLElement.prototype, `on${type}`, property);
+    Object.defineProperty(SVGElement.prototype, `on${type}`, property);
     Object.defineProperty(Document.prototype, `on${type}`, property);
+    Object.defineProperty(G, `on${type}`, windowHandler(type));
   }
+  for (const name of ['pointerLockElement', 'exitPointerLock']) {
+    Object.defineProperty(Document.prototype, name, { enumerable: true });
+  }
+  handlerProperty(Document.prototype, 'pointerlockchange');
+  handlerProperty(Document.prototype, 'pointerlockerror');
   Object.defineProperty(Document.prototype, 'onvisibilitychange', {
     get(this: Any): Any {
       return this._handlers.visibilitychange ?? null;
@@ -18796,7 +19026,8 @@ export function installDom(
           "Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.",
         );
       }
-      const origin = str(location.origin);
+      // the document's, which a sandbox's address does not say
+      const origin = workerLocation ? str(location.origin) : documentOrigin();
       const url = `blob:${origin === 'null' ? 'null' : origin}/${str(call('uuid'))}`;
       (source ? mediaSourceUrls : blobUrls).set(url, blob);
       return url;
@@ -20375,7 +20606,18 @@ export function installDom(
       });
       return lines.sort().join('');
     }
-    overrideMimeType(): void {}
+    /** What `overrideMimeType` was handed, which the response's type gives
+     *  way to (XHR 3.6.8). */
+    _override: string | null = null;
+    overrideMimeType(mime: Any): void {
+      if (this.readyState === 3 || this.readyState === 4) {
+        throw new DOMException(
+          "Failed to execute 'overrideMimeType' on 'XMLHttpRequest': MimeType cannot be overridden when the state is LOADING or DONE.",
+          'InvalidStateError',
+        );
+      }
+      this._override = str(mime);
+    }
     get responseText(): string {
       if (this.responseType !== '' && this.responseType !== 'text') {
         throw new DOMException(
@@ -20406,16 +20648,23 @@ export function installDom(
     }
     /** The body's bytes, which `arraybuffer` and `blob` are made of. */
     _raw: Uint8Array = new Uint8Array(0);
-    /** A text response (XHR 3.6.9): the bytes decoded as the response's
-     *  charset says, and as UTF-8 where it names none this decodes. */
+    /** A text response (XHR 3.6.9): Encoding's "decode", by the response's
+     *  charset, where a byte order mark wins and a label that names nothing
+     *  is UTF-8. `replacement` is no `TextDecoder`'s, so this is the host's
+     *  wherever a label is given. */
     _decode(bytes: Uint8Array): string {
-      const type = this._response?.headers.get('content-type') ?? '';
-      const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type)?.[1];
-      try {
-        return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-      } catch {
-        return new TextDecoder().decode(bytes);
-      }
+      const named = (type: Any): string | undefined =>
+        /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type ?? '')?.[1];
+      // an override that is no MIME type says nothing of its charset
+      const override = /^[^\s/;]+\/[^\s/;]+/.test(this._override ?? '')
+        ? this._override
+        : null;
+      const charset =
+        named(override) ?? named(this._response?.headers.get('content-type'));
+      if (!charset) return new TextDecoder().decode(bytes);
+      return String(
+        call('decodeResponse', base64OfBytes(bytes), charset),
+      ).slice(1);
     }
     get responseXML(): null {
       return null;
@@ -21050,6 +21299,9 @@ export function installDom(
       return 'utf-8';
     }
     encode(input: Any = ''): Uint8Array {
+      if (!(this instanceof TextEncoder)) {
+        throw new TypeError('Illegal invocation');
+      }
       const s = str(input);
       const out: number[] = [];
       for (let i = 0; i < s.length;) {
@@ -21063,6 +21315,14 @@ export function installDom(
       input: Any,
       dest: Uint8Array,
     ): { read: number; written: number } {
+      if (!(this instanceof TextEncoder)) {
+        throw new TypeError('Illegal invocation');
+      }
+      if (Object.prototype.toString.call(dest) !== '[object Uint8Array]') {
+        throw new TypeError(
+          "Failed to execute 'encodeInto' on 'TextEncoder': parameter 2 is not of type 'Uint8Array'.",
+        );
+      }
       const s = str(input);
       let read = 0;
       let written = 0;
@@ -21079,58 +21339,74 @@ export function installDom(
     }
   }
 
-  /** windows-1252's bytes 0x80 to 0x9F, where it is not latin-1. */
-  const CP1252 =
-    '\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f' +
-    '\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178';
+  /** Each `TextDecoder` of another encoding than UTF-8, to the host. */
+  let textDecoders = 0;
 
   /**
-   * `TextDecoder` (Encoding 8.1): UTF-8, with WHATWG's replacement of a
-   * malformed sequence by its maximal subpart, streaming, `fatal` and the
-   * BOM; UTF-16LE; and windows-1252, which `latin1` and `ascii` name.
+   * `TextDecoder` (Encoding 8.1). UTF-8 is here, with WHATWG's replacement of
+   * a malformed sequence by its maximal subpart, streaming, `fatal` and the
+   * BOM, since nearly every decoder a page makes is one. Anything else is the
+   * host's (`textDecode`), whose tables a realm should not have to hold, with
+   * its bytes across the bridge as base64.
    */
   class TextDecoder {
-    readonly encoding: string;
-    readonly fatal: boolean;
-    readonly ignoreBOM: boolean;
+    _encoding: string;
+    _fatal: boolean;
+    _ignoreBOM: boolean;
     _pending: number[] = [];
     _started = false;
+    /** The encoding's name, for what is not UTF-8, and which decoder the host
+     *  keeps a stream's state under. */
+    _legacy: string | null = null;
+    _id = 0;
     constructor(label: Any = 'utf-8', options: Any = {}) {
-      const name = str(label).trim().toLowerCase();
-      if (['utf-8', 'utf8', 'unicode-1-1-utf-8'].includes(name)) {
-        this.encoding = 'utf-8';
-      } else if (['utf-16le', 'utf-16'].includes(name)) {
-        this.encoding = 'utf-16le';
-      } else if (
-        ['windows-1252', 'latin1', 'iso-8859-1', 'ascii', 'us-ascii'].includes(
-          name,
-        )
-      ) {
-        this.encoding = 'windows-1252';
-      } else {
+      const written = str(label);
+      const name =
+        written === 'utf-8' ? 'UTF-8' : String(call('encodingLabel', written));
+      // `replacement` is an encoding of documents, and no decoder's to name
+      if (!name || name === 'replacement') {
         throw new RangeError(
-          `Failed to construct 'TextDecoder': The encoding label provided ('${str(label)}') is invalid.`,
+          `Failed to construct 'TextDecoder': The encoding label provided ('${written}') is invalid.`,
         );
       }
-      this.fatal = !!options?.fatal;
-      this.ignoreBOM = !!options?.ignoreBOM;
+      this._encoding = name.toLowerCase();
+      if (name !== 'UTF-8') {
+        this._legacy = name;
+        this._id = ++textDecoders;
+      }
+      this._fatal = !!options?.fatal;
+      this._ignoreBOM = !!options?.ignoreBOM;
     }
-    decode(input?: Any, options: Any = {}): string {
+    get encoding(): string {
+      return this._encoding;
+    }
+    get fatal(): boolean {
+      return this._fatal;
+    }
+    get ignoreBOM(): boolean {
+      return this._ignoreBOM;
+    }
+    decode(input: Any = undefined, options: Any = undefined): string {
       let bytes: Uint8Array;
+      // a detached buffer reads as nothing
       if (input === undefined || input === null) bytes = new Uint8Array(0);
       else if (ArrayBuffer.isView(input)) {
-        bytes = new Uint8Array(
-          input.buffer,
-          input.byteOffset,
-          input.byteLength,
-        );
-      } else if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
-      else {
+        bytes = input.byteLength
+          ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+          : new Uint8Array(0);
+      } else if (
+        /^\[object (?:Shared)?ArrayBuffer\]$/.test(
+          Object.prototype.toString.call(input),
+        )
+      ) {
+        bytes = input.byteLength ? new Uint8Array(input) : new Uint8Array(0);
+      } else {
         throw new TypeError(
           "Failed to execute 'decode' on 'TextDecoder': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
         );
       }
       const stream = !!options?.stream;
+      if (this._legacy) return this._host(bytes, stream);
       const all = this._pending.length
         ? Uint8Array.from([...this._pending, ...bytes])
         : bytes;
@@ -21152,67 +21428,54 @@ export function installDom(
       };
       const n = all.length;
       let i = 0;
-      if (this.encoding === 'windows-1252') {
-        for (; i < n; i += 1) {
-          const b = all[i];
-          units.push(b >= 0x80 && b < 0xa0 ? CP1252.charCodeAt(b - 0x80) : b);
+      while (i < n) {
+        const b = all[i];
+        if (b < 0x80) {
+          units.push(b);
+          i += 1;
+          continue;
         }
-      } else if (this.encoding === 'utf-16le') {
-        for (; i + 1 < n; i += 2) units.push(all[i] | (all[i + 1] << 8));
-        if (i < n) {
-          if (stream) this._pending = [all[i]];
-          else bad();
+        let need = 0;
+        let code = 0;
+        let lower = 0x80;
+        let upper = 0xbf;
+        if (b >= 0xc2 && b <= 0xdf) {
+          need = 1;
+          code = b & 0x1f;
+        } else if (b >= 0xe0 && b <= 0xef) {
+          need = 2;
+          code = b & 0xf;
+          if (b === 0xe0) lower = 0xa0;
+          if (b === 0xed) upper = 0x9f;
+        } else if (b >= 0xf0 && b <= 0xf4) {
+          need = 3;
+          code = b & 0x7;
+          if (b === 0xf0) lower = 0x90;
+          if (b === 0xf4) upper = 0x8f;
+        } else {
+          bad();
+          i += 1;
+          continue;
         }
-      } else {
-        while (i < n) {
-          const b = all[i];
-          if (b < 0x80) {
-            units.push(b);
-            i += 1;
-            continue;
-          }
-          let need = 0;
-          let code = 0;
-          let lower = 0x80;
-          let upper = 0xbf;
-          if (b >= 0xc2 && b <= 0xdf) {
-            need = 1;
-            code = b & 0x1f;
-          } else if (b >= 0xe0 && b <= 0xef) {
-            need = 2;
-            code = b & 0xf;
-            if (b === 0xe0) lower = 0xa0;
-            if (b === 0xed) upper = 0x9f;
-          } else if (b >= 0xf0 && b <= 0xf4) {
-            need = 3;
-            code = b & 0x7;
-            if (b === 0xf0) lower = 0x90;
-            if (b === 0xf4) upper = 0x8f;
-          } else {
-            bad();
-            i += 1;
-            continue;
-          }
-          let j = 1;
-          for (; j <= need && i + j < n; j += 1) {
-            const c = all[i + j];
-            if (c < lower || c > upper) break;
-            lower = 0x80;
-            upper = 0xbf;
-            code = (code << 6) | (c & 0x3f);
-          }
-          if (j > need) {
-            push(code);
-            i += j;
-          } else if (i + j >= n && stream) {
-            // a sequence the next chunk finishes
-            this._pending = Array.from(all.subarray(i));
-            break;
-          } else {
-            // the bytes that began well, as one replacement
-            bad();
-            i += j;
-          }
+        let j = 1;
+        for (; j <= need && i + j < n; j += 1) {
+          const c = all[i + j];
+          if (c < lower || c > upper) break;
+          lower = 0x80;
+          upper = 0xbf;
+          code = (code << 6) | (c & 0x3f);
+        }
+        if (j > need) {
+          push(code);
+          i += j;
+        } else if (i + j >= n && stream) {
+          // a sequence the next chunk finishes
+          this._pending = Array.from(all.subarray(i));
+          break;
+        } else {
+          // the bytes that began well, as one replacement
+          bad();
+          i += j;
         }
       }
       if (!stream && this._pending.length) {
@@ -21223,6 +21486,30 @@ export function installDom(
       for (let k = 0; k < units.length; k += 8192) {
         text += String.fromCharCode(...units.slice(k, k + 8192));
       }
+      return this._unmarked(text, stream);
+    }
+    /** What the host's decoder makes of `bytes`. A BOM is only the Unicode
+     *  encodings' to take off: gb18030's stays in the text. */
+    _host(bytes: Uint8Array, stream: boolean): string {
+      const text = call(
+        'textDecode',
+        this._id,
+        this._legacy,
+        base64OfBytes(bytes),
+        (stream ? 1 : 0) | (this.fatal ? 2 : 0),
+      );
+      if (text === null) {
+        throw new TypeError(
+          "Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid.",
+        );
+      }
+      const decoded = String(text).slice(1);
+      const marked = this._legacy === 'UTF-16LE' || this._legacy === 'UTF-16BE';
+      return marked ? this._unmarked(decoded, stream) : decoded;
+    }
+    /** Encoding's "serialize I/O queue": a BOM at the start of a stream. */
+    _unmarked(decoded: string, stream: boolean): string {
+      let text = decoded;
       if (
         !this._started &&
         text &&
@@ -21231,7 +21518,7 @@ export function installDom(
       ) {
         text = text.slice(1);
       }
-      this._started = stream ? this._started || text.length > 0 : false;
+      this._started = stream ? this._started || decoded.length > 0 : false;
       return text;
     }
   }
@@ -23268,14 +23555,20 @@ export function installDom(
   idlAttributes(CompressionStream);
   idlAttributes(DecompressionStream);
 
-  class TextDecoderStream extends TransformStream {
-    readonly encoding: string;
-    readonly fatal: boolean;
-    readonly ignoreBOM: boolean;
-    constructor(label?: Any, options?: Any) {
+  class TextDecoderStream {
+    _decoder: TextDecoder;
+    _stream: Any;
+    constructor(label: Any = undefined, options: Any = undefined) {
       const decoder = new TextDecoder(label, options);
-      super({
+      this._decoder = decoder;
+      this._stream = new TransformStream({
         transform(chunk: Any, c: Any) {
+          // no chunk is a call with none to `decode`, and an error here
+          if (chunk === undefined || chunk === null) {
+            throw new TypeError(
+              "Failed to execute 'write' on 'TextDecoderStream': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.",
+            );
+          }
           const text = decoder.decode(chunk, { stream: true });
           if (text) c.enqueue(text);
         },
@@ -23284,22 +23577,65 @@ export function installDom(
           if (text) c.enqueue(text);
         },
       });
-      this.encoding = decoder.encoding;
-      this.fatal = decoder.fatal;
-      this.ignoreBOM = decoder.ignoreBOM;
+    }
+    get encoding(): string {
+      return this._decoder.encoding;
+    }
+    get fatal(): boolean {
+      return this._decoder.fatal;
+    }
+    get ignoreBOM(): boolean {
+      return this._decoder.ignoreBOM;
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
     }
   }
-  class TextEncoderStream extends TransformStream {
-    readonly encoding = 'utf-8';
+  class TextEncoderStream {
+    _stream: Any;
     constructor() {
       const encoder = new TextEncoder();
-      super({
+      /** A leading surrogate a chunk ended on, which the next may finish. */
+      let leading = '';
+      this._stream = new TransformStream({
         transform(chunk: Any, c: Any) {
-          const bytes = encoder.encode(str(chunk));
-          if (bytes.length) c.enqueue(bytes);
+          let text = leading + str(chunk);
+          leading = '';
+          const last = text.charCodeAt(text.length - 1);
+          if (last >= 0xd800 && last <= 0xdbff) {
+            leading = text.slice(-1);
+            text = text.slice(0, -1);
+          }
+          if (text) c.enqueue(encoder.encode(text));
+        },
+        flush(c: Any) {
+          if (leading) c.enqueue(encoder.encode('\ufffd'));
         },
       });
     }
+    get encoding(): string {
+      return 'utf-8';
+    }
+    get readable(): Any {
+      return this._stream.readable;
+    }
+    get writable(): Any {
+      return this._stream.writable;
+    }
+  }
+  idlAttributes(TextDecoder);
+  idlAttributes(TextEncoder);
+  idlAttributes(TextDecoderStream);
+  idlAttributes(TextEncoderStream);
+  for (const [Interface, name] of [
+    [TextDecoder, 'decode'],
+    [TextEncoder, 'encode'],
+    [TextEncoder, 'encodeInto'],
+  ] as const) {
+    Object.defineProperty(Interface.prototype, name, { enumerable: true });
   }
   // --- IndexedDB -------------------------------------------------------------------
   //
@@ -23529,18 +23865,15 @@ export function installDom(
   const fireAt = (targets: Any[], event: Any): boolean => {
     event.isTrusted = true;
     event._target = targets[0];
-    event._path = targets;
-    event._stop = false;
-    event._stopNow = false;
-    invoke(targets[0], event, AT_TARGET);
-    if (event._bubbles) {
-      for (let i = 1; i < targets.length && !event._stop; i += 1) {
-        if (targets[i]) invoke(targets[i], event, BUBBLING_PHASE);
-      }
-    }
-    event._phase = NONE;
-    event._currentTarget = null;
-    return !event._canceled;
+    const path: PathStep[] = targets.filter(Boolean).map((at, i) => ({
+      at,
+      seen: at,
+      adjusted: i === 0 ? at : null,
+      target: targets[0],
+      related: null,
+      flags: 0,
+    }));
+    return runPath(path, event, false);
   };
   /** `on…` properties for the events a class fires. */
   const handlers = (Class: Any, types: string[]): void => {
@@ -28347,10 +28680,19 @@ export function installDom(
       const base = (hash < 0 ? url : url.slice(0, hash)).replace(/\?.*$/, '');
       // what is a file in the entry list is its name in a query
       const query = new URLSearchParams();
+      const entries: [string, string][] = [];
       for (const [name, value] of (formData as Any)._entries) {
-        query.append(name, value instanceof File ? value.name : value);
+        const text = value instanceof File ? value.name : value;
+        query.append(name, text);
+        entries.push([name, text]);
       }
-      url = `${base}?${query}${fragment}`;
+      // in the encoding `accept-charset` or the document says, the host's
+      const encoding = String(call('formEncoding', form._id));
+      const written =
+        encoding === 'UTF-8'
+          ? String(query)
+          : String(call('formQuery', JSON.stringify(entries), encoding));
+      url = `${base}?${written}${fragment}`;
     }
     // replaced where it is made while the document loads, unless a user
     // made it, and for a GET of the URL it is at (HTML 7.4.2.2)
@@ -30501,7 +30843,7 @@ export function installDom(
       setTimer(
         () => {
           this._told = false;
-          dispatch(document, new Event('selectionchange'));
+          dispatch(document, trusted(new Event('selectionchange')));
         },
         0,
         [],
@@ -31034,7 +31376,7 @@ export function installDom(
     data: string | null,
     pasted: { text: string; transfer: Any } | null = null,
   ): void => {
-    const range = editRange(host);
+    let range = editRange(host);
     if (!range) return;
     const init = {
       bubbles: true,
@@ -31045,8 +31387,15 @@ export function installDom(
       data,
       dataTransfer: pasted?.transfer ?? null,
     };
-    if (!dispatch(host, trusted(new InputEvent('beforeinput', init)))) return;
-    const back = inputType === 'deleteContentBackward';
+    const before = trusted(new InputEvent('beforeinput', init));
+    before._ranges = targetRanges(host, range, inputType);
+    if (!dispatch(host, before)) return;
+    if (!textInput(host, inputType, data)) return;
+    // a listener may have moved the selection, which is where the edit is
+    range = editRange(host) ?? range;
+    const back =
+      inputType === 'deleteContentBackward' ||
+      inputType === 'deleteWordBackward';
     const keeps = keepsLines(host);
     if (inputType.startsWith('delete')) {
       if (range.collapsed) {
@@ -31535,14 +31884,151 @@ export function installDom(
   /** What a key not cancelled does in an editing host: the edit it is, if
    *  any, and whether it was one — which keeps it from the host's own
    *  defaults, as Space scrolling the pane. */
+  /** What an edit at the selection will change, as `getTargetRanges()` has
+   *  it for a `beforeinput`: what is selected, or from a caret the letter a
+   *  delete takes. ProseMirror's and Slate's and Lexical's handlers take the
+   *  edit they make from it. */
+  const targetRanges = (host: Any, range: Any, inputType: string): Any[] => {
+    let [sc, so, ec, eo] = [
+      range.startContainer,
+      range.startOffset,
+      range.endContainer,
+      range.endOffset,
+    ];
+    if (range.collapsed && inputType.startsWith('delete')) {
+      const back = inputType.endsWith('Backward');
+      const unit = unitBeside(host, keepsLines(host), sc, so, back, false);
+      if (!unit) return [];
+      [sc, so] = pointBy(unit, false);
+      [ec, eo] = pointBy(unit, true);
+    }
+    return [
+      new StaticRange({
+        startContainer: sc,
+        startOffset: so,
+        endContainer: ec,
+        endOffset: eo,
+      }),
+    ];
+  };
+  /** What a key is about to type in a field, which its widget will do:
+   *  Input Events' name for it, and its text. */
+  let fieldTyping: { inputType: string; data: string | null } | null = null;
+  /** Chromium's `textInput`, after a `beforeinput` of text and with the
+   *  edit still to be made: whether it goes on. */
+  const textInput = (
+    target: Any,
+    inputType: string,
+    data: string | null,
+  ): boolean => {
+    const text =
+      inputType === 'insertText'
+        ? data
+        : inputType === 'insertParagraph' || inputType === 'insertLineBreak'
+          ? '\n'
+          : null;
+    if (text === null) return true;
+    return dispatch(
+      target,
+      trusted(
+        UI_EVENTS.textEvent('textInput', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: G,
+          data: text,
+        }),
+      ),
+    );
+  };
+  /** What a key would do to a field, where the field is one a key types in
+   *  and has something for it to do. */
+  const fieldEditOf = (
+    field: Any,
+    e: Any,
+  ): { inputType: string; data: string | null } | null => {
+    if (!(field instanceof HTMLElement)) return null;
+    const tag = field.localName;
+    if (tag !== 'input' && tag !== 'textarea') return null;
+    if ((field as Any).readOnly || (field as Any).disabled) return null;
+    if (tag === 'input' && !TYPED_INPUTS.has((field as Any).type)) return null;
+    const key = String(e.key ?? '');
+    const start = (field as Any).selectionStart;
+    const end = (field as Any).selectionEnd;
+    const length = String((field as Any).value).length;
+    const chord = e.ctrlKey || e.metaKey;
+    const selected = start !== null && start !== end;
+    if (key === 'Backspace') {
+      if (!selected && start === 0) return null;
+      return {
+        inputType:
+          chord && !selected ? 'deleteWordBackward' : 'deleteContentBackward',
+        data: null,
+      };
+    }
+    if (key === 'Delete') {
+      if (!selected && start === length) return null;
+      return {
+        inputType:
+          chord && !selected ? 'deleteWordForward' : 'deleteContentForward',
+        data: null,
+      };
+    }
+    if (chord && !e.altKey) {
+      const letter = key.toLowerCase();
+      if (letter === 'z') {
+        return {
+          inputType: e.shiftKey ? 'historyRedo' : 'historyUndo',
+          data: null,
+        };
+      }
+      return letter === 'y' ? { inputType: 'historyRedo', data: null } : null;
+    }
+    if (chord || e.altKey) return null;
+    if (key === 'Enter') {
+      return tag === 'textarea'
+        ? { inputType: 'insertLineBreak', data: null }
+        : null;
+    }
+    return [...key].length === 1 && key !== '\u007f'
+      ? { inputType: 'insertText', data: key }
+      : null;
+  };
+  /** A key in a field: told as a `beforeinput` and a `textInput`, its edit
+   *  the widget's to make unless a listener stops it there, and its `input`
+   *  told with what it did. Whether the default goes on. */
+  const fieldKey = (field: Any, e: Any): boolean => {
+    fieldTyping = null;
+    const typed = fieldEditOf(field, e);
+    if (!typed) return true;
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      ...typed,
+    };
+    if (!dispatch(field, trusted(new InputEvent('beforeinput', init)))) {
+      return false;
+    }
+    if (!textInput(field, typed.inputType, typed.data)) return false;
+    fieldTyping = typed;
+    return true;
+  };
   const editForKey = (target: Any, e: Any): boolean => {
-    if (e.ctrlKey || e.metaKey) return false;
+    const key = String(e.key ?? '');
+    const chord = e.ctrlKey || e.metaKey;
+    // a chord deletes a word from a caret, and what is selected as a key
+    // does
+    if (chord && key !== 'Backspace' && key !== 'Delete') return false;
     const host = editingHostOf(target);
     if (!host) return false;
-    const key = String(e.key ?? '');
-    if (key === 'Backspace') edit(host, 'deleteContentBackward', null);
-    else if (key === 'Delete') edit(host, 'deleteContentForward', null);
-    else if (key === 'Enter') {
+    const word = chord && !!editRange(host)?.collapsed;
+    if (key === 'Backspace') {
+      edit(host, word ? 'deleteWordBackward' : 'deleteContentBackward', null);
+    } else if (key === 'Delete') {
+      edit(host, word ? 'deleteWordForward' : 'deleteContentForward', null);
+    } else if (key === 'Enter') {
       edit(host, e.shiftKey ? 'insertLineBreak' : 'insertParagraph', null);
     } else if (
       [...key].length === 1 &&
@@ -31670,6 +32156,8 @@ export function installDom(
     PointerEvent,
     KeyboardEvent,
     InputEvent,
+    CompositionEvent,
+    TextEvent,
     SubmitEvent,
     CustomEvent,
     ErrorEvent,
@@ -32016,6 +32504,19 @@ export function installDom(
   /** What only a secure context has, which a worker asks again of its own
    *  address (`[SecureContext]`, Web IDL 3.3.17). */
   const secureGlobals = (secure: boolean): void => {
+    UI_EVENTS.secure(secure);
+    // `pointerrawupdate`'s handler is `[SecureContext]` (Pointer Events 3)
+    for (const on of [HTMLElement.prototype, Document.prototype, G]) {
+      delete on.onpointerrawupdate;
+    }
+    if (secure) {
+      Object.defineProperty(G, 'onpointerrawupdate', {
+        ...windowHandler('pointerrawupdate'),
+      });
+      for (const on of [HTMLElement.prototype, Document.prototype]) {
+        handlerProperty(on, 'pointerrawupdate');
+      }
+    }
     delete (navigator as Any).locks;
     delete G.Lock;
     delete G.LockManager;
@@ -32076,8 +32577,19 @@ export function installDom(
   }
   const localArea = storage('local');
   const sessionArea = storage('session');
-  define('localStorage', localArea);
-  define('sessionStorage', sessionArea);
+  // of an origin of none there is no store to hand over: the host refuses it
+  // as well (`DomHost._storage`), and this is where HTML throws
+  const area = (held: Any) => (): Any => {
+    if (!workerLocation && documentOrigin() === 'null') {
+      throw new DOMException(
+        "Failed to read the 'localStorage' property from 'Window': The document is sandboxed and lacks the 'allow-same-origin' flag.",
+        'SecurityError',
+      );
+    }
+    return held;
+  };
+  getter('localStorage', area(localArea));
+  getter('sessionStorage', area(sessionArea));
   define('fetch', fetch);
   // WebAssembly's compile, as the page's. The runtime's asynchronous one
   // settles its promise from a task of the host's, in a context that runs
@@ -32303,6 +32815,7 @@ export function installDom(
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);
+  getter('event', () => currentEvent);
   getter('origin', () => documentOrigin());
   // The window's own strings, made strings as they are set, as a
   // browser's are: a classic script's `var name = 1` sets the window's
@@ -32650,13 +33163,7 @@ export function installDom(
     'online',
     'offline',
   ]) {
-    Object.defineProperty(G, `on${type}`, {
-      get: () => handlerOf(windowTarget, type),
-      set: (fn: Any) => {
-        setHandler(windowTarget, type, typeof fn === 'function' ? fn : null);
-      },
-      configurable: true,
-    });
+    Object.defineProperty(G, `on${type}`, windowHandler(type));
   }
 
   // Named access on the window (HTML 7.2.2.3): an element is a global by
@@ -33173,9 +33680,6 @@ export function installDom(
 
   // an event `<Html>` was told of, dispatched as the browser would, and
   // whether its default goes on
-  /** The element the pointer is over, as its moves were told: what it
-   *  leaves when it moves onto another (UI Events 4.3.3). */
-  let hovered: Any = null;
   entry('__event', () => {
     const e = input();
     // a user's press or key has used the page (HTML 6.4.1, "activation
@@ -33189,53 +33693,37 @@ export function installDom(
     }
     let target = wrap(e.target);
     if (!target) return true;
-    const v = viewport();
     const mods = {
       shiftKey: !!e.shiftKey,
       ctrlKey: !!e.ctrlKey,
       altKey: !!e.altKey,
       metaKey: !!e.metaKey,
+      modifierCapsLock: !!(e.locks & 1),
+      modifierNumLock: !!(e.locks & 2),
+      modifierAltGraph: !!(e.locks & 4),
     };
+    if (e.type === 'keydown' || e.type === 'keyup') POINTERS.keyed(mods);
     const trusted = (ev: Any): Any => {
       ev.isTrusted = true;
       return ev;
     };
     const related = e.relatedTarget ? wrap(e.relatedTarget) : null;
-    /** Pointer Events 3, 10.4, "process pending pointer capture": the
-     *  capture changes hands, each side told, before the pointer's next
-     *  event. An element taken out of the document has lost it, which the
-     *  document is told (10.5). */
-    const takeCapture = (at: Any): void => {
-      if (pointer.pending && !pointer.pending.isConnected) {
-        pointer.pending = null;
-      }
-      if (pointer.target === pointer.pending) return;
-      const was = pointer.target;
-      pointer.target = pointer.pending;
-      const told = {
-        ...at,
-        bubbles: true,
-        cancelable: false,
-        composed: false,
-        relatedTarget: null,
-      };
-      if (was) {
-        dispatch(
-          was.isConnected ? was : document,
-          trusted(new PointerEvent('lostpointercapture', told)),
-        );
-      }
-      if (pointer.target) {
-        dispatch(
-          pointer.target,
-          trusted(new PointerEvent('gotpointercapture', told)),
-        );
-      }
-    };
     switch (e.type) {
       case 'click':
+      case 'auxclick':
       case 'dblclick': {
-        const Kind = e.type === 'click' ? PointerEvent : MouseEvent;
+        const v = viewport();
+        const dbl = e.type === 'dblclick';
+        const Kind = dbl ? MouseEvent : PointerEvent;
+        target = POINTERS.clicked(target);
+        const clientX = Math.floor((e.x ?? 0) - v.scrollX);
+        const clientY = Math.floor((e.y ?? 0) - v.scrollY);
+        // the mouse's where a press made it, and no pointer's where the
+        // keyboard did (Pointer Events 3, 5.1.2)
+        const pointed =
+          e.detail === 0
+            ? { pointerId: -1 }
+            : { ...POINTERS.fields(0), persistentDeviceId: 0 };
         const go = dispatch(
           target,
           trusted(
@@ -33245,10 +33733,13 @@ export function installDom(
               composed: true,
               view: G,
               detail: e.detail ?? 1,
-              clientX: (e.x ?? 0) - v.scrollX,
-              clientY: (e.y ?? 0) - v.scrollY,
+              clientX,
+              clientY,
+              screenX: Math.floor(e.screenX ?? clientX),
+              screenY: Math.floor(e.screenY ?? clientY),
               button: e.button ?? 0,
-              buttons: 0,
+              buttons: POINTERS.held(),
+              ...(dbl ? {} : { ...pointed, pressure: 0 }),
               ...mods,
             }),
           ),
@@ -33263,172 +33754,20 @@ export function installDom(
         return go;
       }
       case 'mousedown':
-      case 'mouseup': {
-        // the DOM's mask bit of the DOM's button
-        const bit = [1, 4, 2, 8, 16][e.button ?? 0] ?? 0;
-        const down = e.type === 'mousedown';
-        // a press of a button held is a release that was never told, off
-        // the document: the earlier press is over
-        if (down && pointer.held & bit) {
-          pointer.held = 0;
-          pointer.pending = null;
-          pointer.quiet = false;
-        }
-        const wasHeld = pointer.held;
-        pointer.held = down ? wasHeld | bit : wasHeld & ~bit;
-        const at = {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          view: G,
-          detail: e.detail ?? 1,
-          clientX: (e.x ?? 0) - v.scrollX,
-          clientY: (e.y ?? 0) - v.scrollY,
-          button: e.button ?? 0,
-          buttons: pointer.held,
-          ...mods,
-        };
-        // a release of a button the document never saw pressed is a
-        // mouse's alone
-        if (!down && !(wasHeld & bit)) {
-          return dispatch(target, trusted(new MouseEvent(e.type, at)));
-        }
-        takeCapture(at);
-        const to = pointer.target ?? target;
-        // the first button pressed is a pointerdown and the last released
-        // a pointerup; a button between is a move (Pointer Events 3, 4.1.3)
-        const first = down ? !wasHeld : !pointer.held;
-        const type = first
-          ? down
-            ? 'pointerdown'
-            : 'pointerup'
-          : 'pointermove';
-        const pointerGo = dispatch(
-          to,
-          trusted(
-            new PointerEvent(type, {
-              ...at,
-              cancelable: type !== 'pointermove',
-            }),
-          ),
-        );
-        // a cancelled pointerdown keeps the mouse's events back until the
-        // release, and its default with them (11.2), as Chrome has it
-        if (type === 'pointerdown') pointer.quiet = !pointerGo;
-        const mouseGo = pointer.quiet
-          ? true
-          : dispatch(to, trusted(new MouseEvent(e.type, at)));
-        if (type === 'pointerup') {
-          // the capture is let go once the buttons are (10.2)
-          pointer.quiet = false;
-          pointer.pending = null;
-          takeCapture(at);
-        }
-        // a press and its release outside the open popovers and dialogs
-        // dismiss them (HTML 6.12, 4.11.4)
-        if (type === 'pointerdown' || type === 'pointerup') {
-          lightDismiss(type, to, at.clientX, at.clientY);
-        }
-        // a press in an editing host focuses it and puts the caret there,
-        // which leaves nothing for the document's own selection to do
-        if (
-          type === 'pointerdown' &&
-          (e.button ?? 0) === 0 &&
-          pointerGo &&
-          mouseGo &&
-          editForPress(to, at.clientX, at.clientY)
-        ) {
-          return false;
-        }
-        return pointerGo && mouseGo;
-      }
-      case 'mousemove': {
-        const at = {
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-          view: G,
-          clientX: (e.x ?? 0) - v.scrollX,
-          clientY: (e.y ?? 0) - v.scrollY,
-          button: 0,
-          // a move's own buttons are none on macOS: the presses told are
-          buttons: (e.buttons ?? 0) | pointer.held,
-          ...mods,
-        };
-        takeCapture(at);
-        // a captured pointer is over the element that took it, for its
-        // moves and its boundary events alike (10.1)
-        target = pointer.target ?? target;
-        const was = hovered?.isConnected ? hovered : null;
-        if (was !== target) {
-          // out of the one, over the other, and left and entered every
-          // element between them and the nearest both are in, which hear
-          // it without bubbling
-          const elementsUp = (n: Any): Any[] => {
-            const out: Any[] = [];
-            for (let at = n; at && at.nodeType === 1; at = at.parentNode) {
-              out.push(at);
-            }
-            return out;
-          };
-          const left = was ? elementsUp(was) : [];
-          const entered = elementsUp(target);
-          const both = new Set(left.filter((n) => entered.includes(n)));
-          const leaving = left.filter((n) => !both.has(n));
-          const entering = entered.filter((n) => !both.has(n)).reverse();
-          for (const [Kind, prefix] of [
-            [PointerEvent, 'pointer'],
-            [MouseEvent, 'mouse'],
-          ] as const) {
-            if (was) {
-              dispatch(
-                was,
-                trusted(
-                  new Kind(`${prefix}out`, { ...at, relatedTarget: target }),
-                ),
-              );
-            }
-            for (const n of leaving) {
-              dispatch(
-                n,
-                trusted(
-                  new Kind(`${prefix}leave`, {
-                    ...at,
-                    bubbles: false,
-                    cancelable: false,
-                    relatedTarget: target,
-                  }),
-                ),
-              );
-            }
-            dispatch(
-              target,
-              trusted(new Kind(`${prefix}over`, { ...at, relatedTarget: was })),
-            );
-            for (const n of entering) {
-              dispatch(
-                n,
-                trusted(
-                  new Kind(`${prefix}enter`, {
-                    ...at,
-                    bubbles: false,
-                    cancelable: false,
-                    relatedTarget: was,
-                  }),
-                ),
-              );
-            }
-          }
-          hovered = target;
-        }
-        const go = dispatch(
-          target,
-          trusted(new PointerEvent('pointermove', { ...at, button: -1 })),
-        );
-        if (pointer.quiet) return go;
-        return dispatch(target, trusted(new MouseEvent('mousemove', at)));
-      }
-      case 'wheel':
+      case 'mouseup':
+        return POINTERS.press(e, target, mods);
+      case 'mousemove':
+        return POINTERS.move(e, target, mods);
+      // what is under a pointer that stayed where it was changed, and the
+      // pointer left the document
+      case 'mouseover':
+        POINTERS.under(e, target);
+        return true;
+      case 'mouseleave':
+        POINTERS.left(e, target, mods);
+        return true;
+      case 'wheel': {
+        const v = viewport();
         return dispatch(
           target,
           trusted(
@@ -33446,8 +33785,10 @@ export function installDom(
             }),
           ),
         );
-      case 'contextmenu':
-        return dispatch(
+      }
+      case 'contextmenu': {
+        const v = viewport();
+        const go = dispatch(
           target,
           trusted(
             new PointerEvent('contextmenu', {
@@ -33455,36 +33796,71 @@ export function installDom(
               cancelable: true,
               composed: true,
               view: G,
-              clientX: (e.x ?? 0) - v.scrollX,
-              clientY: (e.y ?? 0) - v.scrollY,
+              clientX: Math.floor((e.x ?? 0) - v.scrollX),
+              clientY: Math.floor((e.y ?? 0) - v.scrollY),
+              screenX: e.screenX,
+              screenY: e.screenY,
               button: 2,
-              buttons: 2,
+              buttons: POINTERS.held(),
+              ...(e.detail === 0
+                ? { pointerId: -1 }
+                : POINTERS.fields(POINTERS.held())),
               ...mods,
             }),
           ),
         );
+        // the menu that opens takes the release, which is told to nobody
+        if (go) POINTERS.menuOpened();
+        return go;
+      }
       case 'keydown':
       case 'keyup': {
-        const go = dispatch(
+        const code = String(e.code ?? '');
+        const key = String(e.key ?? '');
+        const at = {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: G,
+          key,
+          code,
+          location: keyLocationOf(code),
+          repeat: !!e.repeat,
+          ...mods,
+        };
+        const keyCode = keyCodeOf(key, code);
+        let go = dispatch(
           target,
-          trusted(
-            new KeyboardEvent(e.type, {
-              bubbles: true,
-              cancelable: true,
-              composed: true,
-              view: G,
-              key: e.key,
-              code: e.code,
-              ...mods,
-            }),
-          ),
+          trusted(new KeyboardEvent(e.type, { ...at, keyCode })),
         );
+        if (e.type === 'keyup') return go;
         // Escape the page let be is a close request, at the last popover or
         // dialog to have opened (HTML 7.7.2)
-        if (go && e.type === 'keydown' && e.key === 'Escape') closeRequest();
+        if (go && key === 'Escape') closeRequest();
+        // a key that makes a character says so (UI Events, Legacy Key and
+        // Mouse Event Attributes): a chord makes none
+        if (go && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const text = key === 'Enter' ? '\r' : key;
+          if ([...text].length === 1 && key !== '\u007f') {
+            const charCode = text.codePointAt(0)!;
+            go = dispatch(
+              target,
+              trusted(
+                new KeyboardEvent('keypress', {
+                  ...at,
+                  key: key === 'Enter' ? 'Enter' : text,
+                  keyCode: charCode,
+                  charCode,
+                }),
+              ),
+            );
+          }
+        }
+        if (!go) return false;
         // a key typed in an editing host is an edit of it, and its own
-        if (go && e.type === 'keydown' && editForKey(target, e)) return false;
-        return go;
+        if (editForKey(target, e)) return false;
+        // and in a field the widget's, once the page has been told of it
+        return fieldKey(target, e);
       }
       case 'copy':
       case 'cut':
@@ -33500,33 +33876,75 @@ export function installDom(
         const go = dragEvent(e.type, target, e, mods);
         // the pointer is the drag's from here, and no release of it will be
         // told (Pointer Events 3, 5.1.2)
-        if (e.type === 'dragstart' && go) {
-          const at = pointer.target ?? target;
-          for (const type of ['pointercancel', 'pointerout', 'pointerleave']) {
-            dispatch(
-              at,
-              trusted(
-                new PointerEvent(type, {
-                  bubbles: type !== 'pointerleave',
-                  composed: type !== 'pointerleave',
-                }),
-              ),
-            );
-          }
-          pointer.held = 0;
-          pointer.pending = null;
-        }
+        if (e.type === 'dragstart' && go) POINTERS.dragged(target);
         return go;
       }
-      case 'input':
+      case 'input': {
+        const typed = fieldTyping;
+        fieldTyping = null;
         return dispatch(
           target,
-          trusted(new InputEvent('input', { bubbles: true, composed: true })),
+          trusted(
+            new InputEvent('input', {
+              bubbles: true,
+              composed: true,
+              view: G,
+              inputType: typed?.inputType ?? '',
+              data: typed?.data ?? null,
+            }),
+          ),
         );
+      }
+      // text still being typed (UI Events 5.7): a composition's own events,
+      // and what it writes into a field or a host
+      case 'compositionstart':
+      case 'compositionupdate':
+      case 'compositionend': {
+        const data = String(e.data ?? '');
+        if (e.type === 'compositionupdate') {
+          dispatch(
+            target,
+            trusted(
+              new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: false,
+                composed: true,
+                view: G,
+                inputType: 'insertCompositionText',
+                data,
+                isComposing: true,
+              }),
+            ),
+          );
+        }
+        if (e.type === 'compositionend') {
+          fieldTyping = { inputType: 'insertCompositionText', data };
+        }
+        return dispatch(
+          target,
+          trusted(
+            new CompositionEvent(e.type, {
+              bubbles: true,
+              cancelable: e.type === 'compositionstart',
+              composed: true,
+              view: G,
+              data,
+            }),
+          ),
+        );
+      }
       case 'change':
         return dispatch(
           target,
           trusted(new Event('change', { bubbles: true })),
+        );
+      // a selection a press is about to start (Selection API 4.2)
+      case 'selectstart':
+        return dispatch(
+          target,
+          trusted(
+            new Event('selectstart', { bubbles: true, cancelable: true }),
+          ),
         );
       // text the user selected in a field (HTML 4.10.5.2.10)
       case 'select':
@@ -33599,6 +34017,12 @@ export function installDom(
       default:
         return true;
     }
+  });
+
+  // the reader's selection moved: reading it tells it to anything listening
+  entry('__selectionMoved', () => {
+    void selection._range;
+    return true;
   });
 
   // a timer the host's clock fired
@@ -34360,9 +34784,15 @@ export function installDom(
             if (key === 'parent' || key === 'top') return window;
             if (key === 'location') {
               return {
-                set href(_v: Any) {},
-                replace() {},
-                assign() {},
+                set href(v: Any) {
+                  call('navigateTop', str(v));
+                },
+                replace(v: Any) {
+                  call('navigateTop', str(v));
+                },
+                assign(v: Any) {
+                  call('navigateTop', str(v));
+                },
               };
             }
             if (Object.prototype.hasOwnProperty.call(allowed, key)) {
@@ -34378,8 +34808,11 @@ export function installDom(
             }
             throw blocked();
           },
-          set(_t, key) {
-            if (key === 'location') return true;
+          set(_t, key, value) {
+            if (key === 'location') {
+              call('navigateTop', str(value));
+              return true;
+            }
             throw blocked();
           },
           has: (_t, key) =>

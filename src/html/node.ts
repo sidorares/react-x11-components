@@ -325,6 +325,7 @@ import {
   transformed,
 } from './css/transform.js';
 import type { Matrix } from './css/transform.js';
+import { areaAt as imageAreaAt } from './image-map.js';
 import {
   ViewTransitionRun,
   animationsEnd,
@@ -620,6 +621,9 @@ export interface HtmlViewProps {
    *  windows answer may have moved by — the pane's, which the element is
    *  laid out and painted again for, and an `<iframe>`'s box in it. */
   onPaint?: () => void;
+  /** The colour scheme of what it is embedded in, for a frame's document,
+   *  which a root in another is drawn on an opaque canvas against. */
+  embedderScheme?: 'light' | 'dark';
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -1345,6 +1349,7 @@ export class HtmlViewNode extends Node {
   /** The same of what a host mounts over the embedded elements. */
   private _embeddedLaid: EmbeddedRect[] = [];
   private _embedded: EmbeddedRect[] = [];
+  private _embeddedCovers = new Map<Element, Cover[]>();
   private _mounted: ReadonlySet<Element> = new Set();
   /** Each video's size once its player knows it, in CSS pixels: its
    *  intrinsic size from then on, where its poster's was (HTML 4.8.11.6). */
@@ -1585,6 +1590,7 @@ export class HtmlViewNode extends Node {
     pseudo: 0 | 1 | 2 = HOVER_PSEUDO_NONE,
   ): void {
     this._geometry += 1;
+    this._onlyFaces = false;
     if (stale >= Stale.Boxes) {
       const only = stale === Stale.Boxes ? restyle : null;
       const seeded = only !== null && seeds !== null;
@@ -5534,7 +5540,7 @@ export class HtmlViewNode extends Node {
    *  player with them, and what is left to cut it. Null where none is. */
   private _fixedOver(
     tree: BoxTree,
-    laid: MediaRect,
+    laid: MediaRect | EmbeddedRect,
     fixed: readonly Box[] | undefined,
   ): { over: Rect; cutting: readonly Box[] } | null {
     const el = laid.element;
@@ -5547,7 +5553,9 @@ export class HtmlViewNode extends Node {
       this._fixedShift(),
       this._viewportInDocument(),
       this._scale,
-      MAX_COVERS - (this._covers.get(el)?.length ?? 0),
+      MAX_COVERS -
+        (this._covers.get(el) ?? this._embeddedCovers.get(el) ?? NO_COVERS)
+          .length,
     );
     if (!covers.length) return null;
     this._fixedCovers.set(el, covers);
@@ -5564,8 +5572,9 @@ export class HtmlViewNode extends Node {
   private _reportEmbedded(): void {
     const tree = this._tree;
     if (!tree || !this._props().onEmbedded) return;
+    this._embeddedCovers = new Map();
     this._embeddedLaid = tree.embedded.length
-      ? embeddedRectsOf(tree, this._scale)
+      ? embeddedRectsOf(tree, this._scale, this._embeddedCovers)
       : [];
     this._publishEmbedded();
   }
@@ -5576,13 +5585,16 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const report = this._props().onEmbedded;
     if (!tree || !report) return;
-    const rects = this._embeddedLaid.map((laid) =>
-      this._viewportRect(
+    const rects = this._embeddedLaid.map((laid) => {
+      const over = FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree);
+      const drawn = this._fixedOver(tree, laid, over);
+      return this._viewportRect(
         laid,
-        FIXED_OVER.get(laid) ?? FIXED_BOXES.get(tree),
+        drawn?.cutting ?? over,
         HELD_OVER.get(laid),
-      ),
-    );
+        drawn?.over,
+      );
+    });
     if (sameEmbedded(rects, this._embedded)) return;
     this._embedded = rects;
     report(rects);
@@ -5670,7 +5682,7 @@ export class HtmlViewNode extends Node {
     at: { x: number; y: number },
   ): void {
     const tree = this._tree;
-    const laid = this._covers.get(element);
+    const laid = this._covers.get(element) ?? this._embeddedCovers.get(element);
     const fixed = this._fixedCovers.get(element);
     const covers = fixed ? inPaintOrder([...(laid ?? []), ...fixed]) : laid;
     const c = ctx as PaintContext;
@@ -7243,7 +7255,7 @@ export class HtmlViewNode extends Node {
    * script has just put in has its faces in the set.
    */
   fontFaces(): DocumentFontFace[] {
-    this._prepare(this.abs.width || 1);
+    if (!this._onlyFaces) this._prepare(this.abs.width || 1);
     return this._webFonts.faces();
   }
 
@@ -7251,7 +7263,7 @@ export class HtmlViewNode extends Node {
    *  `check()` find them (`WebFonts.match`), styled first as `fontFaces`
    *  is. */
   matchFonts(query: FontQuery, text: string): FontMatch {
-    this._prepare(this.abs.width || 1);
+    if (!this._onlyFaces) this._prepare(this.abs.width || 1);
     return this._webFonts.match(
       query.families,
       query.weight,
@@ -7293,9 +7305,18 @@ export class HtmlViewNode extends Node {
    *  sheet with an `@font-face` is, it changes what every family reads. */
   scriptFontsChanged(id: number, added: boolean): void {
     if (!this._webFonts.addFace(id, added)) return;
+    const only = this._onlyFaces || this._stale === Stale.Nothing;
     this._sheetsRead = null;
     this._invalidate(Stale.Everything);
+    this._onlyFaces = only;
   }
+
+  /** All that has changed since the document was styled is what faces a
+   *  script has put among its fonts, which `document.fonts` reads from where
+   *  they went (`WebFonts.addFace`), so reading it styles nothing for them:
+   *  every read after an add styled the whole document, one read a face
+   *  where a page reads between them. */
+  private _onlyFaces = false;
 
   /** What `svg-geometry.ts` asks of the document: an element's text and
    *  where a drawing was laid out, in CSS pixels. */
@@ -8174,6 +8195,96 @@ export class HtmlViewNode extends Node {
     return this._drawnAt(x, y, this._scrolledOrigin());
   }
 
+  /** Where the pointer last was over the document, a logical window point,
+   *  or null where it has left. */
+  private _pointerPoint: { x: number; y: number } | null = null;
+  notePointer(x: number | null, y = 0): void {
+    this._pointerPoint = x === null ? null : { x, y };
+  }
+  /** What is under a pointer that may not have moved. */
+  pointerElement(): Element | null {
+    const at = this._pointerPoint;
+    return at ? this.elementAtPoint(at.x, at.y) : null;
+  }
+  /** What was under it as the document was last laid out, which asks no
+   *  layout: a page's first listener for a move is often in a script the
+   *  document is still being parsed around. */
+  pointerDrawn(): Element | null {
+    const at = this._pointerPoint;
+    return at ? this._drawnAt(at.x, at.y, this._scrolledOrigin()) : null;
+  }
+  hoverAgain(): void {
+    const at = this._pointerPoint;
+    if (at) this.setHover(at.x, at.y);
+  }
+  /** What holds the pointer's capture, which `:hover` goes with. */
+  private _capturing: Element | null = null;
+  hoverOn(element: Element | null): void {
+    this._capturing = element;
+    this.hoverAgain();
+  }
+
+  /**
+   * A point of the page, logical pixels from the document's corner, as an
+   * element's own (`MouseEvent`): `offset` from its padding edge in the
+   * coordinates it was laid out in, through every matrix around it (CSSOM
+   * View 7.1); `layer` less where the nearest box of a layer of its own is
+   * drawn, in the page's pixels, as Chromium's `layerX` is. Null where it
+   * has no box.
+   */
+  pointIn(
+    how: 'offset' | 'layer',
+    element: Element,
+    x: number,
+    y: number,
+  ): [number, number] | null {
+    this._settle();
+    this._followViewport();
+    const tree = this._tree;
+    const box = tree ? this._ownBoxOf(tree, element) : null;
+    if (!tree || !box) return null;
+    const s = this._scale;
+    if (how === 'layer') {
+      for (let at: Box | null = box; at; at = at.parent) {
+        const style = at.style;
+        if (
+          at.parent &&
+          (style.position !== 'static' ||
+            placedMatrix(at) ||
+            style.opacity < 1 ||
+            isScroller(at))
+        ) {
+          const corner = this._drawnRect(tree, at, true);
+          if (!corner) return null;
+          const placed = this._moveToViewport(at, corner);
+          return [x - placed.x, y - placed.y];
+        }
+      }
+      return [x, y];
+    }
+    const shift = this._fixedShift(this._scrolledOrigin());
+    const moved = shift && drawnAtViewport(box);
+    let px = x * s - (moved ? shift.x : 0);
+    let py = y * s - (moved ? shift.y : 0);
+    const matrices: ReturnType<typeof placedMatrix>[] = [];
+    for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+      const matrix = placedMatrix(at);
+      if (matrix) matrices.push(matrix);
+    }
+    for (let i = matrices.length - 1; i >= 0; i -= 1) {
+      const back = invert(matrices[i]!);
+      if (!back) return null;
+      [px, py] = mapPoint(back, px, py);
+    }
+    const fragments = this._fragmentsOf(tree, box);
+    const corner = fragments?.first ?? box;
+    const inline = box.kind === 'inline' || box.kind === 'text';
+    return [
+      (px - corner.x - (inline ? 0 : box.borderLeft)) / s,
+      (py - corner.y - (inline ? 0 : box.borderTop)) / s,
+    ];
+  }
+
   /**
    * The deepest element under a logical window point as the document was
    * last laid out — what the hover asks (`setHover`). Laid out first, each
@@ -8200,7 +8311,24 @@ export class HtmlViewNode extends Node {
       undefined,
       this._fixedShift(origin),
     );
-    if (hit) return hit;
+    if (hit) {
+      // an image with a map is its areas (HTML 4.8.14), where a point of it
+      // is in one, and otherwise the image
+      if (tagOf(hit) === 'img' && attr(hit, 'usemap')) {
+        const box = this._ownBoxOf(tree, hit);
+        if (box) {
+          const s = this._scale;
+          const area = imageAreaAt(
+            hit,
+            this.document,
+            (local.x - box.x - box.borderLeft - box.padLeft) / s,
+            (local.y - box.y - box.borderTop - box.padTop) / s,
+          );
+          if (area) return area;
+        }
+      }
+      return hit;
+    }
     // past what the document lays out, but inside the element, the root
     // element's: it paints the canvas, which is all of the viewport
     // (CSSOM View 5, `elementFromPoint`) — a press there is outside every
@@ -8367,7 +8495,7 @@ export class HtmlViewNode extends Node {
     // flat tree (Selectors 4, 9.2): a host and a slot are hovered over
     // what is drawn in them
     const chain: Element[] = [];
-    let node = this._drawnAt(x, y);
+    let node = this._capturing ?? this._drawnAt(x, y);
     while (node) {
       chain.push(node);
       node = flatParentOf(node);
@@ -14136,11 +14264,24 @@ export class HtmlViewNode extends Node {
   /** A press on a bar: its thumb taken to drag, as core's pane takes its
    *  own, or its track paging toward the press; anywhere else, the
    *  selection's, where it can start one (`startsSelectionAt`). */
+  /** A page turned the press under way's selection down (`selectstart`). */
+  private _noSelection = false;
+  selectsNothing(): void {
+    this._noSelection = true;
+  }
+  /** What core's selection is, as cheaply as it can be said. */
+  selectionKey(): string {
+    const range = this.selectionRange;
+    return range ? `${range.start},${range.end}` : '';
+  }
+
   override defaultMouseDown(ev: X11MouseEvent): void {
     const hit = ev.button === 1 ? this._barAt(ev.x, ev.y) : null;
     if (!hit) {
       this.interactive?.pressLanded(this.elementAtPoint(ev.x, ev.y));
-      if (ev.button !== 1 || this.startsSelectionAt(ev.x, ev.y)) {
+      const refused = this._noSelection;
+      this._noSelection = false;
+      if (ev.button !== 1 || (!refused && this.startsSelectionAt(ev.x, ev.y))) {
         super.defaultMouseDown?.(ev);
       }
       return;
@@ -14172,6 +14313,10 @@ export class HtmlViewNode extends Node {
     const drag = this._barDrag;
     if (!drag) {
       super.defaultMouseDrag?.(ev);
+      // a press on the document holds the pointer, and core leaves the
+      // hover to the holder
+      this._pointerAt = { x: ev.x, y: ev.y };
+      this.setHover(ev.x, ev.y);
       return;
     }
     const bar = this._barsOf(drag.box).find((b) => b.axis === drag.axis);
@@ -14395,7 +14540,7 @@ export class HtmlViewNode extends Node {
   override opaqueRect(): Rect | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
-    if (!tree || !opaqueCanvas(tree)) return null;
+    if (!tree || !opaqueCanvas(tree, this._props().embedderScheme)) return null;
     this._promisedOpaque = true;
     return this.abs;
   }
@@ -15147,6 +15292,7 @@ export class HtmlViewNode extends Node {
       // the root's background covers the whole element, not only the
       // document: an element grown past its content is canvas too
       canvas: this.abs,
+      embedderScheme: this._props().embedderScheme,
       viewport: this._viewport() ?? undefined,
       scale: this._scale,
       damage,
@@ -16448,6 +16594,8 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
   return true;
 }
 
+const NO_COVERS: readonly Cover[] = [];
+
 function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -16455,6 +16603,7 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
     const q = b[i];
     if (
       p.element !== q.element ||
+      p.colorScheme !== q.colorScheme ||
       p.x !== q.x ||
       p.y !== q.y ||
       p.width !== q.width ||
@@ -16466,7 +16615,8 @@ function sameEmbedded(a: EmbeddedRect[], b: EmbeddedRect[]): boolean {
       p.zoom !== q.zoom ||
       p.atViewport !== q.atViewport ||
       p.held !== q.held ||
-      !sameClip(p.clip, q.clip)
+      !sameClip(p.clip, q.clip) ||
+      !sameClip(p.over, q.over)
     ) {
       return false;
     }

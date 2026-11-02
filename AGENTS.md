@@ -3559,6 +3559,26 @@ runs from the request whether or not anyone reads it, so **anything new that
 keeps a response waiting calls `hold()`**, which the save dialog does, or
 it is given up as stalled while the user is choosing.
 
+**An encoding is one name, and its tables load only where one is used.**
+What a label names and which encoding a document is in is `encoding.ts`,
+which `<Html>` imports whatever it shows, so it holds no table. The decoders
+and encoders are `encoding-codecs.ts`, reached by a dynamic `import()`
+(`loadEncodings`), and statically from the script runtime's chunk, since an op
+is synchronous. `test/treeshake.test.ts` fails if `<Html>` reaches them. They
+are written from the standard and read off its indexes rather than being the
+runtime's, for reasons that are facts and not tastes: nothing encodes anything
+but UTF-8, and ICU's `euc-kr` and `big5` are not the standard's, so an inverse of
+them would have been wrong the same way. Four things are load-bearing. **The
+tables are written by `scripts/encoding-tables.mjs` from the standard's own
+JSON, and never by hand.** **Anything sync that decodes a legacy encoding
+awaits `readyFor` first**, in an async path before it, since `decodeInEncoding`
+falls to the runtime's decoder without them. **A UTF-8 path stays as it was**:
+a query, a form and a document in UTF-8 touch none of this, and a page's UTF-8
+`TextDecoder` is the realm's own, which nearly every decoder a page makes is.
+And **an op's answer that a page's bytes can start is marked** (`textDecode`,
+`=`): an answer starting with U+0001 is a host error, so a byte 1 decoded came
+out as a `DOMException` with no message.
+
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
 entry list, encodes it and resolves the action, and the host decides
@@ -3611,6 +3631,51 @@ is a page's, and keeps the focus. What the document turns down of a press
 goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
 `user-select: none` starts no selection and moves the focus in all three
 engines.
+
+**The mouse is a pointer to a page, and one object says what it is over**
+(`scripts/pointers.ts`, over the interfaces in `scripts/ui-events.ts`). A
+press, a release and a move go through the steps Chromium's
+`PointerEventManager` has, in its order, which is what WPT holds a browser to:
+the capture changes hands, the pointer's boundary events and then the mouse's
+go to what is under it now, then its event and the mouse's. Five things are
+load-bearing. **A move nothing listens for is not told** (`noteHeard`,
+`movesHeard`, `MOVE_EVENTS`): `elementAtPoint` settles what a layout owes, so
+told, every move of a page with scripts laid it out. The first listener is
+answered what the pointer is over, so it hears no `enter` it missed. Anything
+new that needs moves told (a capture does) calls `noteHeard`, and anything new
+that listens by a route other than `addEventListener` or `activateHandler`
+tells it too. **What took an element out is the host's to see**
+(`_pointerLost`, `pointerChain`): a removal and a return in one op leave
+`isConnected` true, and Chromium has moved what the pointer is over to the
+parent by then, so `follow()` asks by `treeEpoch`, and `pointerOver` stays in
+`KEEPS_LISTS`, or a pointer event moves the count that says to ask. **A chain
+is the flat tree's, and a removal goes by the DOM's**: a slot taken out leaves
+what it held in the chain. **An attribute of a user's event is a `_` field the
+trusted path writes**, in `ui-events.ts`, and the constructor is a page's:
+what a page reads of a mouse (`pointerId`, `pointerType`, `isPrimary`,
+`persistentDeviceId`) comes from `fields()` and never from a default. A
+`PointerEvent` from `new` has no pointer, and `el.click()`'s `pointerId` is -1.
+And **a mouse's coordinates are floored and a pointer's are not**, and both
+carry the page point they were told at (`_pageX`), since a scroll between the
+event and a read does not move it. `MouseEvent.offsetX` is worked out as it is
+asked (`pointIn`), since nearly no event is.
+
+**An event's path is worked out where the tree is** (`scripts/event-path.ts`,
+DOM 2.9): one op answers the whole of it, every step's shadow-adjusted target
+and retargeted `relatedTarget`, where an op a level was `parentNode` per node
+and no slot, no retargeting and no closed tree. `invoke` takes a step and which
+of the two passes it is in, since a target runs its capturing listeners first.
+**Anything new that dispatches goes through `dispatch`, or `runPath` with steps
+of its own**, as IndexedDB's `fireAt` does: nothing else keeps `target`,
+`composedPath()` and `window.event` true. A step's `seen` is what its listeners
+hear it as, the window for `windowTarget`.
+
+**A key is told to a page before the widget types it, and the widget's `input`
+says what it did** (`fieldKey`, `fieldTyping`). The realm works out what a key
+would do to a field, as `beforeinput`'s `inputType` and `data`, and leaves the
+edit to core; the `input` the widget's change raises takes them. A composition
+is core's own three events, told through the root's capture phase, which is a
+key's route.
 
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
@@ -4459,6 +4524,28 @@ closes a way out a DOM binding opens by accident:
   of these. A page's request is made a hop at a time in `_fetchFor`, so **anything
   new a request owes at a redirect goes in that loop**, and a preflight in
   `_preflight`, whose cache is by the origin asked in.
+- **A sandbox is flags on the host, by the document** (`sandbox.ts`,
+  `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
+  goes by a document's origin holds. Six things are load-bearing. **`'null'` is
+  never another `'null'`**: anything new that compares two origins treats an
+  opaque one as no other (`_sameOrigin`, `sameOrigin` in `popups.ts`, `takeNode`),
+  and anything keyed by origin keys an opaque one apart, as `BroadcastChannel`'s
+  does, or every sandbox shares one store. **What a sandbox's address says is
+  not its origin**, so anything new that reads a document's origin asks the host
+  and never `location.origin`, which keeps the address's as HTML has it; a blob
+  URL made in a sandbox is `blob:null`, since a worker's host has its address to
+  go by and nothing else, and `workerStart` holds an address to the document's
+  origin, or a worker comes out at the page's. **What a frame
+  loads asks `_frameSandbox` as it loads**, and of the document the frame is in
+  (`_ownerOf`), never of `this`: a frame's document with no realm has its frames
+  loaded by a host that is no sandbox's. **A request a sandbox makes says so**
+  (`opaqueOrigin`), since a frame's `client` is its address, which `HtmlNetwork`
+  takes `Origin` and `same-origin` cookies from. And **anything new a sandbox
+  flag takes away is refused on the host**: `form.submit()` and a press both end
+  in `submit`, but a window has four ops and each asks. What a frame refuses is
+  read from the response before it is parsed, in `_refusedFraming`, of each
+  document around it (`_ancestorOrigins`): **anything new that shows a response
+  in a frame goes through it.**
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as
@@ -4997,6 +5084,20 @@ not before. Three things are load-bearing:
   thirty messages apart passed what a change is told as (`CHANGES_TOLD`),
   and every page of messages styled the whole document again.
 
+**A read of `document.fonts` styles nothing for what a script put in it.** A
+face a script adds changes what every family reads, so the document is styled
+again from the cascade up, once, at the next read of a style or a paint. The set
+is told at once (`WebFonts.addFace`), so its own reads go past that
+(`_onlyFaces`) and `has()` of a script's face asks no host. Excalidraw asks
+`has()` before it adds each of its 230 faces, in one task, and each styled the
+whole document: 7.4 seconds of ops in the task, 80 ms of the page's own, and a
+task that runs into `_spent`'s ceiling has every op after it refused, so its
+library, its fonts and its scene threw `TimeoutError` where nothing had run away.
+**An op a page can ask in a loop costs what it reads.** A read that brings the
+document up to date is worth it where a page asks once; the ceiling counts ops,
+because the runtime's watchdog cannot be paused, so a loop of them is what it
+finds.
+
 **A document's fonts are registered under names nothing else has.**
 `@font-face` faces go through `onResource` as `kind: 'font'` and into
 react-x11's font manager with `loadFont` — the application's manager, so
@@ -5501,6 +5602,19 @@ tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
 `styleFor`, as an inline root has them from its box. So `svg.ts` imports
 the cascade, and the cascade must not import `svg.ts` back — which is why
 `svgSizeHint` lives in `cascade.ts`.
+
+**A colour no context reads is worked out in the drawing's copy**
+(`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
+it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so
+`color()`, `oklch()`, `color-mix()` and `light-dark()` in an attribute or a
+`style` painted nothing, where a rule's reach it worked out already
+(`css/shapes.ts`). Figma writes each colour twice,
+`style="fill:#2E2E2E;fill:color(display-p3 …)"`, so a browser with no P3 keeps
+the first: tldraw's logo is a mask of such a drawing and was not there. What
+comes to no colour is dropped, as CSS drops it, and the earlier one stands.
+**Anything new a drawing can paint with joins `COLOUR_PROPERTIES`**, and the scheme
+a `light-dark()` picks by is in `keptAs`, since a raster is kept by what it was
+drawn from.
 
 **A `<use>`'s copy is matched in a tree of its own.** A selector sees
 nothing above the element the `<use>` names and nothing beside it, and the
@@ -6672,6 +6786,16 @@ holding an absolute box. Lifting those out takes laying them apart, a line at
 a time, for a box that moves nowhere, so one still goes under an absolute box
 before it, where all three engines draw it over.
 
+**A template's content is one list with the template.** The parser and
+`innerHTML` put what a template holds in its `children`, which no page walks,
+and `content` is a fragment over that same array (`templateContent`), made the
+first time a page asks. So the array is never replaced, only changed in place,
+and what reads a template — its `innerHTML`, a serialization of what it is in, a
+clone — reads what a page left in its content. Made as a copy, it was what the
+template held the first time, and from the second time on Vue moved nothing out
+of the one `<template>` it keeps for its static trees. **Anything new that puts
+a template's children somewhere else takes `content` with it.**
+
 **A shadow tree is built where a browser's parser builds it, and drawn
 through the flat tree.** The handler attaches a declarative shadow root as
 the parser meets its template (`Handler._shadowRoot` in `dom.ts`), so the
@@ -6697,6 +6821,16 @@ place asks, so one that tests the pointer or the focus builds the boxes
 again on a change of it (`Cascade._noteEdge`); and they are compiled as the
 sheets are read, so the cascade's css-select adapter exists before the
 first sheet does.
+
+**A rule's text stands alone.** A `<style>`'s rules are kept as text and
+written back as the element's text, one after another (`_writeSheets`), and a
+constructed sheet's are joined the same way, where a browser keeps rules parsed
+and what one leaves open ends with it. So `cssRulesOf` closes what a rule leaves
+open in its text: a string, a comment, its brackets. **Anything new that keeps a
+rule's text goes through `cssRulesOf`**, or a rule with a broken string holds
+every rule after it with no error anywhere: emotion inserts Grafana's global
+styles a rule at a time, one had a form feed in a string, and the 246 rules
+after it were lost, `.grafana-app` among them, so no dashboard had a height.
 
 **A sheet a shadow root adopts is the tree's last sheet, and the host has it
 once.** `root.adoptedStyleSheets` is the document's array (`adoptedArray`,
@@ -6922,6 +7056,18 @@ it was cut 100px below the bar, more of it blank the further it scrolled
 up. **Anything new that reads what a box draws asks `maskShows` where the
 box is masked**, or takes the box for its bounds; it answers for the box in
 its own plane, so one drawn through a matrix is taken at its bounds still.
+
+**What a page puts over a frame is painted over its mount again**
+(`placementOf`'s `covering`, `_fixedOver`, `renderCovers`), as what it puts over
+a player is, where it kept the frame from being mounted at all. A video has a
+poster to fall back on and a frame has nothing, so JSFiddle's ad, in a corner of
+its result pane, left the pane blank. Two things differ from a player. **A
+frame takes presses**, so a press on the canvas is handed to the document
+(`coverOf`), which finds what is under the point: through to the frame, the
+ad's close button was never pressed. And a box that leaves no rectangle and
+cannot be a cover still refuses the frame, a page laid over it past
+`MAX_COVERS` among them: a frame under a page's modal is blank, where drawn
+over it, it would take the modal's presses.
 
 **A scale the same both ways is a rectangle a mount can stand for, and
 the mount is drawn at it** (`zoomBetween`, `evenScaleOf` in `paint.ts`). A
