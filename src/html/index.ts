@@ -198,6 +198,13 @@ export type {
   HtmlDownloadSource,
 } from './download.js';
 export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
+export { memoryNotifications, useHtmlNotifications } from './notifications.js';
+export type {
+  HtmlNotification,
+  HtmlNotificationEvents,
+  HtmlNotifications,
+  HtmlShownNotification,
+} from './notifications.js';
 export type {
   HtmlWebSocket,
   WebSocketConnectRequest,

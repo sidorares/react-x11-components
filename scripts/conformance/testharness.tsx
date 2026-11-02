@@ -67,12 +67,14 @@ import {
   HtmlSessionHistory,
   fakeMediaDevices,
   memoryClipboard,
+  memoryNotifications,
   useHtmlHandle,
 } from '../../src/html/index.js';
 import type {
   FakeMediaDevices,
   HtmlClipboard,
   HtmlHandle,
+  HtmlNotifications,
   HtmlPermissionState,
   HtmlProps,
   HtmlScripts,
@@ -290,6 +292,10 @@ interface Current {
    *  been given is `prompt`, and asking grants it, as a test run with
    *  nobody at the screen takes a browser's prompt as answered. */
   permissions: Record<string, HtmlPermissionState>;
+  /** What hears a permission set. */
+  watchers: Set<(name: string) => void>;
+  /** The notifications it shows. */
+  notifications: HtmlNotifications;
   /** The clipboard its page reaches, a fresh one for each test. */
   clipboard: HtmlClipboard;
 }
@@ -568,11 +574,16 @@ function Tab(props: {
       webRTC: network.webRTC,
       mediaDevices: page.media,
       clipboard: page.clipboard,
+      notifications: page.notifications,
       permissions: {
         state: (name) => page.permissions[name] ?? 'prompt',
         request: (name) => {
           page.permissions[name] ??= 'granted';
           return Promise.resolve(page.permissions[name]);
+        },
+        watch: (listener) => {
+          page.watchers.add(listener);
+          return () => page.watchers.delete(listener);
         },
       },
       fetch: (request, signal) => {
@@ -749,8 +760,11 @@ async function driver(what: string, body: string | null): Promise<string> {
         'set_permission() is not implemented by testdriver-vendor.js',
       );
     }
+    // a driver is across a socket, and a page's next microtask is before it
+    await wait(0);
     if (kind) current.media.setPermission(kind, state);
     current.permissions[name] = state;
+    for (const listener of current.watchers) listener(name);
     return '{}';
   }
   // the first page of a run starts its scripts while the window it is in
@@ -940,6 +954,8 @@ async function render(
     loaded: false,
     media: fakeMediaDevices(),
     permissions: {},
+    watchers: new Set(),
+    notifications: memoryNotifications(),
     clipboard: memoryClipboard(),
   };
   current = page;
@@ -1081,6 +1097,8 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     loaded: false,
     media: fakeMediaDevices(),
     permissions: {},
+    watchers: new Set(),
+    notifications: memoryNotifications(),
     clipboard: memoryClipboard(),
   };
   current = page;

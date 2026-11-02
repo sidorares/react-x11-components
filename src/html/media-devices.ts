@@ -268,6 +268,7 @@ export function idleSource(
  */
 export const NO_MEDIA_DEVICES: HtmlMediaDevices = {
   devices: () => Promise.resolve([]),
+  permission: () => 'denied',
   open: (deviceId) =>
     Promise.reject(
       mediaError(

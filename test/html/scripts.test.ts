@@ -2519,7 +2519,8 @@ test('navigator.permissions answers what a browser answers before it has asked, 
   );
   await waitFor(() => assert.notEqual(doc.text('out'), ''));
   assert.deepEqual(JSON.parse(doc.text('out')), [
-    ['notifications', 'prompt', true, null],
+    // nobody to ask, so nothing can be granted: `notification.test.ts`
+    ['notifications', 'denied', true, null],
     'TypeError',
     'TypeError',
     'TypeError',
