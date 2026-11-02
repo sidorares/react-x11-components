@@ -2516,6 +2516,16 @@ const PREFIXED_ALIASES: Record<string, string> = {
   '-epub-text-orientation': 'text-orientation',
 };
 
+/** Every name the cascade takes a declaration under, which is what a page
+ *  finds `in` a style: anything with a `case` is in one of these. */
+export function declaredProperties(): string[] {
+  return [
+    ...Object.keys(PREFIXED_ALIASES),
+    ...Object.keys(LOGICAL),
+    ...Object.keys(INHERIT_TARGETS),
+  ];
+}
+
 /**
  * Apply one declaration to a style, in place.
  *
