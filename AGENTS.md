@@ -3549,7 +3549,10 @@ what stands between a server's name and a path**: anything new that takes a name
 for a file goes through `downloadName` or `safeFilename`, never around them, and
 a host joins nothing else to a directory. `HtmlNetwork.document` hands over a
 second body with no limit on it (`whole`), lazily: **read `body` or `whole`,
-never both**, since both drain the one response.
+never both**, since both drain the one response. The clock on a stalled response
+runs from the request whether or not anyone reads it, so **anything new that
+keeps a response waiting calls `hold()`**, which the save dialog does, or
+it is given up as stalled while the user is choosing.
 
 **A form is a link it writes itself, and it sends nothing either.**
 `onSubmit` is `onLink` for a form: `src/html/form.ts` works out HTML's
@@ -7605,7 +7608,7 @@ to cancel, and would still be drawing what nobody will see. A tile comes back in
 buffer moved rather than copied; the one copy is out of the WebAssembly heap, since a
 buffer that is the heap's cannot be moved.
 
-Seven things are load-bearing.
+Nine things are load-bearing.
 
 - **The thread is ref'd only while an answer is due** (`ThreadEngine`). A listener
   for `message` refs a `Worker` again, so an `unref` before it holds the process
@@ -7635,6 +7638,18 @@ Seven things are load-bearing.
   on a macrotask**, as a thread does: answered in a microtask, that loop holds the thread
   from every timer, and the test hangs at 100% of a core where it should fail, with
   children a killed runner leaves spinning.
+- **What a paint draws is cut to the pass by hand** (`Pass`, `fillWithin`). Core's clip
+  is no bound on the pane: a claim beside it merges into one pass with it, as a toolbar's
+  text saying the new page does, and a pass over the window is not clipped at all. Drawn
+  whole, a tile that straddles the pane's edge lands on the toolbar and stays there, and
+  only with tiles on hand: a scroll onto new ground has none in that pass. **Anything new
+  a paint draws goes through it**, and a test of it reads outside the element
+  (`fenced`), since every pixel inside is right.
+- **A thumb is pinned where it was as well as where it is.** It moves against the
+  content, so the copy drags its image the other way, and core repairs only the places
+  it is told of. Pinned at the new place alone, a sliver of the old image stays at every
+  step. From the top of a document that image leaves the pane and nothing shows, so a
+  test of this scrolls from the middle.
 
 Everything `PdfViewNode` holds but `_handle` is about pages rather than PDFs, and the
 design for the next format moves it to a shared module when one arrives. Do not move it

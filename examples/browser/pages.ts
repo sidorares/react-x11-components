@@ -1,9 +1,10 @@
 // The pages the browser makes itself: the new-tab page, the ones that say a
 // page could not be shown, and the wrappers that turn a response that is not
 // HTML — plain text, an image, a page's own source — into a document `<Html>`
-// can render. Every one is HTML handed to the same component as a page from
-// the web, so it is styled with CSS like one, including the dark scheme,
-// which `<Html>` answers from the palette in force.
+// can render, where it takes no component of its own (`documents.ts`). Every
+// one is HTML handed to the same component as a page from the web, so it is
+// styled with CSS like one, including the dark scheme, which `<Html>` answers
+// from the palette in force.
 import { escapeHtml } from '../../src/html/index.js';
 
 export const HOME = 'about:home';

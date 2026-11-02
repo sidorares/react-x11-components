@@ -2698,16 +2698,31 @@ are there to save it with; `downloadSource(response, '')` makes the source. What
 to do about it is the host's: the example browser saves what says `attachment`
 and what is of a type it cannot show, and the tab stays on what it was showing.
 
+A source's `hold()` is for a host that will not read it yet, as one asking its
+user where to save it will not: the clock on a stalled response runs from the
+request, so without it a dialog left open for 30 seconds ends the download. The
+clock starts again as the body is first read. `file:` responses are read as
+they are asked for, so a large one is held to a document's limit only by what
+holds it.
+
 `downloadName` goes by the response's name, the attribute, the end of the URL
 and the type's extension, in that order, and `safeFilename` leaves a name that
 is safe to join to a directory: no path in it, no control characters, nothing
-that hides the file, whatever a server or a page said. `dispositionOf` reads
-RFC 6266, `filename*` over `filename`.
+that hides the file or disguises it, whatever a server or a page said. A
+right-to-left override and a slash that is only like one are taken out with the
+rest. `dispositionOf` reads RFC 6266, `filename*` over `filename`.
 
-The example browser writes into the user's Downloads folder, or
-`BROWSER_DOWNLOADS_DIR`, from the tab's own process, with a `.part` file until
-all of it has arrived, and draws a shelf along the bottom of its window with
-each one's progress and a Cancel and a Show in Folder. A tab closed with a
+The example browser asks where each file goes: a save dialog, shown by the
+browser's process, opens on the user's Downloads folder, or
+`BROWSER_DOWNLOADS_DIR`, starting on the cleaned name, numbered so that accepting
+it replaces nothing. A server's name is only that suggestion, nothing of the
+response is read until the dialog answers, and a dialog dismissed leaves no
+trace. Four asks may wait at once, and a page asking for more is refused.
+
+The tab's own process writes to the path chosen, with a `.part` file until all
+of it has arrived, so a file the user chose to replace stands until there is all
+of what replaces it. The browser draws a shelf along the bottom of its window
+with each one's progress and a Cancel and a Show in Folder. A tab closed with a
 download under way ends it, and the shelf says so. `showSaveFilePicker` is left
 out, as `showOpenFilePicker` is, so a tool that saves through it falls back to
 `<a download>`.

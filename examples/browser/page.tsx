@@ -105,6 +105,7 @@ import {
   canPlayMedia,
   decodeText as decode,
   dispositionOf,
+  downloadName,
   downloadSource,
   linkTarget,
   navigableFor,
@@ -143,6 +144,8 @@ import type {
   ResourceResult,
   ViewportOverflow,
 } from '../../src/html/index.js';
+import { MOST_PDF, kindOf, readAll, readJson, readXml } from './documents.js';
+import type { Viewer } from './documents.js';
 import { decodeIcon, iconCandidates } from './favicon.js';
 import { saveDownload } from './downloads.js';
 import type { DownloadState } from './downloads.js';
@@ -186,6 +189,14 @@ const VERTICAL_SCROLL_KEYS = new Set<number>([
 /** The developer tools' panels, loaded the first time a tab opens them:
  *  a tab that never does loads none of what they are made of. */
 const DevTools = lazy(() => import('./devtools/index.js'));
+
+/** What shows a document `<Html>` does not, loaded the first time a tab
+ *  shows one. */
+const DocumentViewer = lazy(() => import('./viewers.js'));
+
+/** How many downloads may wait for the user to say where they go, before a
+ *  page asking for more is refused: each is a dialog of its own. */
+const MOST_UNPLACED = 4;
 
 /** What a secondary press was on, which the page's menu is about. */
 interface MenuTarget {
@@ -405,6 +416,13 @@ export interface PageProps {
   onForgetPermissions(origin: string): void;
   /** Its notification was clicked: show the tab. */
   onBringForward(): void;
+  /** A download wants a place. A pane has no AppKit to show a panel from,
+   *  so the browser shows the save dialog, starting on `name`, and where the
+   *  user said comes back as `savePath`, under `id`. */
+  onSaveFile(id: string, name: string): void;
+  /** The last answer to `onSaveFile`: the path chosen, or null where the
+   *  dialog was dismissed. */
+  savePath?: { id: string; path: string | null } | null;
   /** A download's news: the browser draws its shelf from it. */
   onDownloadState(state: DownloadState): void;
   /** The downloads the shelf asked to have stopped, by id. */
@@ -469,6 +487,10 @@ interface Doc {
   baseUrl: string | null;
   /** Where it was loaded from, where a redirect ended. */
   url: string;
+  /** What shows it where `<Html>` does not (`viewers.tsx`), and what to call
+   *  it where it is saved from there. */
+  viewer?: Viewer;
+  filename?: string;
 }
 
 /** How many documents a tab keeps to show again as they were left, its
@@ -763,6 +785,8 @@ export default function Page(props: PageProps): ReactElement {
   const doc = shown?.seq ?? 0;
   const url = shown?.url ?? '';
   const page = docs.get(doc) ?? null;
+  const viewer = page?.viewer ?? null;
+  const tree = viewer?.kind === 'json' || viewer?.kind === 'xml';
   const handle = useHtmlHandle();
   const scroller = useRef<ScrollableNode | null>(null);
   const [hoverLink, setHoverLink] = useState<string | null>(null);
@@ -1345,18 +1369,46 @@ export default function Page(props: PageProps): ReactElement {
   // each one is stopped by the shelf or by this process's end.
   const saving = useRef(new Map<string, AbortController>());
   const saved = useRef(0);
+  // what is waiting for the user to say where it goes, and how many, counting
+  // those whose response has not come
+  const placing = useRef(new Map<string, (path: string | null) => void>());
+  const unplaced = useRef(0);
+  const placeOf = (id: string, name: string) =>
+    new Promise<string | null>((resolve) => {
+      placing.current.set(id, resolve);
+      live.current.onSaveFile(id, name);
+    });
   const save = (
     source: HtmlDownloadSource | Promise<HtmlDownloadSource>,
     id: string,
     controller: AbortController,
   ) => {
+    if (unplaced.current >= MOST_UNPLACED) {
+      controller.abort();
+      void Promise.resolve(source).catch(() => {});
+      setNotice('This page asked to save more files than can be answered.');
+      return;
+    }
+    unplaced.current += 1;
+    let placed = false;
+    const place = () => {
+      if (!placed) unplaced.current -= 1;
+      placed = true;
+    };
     saving.current.set(id, controller);
     void Promise.resolve(source)
-      .then((from) =>
-        saveDownload(id, from, controller.signal, (state) =>
+      .then(async (from) => {
+        // nothing is read until there is somewhere for it to go, and the
+        // user may take longer about that than a response may stall
+        from.hold?.();
+        const path = await placeOf(id, from.filename);
+        place();
+        // dismissed: the request goes, and nothing has been written
+        if (path === null) return controller.abort();
+        await saveDownload(id, from, path, controller.signal, (state) =>
           live.current.onDownloadState(state),
-        ),
-      )
+        );
+      })
       .catch((error: Error) =>
         live.current.onDownloadState({
           id,
@@ -1368,8 +1420,25 @@ export default function Page(props: PageProps): ReactElement {
           error: error.message,
         }),
       )
-      .finally(() => saving.current.delete(id));
+      .finally(() => {
+        place();
+        saving.current.delete(id);
+      });
   };
+  const savePath = props.savePath;
+  useEffect(() => {
+    if (!savePath) return;
+    placing.current.get(savePath.id)?.(savePath.path);
+    placing.current.delete(savePath.id);
+  }, [savePath]);
+  useEffect(
+    () => () => {
+      // nobody is left to answer for a page that went
+      for (const left of placing.current.values()) left(null);
+      placing.current.clear();
+    },
+    [],
+  );
   const nextDownload = () => {
     saved.current += 1;
     return `${process.pid}.${saved.current}`;
@@ -1436,6 +1505,17 @@ export default function Page(props: PageProps): ReactElement {
       controller,
     );
   };
+  /** Save what the tab shows, as it was served: the bytes of a PDF it has,
+   *  and anything else from the network again, with the page's cookies. */
+  const saveShown = () =>
+    onDownload({
+      url: withoutHash(url),
+      filename: page?.filename ?? '',
+      ...(viewer?.kind === 'pdf' && {
+        bytes: viewer.bytes,
+        type: 'application/pdf',
+      }),
+    });
   const cancelled = props.cancelDownloads;
   useEffect(() => {
     for (const id of cancelled ?? []) saving.current.get(id)?.abort();
@@ -1635,9 +1715,20 @@ export default function Page(props: PageProps): ReactElement {
         onSelect: () => surface?.selectAll(),
       },
       {
+        key: 'save-as',
+        label: 'Save As…',
+        enabled: /^(?:https?|file):/.test(url),
+        onSelect: saveShown,
+      },
+      {
         key: 'source',
         label: 'View Page Source',
-        enabled: /^(?:https?|file):/.test(url),
+        // a PDF's or a player's source is bytes, and no reading of it
+        enabled:
+          /^(?:https?|file):/.test(url) &&
+          viewer?.kind !== 'pdf' &&
+          viewer?.kind !== 'video' &&
+          viewer?.kind !== 'audio',
         onSelect: () =>
           live.current.onLink(`view-source:${withoutHash(url)}`, 'tab', null),
       },
@@ -1653,7 +1744,7 @@ export default function Page(props: PageProps): ReactElement {
       },
     );
     return items;
-  }, [menuAt, clipboard, url]);
+  }, [menuAt, clipboard, url, viewer]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1750,6 +1841,9 @@ export default function Page(props: PageProps): ReactElement {
             flexGrow: 1,
             flexShrink: 1,
             minHeight: 0,
+            // what shows a viewer's document is beside the pane, and scrolls
+            // itself: in it, each would be as tall as all it holds
+            ...(viewer && { display: 'none' }),
           }}
           // A document whose root or body is `overflow: hidden` gave that to
           // the viewport, and the reader is not to scroll it: no bar, no wheel,
@@ -1830,7 +1924,7 @@ export default function Page(props: PageProps): ReactElement {
         >
           {views.map((view) => {
             const source = docs.get(view.seq);
-            if (!source) return null;
+            if (!source || source.viewer) return null;
             // one the session keeps is laid out, drawn and handed nothing
             // while it is hidden, and the handle is the document shown's
             const visible = view.n === shownN;
@@ -1899,6 +1993,34 @@ export default function Page(props: PageProps): ReactElement {
           {/* over the document, in the pane that scrolls it */}
           <Highlight handle={handle} inspection={inspection} />
         </box>
+        {shown && viewer ? (
+          // A node's scale is its life's, so a tree at a new zoom is a new
+          // tree. A PDF takes the browser's zoom itself and keeps its place,
+          // and a player scales its own bar, or a zoom would start it again.
+          <box
+            key={tree ? `${shown.n}@${shown.zoom}` : shown.n}
+            scale={tree ? shown.zoom : 1}
+            style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }}
+          >
+            <Suspense fallback={null}>
+              <DocumentViewer
+                viewer={viewer}
+                zoom={zoom}
+                onSave={saveShown}
+                onLink={(to) => {
+                  // a document's link goes where a stranger's would, and
+                  // one from a file is no way to reach this machine's files
+                  if (/^https?:/i.test(to)) {
+                    live.current.onLink(to, 'here', null);
+                  }
+                }}
+                onTitle={(title) =>
+                  live.current.onMeta(shown.seq, title, undefined)
+                }
+              />
+            </Suspense>
+          </box>
+        ) : null}
       </ContextMenu>
       {status ? (
         <box
@@ -2049,10 +2171,12 @@ async function loadDocument(
     title: string | null,
     url = nav.url,
     posted = false,
+    viewer?: Viewer,
+    filename?: string,
   ) => {
     on.commit(
       url,
-      { source, partial: false, baseUrl: null, url },
+      { source, partial: false, baseUrl: null, url, viewer, filename },
       title,
       posted,
     );
@@ -2086,18 +2210,44 @@ async function loadDocument(
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);
-  // what says it is a file, or is nothing this browser can show
+  // what says it is a file, or is nothing this browser can show or hold
   if (
     !viewSource &&
-    (kind === 'other' || dispositionOf(response.disposition).attachment)
+    (kind === 'other' ||
+      dispositionOf(response.disposition).attachment ||
+      (kind === 'pdf' && (response.size ?? 0) > MOST_PDF))
   ) {
     on.download(downloadSource(response, ''));
     return;
   }
+  const viewed = (viewer: Viewer) =>
+    own(
+      '',
+      fileName(response.url),
+      response.url,
+      posted,
+      viewer,
+      downloadName(response.url, '', response.disposition, response.type),
+    );
+  // the player opens it from its URL, and nothing of it is read here
+  if (kind === 'video') {
+    return viewed({ kind, src: response.url, type: response.type });
+  }
+  if (kind === 'audio') {
+    return viewed({
+      kind,
+      src: response.url,
+      type: response.type,
+      name: fileName(response.url),
+    });
+  }
   if (kind !== 'html') {
     let bytes: Uint8Array;
     try {
-      bytes = await readAll(response.body, signal);
+      bytes =
+        kind === 'pdf'
+          ? await readAll(response.whole ?? response.body, signal, MOST_PDF)
+          : await readAll(response.body, signal);
     } catch (error) {
       if (signal.aborted) return;
       return own(errorPage(target, ...failure(error)), null);
@@ -2108,16 +2258,18 @@ async function loadDocument(
       network.seed({ ...response, bytes });
       return own(imagePage(response.url), fileName(response.url), url, posted);
     }
-    if (kind === 'text') {
-      const text = decode(bytes, response.charset ?? sniffCharset(bytes));
-      return own(
-        textPage(url, text),
-        viewSource ? url : fileName(url),
-        url,
-        posted,
-      );
-    }
-    return own(errorPage(target, 'It cannot be shown.', 'ERR_FAILED'), null);
+    if (kind === 'pdf') return viewed({ kind, bytes });
+    const text = decode(bytes, response.charset ?? sniffCharset(bytes));
+    // text that says it is JSON or XML and is not is shown as what it is
+    const tree =
+      kind === 'json' ? readJson(text) : kind === 'xml' ? readXml(text) : null;
+    if (tree) return viewed(tree);
+    return own(
+      textPage(url, text),
+      viewSource ? url : fileName(url),
+      url,
+      posted,
+    );
   }
 
   // HTML: stream it. The encoding is the response's, or the one a `<meta>`
@@ -2200,38 +2352,6 @@ function landedAt(response: string, asked: string): string {
   return response.includes('#') || at < 0
     ? response
     : response + asked.slice(at);
-}
-
-function kindOf(
-  type: string,
-  url: string,
-): 'html' | 'text' | 'image' | 'other' {
-  if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
-  if (type.startsWith('image/')) return 'image';
-  if (
-    type.startsWith('text/') ||
-    type === 'application/json' ||
-    type === 'application/javascript' ||
-    type.endsWith('+xml') ||
-    type === 'application/xml'
-  ) {
-    return 'text';
-  }
-  // no type at all: what the address says, and HTML where it says nothing
-  if (!type) return /\.(txt|md|json|css|js)$/i.test(url) ? 'text' : 'html';
-  return 'other';
-}
-
-async function readAll(
-  body: AsyncIterable<Uint8Array>,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
-  let out: Uint8Array = new Uint8Array(0);
-  for await (const chunk of body) {
-    if (signal.aborted) break;
-    out = concat(out, chunk);
-  }
-  return out;
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
