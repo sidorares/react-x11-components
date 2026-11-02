@@ -356,6 +356,63 @@ metric(
   },
 );
 
+metric(
+  'a colour only the cascade reads paints a drawing, as an attribute, in a style and in an image',
+  async () => {
+    // Figma writes the sRGB colour and then the P3 one, and `SvgView` hands a
+    // paint to the context as it is written: `color(display-p3 …)` was no
+    // colour to it, so nothing was painted, and tldraw's logo, a mask of such
+    // a drawing, was not there
+    const square = (attributes: string, id: string): string =>
+      `<svg id="${id}" width="20" height="20" style="display:block">` +
+      `<rect width="20" height="20" ${attributes}/></svg>`;
+    const mask = svgBytes(
+      `<svg ${SVG_NS} width="20" height="20" viewBox="0 0 20 20" fill="none">` +
+        '<rect width="20" height="20" fill="#2E2E2E" ' +
+        'style="fill:#2E2E2E;fill:color(display-p3 0.1804 0.1804 0.1804);fill-opacity:1;"/></svg>',
+    );
+    const scheme = svgBytes(
+      `<svg ${SVG_NS} width="20" height="20">` +
+        '<rect width="20" height="20" style="fill:light-dark(rgb(0, 200, 0), rgb(200, 0, 0))"/></svg>',
+    );
+    const { result } = await renderWithBytes(
+      '<!doctype html><body style="margin:0;background:#fff">' +
+        square('style="fill:#0000ff;fill:color(display-p3 0 0 0)"', 'a') +
+        square('fill="oklch(0% 0 0)"', 'b') +
+        square('fill="color(srgb 0 0 0)"', 'c') +
+        square('style="fill:#000;fill:oklch(nonsense)"', 'd') +
+        '<div style="width:20px;height:20px;background:#000;mask-image:url(mask.svg)"></div>' +
+        '<div style="width:20px;height:20px;background:url(scheme.svg)"></div>' +
+        '<div style="width:20px;height:20px;color-scheme:dark;background:url(scheme.svg)"></div>' +
+        '<svg width="20" height="20" style="display:block;color-scheme:dark">' +
+        '<rect width="20" height="20" style="fill:light-dark(rgb(0, 200, 0), rgb(200, 0, 0))"/></svg>' +
+        '<svg width="20" height="20" style="display:block"><linearGradient id="g">' +
+        '<stop offset="0" stop-color="color(srgb 0 0 0)"/><stop offset="1" stop-color="oklch(0% 0 0)"/>' +
+        '</linearGradient><rect width="20" height="20" fill="url(#g)"/></svg>',
+      { 'mask.svg': mask, 'scheme.svg': scheme },
+      100,
+    );
+    await act();
+    const at = async (row: number): Promise<number[]> =>
+      [
+        ...(await pixelsIn(result.ctx, {
+          x: 10,
+          y: row * 20 + 10,
+          width: 1,
+          height: 1,
+        })),
+      ].slice(0, 3);
+    for (const [row, name] of ['a', 'b', 'c', 'd'].entries()) {
+      assert.deepEqual(await at(row), [0, 0, 0], `the square ${name}`);
+    }
+    assert.deepEqual(await at(4), [0, 0, 0], 'what the mask shows');
+    assert.deepEqual(await at(5), [0, 200, 0], "a light element's image");
+    assert.deepEqual(await at(6), [200, 0, 0], "a dark element's image");
+    assert.deepEqual(await at(7), [200, 0, 0], 'a dark drawing');
+    assert.deepEqual(await at(8), [0, 0, 0], 'a gradient');
+  },
+);
+
 test('an SVG image is sized by what its document says, and a PNG still decodes', async () => {
   const { el } = await renderWithBytes(
     '<style>body{margin:0}img{display:block}</style>' +

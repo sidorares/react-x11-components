@@ -15,12 +15,25 @@ import {
 } from 'react-x11/test';
 import { ThemeProvider } from 'react-x11';
 import type { DrawnNode } from 'react-x11';
-import { XK_BACKSPACE, XK_ESCAPE } from 'react-x11/keysyms';
+import {
+  XK_BACKSPACE,
+  XK_DOWN,
+  XK_END,
+  XK_ESCAPE,
+  XK_HOME,
+  XK_LEFT,
+  XK_PAGE_DOWN,
+  XK_PAGE_UP,
+  XK_RIGHT,
+  XK_TAB,
+  XK_UP,
+} from 'react-x11/keysyms';
 import { appendChild, removeElement } from 'domutils';
 import type { Element } from 'domhandler';
 import { elementsIn } from '../../src/html/dom.js';
 import { Html, useHtmlHandle } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
+import { controlValue } from '../../src/html/form.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import { lineHeightMultiplier } from '../../src/html/layout/inline.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
@@ -3171,6 +3184,607 @@ test('a control the page set in its own font draws in it', async () => {
   );
   assert.deepStrictEqual(await fonts(2), [boxes, widgets], 'the same at 2x');
 });
+
+/** A document's ranges, through the server's own pointer and keys: a drag is
+ *  a press core captures and what comes after it, which `fireEvent` starts
+ *  past. It is away from the window's corner, or a press measured from the
+ *  wrong origin lands right. `told` is each `input` and `change` the page
+ *  hears, with what the range held. */
+async function rangesIn(
+  source: string,
+  options: { scale?: number; cancels?: string } = {},
+) {
+  const scale = options.scale ?? 1;
+  const told: string[] = [];
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Page() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source: `<!DOCTYPE html><body style="margin:0">${source}`,
+      partial: false,
+      ref: handle.ref,
+      'data-testname': 'doc',
+      onDomEvent: (ev: { type: string; target: Element }) => {
+        if (ev.type === 'input' || ev.type === 'change') {
+          told.push(`${ev.type} ${handle!.controlValue(ev.target)}`);
+        }
+        return ev.type !== options.cancels;
+      },
+    });
+  }
+  const result = await renderX11(
+    h(
+      'box',
+      {
+        style: {
+          width: 400,
+          height: 300,
+          padding: 20,
+          flexDirection: 'column',
+        },
+      },
+      h(Page),
+    ),
+    { width: 440, height: 340, fonts: FONTS!, ...(scale !== 1 && { scale }) },
+  );
+  await act();
+  const server = (
+    result as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+        injectKey(code: number, down: boolean): void;
+        keymap: { keycodeForKeysym(sym: number): number };
+      };
+    }
+  ).server;
+  const step = async () => {
+    await act(async () => {
+      await new Promise((go) => setTimeout(go, 20));
+    });
+  };
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const element = (id: string) => findById(el.document, id) as Element;
+  return {
+    el,
+    told,
+    result,
+    element,
+    value: (id: string) => handle!.controlValue(element(id)),
+    /** The pointer to a share of the way across and down an element. */
+    move: async (id: string, across: number, down: number) => {
+      const origin = el.getClientRects()[0];
+      const box = el.elementRect(element(id))!;
+      server.injectPointerMove(
+        Math.round((origin.x + box.x + box.width * across) * scale),
+        Math.round((origin.y + box.y + box.height * down) * scale),
+      );
+      await step();
+    },
+    press: async (button = 1) => {
+      server.injectButton(button, true);
+      await step();
+    },
+    release: async (button = 1) => {
+      server.injectButton(button, false);
+      await step();
+    },
+    key: async (sym: number) => {
+      const code = server.keymap.keycodeForKeysym(sym);
+      server.injectKey(code, true);
+      await step();
+      server.injectKey(code, false);
+      await step();
+    },
+    /** Set a range as a script does, and see it show. */
+    set: async (id: string, value: string) => {
+      handle!.setControlValue(element(id), value);
+      await step();
+    },
+  };
+}
+
+const sliders = () => screen.getAllByRole('slider') as (DrawnNode & Props)[];
+
+/** What Chromium answers for a range's size, and for what it holds. */
+const RANGE_RULES = `<style>
+.n{appearance:none}
+.a::-webkit-slider-thumb{appearance:none;width:30px;height:24px}
+.b::-webkit-slider-thumb{appearance:none;width:30px;height:24px;margin:3px 0 5px}
+.i{font-size:40px}.i::-webkit-slider-thumb{appearance:none;width:1em;height:1em}
+.t::-webkit-slider-runnable-track{height:7px}
+.u::-webkit-slider-runnable-track{height:7px;padding:2px;border:1px solid}
+.v::-webkit-slider-runnable-track{background:red}
+.g{writing-mode:vertical-lr}
+.s{height:3px}
+.m::-moz-range-thumb{appearance:none;width:30px;height:24px}
+</style>`;
+
+const RANGE_SIZES: readonly [string, string, number, number][] = [
+  ['', '', 129, 16],
+  ['', 'style="font-size:40px"', 129, 16],
+  ['', 'style="writing-mode:vertical-lr"', 16, 129],
+  ['', 'style="writing-mode:sideways-lr;direction:rtl"', 16, 129],
+  ['', 'style="border:3px solid red;padding:5px"', 145, 32],
+  ['', 'style="width:300px;height:40px"', 300, 40],
+  ['n', '', 129, 16],
+  ['n a', '', 129, 24],
+  ['n b', '', 129, 32],
+  ['n i', '', 129, 40],
+  ['n a t', '', 129, 7],
+  ['n t', 'style="padding:0"', 129, 7],
+  ['n v', '', 129, 16],
+  ['n a s', '', 129, 3],
+  ['n a g', '', 30, 129],
+  ['n g', '', 16, 129],
+  ['a g', '', 16, 129],
+  ['a t', '', 129, 7],
+  ['m', '', 129, 16],
+];
+
+metric(
+  "a range is the size Chromium's is, which way round it runs",
+  async () => {
+    const { result, node } = await render(
+      RANGE_RULES +
+        RANGE_SIZES.map(
+          ([classes, more], i) =>
+            `<div><input id="r${i}" type="range" class="${classes}" ${more}></div>`,
+        ).join('') +
+        '<div style="writing-mode:vertical-rl"><input id="f" type="range"></div>',
+      600,
+    );
+    await act();
+    void result;
+    const el = view(node);
+    await waitFor(() => assert.ok(el.document));
+    const size = (id: string) => {
+      const box = el.elementRect(findById(el.document, id)!)!;
+      return [box.width, box.height];
+    };
+    RANGE_SIZES.forEach(([classes, more, width, height], i) => {
+      assert.deepStrictEqual(
+        size(`r${i}`),
+        [width, height],
+        `${classes} ${more}`,
+      );
+    });
+    assert.deepStrictEqual(size('f'), [16, 129], 'in a vertical flow');
+    assert.strictEqual(
+      edgesOf(boxOf(el, 'r0')).marginLeft,
+      2,
+      "with Chrome's margin",
+    );
+  },
+);
+
+test('a range holds what Chromium makes of its attributes', async () => {
+  // HTML 4.10.5.1.13's sanitization, with Blink's arithmetic: half way along
+  // what is no number, the nearest step counted from `min` or else from the
+  // value it was written with, the upper of two as near, and no step past
+  // `max`. Each row is what an `<input type=range>` reads as there, and in
+  // Firefox and Safari, but for how they write a fraction or a `.`.
+  const rows: readonly [string, string][] = [
+    ['', '50'],
+    ['min=0 max=100 step=10', '50'],
+    ['value=abc min=10 max=20', '15'],
+    ['value=" 5"', '50'],
+    ['value=7 step=3', '7'],
+    ['value=5 step=2', '5'],
+    ['min=20 max=10', '20'],
+    ['min=0 max=100 step=40 value=100', '80'],
+    ['min=0 max=1 step=any value=.333', '0.333'],
+    ['min=0 max=1 step=.1 value=.35', '0.4'],
+    ['min=0 max=1 step=.1 value=.3', '0.3'],
+    ['value=2.5 step=5', '2.5'],
+    ['value=150', '100'],
+    ['value=-5', '0'],
+    ['step=0 value=2.5', '2.5'],
+    ['step=abc value=2.5', '2.5'],
+    ['step=-1 value=2.5', '2.5'],
+    ['min=5 max=6 step=10', '5'],
+    ['max=3 value=2 step=5', '2'],
+    ['min=-10 max=10 step=3 value=0', '-1'],
+    ['min=0 max=10 step=3 value=10', '9'],
+    ['value=+5', '50'],
+    ['value=5.', '50'],
+    ['step=any value=33.3', '33.3'],
+  ];
+  const { node } = await render(
+    rows
+      .map(([attrs], i) => `<input id="r${i}" type="range" ${attrs}>`)
+      .join(''),
+  );
+  await act();
+  const { document } = view(node);
+  rows.forEach(([attrs, value], i) => {
+    assert.strictEqual(
+      controlValue(findById(document, `r${i}`)!),
+      value,
+      attrs,
+    );
+  });
+});
+
+metric(
+  'a drag moves a range as a browser does, an input as it goes and a change where it ended somewhere else',
+  async () => {
+    const r = await rangesIn(
+      '<input id="a" type="range" min="0" max="100" step="10">',
+    );
+    const [slider] = sliders();
+    assert.strictEqual(slider.props['aria-valuenow'], 50);
+
+    // on the thumb a press moves nothing, whatever it is off its centre
+    await r.move('a', 0.55, 0.5);
+    await r.press();
+    assert.deepStrictEqual(r.told, []);
+    assert.strictEqual(r.value('a'), '50');
+    // and from there the pointer is where the thumb is
+    await r.move('a', 0.2, 0.5);
+    assert.deepStrictEqual(r.told, ['input 20']);
+    assert.strictEqual(slider.props['aria-valuenow'], 20, 'the thumb follows');
+    // however far it wanders down
+    await r.move('a', 0.5, 9);
+    assert.deepStrictEqual(r.told, ['input 20', 'input 50']);
+    // back where it started there is nothing to tell of
+    await r.release();
+    assert.deepStrictEqual(r.told, ['input 20', 'input 50']);
+
+    r.told.length = 0;
+    // beside the thumb a press takes it there
+    await r.move('a', 0.2, 0.5);
+    await r.press();
+    assert.deepStrictEqual(r.told, ['input 20']);
+    await r.release();
+    assert.deepStrictEqual(r.told, ['input 20', 'change 20']);
+
+    r.told.length = 0;
+    // and out of the box it holds on to the pointer
+    await r.press();
+    await r.move('a', 3, 0.5);
+    assert.deepStrictEqual(r.told, ['input 100']);
+    await r.release();
+    assert.deepStrictEqual(r.told, ['input 100', 'change 100']);
+    assert.strictEqual(r.value('a'), '100');
+  },
+);
+
+metric(
+  'at a display scale of 2 a press lands where the pointer is',
+  async () => {
+    const r = await rangesIn(
+      '<input id="a" type="range" min="0" max="100" step="10">' +
+        '<input id="b" type="range" min="0" max="100" step="10" ' +
+        'style="writing-mode:vertical-lr;direction:rtl">',
+      { scale: 2 },
+    );
+    await r.move('a', 0.2, 0.5);
+    await r.press();
+    await r.release();
+    assert.strictEqual(r.value('a'), '20');
+    await r.move('b', 0.5, 0.8);
+    await r.press();
+    await r.release();
+    assert.strictEqual(r.value('b'), '20');
+  },
+);
+
+metric(
+  'a press a page cancelled, or of another button, or on a disabled range, moves nothing',
+  async () => {
+    const r = await rangesIn(
+      '<input id="a" type="range" min="0" max="100" step="10">',
+      { cancels: 'mousedown' },
+    );
+    await r.move('a', 0.1, 0.5);
+    await r.press();
+    await r.move('a', 0.9, 0.5);
+    await r.release();
+    assert.strictEqual(r.value('a'), '50', 'cancelled');
+    assert.strictEqual(r.el.focusedElement, null, 'and not focused');
+    cleanup();
+
+    const other = await rangesIn('<input id="a" type="range">');
+    await other.move('a', 0.1, 0.5);
+    await other.press(3);
+    await other.release(3);
+    assert.strictEqual(other.value('a'), '50', 'a secondary press');
+    cleanup();
+
+    const off = await rangesIn('<input id="a" type="range" disabled>');
+    await off.move('a', 0.1, 0.5);
+    await off.press();
+    await off.release();
+    assert.strictEqual(off.value('a'), '50', 'disabled');
+    assert.deepStrictEqual(off.told, []);
+  },
+);
+
+metric(
+  "a range's keys and its ends are Chromium's in each writing mode",
+  async () => {
+    // From 50 with a step of 10, for each of up, down, left, right, Page Up,
+    // Page Down, Home and End, then what a press near its start and near its
+    // end along the page comes to.
+    const rows: readonly [string, string, number[]][] = [
+      ['', '', [60, 40, 40, 60, 60, 40, 0, 100, 0, 100]],
+      ['', 'direction:rtl', [60, 40, 60, 40, 60, 40, 0, 100, 100, 0]],
+      [
+        '',
+        'writing-mode:vertical-lr',
+        [40, 60, 40, 60, 60, 40, 0, 100, 0, 100],
+      ],
+      [
+        '',
+        'writing-mode:vertical-rl',
+        [40, 60, 40, 60, 60, 40, 0, 100, 0, 100],
+      ],
+      [
+        '',
+        'writing-mode:vertical-lr;direction:rtl',
+        [60, 40, 40, 60, 60, 40, 0, 100, 100, 0],
+      ],
+      [
+        '',
+        'writing-mode:sideways-lr',
+        [60, 40, 60, 40, 60, 40, 0, 100, 100, 0],
+      ],
+      [
+        '',
+        'writing-mode:sideways-lr;direction:rtl',
+        [40, 60, 60, 40, 60, 40, 0, 100, 0, 100],
+      ],
+      [
+        '',
+        'writing-mode:sideways-rl',
+        [40, 60, 40, 60, 60, 40, 0, 100, 0, 100],
+      ],
+      [
+        '',
+        'writing-mode:sideways-rl;direction:rtl',
+        [60, 40, 40, 60, 60, 40, 0, 100, 100, 0],
+      ],
+      [
+        'writing-mode:vertical-rl',
+        '',
+        [40, 60, 40, 60, 60, 40, 0, 100, 0, 100],
+      ],
+    ];
+    const keys = [
+      XK_UP,
+      XK_DOWN,
+      XK_LEFT,
+      XK_RIGHT,
+      XK_PAGE_UP,
+      XK_PAGE_DOWN,
+      XK_HOME,
+      XK_END,
+    ];
+    for (const [around, style, answers] of rows) {
+      const r = await rangesIn(
+        `<div style="${around}"><input id="a" type="range" min="0" max="100" step="10" style="${style}"></div>`,
+      );
+      const [slider] = sliders();
+      const vertical = /vertical|sideways/.test(style + around);
+      const got: number[] = [];
+      await act(() => slider.focus());
+      for (const key of keys) {
+        await r.set('a', '50');
+        await r.key(key);
+        got.push(Number(r.value('a')));
+      }
+      for (const share of [0.02, 0.98]) {
+        await r.set('a', '50');
+        await r.move('a', vertical ? 0.5 : share, vertical ? share : 0.5);
+        await r.press();
+        await r.release();
+        got.push(Number(r.value('a')));
+      }
+      assert.deepStrictEqual(got, answers, `${around} ${style}`);
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a key on a range is its input and its change at once, from its own steps, and a page can keep it',
+  async () => {
+    const r = await rangesIn(
+      '<input id="big" type="range" min="0" max="1000" value="500">' +
+        '<input id="any" type="range" min="0" max="10" step="any" value="5">' +
+        '<input id="base" type="range" value="5" step="2">',
+    );
+    const [big, any, base] = sliders();
+    await act(() => big.focus());
+    await r.key(XK_RIGHT);
+    assert.deepStrictEqual(r.told, ['input 501', 'change 501']);
+    await r.key(XK_PAGE_UP);
+    assert.strictEqual(r.value('big'), '601', 'a tenth of the way');
+
+    await act(() => any.focus());
+    await r.key(XK_UP);
+    assert.strictEqual(r.value('any'), '5.1', 'a hundredth of the way');
+    await r.key(XK_PAGE_DOWN);
+    assert.strictEqual(r.value('any'), '4.1');
+
+    // counted from its value, which no `min` says otherwise of
+    await act(() => base.focus());
+    await r.key(XK_UP);
+    assert.strictEqual(r.value('base'), '7');
+    await r.key(XK_HOME);
+    assert.strictEqual(r.value('base'), '1');
+    await r.key(XK_END);
+    assert.strictEqual(r.value('base'), '99');
+    cleanup();
+
+    const kept = await rangesIn('<input id="a" type="range">', {
+      cancels: 'keydown',
+    });
+    await act(() => sliders()[0].focus());
+    await kept.key(XK_RIGHT);
+    assert.strictEqual(kept.value('a'), '50', 'a cancelled key moves nothing');
+  },
+);
+
+metric(
+  'a press focuses a range with no ring, and Tab reaches it with one',
+  async () => {
+    const r = await rangesIn('<input id="a" type="range">');
+    const ring = () => styleOf(r.el, 'a').outlineStyle;
+    await r.move('a', 0.2, 0.5);
+    await r.press();
+    await r.release();
+    assert.strictEqual(r.el.focusedElement, r.element('a'));
+    assert.strictEqual(ring(), 'none');
+    cleanup();
+
+    const tabbed = await rangesIn('<input id="a" type="range">');
+    await tabbed.key(XK_TAB);
+    assert.strictEqual(tabbed.el.focusedElement, tabbed.element('a'));
+    assert.notStrictEqual(
+      styleOf(tabbed.el, 'a').outlineStyle,
+      'none',
+      "the document draws the element's own outline",
+    );
+  },
+);
+
+metric('a script moves a range, and a reset puts it back', async () => {
+  const r = await rangesIn(
+    '<form id="f"><input id="a" type="range" value="10">' +
+      '<button id="b" type="reset">x</button></form>',
+  );
+  const [slider] = sliders();
+  await r.set('a', '70');
+  assert.strictEqual(slider.props['aria-valuenow'], 70);
+  assert.deepStrictEqual(r.told, [], 'a script is told nothing of its own');
+  await r.set('a', '150');
+  assert.strictEqual(r.value('a'), '100', 'kept to the line');
+  assert.strictEqual(slider.props['aria-valuenow'], 100);
+
+  await r.move('a', 0.2, 0.5);
+  await r.press();
+  await r.release();
+  assert.notStrictEqual(r.value('a'), '100');
+  await r.move('b', 0.5, 0.5);
+  await r.press();
+  await r.release();
+  assert.strictEqual(r.value('a'), '10');
+  assert.strictEqual(sliders()[0].props['aria-valuenow'], 10);
+});
+
+metric('a page hears a range as it moves, and moves it', async () => {
+  const log: string[] = [];
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 400, height: 300 } },
+      h(Html, {
+        source:
+          '<!DOCTYPE html><body style="margin:0">' +
+          '<input id="a" type="range" min="0" max="100" step="10">' +
+          '<script>' +
+          'for (const type of ["input", "change"]) a.addEventListener(type, ' +
+          '(e) => console.log(type, a.value, a.valueAsNumber + 1));' +
+          'a.value = 30; console.log("set", a.value);' +
+          'a.step = 5; a.max = 25; console.log("max", a.value, typeof a.value);' +
+          'a.max = 100; console.log("kept", a.value);' +
+          'a.addEventListener("change", () => { a.value = 40; console.log("again", a.value); });' +
+          '</script>',
+        baseUrl: 'https://example.test/',
+        partial: false,
+        scripts: { log: (_: string, text: string) => log.push(text) },
+      } as never),
+    ),
+    { width: 400, height: 300, fonts: FONTS! },
+  );
+  const server = (
+    result as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    }
+  ).server;
+  const step = () =>
+    act(async () => {
+      await new Promise((go) => setTimeout(go, 30));
+    });
+  await waitFor(() => assert.ok(log.includes('kept 25'), log.join()));
+  assert.deepStrictEqual(log, ['set 30', 'max 25 string', 'kept 25']);
+  await waitFor(() =>
+    assert.strictEqual(sliders()[0].props['aria-valuenow'], 25),
+  );
+
+  server.injectPointerMove(120, 10);
+  await step();
+  server.injectButton(1, true);
+  await step();
+  server.injectButton(1, false);
+  await step();
+  assert.deepStrictEqual(log.slice(-3), [
+    'input 95 96',
+    'change 95 96',
+    'again 40',
+  ]);
+  await waitFor(() =>
+    assert.strictEqual(sliders()[0].props['aria-valuenow'], 40),
+  );
+});
+
+metric(
+  "a range draws what a page's rules draw of it, and takes its look back where they do not",
+  async () => {
+    const { result, node } = await render(
+      `<style>
+      body { margin: 0 }
+      div { height: 40px }
+      .fancy { appearance: none; width: 200px; height: 8px; background: #0000ff }
+      .fancy::-webkit-slider-thumb {
+        appearance: none; width: 20px; height: 20px; border-radius: 50%;
+        background: #00ff00;
+      }
+      .track { appearance: none; width: 200px; background: transparent }
+      .track::-webkit-slider-runnable-track {
+        height: 6px; background: #ff00ff; border-radius: 3px;
+      }
+      .track::-webkit-slider-thumb {
+        appearance: none; width: 14px; height: 14px; margin-top: -4px;
+        background: #ff8000;
+      }
+      .plain { width: 200px; background: #0000ff; border: 3px solid #ff0000 }
+      .auto::-webkit-slider-thumb { background: #00ff00 }
+      </style>
+      <div><input id="f" class="fancy" type="range" value="0"></div>
+      <div><input id="t" class="track" type="range" value="0"></div>
+      <div><input id="p" class="plain" type="range"></div>
+      <div><input id="a" class="auto" type="range" value="0"></div>`,
+      300,
+    );
+    await act();
+    const el = view(node);
+    const at = async (id: string, x: number, y: number) => {
+      const box = el.elementRect(findById(el.document, id)!)!;
+      const origin = el.getClientRects()[0];
+      return pixelAt(result.ctx, origin.x + box.x + x, origin.y + box.y + y);
+    };
+    // the thumb, centred in the box and hanging out of it, and the box's own
+    // ground past it
+    assert.deepStrictEqual((await at('f', 10, 4)).slice(0, 3), [0, 255, 0]);
+    assert.deepStrictEqual((await at('f', 100, 4)).slice(0, 3), [0, 0, 255]);
+    // on a track of its own, brought back to it by its margin
+    assert.strictEqual(boxOf(el, 't').height, 6, 'as thick as the track');
+    assert.deepStrictEqual((await at('t', 7, 3)).slice(0, 3), [255, 128, 0]);
+    assert.deepStrictEqual((await at('t', 100, 3)).slice(0, 3), [255, 0, 255]);
+    // a range the page left alone draws neither its border nor its ground
+    const plain = (await at('p', 1, 1)).slice(0, 3);
+    assert.notDeepStrictEqual(plain, [255, 0, 0], 'no border');
+    assert.notDeepStrictEqual((await at('p', 100, 1)).slice(0, 3), [0, 0, 255]);
+    // and a thumb rule that keeps its `appearance` changes nothing
+    assert.notDeepStrictEqual((await at('a', 8, 8)).slice(0, 3), [0, 255, 0]);
+  },
+);
 
 test("a stylesheet's pseudo-classes of a control's state answer as Chromium's do", async () => {
   const { node } = await render(CONTROL_STATE_SOURCE, 800);

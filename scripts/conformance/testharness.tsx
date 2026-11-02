@@ -63,11 +63,13 @@ import { act, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
 import {
+  CookieJar,
   Html,
   HtmlNetwork,
   HtmlServiceWorkers,
   HtmlSessionHistory,
   fakeMediaDevices,
+  isXmlType,
   memoryClipboard,
   memoryNotifications,
   useHtmlHandle,
@@ -160,10 +162,18 @@ const PALETTE = {
  *  for a service worker's variant, which WPT's manifest forces onto https
  *  (`force_https`); a subdomain for `.www.`. */
 export function urlFor(test: string): string {
-  const name = test.split('?')[0];
+  const [name, query = ''] = test.split('?');
   const sub = /\.www\./.test(name) ? 'www.' : '';
-  if (/\.h2\./.test(name)) return `https://${sub}${HOST}:${H2_PORT}/${test}`;
-  if (/\.https\.|\.serviceworker(?:-module)?\.html$/.test(name)) {
+  // a variant says so as the file's name does (`?wpt_flags=https`), as
+  // wptrunner reads a test's flags
+  const flags = new URLSearchParams(query).getAll('wpt_flags');
+  if (/\.h2\./.test(name) || flags.includes('h2')) {
+    return `https://${sub}${HOST}:${H2_PORT}/${test}`;
+  }
+  if (
+    /\.https\.|\.serviceworker(?:-module)?\.html$/.test(name) ||
+    flags.includes('https')
+  ) {
     return `https://${sub}${HOST}:${HTTPS_PORT}/${test}`;
   }
   return `http://${sub}${HOST}:${HTTP_PORT}/${test}`;
@@ -199,9 +209,19 @@ const DRIVER = `(function () {
       .then(function (r) { return r.text(); })
       .then(function (t) { var o = JSON.parse(t || '{}'); if (o.error) throw new Error(o.error); return o; });
   }
+  // in the top document's viewport, which is what WebDriver's origin is: an
+  // element of a frame is that far in
   function centre(el) {
     var r = el.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    var at = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    try {
+      for (var w = el.ownerDocument.defaultView; w && w.frameElement; w = w.parent) {
+        var f = w.frameElement.getBoundingClientRect();
+        at.x += f.left;
+        at.y += f.top;
+      }
+    } catch (e) {}
+    return at;
   }
   internal.in_automation = true;
   internal.click = function (el) {
@@ -211,8 +231,15 @@ const DRIVER = `(function () {
   };
   internal.send_keys = function (el, keys) {
     if (el && el.focus) el.focus();
-    var seq = [];
-    for (var i = 0; i < keys.length; i++) { seq.push({ type: 'keyDown', value: keys[i] }); seq.push({ type: 'keyUp', value: keys[i] }); }
+    // a modifier in the keys is held for the rest of them, as WebDriver's
+    // Element Send Keys has it
+    var seq = [], held = [];
+    for (var i = 0; i < keys.length; i++) {
+      seq.push({ type: 'keyDown', value: keys[i] });
+      if (/[\\uE008-\\uE00A\\uE03D\\uE050-\\uE053]/.test(keys[i])) held.push(keys[i]);
+      else seq.push({ type: 'keyUp', value: keys[i] });
+    }
+    while (held.length) seq.push({ type: 'keyUp', value: held.pop() });
     return post('actions', { actions: [{ type: 'key', actions: seq }] });
   };
   internal.action_sequence = function (sources) {
@@ -230,7 +257,7 @@ const DRIVER = `(function () {
   internal.set_permission = function (params) {
     return post('permission', { name: params.descriptor && params.descriptor.name, state: params.state }).then(function () {});
   };
-  internal.delete_all_cookies = function () { return Promise.resolve(); };
+  internal.delete_all_cookies = function () { return post('delete-cookies', {}).then(function () {}); };
   internal.minimize_window = function () { return Promise.resolve({}); };
   internal.set_window_rect = function () { return Promise.resolve(); };
 })();`;
@@ -256,6 +283,36 @@ const SPECIAL_KEYS: Record<string, number> = {
   '': 0xff54, // Down
   '': 0xffff, // Delete
   '': 0xffeb, // Meta
+  '': 0xffe2, // right Shift
+  '': 0xffe4, // right Control
+  '': 0xffea, // right Alt
+  '': 0xffec, // right Meta
+  '⌘': 0xffeb, // what a test asks a Mac's Command key with
+};
+
+/** What a US keyboard types a shifted character with. */
+const SHIFTED: Record<string, string> = {
+  '!': '1',
+  '@': '2',
+  '#': '3',
+  $: '4',
+  '%': '5',
+  '^': '6',
+  '&': '7',
+  '*': '8',
+  '(': '9',
+  ')': '0',
+  _: '-',
+  '+': '=',
+  '{': '[',
+  '}': ']',
+  '|': '\\',
+  ':': ';',
+  '"': "'",
+  '<': ',',
+  '>': '.',
+  '?': '/',
+  '~': '`',
 };
 
 function keysymOf(value: string): number {
@@ -291,6 +348,8 @@ interface Current {
   done: { status: string; message: string | null; tests: Subtest[] } | null;
   errors: string[];
   loaded: boolean;
+  /** Its cookies, which `delete_all_cookies` empties. */
+  cookies: CookieJar;
   /** Its devices, which `set_permission` changes. */
   media: FakeMediaDevices;
   /** What it may do, which `set_permission` changes: whatever it has not
@@ -316,6 +375,9 @@ interface Loaded {
   source: string;
   baseUrl: string;
   charset: string;
+  /** What the server sent it as. */
+  contentType: string;
+  headers?: [string, string][];
 }
 
 /**
@@ -522,7 +584,12 @@ function Tab(props: {
         [
           {
             n: 0,
-            doc: { source: '', baseUrl: 'about:blank', charset: 'utf-8' },
+            doc: {
+              source: '',
+              baseUrl: 'about:blank',
+              charset: 'utf-8',
+              contentType: 'text/html',
+            },
             number: 0,
           },
         ]
@@ -564,7 +631,13 @@ function Tab(props: {
             ...w.docs,
             {
               n,
-              doc: { source: doc.source, baseUrl: at, charset: doc.charset },
+              doc: {
+                source: doc.source,
+                baseUrl: at,
+                charset: doc.charset,
+                contentType: doc.type,
+                headers: doc.headers,
+              },
               number,
             },
           ],
@@ -615,6 +688,7 @@ function Tab(props: {
     };
     const fetcher = network.fetcher(doc.baseUrl);
     const scripts: HtmlScripts = {
+      headers: doc.headers,
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
@@ -648,8 +722,13 @@ function Tab(props: {
         const to = session.go(delta);
         if (to) load(to.url, to.document);
       },
+      // `document.cookie` is the jar the network sends with, a jar a test
+      cookies: network.cookies ?? undefined,
       // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
       webTransport: network.webTransport,
+      // WPT's pywebsocket handlers, on the ports the server chose, over the
+      // runtime's own WebSocket, as the example browser's
+      webSocket: network.webSockets(doc.baseUrl),
       // two peers in one page, over werift
       webRTC: network.webRTC,
       mediaDevices: page.media,
@@ -736,6 +815,7 @@ function Tab(props: {
       }),
       key: n,
       source: doc.source,
+      contentType: doc.contentType,
       charset: doc.charset,
       partial: false,
       baseUrl: doc.baseUrl,
@@ -828,6 +908,10 @@ const MEDIA_PERMISSIONS: Record<string, 'camera' | 'microphone' | 'display'> = {
 };
 
 async function driver(what: string, body: string | null): Promise<string> {
+  if (what === 'delete-cookies') {
+    current?.cookies.clear();
+    return '{}';
+  }
   if (what === 'permission') {
     const { name, state } = JSON.parse(body ?? '{}') as {
       name?: string;
@@ -860,9 +944,45 @@ async function driver(what: string, body: string | null): Promise<string> {
   const { actions } = JSON.parse(body ?? '{}') as {
     actions: Array<{ type: string; actions: Array<Record<string, unknown>> }>;
   };
+  // one sequence at a time, as WebDriver takes them: a test that goes on as
+  // its `keydown` is heard asks for the next while the last has a `keyUp`
+  // to go, and interleaved they hold each other's modifiers
+  const turn = sequences.then(() => perform(server, actions));
+  sequences = turn.catch(() => {});
+  return turn;
+}
+
+/** Where the last action sequence is. */
+let sequences: Promise<unknown> = Promise.resolve();
+/** The buttons and keys actions left down, which a test that ended early
+ *  would leave down for the next: wptrunner releases them between tests. */
+const buttonsDown = new Set<number>();
+const keysDown = new Set<number>();
+
+function releaseActions(): void {
+  const server = harness?.server;
+  if (!server) return;
+  for (const button of buttonsDown) server.injectButton(button, false);
+  for (const key of keysDown) server.injectKey(key, false);
+  buttonsDown.clear();
+  keysDown.clear();
+}
+/** Where the pointer was left: a sequence relative to it goes on from there. */
+let pointerX = 0;
+let pointerY = 0;
+
+type Server = NonNullable<RenderX11Result['server']>;
+
+async function perform(
+  server: Server,
+  actions: Array<{ type: string; actions: Array<Record<string, unknown>> }>,
+): Promise<string> {
+  // a driver is a round trip away: what a page asked for just now, a frame's
+  // worth of focus among it, has been done by the time it arrives
+  await pump(20);
   const ticks = Math.max(0, ...actions.map((s) => s.actions.length));
-  let px = 0;
-  let py = 0;
+  let px = pointerX;
+  let py = pointerY;
   for (let tick = 0; tick < ticks; tick++) {
     for (const source of actions) {
       const a = source.actions[tick];
@@ -873,12 +993,25 @@ async function driver(what: string, body: string | null): Promise<string> {
       } else if (type === 'pointerMove' || type === 'scroll') {
         const x = Number(a.x ?? 0);
         const y = Number(a.y ?? 0);
+        const fromX = px;
+        const fromY = py;
         if (a.origin === 'pointer') {
           px += x;
           py += y;
         } else {
           px = x;
           py = y;
+        }
+        // a move over a time is a move at each frame of it, as WebDriver's
+        // "perform a pointer move" interpolates it
+        const steps =
+          type === 'pointerMove' ? Math.floor(Number(a.duration ?? 0) / 16) : 0;
+        for (let i = 1; i < steps; i++) {
+          server.injectPointerMove(
+            Math.round(fromX + ((px - fromX) * i) / steps),
+            Math.round(fromY + ((py - fromY) * i) / steps),
+          );
+          await pump(16);
         }
         server.injectPointerMove(Math.round(px), Math.round(py));
         if (type === 'scroll') {
@@ -897,27 +1030,53 @@ async function driver(what: string, body: string | null): Promise<string> {
         }
       } else if (type === 'pointerDown' || type === 'pointerUp') {
         const button = Number(a.button ?? 0);
-        server.injectButton(
-          button === 1 ? 2 : button === 2 ? 3 : 1,
-          type === 'pointerDown',
-        );
+        const x =
+          button === 1
+            ? 2
+            : button === 2
+              ? 3
+              : button === 3
+                ? 8
+                : button === 4
+                  ? 9
+                  : 1;
+        server.injectButton(x, type === 'pointerDown');
+        if (type === 'pointerDown') buttonsDown.add(x);
+        else buttonsDown.delete(x);
       } else if (type === 'keyDown' || type === 'keyUp') {
-        const code = server.keymap.keycodeForKeysym(keysymOf(String(a.value)));
-        if (code) server.injectKey(code, type === 'keyDown');
+        // a character on a key's shifted level is that key with Shift, which
+        // WebDriver's virtual keyboard presses by itself and this one must
+        const value = String(a.value);
+        const shifted =
+          SHIFTED[value] ??
+          (/^[A-Z]$/.test(value) ? value.toLowerCase() : null);
+        const sym = keysymOf(shifted ?? value);
+        const code = server.keymap.keycodeForKeysym(sym);
+        const shift = server.keymap.keycodeForKeysym(0xffe1);
+        if (code) {
+          if (shifted && type === 'keyDown') server.injectKey(shift, true);
+          server.injectKey(code, type === 'keyDown');
+          if (shifted && type === 'keyUp') server.injectKey(shift, false);
+          if (type === 'keyDown') keysDown.add(code);
+          else keysDown.delete(code);
+        }
       }
     }
     await pump(16);
   }
+  pointerX = px;
+  pointerY = py;
   await pump(30);
   return '{}';
 }
 
-/** A test's references: `<link rel=match|mismatch href>`. */
+/** A test's references: `<link rel=match|mismatch href>`, under a prefix
+ *  in a drawing, `<html:link>`. */
 function referencesOf(
   source: string,
 ): Array<{ kind: 'match' | 'mismatch'; href: string }> {
   const out: Array<{ kind: 'match' | 'mismatch'; href: string }> = [];
-  for (const tag of source.match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of source.match(/<(?:[\w.-]+:)?link\b[^>]*>/gi) ?? []) {
     const rel = /\brel\s*=\s*["']?(match|mismatch)\b/i.exec(tag);
     const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(tag);
     if (rel && href) {
@@ -939,7 +1098,7 @@ function fuzzyOf(source: string): {
   let allowed = { maxDifference: 0, totalPixels: 0 };
   // the name's quotes are optional, as an attribute's are
   for (const tag of source.match(
-    /<meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
+    /<(?:[\w.-]+:)?meta\b[^>]*name\s*=\s*(?:"fuzzy"|'fuzzy'|fuzzy(?=[\s/>]))[^>]*>/gi,
   ) ?? []) {
     let spec = /\bcontent\s*=\s*["']([^"']*)["']/i.exec(tag)?.[1];
     if (!spec) continue;
@@ -988,21 +1147,24 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
  * loaded (`test-wait.js`): two frames, then `TestRendered` at the root,
  * which a test that waits for its first rendering listens for. Appended as
  * a script that takes itself out as it runs, since the runner has no
- * other way into the page.
+ * other way into the page. In an XML document it has to be in the root, and
+ * in XHTML's namespace to be a script at all.
  */
-function withTestRendered(source: string): string {
+function withTestRendered(source: string, type: string): string {
   if (!/\bclass\s*=\s*["']?[^"'>]*\breftest-wait\b/i.test(source))
     return source;
   const script =
-    '<script>(function(){var s=document.currentScript;if(s)s.remove();' +
+    '(function(){var s=document.currentScript;if(s)s.remove();' +
     'function go(){var r=document.documentElement;' +
     'if(!/\\breftest-wait\\b/.test(r.className))return;' +
     'requestAnimationFrame(function(){requestAnimationFrame(function(){' +
     "r.dispatchEvent(new Event('TestRendered'));});});}" +
     "if(document.readyState==='complete')setTimeout(go,0);" +
     "else addEventListener('load',function(){setTimeout(go,0);},{once:true});" +
-    '})();</script>';
-  return source + script;
+    '})();';
+  if (!isXmlType(type)) return `${source}<script>${script}</script>`;
+  const end = source.lastIndexOf('</');
+  return `${source.slice(0, end)}<script xmlns="http://www.w3.org/1999/xhtml"><![CDATA[${script}]]></script>${source.slice(end)}`;
 }
 
 /** Whether the root still says `reftest-wait` or `test-wait`. */
@@ -1034,13 +1196,19 @@ async function render(
   lastWorkers?.dispose();
   const serviceWorkers = new HtmlServiceWorkers();
   lastWorkers = serviceWorkers;
-  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
+  const cookies = new CookieJar();
+  const network = new HtmlNetwork({
+    connectTimeout: 2500,
+    serviceWorkers,
+    cookies,
+  });
   const page: Current = {
     url,
     results: new Map(),
     done: null,
     errors: [],
     loaded: false,
+    cookies,
     media: fakeMediaDevices(),
     permissions: {},
     watchers: new Set(),
@@ -1058,9 +1226,11 @@ async function render(
     h(Run, {
       key: `${serial++}`,
       first: {
-        source: withTestRendered(doc.source),
+        source: withTestRendered(doc.source, doc.type),
         baseUrl: doc.url,
         charset: doc.charset,
+        contentType: doc.type,
+        headers: doc.headers,
       },
       network,
       page,
@@ -1181,7 +1351,12 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   lastWorkers?.dispose();
   const serviceWorkers = new HtmlServiceWorkers();
   lastWorkers = serviceWorkers;
-  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
+  const cookies = new CookieJar();
+  const network = new HtmlNetwork({
+    connectTimeout: 2500,
+    serviceWorkers,
+    cookies,
+  });
   const url = urlFor(test);
   const page: Current = {
     url,
@@ -1189,6 +1364,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     done: null,
     errors: [],
     loaded: false,
+    cookies,
     media: fakeMediaDevices(),
     permissions: {},
     watchers: new Set(),
@@ -1211,7 +1387,12 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   await show(
     h(Run, {
       key: `${serial++}`,
-      first: { source: doc.source, baseUrl: doc.url, charset: doc.charset },
+      first: {
+        source: doc.source,
+        baseUrl: doc.url,
+        charset: doc.charset,
+        contentType: doc.type,
+      },
       network,
       page,
     }),
@@ -1269,6 +1450,9 @@ process.on('uncaughtException', (error) => {
 
 const tests = readFileSync(listFile, 'utf8').split('\n').filter(Boolean);
 for (const test of tests) {
+  // what a test that ended early left running would be pressed into the next
+  await sequences;
+  releaseActions();
   let outcome: Outcome;
   try {
     const head = await new HtmlNetwork().html(urlFor(test));

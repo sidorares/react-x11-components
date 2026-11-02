@@ -29,7 +29,9 @@ import { DomHandler, Document as DomDocument, Element, Text } from 'domhandler';
 import type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
 import { sheetConditions } from './css/parse.js';
 import type { MediaCondition } from './css/parse.js';
+import { isXmlType, readProlog } from './xml-prolog.js';
 
+export { isXmlType };
 export type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
 export { Element, Text, Comment } from 'domhandler';
 
@@ -92,7 +94,7 @@ export function isClassicScriptType(type: string): boolean {
  * import map, a deferred or an `async` script is no reason to wait.
  */
 export function blocksParser(el: Element, scripting: boolean): boolean {
-  if (el.name !== 'script' || !isStyleOrScript(el)) return false;
+  if (tagOf(el) !== 'script' || !isStyleOrScript(el)) return false;
   const { attribs } = el;
   if (!isClassicScriptType(attribs.type ?? 'text/javascript')) return false;
   if (attribs.nomodule !== undefined) return false;
@@ -108,13 +110,23 @@ export function blocksParser(el: Element, scripting: boolean): boolean {
       continue;
     }
     if (at instanceof Element) {
-      if (at.name === 'template' || (scripting && at.name === 'noscript')) {
-        return false;
-      }
+      const tag = tagOf(at);
+      if (tag === 'template' || (scripting && tag === 'noscript')) return false;
     }
     at = at.parent;
   }
   return true;
+}
+
+/** Where a `<script>` says its source is: a drawing's in `href` or
+ *  `xlink:href` (SVG 2, 15.3), which an XML parser says it is (HTML's says
+ *  nothing of a `<script>` in a drawing). */
+export function scriptUrlOf(el: Element): string | null {
+  const { attribs } = el;
+  if (el.namespace === SVG_NS) {
+    return attribs.href ?? attribs['xlink:href'] ?? null;
+  }
+  return attribs.src ?? null;
 }
 
 /** The `<link>`s and `<style>`s a document's parser made, which alone are
@@ -192,8 +204,35 @@ export function tagOf(node: AnyNode): string {
   if (node.type !== 'tag' && node.type !== 'script' && node.type !== 'style') {
     return '';
   }
+  const { namespace } = node as Element;
+  if (namespace !== undefined) return namedTag(node as Element, namespace);
   const name = (node as Element).name.toLowerCase();
   return name.endsWith(':svg') && isSvgRoot(node as Element) ? 'svg' : name;
+}
+
+/**
+ * The tag of an element that says what namespace it is in: its local name,
+ * whatever prefix it is under, in the three languages this draws, and none
+ * in any other, whose `<div>` is no `<div>` and whose `<svg>` draws nothing
+ * (DOM 4.9). An XML document's HTML keeps its case, so its `<DIV>` is no
+ * `<div>` either; a drawing's and a formula's are lower-cased as the HTML
+ * parser's are, which is the name the code here asks for.
+ */
+function namedTag(el: Element, namespace: string): string {
+  const name = el.name;
+  const local = name.slice(name.indexOf(':') + 1);
+  if (namespace === HTML_NAMESPACE) return local;
+  if (namespace === SVG_NS || namespace === MATHML_NS) {
+    return local.toLowerCase();
+  }
+  return '';
+}
+
+/** An element's local name, as a type selector in an XML document reads it:
+ *  a name in XML has its case and a prefix is no part of it. */
+export function localNameOf(el: Element): string {
+  const { name } = el;
+  return name.slice(name.indexOf(':') + 1);
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -208,6 +247,7 @@ const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
  * to this any more than to a browser reading it as HTML.
  */
 export function isSvgRoot(el: Element): boolean {
+  if (el.namespace !== undefined) return tagOf(el) === 'svg';
   const name = el.name.toLowerCase();
   if (name === 'svg') return true;
   if (!name.endsWith(':svg')) return false;
@@ -1324,7 +1364,7 @@ export class HtmlSource {
   held: Element | null = null;
 
   private _parser: Parser;
-  private _handler: Handler;
+  private _handler: TreeHandler;
   private _written = '';
   private _facts: ScannedFacts = freshFacts();
   /** Whether `document` is a tree handed over (`adopt`), which nothing is
@@ -1356,6 +1396,9 @@ export class HtmlSource {
    *  that yields to its scripts — and the first chunk, which is the whole
    *  document, not worth recording node by node. */
   private _record: ParseRecord | null = null;
+  /** The source and the type `setXml` last read, where the document is XML:
+   *  what a render that changed neither is told by. */
+  private _xml: { source: string; type: string } | null = null;
   /** The scan of the tree as it was where the record's `factsAt` says, which
    *  a scan of what was put in since extends (`_extendFacts`). */
   private _factsBefore: ScannedFacts | null = null;
@@ -1386,7 +1429,12 @@ export class HtmlSource {
     this._pending = null;
     this._made = null;
     this._handler.inserted = null;
+    if (this._xml) (this._handler as unknown as XmlHandler).stops = null;
     let read = false;
+    if (this._xml && !this.complete) {
+      this._parser.resume();
+      read = true;
+    }
     if (this._ahead) {
       this._parser.write(this._ahead);
       this._ahead = '';
@@ -1411,6 +1459,10 @@ export class HtmlSource {
    *  written, into a parser that has not been ended — and re-parses when it
    *  cannot. */
   setSource(source: string, complete: boolean): boolean {
+    if (this._xml) {
+      this._xml = null;
+      this.reset();
+    }
     if (this.yields) {
       this._record = null;
       this._taken = null;
@@ -1462,6 +1514,47 @@ export class HtmlSource {
     this._handler.recording = null;
     if (changed) this._changed();
     return changed;
+  }
+
+  /**
+   * Set the whole source of a document served as XML (`isXmlType`), read by
+   * XML's rules (XML 1.0, HTML 13.4) rather than HTML's. Nothing of it is read
+   * until it has all come: what is wrong with a document decides what it is,
+   * and that may be its last byte. A document that is not well-formed is the
+   * error and nothing of it, as Firefox shows it, and runs nothing. Read
+   * once to know that, it is the tree where the parse waits for nothing, and
+   * where a host runs its scripts and one of them blocks the parser it is
+   * read again as `yields` has it, each one running where the parser met it
+   * and seeing what came before it and no more.
+   */
+  setXml(source: string, type: string, complete: boolean): boolean {
+    if (this._xml?.source === source && this._xml.type === type) return false;
+    if (!complete) {
+      const was = !!this._xml;
+      return this.setSource('', false) || was;
+    }
+    const read = xmlTree(source);
+    const blocks =
+      read.wellFormed &&
+      this.yields &&
+      read.kids.some((kid) => holdsBlockingScript(kid, this.scripting));
+    if (blocks) {
+      this.reset(true);
+      this._xml = { source, type };
+      markXmlDocument(this.document, type);
+      this._input = read.text;
+      this._ending = true;
+      this._readOn();
+      this._changed();
+      return true;
+    }
+    const kids = read.wellFormed ? read.kids : [parserError()];
+    const document = new DomDocument(kids);
+    for (const kid of kids) kid.parent = document;
+    markXmlDocument(document, type);
+    this.adopt(document);
+    this._xml = { source, type };
+    return true;
   }
 
   /** Record what the parser does to the tree from here on, into the record
@@ -1575,6 +1668,7 @@ export class HtmlSource {
    * read anything.
    */
   private _readOn(): boolean {
+    if (this._xml) return this._readOnXml();
     let read = false;
     if (this._ahead) {
       const at = this._feed(this._ahead, 0, this._ahead.length, true);
@@ -1606,6 +1700,27 @@ export class HtmlSource {
       read = true;
     }
     return read;
+  }
+
+  /** `_readOn` in an XML document, which has no `document.write` to read
+   *  around: the parser pauses itself at the script (`XmlHandler.stops`),
+   *  self-closed or not, so nothing cuts the input up to stop at one. */
+  private _readOnXml(): boolean {
+    this._stopped = null;
+    (this._handler as unknown as XmlHandler).stops = (el) => {
+      if (!blocksParser(el, this.scripting)) return false;
+      this._stopped = el;
+      return true;
+    };
+    if (this._input) {
+      const text = this._input;
+      this._input = '';
+      this._parser.write(text);
+    } else this._parser.resume();
+    if (this._hold()) return true;
+    this._parser.end();
+    this.complete = true;
+    return true;
   }
 
   /** Hold the script the last `_feed` stopped after, where it did: what
@@ -1743,6 +1858,7 @@ export class HtmlSource {
    */
   adopt(document: Document): boolean {
     if (this._adopted && this.document === document) return false;
+    this._xml = null;
     this._record = null;
     this._taken = null;
     this._parser.reset();
@@ -1755,12 +1871,13 @@ export class HtmlSource {
     return true;
   }
 
-  /** Start over — a source that is not an extension of what was written. */
-  reset(): void {
+  /** Start over — a source that is not an extension of what was written,
+   *  read as `xml` says. */
+  reset(xml = false): void {
     this._record = null;
     this._taken = null;
     this._parser.reset();
-    const { parser, handler } = createParser();
+    const { parser, handler } = xml ? createXmlParser() : createParser();
     handler.marksSheets = true;
     this._parser = parser;
     this._handler = handler;
@@ -1839,6 +1956,16 @@ export class HtmlSource {
     const trees: { root: ParentNode; sheets: SheetRef[] }[] = [
       { root: this.document, sheets: facts.sheets },
     ];
+    // what an XML document's prolog links, ahead of all it holds
+    if (XML_DOCUMENTS.has(this.document)) {
+      scanElements(
+        facts,
+        instructionSheets(this.document),
+        facts.sheets,
+        false,
+        null,
+      );
+    }
     for (let i = 0; i < trees.length; i += 1) {
       const { root, sheets } = trees[i];
       const shadow = root instanceof ShadowRoot;
@@ -2106,36 +2233,9 @@ function freshFacts(): ScannedFacts {
   };
 }
 
-/**
- * domhandler's handler, with the one rule of HTML's tree construction about
- * text that htmlparser2 leaves out: a newline straight after the start tag
- * of a `<pre>`, a `<listing>` or a `<textarea>` is not content (HTML
- * 13.2.6.4.7, "newlines at the start of pre blocks are ignored as an
- * authoring convenience"). Without it every code block written `<pre>` and
- * a line break began with an empty line. A chunk of a stream that ends
- * between the tag and the newline keeps the rule, since the handler does.
- */
-class Handler extends DomHandler {
-  private _afterPre = false;
-  /** A written `<html>` at the top of the document, and the document's
-   *  body, written or implied: where HTML's parser puts content the markup
-   *  leaves outside them. */
-  private _html: Element | null = null;
-  private _body: Element | null = null;
-  /** The `<head>` HTML's parser implies in a written `<html>` that has
-   *  none, while it is open: htmlparser2 never saw it open, so it is closed
-   *  here, before whatever comes that is not head content. */
-  private _impliedHead: Element | null = null;
-  private _headSeen = false;
-  /** Whether the source declares itself a document, with a doctype at its
-   *  start: one is parsed as HTML's parser parses every document, into an
-   *  `<html>` with its head and its body, written or implied (13.2.6.4.1,
-   *  "initial", and "before html"). A source with none is a fragment. */
-  private _document = false;
-  /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
-   *  does in a document a browser's parser builds, and not in a fragment
-   *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
-  declarative = true;
+/** What both of a document's parsers do to a tree, for `HtmlSource`: the HTML
+ *  parser's handler, and the XML parser's. */
+class TreeHandler extends DomHandler {
   /** Whether the `<link>`s and `<style>`s made here are a document's
    *  parser's (`madeByParser`): a fragment's are not. */
   marksSheets = false;
@@ -2150,17 +2250,6 @@ class Handler extends DomHandler {
   /** What the parser does to the tree while it is set (`HtmlSource.
    *  takeAppended`). */
   recording: ParseRecord | null = null;
-
-  /** How many `<p>`s are open, which saves every block's start tag a walk
-   *  of the stack to find there is none to close. */
-  paragraphs = 0;
-
-  /** HTML's form element pointer (13.2.4.4): the `<form>` the parser met
-   *  last, which outlives its end on the stack, and until its own end tag
-   *  turns another away and owns the controls that come. */
-  form: Element | null = null;
-  /** Whether the `<form>` being opened is that form. */
-  pointing = false;
 
   /** Whether an element is open: its end tag not met yet. */
   isOpen(el: Element): boolean {
@@ -2198,6 +2287,71 @@ class Handler extends DomHandler {
     this.lastNode = null;
   }
 
+  override ontext(data: string): void {
+    // a text written on to that a chunk before this one put in
+    const record = this.recording;
+    const last = this.lastNode;
+    if (
+      record &&
+      last instanceof Text &&
+      !record.addedSet.has(last) &&
+      !record.grownSet.has(last)
+    ) {
+      record.grown.push(last);
+      record.grownSet.add(last);
+    }
+    super.ontext(data);
+  }
+}
+
+/**
+ * domhandler's handler, with the one rule of HTML's tree construction about
+ * text that htmlparser2 leaves out: a newline straight after the start tag
+ * of a `<pre>`, a `<listing>` or a `<textarea>` is not content (HTML
+ * 13.2.6.4.7, "newlines at the start of pre blocks are ignored as an
+ * authoring convenience"). Without it every code block written `<pre>` and
+ * a line break began with an empty line. A chunk of a stream that ends
+ * between the tag and the newline keeps the rule, since the handler does.
+ */
+class Handler extends TreeHandler {
+  private _afterPre = false;
+  /** A written `<html>` at the top of the document, and the document's
+   *  body, written or implied: where HTML's parser puts content the markup
+   *  leaves outside them. */
+  private _html: Element | null = null;
+  private _body: Element | null = null;
+  /** The `<head>` HTML's parser implies in a written `<html>` that has
+   *  none, while it is open: htmlparser2 never saw it open, so it is closed
+   *  here, before whatever comes that is not head content. */
+  private _impliedHead: Element | null = null;
+  private _headSeen = false;
+  /** Whether the source declares itself a document, with a doctype at its
+   *  start: one is parsed as HTML's parser parses every document, into an
+   *  `<html>` with its head and its body, written or implied (13.2.6.4.1,
+   *  "initial", and "before html"). A source with none is a fragment. */
+  private _document = false;
+  /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
+   *  does in a document a browser's parser builds, and not in a fragment
+   *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
+  declarative = true;
+
+  /** How many `<p>`s are open, which saves every block's start tag a walk
+   *  of the stack to find there is none to close. */
+  paragraphs = 0;
+
+  /** What end tag the parser last met of the two it leaves open, with only
+   *  comments and white space since: a comment then goes outside what ended
+   *  (13.2.6.4.19, "after body", and 13.2.6.4.22, "after after body"), and
+   *  anything else back in the body, which is why neither is closed. */
+  ended: 'body' | 'html' | null = null;
+
+  /** HTML's form element pointer (13.2.4.4): the `<form>` the parser met
+   *  last, which outlives its end on the stack, and until its own end tag
+   *  turns another away and owns the controls that come. */
+  form: Element | null = null;
+  /** Whether the `<form>` being opened is that form. */
+  pointing = false;
+
   /**
    * HTML's parser puts a document's content in a `<body>` whether or not
    * the markup wrote one, and htmlparser2's puts it where it stands. So
@@ -2212,6 +2366,7 @@ class Handler extends DomHandler {
    * `<body>` — is left as it was written, and the root box stands in.
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
+    this.ended = null;
     if (name === 'p') this.paragraphs += 1;
     if (name !== 'html') this._impliedHtml();
     if (this._ignored(name, attribs)) return;
@@ -2510,6 +2665,7 @@ class Handler extends DomHandler {
   }
 
   override onclosetag(name?: string): void {
+    this.ended = null;
     if (name === 'p') this.paragraphs -= 1;
     this._afterPre = false;
     // a close htmlparser2 makes is of what it opened, which the implied
@@ -2524,11 +2680,20 @@ class Handler extends DomHandler {
 
   override oncomment(data: string): void {
     this._afterPre = false;
+    const { ended, tagStack } = this;
+    if (!ended) {
+      super.oncomment(data);
+      return;
+    }
+    // a fragment's root stands for the `<html>` it was read in
+    tagStack.push(ended === 'body' ? (this._html ?? this.root) : this.root);
     super.oncomment(data);
+    tagStack.pop();
   }
 
   override ontext(data: string): void {
     if (NOT_SPACE.test(data)) {
+      this.ended = null;
       this._impliedHtml();
       this._openImpliedHead(null);
       this._closeImpliedHead(null);
@@ -2548,20 +2713,309 @@ class Handler extends DomHandler {
         data = data.slice(skip);
       }
     }
-    // a text written on to that a chunk before this one put in
-    const record = this.recording;
-    const last = this.lastNode;
-    if (
-      record &&
-      last instanceof Text &&
-      !record.addedSet.has(last) &&
-      !record.grownSet.has(last)
-    ) {
-      record.grown.push(last);
-      record.grownSet.add(last);
-    }
     super.ontext(data);
   }
+}
+
+/** The documents XML's parser made or a script's API did, each by its
+ *  content type: an XML document is one of these, whatever is in it. */
+export const XML_DOCUMENTS = new WeakMap<Document, string>();
+
+/** Whether any has been made in this process, which most never see. */
+let xmlDocumentsMade = false;
+export function anyXmlDocuments(): boolean {
+  return xmlDocumentsMade;
+}
+
+/** A document made an XML document of a content type. */
+export function markXmlDocument(document: Document, type: string): void {
+  XML_DOCUMENTS.set(document, type);
+  xmlDocumentsMade = true;
+}
+
+/** Whether a document is an XML document, which any element at its top is
+ *  the root element of, where only an `<html>` is in HTML's. */
+export function isXmlDocument(document: AnyNode | null): boolean {
+  return !!document && XML_DOCUMENTS.has(document as Document);
+}
+
+/** Whether an element is the document's root, as `:root` has it: an `<html>`
+ *  whose parent is the document, or which has none, as the one the cascade
+ *  supplies where the markup has none — and not a shadow tree's, whose top is
+ *  under its host. Taken for the root, the top of every tree was what a `rem`
+ *  styled after it measured from, and GitHub's, sized in `rem`s, measured each
+ *  build from the last. So were a fragment's elements and a `<body>` written
+ *  alone, each of them the document's child: a `rem` came to the font size of
+ *  the one styled before it, and in a restyle in place of the last there is. */
+export function isRootElement(el: Element): boolean {
+  const parent = el.parent;
+  if (el.name !== 'html')
+    return parent?.type === 'root' && isXmlDocument(parent);
+  return !parent || (parent.type === 'root' && !(parent instanceof ShadowRoot));
+}
+
+/** The `<link>` a style sheet's processing instruction stands for, by the
+ *  instruction: what everything that reads sheets reads has an element. */
+const INSTRUCTION_SHEETS = new WeakMap<AnyNode, Element>();
+
+/**
+ * The style sheets an XML document's prolog links (CSSOM's "xml-stylesheet"
+ * rules): an `<?xml-stylesheet?>` before the root element, of no type or of
+ * CSS's, that is no alternate. Each is a `<link>` of the document's that is
+ * in no element, so everything that holds a page or a script back for a sheet
+ * of its parser's holds them for this one, and takes it to come first
+ * (`compareDocumentPosition` finds it among no children).
+ */
+export function instructionSheets(document: Document): Element[] {
+  const out: Element[] = [];
+  for (const kid of document.children) {
+    if (isElement(kid)) break;
+    if (kid.type !== 'directive' || kid.name !== '?xml-stylesheet') continue;
+    let link = INSTRUCTION_SHEETS.get(kid);
+    if (!link) {
+      const said = pseudoAttributes(kid.data);
+      const type = said.type?.trim().toLowerCase();
+      const css =
+        said.href &&
+        (!type || type === 'text/css') &&
+        said.alternate?.trim() !== 'yes';
+      if (!css) continue;
+      link = new Element('link', { ...said, rel: 'stylesheet' });
+      link.namespace = HTML_NAMESPACE;
+      link.parent = document;
+      PARSER_SHEETS.add(link);
+      INSTRUCTION_SHEETS.set(kid, link);
+    }
+    out.push(link);
+  }
+  return out;
+}
+
+/** What an instruction says in the form of attributes (XML Stylesheet 1.0),
+ *  its references read: nothing, where any of it is not in that form. */
+function pseudoAttributes(data: string): Record<string, string> {
+  const said: Record<string, string> = {};
+  const rest = data.replace(
+    /\s*([\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')\s*/g,
+    (_, name: string, double?: string, single?: string) => {
+      said[name] = decodeXmlText(double ?? single ?? '');
+      return '';
+    },
+  );
+  return rest ? {} : said;
+}
+
+/** Character references, and XML's five, read. */
+function decodeXmlText(text: string): string {
+  return text.replace(
+    /&(?:(lt|gt|amp|quot|apos)|#(\d+)|#x([\da-fA-F]+));/g,
+    (whole, name?: string, dec?: string, hex?: string) => {
+      if (name) return XML_NAMED[name];
+      const code = dec ? Number(dec) : parseInt(hex!, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+    },
+  );
+}
+
+const XML_NAMED: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  apos: "'",
+};
+
+/** The texts a CDATA section made: a text to everything but a serializer. */
+export const CDATA_SECTIONS = new WeakSet<AnyNode>();
+
+/** What stands in for a document that is not well-formed. */
+export function parserError(): Element {
+  const namespace = 'http://www.mozilla.org/newlayout/xml/parsererror.xml';
+  const error = new Element('parsererror', { xmlns: namespace });
+  error.namespace = namespace;
+  const text = new Text('XML Parsing Error: not well-formed');
+  text.parent = error;
+  error.children.push(text);
+  return error;
+}
+
+/** XML read: what is in the document, and whether it was well-formed. */
+export interface XmlRead {
+  kids: ChildNode[];
+  wellFormed: boolean;
+  /** The markup as `readProlog` left it, which a second reading starts
+   *  from (`HtmlSource.setXml`). */
+  text: string;
+}
+
+/**
+ * XML parsed into nodes, each element in the namespace its `xmlns`
+ * attributes put it in (Namespaces in XML 1.0, 6), and whether it was
+ * well-formed: every end tag the one open, every element closed, one
+ * root, no character a decoder had to replace. htmlparser2 reads XML
+ * leniently, and a document that is not well-formed must run nothing —
+ * Acid3's second XHTML frame has a stray `</strong>`.
+ */
+export function xmlTree(raw: string): XmlRead {
+  const prolog = readProlog(raw);
+  const { text } = prolog;
+  const { parser, handler } = createXmlParser(prolog.defaults);
+  handler.wellFormed = prolog.wellFormed && !text.includes('\ufffd');
+  parser.write(text);
+  if (parser.opened > 0) handler.wellFormed = false;
+  parser.end();
+  const kids = handler.root.children;
+  if (
+    kids.filter(isElement).length !== 1 ||
+    kids.some((k) => k instanceof Text && /[^ \t\n\r]/.test(k.data))
+  ) {
+    handler.wellFormed = false;
+  }
+  for (const kid of kids) kid.parent = null;
+  return { kids, wellFormed: handler.wellFormed, text };
+}
+
+/**
+ * What XML's parser does to a tree: names and attributes as they were
+ * written, each element in the namespace in scope for it, a CDATA section a
+ * text that remembers it was one, and a prefix nothing bound the end of being
+ * well-formed. None of what HTML's parser does for a document, so there is
+ * no `<head>` a document did not write and no `<tbody>` either.
+ */
+class XmlHandler extends TreeHandler {
+  /** The prefixes in scope, an entry for each element open and the
+   *  document's under them, and the default namespace's under `''`. */
+  private _scopes: Map<string, string>[] = [new Map()];
+  /** Whether nothing has been read yet that a well-formed document has not. */
+  wellFormed = true;
+  /** The attributes an `<!ATTLIST>` gives what does not say them. */
+  defaults: ReadonlyMap<string, ReadonlyMap<string, string>> | null = null;
+  /** Asked of each `<script>` the parser closes: true pauses the parser
+   *  behind it, for `HtmlSource` to hold it (`_readOnXml`). */
+  stops: ((script: Element) => boolean) | null = null;
+  /** Pauses the parser, for what `stops` said. */
+  pause: (() => void) | null = null;
+
+  override onopentag(name: string, attribs: Record<string, string>): void {
+    const scopes = this._scopes;
+    const outer = scopes[scopes.length - 1];
+    let own = outer;
+    for (const key in attribs) {
+      if (key !== 'xmlns' && !key.startsWith('xmlns:')) continue;
+      if (own === outer) own = new Map(outer);
+      own.set(key === 'xmlns' ? '' : key.slice(6), attribs[key]);
+    }
+    const defaults = this.defaults?.get(name);
+    if (defaults) {
+      for (const [key, value] of defaults) attribs[key] ??= value;
+    }
+    const colon = name.indexOf(':');
+    const prefix = colon < 0 ? '' : name.slice(0, colon);
+    if (prefix && !own.has(prefix)) this.wellFormed = false;
+    for (const key in attribs) {
+      const at = key.indexOf(':');
+      const of = at < 0 ? '' : key.slice(0, at);
+      if (of && of !== 'xml' && of !== 'xmlns' && !own.has(of)) {
+        this.wellFormed = false;
+      }
+    }
+    super.onopentag(name, attribs);
+    const opened = this.tagStack[this.tagStack.length - 1] as Element;
+    opened.namespace = own.get(prefix) ?? '';
+    // made, as the HTML parser makes one, of no registry where it says so,
+    // and so what it holds (HTML's scoped registries)
+    markParsedRegistry(opened);
+    if (this.marksSheets) {
+      const tag = tagOf(opened);
+      if (tag === 'link' || tag === 'style') PARSER_SHEETS.add(opened);
+    }
+    scopes.push(own);
+  }
+
+  override onclosetag(): void {
+    this._scopes.pop();
+    const closing = this.tagStack[this.tagStack.length - 1];
+    super.onclosetag();
+    if (
+      closing instanceof Element &&
+      tagOf(closing) === 'script' &&
+      this.stops?.(closing)
+    ) {
+      this.pause?.();
+    }
+  }
+
+  override oncdatastart(): void {
+    this.lastNode = null;
+  }
+
+  override oncdataend(): void {
+    if (this.lastNode) CDATA_SECTIONS.add(this.lastNode as Text);
+    this.lastNode = null;
+  }
+
+  override onprocessinginstruction(name: string, data: string): void {
+    // the prolog's declaration is no node (XML 1.0, 2.8)
+    if (/^\?xml$/i.test(name)) return;
+    super.onprocessinginstruction(
+      name,
+      name.startsWith('!')
+        ? data
+        : data.slice(name.length).replace(/\?$/, '').replace(/^\s+/, ''),
+    );
+  }
+}
+
+/** What `XmlParser` reads of htmlparser2's parser beyond its typed surface:
+ *  the names open, top first, and a tag's name. */
+interface XmlParserInternals {
+  readonly stack: string[];
+  getSlice(start: number, end: number): string;
+}
+
+/** htmlparser2's parser in XML's mode, with what it does not say kept: an
+ *  end tag that is not the one open ends being well-formed. */
+class XmlParser extends Parser {
+  override onclosetag(start: number, endIndex: number): void {
+    const self = this as unknown as XmlParserInternals;
+    if (self.stack[0] !== self.getSlice(start, endIndex)) {
+      (this.handler as XmlHandler).wellFormed = false;
+    }
+    super.onclosetag(start, endIndex);
+  }
+
+  readonly handler: XmlHandler;
+
+  constructor(handler: XmlHandler) {
+    super(handler, { xmlMode: true, decodeEntities: true });
+    this.handler = handler;
+  }
+
+  /** How many elements are open. */
+  get opened(): number {
+    return (this as unknown as XmlParserInternals).stack.length;
+  }
+}
+
+function createXmlParser(defaults: XmlHandler['defaults'] = null): {
+  parser: XmlParser;
+  handler: XmlHandler;
+} {
+  const handler = new XmlHandler(null, {
+    withStartIndices: false,
+    withEndIndices: false,
+  });
+  handler.defaults = defaults;
+  const parser = new XmlParser(handler);
+  handler.pause = () => parser.pause();
+  return { parser, handler };
+}
+
+/** Whether a node is or holds a script that blocks the parser. */
+function holdsBlockingScript(node: AnyNode, scripting: boolean): boolean {
+  if (!isElement(node)) return false;
+  if (blocksParser(node, scripting)) return true;
+  return node.children.some((kid) => holdsBlockingScript(kid, scripting));
 }
 
 /**
@@ -3080,9 +3534,12 @@ class DocumentParser extends Parser {
   private _open(name: string): void {
     const self = this as unknown as ParserInternals;
     const { stack } = self;
-    // a head ends at the first thing that is not head content
-    if (
-      stack[0] === 'head' &&
+    // a head ends at the first thing that is not head content, with what
+    // stands in for it where the markup wrote another `<head>` or `<html>` in
+    // it (`_ignored`): with one of those left, the body opened in the head
+    while (
+      (stack[0] === 'head' ||
+        (stack[0] === 'html' && stack.includes('head'))) &&
       !HEAD_CONTENT.has(name) &&
       name !== 'head' &&
       name !== 'html'
@@ -3415,8 +3872,9 @@ class DocumentParser extends Parser {
       (closes < 0 || this._isHtml(closes))
     ) {
       // a body and a document end where the input does: what comes after
-      // them goes where the last of what they held left it
+      // them goes where the last of what they held left it, but for a comment
       if (name === 'form') this._closeForm(closes);
+      else if (closes >= 0) self.cbs.ended = name as 'body' | 'html';
     } else if (closes >= 0) {
       // the adoption agency would move a block out of this; it stays where
       // it is, and open, as its end tag expects

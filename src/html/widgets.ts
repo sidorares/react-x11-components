@@ -67,6 +67,7 @@ import type {
   DomEventInit,
   HtmlDomEventType,
 } from './dom-events.js';
+import { loadEncodings, loadedEncodings } from './encoding.js';
 import {
   FormState,
   buttonType,
@@ -76,6 +77,7 @@ import {
   controlsOf,
   firstInvalid,
   formOwner,
+  formEncoding,
   formSubmission,
   implicitSubmission,
   inputType,
@@ -84,11 +86,13 @@ import {
   optionElements,
   optionValue,
   radioGroup,
+  rangeValue,
   setIndeterminate,
   setUserValidity,
 } from './form.js';
 import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
+import { RangeWidget } from './range.js';
 
 const h = React.createElement;
 
@@ -100,6 +104,8 @@ export interface FormsOptions {
   view: React.RefObject<HtmlViewNode | null>;
   /** The URL the document came from: an empty `action` is it. */
   baseUrl: string | null | undefined;
+  /** The label of the document's encoding, which its forms are sent in. */
+  charset?: string;
   onControlChange?: (element: Element, value: string | boolean) => void;
   onSubmit?: (submission: FormSubmission) => void;
   /** Ask the user for files, for a file input: `HtmlProps.onPickFiles`. */
@@ -214,6 +220,7 @@ export function useForms(options: FormsOptions): Forms {
   const {
     view,
     baseUrl,
+    charset,
     onControlChange,
     onSubmit,
     onPickFiles,
@@ -280,6 +287,11 @@ export function useForms(options: FormsOptions): Forms {
       }),
     [view, forms],
   );
+
+  // Each range's way to show what `forms` holds: what it holds moves with a
+  // drag and with a script's `value`, each of which reaches one widget and
+  // no render of the document's.
+  const ranges = React.useMemo(() => new Map<Element, () => void>(), []);
 
   // Whose picker is open: the `<select>` whose menu is down, as its widget
   // tells it (`onOpenChange`) or a script's `showPicker()` asks for it. The
@@ -365,10 +377,15 @@ export function useForms(options: FormsOptions): Forms {
         fire('focusin', el, { relatedTarget: was });
       }
       // what accepts typing shows however it took the focus (Selectors 4,
-      // 9.4); what a script focused, as its ask said
+      // 9.4); what a script focused, as its ask said, and a range as a
+      // button would, which a press lights no ring on
       const ask = asked.current;
       if (ask?.el === el) asked.current = null;
-      const visible = isTextField(el) || ask?.el !== el || ask.visible;
+      const visible =
+        isTextField(el) ||
+        (ask?.el === el
+          ? ask.visible
+          : !isRange(el) || lastInput.current !== 'pointer');
       view.current?.setFocus(el, visible);
       return;
     }
@@ -453,12 +470,19 @@ export function useForms(options: FormsOptions): Forms {
   /** The entry list, built as the form is now, and sent. */
   const send = (form: Element, submitter: Element | null, point?: Point) => {
     if (!onSubmit) return;
+    // what a form names in `accept-charset` is the first its document asks
+    // for, and `<Html>` has loaded nothing for it
+    if (formEncoding(form, charset) !== 'UTF-8' && !loadedEncodings()) {
+      void loadEncodings().then(() => send(form, submitter, point));
+      return;
+    }
     const node = view.current;
     const submission = formSubmission(form, submitter, {
       base: node?.documentBase ?? baseUrl ?? null,
       documentUrl: baseUrl ?? null,
       live,
       point,
+      encoding: charset,
     });
     if (submission) onSubmit(submission);
   };
@@ -748,6 +772,7 @@ export function useForms(options: FormsOptions): Forms {
   const ctx: ControlContext = {
     forms,
     widgets,
+    ranges,
     picker: picker.current,
     pickerChanged,
     answers,
@@ -764,6 +789,10 @@ export function useForms(options: FormsOptions): Forms {
     selected: (el) => {
       showValidity(el);
       fire('input', el);
+      fire('change', el);
+    },
+    settled: (el) => {
+      showValidity(el);
       fire('change', el);
     },
     submitFrom: (field) => {
@@ -812,6 +841,14 @@ export function useForms(options: FormsOptions): Forms {
       if (tag === 'select') {
         forms.remember(el);
         touch(setSelectedOption(el, String(value)));
+        return true;
+      }
+      if (isRange(el)) {
+        const was = answers(el);
+        forms.setTyped(el, rangeValue(el, String(value)), true);
+        ranges.get(el)?.();
+        const moved = answersMoved(el, was);
+        if (moved) touch(moved);
         return true;
       }
       if (!isTextField(el)) return false;
@@ -1078,6 +1115,8 @@ function takesFocus(node: DrawnNode): boolean {
 interface ControlContext {
   forms: FormState;
   widgets: WidgetBoxes;
+  /** What asks each range's widget to show what it holds. */
+  ranges: Map<Element, () => void>;
   /** The `<select>` whose menu is down, or null. */
   picker: Element | null;
   /** A `<select>`'s widget says its menu went down, or came up. */
@@ -1108,6 +1147,8 @@ interface ControlContext {
   watchSelection: (el: Element) => void;
   /** A `<select>` was given another option: its `input` and `change`. */
   selected: (el: Element) => void;
+  /** What a range was moved to is settled: its `change`. */
+  settled: (el: Element) => void;
   /** Enter in a text field: its form's implicit submission. */
   submitFrom: (field: Element) => void;
 }
@@ -1232,7 +1273,16 @@ function renderControl(
         ...order,
         ...(ownFont && { native: false }),
         style: { width: '100%', height: '100%' },
-        onPress: (ev) => ctx.click(el, modifiersOf(ev), () => ctx.press(el)),
+        // a key that presses it is a click of no count, and no pointer's
+        onPress: (ev) =>
+          ctx.click(
+            el,
+            {
+              ...modifiersOf(ev),
+              ...(!(ev as { detail?: number }).detail && { detail: 0 }),
+            },
+            () => ctx.press(el),
+          ),
       });
       break;
     case 'file': {
@@ -1281,6 +1331,28 @@ function renderControl(
           filesLabel(el, several),
         ),
       );
+      break;
+    }
+    case 'range': {
+      const content = rect.bare!;
+      widget = h(RangeWidget, {
+        element: el,
+        look: rect.range!,
+        forms,
+        disabled,
+        ...order,
+        size: { width: content.width, height: content.height },
+        reach: {
+          top: content.y - rect.y,
+          right: rect.x + rect.width - content.x - content.width,
+          bottom: rect.y + rect.height - content.y - content.height,
+          left: content.x - rect.x,
+        },
+        moved: typed,
+        settled: () => ctx.settled(el),
+        focused: (on) => ctx.focused(el, on),
+        redraws: ctx.ranges,
+      });
       break;
     }
     case 'select': {
@@ -1847,7 +1919,20 @@ function isTextField(el: Element): boolean {
   );
 }
 
-const CHECKABLE = new Set(['checkbox', 'radio', 'hidden', 'file', 'image']);
+const CHECKABLE = new Set([
+  'checkbox',
+  'radio',
+  'hidden',
+  'file',
+  'image',
+  'range',
+]);
+
+/** Whether a control is a range, which holds what a field does and has a
+ *  `change` of its own, as it is let go of (`range.ts`). */
+function isRange(el: Element): boolean {
+  return tagOf(el) === 'input' && inputType(el) === 'range';
+}
 
 /** What a file input says beside its button. */
 function filesLabel(el: Element, several: boolean): string {

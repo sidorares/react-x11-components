@@ -48,6 +48,14 @@
 import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
+import {
+  bomEncoding,
+  decodeInEncoding,
+  metaEncoding,
+  readyFor,
+  sniffEncoding,
+  sniffXmlEncoding,
+} from './encoding.js';
 import type { CookieJar } from './cookies.js';
 import type { HtmlServiceWorkers } from './service-workers.js';
 import { downloadName } from './download.js';
@@ -61,7 +69,11 @@ import {
   varyMatches,
 } from './http-cache.js';
 import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
-import type { ResourceRequest, ResourceResult } from './resources.js';
+import type {
+  ResourceCors,
+  ResourceRequest,
+  ResourceResult,
+} from './resources.js';
 import { NO_WEBRTC, deferredConnection } from './rtc.js';
 import type { HtmlWebRTC } from './rtc.js';
 import { offeredCapabilities } from './rtc-codecs.js';
@@ -76,6 +88,7 @@ import type {
 } from './socket.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { nodeModule } from './scripts/platform.js';
+import { isXmlType } from './xml-prolog.js';
 import type {
   AbortControllerClass,
   AbortSignalLike,
@@ -338,6 +351,8 @@ export interface Fetched {
   /** The `charset` parameter, when the server named one. */
   charset: string | null;
   bytes: Uint8Array;
+  /** Its response's headers, where it came over HTTP. */
+  headers?: [string, string][];
 }
 
 /**
@@ -377,6 +392,9 @@ export interface DocumentResponse {
   disposition?: string | null;
   /** Its `Content-Length`, where it said. */
   size?: number | null;
+  /** Its response's headers, for what a document says of itself
+   *  (`HtmlScripts.headers`). */
+  headers?: [string, string][];
   /** Its body with no limit on it, for a host that saves it: read this or
    *  `body`, and never both. */
   whole?: AsyncIterable<Uint8Array>;
@@ -456,7 +474,14 @@ function fetchedOf(url: string, response: HtmlCachedResponse): Fetched {
   const { type, charset } = contentType(
     headerOf(response.headers, 'content-type'),
   );
-  return { url, status: response.status, type, charset, bytes: response.bytes };
+  return {
+    url,
+    status: response.status,
+    type,
+    charset,
+    bytes: response.bytes,
+    headers: response.headers,
+  };
 }
 
 interface Queued {
@@ -496,6 +521,8 @@ export class HtmlNetwork {
   private readonly _webRTC: boolean;
   private _peers: HtmlWebRTC | null = null;
   private readonly _webSocket: boolean;
+  /** Whose opening handshake each host and port waits for. */
+  private readonly _socketTurns = new Map<string, Promise<void>>();
   private readonly _cookies: CookieJar | null;
   private readonly _serviceWorkers: HtmlServiceWorkers | null;
   /** Who is told of each request (`observe`), and the last id handed out. */
@@ -609,7 +636,9 @@ export class HtmlNetwork {
    * says what the handshake was answered with — Node's, from 24, through
    * undici's `undici:websocket:open` channel — its `Set-Cookie` is stored;
    * Bun says nothing of it. A runtime with no `WebSocket`, Node 20, fails
-   * every socket, as with no network.
+   * every socket, as with no network. One opening handshake to a host and
+   * port goes at a time (RFC 6455, 4.1), each waiting for the one before to
+   * be answered or to fail, or for `HANDSHAKE_TURN_MS`.
    */
   webSockets(page: string): HtmlWebSocket {
     if (!this._webSocket) return NO_WEBSOCKET;
@@ -622,6 +651,7 @@ export class HtmlNetwork {
           language: this._language,
           cookies: this._cookies,
           site,
+          turns: this._socketTurns,
         });
       },
     };
@@ -703,10 +733,16 @@ export class HtmlNetwork {
     url: string,
     init: Omit<Parameters<HtmlTransport>[1], 'redirect'>,
     cookies: CookieRequest | null,
+    /** Whether a redirect is answered as it is, for whoever takes the next
+     *  hop to take it (`FetchRequest.redirect`). */
+    manual = false,
   ): Promise<ResponseLike> {
     const jar = this._cookies;
     if (!jar || !cookies || cookies.credentials === 'omit') {
-      return this._send(url, { ...init, redirect: 'follow' });
+      return this._send(url, {
+        ...init,
+        redirect: manual ? 'manual' : 'follow',
+      });
     }
     let at = url;
     let method = init.method;
@@ -742,7 +778,7 @@ export class HtmlNetwork {
       });
       if (include) jar.store(at, setCookies(response.headers), context);
       const location = response.headers.get('location');
-      if (!REDIRECTS.has(response.status) || location === null) {
+      if (manual || !REDIRECTS.has(response.status) || location === null) {
         return answered(
           response,
           response.url || at,
@@ -1003,8 +1039,9 @@ export class HtmlNetwork {
     kind: ResourceKind,
     page: string,
     signal?: AbortSignalLike,
+    cors?: ResourceCors,
   ): Promise<Fetched | null> {
-    return this.load(url, kind, page, signal).then((loaded) =>
+    return this.load(url, kind, page, signal, cors).then((loaded) =>
       'fetched' in loaded ? loaded.fetched : null,
     );
   }
@@ -1015,21 +1052,26 @@ export class HtmlNetwork {
     kind: ResourceKind,
     page: string,
     signal?: AbortSignalLike,
+    cors?: ResourceCors,
   ): Promise<Loaded> {
     const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
-    if (allowed !== url) return this.load(allowed, kind, page, signal);
+    if (allowed !== url) return this.load(allowed, kind, page, signal, cors);
     const scheme = schemeOf(url);
     if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
       return refused;
     }
     if (!['http', 'https', 'data', 'file'].includes(scheme)) return refused;
     const http = scheme === 'http' || scheme === 'https';
-    const key = this._cacheKey(url, page);
+    // what a CORS request is answered is its own: another origin's answer to
+    // a request with an `Origin` is no answer to one with none
+    const key =
+      this._cacheKey(url, page) +
+      (cors ? ` cors ${cors.origin} ${cors.mode}` : '');
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
-    const headers = http ? this._headers(kind, url, page) : null;
+    const headers = http ? this._headers(kind, url, page, cors) : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
     if (kept && this._answers(kept, headers)) {
@@ -1068,6 +1110,7 @@ export class HtmlNetwork {
               signal,
               kept?.response ?? null,
               id,
+              cors,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1149,6 +1192,7 @@ export class HtmlNetwork {
     kind: ResourceKind,
     url: string,
     page: string,
+    cors?: ResourceCors,
   ): Record<string, string> {
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
@@ -1157,6 +1201,7 @@ export class HtmlNetwork {
     };
     const referrer = referrerFor(page, url);
     if (referrer) headers.referer = referrer;
+    if (cors) headers.origin = cors.origin;
     return headers;
   }
 
@@ -1202,6 +1247,7 @@ export class HtmlNetwork {
     candidate: HtmlCachedResponse | null,
     /** Its observers' id for it (`observe`), 0 for none. */
     id = 0,
+    cors?: ResourceCors,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1220,6 +1266,7 @@ export class HtmlNetwork {
         limit: this._resourceLimit,
         page,
         id,
+        cors,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1433,6 +1480,7 @@ export class HtmlNetwork {
       charset,
       disposition: response.headers.get('content-disposition'),
       size: Number(response.headers.get('content-length')) || null,
+      headers: [...response.headers.entries()],
       body: this._observed(id, arriving(bodyOf(response, MAX_DOCUMENT), stall)),
       whole: this._observed(id, arriving(bodyOf(response, Infinity), stall)),
       hold: stall.hold,
@@ -1477,6 +1525,7 @@ export class HtmlNetwork {
       charset,
       disposition: header('content-disposition'),
       size: Number(header('content-length')) || null,
+      headers: response.headers,
       body: chunks,
       whole: chunks,
     };
@@ -1529,6 +1578,10 @@ export class HtmlNetwork {
       /** The document it is made from, where that is not `page`: a
        *  frame's (`FetchRequest.client`). */
       client?: string;
+      /** A redirect answered as it is (`FetchRequest.redirect`). */
+      redirect?: 'follow' | 'error' | 'manual';
+      /** An `Origin` of `null` (`FetchRequest.opaqueOrigin`). */
+      opaqueOrigin?: boolean;
     },
     page: string,
     signal: AbortSignalLike,
@@ -1568,7 +1621,7 @@ export class HtmlNetwork {
     headers.accept ??= '*/*';
     // a frame's request is the frame's, and its site for cookies the page's
     const client = request.client ?? page;
-    headers.origin = originOf(client);
+    headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
     const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
     const method = request.method.toUpperCase();
@@ -1616,11 +1669,13 @@ export class HtmlNetwork {
           },
           {
             credentials: request.credentials ?? 'same-origin',
-            origin: originOf(client),
-            site: page,
+            origin: request.opaqueOrigin ? 'null' : originOf(client),
+            // no document of no origin is same-site with anything
+            site: request.opaqueOrigin ? 'about:blank' : page,
             topLevel: false,
             initiator: null,
           },
+          request.redirect === 'manual',
         );
       });
     } catch (error) {
@@ -1682,9 +1737,13 @@ export class HtmlNetwork {
         );
       }
       const kind = request.kind;
-      return this.resource(request.url, kind, page, options.signal).then(
-        (fetched) => (fetched ? resourceResult(fetched, kind) : null),
-      );
+      return this.resource(
+        request.url,
+        kind,
+        page,
+        options.signal,
+        request.cors,
+      ).then((fetched) => (fetched ? resourceResult(fetched, kind) : null));
     };
   }
 
@@ -1707,15 +1766,16 @@ export class HtmlNetwork {
         const { bytes: _none, ...streamed } = answer;
         return { ...streamed, body: '' };
       }
+      await readyFor(charset);
       return { ...answer, body: decodeText(answer.bytes, charset) };
     };
   }
 
   /**
    * A document, all of it, as text: where the address ended up after
-   * redirects, its status, its type and the encoding it was decoded from —
-   * the response's, a `<meta>`'s in its first kilobyte, or UTF-8. What a
-   * host that shows one page hands `<Html source baseUrl>`; one that wants
+   * redirects, its status, its type and the name of the encoding it was
+   * decoded from (`sniffEncoding`). What a host that shows one page hands
+   * `<Html source baseUrl charset>`; one that wants
    * a page to appear as it arrives streams it from `document`. Throws a
    * `NetworkError` where there is no response at all; an HTTP error is a
    * response, and its page is answered.
@@ -1729,19 +1789,24 @@ export class HtmlNetwork {
     type: string;
     charset: string;
     source: string;
+    headers: [string, string][];
   }> {
     const signal = options.signal ?? new AbortController().signal;
     const response = await this.document(url, signal, options.post ?? null);
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const bytes = concat(chunks);
-    const charset = response.charset ?? sniffCharset(bytes) ?? 'utf-8';
+    const charset = isXmlType(response.type)
+      ? sniffXmlEncoding(bytes, response.charset)
+      : sniffEncoding(bytes, response.charset);
+    await readyFor(charset);
     return {
       url: response.url,
       status: response.status,
       type: response.type,
       charset,
       source: decodeText(bytes, charset),
+      headers: response.headers ?? [],
     };
   }
 
@@ -1811,6 +1876,7 @@ export class HtmlNetwork {
       limit: number;
       page: string;
       id: number;
+      cors?: ResourceCors;
     },
   ): Promise<Answer> {
     try {
@@ -1830,6 +1896,7 @@ export class HtmlNetwork {
       limit: number;
       page: string;
       id: number;
+      cors?: ResourceCors;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -1838,12 +1905,19 @@ export class HtmlNetwork {
       const requestTime = Date.now();
       this._sent(id);
       // a page's subresource carries its cookies, as a browser's `no-cors`
-      // request does (credentials mode `include`)
+      // request does (credentials mode `include`); one asked for by CORS, as
+      // a module is, only as far as it says
+      const { cors } = options;
       const response = await this._exchange(
         url,
         { method: 'GET', headers: options.headers, signal: stall.signal },
         {
-          credentials: 'include',
+          credentials:
+            !cors ||
+            cors.mode === 'use-credentials' ||
+            originOf(url) === cors.origin
+              ? 'include'
+              : 'omit',
           origin: originOf(options.page),
           site: options.page,
           topLevel: false,
@@ -1870,6 +1944,7 @@ export class HtmlNetwork {
           type,
           charset,
           bytes: concat(chunks),
+          headers: [...response.headers.entries()],
         },
         redirected: response.redirected,
         headers: [...response.headers.entries()],
@@ -1958,6 +2033,45 @@ function watchHandshakes(): Promise<void> {
   ));
 }
 
+/** How long a socket waits for the handshake before it to the same host and
+ *  port. A server that never answers holds its own socket, which has no
+ *  bound here, and not every socket after it. */
+const HANDSHAKE_TURN_MS = 30000;
+
+/**
+ * A place in the line of opening handshakes to `url`'s host and port (RFC
+ * 6455, 4.1, step 2): `ready` settles when the one before is done, and
+ * `done` is called once this one is. Keyed by name where the RFC has the
+ * address: a name is what the runtime's socket hands over, and two names of
+ * one server run side by side, which no server minds.
+ */
+function socketTurn(
+  turns: Map<string, Promise<void>>,
+  url: string,
+): { ready: Promise<void>; done(): void } {
+  const { host } = new URL(url);
+  const ready = turns.get(host) ?? Promise.resolve();
+  let finish = (): void => {};
+  const mine = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const last = ready.then(() => mine);
+  turns.set(host, last);
+  let timer: unknown = null;
+  const done = (): void => {
+    if (timer !== null) stallClock.disarm(timer);
+    timer = null;
+    finish();
+  };
+  void ready.then(() => {
+    timer = stallClock.arm(done, HANDSHAKE_TURN_MS);
+  });
+  void last.then(() => {
+    if (turns.get(host) === last) turns.delete(host);
+  });
+  return { ready, done };
+}
+
 /** A connection over the runtime's `WebSocket`, its events told in the
  *  order they came. */
 function runtimeSocket(
@@ -1968,6 +2082,7 @@ function runtimeSocket(
     language: string;
     cookies: CookieJar | null;
     site: string;
+    turns: Map<string, Promise<void>>;
   },
 ): WebSocketConnectionLike {
   const Native = (globalThis as { WebSocket?: RuntimeWebSocketClass })
@@ -1996,6 +2111,7 @@ function runtimeSocket(
   const cookie = jar?.header(request.url, context);
   if (cookie) headers.cookie = cookie;
 
+  const turn = socketTurn(options.turns, request.url);
   let ws: RuntimeWebSocket | null = null;
   /** Abandoned before the runtime's socket was made. */
   let abandoned = false;
@@ -2008,7 +2124,10 @@ function runtimeSocket(
     else fn();
   };
   const make = (): void => {
-    if (abandoned) return;
+    if (abandoned) {
+      turn.done();
+      return;
+    }
     let socket: RuntimeWebSocket;
     try {
       socket = new Native(request.url, {
@@ -2017,12 +2136,14 @@ function runtimeSocket(
       });
     } catch (error) {
       done = true;
+      turn.done();
       events.failed(String((error as Error)?.message ?? error));
       return;
     }
     ws = socket;
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
+      turn.done();
       // undici publishes the handshake's answer just after `open`
       held = [];
       void Promise.resolve().then(() => {
@@ -2064,12 +2185,14 @@ function runtimeSocket(
     socket.onerror = (event) =>
       inOrder(() => {
         done = true;
+        turn.done();
         const message = event?.message ?? (event?.error as Error)?.message;
         events.failed(message ? String(message) : 'the connection failed.');
       });
     socket.onclose = (event) =>
       inOrder(() => {
         done = true;
+        turn.done();
         events.closed(
           Number(event?.code ?? 1006),
           String(event?.reason ?? ''),
@@ -2079,8 +2202,7 @@ function runtimeSocket(
   };
   // the handshake's answer is watched for where there is a jar to keep its
   // cookies in, before the first socket is made
-  if (jar) void watchHandshakes().then(make);
-  else make();
+  void Promise.all([turn.ready, jar && watchHandshakes()]).then(make);
   return {
     send(data) {
       ws?.send(data);
@@ -2154,6 +2276,8 @@ export function resourceResult(
       kind: 'script',
       bytes: fetched.bytes,
       charset: fetched.charset ?? undefined,
+      url: fetched.url,
+      headers: fetched.headers,
     };
   }
   // a page or text where an image was asked for is a document, which an
@@ -2639,6 +2763,7 @@ const TYPES: Record<string, string> = {
   '.html': 'text/html',
   '.htm': 'text/html',
   '.xhtml': 'application/xhtml+xml',
+  '.xht': 'application/xhtml+xml',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -2874,23 +2999,14 @@ export function escapeHtml(text: string): string {
 /** The encoding a document names in its first kilobyte: a byte order mark,
  *  or a `<meta charset>` or its `http-equiv` spelling (HTML 13.2.3.2). */
 export function sniffCharset(bytes: Uint8Array): string | null {
-  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
-    return 'utf-8';
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be';
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le';
-  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 1024));
-  const m = /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head);
-  return m ? m[1].toLowerCase() : null;
+  return bomEncoding(bytes) ?? metaEncoding(bytes);
 }
 
-/** Bytes as text in an encoding by its label, or UTF-8 where it names none
- *  the runtime knows. */
+/** Bytes as text in an encoding by its label, or UTF-8 where the label names
+ *  none. A legacy encoding wants `readyFor` awaited first: see
+ *  `decodeInEncoding`. */
 export function decodeText(bytes: Uint8Array, charset: string | null): string {
-  try {
-    return new TextDecoder(charset ?? 'utf-8').decode(bytes);
-  } catch {
-    return new TextDecoder('utf-8').decode(bytes);
-  }
+  return decodeInEncoding(bytes, charset);
 }
 
 // --- for a component -----------------------------------------------------------

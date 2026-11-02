@@ -32,6 +32,7 @@ import { hx } from '../hx.js';
 import { throughWorker, useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
+import { SB_FORMS, SB_POPUPS, SB_TOP_GESTURE } from './sandbox.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
@@ -73,7 +74,11 @@ export function embeddedMounts(
   return (rect) => {
     const known = rect.kind === 'iframe' ? context() : null;
     if (!known) return null;
-    return h(FramePage, { frame: rect.element, context: known });
+    return h(FramePage, {
+      frame: rect.element,
+      context: known,
+      scheme: rect.colorScheme,
+    });
   };
 }
 
@@ -147,9 +152,11 @@ function keyOf(document: Document): number {
 function FramePage({
   frame,
   context,
+  scheme,
 }: {
   frame: Element;
   context: FrameContext;
+  scheme: 'light' | 'dark';
 }): ReactElement | null {
   const host = context.parent.host;
   const find = () => host.frames().find((f) => f.frame === frame) ?? null;
@@ -168,6 +175,7 @@ function FramePage({
     url: shown.url,
     realm: shown.realm,
     context,
+    scheme,
   });
 }
 
@@ -177,6 +185,7 @@ function FrameDocument({
   url,
   realm,
   context,
+  scheme,
   undrawn = false,
 }: {
   frame: Element;
@@ -184,12 +193,16 @@ function FrameDocument({
   url: string;
   realm: boolean;
   context: FrameContext;
+  /** The element's colour scheme, where it is drawn. */
+  scheme?: 'light' | 'dark';
   undrawn?: boolean;
 }): ReactElement {
   const handle = useHtmlHandle();
   const scroller = useRef<ScrollableNode | null>(null);
   const host = context.parent.host;
   const outer = context.seams;
+  /** What the document's sandbox takes from it, which only the host knows. */
+  const sandbox = host.shared.sandboxes.get(document) ?? 0;
   const seams: ScriptsOptions = {
     ...outer,
     // the frame's own pane: its size and its scroll, in the page's zoom —
@@ -268,11 +281,13 @@ function FrameDocument({
   ) => {
     const keyword = target.toLowerCase();
     if (keyword === '_top' || keyword === '_parent') {
-      outer.navigate(to, 'here');
+      // a link followed is a gesture
+      if (!(sandbox & SB_TOP_GESTURE)) outer.navigate(to, 'here');
       return;
     }
     const where = navigableFor(document, target);
     if (where === 'tab') {
+      if (sandbox & SB_POPUPS) return;
       const { noopener, noreferrer } = linkOpener(target, rel);
       const runner = scripts.runner?.();
       if (!runner?.followTarget(to, target, noopener, noreferrer, post)) {
@@ -316,6 +331,7 @@ function FrameDocument({
       },
       onSubmit: (submission) => {
         const { url: to, method, body, contentType, target } = submission;
+        if (sandbox & SB_FORMS) return;
         if (!/^(?:https?|file|data):/i.test(to)) return;
         send(
           target,
@@ -330,7 +346,10 @@ function FrameDocument({
       onScript: scripts.onScript,
       onParsed: scripts.onParsed,
       onLoaded: scripts.onLoaded,
-      onDomEvent: scripts.onDomEvent,
+      // a document of the page realm's has its events heard there
+      onDomEvent: realm
+        ? scripts.onDomEvent
+        : (event) => (context.parent.dispatch(event) ? undefined : false),
       onDocument: scripts.onDocument,
       onElementScroll: scripts.onElementScroll,
       stylesheet: scripts.stylesheet,
@@ -342,6 +361,7 @@ function FrameDocument({
       // query lists' `change`; and its own CSS transitions' events, which
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
+        _embedderScheme: scheme,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,

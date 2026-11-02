@@ -26,6 +26,7 @@ import {
   XK_ESCAPE,
   XK_LEFT,
   XK_RETURN,
+  XK_TAB,
 } from 'react-x11/keysyms';
 import type { DrawnNode } from 'react-x11';
 
@@ -775,6 +776,49 @@ test('a script the parser meets runs there, and sees the document only as far as
     await rootLog(doc, (t) => t.includes('ready')),
     'head:true:loading:s1:true:1 body:true:true:2:s2:loading end:true ready:interactive',
   );
+});
+
+test('document.open starts a document again from nothing, and what a page builds in it stays through close', async () => {
+  // an analytics loader on tldraw makes a frame, and `open()`, an `<html>`,
+  // `appendChild` and `close()` in its document: the `<html>` about:blank
+  // came with was still there, so `appendChild` threw
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var n = f.contentDocument;' +
+      'n.open();' +
+      'r.push(n.childNodes.length, n.documentElement, n.body);' +
+      'var h = n.createElement("html");' +
+      'h.append(n.createElement("head"), n.createElement("body"));' +
+      'n.appendChild(h);' +
+      'r.push(n.childNodes.length, n.documentElement === h, n.head === h.firstChild);' +
+      'n.close();' +
+      'r.push(n.childNodes.length, n.documentElement === h);' +
+      'var g = document.createElement("iframe"); document.body.appendChild(g);' +
+      'var m = g.contentDocument; m.open(); m.close();' +
+      'r.push(m.childNodes.length, m.documentElement.outerHTML);' +
+      'var d = document.implementation.createHTMLDocument("t");' +
+      'r.push(d.childNodes.length); d.open(); r.push(d.childNodes.length);' +
+      'd.write("<b>x</b>"); d.close(); r.push(d.documentElement.outerHTML);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '',
+    '',
+    '1',
+    'true',
+    'true',
+    '1',
+    'true',
+    '1',
+    '<html><head></head><body></body></html>',
+    '2',
+    '0',
+    '<html><head></head><body><b>x</b></body></html>',
+  ]);
 });
 
 test('what document.write writes is parsed where the script is, before what follows it, and is there when write returns', async () => {
@@ -2391,6 +2435,100 @@ test('a drawing says where what it holds is: its boxes, its matrices and the len
   });
 });
 
+test('what a Request turns down is a TypeError from fetch, whatever the signal says', async () => {
+  // fetch makes its `Request` first, so the abort comes after it; and only
+  // where it would come, since a request that goes on is the host's to read
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const c = new AbortController();
+       c.abort();
+       const name = (p) => p.then(() => 'went', (e) => e.constructor.name + ':' + e.name);
+       Promise.all([
+         name(fetch('http://user:secret@example.test/', { signal: c.signal })),
+         name(fetch('', { mode: 'navigate', signal: c.signal })),
+         name(fetch('', { mode: 'no-cors', method: 'PUT', signal: c.signal })),
+         name(fetch('http://', { signal: c.signal })),
+         name(fetch('/fine', { signal: c.signal })),
+         name(fetch(new Request('/fine'), { signal: c.signal })),
+         name(fetch('/fine', { method: 'POST', body: 'x', signal: c.signal })),
+       ]).then((r) => { document.getElementById('out').textContent = r.join(' '); });
+     </script>`,
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split(' '), [
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'TypeError:TypeError',
+    'DOMException:AbortError',
+    'DOMException:AbortError',
+    'DOMException:AbortError',
+  ]);
+});
+
+test('pipeTo takes an AbortSignal, and what only looks like one is a TypeError', async () => {
+  // it asked for an own `aborted`, which went when a signal's state came to
+  // be no field a page can write: every pipeTo with a signal threw
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const pipe = (signal) => {
+         const readable = new ReadableStream({ start(c) { c.enqueue('a'); } });
+         return readable.pipeTo(new WritableStream(), { signal });
+       };
+       const c = new AbortController();
+       const name = (p) => p.then(() => 'went', (e) => e.name);
+       const aborted = name(pipe(c.signal));
+       c.abort();
+       Promise.all([
+         aborted,
+         name(pipe(Object.create(AbortSignal.prototype))),
+         name(pipe('AbortSignal')),
+       ]).then((r) => { document.getElementById('out').textContent = r.join(' '); });
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'AbortError TypeError TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
+test('queueMicrotask is a TypeError for what is no function, where it failed later, as an uncaught error in the task after', async () => {
+  // and a service worker whose script did that at evaluation was no worker
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const r = [undefined, null, 0, {}, 'x', 'none'].map((v, i) => {
+         try { i === 5 ? queueMicrotask() : queueMicrotask(v); return 'queued'; }
+         catch (e) { return e.name; }
+       });
+       queueMicrotask(() => r.push('ran'));
+       setTimeout(() => { document.getElementById('out').textContent = r.join(' '); }, 0);
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TypeError TypeError TypeError TypeError TypeError TypeError ran',
+  );
+  assert.deepEqual(
+    doc.logs.filter((l) => l.startsWith('error')),
+    [],
+  );
+});
+
+test('what a page reads of the time is coarsened to five microseconds', async () => {
+  // a read costs less than that, so two in a row told how long one took
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const reads = Array.from({ length: 200 }, () => performance.now());
+       performance.mark('m');
+       reads.push(performance.getEntriesByName('m')[0].startTime);
+       const off = reads.filter((t) => Math.abs(t * 200 - Math.round(t * 200)) > 1e-6);
+       document.getElementById('out').textContent = String(off.length);
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '0', doc.logs.join('\n'));
+});
+
 test('AbortSignal.any follows the signals it was made from, and a signal is no field a page can write', async () => {
   // pdf.js makes every request's signal with `any`
   const doc = await hosted(
@@ -3772,6 +3910,72 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
     errors: ['SyntaxError', 'NamespaceError', 'TypeError'],
     evaluator: 2,
   });
+});
+
+test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
+  // Grafana's global styles, by emotion, a rule at a time: `\\f` in a
+  // JavaScript string is a form feed, a newline to CSS, which breaks the
+  // string, and what comes after it opens one that runs to the end of the
+  // rule. Every browser ends it there; written back beside the rules after
+  // it, it ate them, `.grafana-app` among them.
+  const doc = await hosted(
+    '<div id="a" class="a"></div><p id="b" class="b"></p>' +
+      '<p id="out"></p><p id="adopted"></p><script>' +
+      'var r = [], s = document.createElement("style");' +
+      'document.body.append(s);' +
+      'var sheet = s.sheet;' +
+      'function add(rule) {' +
+      '  try { sheet.insertRule(rule, sheet.cssRules.length);' +
+      '    var it = sheet.cssRules[sheet.cssRules.length - 1];' +
+      '    r.push(it.selectorText || it.conditionText || it.cssText);' +
+      '  } catch (e) { r.push(e.name); } }' +
+      'add(".a::after{position:absolute;color:rgb(1, 2, 3);content:\\"\\f0d7\\";pointer-events:none;}");' +
+      'add(".b{color:rgb(4, 5, 6)}");' +
+      'add("@media (min-width: 1px) { .c { color: red");' +
+      'add(".d { color: red /* open");' +
+      'add(".e { background: url(a");' +
+      'add(".f { content: \\"a\\\\");' +
+      'add(".g");' +
+      'add("@layer l");' +
+      'add(".h{margin-left:7px}");' +
+      'r.push(sheet.cssRules.length, sheet.cssRules[0].style.pointerEvents,' +
+      '  sheet.cssRules[0].style.position);' +
+      'var b = document.getElementById("b");' +
+      'r.push(getComputedStyle(b).color);' +
+      'b.className = "b h";' +
+      'r.push(getComputedStyle(b).marginLeft);' +
+      'var made = new CSSStyleSheet();' +
+      'made.insertRule(".k{content:\\"\\f0d7\\";color:red}");' +
+      'made.insertRule(".b{outline-color:rgb(1, 1, 1)}", 1);' +
+      'document.adoptedStyleSheets = [made];' +
+      'r.push(made.cssRules.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      'setInterval(function () {' +
+      '  document.getElementById("adopted").textContent = getComputedStyle(b).outlineColor;' +
+      '}, 10);' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '.a::after',
+    '.b',
+    '(min-width: 1px)',
+    '.d',
+    '.e',
+    '.f',
+    'SyntaxError',
+    '@layer l;',
+    '.h',
+    '8',
+    '',
+    'absolute',
+    'rgb(4, 5, 6)',
+    '7px',
+    '2',
+  ]);
+  assert.equal(
+    await settled(doc, 'adopted', (t) => t === 'rgb(1, 1, 1)'),
+    'rgb(1, 1, 1)',
+  );
 });
 
 test('a page edits a <style>’s rules as CSS-in-JS does, and what it inserts is drawn', async () => {
@@ -5587,6 +5791,69 @@ test("what a template holds is its content's, and no search of the document find
   );
 });
 
+test('a template set again has what it was set to in its content, the same fragment, as Vue uses one for each static tree', async () => {
+  // Vue's `insertStaticContent` keeps one <template>, and for each static
+  // tree sets its `innerHTML` and moves its `content` out: from the second
+  // on there was nothing to move, and one in a drawing took `firstChild` of
+  // null, which left JSFiddle's editors empty
+  const doc = await hosted(
+    '<main id="m"></main><p id="out"></p><script>' +
+      'var r = [], m = document.getElementById("m");' +
+      'var t = document.createElement("template");' +
+      't.innerHTML = "<a id=\\"one\\"></a>";' +
+      'var f = t.content;' +
+      'm.insertBefore(f, null);' +
+      'r.push(f.childNodes.length, m.children.length);' +
+      't.innerHTML = "<b id=\\"two\\"></b>";' +
+      'r.push(t.content === f, t.content.childNodes.length, t.content.firstChild.nodeName, t.childNodes.length);' +
+      'm.insertBefore(t.content, null);' +
+      'r.push(m.children.length, m.lastChild.id);' +
+      // as Vue unwraps what goes in a drawing
+      't.innerHTML = "<svg><path d=\\"M0 0\\"></path></svg>";' +
+      'var content = t.content, wrapper = content.firstChild;' +
+      'while (wrapper.firstChild) content.appendChild(wrapper.firstChild);' +
+      'content.removeChild(wrapper);' +
+      'r.push(content.childNodes.length, content.firstChild.nodeName);' +
+      // what is in its content is what it holds, to all that reads it
+      't.innerHTML = "<u></u>";' +
+      't.content.appendChild(document.createElement("i"));' +
+      'r.push(t.innerHTML, t.outerHTML, t.cloneNode(true).content.childNodes.length,' +
+      '  t.cloneNode(true).innerHTML, t.cloneNode(false).content.childNodes.length);' +
+      'var d = document.createElement("div");' +
+      'd.innerHTML = "<template><i></i></template>";' +
+      'd.firstChild.content.appendChild(document.createElement("b"));' +
+      'r.push(d.innerHTML, d.cloneNode(true).firstChild.content.childNodes.length);' +
+      // setting one's `innerHTML` is a change to its content
+      'var seen = new MutationObserver(function () {});' +
+      'seen.observe(t.content, { childList: true });' +
+      't.innerHTML = "";' +
+      'r.push(seen.takeRecords().length, t.content.childNodes.length);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '1',
+    'true',
+    '1',
+    'B',
+    '0',
+    '2',
+    'two',
+    '1',
+    'path',
+    '<u></u><i></i>',
+    '<template><u></u><i></i></template>',
+    '2',
+    '<u></u><i></i>',
+    '0',
+    '<template><i></i><b></b></template>',
+    '2',
+    '1',
+    '0',
+  ]);
+});
+
 test("a template's content is walked by its children's siblings, as Polymer walks it", async () => {
   // its content is made of copies of the template's children, which were
   // linked to no sibling: the first one's `nextSibling` was null, and
@@ -7202,6 +7469,65 @@ test('a press on what user-select keeps out of a selection starts none, and move
   assert.equal(activeIn(doc), null);
 });
 
+test('a press leaves the focus on what it lands on where the page gave it the focus in its mousedown, and tells nothing of it', async () => {
+  // a press's default action comes after the handlers, and gave the focus
+  // to the document's surface: `button.focus()` there, which a page does
+  // since some browsers focus no button on a click, did not last the press
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  await act(() =>
+    doc.run(
+      'document.getElementById("stop").addEventListener("mousedown", function (e) { e.target.focus(); });',
+    ),
+  );
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'stop'),
+    'mousedown stop, active t | focusout t to stop | focusin stop from t',
+  );
+  assert.equal(activeIn(doc), 'stop');
+  await act(() => doc.run('say("then " + active())'));
+  assert.ok(doc.text('out').endsWith('then stop'), doc.text('out'));
+});
+
+test('a press on what has the focus leaves it there, and one on something else takes it away', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  await act(() => doc.run('document.getElementById("stop").focus()'));
+  await settle();
+  assert.equal(activeIn(doc), 'stop');
+  assert.equal(await pressOn(doc, 'stop'), 'mousedown stop, active stop');
+  assert.equal(activeIn(doc), 'stop');
+  assert.equal(
+    await pressOn(doc, 'plain'),
+    'mousedown plain, active stop | focusout stop to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press on the document takes back a focus still owed to something else', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  const node = doc.view as unknown as DrawnNode;
+  const rect = doc.view.elementRect(doc.byId('plain'))!;
+  const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+  const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+  await act(async () => {
+    doc.run(
+      'var i = document.createElement("input"); i.id = "late"; document.body.appendChild(i); i.focus();',
+    );
+    fireEvent.mouseDown(node, { dx, dy });
+    fireEvent.mouseUp(node, { dx, dy });
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+  assert.equal(activeIn(doc), null, doc.text('out'));
+  assert.ok(
+    !screen.getAllByRole('textbox').some((n) => n.focused),
+    'and no widget took it',
+  );
+});
+
 test('a press in the field that has the focus tells nothing of the focus', async () => {
   const doc = await hosted(PRESS_PAGE);
   await settle();
@@ -7312,6 +7638,195 @@ test('a field taken out before its widget was mounted has nothing to come for it
   );
   assert.ok(doc.text('out').endsWith('held BODY'), doc.text('out'));
   assert.equal(doc.handle.activeElement, null);
+});
+
+/** What the page heard of the keys, at what, for the tests below. */
+const LISTEN_FOR_KEYS =
+  'function at(e) { return e.target.id || e.target.nodeName; }' +
+  'document.addEventListener("keydown", function (e) { say("down " + e.key + " at " + at(e)); });' +
+  'document.addEventListener("keyup", function (e) { say("up " + e.key + " at " + at(e)); });';
+
+/** `withWidgetHeld`, with a key typed while nothing is rendered: the key
+ *  reaches core through the server, a few turns later, as a real one does. */
+async function keyWithWidgetHeld(
+  doc: Hosted,
+  code: string,
+  keysym: number,
+): Promise<void> {
+  await act(() => doc.run(LISTEN_FOR_KEYS));
+  await act(async () => {
+    doc.run(code);
+    fireEvent.key(keysym);
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+}
+
+test('a key typed while a focus is owed reaches the page, at the element it was told has the focus', async () => {
+  // with no focused node core sends a key to the window, and the page heard
+  // the release of a key whose press it never had: the first Escape of
+  // dialog-closedby-corner-cases.html, which then waited for good
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await keyWithWidgetHeld(doc, 'late().focus()', XK_ESCAPE);
+  assert.equal(
+    doc.text('out'),
+    'in late | down Escape at late | up Escape at late',
+  );
+  assert.ok(
+    screen.getAllByRole('textbox').find((n) => n.focused),
+    'and the widget took the focus after it',
+  );
+});
+
+test('a key on a button a focus is owed to does what it does on the button', async () => {
+  const doc = await hosted(
+    LATE_FIELD +
+      '<script>function button() { var b = document.createElement("button"); b.id = "b"; b.textContent = "b";' +
+      ' b.addEventListener("click", function () { say("clicked"); });' +
+      ' document.getElementById("box").appendChild(b); return b; }</script>',
+  );
+  await settle();
+  await keyWithWidgetHeld(doc, 'button().focus()', XK_RETURN);
+  assert.equal(
+    doc.text('out'),
+    'in b | down Enter at b | clicked | up Enter at b',
+  );
+});
+
+test('Tab straight after a script put a focusable element in goes to it, before the layout that would report it', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>function add() { var b = document.createElement("button"); b.id = "b"; b.textContent = "b"; document.body.appendChild(b); }</script>',
+  );
+  await settle();
+  await act(async () => void (doc.view.parent as unknown as DrawnNode).focus());
+  await act(async () => {
+    doc.run('add()');
+    fireEvent.key(XK_TAB);
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+  assert.equal(doc.handle.activeElement?.attribs.id, 'b');
+});
+
+test('a key typed once what a focus was owed to has gone reaches the page at the body, as nothing has the focus', async () => {
+  const doc = await hosted(LATE_FIELD);
+  await settle();
+  await keyWithWidgetHeld(
+    doc,
+    'var i = late(); i.focus(); i.remove()',
+    XK_ESCAPE,
+  );
+  assert.ok(
+    doc.text('out').endsWith('down Escape at BODY | up Escape at BODY'),
+    doc.text('out'),
+  );
+});
+
+test('a focus owed holds the keys with nothing moved: the page stays scrolled where it was, and no ring is drawn', async () => {
+  const doc = await hosted(
+    LATE_FIELD.replace(
+      '</style>',
+      'body{margin:0;height:3000px}#box{position:absolute;top:950px}</style>',
+    ),
+    { pane: 200 },
+  );
+  await settle();
+  await act(() => doc.run('window.scrollTo(0, 900)'));
+  await settle();
+  assert.equal(doc.pane?.scrollY, 900);
+  // the root is what a script's focus would ring, round all of the document
+  const root = doc.view.parent as unknown as {
+    states: Record<string, boolean>;
+  };
+  await act(async () => {
+    doc.run('late().focus()');
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(root.states[':focus-visible'], false, 'a ring round it');
+  });
+  await settle();
+  assert.equal(doc.pane?.scrollY, 900);
+});
+
+test("an option is a select's however deep it stands, in a wrapper as much as in an optgroup", async () => {
+  // HTML 4.10.7, the list of options. Held in a list made before it moved,
+  // an option in a `<div>` read as one until the list came to be live
+  const doc = await hosted(
+    `<p id="out"></p><select id="s"><option selected value="1">a</option></select>
+     <select id="g"><optgroup id="group"><div><option value="2" selected>b</option></div></optgroup>
+       <hr><datalist><option value="no">in a list</option></datalist></select>
+     <script>
+       const s = document.getElementById('s');
+       const option = s.options[0];
+       const div = document.createElement('div');
+       s.appendChild(div);
+       div.appendChild(option);
+       const g = document.getElementById('g');
+       const nested = document.createElement('optgroup');
+       nested.appendChild(new Option('in an optgroup in one', 'no'));
+       document.getElementById('group').appendChild(nested);
+       document.getElementById('out').textContent = [
+         s.value, s.options.length, s.selectedIndex,
+         g.value, g.options.length, [...g.options].map((o) => o.value).join(),
+       ].join(' ');
+     </script>`,
+  );
+  await settle();
+  assert.equal(doc.text('out'), '1 1 0 2 1 2', doc.logs.join('\n'));
+});
+
+test('an element of a drawing is focused and given a tabIndex as an HTML one is', async () => {
+  // HTMLOrSVGElement: `focus` was HTMLElement's, so a page's generic
+  // `el.focus()` threw on every element of a drawing, and `tabIndex` said
+  // nothing to anything
+  const doc = await hosted(
+    `<p id="out"></p><svg><a id="a" tabindex="0"><text id="t">x</text></a></svg>
+     <script>
+       const a = document.getElementById('a');
+       const t = document.getElementById('t');
+       const r = [typeof SVGElement.prototype.focus, typeof SVGElement.prototype.blur];
+       r.push(a.tabIndex);
+       a.tabIndex = -1;
+       r.push(a.getAttribute('tabindex'), a.tabIndex);
+       t.focus();
+       r.push(document.activeElement === t);
+       a.focus();
+       r.push(document.activeElement === a);
+       a.blur();
+       r.push(document.activeElement === document.body);
+       document.getElementById('out').textContent = r.join(' ');
+     </script>`,
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    'function function 0 -1 -1 false true true',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a worker's time starts with it, after its page's, where both read the process's clock", async () => {
+  const doc = await hosted(
+    `<p id="out"></p><script>
+       const before = performance.now();
+       const made = Date.now();
+       const src = 'postMessage([performance.timeOrigin, performance.now()]);';
+       const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+       w.onmessage = (e) => {
+         const [origin, now] = e.data;
+         document.getElementById('out').textContent = JSON.stringify({
+           after: origin >= made - 1 && origin > performance.timeOrigin,
+           own: now < performance.now(),
+           ordered: performance.timeOrigin + before < origin + now,
+         });
+       };
+     </script>`,
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    '{"after":true,"own":true,"ordered":true}',
+    doc.logs.join('\n'),
+  );
 });
 
 test('showModal puts a dialog in the top layer: :modal matches it, it is centred in the viewport over all of the page, and close takes it out', async () => {
@@ -11116,6 +11631,50 @@ test('a box a script checked keeps its checkedness when its attribute changes, a
   );
 });
 
+test('a checkedness a script set before an input was a box is the box’s once it is one', async () => {
+  // Vue's `v-model` sets `checked` as it makes a radio, ahead of its `type`,
+  // so every radio on JSFiddle was unticked and its form sent none of them:
+  // the server turned down every Run
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function make(checked, value) {' +
+      '  var el = document.createElement("input");' +
+      '  el.checked = checked;' +
+      '  el.type = "radio"; el.name = "panel"; el.value = value;' +
+      '  return el; }' +
+      'var off = make(false, "0"), on = make(true, "1");' +
+      'r.push(off.checked, on.checked, on.hasAttribute("checked"));' +
+      'var form = document.createElement("form");' +
+      'form.append(off, on); document.body.append(form);' +
+      'r.push(on.checked, Array.from(new FormData(form).entries()).join());' +
+      'r.push(form.querySelector(":checked") === on);' +
+      'var box = document.createElement("input"); box.checked = true;' +
+      'box.setAttribute("type", "checkbox"); r.push(box.checked);' +
+      'var back = document.createElement("input");' +
+      'back.type = "checkbox"; back.checked = true;' +
+      'back.type = "text"; r.push(back.checked);' +
+      'back.type = "radio"; r.push(back.checked);' +
+      'var unset = document.createElement("input");' +
+      'unset.setAttribute("checked", ""); unset.type = "radio";' +
+      'r.push(unset.checked);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'false',
+    'true',
+    'false',
+    'true',
+    'panel,1',
+    'true',
+    'true',
+    'true',
+    'true',
+    'true',
+  ]);
+});
+
 test('a text field has a checkedness of its own, which is never its text', async () => {
   // React sets `checked` on every input it mounts (`initInput`), a text
   // field's included, and facebook.com's login fields showed `false`
@@ -11393,6 +11952,68 @@ metric(
     );
   },
 );
+
+test('a page that asks document.fonts about each face it adds styles nothing for it', async () => {
+  // Excalidraw, on its way up: `has` and `add` for each of its 230 faces in
+  // one task, and each `has` styled the whole document for the `add` before
+  // it. That was 8 seconds of one task on a loaded machine, which is where
+  // what the page asks next is refused (`_spent`), and its library, its
+  // fonts and its scene all threw `TimeoutError` by turns.
+  const doc = await hosted(
+    `<p id=out></p><p>A page with something to style.</p>
+     <style>p { color: rgb(1, 2, 3) }</style>
+     <script>
+       window.go = (faces) => {
+         const fonts = document.fonts;
+         const made = [];
+         for (let i = 0; i < faces; i += 1) {
+           const face = new FontFace('Brand', 'url(brand.ttf)', {
+             unicodeRange: 'U+' + (0x100 + i).toString(16),
+           });
+           made.push(face);
+           if (!fonts.has(face)) fonts.add(face);
+         }
+         return [fonts.has(made[0]), fonts.size, fonts.check('16px Brand', 'a')];
+       };
+       window.after = () => {
+         const sheet = document.createElement('style');
+         sheet.textContent = '@font-face { font-family: Sheet; src: url(sheet.ttf) }';
+         document.body.append(sheet);
+         const size = document.fonts.size;
+         const face = new FontFace('Other', 'url(other.ttf)');
+         const had = document.fonts.has(face);
+         document.fonts.add(face);
+         return [size, had, document.fonts.has(face), document.fonts.size];
+       };
+     </script>`,
+  );
+  await settle();
+  const view = doc.view as unknown as {
+    _update(width: number): void;
+    fontFaces(): unknown[];
+  };
+  const update = view._update;
+  const fontFaces = view.fontFaces;
+  let updates = 0;
+  let reads = 0;
+  view._update = function (this: unknown, width: number) {
+    updates += 1;
+    update.call(this, width);
+  };
+  view.fontFaces = function (this: unknown) {
+    reads += 1;
+    return fontFaces.call(this);
+  };
+  const answer = (code: string) =>
+    doc.runner()!.evaluate(`JSON.stringify(${code})`)?.text ?? '';
+  assert.equal(answer('go(60)'), '"[true,60,true]"');
+  assert.equal(updates, 0, 'nothing is styled for the faces while they go in');
+  assert.ok(reads < 5, `${reads} reads of the list for 60 faces`);
+  // a read of the set still finds what a sheet put in, and what it styled
+  assert.equal(answer('after()'), '"[61,false,true,62]"');
+  await settle();
+  assert.ok(updates >= 1, 'and they are styled for');
+});
 
 metric(
   "a FontFaceObserver's poll of document.fonts.load ends once the face it waits for is in",
@@ -11974,6 +12595,45 @@ test('a target is a keyword, a frame’s name, or a new tab; window.open goes wh
     true,
   );
   assert.equal(navigableFor(drawn.document, 'side'), 'tab');
+});
+
+test('isContentEditable says whether an element can be edited, as all three engines have it', async () => {
+  // it said false of everything, so a page's shortcuts, which leave alone
+  // what a person is typing in, took the keys of its editors
+  const doc = await hosted(
+    '<div id="a" contenteditable><span id="b">x<i id="c" contenteditable="false">' +
+      '<u id="d" contenteditable="true">y</u></i></span></div>' +
+      '<div id="e" contenteditable="plaintext-only"><b id="f"></b></div>' +
+      '<div id="g" contenteditable="bogus"><b id="h"></b></div>' +
+      '<div id="i"></div><div id="z" contenteditable></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      '"abcdefghi".split("").forEach(function (id) {' +
+      '  r.push(document.getElementById(id).isContentEditable); });' +
+      'var root = document.getElementById("z").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<p id=s>in</p>";' +
+      'r.push(root.getElementById("s").isContentEditable);' +
+      'var out = document.createElement("div");' +
+      'out.setAttribute("contenteditable", "true");' +
+      'var kid = document.createElement("b"); out.append(kid);' +
+      'r.push(out.isContentEditable, kid.isContentEditable);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'true',
+    'true',
+    'false',
+    'true',
+    'true',
+    'true',
+    'false',
+    'false',
+    'false',
+    'false',
+    'true',
+    'true',
+  ]);
 });
 
 test('a key typed in an editing host the page focused is an edit of it at the selection, told as a beforeinput and an input', async () => {

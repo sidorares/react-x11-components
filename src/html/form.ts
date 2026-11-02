@@ -18,6 +18,7 @@
 // theirs in the DOM's attributes, where `:checked` reads them, and
 // `FormState` remembers what those attributes were so a reset can put them
 // back.
+import { encodingOf, loadedEncodings, outputEncoding } from './encoding.js';
 import type { AnyNode, Element } from 'domhandler';
 
 import type { HtmlFile } from './files.js';
@@ -91,6 +92,9 @@ export interface SubmitContext {
   point?: { x: number; y: number };
   /** `multipart/form-data`'s boundary. Made up when absent; a test pins it. */
   boundary?: string;
+  /** The label of the document's encoding, which a form with no
+   *  `accept-charset` is sent in. UTF-8 where absent. */
+  encoding?: string;
 }
 
 // --- which controls, in which form ---------------------------------------------
@@ -288,17 +292,23 @@ function firstLegend(fieldset: Element): Element | null {
 /** A `<select>`'s `<option>`s, in tree order, through its `<optgroup>`s. */
 export function optionElements(select: Element): Element[] {
   const out: Element[] = [];
-  const walk = (node: Element): void => {
+  const walk = (node: Element, inGroup: boolean): void => {
     for (const child of childrenOf(node)) {
       if (!isElement(child)) continue;
       const tag = tagOf(child);
       if (tag === 'option') out.push(child);
-      else if (tag === 'optgroup' && node === select) walk(child);
+      else if (!OPTIONS_NOT_IN.has(tag) && !(inGroup && tag === 'optgroup')) {
+        walk(child, inGroup || tag === 'optgroup');
+      }
     }
   };
-  walk(select);
+  walk(select, false);
   return out;
 }
+
+/** What a `<select>`'s list of options does not go on into (HTML 4.10.7),
+ *  which is otherwise everything it holds, however deep. */
+const OPTIONS_NOT_IN = new Set(['select', 'hr', 'datalist']);
 
 /** An option's text, its white space collapsed, as HTML's `text` IDL
  *  attribute reads it. */
@@ -389,6 +399,14 @@ export function controlValue(
         .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
     case 'number':
       return FLOAT.test(raw) ? raw : '';
+    case 'range': {
+      const value = rangeValue(el, raw);
+      // what its `max` took from it stays taken, as a browser has it, whose
+      // sanitization runs as the attribute changes: a `max` put back gives
+      // nothing back
+      if (typed !== undefined && TYPED.has(el)) TYPED.set(el, value);
+      return value;
+    }
     case 'date':
     case 'month':
     case 'week':
@@ -493,6 +511,56 @@ function attributeNumber(
   return text === undefined ? null : fieldNumber(type, text.trim());
 }
 
+/** What an `<input type=range>` runs over (HTML 4.10.5.1.13). */
+export interface RangeLine {
+  min: number;
+  /** Never under `min`: a `max` that is comes to `min`. */
+  max: number;
+  /** How far apart its values are; 0 at `step=any`, any value being one. */
+  step: number;
+  /** What its steps are counted from. */
+  base: number;
+}
+
+/** A range's line, as its attributes say: 0 to 100 by ones where they say
+ *  nothing, or nothing a number can be read from. */
+export function rangeLine(el: Element): RangeLine {
+  const min = attributeNumber(el, 'min', 'range');
+  const low = min ?? 0;
+  const written = attr(el, 'step')?.trim();
+  const asked = written && FLOAT.test(written) ? Number(written) : 0;
+  return {
+    min: low,
+    max: Math.max(low, attributeNumber(el, 'max', 'range') ?? 100),
+    step:
+      written?.toLowerCase() === 'any' ? 0 : asked > 0 ? asked : STEPS.range[0],
+    base: min ?? attributeNumber(el, 'value', 'range') ?? 0,
+  };
+}
+
+/**
+ * What a range holds given `raw`: its value sanitization (HTML 4.10.5.1.13,
+ * and Blink's `StepRange::ClampValue` where HTML leaves the arithmetic open),
+ * which runs at every read, since what it holds moves with its `min`, its
+ * `max` and its `step` however it got there. What is no number is half way
+ * along; the rest is kept to the line and to the nearest step on it, the
+ * upper of two as near, and to a step short of a `max` no step lands on.
+ */
+export function rangeValue(el: Element, raw: string | number): string {
+  const line = rangeLine(el);
+  const { min, max, step, base } = line;
+  const read = typeof raw === 'number' ? raw : fieldNumber('range', raw);
+  const n = Math.min(max, Math.max(min, read ?? min + (max - min) / 2));
+  if (!step) return String(n);
+  // Blink's arithmetic is decimal and a double's is not: .35 is 3.4999999999999996
+  // steps of .1, and a step of .1 lands on 0.30000000000000004
+  const steps = Number(((n - base) / step).toPrecision(15));
+  let near = base + Math.round(steps) * step;
+  if (near > max) near -= step;
+  if (near < min) near += step;
+  return String(near < min || near > max ? n : Number(near.toPrecision(15)));
+}
+
 /** Where a field's value stands against its `min` and its `max`: below
  *  them, above them or between, and null with neither. A `time` whose `min`
  *  is later than its `max` runs past midnight (HTML 4.10.5.1.10). */
@@ -553,6 +621,7 @@ function entriesOf(
   submitter: Element | null,
   live: SubmitContext['live'],
   point: SubmitContext['point'],
+  encoding: string,
 ): Entry[] {
   const out: Entry[] = [];
   const add = (name: string, value: string, file = false): void => {
@@ -595,7 +664,7 @@ function entriesOf(
       continue;
     }
     if (type === 'hidden' && name.toLowerCase() === '_charset_') {
-      add(name, 'UTF-8');
+      add(name, encoding);
       continue;
     }
     if (tag === 'button' || type === 'submit' || type === 'reset') {
@@ -646,13 +715,48 @@ function formEncode(text: string): string {
     );
 }
 
+/** What that serializer leaves as it is, as a byte. */
+const FORM_BYTE = /[A-Za-z0-9*\-._]/;
+const formByte = (byte: number): boolean =>
+  byte < 0x80 && FORM_BYTE.test(String.fromCharCode(byte));
+
+/** The codecs for an encoding other than UTF-8. A host decoding a document
+ *  in one has them; `<Html>` loads them for its `charset` besides, so only
+ *  a form sent before that ever goes as UTF-8. */
+const legacy = (encoding: string): ReturnType<typeof loadedEncodings> =>
+  encoding === 'UTF-8' ? null : loadedEncodings();
+
+/**
+ * HTML's "pick an encoding for the form": the first label of `accept-charset`
+ * that names an encoding, UTF-8 where it has none that does, and without one
+ * the document's. An encoding that does not leave ASCII alone is no form's
+ * (Encoding's "get an output encoding").
+ */
+export function formEncoding(form: Element, document = 'UTF-8'): string {
+  const accepted = attr(form, 'accept-charset');
+  if (accepted === undefined) {
+    return outputEncoding(encodingOf(document) ?? 'UTF-8');
+  }
+  for (const token of accepted.split(/[\t\n\f\r ]+/)) {
+    const name = token ? encodingOf(token) : null;
+    if (name) return outputEncoding(name);
+  }
+  return 'UTF-8';
+}
+
 /** The entries as `application/x-www-form-urlencoded`: a query string, and
- *  a POST body of that type. */
-export function urlencoded(entries: readonly [string, string][]): string {
+ *  a POST body of that type, in `encoding` by its name. */
+export function urlencoded(
+  entries: readonly [string, string][],
+  encoding = 'UTF-8',
+): string {
+  const codecs = legacy(encoding);
+  const each = codecs
+    ? (text: string) =>
+        codecs.percentEncoded(encoding, crlf(text), formByte, true)
+    : (text: string) => formEncode(crlf(text));
   return entries
-    .map(
-      ([name, value]) => `${formEncode(crlf(name))}=${formEncode(crlf(value))}`,
-    )
+    .map(([name, value]) => `${each(name)}=${each(value)}`)
     .join('&');
 }
 
@@ -674,6 +778,7 @@ function dispositionName(name: string): string {
 function multipart(
   entries: readonly Entry[],
   boundary: string,
+  encoding: string,
 ): string | Uint8Array {
   // what is text so far, then each file's bytes after the text before it
   const parts: (string | Uint8Array)[] = [];
@@ -693,18 +798,30 @@ function multipart(
     body += '\r\n';
   }
   body += `--${boundary}--\r\n`;
-  if (!parts.length) return body;
+  const codecs = legacy(encoding);
+  if (!parts.length && !codecs) return body;
   parts.push(body);
-  return joinParts(parts);
+  return joinParts(
+    parts,
+    codecs && ((text) => codecs.encodeForForm(encoding, text)),
+  );
 }
 
 declare const TextEncoder: new () => { encode(text: string): Uint8Array };
 
-/** Text and bytes as one run of bytes, the text as UTF-8. */
-function joinParts(parts: readonly (string | Uint8Array)[]): Uint8Array {
+/** Text and bytes as one run of bytes, the text as UTF-8 where `encode` does
+ *  not say otherwise. */
+function joinParts(
+  parts: readonly (string | Uint8Array)[],
+  encode?: ((text: string) => Uint8Array) | null,
+): Uint8Array {
   const encoder = new TextEncoder();
   const chunks = parts.map((part) =>
-    typeof part === 'string' ? encoder.encode(part) : part,
+    typeof part !== 'string'
+      ? part
+      : encode
+        ? encode(part)
+        : encoder.encode(part),
   );
   const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
   let at = 0;
@@ -781,7 +898,14 @@ export function formSubmission(
   const enctype = enctypeOf(pick('formenctype', 'enctype'));
   const target = pick('formtarget', 'target') ?? baseTarget(rootOf(form));
 
-  const list = entriesOf(form, submitter, context.live, context.point);
+  const encoding = formEncoding(form, context.encoding);
+  const list = entriesOf(
+    form,
+    submitter,
+    context.live,
+    context.point,
+    encoding,
+  );
   const entries = list.map(({ name, value }): [string, string] => [
     name,
     value,
@@ -791,8 +915,8 @@ export function formSubmission(
     // a `mailto:` form writes its entries as headers, which spell a space
     // `%20` (HTML 4.10.21.3, "mail with headers")
     const query = /^mailto:/i.test(action)
-      ? urlencoded(entries).replace(/\+/g, '%20')
-      : urlencoded(entries);
+      ? urlencoded(entries, encoding).replace(/\+/g, '%20')
+      : urlencoded(entries, encoding);
     return {
       ...base,
       method,
@@ -807,15 +931,28 @@ export function formSubmission(
       ...base,
       method,
       url: action,
-      body: multipart(list, boundary),
+      body: multipart(list, boundary, encoding),
       contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+  const codecs = legacy(encoding);
+  if (enctype === 'text/plain' && codecs) {
+    return {
+      ...base,
+      method,
+      url: action,
+      body: codecs.encodeForForm(encoding, plainText(entries)),
+      contentType: `text/plain;charset=${encoding}`,
     };
   }
   return {
     ...base,
     method,
     url: action,
-    body: enctype === 'text/plain' ? plainText(entries) : urlencoded(entries),
+    body:
+      enctype === 'text/plain'
+        ? plainText(entries)
+        : urlencoded(entries, encoding),
     contentType:
       enctype === 'text/plain' ? 'text/plain;charset=UTF-8' : enctype,
   };

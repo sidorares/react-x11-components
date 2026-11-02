@@ -34,6 +34,7 @@ import type { Popup } from './popups.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
+import { readyFor } from '../encoding.js';
 import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceRequest, ResourceResult } from '../resources.js';
@@ -97,6 +98,8 @@ export interface ScriptProps {
    *  presence makes the parse yield to the page's scripts. */
   _onParserBlocked?: (script: Element) => void;
   onDomEvent?: (event: HtmlDomEvent) => boolean | void;
+  /** Whether a page listens for what a pointer's moves make. */
+  movesHeard?: () => boolean;
   stylesheet?: string[];
   /** A frame of the page's sent somewhere by a link or a form whose target
    *  names it, where scripts run: absent where nothing loads a frame. */
@@ -224,6 +227,9 @@ export function useScripts(
     get language() {
       return latest.current.language;
     },
+    get charset() {
+      return latest.current.charset;
+    },
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
@@ -238,22 +244,37 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element) => {
+    load: async (src, element, cors) => {
       const answered = await workerResource(
         src,
         'script',
         element?.attribs.crossorigin !== undefined,
       );
-      if (answered === undefined) return latest.current.load(src, element);
+      if (answered === undefined) {
+        return latest.current.load(src, element, cors);
+      }
       if (answered?.kind !== 'script') return null;
-      return 'text' in answered
-        ? answered.text
-        : decodeText(answered.bytes, answered.charset ?? null);
+      if ('text' in answered) {
+        return {
+          text: answered.text,
+          url: answered.url,
+          headers: answered.headers,
+        };
+      }
+      await readyFor(answered.charset);
+      return {
+        text: decodeText(answered.bytes, answered.charset ?? null),
+        url: answered.url,
+        headers: answered.headers,
+      };
     },
     onTimeout: () => latest.current.onTimeout(),
     reserved: (event) => latest.current.reserved?.(event) ?? false,
     get timeout() {
       return latest.current.timeout;
+    },
+    get headers() {
+      return latest.current.headers;
     },
     get workers() {
       return latest.current.workers;
@@ -455,6 +476,10 @@ export function useScripts(
     const go = runner.current?.dispatch(event) ?? true;
     return go ? undefined : false;
   }, []);
+  const movesHeard = useCallback(
+    () => runner.current?.host.movesHeard ?? false,
+    [],
+  );
   const navigateFrame = useCallback(
     (frame: Element, to: string, post: FramePost | null) =>
       runner.current?.host.navigateFrame(frame, to, post),
@@ -557,6 +582,7 @@ export function useScripts(
     onLoaded,
     _onParserBlocked: onParserBlocked,
     onDomEvent,
+    movesHeard,
     navigateFrame,
     scrolled,
     painted,

@@ -126,6 +126,10 @@ export class WindowSlot {
     group.slots.add(this);
   }
 
+  /** The sandboxing flags of each document this window shows (HTML, "popup
+   *  sandboxing flag set"). */
+  sandbox = 0;
+
   /** A document of this window's: it is the one shown from now on, and
    *  every other window of the group reaches it. */
   adopt(runner: ScriptRunner): void {
@@ -222,7 +226,22 @@ export class WindowSlot {
 /** Whether two documents are of one origin, one of `about:blank` being the
  *  origin of what made it, and an opaque origin being no other's. */
 function sameOrigin(a: ScriptRunner, b: ScriptRunner): boolean {
-  return a.host.origin === b.host.origin && a.host.origin !== 'null';
+  if (a.host.origin !== b.host.origin) return false;
+  // an opaque origin is one document's, and those that document made
+  return (
+    a.host.origin !== 'null' || a.host.opaqueOrigin === b.host.opaqueOrigin
+  );
+}
+
+/** Whether a document may send a window to an address: a `javascript:` URL
+ *  runs in the document it is sent to, so it is only that origin's to send
+ *  (HTML 7.4.2.3.2, which ends the navigation there), and a host hears of
+ *  none. Asked here, of the address as `URL` left it, and not of what the
+ *  page's realm says it is. */
+function maySend(from: ScriptRunner, to: WindowSlot, url: string): boolean {
+  return (
+    !/^javascript:/i.test(url) || (!!to.runner && sameOrigin(from, to.runner))
+  );
 }
 
 /** The slot of a document, which is made for it the first time something
@@ -306,6 +325,15 @@ export class Popup implements HtmlPopup {
 
   get closed(): boolean {
     return this.slot?.closing ?? false;
+  }
+
+  /** The opaque origin that opened it, where one did: what its first
+   *  document is of, which `creator`, an address, does not say. */
+  creatorOrigin: object | null = null;
+
+  /** The sandboxing flags each document it shows has. */
+  get sandbox(): number {
+    return this.slot?.sandbox ?? 0;
   }
 
   /** What the document it opened with is, for the `<Html>` that draws it:
@@ -444,11 +472,15 @@ export function windowOps(
     if (!popups) return 0;
     const from = slotOf(runner);
     const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
+    popup.creatorOrigin = runner.host.opaqueOrigin;
     if (!popups.open(popup)) return 0;
     const slot = new WindowSlot(from.group, from, popup, popup.id);
     slot.name = ask.name;
     popup.slot = slot;
     slot.blank = true;
+    // what the window's every document starts with, unless the page that
+    // opened it lets it out (`allow-popups-to-escape-sandbox`)
+    slot.sandbox = runner.host.popupSandbox;
     const blank = make(
       runner.host.blankDocument(),
       'about:blank',
@@ -472,7 +504,10 @@ export function windowOps(
       slotById(id)?.popup?.focused();
     },
     navigate(id, url, replace) {
-      slotById(id)?.navigate(url, replace ? 'replace' : 'here', null);
+      const slot = slotById(id);
+      if (slot && maySend(runner, slot, url)) {
+        slot.navigate(url, replace ? 'replace' : 'here', null);
+      }
     },
     named(name) {
       // a tab's name outlives its document; a frame's is its element's
@@ -514,7 +549,7 @@ export function windowOps(
       if (!runner.seams.popups) return false;
       const there = find(target);
       if (there) {
-        there.navigate(url, 'here', post);
+        if (maySend(runner, there, url)) there.navigate(url, 'here', post);
         return true;
       }
       if (noopener) return false;
