@@ -4319,7 +4319,9 @@ export class DomHost {
             ? ''
             : `<title>${DomUtils.getOuterHTML(new Text(text(a)))}</title>`;
         return this.idOf(
-          this._documentOf(`<html><head>${title}</head><body></body></html>`),
+          this._documentOf(
+            `<!doctype html><html><head>${title}</head><body></body></html>`,
+          ),
         );
       }
       case 'parseDocument':

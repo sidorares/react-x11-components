@@ -16797,7 +16797,12 @@ export function installDom(
     }
     open(): Any {
       // `== null`: a wrapper is made without its class's fields
-      if (this !== document && this._written == null) this._written = '';
+      if (this !== document && this._written == null) {
+        this._written = '';
+        // it starts again from nothing (HTML 8.4.2): a loader tldraw uses
+        // builds an `<html>` of its own in a frame's document after `open`
+        this.replaceChildren();
+      }
       return this;
     }
     close(): void {
@@ -16808,7 +16813,11 @@ export function installDom(
       if (this === document || this._written == null) return;
       const markup = this._written;
       this._written = null;
-      call('fillDocument', this._id, markup);
+      // nothing written leaves what the page put there, or the empty
+      // document the parser makes of no input
+      if (markup || !this.documentElement) {
+        call('fillDocument', this._id, markup);
+      }
     }
   }
   /** A document made of XML's rules: `createDocument`'s. */
