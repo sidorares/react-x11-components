@@ -1244,7 +1244,16 @@ function renderControl(
         ...order,
         ...(ownFont && { native: false }),
         style: { width: '100%', height: '100%' },
-        onPress: (ev) => ctx.click(el, modifiersOf(ev), () => ctx.press(el)),
+        // a key that presses it is a click of no count, and no pointer's
+        onPress: (ev) =>
+          ctx.click(
+            el,
+            {
+              ...modifiersOf(ev),
+              ...(!(ev as { detail?: number }).detail && { detail: 0 }),
+            },
+            () => ctx.press(el),
+          ),
       });
       break;
     case 'file': {

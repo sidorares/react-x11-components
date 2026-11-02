@@ -3632,6 +3632,51 @@ goes in `defaultMouseDown`, as `startsSelectionAt` does, since a press on
 `user-select: none` starts no selection and moves the focus in all three
 engines.
 
+**The mouse is a pointer to a page, and one object says what it is over**
+(`scripts/pointers.ts`, over the interfaces in `scripts/ui-events.ts`). A
+press, a release and a move go through the steps Chromium's
+`PointerEventManager` has, in its order, which is what WPT holds a browser to:
+the capture changes hands, the pointer's boundary events and then the mouse's
+go to what is under it now, then its event and the mouse's. Five things are
+load-bearing. **A move nothing listens for is not told** (`noteHeard`,
+`movesHeard`, `MOVE_EVENTS`): `elementAtPoint` settles what a layout owes, so
+told, every move of a page with scripts laid it out. The first listener is
+answered what the pointer is over, so it hears no `enter` it missed. Anything
+new that needs moves told (a capture does) calls `noteHeard`, and anything new
+that listens by a route other than `addEventListener` or `activateHandler`
+tells it too. **What took an element out is the host's to see**
+(`_pointerLost`, `pointerChain`): a removal and a return in one op leave
+`isConnected` true, and Chromium has moved what the pointer is over to the
+parent by then, so `follow()` asks by `treeEpoch`, and `pointerOver` stays in
+`KEEPS_LISTS`, or a pointer event moves the count that says to ask. **A chain
+is the flat tree's, and a removal goes by the DOM's**: a slot taken out leaves
+what it held in the chain. **An attribute of a user's event is a `_` field the
+trusted path writes**, in `ui-events.ts`, and the constructor is a page's:
+what a page reads of a mouse (`pointerId`, `pointerType`, `isPrimary`,
+`persistentDeviceId`) comes from `fields()` and never from a default. A
+`PointerEvent` from `new` has no pointer, and `el.click()`'s `pointerId` is -1.
+And **a mouse's coordinates are floored and a pointer's are not**, and both
+carry the page point they were told at (`_pageX`), since a scroll between the
+event and a read does not move it. `MouseEvent.offsetX` is worked out as it is
+asked (`pointIn`), since nearly no event is.
+
+**An event's path is worked out where the tree is** (`scripts/event-path.ts`,
+DOM 2.9): one op answers the whole of it, every step's shadow-adjusted target
+and retargeted `relatedTarget`, where an op a level was `parentNode` per node
+and no slot, no retargeting and no closed tree. `invoke` takes a step and which
+of the two passes it is in, since a target runs its capturing listeners first.
+**Anything new that dispatches goes through `dispatch`, or `runPath` with steps
+of its own**, as IndexedDB's `fireAt` does: nothing else keeps `target`,
+`composedPath()` and `window.event` true. A step's `seen` is what its listeners
+hear it as, the window for `windowTarget`.
+
+**A key is told to a page before the widget types it, and the widget's `input`
+says what it did** (`fieldKey`, `fieldTyping`). The realm works out what a key
+would do to a field, as `beforeinput`'s `inputType` and `data`, and leaves the
+edit to core; the `input` the widget's change raises takes them. A composition
+is core's own three events, told through the root's capture phase, which is a
+key's route.
+
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
 sheet, and everything it imports, has run (`_sheetsInForce`), not when the

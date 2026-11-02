@@ -373,6 +373,9 @@ export interface InternalHtmlProps extends HtmlProps {
   /** What is on the clipboard, read for a `paste` where the host handed a
    *  clipboard: the paste is then the page's, and the widget's stopped. */
   _readClipboard?: () => Promise<HtmlClipboardData>;
+  /** Whether anything listens for what a pointer's moves make, where that
+   *  is known: a move nothing hears asks the document nothing. */
+  _movesHeard?: () => boolean;
   /** The pane around the element scrolled (`HtmlViewProps`). */
   _onViewportScroll?: () => void;
   /** The element painted (`HtmlViewProps`). */
@@ -751,6 +754,11 @@ export function useScriptedHtml(
     },
     [scripts.onDomEvent],
   );
+  const movesHeard = useCallback(
+    () =>
+      !!latest.current.props.onDomEvent || (scripts.movesHeard?.() ?? false),
+    [scripts.movesHeard],
+  );
   const onElementScroll = useCallback(
     (element: Element) => {
       scripts.onElementScroll?.(element);
@@ -820,6 +828,7 @@ export function useScriptedHtml(
     _inspectValue: inspectValue,
     _releaseValues: releaseValues,
     _onParserBlocked: scripts._onParserBlocked,
+    _movesHeard: movesHeard,
     ...(config.clipboard && {
       _readClipboard: () => latest.current.config.clipboard!.read(),
     }),

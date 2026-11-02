@@ -3314,22 +3314,26 @@ a field, and what keeps Monaco's editor focused when it is pressed. A press
 on what `user-select: none` keeps out of a selection starts none and still
 moves the focus, since nothing cancelled it.
 
-| `type`                 | When                                                                                                     | Cancelling it                                    |
-| ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `mousedown`, `mouseup` | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
-| `click`, `dblclick`    | The two together, on the nearest element both were on; or Enter on a link                                | no link followed, no button pressed, no box kept |
-| `mousemove`            | The pointer moved over the element, with the `buttons` held                                              | —                                                |
-| `wheel`                | The wheel turned over the element, its `deltaX` and `deltaY` in pixels                                   | the pane the document is in does not scroll      |
-| `contextmenu`          | A secondary press, after its `mousedown`, as X11 and macOS ask on the press                              | the press starts nothing                         |
-| `keydown`, `keyup`     | A key, at the control or the stop with the focus, or the `<body>`                                        | the key is not typed, nor does Tab move          |
-| `input`                | A field typed into, a box ticked, an option chosen                                                       | —                                                |
-| `select`               | Text the user selected in a field, by a key, a press or a release in it                                  | —                                                |
-| `change`               | A field left, or submitted from, with another value; a box; an option                                    | —                                                |
-| `submit`               | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
-| `reset`                | A reset button pressed                                                                                   | nothing is put back                              |
-| `focusin`, `focusout`  | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
-| `toggle`               | A `<details>` opened or closed                                                                           | —                                                |
-| `load`, `error`        | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
+| `type`                                                    | When                                                                                                     | Cancelling it                                    |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `mousedown`, `mouseup`                                    | A press and a release, on the element under them or a control's element                                  | a press neither focuses nor starts a selection   |
+| `click`, `dblclick`                                       | The two of the main button, on the nearest element both were on; or Enter on a link                      | no link followed, no button pressed, no box kept |
+| `auxclick`                                                | A press and a release of any other button, on the nearest element both were on                           | —                                                |
+| `mouseover`                                               | What is under a pointer that did not move changed, or the pointer came onto a frame's element            | —                                                |
+| `mouseleave`                                              | The pointer left the document                                                                            | —                                                |
+| `mousemove`                                               | The pointer moved over the element, with the `buttons` held                                              | —                                                |
+| `wheel`                                                   | The wheel turned over the element, its `deltaX` and `deltaY` in pixels                                   | the pane the document is in does not scroll      |
+| `contextmenu`                                             | A secondary press, after its `mousedown`, as X11 and macOS ask on the press                              | the press starts nothing                         |
+| `keydown`, `keyup`                                        | A key, at the control or the stop with the focus, or the `<body>`                                        | the key is not typed, nor does Tab move          |
+| `compositionstart`, `compositionupdate`, `compositionend` | What a dead key, the Compose key or an input method is typing, as `data`                                 | the first: none of it is typed                   |
+| `input`                                                   | A field typed into, a box ticked, an option chosen                                                       | —                                                |
+| `select`                                                  | Text the user selected in a field, by a key, a press or a release in it                                  | —                                                |
+| `change`                                                  | A field left, or submitted from, with another value; a box; an option                                    | —                                                |
+| `submit`                                                  | A form validated and about to be sent, with its `submitter`                                              | nothing is sent                                  |
+| `reset`                                                   | A reset button pressed                                                                                   | nothing is put back                              |
+| `focusin`, `focusout`                                     | The focus moved, with the other element as `relatedTarget`                                               | —                                                |
+| `toggle`                                                  | A `<details>` opened or closed                                                                           | —                                                |
+| `load`, `error`                                           | A sheet's `<link>` applied, or its preload's sheet in; or not to be had; what an `<img>`'s image came to | —                                                |
 
 The order is HTML's and UI Events', and three places in it are worth knowing:
 
@@ -3364,17 +3368,65 @@ The order is HTML's and UI Events', and three places in it are worth knowing:
 
 A `mousemove` is told at every move the pointer makes over what the
 document draws, a hit test each, which is why a host decides what crossing
-it into a page costs: the browser example dispatches it as a page has it —
-`pointermove` and `mousemove`, and the `over`, `out`, `enter` and `leave`
-of each where the pointer came onto another element — and a page drawing
-its own picture on a `<canvas>` takes its input from these, as the
-react-x11 playground's X server does.
+it into a page costs: the example's script engine tells a page's moves only
+once something in the page listens for what one makes, so a page that does
+not asks nothing of the document at all, and an owed layout stays owed. What
+a host is told of a move has the samples ntk folded into it (`samples`), for a
+drawing tool.
+
+**The mouse is a pointer to a page's scripts** (Pointer Events 3, UI Events),
+in the order Chromium has it, which is what WPT holds a browser to:
+
+- A press, a release and a move each go through the same steps. A capture
+  asked for changes hands, with the pointer's boundary events to what took
+  it, and `lostpointercapture` and `gotpointercapture`. The pointer's
+  `out`, `leave`, `over` and `enter` go to what is under it now, and the
+  mouse's after them. Then its own event, and the mouse's: `pointerdown` then
+  `mousedown`, `pointermove` then `mousemove`. So a press whose listener takes
+  its target out has its release told at what held it, after a `mouseover`
+  there.
+- An element taken out moves what the pointer is over to what held it, with
+  nothing told, and the `over` the next event tells has no `enter`, since the
+  pointer never left what was around it. That holds if it comes back in the
+  same task. A slot taken out leaves what it held where it was.
+- What comes under a pointer that did not move is told once the content has
+  been still for a tenth of a second, as its boundary events and no move.
+- A cancelled `pointerdown` keeps the mouse's press, moves and release back,
+  and not its boundary events or its `click`. A disabled control has pointer
+  events and no mouse's, and no `click`.
+- A press on what the document draws holds the pointer until its release,
+  so a stroke dragged off the window goes on being told, at the root element,
+  and ends where it should.
+- `getCoalescedEvents()` is `[SecureContext]`, and answers a `pointermove`
+  with a sample for each motion event the frame folded, adding up to it.
+  `getPredictedEvents()` answers nothing here: nothing predicts.
+- `pointerType` is always `mouse` and `pressure` is 0.5 or 0, because that is
+  all core tells of a pointer. A pen and a touch have no seam there yet, so
+  Pointer Events' tests of them cannot pass on this path.
+- No pointer lock is to be had: core has nothing that confines or hides a
+  pointer. `requestPointerLock()` is told as a failure, with a
+  `pointerlockerror` and a rejected promise, and `exitPointerLock()` does
+  nothing.
+
+An event's `target` and `relatedTarget` are retargeted across shadow trees
+and the path goes through a slot, as DOM 2.9 has it, and a listener at a
+target hears capturing listeners first. `window.event` is the event a
+listener outside a shadow tree is in.
+
+A key in a field is told as a `keydown`, a `keypress` where it makes a
+character and no chord does, a `beforeinput` the page can cancel and Chromium's
+`textInput`, with the edit still to be made; the widget makes it, and its
+`input` says what it did (`inputType`, `data`). `getTargetRanges()` answers
+what an edit of an editing host will change for as long as its `beforeinput`
+is on its way, which is what ProseMirror, Slate and Lexical read. In a field
+it answers nothing, as all three browsers have it.
 
 A click on a control's widget — a checkbox, a radio, a button — is the
 widget's to tell, as it ticks or presses; a click on what the document draws
 is the root's. A press on a `<label>` is a click on the label and then one on
 its control, as HTML's activation behaviour is; Enter on a link is a click
-whose `detail` is 0. `x` and `y` are in the document's coordinates in
+whose `detail` is 0, and to a page a click of no pointer, whose `pointerId` is
+-1 and whose `pointerType` is empty. `x` and `y` are in the document's coordinates in
 logical pixels, as `elementRect` is, and `button` is the DOM's numbering.
 
 A host that runs a page's scripts has what it needs from the handle as well:

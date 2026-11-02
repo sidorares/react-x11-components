@@ -84,6 +84,9 @@ const FRAME_MS = 16;
  *  host's time in what it asks of the document is not counted, and the task
  *  is stopped outright at five times it (`ScriptEngine._bridge`). */
 export const SCRIPT_TIMEOUT_MS = 2000;
+/** How long the content has to hold still before what is under a pointer
+ *  that did not move is asked, as `<Html>` holds a hover (`HOVER_REST_MS`). */
+const UNDER_REST_MS = 100;
 
 /** What the page around a document gives its scripts. */
 declare const Buffer: { from(text: string, encoding: 'base64'): Uint8Array };
@@ -856,6 +859,7 @@ export class ScriptRunner {
 
   /** The pane the document is shown in scrolled. */
   scrolled(): void {
+    this._scrolledAt = Date.now();
     // a scroll again puts off the end of it
     if (this._scrollEndOwed) {
       clearTimeout(this._scrollEndOwed);
@@ -882,10 +886,30 @@ export class ScriptRunner {
     if (this._disposed || this._paintSeen) return;
     this._paintSeen = setTimeout(() => {
       this._paintSeen = null;
-      if (!this._disposed) this.host.renderingMoved();
+      if (this._disposed) return;
+      this.host.renderingMoved();
+      this.host.askSelection();
+      this._askUnder();
     }, 0);
   }
   private _paintSeen: ReturnType<typeof setTimeout> | null = null;
+  /** What is under a still pointer is asked once the content has been still
+   *  for `UNDER_REST_MS`: every frame of a scroll moves it, and a page whose
+   *  `mouseover` does anything would be held by each. */
+  private _askUnder(): void {
+    if (!this.host.movesHeard || this._underSoon) return;
+    const left = this._scrolledAt + UNDER_REST_MS - Date.now();
+    if (left <= 0) {
+      this.host.askUnder();
+      return;
+    }
+    this._underSoon = setTimeout(() => {
+      this._underSoon = null;
+      if (!this._disposed) this._askUnder();
+    }, left);
+  }
+  private _underSoon: ReturnType<typeof setTimeout> | null = null;
+  private _scrolledAt = 0;
   /** Each scroll container's `scrollend`, owed a frame after its last
    *  `scroll` (`elementScrolled`). */
   private _elementScrollEnds = new Map<
@@ -896,6 +920,7 @@ export class ScriptRunner {
   /** A scroll container in the document scrolled (`onElementScroll`). */
   elementScrolled(element: Element): void {
     if (this._disposed) return;
+    this._scrolledAt = Date.now();
     this._scrolledElements.add(element);
     const owed = this._elementScrollEnds.get(element);
     if (owed) clearTimeout(owed);
