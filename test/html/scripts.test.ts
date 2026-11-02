@@ -6268,6 +6268,126 @@ test('getComputedStyle answers a shorthand by its name, in either spelling, and 
   ]);
 });
 
+test("what HTML's parser makes in a drawing is SVG's, whatever its name, and what an integration point holds is HTML's", async () => {
+  // DOMPurify removes what stands in the wrong namespace: mermaid sanitizes
+  // each diagram with it, and lost its <style> and its labels
+  const doc = await hosted(
+    `<!doctype html><pre id="out"></pre><script>
+    var read = function (root) {
+      var out = {};
+      root.querySelectorAll('*').forEach(function (e) {
+        out[e.localName] = [e.tagName, e.namespaceURI.slice(-3), e.constructor.name];
+      });
+      return out;
+    };
+    var d = new DOMParser().parseFromString(
+      '<svg><style>rect{}</style><defs><clipPath></clipPath><linearGradient></linearGradient>' +
+      '<marker></marker><filter><feBlend></feBlend></filter></defs><a><text>t</text></a>' +
+      '<foreignObject><div><span>y</span><svg><g></g></svg></div></foreignObject>' +
+      '<desc><b>d</b></desc></svg>', 'text/html');
+    var html = new DOMParser().parseFromString('<style></style><a></a><div></div>', 'text/html');
+    var made = document.createElement('style');
+    document.createElementNS('http://www.w3.org/2000/svg', 'svg').appendChild(made);
+    var host = document.createElement('div');
+    host.innerHTML = '<svg><style>rect{fill:#123456}</style><rect></rect></svg>';
+    document.body.appendChild(host);
+    var sheet = host.querySelector('style').sheet;
+    document.getElementById('out').textContent = JSON.stringify({
+      drawing: read(d),
+      html: read(html),
+      made: made.namespaceURI.slice(-5),
+      sheet: [sheet.cssRules.length, sheet.ownerNode === host.querySelector('style'), document.styleSheets.length],
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  const svg = (name: string, kind: string) => [name, 'svg', kind];
+  const { html, head, body, ...drawing } = out.drawing;
+  assert.deepStrictEqual(drawing, {
+    svg: svg('svg', 'SVGSVGElement'),
+    style: svg('style', 'SVGStyleElement'),
+    defs: svg('defs', 'SVGDefsElement'),
+    clipPath: svg('clipPath', 'SVGClipPathElement'),
+    linearGradient: svg('linearGradient', 'SVGLinearGradientElement'),
+    marker: svg('marker', 'SVGMarkerElement'),
+    filter: svg('filter', 'SVGFilterElement'),
+    feBlend: svg('feBlend', 'SVGElement'),
+    a: svg('a', 'SVGAElement'),
+    text: svg('text', 'SVGTextElement'),
+    foreignObject: svg('foreignObject', 'SVGForeignObjectElement'),
+    div: ['DIV', 'tml', 'HTMLDivElement'],
+    span: ['SPAN', 'tml', 'HTMLSpanElement'],
+    g: svg('g', 'SVGGElement'),
+    desc: svg('desc', 'SVGDescElement'),
+    b: ['B', 'tml', 'HTMLElement'],
+  });
+  assert.deepStrictEqual(out.html.style, ['STYLE', 'tml', 'HTMLStyleElement']);
+  assert.deepStrictEqual(out.html.a, ['A', 'tml', 'HTMLAnchorElement']);
+  // what a script made as HTML's stays so, wherever it is put
+  assert.strictEqual(out.made, 'xhtml');
+  assert.deepStrictEqual(out.sheet, [1, true, 1]);
+});
+
+test("a page's selector finds a drawing's elements by the names they are written with", async () => {
+  // d3's `select('foreignObject')`, which the parser's capitals hid
+  const doc = await hosted(
+    `<!doctype html><svg><clipPath id="c"></clipPath><foreignObject id="f"><p id="p"></p></foreignObject>
+    <linearGradient id="l"></linearGradient></svg><pre id="out"></pre><script>
+    var q = function (s) { var e = document.querySelector(s); return e && e.id; };
+    var p = document.getElementById('p');
+    document.getElementById('out').textContent = JSON.stringify([
+      q('foreignObject'), q('clipPath'), q('svg linearGradient'), q('foreignObject > p'),
+      p.closest('foreignObject').id, document.getElementById('f').matches('foreignObject'),
+      document.querySelectorAll('svg clipPath, svg foreignObject').length, q('P'),
+    ]);
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  assert.deepStrictEqual(out, ['f', 'c', 'l', 'p', 'f', true, 2, 'p']);
+});
+
+test('what a foreignObject holds is measured where the drawing puts it, at any size of the object', async () => {
+  // mermaid sizes each object from the label it holds, which was laid out
+  // nowhere and read as nothing, so each came to 0 by 0 and hid its text
+  const doc = await hosted(
+    `<!doctype html><style>body { margin: 0 }</style>
+    <svg id="s" width="300" height="200" viewBox="0 0 150 100" style="display:block">
+      <g transform="translate(10, 5)"><foreignObject id="f">
+        <div id="i" style="display: table-cell; white-space: nowrap"><span id="t">Some words</span></div>
+      </foreignObject></g>
+      <foreignObject id="sized" x="20" y="30" width="50" height="40"><div id="d" style="width: 30px; height: 10px; margin: 2px 4px"></div></foreignObject>
+      <foreignObject id="turned" transform="rotate(90)" width="20" height="10"><div id="q" style="width: 20px; height: 10px"></div></foreignObject>
+    </svg><div id="out"></div><script>
+    var r = function (id) { var b = document.getElementById(id).getBoundingClientRect(); return [b.x, b.y, b.width, b.height]; };
+    var before = r('i'), inner = r('t');
+    var f = document.getElementById('f');
+    f.setAttribute('width', before[2] / 2); f.setAttribute('height', before[3] / 2);
+    document.getElementById('out').textContent = JSON.stringify({
+      before: before, inner: inner, after: r('i'), object: r('f'), sized: r('d'), turned: r('q'),
+    });
+    </script>`,
+  );
+  const out = JSON.parse(await settled(doc, 'out', (t) => t !== ''));
+  assert.ok(out.before[2] > 40, `as wide as its words: ${out.before}`);
+  assert.ok(out.before[3] > 0, `and as tall: ${out.before}`);
+  assert.deepStrictEqual(
+    out.before.slice(0, 2),
+    [20, 10],
+    'the viewBox and the group both reach it',
+  );
+  assert.deepStrictEqual(
+    out.after,
+    out.before,
+    'the size it asked for holds it',
+  );
+  assert.deepStrictEqual(out.object, out.before, 'and the object is that big');
+  assert.deepStrictEqual(out.inner.slice(0, 2), out.before.slice(0, 2));
+  // from the corner of an object at (20, 30), twice the size
+  assert.deepStrictEqual(out.sized, [48, 64, 60, 20]);
+  // a quarter turn about the origin, which is the drawing's corner
+  assert.deepStrictEqual(out.turned.map(Math.round), [-20, 0, 20, 40]);
+});
+
 test('getComputedStyle reads a colour in the space it was written or mixed in, and el.style a contrast-color() with its calculations simplified', async () => {
   // CSS Color 4, 15, and CSS Color 5: what a colour picker or a theme's
   // script reads back is oklch() as oklch(), a mix in sRGB as color(srgb …),
