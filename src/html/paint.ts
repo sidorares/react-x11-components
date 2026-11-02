@@ -13757,6 +13757,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
         : null,
       units,
       cut,
+      style.colorScheme,
     );
   // from a raster where the context draws in whole pixels of its own, as an
   // SVG image is (`drawSvg`), and it is cut to the raster: a page's icons
@@ -13775,6 +13776,7 @@ function paintSvg(ctx: PaintContext, box: Box, options: PaintOptions): void {
           size,
           inherited,
           units,
+          style.colorScheme,
         )
       : null;
   const kept =
