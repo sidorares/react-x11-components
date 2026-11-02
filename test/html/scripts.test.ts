@@ -11446,7 +11446,7 @@ test('a page that asks document.fonts about each face it adds styles nothing for
     return fontFaces.call(this);
   };
   const answer = (code: string) =>
-    doc.runner().evaluate(`JSON.stringify(${code})`)?.text ?? '';
+    doc.runner()!.evaluate(`JSON.stringify(${code})`)?.text ?? '';
   assert.equal(answer('go(60)'), '"[true,60,true]"');
   assert.equal(updates, 0, 'nothing is styled for the faces while they go in');
   assert.ok(reads < 5, `${reads} reads of the list for 60 faces`);
