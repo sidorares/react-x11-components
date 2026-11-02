@@ -152,7 +152,7 @@ test('the constructor makes a URL of what it is given, and refuses what is no We
   );
 });
 
-test('an open socket sends and hears text and binary, as a Blob or an ArrayBuffer, and its bufferedAmount comes down as the network takes what was sent', async () => {
+test('an open socket sends and hears text and binary, as a Blob or an ArrayBuffer, and its bufferedAmount comes down as the network takes what was sent', async (t) => {
   let c: FakeConnection | null = null;
   const sockets = new FakeSockets((made) => {
     c = made;
@@ -165,18 +165,22 @@ test('an open socket sends and hears text and binary, as a Blob or an ArrayBuffe
       'var heard = [];' +
       'ws.onopen = function (e) { log("open", ws.readyState, ws.protocol, ws.extensions, e.isTrusted);' +
       '  ws.send("héllo"); ws.send(new Uint8Array([1, 2, 3]).buffer); ws.send(new Uint16Array([0x0201, 0x0403]).subarray(1)); ws.send(new Blob(["blob"]));' +
-      '  log("buffered", ws.bufferedAmount); };' +
+      '  log("buffered", ws.bufferedAmount); check(); };' +
       'ws.onmessage = function (e) { heard.push(e);' +
       '  if (heard.length === 2) ws.binaryType = "arraybuffer";' +
       '  if (heard.length < 4) return;' +
       '  Promise.all(heard.map(function (m) { return typeof m.data === "string" ? m.data : m.data instanceof Blob ? m.data.arrayBuffer().then(function (b) { return "blob:" + new Uint8Array(b).join("."); }) : "ab:" + new Uint8Array(m.data).join("."); }))' +
       '  .then(function (all) { log("heard", all.join(","), heard[0].origin, heard[0].isTrusted); }); };' +
-      'setTimeout(function check() { if (ws.bufferedAmount) return setTimeout(check, 5); log("drained", ws.bufferedAmount); }, 50);',
+      // from the sends on: before them nothing waits, so a look at a socket
+      // that is yet to open would find it drained
+      'var looks = 0;' +
+      'function check() { if (!ws.bufferedAmount) return log("drained", ws.bufferedAmount); log("waiting", ++looks, ws.bufferedAmount); setTimeout(check, 5); }',
     { webSocket: sockets },
   );
   assert.equal(await p.until('early|'), 'InvalidStateError');
   await waitFor(() => c !== null, 'a connection was asked for');
   const conn = c!;
+  const asked = t.mock.method(conn, 'bufferedAmount');
   assert.deepEqual(conn.request, {
     url: 'wss://ws.test/echo',
     origin: 'https://example.test',
@@ -194,9 +198,13 @@ test('an open socket sends and hears text and binary, as a Blob or an ArrayBuffe
     await p.until('heard|'),
     'héllo,blob:1.2.3,ab:3.4,ab:98.108.111.98|wss://ws.test|true',
   );
-  // nothing has left the seam yet; once it has, the page hears it
-  await act(() => new Promise((r) => setTimeout(r, 80)));
-  assert.ok(!p.logs.some((l) => l.startsWith('log: drained')));
+  // nothing has left the seam yet: the host asks it, and the page, looking
+  // after that, reads all of it still waiting; once it has left, the page
+  // hears it
+  const asks = asked.mock.callCount();
+  await waitFor(() => asked.mock.callCount() > asks, 'the host asked the seam');
+  const looks = p.logs.filter((l) => l.startsWith('log: waiting|')).length;
+  assert.equal(await p.until(`waiting|${looks + 1}|`), '15');
   conn.drain();
   assert.equal(await p.until('drained|'), '0');
 });
