@@ -810,8 +810,10 @@ the face says it has loaded. `document.fonts.add` puts a face among the
 document's, which styles the document again, as an `@font-face` in a sheet
 would; `delete` and `clear` take it out, and only what a script put there. A
 family or a descriptor that cannot be read is the `SyntaxError` `loaded`
-rejects with, and a font the engine cannot read a `NetworkError`. A
-descriptor set after a face is made reads back and changes nothing of it.
+rejects with, and a font the engine cannot read a `NetworkError`. A `style`,
+a `weight` or a `stretch` set after a face is made is what it is matched by
+from then on; any other descriptor set then reads back and changes nothing of
+it.
 
 ## Scripts
 
@@ -1087,7 +1089,9 @@ a request whose site for cookies is `page`'s. Where the runtime says what
 the handshake was answered with — Node's from 24, through undici's
 `undici:websocket:open` diagnostics channel — its `Set-Cookie` is kept in
 the jar before the page hears `open`; Bun's says nothing of it. Node 20 has
-no `WebSocket`, and there every socket fails as with no network.
+no `WebSocket`, and there every socket fails as with no network. One
+opening handshake to a host and port goes at a time, as RFC 6455 has it, each
+waiting for the one before to be answered or to fail, or for 30 seconds.
 `webSocket: false` opens none. `test/fake-socket.ts` is a seam a test
 answers by hand, and `test/ws-server.ts` a server of RFC 6455's to point
 the real one at.
@@ -1255,7 +1259,8 @@ as WPT's tests make them, and to another peer the host can reach.
   speakers has silence; WPT's WebRTC tests make their audio from one.
 - **A canvas's text is drawn in the document's fonts**: `fillText`,
   `strokeText` and `measureText`, with `textAlign`, `textBaseline`,
-  `direction`, `letterSpacing`, `wordSpacing` and `maxWidth`, through every
+  `direction`, `fontStretch`, `letterSpacing`, `wordSpacing` and `maxWidth`,
+  through every
   transform, clip and compositing operator a path goes through. A `font`
   names what the document's `@font-face` rules and `new FontFace` do, and a
   face not loaded yet is asked for and drawn in what the list has until it
@@ -2223,7 +2228,9 @@ wptrunner runs a browser.
 it is the window; of another, `postMessage`, `closed`, `close()`, `focus()`,
 `location =`, `location.replace()` and a `SecurityError` for the rest, and it goes
 from one to the other as the window navigates, so one object stands for a window
-through a popup login. `closed` is true from the moment `close()` is called, and
+through a popup login. A `javascript:` URL sent to a window or a frame of another
+origin ends there, as HTML has it, and a host hears of no navigation. `closed` is
+true from the moment `close()` is called, and
 the window goes in a task after it: `opener` reads null then, and a name no longer
 finds it.
 
@@ -2310,7 +2317,9 @@ What can be dragged is an element marked `draggable=true`, a link and an image.
 The store is read/write at `dragstart`, read-only at `drop` and protected in
 between, where a page sees its types and not its data. A target that takes a
 drop cancels `dragover`; a field or an editing host takes text with nothing
-said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+said, as `insertFromDrop`. A press on a text field or a `<select>` starts no
+drag of it or of what it is in, `draggable` or `readonly` or not, as in a
+browser: it selects. A page that cancels `dragstart`, and a press on
 anything else, leaves the gesture what it was: a selection, or a drag of the
 page's own over pointer events. After `dragstart` the pointer is the drag's, so
 a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
@@ -3233,7 +3242,10 @@ says nothing, the UA sheet's `:focus-visible { outline: auto 1px
 element's border box, or round each of a link's fragments. A press does not
 focus a link or a button, which it does in a browser: the press focuses the
 document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
-link follows it. Tab after a press goes on from where it landed, as from a
+link follows it. A press on what has the focus leaves it there, whether it
+had it before or a page's `mousedown` just gave it, as a page that focuses a
+button itself expects of the browsers that focus none on a click.
+Tab after a press goes on from where it landed, as from a
 link pressed or from text between links, which is HTML's sequential focus
 navigation starting point (6.6.4). The element focused is scrolled into
 view, by the box around the document that scrolls. An element a page's
@@ -3242,6 +3254,16 @@ document was not a press, as Chrome, Firefox and WebKit decide it: a menu a
 click opens, whose script focuses its first link, draws no ring round it,
 where Tab and Enter, or no input yet, draw one. A modifier alone, and a
 chord with Ctrl, Alt or Meta, is no input that changes the answer.
+
+**A focus a script asks for is the keyboard's at once.** `focus()` is told
+before it returns, and what takes it for a control or a link may be a render
+or two away on a page still loading. A key typed until then reaches the page
+at that element, and does what it does on a link or a button; only text typed
+at a field whose widget is still to come is heard and not typed. A press
+elsewhere takes such a focus back, as it takes any.
+
+Tab goes by the document as it stands, so a Tab straight after a script put
+something focusable in reaches it.
 
 **Enter follows a link, with a click.** A browser activates a link from the
 keyboard with a `click` (HTML 6.5.6), and so does this: `onLink` is handed

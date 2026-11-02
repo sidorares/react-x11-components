@@ -635,6 +635,142 @@ test('another origin reaches what crosses origins and nothing else', async () =>
   assert.ok(!s.logs.some((l) => l.includes('wrong')));
 });
 
+/** The ways a page writes one, each of which `URL` makes the same address. */
+const SCRIPT_URLS = [
+  'javascript:parent.ran = 1',
+  'JaVaScRiPt:parent.ran = 1',
+  '  javascript:parent.ran = 1',
+  'java\tscript:parent.ran = 1',
+  'java\nscript:parent.ran = 1',
+];
+
+test('a window of another origin is sent to no javascript: URL: the navigation ends, and the host hears of none', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}side', 'side');
+      addEventListener('message', () => {
+        for (const url of ${JSON.stringify(SCRIPT_URLS)}) {
+          w.location = url;
+          w.location.href = url;
+          w.location.replace(url);
+        }
+        window.open('javascript:parent.ran = 1', 'side');
+        console.log('sent');
+        w.postMessage('still there?', '*');
+      }, { once: true });
+    `),
+    {
+      [`${PROVIDER}side`]: page(`
+        addEventListener('message', (e) => e.source.postMessage('alive', '*'));
+        opener.postMessage('up', '*');
+      `),
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  await s.until('sent');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  const sent = s.requests.filter((r) => /script:/i.test(r));
+  assert.deepEqual(sent, [], 'the host was asked to go there');
+  assert.ok(
+    s.shown().includes(`${PROVIDER}side`),
+    `the popup stayed on its page: ${s.shown()}`,
+  );
+});
+
+test('a window of another origin is still sent to a place, so what is refused is the script and not the navigation', async () => {
+  const s = await scene(
+    pressed(`
+      const w = window.open('${PROVIDER}side', 'side');
+      addEventListener('message', () => {
+        w.location = '${PROVIDER}next';
+      }, { once: true });
+    `),
+    {
+      [`${PROVIDER}side`]: page(`opener.postMessage('up', '*');`),
+      [`${PROVIDER}next`]: page(`console.log('arrived');`),
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.press();
+  await s.when(() => s.requests.includes(`GET ${PROVIDER}next`), 'not sent');
+});
+
+test('a frame of another origin is sent to no javascript: URL, and stays on its page', async () => {
+  const s = await scene(
+    pressed(`
+      const frame = document.querySelector('iframe');
+      frame.addEventListener('load', () => console.log('frame loaded again'));
+      for (const url of ${JSON.stringify(SCRIPT_URLS)}) {
+        frame.contentWindow.location = url;
+      }
+      // past the task such a navigation would unload the frame in
+      setTimeout(() => {
+        console.log('sent');
+        frame.contentWindow.postMessage('still there?', '*');
+      }, 30);
+    `).replace(
+      '<div style="height:100px">page</div>',
+      `<div style="height:20px">page</div><iframe src="${PROVIDER}frame" style="width:100px;height:40px"></iframe>`,
+    ),
+    {
+      [`${PROVIDER}frame`]: page(`
+        addEventListener('message', (e) => console.log('frame heard', e.data));
+        addEventListener('pagehide', () => console.log('frame left'));
+      `),
+    },
+    { popups: { unblocked: true } },
+  );
+  await s.when(() => s.requests.includes(`GET ${PROVIDER}frame`), 'no frame');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  await s.press();
+  await s.until('sent');
+  assert.equal(
+    await s.until(`[frame ${PROVIDER}frame] frame heard`),
+    'still there?',
+  );
+  assert.ok(
+    !s.logs.some((l) => /frame (left|loaded)/.test(l)),
+    s.logs.join('\n'),
+  );
+  assert.deepEqual(
+    s.requests.filter((r) => /script:/i.test(r)),
+    [],
+  );
+  assert.equal(
+    s.requests.filter((r) => r === `GET ${PROVIDER}frame`).length,
+    1,
+    'loaded once',
+  );
+});
+
+test("a frame's fetch takes a Request of the page's, method, body and all, where it was read as a URL", async () => {
+  // a frame with a realm of its own has a `Request` of its own, and the
+  // page's was no instance of it
+  const s = await scene(
+    pressed(`
+      const frame = document.querySelector('iframe');
+      const request = new Request('${APP}taken', { method: 'POST', body: 'BODY' });
+      frame.contentWindow.fetch(request).then(
+        (r) => console.log('answered', r.status),
+        (e) => console.log('answered', e.name),
+      );
+    `).replace(
+      '<div style="height:100px">page</div>',
+      `<div style="height:20px">page</div><iframe src="${APP}frame" style="width:100px;height:40px"></iframe>`,
+    ),
+    {
+      [`${APP}frame`]: page(`console.log('frame');`),
+      [`${APP}taken`]: 'taken',
+    },
+  );
+  await s.when(() => s.requests.includes(`GET ${APP}frame`), 'no frame');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  await s.press();
+  await s.until('answered');
+  assert.ok(s.requests.includes(`POST ${APP}taken`), s.requests.join('\n'));
+});
+
 test('a frame opens a window, and that window talks to the frame', async () => {
   const s = await scene(
     pressed(`

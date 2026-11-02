@@ -9054,16 +9054,25 @@ export function installDom(
     const options: Any[] = [];
     const inHtml = (el: Any, tag: string): boolean =>
       el.localName === tag && el.namespaceURI === HTML_NS;
-    for (const kid of wrapAll(call('kids', select._id, 'elements'))) {
-      if (inHtml(kid, 'option')) options.push(kid);
-      else if (inHtml(kid, 'optgroup')) {
-        for (const inner of wrapAll(call('kids', kid._id, 'elements'))) {
-          if (inHtml(inner, 'option')) options.push(inner);
+    const walk = (at: Any, inGroup: boolean): void => {
+      for (const kid of wrapAll(call('kids', at._id, 'elements'))) {
+        if (inHtml(kid, 'option')) options.push(kid);
+        else if (
+          !OPTIONS_NOT_IN.has(kid.localName) ||
+          !inHtml(kid, kid.localName)
+        ) {
+          const group = inHtml(kid, 'optgroup');
+          if (!group || !inGroup) walk(kid, inGroup || group);
         }
       }
-    }
+    };
+    walk(select, false);
     return options;
   };
+  /** What a `<select>`'s list of options (HTML 4.10.7) does not go on into:
+   *  it holds its options however deep, in a `<div>` as much as in an
+   *  `<optgroup>`, so an option moved into a wrapper stays one of them. */
+  const OPTIONS_NOT_IN = new Set(['select', 'hr', 'datalist']);
   /** The options chosen: those `selected`, as `<Html>` keeps them, and in a
    *  list of one the last of those, or else the first that can be (HTML
    *  4.10.7, "selectedness setting algorithm"). */
@@ -11134,6 +11143,10 @@ export function installDom(
 
   /** The white space a context's text takes for a space (HTML 4.12.5.1.8). */
   const TEXT_SPACES = /[\t\n\f\r]/g;
+  /** A width as a `font` writes it, among the words before its size: a
+   *  family called `condensed` is no width. */
+  const FONT_STRETCHES =
+    /^((?:(?!\S*px[\s/])\S+\s+)*?)(?:(?:ultra|extra|semi)-)?(?:condensed|expanded)\s+/;
 
   /** Pixels in each absolute unit of a context's spacing. */
   const SPACING_UNITS: Record<string, number> = {
@@ -11922,6 +11935,14 @@ export function installDom(
         CAPS_FEATURES[state.fontVariantCaps] ?? '',
       ].join(',');
     }
+    /** The font a string is set in: `font`, with the context's `fontStretch`
+     *  in it, which nothing else says to the text engine. A width `font` was
+     *  written with gives way to one set after it, as two in it are none. */
+    _textFont(): string {
+      const { font, fontStretch } = this._state;
+      if (fontStretch === 'normal') return font;
+      return `${fontStretch} ${font.replace(FONT_STRETCHES, '$1')}`;
+    }
     /** What a `font` comes to: null for no font. Where there is no text
      *  engine it is kept as written, with what size can be read off it. */
     _fontOf(value: string): Any {
@@ -11959,7 +11980,7 @@ export function installDom(
       const setting = this._textSetting(now.direction);
       const raster = canvasRaster(
         now.owner,
-        state.font,
+        this._textFont(),
         chars,
         size,
         stroke ? state.lineWidth * perUnit : 0,
@@ -12006,7 +12027,8 @@ export function installDom(
       const now = this._textNow();
       const setting = this._textSetting(now?.direction ?? 'ltr');
       const raw =
-        now && call('canvasMeasure', now.owner, state.font, chars, setting);
+        now &&
+        call('canvasMeasure', now.owner, this._textFont(), chars, setting);
       // where there is no text engine, a sans-serif's average character
       const lengths =
         typeof raw === 'string'
@@ -12041,7 +12063,7 @@ export function installDom(
           chars.trim() && now
             ? canvasRaster(
                 now.owner,
-                state.font,
+                this._textFont(),
                 chars,
                 fine,
                 0,
@@ -15947,18 +15969,33 @@ export function installDom(
     }
     set style(v: Any) {
       this._desc.style = str(v);
+      this._matchedBy();
     }
     get weight(): string {
       return this._desc.weight;
     }
     set weight(v: Any) {
       this._desc.weight = str(v);
+      this._matchedBy();
     }
     get stretch(): string {
       return this._desc.stretch;
     }
     set stretch(v: Any) {
       this._desc.stretch = str(v);
+      this._matchedBy();
+    }
+    /** What it is matched by is the host's, which went by what it was made
+     *  with: a width set after that left it the normal one. */
+    _matchedBy(): void {
+      if (!this._script) return;
+      const { style, weight, stretch } = this._desc;
+      call(
+        'fontFaceSet',
+        this._doc._id,
+        this._script,
+        JSON.stringify({ style, weight, stretch }),
+      );
     }
     get unicodeRange(): string {
       return this._desc.unicodeRange;
@@ -16903,6 +16940,13 @@ export function installDom(
   /** A document made of XML's rules: `createDocument`'s. */
   class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));
+
+  // HTMLOrSVGElement is a mixin as well: without it `focus()` on an element
+  // of a drawing threw, and `tabIndex` was an expando that said nothing
+  for (const name of ['focus', 'blur', 'tabIndex', 'nonce', 'autofocus']) {
+    const d = Object.getOwnPropertyDescriptor(HTMLElement.prototype, name);
+    if (d) Object.defineProperty(SVGElement.prototype, name, d);
+  }
 
   // ParentNode is a mixin (Web IDL 2.5), so what it has is each
   // interface's own, and they inherit from `Node`. Shady DOM, which
@@ -18332,7 +18376,13 @@ export function installDom(
     return { width, height, scrollX, scrollY, dpr };
   };
 
-  const now = (): number => Number(bridge('now'));
+  /** Where this realm's clock starts on the host's, which is the process's:
+   *  a worker's, whose time is its own (`__becomeWorker`). */
+  let clockFrom = 0;
+  // read to five microseconds, as a browser coarsens what a page can time
+  // (HR Time 4.3), and each read here costs less than that
+  const now = (): number =>
+    Math.floor((Number(bridge('now')) - clockFrom) * 200) / 200;
 
   // --- viewports, as the rendering steps see them -------------------------
   //
@@ -19741,6 +19791,18 @@ export function installDom(
     return new Uint8Array(out);
   };
 
+  /** A `Request` as what it is, or null: one of a same-origin frame's realm
+   *  is a `Request` of no class here, and read as a URL its method and body
+   *  went. */
+  const requestIn = (input: Any): Any =>
+    input instanceof Request ||
+    (typeof input === 'object' &&
+      input !== null &&
+      '_raw' in input &&
+      '_stream' in input)
+      ? input
+      : null;
+
   /** The headers of a request the user agent makes, which a page's script
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
@@ -19748,7 +19810,7 @@ export function installDom(
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
-      const request = input instanceof Request ? input : null;
+      const request = requestIn(input);
       const url =
         typeof input === 'string' ? input : (input?.url ?? str(input));
       const mode = str(init.mode ?? request?.mode ?? 'cors');
@@ -19812,6 +19874,17 @@ export function installDom(
         headers.set('content-type', extracted.type);
       }
       if (signal?.aborted) {
+        // fetch makes its `Request` first (Fetch 5.5), so what one turns down
+        // is that TypeError whatever the signal says; asked only here, since
+        // a request that goes on is the host's to refuse, and to resolve
+        if (!request) {
+          try {
+            new Request(input, { ...init, body: undefined, signal: undefined });
+          } catch (e) {
+            reject(e);
+            return;
+          }
+        }
         if (extracted?.stream) extracted.stream.cancel?.(aborted());
         reject(aborted());
         return;
@@ -19929,7 +20002,7 @@ export function installDom(
     _stream: Any = null;
     bodyUsed = false;
     constructor(input: Any, init: Any = {}) {
-      const from = input instanceof Request ? input : null;
+      const from = requestIn(input);
       // every member of the dictionary is read, as WebIDL converts one —
       // `duplex` among them, whose being read a page feature-detects a
       // stream body by
@@ -32361,6 +32434,11 @@ export function installDom(
   );
   define('cancelIdleCallback', clearTimer);
   define('queueMicrotask', (fn: Any) => {
+    if (typeof fn !== 'function') {
+      throw new TypeError(
+        "Failed to execute 'queueMicrotask': parameter 1 is not of type 'Function'.",
+      );
+    }
     Promise.resolve().then(() => {
       try {
         fn();
@@ -33609,6 +33687,11 @@ export function installDom(
    */
   entry('__becomeWorker', () => {
     const { url, name, shared, service } = input();
+    // a worker's time starts with it (HR Time 3, the time origin), where one
+    // read off the process's clock came to its page's, and which of the two
+    // was first was a coin toss
+    clockFrom = Number(bridge('now'));
+    (G as Any).performance.timeOrigin = Date.now();
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();

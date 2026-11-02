@@ -63,6 +63,7 @@ import { act, renderX11 } from 'react-x11/test';
 import type { RenderX11Result } from 'react-x11/test';
 
 import {
+  CookieJar,
   Html,
   HtmlNetwork,
   HtmlServiceWorkers,
@@ -160,10 +161,18 @@ const PALETTE = {
  *  for a service worker's variant, which WPT's manifest forces onto https
  *  (`force_https`); a subdomain for `.www.`. */
 export function urlFor(test: string): string {
-  const name = test.split('?')[0];
+  const [name, query = ''] = test.split('?');
   const sub = /\.www\./.test(name) ? 'www.' : '';
-  if (/\.h2\./.test(name)) return `https://${sub}${HOST}:${H2_PORT}/${test}`;
-  if (/\.https\.|\.serviceworker(?:-module)?\.html$/.test(name)) {
+  // a variant says so as the file's name does (`?wpt_flags=https`), as
+  // wptrunner reads a test's flags
+  const flags = new URLSearchParams(query).getAll('wpt_flags');
+  if (/\.h2\./.test(name) || flags.includes('h2')) {
+    return `https://${sub}${HOST}:${H2_PORT}/${test}`;
+  }
+  if (
+    /\.https\.|\.serviceworker(?:-module)?\.html$/.test(name) ||
+    flags.includes('https')
+  ) {
     return `https://${sub}${HOST}:${HTTPS_PORT}/${test}`;
   }
   return `http://${sub}${HOST}:${HTTP_PORT}/${test}`;
@@ -230,7 +239,7 @@ const DRIVER = `(function () {
   internal.set_permission = function (params) {
     return post('permission', { name: params.descriptor && params.descriptor.name, state: params.state }).then(function () {});
   };
-  internal.delete_all_cookies = function () { return Promise.resolve(); };
+  internal.delete_all_cookies = function () { return post('delete-cookies', {}).then(function () {}); };
   internal.minimize_window = function () { return Promise.resolve({}); };
   internal.set_window_rect = function () { return Promise.resolve(); };
 })();`;
@@ -291,6 +300,8 @@ interface Current {
   done: { status: string; message: string | null; tests: Subtest[] } | null;
   errors: string[];
   loaded: boolean;
+  /** Its cookies, which `delete_all_cookies` empties. */
+  cookies: CookieJar;
   /** Its devices, which `set_permission` changes. */
   media: FakeMediaDevices;
   /** What it may do, which `set_permission` changes: whatever it has not
@@ -648,8 +659,13 @@ function Tab(props: {
         const to = session.go(delta);
         if (to) load(to.url, to.document);
       },
+      // `document.cookie` is the jar the network sends with, a jar a test
+      cookies: network.cookies ?? undefined,
       // WPT's WebTransport server, `./wpt serve --webtransport-h3`, over quico
       webTransport: network.webTransport,
+      // WPT's pywebsocket handlers, on the ports the server chose, over the
+      // runtime's own WebSocket, as the example browser's
+      webSocket: network.webSockets(doc.baseUrl),
       // two peers in one page, over werift
       webRTC: network.webRTC,
       mediaDevices: page.media,
@@ -828,6 +844,10 @@ const MEDIA_PERMISSIONS: Record<string, 'camera' | 'microphone' | 'display'> = {
 };
 
 async function driver(what: string, body: string | null): Promise<string> {
+  if (what === 'delete-cookies') {
+    current?.cookies.clear();
+    return '{}';
+  }
   if (what === 'permission') {
     const { name, state } = JSON.parse(body ?? '{}') as {
       name?: string;
@@ -1034,13 +1054,19 @@ async function render(
   lastWorkers?.dispose();
   const serviceWorkers = new HtmlServiceWorkers();
   lastWorkers = serviceWorkers;
-  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
+  const cookies = new CookieJar();
+  const network = new HtmlNetwork({
+    connectTimeout: 2500,
+    serviceWorkers,
+    cookies,
+  });
   const page: Current = {
     url,
     results: new Map(),
     done: null,
     errors: [],
     loaded: false,
+    cookies,
     media: fakeMediaDevices(),
     permissions: {},
     watchers: new Set(),
@@ -1181,7 +1207,12 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
   lastWorkers?.dispose();
   const serviceWorkers = new HtmlServiceWorkers();
   lastWorkers = serviceWorkers;
-  const network = new HtmlNetwork({ connectTimeout: 2500, serviceWorkers });
+  const cookies = new CookieJar();
+  const network = new HtmlNetwork({
+    connectTimeout: 2500,
+    serviceWorkers,
+    cookies,
+  });
   const url = urlFor(test);
   const page: Current = {
     url,
@@ -1189,6 +1220,7 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     done: null,
     errors: [],
     loaded: false,
+    cookies,
     media: fakeMediaDevices(),
     permissions: {},
     watchers: new Set(),

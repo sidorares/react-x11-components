@@ -5736,6 +5736,8 @@ const SELF_POSITIONS: ReadonlySet<string> = new Set([
   'self-end',
   'flex-start',
   'flex-end',
+  'flow-start',
+  'flow-end',
 ]);
 const CONTENT_POSITIONS: ReadonlySet<string> = new Set([
   'center',
@@ -5743,6 +5745,8 @@ const CONTENT_POSITIONS: ReadonlySet<string> = new Set([
   'end',
   'flex-start',
   'flex-end',
+  'flow-start',
+  'flow-end',
 ]);
 const CONTENT_DISTRIBUTIONS: ReadonlySet<string> = new Set([
   'space-between',
@@ -5833,6 +5837,10 @@ function justifyKeyword(value: string): ComputedStyle['justifyContent'] | null {
     case 'space-around':
     case 'space-evenly':
       return v;
+    case 'flow-start':
+      return 'flex-start';
+    case 'flow-end':
+      return 'flex-end';
     case 'normal':
     case 'stretch':
       return v;
@@ -5861,11 +5869,13 @@ function alignKeyword(value: string): string | null {
   switch (v) {
     case 'start':
     case 'flex-start':
+    case 'flow-start':
     case 'self-start':
     case 'left':
       return 'flex-start';
     case 'end':
     case 'flex-end':
+    case 'flow-end':
     case 'self-end':
     case 'right':
       return 'flex-end';
