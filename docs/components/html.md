@@ -852,8 +852,9 @@ of its own:
   answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
 charset }` — the `<script>` is the request's `element`, and the root
   element is a module's;
-- a page's own requests — `fetch`, `XMLHttpRequest`, a frame's document, a
-  worker's script — go through `scripts.fetch`, a request of any method and
+- a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
+  document, a worker's script — go through `scripts.fetch`, a request of any
+  method and
   the response whatever its status, after the engine has held the page to
   what its origin and CORS let it read. **With none, they fail** as a
   request with no network does, a `TypeError` in the page. A body is
@@ -983,6 +984,7 @@ since this component navigates nowhere by itself:
 | `workers`        | true                      | Dedicated and shared workers, each a thread; a `SharedWorker` is one for a script and a name, connected to by a port each. Off, both throw `NotSupportedError`.                  |
 | `serviceWorkers` | false                     | `navigator.serviceWorker` on a secure page: an `HtmlServiceWorkers`, the one its `HtmlNetwork` was made with, or `true` for one of its own. A worker answers `fetch`. See below. |
 | `webSocket`      | none: every socket fails  | A page's `WebSocket`s: each one's opening handshake, its messages and how it closed (`HtmlWebSocket`). `HtmlNetwork.webSockets(page)` is one. See below.                         |
+| `syncNetwork`    | none: asynchronous only   | What a page's synchronous `XMLHttpRequest`s are made through, on a thread of its own (`HtmlSyncNetwork`). `HtmlNetwork.syncNetwork()` is one. See below.                         |
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.                |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                     |
 | `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                             |
@@ -1038,6 +1040,40 @@ their queue is past its high-water mark (`writer.ready`,
 strategies. Every algorithm is the standard's, run in the page's realm
 (`src/html/scripts/streams.ts`), and WPT's `streams/` tests pass but the
 tentative `owning` type's.
+
+**A synchronous `XMLHttpRequest` is the one request `scripts.fetch` cannot
+make.** A page shares its thread with its network, and a request needs that
+thread back, which a page waiting in `send()` will not give it. So
+`scripts.syncNetwork` is a network on a thread of its own, made again there from
+what `HtmlNetwork.syncNetwork()` says of itself, and the page's thread sleeps on
+a shared word until it answers. It is the same `HtmlNetwork.request` as any
+other: its headers, redirects, cookies and CORS are the ones every request has,
+and the jar goes over with the request and comes back with what became of it,
+so a `Set-Cookie` on the way is the page's by the time `send()` returns. With no
+`syncNetwork` a page has only asynchronous ones, and `open` with `async` false
+throws `InvalidAccessError`, as it always did; `useHtmlNetwork` hands one. On
+Node and on Bun alike.
+
+- **Nothing runs while it waits**: no timer, no paint, no input, in this process.
+  That is what a synchronous request has always meant, and so a server in the
+  same process as the page cannot answer one until it fails.
+- **It has a bound.** A task may last five times `scripts.timeout`, 10 seconds by
+  default, whatever it is waiting on, and the wait stops short of that, at 7.5
+  seconds of the task by default: a request that takes too long is a `TimeoutError`
+  from `send()`, and the page goes on. The time asleep is not counted as the page's
+  own.
+- **A network with a `fetch` transport of the host's has none**, since a function
+  cannot cross a thread. `syncNetwork()` answers null.
+- **A service worker does not hear it.** Its registry is on the thread that is
+  asleep, and its own requests come back to that thread, so a controlled page's
+  synchronous request goes straight to the network.
+- **It keeps nothing**: the thread's network has no HTTP cache, and hears nothing
+  of what the page's has kept.
+
+A web worker needs none of this and no seam: it is the thread that sleeps, and
+the page's network, awake, answers it through `scripts.fetch` as it answers an
+`importScripts`, service worker and cache and all. Its `timeout` holds, as a
+window's is refused with `InvalidAccessError`, as is a `responseType`.
 
 **A page's WebSockets are the host's to carry** (WHATWG WebSockets). The
 page has the whole API — `WebSocket` with `url`, `readyState` and its four

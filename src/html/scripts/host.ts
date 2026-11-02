@@ -189,7 +189,7 @@ import { PagePeers } from './peers.js';
 import type { ChannelRelay } from './peers.js';
 import { PageTransports } from './transports.js';
 import { PageSockets } from './sockets.js';
-import { parseCsp } from '../csp.js';
+import { connectAllowed, parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
@@ -210,6 +210,8 @@ import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles } from '../form.js';
+import type { HtmlSyncNetwork } from '../network.js';
+import { fetchSync } from './sync-fetch.js';
 import type { HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
@@ -735,6 +737,14 @@ export interface HostSeams {
   /** The document's title changed. */
   title(title: string | null): void;
   fetch(request: FetchRequest, signal: AbortSignalLike): Promise<FetchResponse>;
+  /** What a page's synchronous requests are made through, on a thread that
+   *  stays awake while this one sleeps (`sync-fetch.ts`). Absent, a page
+   *  has only asynchronous ones. */
+  syncNetwork?: HtmlSyncNetwork | null;
+  /** A synchronous request where this realm makes them its own way: a web
+   *  worker's, whose page has a network to answer it with. Throws what it
+   *  came to, a `TimeoutError` by name where `timeout` ms ran out. */
+  fetchSync?(request: FetchRequest, timeout: number): FetchResponse;
   userAgent: string;
   language: string;
   /** What a media element's `canPlayType` answers: whether what plays the
@@ -1677,6 +1687,9 @@ type Pseudos = Record<
 /** What an entry into the page answers: the engine's `call`. */
 export interface Entries {
   call(entry: string, input: unknown): Primitive;
+  /** How long the task under way may still wait on an op, in ms
+   *  (`ScriptEngine.waitLeft`). */
+  readonly waitLeft?: number;
   /** How long the page's tasks have taken, in ms (`ScriptEngine.busy`). */
   readonly busy?: number;
   /** Whether an entry has timed out since last asked (`ScriptEngine`): the
@@ -1705,6 +1718,60 @@ export interface Entries {
  * realm changes may be drawn by another's `<Html>`. What is a realm's own
  * — its ids, its timers, its observers, its address — stays its host's.
  */
+/** How long a synchronous request may hold a page, at most: the task's own
+ *  limit comes first, and only a host that raised it gets this far. */
+const SYNC_REQUEST_MS = 30_000;
+
+/** How a request goes (`_route`). */
+interface FetchRoute {
+  kind: 'own' | 'opaque' | 'cors';
+  plain: FetchRequest;
+  /** What the request has to ask another origin first. */
+  preflight?: { unsafe: string[] };
+}
+
+/** A request's preflight, which carries no cookies (Fetch 4.9). */
+function preflightRequest(
+  request: PageRequest,
+  unsafe: string[],
+): FetchRequest {
+  const headers: [string, string][] = [
+    ['access-control-request-method', request.method],
+  ];
+  if (unsafe.length) {
+    headers.push(['access-control-request-headers', unsafe.join(',')]);
+  }
+  return {
+    url: request.url,
+    method: 'OPTIONS',
+    headers,
+    body: null,
+    credentials: 'omit',
+  };
+}
+
+/** What a preflight's answer does not let this request do, or null. */
+function preflightRefusal(
+  entry: PreflightEntry,
+  request: PageRequest,
+  unsafe: string[],
+): string | null {
+  const include = request.credentials === 'include';
+  if (
+    !SIMPLE_METHODS.has(request.method) &&
+    !entry.methods.has(request.method) &&
+    !(entry.anyMethod && !include)
+  ) {
+    return `Method ${request.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
+  }
+  for (const name of unsafe) {
+    if (entry.headers.has(name)) continue;
+    if (entry.anyHeader && !include && name !== 'authorization') continue;
+    return `Request header field ${name} is not allowed by Access-Control-Allow-Headers in preflight response.`;
+  }
+  return null;
+}
+
 export class DomShared {
   readonly inert = new WeakSet<Element>();
   /** The `<script>`s a page's script made, and whether each still has its
@@ -5583,6 +5650,14 @@ export class DomHost {
       case 'fetch':
         this._fetch(Number(a), text(b));
         return null;
+      case 'syncRequests':
+        return this._seams.fetchSync
+          ? 'worker'
+          : this._seams.syncNetwork
+            ? 'page'
+            : '';
+      case 'fetchSync':
+        return this._syncRequest(text(a), Number(b));
       // a page's WebGL contexts, where the host has a GL (`gl.ts`)
       case 'glOpen':
         return this._contexts.open(JSON.parse(text(a)) as HtmlGLOptions);
@@ -7927,41 +8002,7 @@ export class DomHost {
     };
     let request: PageRequest;
     try {
-      const raw = JSON.parse(json) as Partial<PageRequest>;
-      request = {
-        url: this._resolve(String(raw.url ?? '')),
-        method: String(raw.method ?? 'GET').toUpperCase(),
-        // what a page may not set, which a browser drops (Fetch 2.2.2)
-        headers: Array.isArray(raw.headers)
-          ? raw.headers
-              .map(([k, v]) => [String(k), String(v)] as [string, string])
-              .filter(([k]) => !forbiddenRequestHeader(k))
-          : [],
-        body: typeof raw.body === 'string' ? raw.body : null,
-        ...(raw.stream === true ? { stream: true } : {}),
-        ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
-        ...(raw.streamedBody === true ? { streamedBody: true } : {}),
-        ...(typeof (raw as { base64?: unknown }).base64 === 'string'
-          ? {
-              bytes: new Uint8Array(
-                Buffer.from((raw as { base64: string }).base64, 'base64'),
-              ),
-            }
-          : {}),
-        mode:
-          raw.mode === 'no-cors' || raw.mode === 'same-origin'
-            ? raw.mode
-            : 'cors',
-        credentials:
-          raw.credentials === 'omit' || raw.credentials === 'include'
-            ? raw.credentials
-            : 'same-origin',
-        cache: raw.cache,
-        redirect: raw.redirect,
-        integrity: raw.integrity,
-        referrerPolicy: raw.referrerPolicy,
-        destination: raw.destination,
-      };
+      request = this._pageRequest(json);
     } catch {
       return;
     }
@@ -8006,6 +8047,119 @@ export class DomHost {
     }
     if (!this._fetches.delete(id) || this._disposed) return;
     this.entries?.call('__fetchEnd', [id, failed]);
+  }
+
+  /** A request as the facade sends it. */
+  private _pageRequest(json: string): PageRequest {
+    const raw = JSON.parse(json) as Partial<PageRequest>;
+    return {
+      url: this._resolve(String(raw.url ?? '')),
+      method: String(raw.method ?? 'GET').toUpperCase(),
+      // what a page may not set, which a browser drops (Fetch 2.2.2)
+      headers: Array.isArray(raw.headers)
+        ? raw.headers
+            .map(([k, v]) => [String(k), String(v)] as [string, string])
+            .filter(([k]) => !forbiddenRequestHeader(k))
+        : [],
+      body: typeof raw.body === 'string' ? raw.body : null,
+      ...(raw.stream === true ? { stream: true } : {}),
+      ...(Array.isArray(raw.uaHeaders) ? { uaHeaders: raw.uaHeaders } : {}),
+      ...(raw.streamedBody === true ? { streamedBody: true } : {}),
+      ...(typeof (raw as { base64?: unknown }).base64 === 'string'
+        ? {
+            bytes: new Uint8Array(
+              Buffer.from((raw as { base64: string }).base64, 'base64'),
+            ),
+          }
+        : {}),
+      mode:
+        raw.mode === 'no-cors' || raw.mode === 'same-origin'
+          ? raw.mode
+          : 'cors',
+      credentials:
+        raw.credentials === 'omit' || raw.credentials === 'include'
+          ? raw.credentials
+          : 'same-origin',
+      cache: raw.cache,
+      redirect: raw.redirect,
+      integrity: raw.integrity,
+      referrerPolicy: raw.referrerPolicy,
+      destination: raw.destination,
+    };
+  }
+
+  /**
+   * A synchronous `XMLHttpRequest`: what `_fetchFor` does, with the thread
+   * asleep where that awaits. What comes back is JSON, the bytes as base64,
+   * and what fails is the `NetworkError` the page's `send()` throws, or a
+   * `TimeoutError`. It waits for no longer than `limit` ms, a worker's
+   * `timeout`, nor than the task may wait: the runtime's watchdog counts this
+   * and cannot be paused, and past it the whole task goes. So a request that
+   * takes too long is one failed request, and the page goes on.
+   */
+  private _syncRequest(json: string, limit: number): string {
+    const timeout = Math.min(
+      limit > 0 ? limit : SYNC_REQUEST_MS,
+      SYNC_REQUEST_MS,
+      this.entries?.waitLeft ?? SYNC_REQUEST_MS,
+    );
+    try {
+      const request = this._pageRequest(json);
+      const {
+        bytes,
+        chunks: _chunks,
+        ...rest
+      } = this._fetchNow(request, timeout);
+      return JSON.stringify({
+        ...rest,
+        body: bytes ? '' : rest.body,
+        ...(bytes && { base64: base64Of(bytes) }),
+      });
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      // the page's exception says nothing of why, as a browser's does not
+      this._seams.log('error', message);
+      throw new DomError(
+        (error as Error)?.name === 'TimeoutError'
+          ? 'TimeoutError'
+          : 'NetworkError',
+        message,
+      );
+    }
+  }
+
+  /** `_fetchFor`, for `_syncRequest`. A service worker hears nothing of it:
+   *  its registry is on this thread, which is asleep. */
+  private _fetchNow(request: PageRequest, timeout: number): FetchResponse {
+    const until = performance.now() + timeout;
+    const send = (plain: FetchRequest): FetchResponse => {
+      const left = until - performance.now();
+      if (this._seams.fetchSync) return this._seams.fetchSync(plain, left);
+      const network = this._seams.syncNetwork;
+      if (!network) throw new TypeError('Failed to fetch');
+      // a frame's request is the frame's, and its site for cookies the page's
+      const client = { ...plain, client: this.url };
+      return fetchSync(network, client, this.top ?? this.url, left);
+    };
+    const page = this._origin();
+    if (!connectAllowed(this._cspPolicies(), request.url, page)) {
+      throw new TypeError(
+        `${request.url} is refused by the document's Content Security Policy.`,
+      );
+    }
+    const route = this._route(request, page);
+    if (route.preflight) {
+      const { unsafe } = route.preflight;
+      if (!this._preflightKept(request, unsafe)) {
+        this._preflightAnswered(
+          send(preflightRequest(request, unsafe)),
+          request,
+          unsafe,
+          page,
+        );
+      }
+    }
+    return this._routed(route, send(route.plain), request, page);
   }
 
   /** What CORS remembers of the preflights this page made. */
@@ -8134,13 +8288,8 @@ export class DomHost {
     signal: AbortSignalLike,
   ): Promise<FetchResponse> {
     const page = this._origin();
-    let target: string;
-    try {
-      target = new URL(request.url).origin;
-    } catch {
-      throw new TypeError('Failed to fetch');
-    }
-    const own = target === page && page !== 'null';
+    // a URL that is none is the first thing asked
+    this._route(request, page, true);
     // a controlled client's request goes to its worker before CORS asks
     // anything of it (Fetch 4.3, "HTTP fetch")
     if (this.serviceClient?.controlled && /^https?:/i.test(request.url)) {
@@ -8150,6 +8299,35 @@ export class DomHost {
       );
       if (answered) return this._fromWorker(answered, request);
     }
+    const route = this._route(request, page);
+    if (route.preflight) {
+      await this._preflight(request, route.preflight.unsafe, page, signal);
+    }
+    return this._routed(
+      route,
+      await this._seams.fetch(route.plain, signal),
+      request,
+      page,
+    );
+  }
+
+  /**
+   * How a page's request goes, whichever way it is waited for: its own
+   * origin's, a `no-cors` request's or CORS's, with what has to be asked first,
+   * and what it is refused outright. `urlOnly` asks only whether it has a URL.
+   */
+  private _route(
+    request: PageRequest,
+    page: string,
+    urlOnly = false,
+  ): FetchRoute {
+    let target: string;
+    try {
+      target = new URL(request.url).origin;
+    } catch {
+      throw new TypeError('Failed to fetch');
+    }
+    const own = target === page && page !== 'null';
     const plain: FetchRequest = {
       url: request.url,
       method: request.method,
@@ -8160,22 +8338,7 @@ export class DomHost {
       ...(request.streamedBody ? { streamedBody: true } : {}),
       credentials: request.credentials,
     };
-    if (own) {
-      const response = await this._seams.fetch(plain, signal);
-      // a redirect to another origin is that origin's to let the page read
-      if (originOf(response.url) === page) {
-        return {
-          ...response,
-          headers: readable(response.headers),
-          type: 'basic',
-        };
-      }
-      if (request.mode === 'same-origin') {
-        release(response);
-        throw new CorsError('The request was redirected to another origin.');
-      }
-      return this._shared(response, request, page);
-    }
+    if (own || urlOnly) return { kind: 'own', plain };
     if (request.mode === 'same-origin') {
       throw new TypeError(
         `Fetch API cannot load ${request.url}. Request mode is "same-origin" but the URL's origin is not same as the request origin ${page}.`,
@@ -8190,15 +8353,42 @@ export class DomHost {
           `'${request.method}' or a header is not allowed in 'no-cors' mode.`,
         );
       }
-      return this._opaque(await this._seams.fetch(plain, signal));
+      return { kind: 'opaque', plain };
     }
     const unsafe = unsafeRequestHeaders(
       request.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
     );
-    if (!SIMPLE_METHODS.has(request.method) || unsafe.length) {
-      await this._preflight(request, unsafe, page, signal);
+    return {
+      kind: 'cors',
+      plain,
+      ...((!SIMPLE_METHODS.has(request.method) || unsafe.length) && {
+        preflight: { unsafe },
+      }),
+    };
+  }
+
+  /** The response to a routed request, as far as the page may read it. */
+  private _routed(
+    route: FetchRoute,
+    response: FetchResponse,
+    request: PageRequest,
+    page: string,
+  ): FetchResponse {
+    if (route.kind === 'opaque') return this._opaque(response);
+    if (route.kind === 'cors') return this._shared(response, request, page);
+    // a redirect to another origin is that origin's to let the page read
+    if (originOf(response.url) === page) {
+      return {
+        ...response,
+        headers: readable(response.headers),
+        type: 'basic',
+      };
     }
-    return this._shared(await this._seams.fetch(plain, signal), request, page);
+    if (request.mode === 'same-origin') {
+      release(response);
+      throw new CorsError('The request was redirected to another origin.');
+    }
+    return this._shared(response, request, page);
   }
 
   /**
@@ -8464,42 +8654,35 @@ export class DomHost {
     page: string,
     signal: AbortSignalLike,
   ): Promise<void> {
+    if (this._preflightKept(request, unsafe)) return;
+    this._preflightAnswered(
+      await this._seams.fetch(preflightRequest(request, unsafe), signal),
+      request,
+      unsafe,
+      page,
+    );
+  }
+
+  /** Whether an entry of this request's says what it needs to. */
+  private _preflightKept(request: PageRequest, unsafe: string[]): boolean {
+    const include = request.credentials === 'include';
+    const kept = this._preflights.get(`${request.url}\u0000${include}`);
+    return (
+      !!kept &&
+      kept.until > Date.now() &&
+      preflightRefusal(kept, request, unsafe) === null
+    );
+  }
+
+  /** What a preflight was answered with, held to the request and kept. */
+  private _preflightAnswered(
+    response: FetchResponse,
+    request: PageRequest,
+    unsafe: string[],
+    page: string,
+  ): void {
     const include = request.credentials === 'include';
     const key = `${request.url}\u0000${include}`;
-    const kept = this._preflights.get(key);
-    const allows = (entry: PreflightEntry): string | null => {
-      if (
-        !SIMPLE_METHODS.has(request.method) &&
-        !entry.methods.has(request.method) &&
-        !(entry.anyMethod && !include)
-      ) {
-        return `Method ${request.method} is not allowed by Access-Control-Allow-Methods in preflight response.`;
-      }
-      for (const name of unsafe) {
-        if (entry.headers.has(name)) continue;
-        if (entry.anyHeader && !include && name !== 'authorization') continue;
-        return `Request header field ${name} is not allowed by Access-Control-Allow-Headers in preflight response.`;
-      }
-      return null;
-    };
-    if (kept && kept.until > Date.now() && allows(kept) === null) return;
-    const headers: [string, string][] = [
-      ['access-control-request-method', request.method],
-    ];
-    if (unsafe.length) {
-      headers.push(['access-control-request-headers', unsafe.join(',')]);
-    }
-    // a preflight carries no cookies (Fetch 4.9)
-    const response = await this._seams.fetch(
-      {
-        url: request.url,
-        method: 'OPTIONS',
-        headers,
-        body: null,
-        credentials: 'omit',
-      },
-      signal,
-    );
     const failed = (why: string) =>
       new CorsError(
         `Response to preflight request doesn't pass access control check: ${why}`,
@@ -8533,7 +8716,7 @@ export class DomHost {
       anyMethod: methods.has('*'),
       anyHeader: allowed.has('*'),
     };
-    const refused = allows(entry);
+    const refused = preflightRefusal(entry, request, unsafe);
     if (refused) throw new CorsError(refused);
     this._preflights.set(key, entry);
   }

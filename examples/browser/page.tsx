@@ -286,6 +286,8 @@ const network = new HtmlNetwork({
     ? (...parts) => console.error('[browser]', ...parts)
     : undefined,
 });
+/** What a page's synchronous XMLHttpRequests are made through. */
+const SYNC_NETWORK = network.syncNetwork();
 
 /** Where a followed link goes: this tab, a new one, or one behind this. */
 export type LinkTarget = 'here' | 'tab' | 'background';
@@ -1616,6 +1618,8 @@ export default function Page(props: PageProps): ReactElement {
         connect: (request, events) =>
           network.webSockets(withoutHash(view.url)).connect(request, events),
       },
+      // and its synchronous XMLHttpRequests, on a thread of their own
+      syncNetwork: SYNC_NETWORK,
       // what a page puts on the machine's clipboard and reads off it
       clipboard: pageClipboard,
       // what a page asks for goes to the bar above it, and what it is told

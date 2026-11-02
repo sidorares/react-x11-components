@@ -224,6 +224,9 @@ export function useScripts(
     get language() {
       return latest.current.language;
     },
+    get syncNetwork() {
+      return latest.current.syncNetwork;
+    },
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),

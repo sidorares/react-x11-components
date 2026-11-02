@@ -1222,6 +1222,15 @@ export class ScriptEngine {
     };
   }
 
+  /** How long the task under way may still wait on an op: the watchdog
+   *  counts the wait and cannot be paused, and a little past this the page's
+   *  next op is refused (`_spent`), so a wait that ends here leaves the page
+   *  able to hear of it and go on. */
+  get waitLeft(): number {
+    const end = this._ceiling - this._options.timeout * 1.25;
+    return end - (performance.now() - this._taskFrom);
+  }
+
   /** Whose time it is from now, the page's or the host's; what it was. */
   private _stretch(page: boolean): boolean {
     const now = performance.now();
