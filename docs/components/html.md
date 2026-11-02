@@ -1011,6 +1011,13 @@ page and its frames. A worker's thread keeps its own, and so does each tab, whic
 is a process of its own, so a channel does not cross to a worker and a lock
 excludes nothing in another tab.
 
+**`Math.sumPrecise` is the realm's where the runtime has none**, in a page, a
+frame's realm and a worker, and a runtime's own is left alone: Node has none yet
+and Bun has its own. It is the exact sum, rounded once, so a sum that overflows
+on the way and comes back is still a number. What a page sets on `Math`, `Number`
+or `BigInt` afterwards does not change its answer. pdf.js's worker adds up the
+tables of each font it rebuilds with it.
+
 **A page's streams are the standard's** (WHATWG Streams): readable
 streams of chunks and of bytes, a reader that brings its own buffer
 (`getReader({ mode: 'byob' })`, `read(view, { min })`), the controllers'

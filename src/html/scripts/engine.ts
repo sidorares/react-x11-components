@@ -57,6 +57,7 @@ import { installMediaStreams } from './mediastream.js';
 import { installWebAudio } from './webaudio.js';
 import { installMse } from './mse.js';
 import { installRaster } from './raster.js';
+import { installMath } from './math.js';
 import { installStreams } from './streams.js';
 import { installWebRTC } from './webrtc.js';
 import { installRtcTransports } from './rtc-transports.js';
@@ -266,6 +267,7 @@ const INSTALL = `(function () {
     return target;
   };
   (${lockStacks.toString()})(${JSON.stringify(FACADE)});
+  (${installMath.toString()})();
   const install = (${installDom.toString()});
   const webgl = (${installWebGL.toString()});
   const raster = (${installRaster.toString()});
