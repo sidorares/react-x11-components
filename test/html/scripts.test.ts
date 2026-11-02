@@ -7202,6 +7202,65 @@ test('a press on what user-select keeps out of a selection starts none, and move
   assert.equal(activeIn(doc), null);
 });
 
+test('a press leaves the focus on what it lands on where the page gave it the focus in its mousedown, and tells nothing of it', async () => {
+  // a press's default action comes after the handlers, and gave the focus
+  // to the document's surface: `button.focus()` there, which a page does
+  // since some browsers focus no button on a click, did not last the press
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  await act(() =>
+    doc.run(
+      'document.getElementById("stop").addEventListener("mousedown", function (e) { e.target.focus(); });',
+    ),
+  );
+  await settle();
+  assert.equal(
+    await pressOn(doc, 'stop'),
+    'mousedown stop, active t | focusout t to stop | focusin stop from t',
+  );
+  assert.equal(activeIn(doc), 'stop');
+  await act(() => doc.run('say("then " + active())'));
+  assert.ok(doc.text('out').endsWith('then stop'), doc.text('out'));
+});
+
+test('a press on what has the focus leaves it there, and one on something else takes it away', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  await act(() => doc.run('document.getElementById("stop").focus()'));
+  await settle();
+  assert.equal(activeIn(doc), 'stop');
+  assert.equal(await pressOn(doc, 'stop'), 'mousedown stop, active stop');
+  assert.equal(activeIn(doc), 'stop');
+  assert.equal(
+    await pressOn(doc, 'plain'),
+    'mousedown plain, active stop | focusout stop to null',
+  );
+  assert.equal(activeIn(doc), null);
+});
+
+test('a press on the document takes back a focus still owed to something else', async () => {
+  const doc = await hosted(PRESS_PAGE);
+  await settle();
+  const node = doc.view as unknown as DrawnNode;
+  const rect = doc.view.elementRect(doc.byId('plain'))!;
+  const dx = rect.x + rect.width / 2 - node.abs.width / 2;
+  const dy = rect.y + rect.height / 2 - node.abs.height / 2;
+  await act(async () => {
+    doc.run(
+      'var i = document.createElement("input"); i.id = "late"; document.body.appendChild(i); i.focus();',
+    );
+    fireEvent.mouseDown(node, { dx, dy });
+    fireEvent.mouseUp(node, { dx, dy });
+    await new Promise((r) => setTimeout(r, 60));
+  });
+  await settle();
+  assert.equal(activeIn(doc), null, doc.text('out'));
+  assert.ok(
+    !screen.getAllByRole('textbox').some((n) => n.focused),
+    'and no widget took it',
+  );
+});
+
 test('a press in the field that has the focus tells nothing of the focus', async () => {
   const doc = await hosted(PRESS_PAGE);
   await settle();

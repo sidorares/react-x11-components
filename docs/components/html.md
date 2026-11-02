@@ -3174,7 +3174,10 @@ says nothing, the UA sheet's `:focus-visible { outline: auto 1px
 element's border box, or round each of a link's fragments. A press does not
 focus a link or a button, which it does in a browser: the press focuses the
 document, whose selection Ctrl+A and Ctrl+C belong to, and a click on a
-link follows it. Tab after a press goes on from where it landed, as from a
+link follows it. A press on what has the focus leaves it there, whether it
+had it before or a page's `mousedown` just gave it, as a page that focuses a
+button itself expects of the browsers that focus none on a click.
+Tab after a press goes on from where it landed, as from a
 link pressed or from text between links, which is HTML's sequential focus
 navigation starting point (6.6.4). The element focused is scrolled into
 view, by the box around the document that scrolls. An element a page's

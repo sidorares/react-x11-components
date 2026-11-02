@@ -50,6 +50,7 @@ import { useLinkClicks, useSelectionMenu } from '../richtext/index.js';
 import { useFontPrewarm } from '../internal/prewarm.js';
 import { hx } from './hx.js';
 import { attr, flatParentOf, isElement, isModal, tagOf } from './dom.js';
+import { focusableElement } from './focus.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -1790,6 +1791,26 @@ function documentInteraction(
     return now.forms.controlOf(node) ?? now.stops.elementOf(node);
   };
   return {
+    // Core's press goes to the nearest node that takes the focus, and what the
+    // document draws has none under it but the surface. A browser leaves the
+    // focus where it is when the nearest area that takes it around the press
+    // has it, which a page's `mousedown` may just have done: a button that
+    // focuses itself there lost the focus again as the handler returned. Told
+    // a microtask later, a blur put right here is one the page never hears.
+    pressLanded(at) {
+      const now = live.current;
+      const held = view.current?.focusedElement;
+      if (!now || !held) return;
+      for (let el = at; el; el = flatParentOf(el)) {
+        if (el === held) {
+          this.focus(el);
+          return;
+        }
+        if (focusableElement(el)) break;
+      }
+      // and a focus owed to something else is not what the press wanted
+      if (now.forms.owed()) now.forms.letGo();
+    },
     controlValue: (el) => live.current?.forms.value(el) ?? null,
     setControlValue: (el, value) =>
       live.current?.forms.setValue(el, value) ?? false,
