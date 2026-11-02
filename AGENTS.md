@@ -4560,6 +4560,23 @@ closes a way out a DOM binding opens by accident:
   has not said yes to is refused, whatever gesture is behind it**: with
   `scripts.permissions` absent, `request` answers `denied`, so a host that hands
   a page its clipboard does not hand it the clipboard's contents.
+- **A document's drag is a layer over core's, on one root** (`drag.ts`). The
+  root is core's one draggable and its one drop target; `onDragStart` cancels
+  every press that is on nothing a drag starts from, which leaves it ordinary
+  mouse events, and `pressCanDrag` keeps a press on such an element from being
+  turned down before core can arm it, as a press past a text's end is
+  (`startsSelectionAt`). Core reads `dragData` before `onDragStart`, so the
+  root's is fixed, thunks that answer from `active`, this process's drag. **A
+  `<Frame>` pane on a Mac has neither half of it**: no `attachDropTransport`,
+  so `_initDnd` makes no drop session and core takes every drag for one over
+  another application; and no `beginDrag`. `onDrag` answers what is inside the
+  document for it (`droppable`), and the host takes what comes from outside
+  (`dragOver`, `dropHere`). Both are worked around here, and the fix is core's:
+  when it lands, `droppable` goes. **A drag event's `dataTransfer` is new at
+  each event over one store**, as HTML has it, so what a page left comes back
+  through `dragOut` and `HtmlDomEvent.drag`, and `offeredEntries` is what makes
+  a store of what crossed. A store's entry can have no data: a `File` of
+  another application's, known to be there and unreadable until the drop.
 - **What a page stores goes through the host's storage, and a change is
   told.** `localStorage` and `sessionStorage` are one op, `storage`, over
   `HtmlStorage`'s areas (`DomHost._storage`), which tells

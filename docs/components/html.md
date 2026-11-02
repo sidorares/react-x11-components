@@ -2100,6 +2100,40 @@ Not here: `clipboardchange`, a paste whose `text/html` keeps its structure
 without a listener's help, and `navigator.clipboard` behaving as a detached
 frame's own where the frame has no realm of its own.
 
+### Drag and drop
+
+A press on what can be dragged, moved past core's threshold, is a drag as HTML
+has it: `dragstart`, `drag`, `dragenter`, `dragover`, `dragleave`, `drop` and
+`dragend`, each a `DragEvent` with a `dataTransfer` of its own over one store.
+What can be dragged is an element marked `draggable=true`, a link and an image.
+The store is read/write at `dragstart`, read-only at `drop` and protected in
+between, where a page sees its types and not its data. A target that takes a
+drop cancels `dragover`; a field or an editing host takes text with nothing
+said, as `insertFromDrop`. A page that cancels `dragstart`, and a press on
+anything else, leaves the gesture what it was: a selection, or a drag of the
+page's own over pointer events. After `dragstart` the pointer is the drag's, so
+a page hears `pointercancel`, and no `mouseup` or `click` comes of it.
+
+Text and files from another application land where the host hands
+`onDropFiles`, which is given the paths and answers with `HtmlFile`s:
+`readHtmlFiles` is one. Without it nothing from outside lands on a document. A
+page sees `Files` in `types` while the drag is over it, and the `File`s at the
+`drop`, as `dataTransfer.files` and through `webkitGetAsEntry()`, a file's
+entry: a folder dropped is no entry here.
+
+**A `<Frame>` pane is no window of its own, so its host takes drops for it.**
+A host puts `dropAccept` on the box around the `<Frame>`, and hands the page
+what it hears through `HtmlHandle.dragOver`, `dragLeave` and `dropHere`, as the
+example browser does; it accepts for the page, since no answer could come back
+across the process in time. On a Mac a pane also has no drop session of core's,
+so a drag inside the page is answered here, and **a page in a pane on a Mac
+cannot be dragged out to another application**, or to another tab: that needs
+`beginDrag` in the host. On X11 a pane's process drives XDND itself. `<Html>`
+in a window of its own can do both on every backend.
+
+Not here: a drag image (`setDragImage` is kept and nothing is drawn beside the
+cursor), dragging selected text, and a folder dropped as a directory entry.
+
 ### Cookies and storage
 
 ```js

@@ -7233,7 +7233,14 @@ export function installDom(
       this.setAttribute('accesskey', v);
     }
     get draggable(): boolean {
-      return this.getAttribute('draggable') === 'true';
+      const said = (this.getAttribute('draggable') ?? '').toLowerCase();
+      if (said === 'true') return true;
+      if (said === 'false') return false;
+      // HTML 6.11.6: `auto`, which an image and a link with an address are
+      return (
+        this.localName === 'img' ||
+        (this.localName === 'a' && this.hasAttribute('href'))
+      );
     }
     set draggable(v: Any) {
       this.setAttribute('draggable', v ? 'true' : 'false');
@@ -17384,6 +17391,13 @@ export function installDom(
     'copy',
     'cut',
     'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'input',
     'change',
     'select',
@@ -21460,6 +21474,8 @@ export function installDom(
     'DataTransferItem',
     'DataTransferItemList',
     'ClipboardEvent',
+    'DragEvent',
+    'FileSystemFileEntry',
     'Clipboard',
     'ClipboardItem',
     // WebRTC's and Media Capture's interfaces but the data channel's
@@ -22306,6 +22322,7 @@ export function installDom(
   const TRANSFER = transfers({
     DOMException,
     Event,
+    MouseEvent,
     File,
     FileList,
     // what a store holds is no tree's, so no count says it moved
@@ -30607,8 +30624,8 @@ export function installDom(
         type,
         data: new File(
           [bytesOfBase64(item.b)],
-          `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
-          { type },
+          item.n ?? `image.${type.replace(/^.*\//, '').replace(/[+;].*$/, '')}`,
+          { type, ...(item.m !== undefined && { lastModified: item.m }) },
         ),
       };
     }
@@ -30641,7 +30658,11 @@ export function installDom(
   /** A paste no listener cancelled: into the field that has the focus, or
    *  at the selection of the host it is in. Text alone, and the structure of
    *  `text/html` is a listener's to use (5.3.1). */
-  const pasteInto = (at: Any, entries: Any[]): void => {
+  const pasteInto = (
+    at: Any,
+    entries: Any[],
+    inputType = 'insertFromPaste',
+  ): void => {
     let text = '';
     for (const held of entries) {
       if (held.kind === 'text' && held.type === 'text/plain') text = held.data;
@@ -30660,12 +30681,12 @@ export function installDom(
               (field.selectionEnd - field.selectionStart);
         value = value.slice(0, Math.max(0, room));
       }
-      if (value) editField(field, 'insertFromPaste', value);
+      if (value) editField(field, inputType, value);
       return;
     }
     const host = editingHostOf(at);
     if (host) {
-      edit(host, 'insertFromPaste', null, {
+      edit(host, inputType, null, {
         text,
         transfer: TRANSFER.made('read-only', entries),
       });
@@ -30741,6 +30762,94 @@ export function installDom(
       return false;
     }
     return true;
+  };
+
+  /** What a drag holds that a page added at its `dragstart`, as it crosses
+   *  to where the drag lands, which may be another realm. */
+  const dragWire = (transfer: Any): Any[] => {
+    const out = storeWire(transfer);
+    for (const held of TRANSFER.entriesOf(transfer) as Any[]) {
+      if (held.kind !== 'file' || !held.data) continue;
+      out[out.length] = {
+        t: held.type,
+        b: base64OfBytes(held.data._bytes),
+        n: held.data.name,
+        m: held.data.lastModified,
+      };
+    }
+    return out;
+  };
+
+  /**
+   * A drag's event (HTML 6.11.5), with a `DataTransfer` of its own over what
+   * the drag holds, in the mode the event has it: what a page wrote at
+   * `dragstart`, and what it answers at `dragover`, go back through
+   * `dragOut`. Whether it was not cancelled.
+   */
+  const dragEvent = (type: string, target: Any, e: Any, mods: Any): boolean => {
+    const told = e.drag ?? {};
+    const entries = offeredEntries(told.entries ?? []);
+    for (const file of told.files ?? []) {
+      const made = hostFile(file);
+      entries[entries.length] = { kind: 'file', type: made.type, data: made };
+    }
+    // known to be there, and nothing to read until it is dropped
+    if (told.hasFiles) {
+      entries[entries.length] = { kind: 'file', type: '', data: null };
+    }
+    const data = TRANSFER.made(
+      type === 'dragstart'
+        ? 'read/write'
+        : type === 'drop'
+          ? 'read-only'
+          : 'protected',
+      entries,
+    );
+    TRANSFER.setEffects(
+      data,
+      str(told.effectAllowed ?? 'uninitialized'),
+      str(told.dropEffect ?? 'none'),
+    );
+    const v = viewport();
+    const clientX = (e.x ?? 0) - v.scrollX;
+    const clientY = (e.y ?? 0) - v.scrollY;
+    const go = dispatch(
+      target,
+      trusted(
+        new (TRANSFER.interfaces.DragEvent as Any)(type, {
+          bubbles: true,
+          cancelable: type !== 'dragleave' && type !== 'dragend',
+          composed: true,
+          view: G,
+          clientX,
+          clientY,
+          button: 0,
+          buttons: type === 'dragend' ? 0 : 1,
+          dataTransfer: data,
+          relatedTarget: e.relatedTarget ? wrap(e.relatedTarget) : null,
+          ...mods,
+        }),
+      ),
+    );
+    const { allowed, effect } = TRANSFER.effectsOf(data);
+    call(
+      'dragOut',
+      JSON.stringify({
+        effectAllowed: allowed,
+        dropEffect: effect,
+        ...(type === 'dragstart' && { entries: dragWire(data) }),
+      }),
+    );
+    TRANSFER.setMode(data, 'protected');
+    if (type === 'drop' && go) {
+      const at = document.caretPositionFromPoint(clientX, clientY);
+      const host = editingHostOf(target);
+      if (host && at && host.contains(at.offsetNode)) {
+        selection.collapse(at.offsetNode, at.offset);
+      }
+      pasteInto(target, entries, 'insertFromDrop');
+    }
+    return go;
   };
 
   /** A clipboard command: `execCommand('copy')` under a user's gesture. */
@@ -31864,6 +31973,13 @@ export function installDom(
     'copy',
     'cut',
     'paste',
+    'dragstart',
+    'drag',
+    'dragenter',
+    'dragover',
+    'dragleave',
+    'drop',
+    'dragend',
     'unhandledrejection',
     'rejectionhandled',
     'pageshow',
@@ -32671,6 +32787,34 @@ export function installDom(
       case 'cut':
       case 'paste':
         return clipboardEvent(e.type, target, e.clipboard, false);
+      case 'dragstart':
+      case 'drag':
+      case 'dragenter':
+      case 'dragover':
+      case 'dragleave':
+      case 'drop':
+      case 'dragend': {
+        const go = dragEvent(e.type, target, e, mods);
+        // the pointer is the drag's from here, and no release of it will be
+        // told (Pointer Events 3, 5.1.2)
+        if (e.type === 'dragstart' && go) {
+          const at = pointer.target ?? target;
+          for (const type of ['pointercancel', 'pointerout', 'pointerleave']) {
+            dispatch(
+              at,
+              trusted(
+                new PointerEvent(type, {
+                  bubbles: type !== 'pointerleave',
+                  composed: type !== 'pointerleave',
+                }),
+              ),
+            );
+          }
+          pointer.held = 0;
+          pointer.pending = null;
+        }
+        return go;
+      }
       case 'input':
         return dispatch(
           target,
