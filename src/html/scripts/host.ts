@@ -106,7 +106,7 @@ import {
   cssomShorthands,
   cssomStyle,
 } from '../computed.js';
-import { fontQuery } from '../css/style.js';
+import { declaredProperties, fontQuery } from '../css/style.js';
 import type { ComputedStyle, FontQuery, RootLook } from '../css/style.js';
 import type { DocumentFontFace, FontMatch, WebFonts } from '../fonts.js';
 import type { FontFaceInit, Stylesheet } from '../css/parse.js';
@@ -4271,6 +4271,17 @@ export class DomHost {
           ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
           : '';
       }
+      // every name a style has an attribute for, a computed style's list
+      // with what it leaves out
+      case 'styleProperties': {
+        const style = this._seams.handle.computedStyle(this._element(a), null);
+        if (!style) return '';
+        return [
+          ...Object.keys(style),
+          ...SHORTHAND_NAMES,
+          ...declaredProperties(),
+        ].join(',');
+      }
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
@@ -5444,7 +5455,7 @@ export class DomHost {
     if (removed.length || nodes.length) {
       this._childList(parent, nodes, removed, null, null);
     }
-    this._connected(nodes, false);
+    this._connected(nodes);
   }
 
   private _childList(
@@ -6566,14 +6577,14 @@ export class DomHost {
 
   /** What a page's script put into its tree, as HTML's post-connection
    *  steps take it (DOM 4.2.3, "insert"), in tree order once all of it is
-   *  in: a frame loaded, a script prepared. What replaces all a parent
-   *  holds loads no frame here (`frames`), as it never has. */
-  private _connected(nodes: readonly AnyNode[], frames = true): void {
+   *  in: a frame loaded, a script prepared. `innerHTML` and
+   *  `replaceChildren` insert as `appendChild` does: a video site's player
+   *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
+   *  once a page read its `contentWindow`, and was an empty box. */
+  private _connected(nodes: readonly AnyNode[]): void {
     const found = DomUtils.findAll(
       (el) =>
-        el.name === 'script' ||
-        el.name === 'link' ||
-        (frames && FRAME_TAGS.has(el.name)),
+        el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
       nodes as AnyNode[],
     );
     for (const el of found) {

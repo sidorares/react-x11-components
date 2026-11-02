@@ -792,6 +792,421 @@ test('an <svg> in a <math> is MathML’s and what it holds with it, and the othe
   );
 });
 
+/**
+ * Each table below is what Chromium, Firefox and WebKit make of the markup
+ * with `DOMParser`, written out from what they answered. An `<x-m>` says where
+ * an end tag left the parser, and in a table a `<style>`, which HTML puts
+ * where it stands.
+ */
+function holds(rows: readonly (readonly [string, string])[]): void {
+  for (const [markup, shape] of rows) {
+    assert.strictEqual(shapeOf(markup), shape, markup);
+  }
+}
+
+test('an integration point is one in its own language, where what it holds is read as HTML', () => {
+  holds([
+    ['<svg><mi><img></mi></svg>', 'svg(mi()) img()'],
+    ['<svg><mi><image></image></mi></svg>', 'svg(mi(image()))'],
+    ['<svg><mtext><div></div></mtext></svg>', 'svg(mtext()) div()'],
+    ['<svg><mo><p>x</p></mo></svg>', 'svg(mo()) p(x)'],
+    [
+      '<svg><annotation-xml><img></annotation-xml></svg>',
+      'svg(annotation-xml()) img()',
+    ],
+    ['<svg><math><mi><div></div></mi></math></svg>', 'svg(math(mi())) div()'],
+    [
+      '<svg><math><annotation-xml encoding="text/html"><div></div></annotation-xml></math></svg>',
+      'svg(math(annotation-xml())) div()',
+    ],
+    ['<math><title><div></div></title></math>', 'math(title()) div()'],
+    ['<math><desc><img></desc></math>', 'math(desc()) img()'],
+    ['<math><title><b>x</b></title></math>', 'math(title()) b(x)'],
+    [
+      '<math><foreignObject><div></div></foreignObject></math>',
+      'math(foreignobject()) div()',
+    ],
+    [
+      '<math><svg><foreignObject><div></div></foreignObject></svg></math>',
+      'math(svg(foreignobject())) div()',
+    ],
+    [
+      '<math><svg><title><img></title></svg></math>',
+      'math(svg(title())) img()',
+    ],
+    [
+      '<math><annotation-xml><svg><foreignObject><div></div></foreignObject></svg></annotation-xml></math>',
+      'math(annotation-xml(svg(foreignObject(div()))))',
+    ],
+    [
+      '<math><mi><svg><title><div></div></title></svg></mi></math>',
+      'math(mi(svg(title(div()))))',
+    ],
+    [
+      '<math><mtext><svg><mi><img></mi></svg></mtext></math>',
+      'math(mtext(svg(mi()) img()))',
+    ],
+    [
+      '<math><title><style><b>x</b></style></title></math>',
+      'math(title(style())) b(x)',
+    ],
+    ['<svg><mi><style><g></g></style></mi></svg>', 'svg(mi(style(g())))'],
+  ]);
+});
+
+test('an <annotation-xml> holds HTML where its encoding says so, which is known only at the end of its tag', () => {
+  holds([
+    [
+      '<math><annotation-xml><img></annotation-xml></math>',
+      'math(annotation-xml()) img()',
+    ],
+    [
+      '<math><annotation-xml encoding="text/html"><img></annotation-xml></math>',
+      'math(annotation-xml(img()))',
+    ],
+    [
+      '<math><annotation-xml encoding="TEXT/HTML"><img></annotation-xml></math>',
+      'math(annotation-xml(img()))',
+    ],
+    [
+      '<math><annotation-xml encoding="application/xhtml+xml"><div></div></annotation-xml></math>',
+      'math(annotation-xml(div()))',
+    ],
+    [
+      '<math><annotation-xml encoding="MathML-Content"><div></div></annotation-xml></math>',
+      'math(annotation-xml()) div()',
+    ],
+    [
+      '<svg><annotation-xml encoding="text/html"><div></div></annotation-xml></svg>',
+      'svg(annotation-xml()) div()',
+    ],
+    [
+      '<math><annotation-xml encoding="text/html"/><img></math>',
+      'math(annotation-xml()) img()',
+    ],
+    [
+      '<math><annotation-xml encoding="text/html"><math><mrow><img></mrow></math></annotation-xml></math>',
+      'math(annotation-xml(math(mrow()) img()))',
+    ],
+  ]);
+});
+
+test('a <font> with a color, a face or a size ends foreign content, which is known only at the end of its tag', () => {
+  holds([
+    [
+      '<svg><g><font color="red">x</font><rect></rect></g></svg>',
+      'svg(g()) font(x) rect()',
+    ],
+    ['<svg><g><font face="x">x</font></g></svg>', 'svg(g()) font(x)'],
+    ['<svg><g><font size="1">x</font></g></svg>', 'svg(g()) font(x)'],
+    ['<svg><g><FONT COLOR=red>x</FONT></g></svg>', 'svg(g()) font(x)'],
+    ['<svg><g><font class="x">x</font></g></svg>', 'svg(g(font(x)))'],
+    ['<svg><g><font>x</font><rect></rect></g></svg>', 'svg(g(font(x) rect()))'],
+    ['<svg><font color="red"/>x<rect></rect></svg>', 'svg() font(x rect())'],
+    ['<svg><font/>x</svg>', 'svg(font() x)'],
+    [
+      '<math><mrow><font size="1">x</font></mrow></math>',
+      'math(mrow()) font(x)',
+    ],
+    ['<math><mi><font size="1">x</font></mi></math>', 'math(mi(font(x)))'],
+    [
+      '<svg><foreignObject><font color="red">x</font></foreignObject></svg>',
+      'svg(foreignObject(font(x)))',
+    ],
+    ['<p><svg><g><font face="x">y</font></g></svg></p>', 'p(svg(g()) font(y))'],
+  ]);
+});
+
+test('what HTML implies of a name implies nothing in SVG or MathML', () => {
+  holds([
+    ['<svg><td><td></td></td></svg>', 'svg(td(td()))'],
+    ['<svg><tr><tr></tr></tr></svg>', 'svg(tr(tr()))'],
+    ['<svg><a><a>x</a></a></svg>', 'svg(a(a(x)))'],
+    [
+      '<svg><option><option>x</option></option></svg>',
+      'svg(option(option(x)))',
+    ],
+    ['<svg><button><select></select></button></svg>', 'svg(button(select()))'],
+    [
+      '<svg><select><textarea></textarea></select></svg>',
+      'svg(select(textarea()))',
+    ],
+    ['<svg><form><form>x</form></form></svg>', 'svg(form(form(x)))'],
+    ['<svg><tbody><tbody></tbody></tbody></svg>', 'svg(tbody(tbody()))'],
+    ['<math><tr><tr></tr></tr></math>', 'math(tr(tr()))'],
+    ['<math><a><a>x</a></a></math>', 'math(a(a(x)))'],
+    ['<math><form><form></form></form></math>', 'math(form(form()))'],
+  ]);
+});
+
+test('a name is void in HTML alone', () => {
+  holds([
+    ['<svg><input><g></g></input></svg>', 'svg(input(g()))'],
+    ['<svg><link><g></g></link></svg>', 'svg(link(g()))'],
+    ['<svg><wbr><g></g></svg>', 'svg(wbr(g()))'],
+    ['<math><area><mi></mi></area></math>', 'math(area(mi()))'],
+    ['<math><input>x</input></math>', 'math(input(x))'],
+    ['<svg><input/><g></g></svg>', 'svg(input() g())'],
+    ['<svg><link/><g></g></svg>', 'svg(link() g())'],
+    [
+      '<svg><foreignObject><input><g></g></foreignObject></svg>',
+      'svg(foreignObject(input() g()))',
+    ],
+    [
+      '<svg><input><foreignObject></input><x-m></x-m>',
+      'svg(input(foreignObject()) x-m())',
+    ],
+  ]);
+});
+
+test('an end tag closes what HTML closes, and HTML ignores it past what its scopes stop at', () => {
+  holds([
+    [
+      '<svg><foreignObject><svg><div></svg><x-m></x-m>',
+      'svg(foreignObject(svg() div(x-m())))',
+    ],
+    [
+      '<svg><foreignObject><svg><div></div></svg><x-m></x-m>',
+      'svg(foreignObject(svg() div())) x-m()',
+    ],
+    [
+      '<svg><foreignObject><svg><span></svg><x-m></x-m>',
+      'svg(foreignObject(svg() span(x-m())))',
+    ],
+    ['<math><mi><div></mi><x-m></x-m>', 'math(mi(div(x-m())))'],
+    ['<math><mi><span></mi><x-m></x-m>', 'math(mi(span(x-m())))'],
+    ['<math><mi></mi><x-m></x-m>', 'math(mi() x-m())'],
+    ['<math><mtext><svg></mtext><x-m></x-m>', 'math(mtext(svg()) x-m())'],
+    ['<math><mrow><mi></mrow><x-m></x-m>', 'math(mrow(mi()) x-m())'],
+    ['<svg><g><foreignObject></g><x-m></x-m>', 'svg(g(foreignObject()) x-m())'],
+    [
+      '<svg><foreignObject><div></foreignObject><x-m></x-m>',
+      'svg(foreignObject(div(x-m())))',
+    ],
+    ['<svg><desc><span></desc><x-m></x-m>', 'svg(desc(span(x-m())))'],
+    ['<svg><title><span></title><x-m></x-m>', 'svg(title(span(x-m())))'],
+    [
+      '<math><annotation-xml encoding="text/html"><div></annotation-xml><x-m></x-m>',
+      'math(annotation-xml(div(x-m())))',
+    ],
+    ['<div><svg><g></div><x-m></x-m>', 'div(svg(g())) x-m()'],
+    ['<div><svg><mi></div><x-m></x-m>', 'div(svg(mi())) x-m()'],
+    ['<div><math><title></div><x-m></x-m>', 'div(math(title())) x-m()'],
+    [
+      '<div><svg><foreignObject></div><x-m></x-m>',
+      'div(svg(foreignObject(x-m())))',
+    ],
+    ['<div><svg><desc></div><x-m></x-m>', 'div(svg(desc(x-m())))'],
+    ['<div><math><mi></div><x-m></x-m>', 'div(math(mi(x-m())))'],
+    [
+      '<div><math><annotation-xml></div><x-m></x-m>',
+      'div(math(annotation-xml(x-m())))',
+    ],
+    [
+      '<div><math><annotation-xml encoding="text/html"></div><x-m></x-m>',
+      'div(math(annotation-xml(x-m())))',
+    ],
+    [
+      '<div><svg><foreignObject><svg></div><x-m></x-m>',
+      'div(svg(foreignObject(svg(x-m()))))',
+    ],
+    [
+      '<div><svg><title><svg><g></div><x-m></x-m>',
+      'div(svg(title(svg(g(x-m())))))',
+    ],
+    [
+      '<span><svg><foreignObject></span><x-m></x-m>',
+      'span(svg(foreignObject(x-m())))',
+    ],
+    ['<span><svg><g></span><x-m></x-m>', 'span(svg(g())) x-m()'],
+    [
+      '<div><svg><foreignObject><div></div></div></svg></div><x-m></x-m>',
+      'div(svg(foreignObject(div()))) x-m()',
+    ],
+    ['<svg><clipPath><g></clipPath><x-m></x-m>', 'svg(clipPath(g()) x-m())'],
+    ['<svg><clipPath><g></clippath><x-m></x-m>', 'svg(clipPath(g()) x-m())'],
+    ['<svg><g></x-y><x-m></x-m>', 'svg(g(x-m()))'],
+    ['<svg><foreignObject></x-y><x-m></x-m>', 'svg(foreignObject(x-m()))'],
+    [
+      '<svg><foreignObject><math><foreignObject></foreignObject><x-m></x-m>',
+      'svg(foreignObject(math(foreignobject() x-m())))',
+    ],
+    [
+      '<svg><foreignObject><foreignobject></foreignObject><x-m></x-m>',
+      'svg(foreignObject(foreignobject() x-m()))',
+    ],
+    [
+      '<svg><foreignObject><x-y><g></x-y><x-m></x-m>',
+      'svg(foreignObject(x-y(g()) x-m()))',
+    ],
+    ['<math><mi><x-y></x-y><x-m></x-m>', 'math(mi(x-y() x-m()))'],
+    [
+      '<svg><foreignObject><div></g><x-m></x-m>',
+      'svg(foreignObject(div(x-m())))',
+    ],
+  ]);
+});
+
+test('a table’s own end tags reach past an integration point, which no other end tag does', () => {
+  holds([
+    [
+      '<table><tr><td><svg><foreignObject></td><style></style></table>',
+      'table(tbody(tr(td(svg(foreignObject())) style())))',
+    ],
+    [
+      '<table><tr><td><math><mi></td><style></style></table>',
+      'table(tbody(tr(td(math(mi())) style())))',
+    ],
+    [
+      '<table><tr><td><svg><desc></tr><style></style></table>',
+      'table(tbody(tr(td(svg(desc()))) style()))',
+    ],
+    [
+      '<table><tr><td><svg><title></table><style></style>',
+      'table(tbody(tr(td(svg(title()))))) style()',
+    ],
+    [
+      '<table><tr><td><math><annotation-xml></tbody><style></style></table>',
+      'table(tbody(tr(td(math(annotation-xml())))) style())',
+    ],
+    [
+      '<table><tr><td><svg><g></td><style></style></table>',
+      'table(tbody(tr(td(svg(g())) style())))',
+    ],
+  ]);
+});
+
+test('a </p> and a </br> end foreign content', () => {
+  holds([
+    ['<svg><g></p><rect></rect></g></svg>', 'svg(g()) p() rect()'],
+    ['<p><svg><g></p><x-m></x-m>', 'p(svg(g())) x-m()'],
+    ['<svg><g></br><rect></rect></g></svg>', 'svg(g()) br() rect()'],
+    ['<math><mrow></br>x</mrow></math>', 'math(mrow()) br() x'],
+    ['<math></p>x</math>', 'math() p() x'],
+    // Chromium and WebKit; Firefox ends the integration point as well
+    [
+      '<svg><foreignObject></p>x</foreignObject></svg>',
+      'svg(foreignObject(p() x))',
+    ],
+    [
+      '<svg><foreignObject></br>x</foreignObject></svg>',
+      'svg(foreignObject(br() x))',
+    ],
+    [
+      '<p><svg><foreignObject></p>x</foreignObject></svg>',
+      'p(svg(foreignObject(p() x)))',
+    ],
+    ['<math><mi></p>x</mi></math>', 'math(mi(p() x))'],
+  ]);
+});
+
+test('a start tag takes SVG’s casing in SVG alone, and an end tag finds the name however it is cased', () => {
+  holds([
+    [
+      '<svg><foreignObject><math><foreignObject><x-m></x-m>',
+      'svg(foreignObject(math(foreignobject(x-m()))))',
+    ],
+    [
+      '<svg><clipPath><foreignObject><clippath><x-m></x-m>',
+      'svg(clipPath(foreignObject(clippath(x-m()))))',
+    ],
+    [
+      '<svg><clipPath><math><clippath><x-m></x-m>',
+      'svg(clipPath(math(clipPath(x-m()))))',
+    ],
+    ['<svg><clipPath><g></g></clipPath></svg>', 'svg(clipPath(g()))'],
+    ['<math><clipPath></clipPath></math>', 'math(clippath())'],
+    [
+      '<svg><foreignObject><clipPath></clipPath></foreignObject></svg>',
+      'svg(foreignObject(clippath()))',
+    ],
+  ]);
+});
+
+test('a MathML text point takes an <mglyph> and a <malignmark> as MathML’s, whose /> ends them', () => {
+  holds([
+    ['<math><mi><mglyph/>x</mi></math>', 'math(mi(mglyph() x))'],
+    [
+      '<math><mtext><malignmark/>x</mtext></math>',
+      'math(mtext(malignmark() x))',
+    ],
+    ['<math><mi><mglyph>x</mglyph>y</mi></math>', 'math(mi(mglyph(x) y))'],
+    ['<mi><mglyph/>x</mi>', 'mi(mglyph(x))'],
+    ['<svg><mi><mglyph/>x</mi></svg>', 'svg(mi(mglyph() x))'],
+    ['<math><mrow><mglyph/>x</mrow></math>', 'math(mrow(mglyph() x))'],
+    ['<math><mi><div><mglyph/>x</div></mi></math>', 'math(mi(div(mglyph(x))))'],
+    ['<svg><title><mglyph/>x</title></svg>', 'svg(title(mglyph(x)))'],
+  ]);
+});
+
+test('an <html> in SVG or MathML is an element like any, and no second document', () => {
+  holds([
+    ['<svg><html><g></g></html></svg>', 'svg(html(g()))'],
+    ['<math><html>x</html></math>', 'math(html(x))'],
+    ['<svg><g><html></g><x-m></x-m>', 'svg(g(html()) x-m())'],
+    [
+      '<svg><foreignObject><html>x</foreignObject></svg>',
+      'svg(foreignObject(x))',
+    ],
+  ]);
+  const source = new HtmlSource();
+  source.setSource(
+    '<html lang="a"><body><svg><html lang="b"></html></svg>',
+    true,
+  );
+  assert.strictEqual(
+    (source.document.children[0] as Element).attribs.lang,
+    'a',
+    'the document’s stays its own',
+  );
+});
+
+test('a fragment read in SVG or MathML closes and breaks out as a document does', () => {
+  // what each engine's `innerHTML` makes in an `<svg>` or a `<math>`
+  type N = { name?: string; children?: N[]; data?: string };
+  const walk = (nodes: N[]): string =>
+    nodes
+      .map((n) =>
+        n.name !== undefined
+          ? `${n.name}(${walk(n.children ?? [])})`
+          : (n.data ?? '').trim(),
+      )
+      .filter(Boolean)
+      .join(' ');
+  for (const [context, markup, shape] of [
+    ['svg', '</svg><g></g>', 'g()'],
+    ['svg', '<g></svg><rect></rect>', 'g(rect())'],
+    ['svg', '<g><font color="red">x</font>', 'g() font(x)'],
+    ['svg', '</p><g></g>', 'p() g()'],
+    ['svg', '</br>', 'br()'],
+    ['svg', '<td><td>', 'td(td())'],
+    ['svg', '<input><g></g>', 'input(g())'],
+    [
+      'svg',
+      '<foreignObject><svg><div></svg><x-m></x-m>',
+      'foreignObject(svg() div(x-m()))',
+    ],
+    ['math', '<mi><div></mi><x-m></x-m>', 'mi(div(x-m()))'],
+    [
+      'math',
+      '<annotation-xml encoding="text/html"><img>',
+      'annotation-xml(img())',
+    ],
+    ['math', '<annotation-xml><img>', 'annotation-xml() img()'],
+    ['svg', '<mi><img>', 'mi() img()'],
+    ['math', '<title><div></div></title>', 'title() div()'],
+  ] as const) {
+    const source = new HtmlSource();
+    source.setSource(`<${context} id="c"></${context}>`, true);
+    const el = findById(source.document, 'c')!;
+    assert.strictEqual(
+      walk(parseFragment(markup, false, el) as N[]),
+      shape,
+      `${markup} in <${context}>`,
+    );
+  }
+});
+
 test('the parse waits at no <script> a <math> holds, which no one runs, and at one a drawing holds', () => {
   const source = new HtmlSource();
   source.setSource(
