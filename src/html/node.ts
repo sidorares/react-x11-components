@@ -7057,6 +7057,36 @@ export class HtmlViewNode extends Node {
   }
 
   /**
+   * Where an element a `<foreignObject>` holds was laid out, in the object's
+   * user units from its corner, with the object: null for one in no object.
+   * It is in no box of the document's, and what the drawing's matrices do
+   * to the object is `svg-geometry.ts`'s to say.
+   */
+  foreignRect(element: Element): { object: Element; rect: Rect } | null {
+    this._settle();
+    const objects = this._tree?.foreign;
+    if (!objects) return null;
+    for (let at = elementParent(element); at; at = elementParent(at)) {
+      const object = objects.get(at);
+      if (!object) continue;
+      const box = boxFor(object.tree.root, element);
+      const rect = box && this._drawnRect(object.tree, box, false);
+      if (!rect) return null;
+      const unit = object.scale || 1;
+      return {
+        object: at,
+        rect: {
+          x: rect.x / unit,
+          y: rect.y / unit,
+          width: rect.width / unit,
+          height: rect.height / unit,
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
    * What an `IntersectionObserver` measures of its targets against its root
    * (Intersection Observer, 3.2.8), laid out first as `elementRect` is and
    * in its coordinates. The root's rectangle: its padding box where it
