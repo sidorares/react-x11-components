@@ -149,7 +149,7 @@ async function page(
     timeout?: number;
     body?: string;
   },
-): Promise<{ until(prefix: string): Promise<string> }> {
+): Promise<{ until(prefix: string, ms?: number): Promise<string> }> {
   const logs: string[] = [];
   const network = options.network ?? new HtmlNetwork();
   await renderX11(
@@ -169,8 +169,8 @@ async function page(
     FONTS ? { width: 200, height: 100, fonts: FONTS } : { backend: 'mock' },
   );
   return {
-    async until(prefix) {
-      const end = Date.now() + 8000;
+    async until(prefix, ms = 8000) {
+      const end = Date.now() + ms;
       const found = () => logs.find((l) => l.startsWith(`log: ${prefix}`));
       while (!found() && Date.now() < end) {
         await act(() => new Promise((r) => setTimeout(r, 10)));
@@ -386,6 +386,9 @@ test('a request that takes too long fails before the watchdog would cut the task
   assert.equal(await p.until('after|'), 'true|0');
 });
 
+/** How long a test waits on a worker, whose thread loads the engine. */
+const WORKER_MS = 30000;
+
 test('a worker’s synchronous request is the page’s network’s, and its own `timeout` holds', async (t) => {
   const url = await server(t);
   const jar = new CookieJar();
@@ -404,8 +407,37 @@ test('a worker’s synchronous request is the page’s network’s, and its own 
       'w.onerror = function (e) { log("worker", "error", e.message); };',
     { url: `${url}/page.html`, network, sync: false },
   );
-  assert.equal(await p.until('worker|'), 'sid=abc|TimeoutError|hello');
+  // a worker's thread loads the engine afresh, which a busy runner takes
+  // seconds over
+  assert.equal(
+    await p.until('worker|', WORKER_MS),
+    'sid=abc|TimeoutError|hello',
+  );
   assert.ok(jar.all().some((c) => c.name === 'made'));
+});
+
+test('a worker reads past the late answer of a request its timeout gave up on, however soon the next answer comes', async (t) => {
+  const url = await server(t);
+  const network = new HtmlNetwork();
+  // each request given up on is answered as it is let go, a moment before
+  // the next one is: read alone, that answer left the next unread
+  const worker =
+    'var out = [];' +
+    'for (var i = 0; i < 6; i++) {' +
+    `  var y = new XMLHttpRequest(); y.open("GET", "${url}/slow?ms=150", false); y.timeout = 5;` +
+    '  try { y.send(); out.push("late"); } catch (e) { out.push(e.name === "TimeoutError" ? "t" : e.name); }' +
+    `  var z = new XMLHttpRequest(); z.open("GET", "${url}/text", false);` +
+    '  try { z.send(); out.push(z.responseText === "hello" ? "z" : "?"); } catch (e) { out.push(e.name); }' +
+    '}' +
+    'postMessage(out.join(""));';
+  const p = await page(
+    LOG +
+      `var w = new Worker(URL.createObjectURL(new Blob([${JSON.stringify(worker).replace(/</g, '\\u003c')}], { type: "text/javascript" })));` +
+      'w.onmessage = function (e) { log("worker", e.data); };' +
+      'w.onerror = function (e) { log("worker", "error", e.message); };',
+    { url: `${url}/page.html`, network, sync: false },
+  );
+  assert.equal(await p.until('worker|', WORKER_MS), 'tz'.repeat(6));
 });
 
 test('overrideMimeType says what a synchronous response is decoded with, and a data: URL needs no network', async (t) => {

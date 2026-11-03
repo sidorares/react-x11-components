@@ -286,35 +286,56 @@ const seams: HostSeams = {
 let syncSeq = 0;
 seams.fetchSync = (request, timeout) => {
   const id = ++syncSeq;
-  Atomics.store(word, 0, 0);
   sync.postMessage({ id, request });
   const end = performance.now() + timeout;
-  for (;;) {
-    const left = end - performance.now();
-    if (left <= 0) {
-      sync.postMessage({ id, abort: true });
-      const error = new Error(`${request.url} took too long.`);
-      error.name = 'TimeoutError';
-      throw error;
-    }
-    Atomics.wait(word, 0, 0, left);
-    const answer = receiveMessageOnPort(sync)?.message as
-      { id: number; response?: FetchResponse; failed?: string } | undefined;
-    if (answer?.id === id) {
-      if (answer.response) return answer.response;
-      throw new Error(answer.failed ?? 'The request failed.');
-    }
-    Atomics.store(word, 0, 0);
+  const answer = waitFor(
+    (m): m is { id: number; response?: FetchResponse; failed?: string } =>
+      (m as { id?: number }).id === id,
+    end,
+  );
+  if (!answer) {
+    sync.postMessage({ id, abort: true });
+    const error = new Error(`${request.url} took too long.`);
+    error.name = 'TimeoutError';
+    throw error;
   }
+  if (answer.response) return answer.response;
+  throw new Error(answer.failed ?? 'The request failed.');
 };
+
+/**
+ * The page's answer this thread is asleep for, or undefined where `end` came
+ * first. Every answer that came is read at each wake, and the flag cleared
+ * before they are: one a timeout gave up on answers late, and read alone it
+ * left the answer behind it unread with the flag down, so the thread slept
+ * through it to the end of its time.
+ */
+function waitFor<T>(
+  wanted: (message: unknown) => message is T,
+  end: number,
+): T | undefined {
+  for (;;) {
+    Atomics.store(word, 0, 0);
+    for (
+      let got = receiveMessageOnPort(sync);
+      got;
+      got = receiveMessageOnPort(sync)
+    ) {
+      if (wanted(got.message)) return got.message;
+    }
+    const left = end - performance.now();
+    if (left <= 0) return undefined;
+    Atomics.wait(word, 0, 0, left);
+  }
+}
 
 const host = new DomHost(new Document([]), seams, init.url);
 const importScript = (url: string): string | null => {
-  Atomics.store(word, 0, 0);
   sync.postMessage({ url });
-  Atomics.wait(word, 0, 0, 60_000);
-  const answer = receiveMessageOnPort(sync)?.message as
-    { source: string | null } | undefined;
+  const answer = waitFor(
+    (m): m is { source: string | null } => !('id' in (m as object)),
+    performance.now() + 60_000,
+  );
   return answer?.source ?? null;
 };
 host.workerScope = {
