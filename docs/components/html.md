@@ -269,10 +269,14 @@ HTML's parser builds for one: an `<html>`, a head and a body, each as
 written or implied where the markup leaves it out (HTML 13.2.6.4.1 to
 13.2.6.4.6). An empty document has all three. So a page that starts
 `<!doctype html><title>` has a `document.head` for its scripts and the
-body's UA margin, and its `:root` is the `<html>`. A source with no doctype
-is a fragment and is left as written, with the root box standing in for
-the body it would have had. That is how an application's snippet of HTML
-is drawn. The initial containing block takes the root element's
+body's UA margin, and its `:root` is the `<html>`. So is one that starts with
+an `<html>` or a `<head>`, and so is every source where `scripts` is on,
+whatever it starts with, as a frame's document, a written one and
+`DOMParser`'s are: a page's first script finds `document.head`, and one with no
+doctype, or an old one, is in quirks mode, where a `<table>` ends no `<p>`. Any
+other source with no doctype is a fragment and is left as written, with the
+root box standing in for the body it would have had. That is how an
+application's snippet of HTML is drawn. The initial containing block takes the root element's
 `direction` (CSS 2.1 10.1), so an `<html>` narrower than the viewport in
 `rtl` stands at its right.
 
@@ -7330,23 +7334,33 @@ it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
 `</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
 table's scope stops at no integration point.
 
-**Mis-nested HTML is read as a browser reads it, but for formatting.** An end
-tag goes by HTML's scopes: a `</span>` over a `<div>` is ignored, so that the
-`<div>`'s own end tag closes the `<div>` and no outer one, a `</li>` stops at a
-list, and any heading's end tag ends a heading. A start tag closes what HTML has
-it close, from under whatever is open: a `<div>` or an `<li>` ends a `<p>`, an
-`<li>` ends the one before it, and a `<button>` holds an `<input>`, as a
-`<select>` holds a `<button>`. A part of a table outside one is ignored, and in
-one closes what cannot hold it. A `</form>` leaves what the form holds open, a
-second `<form>` is turned away for as long as the parser points at the first,
-and between a table's parts a `<form>` closes as it opens and owns the controls
-that come after it, which is why a page reads `input.form` where `closest('form')`
-finds nothing. What is left differs from a browser: there is no adoption agency,
-so nothing closes a formatting element from under what it holds and nothing brings
-one back, and `<p><a><div>` stays in the `<p>`; a nested `<a>` is not ended; and
-there is no foster parenting, so what is out of place in a table stays in it. A
-`<table>` ends a `<p>` in a source of any kind, as it does in a document with no
-quirks.
+**Mis-nested HTML is read as a browser reads it.** The tree is built as HTML's
+parser builds it (13.2.6), mode by mode, and every chain of up to five tags from
+the formatting elements and blocks, a table's parts and a document's own tags,
+some 2.6 million documents, comes out as all three engines read it where they
+agree. An end tag goes by HTML's scopes, so a `</span>` over a `<div>` is
+ignored and the `<div>`'s own end tag closes the `<div>`. A formatting element
+closed from under what it holds is made again around what comes after it, as
+the adoption agency has it: `<p><b>x<p>y` has a `<b>` in each paragraph, and a
+`</b>` across a block leaves a `<b>` in front of it and one inside it. What is
+out of place in a table is put in front of it, so `<table><div>x</div>` has its
+`<div>` before the table and text in a table its text, while a hidden `<input>`,
+a `<script>`, a `<style>` and a `<form>` are the table's own. A `<template>`'s
+content goes on in the mode its first tag gives it, a `<frameset>` takes the
+place of a body nothing has been put in, and a carriage return is a line feed.
+A `</form>` leaves what the form holds open, a second `<form>` is turned away for
+as long as the parser points at the first, and in a table a `<form>` closes as it
+opens and owns the controls that come after it, which is why a page reads
+`input.form` where `closest('form')` finds nothing.
+
+What is still read otherwise than a browser reads it is the tokenizer's, which is
+htmlparser2's: a `<script>` holding `<!--<script>` ends at its first `</script>`,
+where a browser reads on to the second. A `<noscript>` holds markup, as with
+scripting off, where a document whose scripts run holds its text. SVG's and
+MathML's attributes are lower-cased (`viewbox`), and a `<?…?>` is a comment, as
+Firefox and Safari read it. A frame's scripts run once its document is parsed,
+and a document `document.write` fills is parsed at `close`, running none of its
+scripts.
 
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once

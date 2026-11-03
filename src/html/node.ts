@@ -4630,10 +4630,21 @@ export class HtmlViewNode extends Node {
         // can differ in, the tree keeps every box they cannot, and only
         // their subtrees are built (`_subtreeBuild`) — the first build of
         // the pass only, whose `restyleOnly` is still theirs.
+        // What animates is among them: a frame waits for a build that is
+        // coming (`_makeFrame`), and a build of subtrees styles nothing
+        // outside them, so an element a script's animation had moved on
+        // since the last frame was drawn where that frame left it. Seeded,
+        // it is styled at its time, and one that comes out as it was is no
+        // seed, as any is not.
         const subtrees =
           kept && seeds && restyleOnly === seededWith
             ? this._seedsThatMoved(
-                seeds,
+                this._animating()
+                  ? new Set([
+                      ...seeds,
+                      ...this._animationReach(this._tree!).reach,
+                    ])
+                  : seeds,
                 always,
                 tails,
                 pseudoRules,

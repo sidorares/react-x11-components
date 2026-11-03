@@ -821,6 +821,22 @@ test('document.open starts a document again from nothing, and what a page builds
   ]);
 });
 
+test('a page with no doctype is a document, its head there for the first script, as a browser parses one', async () => {
+  const doc = await hosted(
+    '<title>t</title><script>' +
+      'window.r = [document.head && document.head.firstChild.nodeName,' +
+      '  String(document.body), document.documentElement.nodeName];' +
+      '</script><p id="out"></p><script>' +
+      'document.getElementById("out").textContent =' +
+      '  r.concat(document.body.nodeName).join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TITLE|null|HTML|BODY',
+  );
+});
+
 test('a frame sent to a blob: URL shows what the blob holds, whatever it is mounted in, and the network is never asked', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

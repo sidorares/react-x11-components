@@ -3685,7 +3685,7 @@ const MARKED = new Set([
 /**
  * The start tags that end foreign content, as all three engines have them
  * (HTML 13.2.6.5). A `<font>` with a `color`, a `face` or a `size` is one too,
- * which `_tagEnds` asks: its attributes come after the name this is asked of.
+ * which `_startTag` asks once its attributes are read.
  */
 const BREAKS_OUT = new Set([
   'b',
