@@ -2365,7 +2365,14 @@ export function resourceResult(
   ) {
     return { kind: 'document' };
   }
-  return { kind: 'image', bytes: fetched.bytes };
+  // where it came from, which a canvas it is drawn on is tainted by, and
+  // the headers a CORS request for it is held to
+  return {
+    kind: 'image',
+    bytes: fetched.bytes,
+    url: fetched.url,
+    ...(fetched.headers && { headers: fetched.headers }),
+  };
 }
 
 /**

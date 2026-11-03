@@ -55,6 +55,7 @@ import type {
   ScriptRequest,
 } from '../node.js';
 import type { MarginLength } from '../paint.js';
+import type { ImageResponse } from '../resources.js';
 import type { MediaEventKind } from '../media.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import type { AdoptedSheet } from '../dom.js';
@@ -660,6 +661,8 @@ export interface HandleInternals {
     width: number;
     height: number;
     src: string;
+    /** Where what it shows came from (`ResourceStore.response`). */
+    response?: ImageResponse | null;
   };
   /** What the document's media queries are answered from, as a key that
    *  moves where an answer may (`HtmlViewNode.mediaEnvironment`). */
@@ -5593,7 +5596,8 @@ export class DomHost {
         const state = this._imageDrawn(el)?.imageState?.(el);
         // nothing draws it: as it would be with no image to wait for
         if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
-        return state[text(b) as keyof typeof state];
+        const read = state[text(b) as keyof typeof state];
+        return typeof read === 'object' ? null : read;
       }
       case 'canPlayType': {
         // the three answers HTML has, and none other (4.8.11.3)
@@ -8804,16 +8808,29 @@ export class DomHost {
     }
   }
 
-  /** Whether a page may read a canvas back once an image or a video was
-   *  drawn on it. It has its pixels in no case (`drawnPixels`), so one that
-   *  says it asked by CORS is taken at its word. */
+  /**
+   * Whether a page may read a canvas back once an image or a video was drawn
+   * on it (HTML's "CORS-same-origin"): by the response an image was drawn
+   * from, whose type is believed where the store knows it — a service
+   * worker's answer, or a CORS request's — and by where it came from in the
+   * end where not. A video has its pixels in no case (`drawnPixels`), so one
+   * that says it asked by CORS is taken at its word.
+   */
   private _imageClean(el: Element): boolean {
-    const url =
-      el.name === 'video'
-        ? this._resolve(el.attribs.src ?? '')
-        : String(this._imageDrawn(el)?.imageState?.(el)?.src ?? '');
-    if (!url || /^(?:data|blob):/i.test(url)) return true;
+    if (el.name !== 'video') {
+      const response = this._imageDrawn(el)?.imageState?.(el)?.response;
+      if (!response) return true;
+      if (response.type) return response.type !== 'opaque';
+      return this._ownImage(response.url);
+    }
     if (el.attribs.crossorigin !== undefined) return true;
+    return this._ownImage(this._resolve(el.attribs.src ?? ''));
+  }
+
+  /** Whether what came from `url` is this document's own to read: its
+   *  origin's, or what no network answered. */
+  private _ownImage(url: string): boolean {
+    if (!url || /^(?:data|blob):/i.test(url)) return true;
     return originOf(url) === this._origin();
   }
 

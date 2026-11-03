@@ -30,6 +30,8 @@ import type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
 import { sheetConditions } from './css/parse.js';
 import type { MediaCondition } from './css/parse.js';
 import { isXmlType, readProlog } from './xml-prolog.js';
+import { corsKeyed } from './url.js';
+import type { CorsMode } from './url.js';
 
 export { isXmlType };
 export type { AnyNode, ChildNode, Document, ParentNode } from 'domhandler';
@@ -467,14 +469,27 @@ export function isInputButton(el: Element): boolean {
  *  element"), and as the element's fallback content otherwise — an
  *  `<embed>`'s `src` the same, and a `<video>`'s `poster`, the frame it
  *  shows until it plays, which here it does not. An `<img>` that chooses
- *  its source (`choosesSource`) shows what it chose, which this is not. */
+ *  its source (`choosesSource`) shows what it chose, which this is not. An
+ *  `<img>` asked for by CORS is kept by the mode it asks in as well
+ *  (`corsKeyed`), which the store asks the host for it in. */
 export function imageUrlOf(el: Element): string | undefined {
   const tag = tagOf(el);
-  return tag === 'object'
-    ? attr(el, 'data')
-    : tag === 'video'
-      ? attr(el, 'poster')
-      : attr(el, 'src');
+  if (tag === 'object') return attr(el, 'data');
+  if (tag === 'video') return attr(el, 'poster');
+  const src = attr(el, 'src');
+  return src && tag === 'img' ? corsKeyed(src, imageCors(el)) : src;
+}
+
+/** The CORS mode an `<img>` asks for its image in, by its `crossorigin`
+ *  attribute (HTML 2.5.4): null where it has none, and `anonymous` for any
+ *  value but `use-credentials`. */
+export function imageCors(el: Element): CorsMode | null {
+  if (tagOf(el) !== 'img') return null;
+  const raw = attr(el, 'crossorigin');
+  if (raw === undefined) return null;
+  return raw.toLowerCase() === 'use-credentials'
+    ? 'use-credentials'
+    : 'anonymous';
 }
 
 /**

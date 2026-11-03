@@ -594,6 +594,77 @@ test("another origin's image goes through a worker, into its cache and out again
   assert.equal(await again.text('out'), 'drawn 1');
 });
 
+test('what a worker answers an image with taints a canvas by its type, whatever the image was asked for, and through its cache', async (t) => {
+  const pixel = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  const images = await serve({ '/pixel.png': ['image/png', pixel] }, t);
+  const other = images.url('/pixel.png').replace('localhost', '127.0.0.1');
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/pixel.png': ['image/png', pixel],
+      '/page': `<!doctype html><p id="out"></p><script>
+        var heard = [];
+        function said(line) {
+          heard.push(line);
+          if (heard.length === 5) {
+            document.getElementById('out').textContent = heard.sort().join(', ');
+          }
+        }
+        function read(name, src, cors) {
+          var i = new Image();
+          if (cors) i.crossOrigin = cors;
+          i.onerror = function () { said(name + ' failed'); };
+          i.onload = function () {
+            var x = document.createElement('canvas').getContext('2d');
+            x.drawImage(i, 0, 0);
+            try { x.getImageData(0, 0, 1, 1); said(name + ' read'); }
+            catch (e) { said(name + ' ' + e.name); }
+          };
+          i.src = src;
+        }
+        read('basic', ${JSON.stringify(other + '?own')});
+        read('opaque', '/opaque.png');
+        read('refused', '/opaque.png?cors', 'anonymous');
+        read('cached', '/cached.png');
+        read('own', '/pixel.png');
+        </script>`,
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        var url = new URL(e.request.url);
+        var theirs = ${JSON.stringify(other)};
+        if (url.search === '?own') e.respondWith(fetch('/pixel.png'));
+        else if (url.pathname === '/opaque.png') {
+          e.respondWith(fetch(theirs, { mode: 'no-cors' }));
+        } else if (url.pathname === '/cached.png') {
+          e.respondWith(fetch(theirs, { mode: 'no-cors' }).then(function (r) {
+            return caches.open('c').then(function (c) {
+              return c.put('/cached.png', r).then(function () {
+                return c.match('/cached.png');
+              });
+            });
+          }));
+        }
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  // another origin's address, answered with this origin's response; this
+  // origin's, answered with another's that no CORS let through, which is no
+  // answer to a CORS request at all, and is the same out of a cache
+  assert.equal(
+    await page.text('out'),
+    'basic read, cached SecurityError, opaque SecurityError, own read, refused failed',
+  );
+});
+
 test("a page cannot read another origin's opaque body by writing the number it is held by", async (t) => {
   const images = await serve({ '/secret': ['text/plain', 'the secret'] }, t);
   const other = images.url('/secret').replace('localhost', '127.0.0.1');

@@ -140,6 +140,7 @@ export type {
 } from './dom-events.js';
 export type {
   AudioSource,
+  ImageOrigin,
   ResourceRequest,
   ResourceResult,
   VideoSource,
