@@ -240,14 +240,21 @@ export interface ShapeContext {
 }
 
 /**
- * A `fill` or a `stroke` (SVG 2, 13.2): `none`, a colour, or a `url()`
- * naming a gradient in the drawing, with what follows it, its fallback,
- * left off. Null for anything else, `context-fill` and `context-stroke`
- * among it, which only a marker or a `<use>` has a context for.
+ * A `fill` or a `stroke` (SVG 2, 13.2): `none`, a colour, `context-fill`
+ * or `context-stroke`, or a `url()` naming a gradient in the drawing, with
+ * what follows it, its fallback, left off. Null for anything else. A
+ * context's paint is the drawing's to resolve, against the shape a marker
+ * is drawn on or the `<use>` it is in, and nothing outside either:
+ * `marker path { fill: context-stroke }` is how a diagram's arrowheads
+ * take their line's colour.
  */
 export function svgPaint(value: string): string | null {
   const v = value.trim();
-  if (v.toLowerCase() === 'none') return 'none';
+  const keyword = v.toLowerCase();
+  if (keyword === 'none') return 'none';
+  if (keyword === 'context-fill' || keyword === 'context-stroke') {
+    return keyword;
+  }
   const url = /^url\(\s*(['"]?)(#[^'")\s]+)\1\s*\)/i.exec(v);
   if (url) return `url(${url[2]})`;
   return parseColor(v);
