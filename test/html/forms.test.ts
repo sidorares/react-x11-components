@@ -1405,10 +1405,12 @@ test("what styles a control is an author's value the cascade leaves it, by name,
   const { node } = await render(
     '<style>@layer a { #layered { background-color: red } }' +
       '@layer b { #layered { background-color: revert-layer } }' +
-      '@layer a { #alone { border-top-color: revert-layer } }</style>' +
+      '@layer a { #alone { border-top-color: revert-layer } }' +
+      '@layer a { #back { border-top-color: red } }' +
+      '#back { border-top-color: revert }</style>' +
       '<input id="plain">' +
       '<input id="reverted" style="background-color: revert">' +
-      '<input id="layered"><input id="alone">' +
+      '<input id="layered"><input id="alone"><input id="back">' +
       '<input id="written" style="border-top-width: 2px">' +
       '<input id="logical" style="border-inline-start-color: currentcolor">' +
       '<input id="image" style="border-image-repeat: stretch">' +
@@ -1428,6 +1430,7 @@ test("what styles a control is an author's value the cascade leaves it, by name,
       'reverted',
       'layered',
       'alone',
+      'back',
       'written',
       'logical',
       'image',
