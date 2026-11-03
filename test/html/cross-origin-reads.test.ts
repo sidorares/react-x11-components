@@ -776,6 +776,62 @@ test('a pattern and a bitmap carry where they came from, and creating one taints
   assert.equal(await seen(logs, 'bitmap'), 'SecurityError');
 });
 
+test('a pattern is of a picture there is: none of an image on its way, of no size or with no address, and a broken one or no image at all throws', async () => {
+  const logs: string[] = [];
+  const flat = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="10"></svg>';
+  await renderX11(
+    h(Html, {
+      source: `<!doctype html><body><img id=ok src="${APP}p.png"><img id=gone src="${APP}gone.png"><img id=flat src="${APP}flat.svg"><script>
+        ${READS}
+        const x = document.createElement('canvas').getContext('2d');
+        const of = (name, what) => read(name, () => {
+          if (x.createPattern(what, 'repeat') === null) throw { name: 'null' };
+        });
+        of('coming', new Image());
+        // an address nothing has asked for, or it would be complete at once
+        const loading = new Image();
+        loading.src = '${APP}q.png';
+        of('loading', loading);
+        of('nothing', null);
+        of('text', 'p.png');
+        onload = () => {
+          of('ok', document.getElementById('ok'));
+          of('gone', document.getElementById('gone'));
+          of('flat', document.getElementById('flat'));
+          const none = document.createElement('canvas');
+          none.width = 0;
+          of('canvas', none);
+        };
+      </script></body>`,
+      partial: false,
+      baseUrl: APP,
+      scripts: { log: (level, text) => void logs.push(`${level}: ${text}`) },
+      onResource: async ({ url }: ResourceRequest) =>
+        url.endsWith('gone.png')
+          ? null
+          : {
+              kind: 'image' as const,
+              bytes: url.endsWith('.svg')
+                ? new TextEncoder().encode(flat)
+                : Buffer.from(IMAGE, 'base64'),
+            },
+      style: { flexGrow: 1 },
+    }),
+    FONTS
+      ? { width: 320, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  assert.equal(await seen(logs, 'coming'), 'null');
+  assert.equal(await seen(logs, 'loading'), 'null');
+  assert.equal(await seen(logs, 'nothing'), 'TypeError');
+  assert.equal(await seen(logs, 'text'), 'TypeError');
+  assert.equal(await seen(logs, 'ok'), 'read');
+  assert.equal(await seen(logs, 'gone'), 'InvalidStateError');
+  assert.equal(await seen(logs, 'flat'), 'null');
+  // a canvas of no size throws as it always has
+  assert.equal(await seen(logs, 'canvas'), 'InvalidStateError');
+});
+
 test("the page's own image, and one asked for by CORS, leave a canvas its own", async () => {
   for (const src of [`${APP}p.png`, `data:image/png;base64,${IMAGE}`]) {
     const logs = await withImage(

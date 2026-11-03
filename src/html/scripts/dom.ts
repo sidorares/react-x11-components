@@ -12299,6 +12299,7 @@ export function installDom(
           'SyntaxError',
         );
       }
+      if (!patternSource(source, this)) return null;
       const from = drawnPixels(source, this, 'createPattern');
       // an image is drawn as nothing, and a pattern of one is a pattern of
       // nothing, which still says what it is of
@@ -12485,6 +12486,45 @@ export function installDom(
    *  null for one whose pixels are the host's — an image, a video — which
    *  is drawn as nothing. One with nothing to draw is an `InvalidStateError`
    *  (HTML 4.12.5.1.14, "check the usability of the image argument"). */
+  /**
+   * Whether a source has a picture to make a pattern of (HTML 4.12.5.1.16,
+   * "check the usability of the image argument"): an image still on its way,
+   * with no address, or of no size has none yet, and a video with no frame.
+   * An image whose address came to nothing throws, as does what is no image
+   * source at all.
+   */
+  const patternSource = (source: Any, context: Any): boolean => {
+    const where = `Failed to execute 'createPattern' on '${
+      context instanceof OffscreenCanvasRenderingContext2D
+        ? 'OffscreenCanvasRenderingContext2D'
+        : 'CanvasRenderingContext2D'
+    }'`;
+    if (source instanceof HTMLImageElement) {
+      if (call('image', source._id, 'complete') !== true) return false;
+      if (call('image', source._id, 'available') === true) {
+        return !!source.naturalWidth && !!source.naturalHeight;
+      }
+      if (!str(source.getAttribute('src') ?? '').trim()) return false;
+      throw new DOMException(
+        `${where}: The HTMLImageElement provided is in the 'broken' state.`,
+        'InvalidStateError',
+      );
+    }
+    // an SVG `<image>`'s picture is nothing this realm is told of
+    if (source instanceof SVGImageElement) return false;
+    if (source instanceof HTMLVideoElement) return source.readyState >= 2;
+    if (
+      source instanceof HTMLCanvasElement ||
+      source instanceof OffscreenCanvas ||
+      source instanceof ImageBitmap
+    ) {
+      return true;
+    }
+    throw new TypeError(
+      `${where}: The provided value is not of type '(CSSImageValue or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or OffscreenCanvas or SVGImageElement or VideoFrame)'.`,
+    );
+  };
+
   const drawnPixels = (
     source: Any,
     context: Any,
@@ -15373,7 +15413,7 @@ export function installDom(
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
-    const rules = JSON.parse(String(call('cssRules', text))) as string[];
+    const rules = JSON.parse(String(call('cssRules', text, true))) as string[];
     if (rules.length !== 1 || droppedRule(rules[0])) {
       throw new DOMException(
         `Failed to parse the rule '${text}'.`,

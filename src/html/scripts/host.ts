@@ -1598,7 +1598,12 @@ const RAW_TEXT = new Set([
  * comments before it left out; `<!--` and `-->` are not rules, and
  * neither is what a `;` ends that is no at-rule, which CSS drops.
  */
-export function cssRulesOf(css: string): string[] {
+export function cssRulesOf(
+  css: string,
+  /** Told of what was no rule and dropped, which `insertRule`, handed one
+   *  rule and nothing else, refuses (CSSOM 1, "parse a CSS rule"). */
+  dropped?: { any: boolean },
+): string[] {
   const out: string[] = [];
   const n = css.length;
   // the closing bracket of each block open, innermost last
@@ -1610,7 +1615,10 @@ export function cssRulesOf(css: string): string[] {
     const rule = css.slice(start, at).trim();
     start = at;
     if (!rule || rule === '<!--' || rule === '-->') return;
-    if (statement && !rule.startsWith('@')) return;
+    if (statement && !rule.startsWith('@')) {
+      if (dropped) dropped.any = true;
+      return;
+    }
     out.push(rule);
   };
   for (let i = 0; i < n; i++) {
@@ -1660,7 +1668,10 @@ export function cssRulesOf(css: string): string[] {
     let rule = out.pop() as string;
     const atRule = rule[0] === '@';
     // what has no block by then is no rule, but for an at-rule
-    if (!atRule && !open.includes('}')) return out;
+    if (!atRule && !open.includes('}')) {
+      if (dropped) dropped.any = true;
+      return out;
+    }
     if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
       rule = rule.slice(0, -1);
     }
@@ -4127,7 +4138,9 @@ export class DomHost {
       case 'sheetInsert': {
         const el = this._element(a);
         const state = this._sheetOf(el);
-        const rules = cssRulesOf(text(b));
+        // one rule, and what follows it as much a syntax error as nothing
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(b), dropped);
         const brace = rules.length === 1 ? rules[0].indexOf('{') : -1;
         const prelude =
           brace > 0 && !rules[0].startsWith('@')
@@ -4137,6 +4150,7 @@ export class DomHost {
           prelude === null ? null : highlightSelectorValid(prelude);
         if (
           rules.length !== 1 ||
+          dropped.any ||
           (prelude !== null &&
             (transitionSelectorValid(prelude) === false ||
               highlights === false))
@@ -4449,8 +4463,12 @@ export class DomHost {
       }
       // a sheet's text as rules, for a sheet of the page's own and what a
       // grouping rule holds
-      case 'cssRules':
-        return JSON.stringify(cssRulesOf(text(a)));
+      case 'cssRules': {
+        // with `b`, one rule and nothing after it, as `insertRule` takes it
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(a), b === true ? dropped : undefined);
+        return JSON.stringify(dropped.any ? [] : rules);
+      }
       // the document's sheets, in tree order: its `<style>`s and the
       // `<link>`s that are a stylesheet
       case 'sheets': {

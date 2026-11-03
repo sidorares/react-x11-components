@@ -3912,6 +3912,28 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
   });
 });
 
+test('a rule inserted with anything after it is a syntax error, in a sheet of a style element and in one a script made', async () => {
+  const doc = await hosted(
+    '<style>p { color: rgb(0, 128, 0) }</style><p id="p">x</p><p id="out"></p><script>' +
+      'var r = [], made = new CSSStyleSheet();' +
+      'for (const sheet of [document.styleSheets[0], made]) {' +
+      '  for (const rule of ["p { color: red; } garbage", "p { color: red; } q;", "p { color: red; } /* end */ "]) {' +
+      '    try { sheet.insertRule(rule, sheet.cssRules.length); r.push("took"); }' +
+      '    catch (e) { r.push(e.name); }' +
+      '  }' +
+      '  r.push(sheet.cssRules.length);' +
+      '}' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    'SyntaxError|SyntaxError|took|2|SyntaxError|SyntaxError|took|1',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
   // Grafana's global styles, by emotion, a rule at a time: `\\f` in a
   // JavaScript string is a form feed, a newline to CSS, which breaks the
