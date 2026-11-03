@@ -685,6 +685,8 @@ export function useForms(options: FormsOptions): Forms {
     option: Element,
     ev: X11MouseEvent<DrawnNode>,
   ) => {
+    // what a reset puts back, before anything changes it
+    forms.remember(select);
     const options = optionElements(select);
     const several = isMultiple(select);
     const from = several && ev.shiftKey ? anchors.get(select) : undefined;
@@ -712,7 +714,6 @@ export function useForms(options: FormsOptions): Forms {
         oldValue: was,
       });
     });
-    forms.remember(select);
     if (!changes.length) return;
     changed(select, optionValue(option), changes);
     fire('input', select);
@@ -765,9 +766,11 @@ export function useForms(options: FormsOptions): Forms {
     pressed.current = null;
     if (ev.button !== 1) return;
     const at = pressableAt(ev);
-    // a list box takes its option as the button goes down, as Blink's does
-    if (at?.kind === 'option') pickOption(at.control, at.element, ev);
-    else if (at) pressed.current = { at, x: ev.x, y: ev.y };
+    // a list box takes its option as the button goes down, as Blink's
+    // does, where the page let the press go
+    if (at?.kind === 'option') {
+      if (!ev.defaultPrevented) pickOption(at.control, at.element, ev);
+    } else if (at) pressed.current = { at, x: ev.x, y: ev.y };
   };
   const onMouseUp = (ev: X11MouseEvent<DrawnNode>) => {
     const start = pressed.current;

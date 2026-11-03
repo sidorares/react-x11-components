@@ -8980,7 +8980,12 @@ export class Cascade {
     // border, whatever the page set: Blink and WebKit reset both
     // (`LayoutTheme::AdjustCheckboxStyle`), so it is as large as its size
     // says, and reads none of them. Firefox keeps the width and draws none.
-    if (own && style.appearance !== 'none' && isCheckable(el)) {
+    if (
+      own &&
+      el.name.length === 5 &&
+      style.appearance !== 'none' &&
+      isCheckable(el)
+    ) {
       noEdges(style);
     }
     if (own && el.name.length === 6 && isListBox(el)) {
