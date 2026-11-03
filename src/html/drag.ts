@@ -156,6 +156,9 @@ export interface DocumentDragOptions {
   embedded: Embedded;
   /** The element the press was on. */
   pressed(): Element | null;
+  /** Where the press was on what the document draws, in the element's
+   *  logical pixels: null for one on a widget. */
+  pressPoint(): { x: number; y: number } | null;
   /** The control a node is the widget of. */
   controlOf(node: DrawnNode | null): Element | null;
   /** Read what another application dropped. Absent, the document takes
@@ -351,10 +354,16 @@ export function useDocumentDrag(options: DocumentDragOptions): {
     dropAccept: (types: string[]) =>
       types.includes(OWN_TYPE) || latest.current.onDropFiles !== undefined,
     onDragStart: (ev: CoreDragEvent) => {
-      const { pressed, baseUrl, embedded, onDomEvent } = latest.current;
+      const { pressed, pressPoint, view, baseUrl, embedded, onDomEvent } =
+        latest.current;
+      // what a drag starts from is what is under the press as it starts, as
+      // a browser asks again: a page's `mousedown` may have moved what was
+      // pressed out of what it was in
+      const point = pressPoint();
+      const now = point ? view.current?.elementAtPoint(point.x, point.y) : null;
       const el = embedded.contains(ev.target as DrawnNode)
         ? null
-        : draggableFrom(pressed());
+        : draggableFrom(now ?? pressed());
       if (!el || !onDomEvent) {
         // the gesture goes on as ordinary mouse events: a selection, a drag
         // of a page's own

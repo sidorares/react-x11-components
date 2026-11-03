@@ -149,6 +149,7 @@ export type {
 } from './dom-events.js';
 export type {
   AudioSource,
+  ImageOrigin,
   ResourceRequest,
   ResourceResult,
   VideoSource,
@@ -1389,6 +1390,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onDomEvent,
     embedded,
     pressed: events.pressedElement,
+    pressPoint: events.pressPoint,
     controlOf: forms.controlOf,
     onDropFiles: props.onDropFiles,
   });
@@ -1467,6 +1469,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
     embedderScheme: props._embedderScheme,
+    frameElement: props._frameElement,
     onCssEvents: props._onCssEvents,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
@@ -1687,6 +1690,8 @@ export function makeHtmlHandle(
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
     embedRendered: (element) => nodeRef.current?.embedRendered(element) ?? null,
+    mountsEmbedded: (element) =>
+      nodeRef.current?.mountsEmbedded(element) ?? null,
     selectionKey: () => nodeRef.current?.selectionKey() ?? '',
     hoverAgain: () => nodeRef.current?.hoverAgain(),
     hoverOn: (element) => nodeRef.current?.hoverOn(element),
@@ -1994,6 +1999,11 @@ function documentInteraction(
       }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
+      // and the page hears it before `blur()` returns (HTML 6.6.4, the
+      // unfocusing steps), where core's blur is told a microtask later for a
+      // move between two fields: a `focus()` straight after it found the
+      // element still holding the focus, and told nothing
+      forms?.letGo();
     },
     activeElement: () =>
       live.current?.forms.owed() ?? owner(focusedNode(view.current)),
@@ -2053,6 +2063,8 @@ function useDocumentEvents(
   movesHeard?: () => boolean,
 ) {
   const pressed = React.useRef<Element | null>(null);
+  /** Where that press was, on what the document draws. */
+  const pressPoint = React.useRef<{ x: number; y: number } | null>(null);
   const released = React.useRef<Element | null>(null);
   /** The element each button held was pressed on: a click needs its own
    *  press, whatever was pressed since. */
@@ -2219,6 +2231,8 @@ function useDocumentEvents(
       const target = pointedAt(ev);
       if (!target) return;
       pressed.current = target;
+      pressPoint.current =
+        ev.target === (node as unknown) ? { x: ev.x, y: ev.y } : null;
       pressedBy.current.set(ev.button, target);
       if (ev.button !== lastButton.current) countFrom.current = ev.detail - 1;
       else if (ev.detail === 1) countFrom.current = 0;
@@ -2280,6 +2294,17 @@ function useDocumentEvents(
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
       const node = view.current;
       node?.notePointer(ev.x, ev.y);
+      // over a control's widget, or a frame's mount, the pointer is over its
+      // element, which the document hovers with all around it: the node
+      // hears only the moves over what it draws (`pointerBeside`)
+      if (node && ev.target !== (node as unknown)) {
+        const target = ev.target as DrawnNode;
+        node.pointerBeside(
+          ev.x,
+          ev.y,
+          forms.controlOf(target) ?? embedded.elementOf(target),
+        );
+      }
       // a move nothing listens for costs the hit test nothing, and lays
       // nothing out: `elementAtPoint` settles what is owed
       if (!onDomEvent || movesHeard?.() === false) return;
@@ -2296,6 +2321,7 @@ function useDocumentEvents(
     },
     onMouseLeave: (ev: X11MouseEvent<DrawnNode>) => {
       view.current?.notePointer(null);
+      view.current?.pointerLeft();
       if (!onDomEvent || movesHeard?.() === false) return;
       const at = offDocument();
       if (at) fire('mouseleave', at, mouse(ev));
@@ -2323,6 +2349,7 @@ function useDocumentEvents(
     onBar: () => barPress.current,
     /** The element the press now under way was on. */
     pressedElement: () => pressed.current,
+    pressPoint: () => (pressed.current ? pressPoint.current : null),
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressedBy.current.get(ev.button);
       const up = released.current;

@@ -504,6 +504,36 @@ metric(
 );
 
 metric(
+  'Space ticks a checkbox the document draws, and its click is told after',
+  async () => {
+    // At `appearance: none` the page draws the box and a stop takes the
+    // focus for it. HTML ticks it before its click is told, and the click
+    // is told once: the stop's own click and the tick's were two.
+    const events: string[] = [];
+    const { el, focused } = await renderBetween(
+      '<input id="c" type="checkbox" style="appearance:none;width:12px;' +
+        'height:12px;border:1px solid">',
+      {
+        onDomEvent: (ev: { type: string; target: DocElement }) => {
+          if (ev.type === 'click' || ev.type === 'change') {
+            events.push(
+              `${ev.type}:${ev.target.attribs.checked !== undefined}`,
+            );
+          }
+          return true;
+        },
+      },
+    );
+    await tabs(2, focused);
+    assert.strictEqual(focused(), 'c');
+    await userEvent.key(XK_SPACE);
+    await userEvent.key(XK_RETURN);
+    assert.deepStrictEqual(events, ['click:true', 'change:true']);
+    assert.strictEqual(boxOf(el, 'c').el!.attribs.checked, '');
+  },
+);
+
+metric(
   'a summary opened builds its details, and nothing around them',
   async () => {
     const { el, focused } = await renderBetween(

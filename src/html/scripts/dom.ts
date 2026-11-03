@@ -212,6 +212,7 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'opaqueSrcdoc',
     'eventPath',
     'pointerChain',
     'pointerOver',
@@ -8088,6 +8089,8 @@ export function installDom(
   for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
     Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
   }
+  // what decides whether a canvas it is drawn on stays the page's to read
+  Object.defineProperty(HTMLImageElement.prototype, 'crossOrigin', corsSetting);
   // limited to the keywords it has, which a page tests for support with
   Object.defineProperty(HTMLImageElement.prototype, 'loading', {
     get(this: Any) {
@@ -10153,6 +10156,9 @@ export function installDom(
    *  facade defined as a value, before any page code ran, but what is the
    *  window's own (`OWN_PER_WINDOW`). Taken at the end of `installDom`. */
   let realmGlobals: [string, Any][] = [];
+  /** The globals a frame's window shares that are getters on this one. */
+  const SHARED_GETTERS = new Set(['localStorage', 'sessionStorage']);
+  let realmGetters: [string, () => Any][] = [];
   /** The page's `CSS` namespace, which a frame's window copies with its
    *  own `highlights` (`frameWindowOf`). Made where `CSS` is defined. */
   let cssNamespace: Any = null;
@@ -10317,6 +10323,13 @@ export function installDom(
         writable: true,
         configurable: true,
         enumerable: false,
+      });
+    }
+    for (const [name, get] of realmGetters) {
+      Object.defineProperty(win, name, {
+        get,
+        configurable: true,
+        enumerable: true,
       });
     }
     const size = (): number[] =>
@@ -12302,6 +12315,7 @@ export function installDom(
           'SyntaxError',
         );
       }
+      if (!patternSource(source, this)) return null;
       const from = drawnPixels(source, this, 'createPattern');
       // an image is drawn as nothing, and a pattern of one is a pattern of
       // nothing, which still says what it is of
@@ -12488,6 +12502,45 @@ export function installDom(
    *  null for one whose pixels are the host's — an image, a video — which
    *  is drawn as nothing. One with nothing to draw is an `InvalidStateError`
    *  (HTML 4.12.5.1.14, "check the usability of the image argument"). */
+  /**
+   * Whether a source has a picture to make a pattern of (HTML 4.12.5.1.16,
+   * "check the usability of the image argument"): an image still on its way,
+   * with no address, or of no size has none yet, and a video with no frame.
+   * An image whose address came to nothing throws, as does what is no image
+   * source at all.
+   */
+  const patternSource = (source: Any, context: Any): boolean => {
+    const where = `Failed to execute 'createPattern' on '${
+      context instanceof OffscreenCanvasRenderingContext2D
+        ? 'OffscreenCanvasRenderingContext2D'
+        : 'CanvasRenderingContext2D'
+    }'`;
+    if (source instanceof HTMLImageElement) {
+      if (call('image', source._id, 'complete') !== true) return false;
+      if (call('image', source._id, 'available') === true) {
+        return !!source.naturalWidth && !!source.naturalHeight;
+      }
+      if (!str(source.getAttribute('src') ?? '').trim()) return false;
+      throw new DOMException(
+        `${where}: The HTMLImageElement provided is in the 'broken' state.`,
+        'InvalidStateError',
+      );
+    }
+    // an SVG `<image>`'s picture is nothing this realm is told of
+    if (source instanceof SVGImageElement) return false;
+    if (source instanceof HTMLVideoElement) return source.readyState >= 2;
+    if (
+      source instanceof HTMLCanvasElement ||
+      source instanceof OffscreenCanvas ||
+      source instanceof ImageBitmap
+    ) {
+      return true;
+    }
+    throw new TypeError(
+      `${where}: The provided value is not of type '(CSSImageValue or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or OffscreenCanvas or SVGImageElement or VideoFrame)'.`,
+    );
+  };
+
   const drawnPixels = (
     source: Any,
     context: Any,
@@ -15399,7 +15452,7 @@ export function installDom(
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
-    const rules = JSON.parse(String(call('cssRules', text))) as string[];
+    const rules = JSON.parse(String(call('cssRules', text, true))) as string[];
     if (rules.length !== 1 || droppedRule(rules[0])) {
       throw new DOMException(
         `Failed to parse the rule '${text}'.`,
@@ -19015,9 +19068,17 @@ export function installDom(
       return this.href;
     },
   };
+  /** Whether this is a `srcdoc` a sandbox took its origin from, which a
+   *  realm is for as long as it lives. */
+  let opaqueSrcdoc: boolean | null = null;
   for (const part of URL_PARTS) {
     Object.defineProperty(location, part, {
       get(): string {
+        // a sandbox's `srcdoc` goes by its page's address here, and an
+        // `about:srcdoc` has no origin to read from one
+        if (part === 'origin' && (opaqueSrcdoc ??= !!call('opaqueSrcdoc'))) {
+          return 'null';
+        }
         return urlParts(this.href)?.[part] ?? '';
       },
       set(v: Any) {
@@ -20086,6 +20147,9 @@ export function installDom(
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
   const UA_HEADERS = Symbol('uaHeaders');
+  /** The errors of requests CORS turned down, which say so to no page but
+   *  tell an `EventSource` that asking again would come to the same. */
+  const CORS_REFUSED = new WeakSet<object>();
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
@@ -22822,6 +22886,25 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone (`[Exposed=Window]`): a worker has no input of its
+    // own, no history, no address bar and no document to make
+    'UIEvent',
+    'FocusEvent',
+    'MouseEvent',
+    'PointerEvent',
+    'WheelEvent',
+    'InputEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'TextEvent',
+    'BeforeUnloadEvent',
+    'PopStateEvent',
+    'HashChangeEvent',
+    'PageTransitionEvent',
+    'Location',
+    'Navigator',
+    'Audio',
+    'DOMImplementation',
     // a window's alone: a worker has no clipboard and nothing dragged to it
     'DataTransfer',
     'DataTransferItem',
@@ -25489,6 +25572,9 @@ export function installDom(
    * No `change` is told: nothing tells this realm of a cookie a response or
    * another tab set.
    */
+  /** What a `CookieInit` a deletion makes says of itself, which no page's
+   *  can. */
+  const DELETING = Symbol('deleting');
   class CookieStore extends EventTarget {
     get(options?: Any): Promise<Any> {
       return this.getAll(options).then((list: Any[]) => list[0] ?? null);
@@ -25524,8 +25610,12 @@ export function installDom(
           typeof nameOrInit === 'object' && nameOrInit !== null
             ? nameOrInit
             : { name: nameOrInit, value };
-        const name = str(init.name ?? '');
-        const v = str(init.value ?? '');
+        // each without the tabs and spaces around it (Cookie Store API,
+        // "normalize")
+        const trim = (text: string): string =>
+          text.replace(/^[\t ]+|[\t ]+$/g, '');
+        const name = trim(str(init.name ?? ''));
+        const v = trim(str(init.value ?? ''));
         const host = new URL(str(document.URL)).hostname;
         const domain =
           init.domain === undefined || init.domain === null
@@ -25540,22 +25630,27 @@ export function installDom(
               ? "A cookie's name takes no '='."
               : !name && v.includes('=')
                 ? "A cookie with no name takes no '=' in its value."
-                : !name && /^__(secure|host)-/i.test(v)
+                : !name && /^__(secure|host|http)-/i.test(v)
                   ? 'A cookie with no name cannot look like a prefixed one.'
-                  : !name && !v
-                    ? 'A cookie needs a name or a value.'
-                    : name.length + v.length > 4096
-                      ? 'The cookie is too large.'
-                      : domain !== null &&
-                          (domain.startsWith('.') ||
-                            (host !== domain && !host.endsWith(`.${domain}`)) ||
-                            domain.length > 1024)
-                        ? "The domain is not the document's."
-                        : domain !== null && /^__host-/i.test(name)
-                          ? 'A __Host- cookie takes no domain.'
-                          : !path.startsWith('/') || path.length > 1024
-                            ? "A cookie's path starts with '/'."
-                            : null;
+                  : /^__(host-)?http-/i.test(name)
+                    ? "An __Http- cookie is HTTP's to set, and no script's."
+                    : !name && !v && !init[DELETING]
+                      ? 'A cookie needs a name or a value.'
+                      : name.length + v.length > 4096
+                        ? 'The cookie is too large.'
+                        : domain !== null &&
+                            (domain.startsWith('.') ||
+                              (host !== domain &&
+                                !host.endsWith(`.${domain}`)) ||
+                              domain.length > 1024)
+                          ? "The domain is not the document's."
+                          : domain !== null && /^__host-/i.test(name)
+                            ? 'A __Host- cookie takes no domain.'
+                            : path !== '/' && /^__host-/i.test(name)
+                              ? "A __Host- cookie's path is '/'."
+                              : !path.startsWith('/') || path.length > 1024
+                                ? "A cookie's path starts with '/'."
+                                : null;
         if (why) {
           fail(new TypeError(why));
           return;
@@ -25593,6 +25688,8 @@ export function installDom(
         domain: init.domain ?? null,
         path: init.path ?? '/',
         sameSite: 'strict',
+        // a cookie of no name is one to delete as any is
+        [DELETING]: true,
       });
     }
   }
@@ -27446,11 +27543,13 @@ export function installDom(
         [UA_HEADERS]: ['cache-control', 'last-event-id'],
       }).then(
         (response: Any) => this._opened(response, controller),
-        () => {
+        (error: Any) => {
           if (this._controller !== controller) return;
-          // a request nothing here can make is never made again
-          if (/^https?:/i.test(this._url)) this._reconnect();
-          else this._fail();
+          // a request nothing here can make is never made again, nor one
+          // another origin has turned down (HTML 9.2.3, "futile")
+          if (/^https?:/i.test(this._url) && !CORS_REFUSED.has(error)) {
+            this._reconnect();
+          } else this._fail();
         },
       );
     }
@@ -31314,10 +31413,13 @@ export function installDom(
   };
 
   /** The selection's range where it is in `host`, put at the host's start
-   *  where it is anywhere else, as focusing a host puts it. */
+   *  where it is anywhere else, as focusing a host puts it, and null where
+   *  there is none: a page that took every range away has no edit made, in
+   *  any browser. */
   const editRange = (host: Any): Any => {
     const r = selection._range;
-    if (r && host.contains(r.startContainer) && host.contains(r.endContainer)) {
+    if (!r) return null;
+    if (host.contains(r.startContainer) && host.contains(r.endContainer)) {
       return r;
     }
     selection.collapse(host, 0);
@@ -31910,7 +32012,9 @@ export function installDom(
     const field = editableField(at);
     if (field && field.selectionStart === field.selectionEnd) return false;
     const host = field ? null : editingHostOf(at);
-    if (!field && (!host || editRange(host).collapsed)) return false;
+    if (!field && (!host || (editRange(host)?.collapsed ?? true))) {
+      return false;
+    }
     CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
     if (field) editField(field, 'deleteByCut', null);
     else edit(host, 'deleteByCut', null);
@@ -33655,6 +33759,12 @@ export function installDom(
     const found = Object.getOwnPropertyDescriptor(G, name);
     return found && 'value' in found ? [[name, found.value]] : [];
   }) as [string, Any][];
+  // and its storage, a getter so that a sandbox's throws: a frame the page
+  // can reach is of its origin, and so of its store
+  realmGetters = [...SHARED_GETTERS].flatMap((name) => {
+    const found = Object.getOwnPropertyDescriptor(G, name);
+    return found?.get ? [[name, found.get]] : [];
+  }) as [string, () => Any][];
 
   // --- the entries -------------------------------------------------------------------
   //
@@ -34199,12 +34309,12 @@ export function installDom(
           target,
           trusted(new Event('reset', { bubbles: true, cancelable: true })),
         );
-      case 'focusin':
+      case 'focusin': {
         dispatch(
           target,
           trusted(new FocusEvent('focus', { relatedTarget: related })),
         );
-        return dispatch(
+        const go = dispatch(
           target,
           trusted(
             new FocusEvent('focusin', {
@@ -34213,6 +34323,18 @@ export function installDom(
             }),
           ),
         );
+        // an editing host the focus came to has the caret, at its start
+        // where the selection is anywhere else or nowhere, as Chrome and
+        // Safari put it once its `focus` is told: a page may take it away
+        // after, and a key then edits nothing (`editRange`)
+        if (editingHostOf(target) === target) {
+          const r = selection._range;
+          if (!r || !target.contains(r.startContainer)) {
+            selection.collapse(target, 0);
+          }
+        }
+        return go;
+      }
       case 'focusout':
         dispatch(
           target,
@@ -34600,12 +34722,15 @@ export function installDom(
   });
   // what came of a `fetch`
   entry('__fetched', () => {
-    const [id, answer] = input();
+    const [id, answer, refused] = input();
     const pending = fetches.get(id);
     if (!pending) return false;
     fetches.delete(id);
-    if (typeof answer === 'string') pending.reject(new TypeError(answer));
-    else if (pending.streamed && answer.status === 401) {
+    if (typeof answer === 'string') {
+      const error = new TypeError(answer);
+      if (refused) CORS_REFUSED.add(error);
+      pending.reject(error);
+    } else if (pending.streamed && answer.status === 401) {
       // and a body on its way is let go
       if (answer.streaming) call('abortFetch', id);
       pending.reject(new TypeError('Failed to fetch'));

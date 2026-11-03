@@ -25,8 +25,10 @@ import { readAnimatedWebP } from './webp.js';
 import type { DecodeStill } from './webp.js';
 import { headerSize } from './image-header.js';
 import type { HeaderSize } from './image-header.js';
+import { CORS_MARK, corsOfKey } from './url.js';
 import type { UrlResolver } from './url.js';
 import type { Element } from 'domhandler';
+import { corsAllows, originOf } from './scripts/fetch-hops.js';
 
 /** What the host is asked for. */
 export interface ResourceRequest {
@@ -58,11 +60,11 @@ export interface ResourceRequest {
    *  for a font, the `<style>` or `<link>` whose sheet declared it; for a
    *  module a script imports, the document's root element. */
   element: Element;
-  /** Where it is asked for by CORS — a module's script, or one with a
-   *  `crossorigin` attribute, and a font of another origin's (CSS Fonts 4,
-   *  4.8.2) — in whose name and with whose credentials. A host answers with
-   *  `headers`, and where redirects took it with `url` and `redirects`, which
-   *  the answer is read by. */
+  /** Where it is asked for by CORS — a module's script, a script or an
+   *  image whose element has a `crossorigin` attribute, and a font of another
+   *  origin's (CSS Fonts 4, 4.8.2) — in whose name and with whose
+   *  credentials. A host answers with `headers`, and where redirects took it
+   *  with `url` and `redirects`, which the answer is read by. */
   cors?: ResourceCors;
   /** The address of the document that asked, where that is a frame's
    *  rather than the one the host was handed: what its `Referer` says. */
@@ -123,8 +125,13 @@ export interface ResourceCors {
 export type ResourceResult =
   | { kind: 'stylesheet'; text: string; url?: string }
   | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string; url?: string }
-  | { kind: 'image'; bytes: Uint8Array }
-  | { kind: 'image'; image: unknown; width: number; height: number }
+  | ({ kind: 'image'; bytes: Uint8Array } & ImageOrigin)
+  | ({
+      kind: 'image';
+      image: unknown;
+      width: number;
+      height: number;
+    } & ImageOrigin)
   | ({ kind: 'font'; bytes: Uint8Array } & ScriptOrigin)
   | ({ kind: 'script'; text: string } & ScriptOrigin)
   | ({ kind: 'script'; bytes: Uint8Array; charset?: string } & ScriptOrigin)
@@ -145,6 +152,29 @@ export interface ScriptOrigin {
   /** The addresses it was asked for at before `url`, where redirects took
    *  it on: a way through another origin is asked for in nobody's name. */
   redirects?: string[];
+}
+
+/**
+ * Where an image came from, as a host that knows says, which decides whether
+ * a canvas it is drawn on stays the page's to read (HTML's "CORS-same-origin",
+ * Fetch's response tainting): where it ended up after redirects, and its
+ * response's headers, which a CORS request is held to. `type` is a response's
+ * type where something made one — a service worker's answer, which may be
+ * another origin's response, or one out of Cache Storage — and is believed
+ * over the rest: `'opaque'` taints a canvas wherever it says it is from, and
+ * `'basic'` or `'cors'` taints none. Absent, an image is held to the address
+ * it was asked for.
+ */
+export interface ImageOrigin extends ScriptOrigin {
+  type?: 'basic' | 'cors' | 'opaque';
+}
+
+/** What a page may know of the response an image was drawn from: the URL it
+ *  came from in the end, and its type where that is known (`ImageOrigin`),
+ *  else a page's origin decides by the URL. */
+export interface ImageResponse {
+  url: string;
+  type?: 'basic' | 'cors' | 'opaque';
 }
 
 /** What a `<video>` plays: a host's answer to `kind: 'video'`. */
@@ -201,6 +231,10 @@ interface Entry {
   /** Whether only a lazy image has asked for it, which holds no `load`
    *  (`request`'s `lazily`). */
   lazily?: boolean;
+  /** The CORS request an image was asked for by, where it was one. */
+  cors?: ResourceCors;
+  /** Where an image's response came from, and its type where known. */
+  response?: ImageResponse;
 }
 
 /** The ntk `Image` slice this uses. Structural, as everywhere else here. */
@@ -282,9 +316,21 @@ export class ResourceStore {
     if (!this._destroyed) this.settled?.(key);
   }
 
-  /** A URL as the document wrote it, as the store keys it. */
+  /** A URL as the document wrote it, as the store keys it: resolved, with
+   *  the CORS mode it is asked in after it, where it is (`corsKeyed`). */
   private _key(url: string): string {
-    return this._urls ? this._urls.resolve(url) : url;
+    if (!this._urls) return url;
+    const at = url.indexOf(CORS_MARK);
+    return at < 0
+      ? this._urls.resolve(url)
+      : this._urls.resolve(url.slice(0, at)) + url.slice(at);
+  }
+
+  /** The origin the document asks in, by its base: what a CORS request
+   *  says it is from. */
+  private _origin(): string {
+    const base = this._urls?.base;
+    return base ? originOf(base) : 'null';
   }
 
   /** Ask for a resource, once per URL: for what only paints it where
@@ -315,9 +361,16 @@ export class ResourceStore {
       lazily,
     };
     this._entries.set(url, entry);
+    // the host is asked for the URL, by CORS where the key says so
+    const { url: asked, mode } = corsOfKey(url);
+    if (mode) entry.cors = { origin: this._origin(), mode };
     let answer: Promise<ResourceResult | null> | ResourceResult | null;
     try {
-      answer = this._ask(url === request.url ? request : { ...request, url });
+      answer = this._ask(
+        url === request.url && !mode
+          ? request
+          : { ...request, url: asked, ...(entry.cors && { cors: entry.cors }) },
+      );
     } catch {
       entry.state = 'failed';
       if (late) this._done(url);
@@ -399,6 +452,13 @@ export class ResourceStore {
       if (!synchronous) this._changed('stylesheet', entry.layout !== false);
       return;
     }
+    const response = responseOf(url, entry.cors, result);
+    if (!response) {
+      // a CORS request another origin did not let through is no image
+      entry.state = 'failed';
+      return;
+    }
+    entry.response = response;
     if ('image' in result) {
       entry.image = result.image;
       entry.size = rasterSize(result.width, result.height);
@@ -406,7 +466,7 @@ export class ResourceStore {
       if (!synchronous) this._arrived(url, entry);
       return;
     }
-    const svg = svgFromBytes(result.bytes, fragmentOf(url));
+    const svg = svgFromBytes(result.bytes, fragmentOf(corsOfKey(url).url));
     if (svg) {
       entry.image = svg;
       entry.size = svg.intrinsics;
@@ -546,6 +606,14 @@ export class ResourceStore {
     if (!url) return null;
     const entry = this._entries.get(this._key(url));
     return entry?.state === 'ready' ? (entry.image ?? null) : null;
+  }
+
+  /** Where a loaded image's response came from, and its type where known:
+   *  what a canvas it is drawn on is tainted by (`ImageResponse`). */
+  response(url: string): ImageResponse | null {
+    if (!url) return null;
+    const entry = this._entries.get(this._key(url));
+    return entry?.state === 'ready' ? (entry.response ?? null) : null;
   }
 
   /** A loaded GIF of more than one frame, which the paint pass asks for
@@ -815,6 +883,35 @@ export const imageDecoder = {
 const exifOrientation = (
   ntk as unknown as { exifOrientation?: (bytes: Uint8Array) => number }
 ).exifOrientation;
+
+/**
+ * What a page may know of where an image a host answered came from (Fetch's
+ * response tainting): null where it was asked for by CORS and may not be had
+ * at all, a load that failed. A type the host said is believed, and an opaque
+ * one is no answer to a CORS request (Service Workers' "handle fetch"). A
+ * CORS request answered from another origin is held to its headers; one
+ * whose host said none could not be held to anything, and is drawn, and
+ * taints.
+ */
+function responseOf(
+  key: string,
+  cors: ResourceCors | undefined,
+  result: ImageOrigin,
+): ImageResponse | null {
+  const url = result.url || corsOfKey(key).url;
+  if (result.type) {
+    return result.type === 'opaque' && cors ? null : { url, type: result.type };
+  }
+  if (!cors) return { url };
+  if (/^(?:data|blob):/i.test(url) || originOf(url) === cors.origin) {
+    return { url, type: 'basic' };
+  }
+  if (!result.headers) return { url, type: 'opaque' };
+  const credentials = cors.mode === 'use-credentials' ? 'include' : 'omit';
+  return corsAllows(result.headers, credentials, cors.origin)
+    ? { url, type: 'cors' }
+    : null;
+}
 
 /** A URL's fragment, decoded, or '' where it has none. */
 function fragmentOf(url: string): string {

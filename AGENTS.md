@@ -1893,6 +1893,17 @@ a control is handed it.** Where a core component takes no style for it,
 `<Radio>`, and on macOS the box inside a native `<Button>` and `<Select>`,
 what core needs is written down rather than covered over.
 
+**The pointer over a widget is over its element** (`pointerBeside`). Core
+tells the `<htmlview>` the pointer left it as it goes onto a widget or a
+frame's mount, and hands it none of their moves, so the root's move capture
+hovers the element whose widget or mount it is, and the `<htmlview>`'s own
+leave clears nothing: the root's does (`pointerLeft`). A leave with no move
+after it is content that moved under a still pointer, and holds the hover as
+a scroll does. **Anything new mounted beside the document that takes the
+pointer is found from the root's capture** — `controlOf`, `elementOf`, or
+what the document draws at the point — or `input:hover`, and the card around
+the field, go off over it.
+
 **A field's selection is its widget's, and `FormState` holds it only
 between widgets.** A script's `setSelectionRange()` selects in the
 `<textinput>` mounted for the field, through core's selection API, which is
@@ -2051,8 +2062,26 @@ and its keyboard activation a `<button>`'s (`pressableAt`, `activate`); one
 it leaves alone is the palette's widget. **Anything that asks whether a box
 is a button asks `isButton` or `isButtonBlock`**, which answer for both,
 and a restyle that turns the styling on or off builds the box again
-(`isInputButton` in `_restyleInPlace`): a black pill was the palette's
-white framed button, half as wide again.
+(`drawnControl` in `_restyleInPlace`): a black pill was the palette's
+white framed button, half as wide again. A checkbox or a radio button at
+`appearance: none` is the same, a box the document draws with its
+`::before` and `::after`, ticked by a press and by Space: **anything that
+asks whether a control is mounted or drawn asks `drawnControl`**.
+
+**What styles a control is CSS UI 4's list, cascaded** (`stylesControl`):
+an author's value left, after `revert` and `revert-layer` roll theirs back,
+for a property `DISABLING` names, or `appearance: none`, or a drop-down's
+`menulist-button`. Who set it counts, not what to, so a page that writes
+back what it read takes the look off. Two things are load-bearing. **A name
+that sets one of the listed properties joins `DISABLING`**, a shorthand or a
+prefixed name among them, or a page that writes it keeps the palette's look.
+And **anything that answers a page from a control's style reads
+`styleAsRead`**, which has the web's border and ground where the palette's
+are in the style: read as the palette's, every value a page wrote back was
+a look no browser draws, and 480 of WPT's 802 tests of the list failed for
+it. Only what is on the list reads the web's: a padding or a size written
+back takes no look off, and read as the web's it moved the box. A list
+box and a colour well have no palette's look at all (`drawnByDocument`).
 
 **A `<select>`'s menu is the document's to hold.** Its widget is core's
 `<Select>` given `open` and `onOpenChange` (`renderControl`), so a press
@@ -2853,6 +2882,13 @@ or went is built from there on where its own style stands**
 (`_subtreeRoots`' `restyled`, which a seed that came out as it was is taken
 out of), so a `:has()` anchored at the `<body>` leaves a tail at its end,
 where it had built the document.
+**What animates is a seed of every build of subtrees** (`_animationReach`):
+a frame waits for a build that is coming (`_makeFrame`), and a build of
+subtrees styles nothing outside them, so an element a script's animation had
+sought or sped up since the last frame stayed where that frame drew it until
+the next. It showed once a page whose scripts run was a document, its body a
+root a change could be built in. **Anything new that leaves a frame to a
+build makes the build reach what the frame would have.**
 
 **A build for such a change builds the subtrees it reached, and the
 layout after it keeps the blocks it did not** (`buildSubtrees`,
@@ -4621,6 +4657,20 @@ closes a way out a DOM binding opens by accident:
   of these. A page's request is made a hop at a time in `_fetchFor`, so **anything
   new a request owes at a redirect goes in that loop**, and a preflight in
   `_preflight`, whose cache is by the origin asked in.
+- **An image taints a canvas by the response it came in, never by its
+  address** (`responseOf` in `resources.ts`, `_imageClean`). The store keeps
+  what each image's response was as it lands: the type a service worker's
+  answer had, which is believed wherever it says it is from, and for a CORS
+  request whether its headers let the document have it, where one that does
+  not is a load that failed. The address alone taints only where nothing said
+  more. Two things are load-bearing. **An `<img crossorigin>`'s image is kept
+  by its CORS mode as well as its URL** (`corsKeyed`), since another origin's
+  answer to a request with an `Origin` is no answer to one without: anything
+  new that asks the store for an `<img>`'s image asks by `imageUrlOf` or a
+  source `ImageSources` chose, which carry the mode, and never by its `src`,
+  or it reads another request's answer. And **a key with a mode in it never
+  reaches a host or a page**: the store asks for the URL with `cors`, and
+  `imageState` answers `currentSrc` without it.
 - **A sandbox is flags on the host, by the document** (`sandbox.ts`,
   `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
   goes by a document's origin holds. Six things are load-bearing. **`'null'` is
@@ -5258,6 +5308,19 @@ not before. Three things are load-bearing:
   element since the last build, and `_styleOf` then answers from a cascade
   that has not seen it. One that is not rendered waits (`_embedsWaiting`), and
   is looked at after each paint, which is what loads one a script shows.
+- **An `<iframe>` whose document has no realm hears `load` from the view over
+  it** (`followFrame`, `frameViewLoaded`): only a view asks for a document's
+  images, and HTML's frame `load` waits for them, so told as the document
+  went in, a page's `onload` read every image in its frames as not there yet.
+  The view is `FramePage`'s, which follows the frame from the commit that
+  mounts it, and a document can arrive first: the page then says whether it
+  mounts one over the frame (`mountsEmbedded`), null while it owes a layout,
+  asked again after each paint (`_awaitView`), and a frame it mounts nothing
+  over hears `load` at once. Never decide by the holder: a view of no size
+  chooses a `<picture>`'s source for no width, and the page's view, mounted
+  after it, asks and tells every image again. **Anything new that mounts a
+  view of its own over a frame says so through `framesFollowed`**, or the
+  frame's `load` waits for a view that never says anything.
 - **An address given to an `<object>` or an `<embed>` during the parse is
   `loadFrames`' to find** (`_framesLoaded`). Loaded as it is set, its `load`
   comes before the first layout, and before the image that sizes it: a page
@@ -5619,22 +5682,22 @@ load-bearing.
 - **The tree breaks out as HTML's does** (`BREAKS_OUT`, `_breakOut`), or a mark
   would turn `<svg><p></p><link>`, a sheet in every engine, into none. The list
   is the engines', and `<table>` is on it. What only attributes can say is
-  known at the end of a tag (`_tagEnds`): a `<font>` with a `color`, a `face` or
+  known at the end of a tag (`_tag`): a `<font>` with a `color`, a `face` or
   a `size` ends the drawing, and an `<annotation-xml>` with an HTML `encoding`
   is a point.
 - **In foreign content the parser goes by an element's language, where
-  htmlparser2 goes by its name** (`_openForeign`, `_closedBy`). A foreign tag is
-  opened without `emitOpenTag`, which would close a `<td>` with a `<td>` and take
-  a `<math>` in a drawing for MathML, and with a frame of `foreignContext` in
-  that element's language. An end tag from a foreign element closes the nearest
+  htmlparser2 goes by its name** (`_foreign`, `frameOf`, `_closedBy`). A foreign
+  tag is opened by no insertion mode, which would close a `<td>` with a `<td>` and
+  take a `<math>` in a drawing for MathML, and with a frame of `foreignContext`
+  in that element's language. An end tag from a foreign element closes the nearest
   of its name back to the first HTML element, and from there it is HTML's: it
   closes HTML elements alone, and stops at what HTML's scopes stop at, a point
   of the element's own language or any `<annotation-xml>`. A table's own end tags
   do not stop there, since their scope has no such stop, which a reading of "in
   scope" gets wrong and the engines do not. So **anything new that opens a
-  foreign element goes through `_openForeign`**, since `popElement` takes a
-  frame off by the name alone (`FRAMED`), and **a tag's end decides anything
-  more through `_tagEnds`**, where the element is not made yet. Every chain to
+  foreign element goes through `_foreign`**, since `popElement` takes a frame
+  off by the name alone (`FRAMED`), and what decides a frame is `frameOf`, which
+  `_reframe` asks again where the stack is taken apart. Every chain to
   depth 5 of foreign and HTML elements, with each end tag after it, is read as
   the engines read it (788,922 documents). A generator for this holds HTML well
   nested, or HTML's rules drown what foreign content's do. Left, and nobody
@@ -5647,70 +5710,85 @@ load-bearing.
   parses markup for an element hands the element over.** What breaks out of the
   context is HTML's until it closes, and the context is there again after it.
 
-**HTML's tags are closed by HTML's rules, read off the stack** (`_open`,
-`_implied`, `_tablePart`, `_closedBy`, `_endTag`). htmlparser2's parser keeps a
-table of what a start tag closes and asks only the top of the stack, and closes
-the nearest element of an end tag's name whatever stands between, so a `</span>`
-ended a block it was never in, the block's own end tag then ended an outer one,
-and `<button><input>` closed the button. `DocumentParser` keeps htmlparser2's
-tokenizer and opens every element itself: nothing calls `emitOpenTag`. A
-differential over 969,873 generated chains to depth 3 differs from all three
-engines in two, each a `<select>` that ended in a `<template>`, where it was 2,170
-in 16,002 and 3,225 in 18,981 at depth 2. Six things are load-bearing.
+**HTML's tree is built mode by mode, as the spec builds it** (`DocumentParser`:
+`_htmlStart`, `_htmlEnd`, `_characters`, `_inBody`, `_inTable`, `_adoption`,
+`_reconstruct`, `_fosterPlace`, `_resetMode`). It keeps htmlparser2's tokenizer
+and nothing of its tree construction: the insertion modes, the list of active
+formatting elements and the adoption agency, foster parenting, a template's
+modes, framesets, and the quirks mode `<p><table>` asks about. Every chain of
+tags to depth 5 from three vocabularies, formatting and blocks (813,616),
+tables (579,195, and 111,151 in quirks mode) and a document's own tags
+(1,118,481), is read as all three engines read it where they agree, through
+`DOMParser`. Eight things are load-bearing.
 
-- **Generate for one rule at a time.** Whole trees from a loose vocabulary drown
-  in foster parenting and the adoption agency. The rig's families leave out what
-  only foster-parents, and a marker after each tag says where the tag left the
-  parser, a `<style>` in a table.
-- **An end tag goes by a scope, and `_stopsAt` says which.** A block's and a
-  heading's go by default scope, a `</li>` stops at a list, a `</p>` at a button,
-  a table's at a table, and any other at what is `SPECIAL`, which is what keeps a
-  block open for its own end tag. `select` is in the default scope, which the
-  engines all have and an older reading of HTML does not. `html`, `head` and
-  `body` are in none of them: an ignored `<html>` stands on the stack for what it
-  would have closed (`_ignored`), and the real ones are at the bottom.
-- **Nothing a start tag implies closes a formatting element**, which is a stop
-  in every walk `_implied` makes (`TO_A_PARAGRAPH`, `IMPLYING`,
-  `SPECIAL_TO_AN_ITEM`). An engine brings one closed from under it back around
-  what comes after, from a list nothing here keeps, so `<p><a><div>` closed here
-  would have the block out of the link. The two together are the adoption agency
-  and belong together. A cell and a caption do close what is in them, since HTML
-  clears that list at each. Where a formatting element's end tag has a block
-  above it, the agency would move the block out; here it leaves the stack and the
-  block stays open (`_leaveOpen`), so the block's end tag closes the block and no
-  outer one.
-- **What takes an element off the middle of the stack goes through `_leaveOpen`**,
-  which tells the handler, since the two stacks have to stay in step from the
-  top. HTML's `</form>` is the other that does: `<form><div></form>x` has the `x`
-  in the `<div>`, after it generates implied end tags.
-- **The form pointer outlives the stack** (`Handler.form`). A `<form>` closed by
-  what held it still turns the next away, and between a table's parts one closes
-  as it opens, so the rows are not in it and each control after it has the form
-  through `PARSED_FORMS`. `formOwner` and a page's `form` both end there, after
-  what is around the control, so **anything new that asks a control's form asks
-  `parsedForm` last**. Old pages write `<table><form><tr>`, whose rows were in a
-  form in a table and laid out as nothing a browser draws.
+- **A start tag is acted on once its attributes are read** (`_tag`): an `<input
+type=hidden>` in a table, a `<font color>` in a drawing and an
+  `<annotation-xml encoding>` turn on them. The tokenizer decides raw text as it
+  reads a tag's name, so where the tree builder makes no element of such a tag,
+  a `<textarea>` in a frameset, it is told the text is HTML (`NO_SEQUENCE`); and
+  there is no "text" mode, so a raw element's end tag closes it in any mode
+  (`onclosetag`), and the end of the input does.
+- **The two stacks are one, in step**: htmlparser2's names, top first, with its
+  frames of the language each holds (`frameOf`), and the handler's nodes, the
+  root under all of them, so `openNodes.length - 1 === stack.length`. Nothing
+  stands on either for a tag HTML ignores. **Anything new that takes an element
+  out of the middle goes through `_dropFromStack`**, which reframes where it has
+  to: the adoption agency does, `</form>` (`_leaveOpen`), and head content after
+  the head (`_inHeadAfterIt`).
+- **Anything new the parser does to the tree is recorded or marks the record
+  unknown**, for a stream's chunks and the scripts a parse yields to: what is
+  foster parented goes in front of a table (`place`), what the adoption agency
+  moves (`moved`), a frameset that takes the body out.
+- **A source is a document or a fragment** (`HtmlSource.setDocument`). A page
+  whose scripts run is a document, as a frame's, a written one and `DOMParser`'s
+  are: an `<html>` with its head and its body from the first token on, so a
+  head script finds `document.head`, and in quirks mode where it has no doctype
+  or an old one. Any other source is a fragment until a doctype, an `<html>` or a
+  `<head>` at its start makes it a document: read as a body's content, the root
+  standing in for the body, and a `<body>` written in it takes in what came
+  before it (`adopt`). A fragment read as an element's content (`readIn`) is
+  none of that. **A source parses with its own scripting** (`setScripting`,
+  which reaches the parser before it reads anything): where scripts run, a
+  `<noscript>` holds its content as text, which the tokenizer is set to read
+  as it reads a `<noembed>`'s (`NOSCRIPT_END`), and where they do not, markup,
+  of which a head keeps what is head content. Parsed as markup in a page whose
+  scripts run, a `<noscript>` in the head put its tracking pixel in the body.
 - **Every document pays for this, so the cost is kept off the path of a page with
-  no mistakes.** A start tag with nothing to do asks one `Set`, as htmlparser2 did;
-  `Handler.paragraphs` saves each block a walk of the stack to find there is no
-  `<p>`, which is O(n) at every level of a document of unclosed `<div>`s; and an
-  end tag that closes what is current goes no further than `onclosetag`. A 3 MB
-  document of plain HTML parses within 1% of what it did, and one all of SVG takes
-  2% more.
-  **And no walk with nothing foreign open goes past `MAX_DEPTH`** (`_walked`):
-  past what a tree holds it takes the name for what it finds, as htmlparser2 did,
-  since a page of unclosed elements and a tag for each that closes nothing would
-  otherwise cost the square of them. Unbounded, a 150 KB document of 20,000
-  `<span>`s took a hundred times as long as it did. Measure a change here on such
-  a document as well: no real page shows it.
+  no mistakes.** A start tag "in body" has no rule of its own for asks one `Set`
+  (`BODY_RULES`); a formatting element's end tag that closes the current node,
+  the last on the list, pops it with no adoption agency, which is all the agency
+  would do; `Handler.paragraphs` saves each block a walk of the stack to find no
+  `<p>`; and an end tag that closes what is current goes no further than
+  `onclosetag`. A 3 MB document of plain HTML parses at master's time (110 ms
+  against 114 at best, 121 and 121 at the median, the two alternated in one
+  process), and 20,000 unclosed `<span>`s and 4,000 unclosed `<div>`s at it or
+  below. **And no walk with nothing foreign open goes past `MAX_DEPTH`**
+  (`_walked`), since a page of unclosed elements and a tag for each that closes
+  nothing would otherwise cost the square of them.
+- **What a test expects of a tree is the engines'**: `documentShape` in
+  `test/html/document.test.ts` writes a tree as the engines' `DOMParser` is
+  written for the differential, and each row is copied from them. Generate for
+  one rule at a time: whole trees from a loose vocabulary drown in what the
+  engines split on.
+- **The form pointer outlives the stack** (`Handler.form`). A `<form>` closed by
+  what held it still turns the next away, and in a table one closes as it opens,
+  so the rows are not in it and each control after it has the form through
+  `PARSED_FORMS`. `formOwner` and a page's `form` both end there, after what is
+  around the control, so **anything new that asks a control's form asks
+  `parsedForm` last**.
+- **A comment after the body goes in the `<html>`, and after the `<html>` in the
+  document** (`_comment`), which is the one thing "after body" and "after after
+  body" do differently: anything else after them goes back in the body.
 
-What is left, each against all three engines: the adoption agency and its list,
-so a formatting element closed from under what follows it is not brought back,
-and a nested `<a>` is not ended; foster parenting, so what is out of place in a
-table stays in it; `<template>`'s modes past the first tag it holds and
-`colgroup.innerHTML`'s; `<p><table>`, which ends the `<p>` as a document with no
-quirks does, in a source of any kind, since `<Html>` has no quirks mode; and text,
-which ends no written `<head>`.
+What is left, each against the engines or html5lib's tests: what htmlparser2's
+tokenizer reads otherwise than HTML's, the script data escape states above all
+(`<script><!--<script></script>`), a doctype's ids written with nothing between
+them, a `</b` at the end of the input; processing instructions, which Chrome alone keeps; SVG's and MathML's
+attribute names in their case (`viewBox`), which are lower-cased; what a
+`<selectedcontent>` copies of its option; a fragment's tokenizer state from its
+context, as `innerHTML` on a `<textarea>` reads; and scripts run as the parser
+meets them in a frame's document, which is parsed whole before they run, and in
+one `document.write` fills, which is parsed at `close` and runs none.
 
 **A document served as XML is read by XML's rules, and being one is a fact
 about the document** (`contentType`, `HtmlSource.setXml`, `XML_DOCUMENTS`,
@@ -5825,15 +5903,6 @@ processing instruction, in no children and with the document for its parent, so
 `compareDocumentPosition` has it before everything, and all that holds a script
 for a parser's sheet holds it for this one. `document.styleSheets` lists it, and
 its `ownerNode` is that `<link>` and not the instruction.
-
-**A `</body>` and an `</html>` close nothing, and say so** (`Handler.ended`):
-what comes after them goes back in the body, and a comment after one goes
-outside it, in the `<html>` and the document, which is the one thing the two
-modes HTML keeps for this do differently. **A `<head>` ends with what stands in
-for it**: a second `<head>` or a stray `<html>` in one is a stand-in on the
-stack (`_ignored`), so the first thing that is no head content closes all of
-them, or the body opens inside the head. WPT's `scroll_support` tests write
-`<head>` twice, and their `200vh` body scrolled nothing.
 
 **A script asks a drawing where things are, and the attributes answer.**
 Nothing here lays out what an `<svg>` holds, so `getBBox`, `getCTM`,

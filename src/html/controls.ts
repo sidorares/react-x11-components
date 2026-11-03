@@ -119,6 +119,8 @@ export interface ControlRect {
   buttonCursor?: string;
   /** A range's: what its widget is handed (`rangeLook`). */
   range?: RangeLook;
+  /** A `<meter>`'s or a `<progress>`'s: how full it is (`gaugeOf`). */
+  gauge?: Gauge;
   /**
    * Set on a text field or a `<select>` whose own box the author styled —
    * gave it a border or a background (`styledField`). The document draws
@@ -364,10 +366,17 @@ export function controlRectsOf(
       covered?.set(box.el, { shows, left });
       if (left) rect.clip = left;
     }
-    // a range is always in its content box, the document drawing the rest
-    // of it (`styledField`)
+    // a range and a file input are always in their content box, the
+    // document drawing the rest of them (`styledField`): a file input has
+    // no look of its own to give way, its edges are the page's in every
+    // engine
     if (box.replaced === 'range') rect.range = rangeLook(box, scale, partOf);
-    if (rect.range || styledField(box.replaced, box.style)) {
+    if (box.replaced === 'gauge') rect.gauge = gaugeOf(box.el);
+    if (
+      rect.range ||
+      box.replaced === 'file' ||
+      styledField(box.replaced, box.style)
+    ) {
       const content = turn
         ? mapRect(
             turn,
@@ -759,10 +768,69 @@ export function covers(clip: Rect, rect: Rect): boolean {
  * as well at `appearance: none` — `BareField.chevron`.
  */
 export function styledField(kind: ReplacedKind, style: ComputedStyle): boolean {
-  if (kind !== 'input' && kind !== 'textarea' && kind !== 'select') {
+  if (
+    kind !== 'input' &&
+    kind !== 'textarea' &&
+    kind !== 'select' &&
+    kind !== 'gauge'
+  ) {
     return false;
   }
   return style.styledControl;
+}
+
+/**
+ * How full a `<meter>` or a `<progress>` is: a share of its bar, or null for
+ * a progress bar with no `value`, which is working with no idea how far
+ * along. A meter's region says which of its colours it is in: its optimum,
+ * a region next to it, or one further (HTML 4.10.14).
+ */
+export interface Gauge {
+  share: number | null;
+  region?: 'optimum' | 'suboptimum' | 'even-less-good';
+}
+
+export function gaugeOf(el: Element): Gauge {
+  const number = (name: string): number | null => {
+    const raw = attr(el, name);
+    if (raw === undefined || raw.trim() === '') return null;
+    const n = Number(raw.trim());
+    return Number.isFinite(n) ? n : null;
+  };
+  const within = (n: number, low: number, high: number) =>
+    Math.min(high, Math.max(low, n));
+  if (tagOf(el) === 'progress') {
+    const value = number('value');
+    if (value === null) return { share: null };
+    const most = number('max');
+    const max = most !== null && most > 0 ? most : 1;
+    return { share: within(value, 0, max) / max };
+  }
+  const min = number('min') ?? 0;
+  const max = Math.max(min, number('max') ?? 1);
+  const value = within(number('value') ?? 0, min, max);
+  const low = within(number('low') ?? min, min, max);
+  const high = within(number('high') ?? max, low, max);
+  const optimum = within(number('optimum') ?? (min + max) / 2, min, max);
+  let region: Gauge['region'];
+  if (optimum < low) {
+    region =
+      value <= low
+        ? 'optimum'
+        : value <= high
+          ? 'suboptimum'
+          : 'even-less-good';
+  } else if (optimum > high) {
+    region =
+      value >= high
+        ? 'optimum'
+        : value >= low
+          ? 'suboptimum'
+          : 'even-less-good';
+  } else {
+    region = value >= low && value <= high ? 'optimum' : 'suboptimum';
+  }
+  return { share: max === min ? 0 : (value - min) / (max - min), region };
 }
 
 /** How wide an `<input type=file>` is, in the width of a digit. */
@@ -835,12 +903,15 @@ export function measureControl(
     case 'select': {
       const widest = optionWidths(el);
       // a select the page styled is its widest option and its arrow, and
-      // the room around them is the page's
+      // the room around them is the page's: the arrow's is Blink's, some
+      // 1.6em, or where it is more, what core's trigger takes for it, its
+      // chevron as tall as the capitals and a gap either side of the
+      // spacer before it
       if (styledField(kind, style)) {
+        const text = widestText(el, style, fonts) ?? ch * widest;
+        const arrow = Math.max(em * 1.6, 16 * scale + Math.ceil(em * 0.72));
         return {
-          width: Math.round(
-            ch * widest + (style.appearance === 'none' ? 0 : em),
-          ),
+          width: Math.ceil(text + (style.appearance === 'none' ? 0 : arrow)),
           height: lineHeight,
         };
       }
@@ -974,6 +1045,38 @@ function numberAttr(el: Element, name: string): number | null {
   if (!raw) return null;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** How wide a `<select>`'s widest option is set in its font, or null
+ *  where the engine sets no text. */
+function widestText(
+  el: Element,
+  style: ComputedStyle,
+  fonts: FontsLike | null,
+): number | null {
+  if (!fonts) return null;
+  const run = {
+    family: style.fontFamily,
+    size: style.fontSize,
+    weight: style.fontWeight,
+    style: style.fontStyle === 'normal' ? 'normal' : 'italic',
+    stretch: style.fontStretch,
+  } as const;
+  try {
+    let widest = 0;
+    for (const option of optionsOf(el)) {
+      if (!option.label) continue;
+      const width = fonts.layout(
+        [{ text: option.label, ...run }],
+        run,
+        {},
+      ).width;
+      widest = Math.max(widest, width);
+    }
+    return widest;
+  } catch {
+    return null;
+  }
 }
 
 function optionWidths(el: Element): number {

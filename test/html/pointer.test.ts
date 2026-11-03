@@ -1921,10 +1921,8 @@ metric(
     // and one that leaves takes what it held with it
     await act(async () => pane.current!.scrollTo({ y: 320 }));
     assert.ok(clock.pending);
-    (
-      el as unknown as { defaultMouseLeave(ev: unknown): void }
-    ).defaultMouseLeave({});
-    assert.strictEqual(hovered(), undefined);
+    fireEvent.mouseMove(pane.current!, { dx: 210, dy: 0 });
+    await waitFor(() => assert.strictEqual(hovered(), undefined));
     assert.ok(!clock.pending, 'a hover held for a pointer that left');
   },
 );
@@ -1982,6 +1980,215 @@ metric(
     for (let i = 0; i < 10; i += 1) await clock.frame();
     assert.strictEqual(hovered(), 'h', 'over its cable, it is still hovered');
     assert.strictEqual(top(), 260, 'and it stays down');
+  },
+);
+
+/** Moves the pointer to a logical window point over `node`'s window. */
+function movePointer(node: DrawnNode, x: number, y: number): void {
+  const { abs } = node;
+  fireEvent.mouseMove(node, {
+    dx: x - (abs.x + abs.width / 2),
+    dy: y - (abs.y + abs.height / 2),
+  });
+}
+
+/** The ids of what the document hovers, and of each hover the cascade is
+ *  told of from here on. */
+function watchHover(el: HtmlViewNode) {
+  const ids = (list: Iterable<DocElement>) =>
+    [...list].map((e) => e.attribs.id).filter(Boolean);
+  const cascade = (
+    el as unknown as {
+      _cascade: { setPointer(p: { hovered: Set<DocElement> }): void };
+    }
+  )._cascade;
+  const told: string[][] = [];
+  const setPointer = cascade.setPointer.bind(cascade);
+  cascade.setPointer = (p) => {
+    told.push(ids(p.hovered));
+    setPointer(p);
+  };
+  return {
+    told,
+    hovered: () => ids((el as unknown as { _hovered: DocElement[] })._hovered),
+  };
+}
+
+metric(
+  "the pointer over a field's widget hovers the field and all around it, until it leaves the <Html>",
+  async () => {
+    // A field is a widget of core's mounted beside the document, so core
+    // told the document the pointer had left it as the pointer went onto
+    // one, and the widget's moves were none of the document's:
+    // `input:hover` never matched, and a card's `:hover` went off as the
+    // pointer went from the card onto its field. A browser hovers both.
+    const { node } = await render(
+      '<style>body{margin:0} #card{padding:20px} #card:hover{color:blue}' +
+        ' input:hover{color:red}</style>' +
+        '<div id="card"><p id="p">a card</p><input id="f"></div>' +
+        '<p id="out">after it</p>',
+      300,
+    );
+    const el = view(node);
+    await act();
+    const drawn = el as unknown as DrawnNode;
+    const field = screen.all((n) => n.kind === 'textinput')[0] as DrawnNode;
+    assert.ok(field, 'the field has a widget');
+    const colour = (id: string) =>
+      el.computedStyle(findById(el.document, id)!)?.color;
+    const { told, hovered } = watchHover(el);
+    const unhovered = colour('f');
+
+    movePointer(drawn, ...pointIn(el, 'p'));
+    await act();
+    await waitFor(() =>
+      assert.ok(hovered().includes('card'), 'the card, over its text'),
+    );
+    assert.strictEqual(colour('card'), 'rgb(0, 0, 255)');
+    assert.strictEqual(colour('f'), unhovered, 'and not its field');
+
+    told.length = 0;
+    fireEvent.mouseMove(field);
+    await act();
+    await waitFor(() =>
+      assert.ok(hovered().includes('f'), 'the field, over its widget'),
+    );
+    assert.deepStrictEqual(hovered(), ['f', 'card'], 'and all around it');
+    assert.strictEqual(colour('f'), 'rgb(255, 0, 0)');
+    assert.strictEqual(colour('card'), 'rgb(0, 0, 255)');
+    assert.ok(
+      told.length && told.every((ids) => ids.includes('card')),
+      `the card stayed hovered on the way: ${JSON.stringify(told)}`,
+    );
+
+    // back onto what the document draws, past the card
+    movePointer(drawn, ...pointIn(el, 'out'));
+    await act();
+    await waitFor(() => assert.deepStrictEqual(hovered(), ['out']));
+    assert.strictEqual(colour('f'), unhovered, 'the field, left');
+
+    fireEvent.mouseMove(field);
+    await act();
+    await waitFor(() =>
+      assert.ok(hovered().includes('f'), 'the field, over its widget again'),
+    );
+    // and off the `<Html>` altogether, beside it in the window
+    movePointer(drawn, drawn.abs.x + drawn.abs.width + 20, drawn.abs.y + 10);
+    await act();
+    await waitFor(() =>
+      assert.deepStrictEqual(hovered(), [], 'nothing, once it has left'),
+    );
+    assert.strictEqual(colour('f'), unhovered);
+    assert.notStrictEqual(colour('card'), 'rgb(0, 0, 255)');
+  },
+);
+
+metric(
+  'a field a scroll brings under a still pointer is hovered once the scroll stops',
+  async (t) => {
+    // Core asks what is under the pointer again after a frame that moved
+    // the content (react-x11#793). Where a scroll brings a field's widget
+    // under it, the document hears only that the pointer left what it
+    // draws, with no move after it, and asks again once the content has
+    // been still, as for any other element a scroll brings there.
+    const clock = holdClock(t, hoverClock);
+    const rows = (from: number, n: number) =>
+      Array.from(
+        { length: n },
+        (_, i) => `<p id="r${from + i}">row ${from + i}</p>`,
+      ).join('');
+    const pane = React.createRef<
+      DrawnNode & { scrollTo(to: { y: number }): void }
+    >();
+    await renderX11(
+      h(
+        'box',
+        { ref: pane, style: { width: 400, height: 200, overflow: 'scroll' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0} p{margin:0;height:40px}' +
+            ' p:hover{background:#ffff00} input{display:block;margin:0;' +
+            'box-sizing:border-box;width:100%;height:40px}' +
+            ' input:hover{color:red}' +
+            `</style>${rows(0, 12)}<input id="f">${rows(12, 10)}`,
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 240, fonts: FONTS! },
+    );
+    await act();
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const { hovered } = watchHover(el);
+
+    // the middle of the pane, over the third row
+    fireEvent.mouseMove(pane.current!, { dx: 0, dy: 0 });
+    await waitFor(() => assert.deepStrictEqual(hovered(), ['r2']));
+    // the field, 480px down, scrolled under it
+    await act(async () => pane.current!.scrollTo({ y: 400 }));
+    const field = screen.all((n) => n.kind === 'textinput')[0] as DrawnNode;
+    const { abs } = pane.current!;
+    const middle = abs.y + abs.height / 2;
+    const centre = abs.x + abs.width / 2;
+    assert.ok(
+      field.abs.y <= middle &&
+        middle < field.abs.y + field.abs.height &&
+        field.abs.x <= centre &&
+        centre < field.abs.x + field.abs.width,
+      'the widget is under the pointer',
+    );
+    assert.ok(clock.pending, 'asked again once still');
+    for (let i = 0; i < 10; i += 1) await clock.frame();
+    assert.deepStrictEqual(hovered(), ['f'], 'the field, under its widget');
+    assert.ok(!clock.pending, 'a timer left running');
+  },
+);
+
+metric(
+  "the pointer in a frame's mount hovers the <iframe> and all around it",
+  async () => {
+    // what the host mounts for a frame is beside the document as a widget
+    // is, and a browser hovers the `<iframe>` while the pointer is in it
+    const { node } = await render(
+      '<style>body{margin:0} #wrap{padding:20px} #wrap:hover{color:blue}' +
+        ' iframe:hover{color:red}</style>' +
+        '<div id="wrap"><p id="p">a frame</p>' +
+        '<iframe id="fr" width="120" height="60"></iframe></div>',
+      300,
+      {
+        renderEmbedded: () =>
+          h('box', {
+            'data-testname': 'in-fr',
+            style: { flexGrow: 1, backgroundColor: '#ff0000' },
+          }),
+      },
+    );
+    const el = view(node);
+    await act();
+    const drawn = el as unknown as DrawnNode;
+    const { told, hovered } = watchHover(el);
+
+    movePointer(drawn, ...pointIn(el, 'p'));
+    await act();
+    await waitFor(() =>
+      assert.ok(hovered().includes('wrap'), 'the wrapper, over its text'),
+    );
+    told.length = 0;
+    fireEvent.mouseMove(screen.getByTestName('in-fr') as DrawnNode);
+    await act();
+    await waitFor(() =>
+      assert.ok(hovered().includes('fr'), 'the frame, over its mount'),
+    );
+    assert.deepStrictEqual(hovered(), ['fr', 'wrap']);
+    assert.ok(
+      told.length && told.every((ids) => ids.includes('wrap')),
+      `the wrapper stayed hovered on the way: ${JSON.stringify(told)}`,
+    );
+    movePointer(drawn, drawn.abs.x + drawn.abs.width + 20, drawn.abs.y + 10);
+    await act();
+    await waitFor(() =>
+      assert.deepStrictEqual(hovered(), [], 'nothing, once it has left'),
+    );
   },
 );
 

@@ -26,6 +26,8 @@ import {
   flatParentOf,
   imageUrlOf,
   isElement,
+  isCheckable,
+  isDropDown,
   isInputButton,
   isText,
   inImpliedHead,
@@ -613,6 +615,11 @@ export type ReplacedKind =
   | 'radio'
   /** An `<input type=range>`: a track and a thumb, and no text. */
   | 'range'
+  /** A `<meter>` or a `<progress>`: a bar, and none of its content. */
+  | 'gauge'
+  /** An `<input type=color>`: a well with its colour in it, which the
+   *  document draws whether or not the page styles it. */
+  | 'color'
   | 'hr'
   /** An `<iframe>`, `<video>`, `<embed>` or `<canvas>`: what it would
    *  show is never loaded or drawn, so it is a box of its size with nothing
@@ -4420,13 +4427,11 @@ class Builder {
     ) {
       this._awaitingKind.push(el);
     }
-    // An input button the page styled is drawn as the page has it, as a
-    // `<button>` is: a box with its label in it, and not the palette's
-    // widget, whose look and size would be the window's — a black pill
-    // with white text was a framed white button half as wide again.
-    const drawnButton =
-      replaced === 'button' && style.styledControl && isInputButton(el);
-    if (replaced !== 'none' && !drawnButton) {
+    // A control the page draws is a box like any (`drawnControl`), and not
+    // the palette's widget, whose look and size would be the window's.
+    const drawn = replaced !== 'none' && drawnControl(el, style);
+    const drawnButton = drawn && replaced === 'button';
+    if (replaced !== 'none' && !drawn) {
       this._replaced(el, tag, replaced, style, into);
       return;
     }
@@ -4666,7 +4671,9 @@ class Builder {
       return;
     }
 
-    if (replaced === 'hr') return;
+    // sized by the UA sheet as Blink's is, and drawn by the document
+    // (`paintColorWell`), which has no widget to put over it
+    if (replaced === 'hr' || replaced === 'color') return;
     if (replaced === 'svg') {
       // its `em` is its own font size, in CSS pixels like the rest of it
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
@@ -6457,8 +6464,13 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'frame';
     case 'textarea':
       return 'textarea';
+    case 'meter':
+    case 'progress':
+      return 'gauge';
+    // a list box is the document's, its options boxes in a box that
+    // scrolls (`settleListBox`); a drop-down box is a widget
     case 'select':
-      return 'select';
+      return isDropDown(el) ? 'select' : 'none';
     // A `<button>` is not one: its content is the document's, laid out and
     // drawn like any box's (the UA sheet's `button` rule), where an
     // `<input type=submit>` has only a value to show and is a widget.
@@ -6467,6 +6479,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
       if (type === 'range') return 'range';
+      if (type === 'color') return 'color';
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';
@@ -6945,6 +6958,22 @@ function anonymousOf(
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && isBlank(box.text);
+}
+
+/**
+ * Whether a control is drawn by the document, a box like any other, rather
+ * than mounted as the palette's widget. An input button the page styles is
+ * a `<button>` with its label in it (CSS UI 4, 7.2.1): a black pill with
+ * white text was a framed white button half as wide again. A checkbox or a
+ * radio button at `appearance: none` has no look of its own at all, in
+ * every engine, and is the page's box, its `::before` and `::after` with
+ * it: a design system draws its ticks and its switches so. Pressed, keyed
+ * and focused as a drawn button is (`pressableAt`, `activate`, `stops.ts`).
+ */
+export function drawnControl(el: Element, style: ComputedStyle): boolean {
+  if (el.name !== 'input' && tagOf(el) !== 'input') return false;
+  if (style.appearance === 'none' && isCheckable(el)) return true;
+  return style.styledControl && isInputButton(el);
 }
 
 /** The label an input button shows: its `value`, or what a submit or a
