@@ -129,6 +129,9 @@ export interface ScriptProps {
   canvasImage?: (element: Element) => unknown | null;
   /** Whether that picture lets nothing behind it show. */
   canvasOpaque?: (element: Element) => boolean;
+  /** Whether an `<object>` or an `<embed>` shows its document as it stands,
+   *  over its box (`DomHost.framed`). */
+  framed?: (element: Element) => boolean;
   /** The document's runner, where its scripts run: what a frame in it is
    *  run as a frame of (`FrameLink`). Not a prop. */
   runner?: () => ScriptRunner | null;
@@ -372,6 +375,10 @@ export function useScripts(
     (element: Element) => runner.current?.host.canvasOpaque(element) ?? false,
     [],
   );
+  const framed = useCallback(
+    (element: Element) => runner.current?.host.framed(element) ?? false,
+    [],
+  );
   const unwatch = useRef<(() => void) | null>(null);
 
   /** The document's runner goes: with `swap`, the document shown in its
@@ -609,6 +616,7 @@ export function useScripts(
     mediaEvent,
     canvasImage,
     canvasOpaque,
+    framed,
     runner: getRunner,
     runtime: engine,
     workerResource,

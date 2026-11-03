@@ -9,9 +9,10 @@
 // page lays out no box for — `display: none`, or set aside — still runs its
 // document, in a holder that draws nothing (`FrameHolder`), and a view that
 // goes and comes back finds it running, as a browser's frame does. Only a
-// document loaded as HTML has a realm (`DomShared.realms`): a frame's first
-// `about:blank`, and what a script writes into it, are the page realm's,
-// which reaches into them as it makes them, and are drawn and no more.
+// document loaded as HTML or XML has a realm (`DomShared.realms`): a frame's
+// first `about:blank`, and what a script writes into it, are the page
+// realm's, which reaches into them as it makes them, and are drawn and no
+// more.
 //
 // Part of the engine's chunk (`./runtime.ts`): nothing here is reached
 // before a page's scripts run.
@@ -69,15 +70,15 @@ export interface FrameContext {
 }
 
 /** What a page mounts over its embedded elements: a frame's document over
- *  an `<iframe>`, where its scripts run; nothing over an `<embed>`, nor
- *  over a `<canvas>`, whose pixels `<Html>` draws in the document
+ *  an `<iframe>`, an `<object>` or an `<embed>`, where its scripts run;
+ *  nothing over a `<canvas>`, whose pixels `<Html>` draws in the document
  *  (`canvasImage`). The context is asked as each is mounted, since `<Html>`
  *  asks again as they move, with the props of the page's last render. */
 export function embeddedMounts(
   context: () => FrameContext | null,
 ): (rect: EmbeddedRect) => ReactElement | null {
   return (rect) => {
-    const known = rect.kind === 'iframe' ? context() : null;
+    const known = rect.kind === 'canvas' ? null : context();
     if (!known) return null;
     return h(FramePage, {
       frame: rect.element,
@@ -375,6 +376,7 @@ function FrameDocument({
       stylesheet: scripts.stylesheet,
       renderEmbedded: embeddedMounts(inner),
       canvasImage: scripts.canvasImage,
+      ...({ _framed: scripts.framed } as object),
       style: { flexGrow: 1 },
       // the frame's own viewport moved — its box laid out again by the
       // page — which its realm hears as its window's `resize` and its media

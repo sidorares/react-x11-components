@@ -34,9 +34,10 @@ import {
 } from './form.js';
 import type { RangeLine } from './form.js';
 import { fadeColor } from './css/color.js';
-import { inkColor } from './css/values.js';
+import { cursorKeyword, inkColor } from './css/values.js';
 import { verticalMode } from './css/style.js';
 import type { ComputedStyle } from './css/style.js';
+import type { WidgetPart } from './css/cascade.js';
 import { invert, mapRect } from './css/transform.js';
 import { heldBack, heldShift, placedMatrix } from './layout/block.js';
 import type { Box, BoxTree, ReplacedKind } from './layout/boxes.js';
@@ -105,6 +106,17 @@ export interface ControlRect {
    * as the page around it is. Missing is the palette's.
    */
   colorScheme?: 'light' | 'dark';
+  /**
+   * What the pointer shows over it: the element's computed `cursor`, as a
+   * keyword (`shownCursor`). A widget is a node of core's that names its
+   * own, and the deepest node's is what core shows, so a widget has to be
+   * told, or what a control computes to and what it shows come apart: a
+   * page's `cursor: not-allowed` on a field would show as its I-beam.
+   * Missing, a widget shows its own.
+   */
+  cursor?: string;
+  /** A file input's: its `::file-selector-button`'s, over the button. */
+  buttonCursor?: string;
   /** A range's: what its widget is handed (`rangeLook`). */
   range?: RangeLook;
   /**
@@ -269,7 +281,7 @@ export function controlRectsOf(
   covered: Map<Element, CoverAnswer> | null = null,
   /** What a field's line is measured in (`BareField.lineHeight`). */
   fonts: FontsLike | null = null,
-  sliderOf?: SliderStyles,
+  partOf?: PartStyles,
 ): ControlRect[] {
   const out: ControlRect[] = [];
   for (const box of tree.controls) {
@@ -297,6 +309,14 @@ export function controlRectsOf(
       fontFamily: box.style.fontFamily,
       fontSize: box.style.fontSize,
       colorScheme: box.style.colorScheme,
+      cursor: shownCursor(box.style.cursor, box.replaced),
+      ...(box.replaced === 'file' && {
+        buttonCursor: shownCursor(
+          (partOf?.(box.el, box.style, 'file-selector-button') ?? box.style)
+            .cursor,
+          box.replaced,
+        ),
+      }),
       ...(drawnAtViewport(box) && { atViewport: true as const }),
     };
     // one in a vertical flow is mounted where the flow's turn draws its box,
@@ -346,7 +366,7 @@ export function controlRectsOf(
     }
     // a range is always in its content box, the document drawing the rest
     // of it (`styledField`)
-    if (box.replaced === 'range') rect.range = rangeLook(box, scale, sliderOf);
+    if (box.replaced === 'range') rect.range = rangeLook(box, scale, partOf);
     if (rect.range || styledField(box.replaced, box.style)) {
       const content = turn
         ? mapRect(
@@ -416,19 +436,24 @@ export function heldAtRest<R extends Rect & { clip?: Rect; held?: true }>(
   };
 }
 
+/** What the pointer shows over a control: its computed `cursor`, and where
+ *  that is `auto` what a browser shows there, an I-beam over what takes text
+ *  and the arrow over the rest. */
+function shownCursor(cursor: string | null, kind: ReplacedKind): string {
+  const keyword = cursorKeyword(cursor);
+  if (keyword !== 'auto') return keyword;
+  return kind === 'input' || kind === 'textarea' ? 'text' : 'default';
+}
+
 /** What a range's widget is told of it. */
-function rangeLook(
-  box: Box,
-  scale: number,
-  sliderOf?: SliderStyles,
-): RangeLook {
+function rangeLook(box: Box, scale: number, partOf?: PartStyles): RangeLook {
   const el = box.el!;
   const { style } = box;
   const vertical = verticalMode(style.writingMode);
   const upward = style.writingMode === 'sideways-lr';
   const flipped = (style.direction === 'rtl') !== upward;
-  const thumb = sliderOf?.(el, style, 'slider-thumb');
-  const track = sliderOf?.(el, style, 'slider-track');
+  const thumb = partOf?.(el, style, 'slider-thumb');
+  const track = partOf?.(el, style, 'slider-track');
   const look = {
     line: rangeLine(el),
     vertical,
@@ -445,11 +470,12 @@ function rangeLook(
   };
 }
 
-/** A range's thumb's or track's style (`Cascade.sliderStyle`). */
-type SliderStyles = (
+/** A range's thumb's or track's style, or a file input's button's
+ *  (`Cascade.partStyle`). */
+type PartStyles = (
   el: Element,
   style: ComputedStyle,
-  part: 'slider-thumb' | 'slider-track',
+  part: Exclude<WidgetPart, 'placeholder'>,
 ) => ComputedStyle | null;
 
 /** What a range's thumb or track draws, as its rules leave it: a page sets
@@ -764,7 +790,7 @@ export function measureControl(
   look: ControlChrome,
   /** The document's device pixels to a CSS one. */
   scale = 1,
-  sliderOf?: SliderStyles,
+  partOf?: PartStyles,
 ): { width: number; height: number } {
   const em = style.fontSize;
   const ch = charWidth(style, fonts);
@@ -797,7 +823,7 @@ export function measureControl(
       const unit = scale * style.effectiveZoom;
       return {
         width: RANGE_LENGTH * unit,
-        height: ownThickness(el, style, sliderOf) ?? RANGE_THICKNESS * unit,
+        height: ownThickness(el, style, partOf) ?? RANGE_THICKNESS * unit,
       };
     }
     // thirty-four of the digit zero, as Blink's is, whatever it holds
@@ -875,15 +901,15 @@ export function measureControl(
 function ownThickness(
   el: Element,
   style: ComputedStyle,
-  sliderOf?: SliderStyles,
+  partOf?: PartStyles,
 ): number | null {
-  if (!sliderOf) return null;
+  if (!partOf) return null;
   const down = verticalMode(style.writingMode);
   const across = down ? 'width' : 'height';
-  const track = sliderOf(el, style, 'slider-track')?.[across];
+  const track = partOf(el, style, 'slider-track')?.[across];
   if (typeof track === 'number') return track;
   if (style.appearance !== 'none') return null;
-  const thumb = sliderOf(el, style, 'slider-thumb');
+  const thumb = partOf(el, style, 'slider-thumb');
   if (thumb?.appearance !== 'none') return null;
   const sides = down
     ? [thumb.width, thumb.marginLeft, thumb.marginRight]

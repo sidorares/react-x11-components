@@ -510,6 +510,9 @@ export interface HandleInternals {
   pointerElement(): Element | null;
   /** What was under the pointer as the document was last laid out. */
   pointerDrawn(): Element | null;
+  /** Whether an `<embed>` may hold a document, by what the document renders
+   *  of it (`HtmlViewNode.embedRendered`). Null until it has styles. */
+  embedRendered(element: Element): boolean | null;
   /** What the reader's selection is, to compare. */
   selectionKey(): string;
   /** What is under a pointer that did not move is `:hover` now. */
@@ -1003,7 +1006,7 @@ const KEEPS_ANSWERS = /:(?:has|i?contains)\(/i;
 const KEPT_QUERIES = 1000;
 
 /** The elements that hold a document of their own: a frame's. */
-const FRAME_TAGS = new Set(['iframe', 'frame', 'object']);
+const FRAME_TAGS = new Set(['iframe', 'frame', 'object', 'embed']);
 
 /** What says which image an `<img>` shows, or how it is fetched (HTML
  *  4.8.4.3.8, "relevant mutations"): changing one loads its image again. */
@@ -1188,8 +1191,8 @@ const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 function hasScripts(doc: Document): boolean {
   return !!DomUtils.findOne(
     (el) =>
-      el.name === 'script' &&
-      !el.namespace &&
+      tagOf(el) === 'script' &&
+      isStyleOrScript(el) &&
       (JS_TYPES.test((el.attribs.type ?? '').trim()) ||
         (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
     doc.children,
@@ -1881,11 +1884,15 @@ export class DomShared {
   readonly frameList = new Set<Element>();
   readonly frameListeners = new Set<() => void>();
   /** The frames' documents that run in a realm of their own: those loaded
-   *  as HTML, with a script in them, where the browser draws frames. A
-   *  frame's first `about:blank`, what a script writes into one and a
+   *  as HTML or XML, with a script in them, where the browser draws frames.
+   *  A frame's first `about:blank`, what a script writes into one and a
    *  document with no script are the page realm's, since a page reaches
    *  into them at once, before a realm could be made. */
   readonly realms = new WeakSet<Document>();
+  /** The documents of `<object>`s and `<embed>`s that are shown as they
+   *  stand, in a view of their own, where a drawing is otherwise shown as
+   *  the picture of it (`DomHost.framed`). */
+  readonly live = new WeakSet<Document>();
   /** Each document's sandboxing flags, where it has any (`./sandbox.ts`):
    *  kept here, by the document, where no realm can reach them. */
   readonly sandboxes = new WeakMap<Document, number>();
@@ -2425,12 +2432,11 @@ export class DomHost {
   }
 
   /**
-   * The frames in this realm's document that have an HTML document of their
-   * own to show, each with it, its address and whether it runs in a realm
-   * of its own (`DomShared.realms`): what a browser that draws frames mounts
-   * a frame for (`drawsFrames`), another origin's among them, which runs
-   * at its own origin; an XML one, which `<Html>` does not draw, is left
-   * out.
+   * The frames in this realm's document that have a document of their own
+   * to show, HTML's or XML's, each with it, its address and whether it runs
+   * in a realm of its own (`DomShared.realms`): what a browser that draws
+   * frames mounts a frame for (`drawsFrames`), another origin's among them,
+   * which runs at its own origin.
    */
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
@@ -2440,10 +2446,43 @@ export class DomHost {
       let url = this._frameAt.get(frame) ?? 'about:blank';
       // a `srcdoc` document's base is the page's (HTML 4.8.5)
       if (url === 'about:srcdoc') url = this.url;
-      if (!document || this._xml.has(document)) continue;
+      if (!document) continue;
+      // an `<embed>` that loaded nothing has nothing to draw, and nothing a
+      // page could write in: it has no `contentDocument`
+      if (frame.name === 'embed' && url === 'about:blank') continue;
       out.push({ frame, document, url, realm: this._s.realms.has(document) });
     }
     return out;
+  }
+
+  /**
+   * Whether an `<object>` or an `<embed>` shows its document as it stands,
+   * in a view of its own, rather than the picture an image of it would be
+   * (`DomShared.live`). A drawing with nothing to change it stays a picture,
+   * which `object-fit` reaches and a mount over the box would not: one with
+   * a script is live from the start, and one a page's script writes into is
+   * from then on.
+   */
+  framed(element: Element): boolean {
+    const document = this._frames.get(element);
+    return !!document && this._s.live.has(document);
+  }
+
+  /** An `<object>`'s or an `<embed>`'s document has come to need showing as
+   *  it stands: told as a change of an attribute nothing has, which builds
+   *  the element's box, a frame now where it was an image. */
+  private _goLive(doc: Document): void {
+    const frame = this._frameOf.get(doc);
+    if (!frame || (frame.name !== 'object' && frame.name !== 'embed')) return;
+    if (!this._seams.drawsFrames || this._s.live.has(doc)) return;
+    this._s.live.add(doc);
+    if (this._loadsFrame(frame)) {
+      this._tell(frame, {
+        type: 'attributes',
+        target: frame,
+        attributeName: '-rx-framed',
+      });
+    }
   }
 
   /**
@@ -2505,8 +2544,11 @@ export class DomHost {
    *  and nothing has asked for them yet. */
   loadFrames(): void {
     if (this._disposed) return;
+    this._framesLoaded = true;
     this._framesIn(this.document.children);
   }
+  /** Whether the frames the markup has have been asked to load. */
+  private _framesLoaded = false;
 
   /** A `<canvas>`'s pixels, where a script drew any. */
   canvas(element: Element): CanvasPixels | null {
@@ -3595,6 +3637,14 @@ export class DomHost {
         if (this._sendsFrame(el, name, true)) {
           this._frameSent.delete(el);
           this._loadFrame(el, true);
+        } else if (
+          this._framesLoaded &&
+          ((el.name === 'object' && name === 'data') ||
+            (el.name === 'embed' && name === 'src'))
+        ) {
+          // and one put in with nothing to show has something now; while
+          // the parse goes on it is one of those `loadFrames` will find
+          this._frameIn(el);
         }
         return null;
       }
@@ -4651,6 +4701,16 @@ export class DomHost {
       }
       case 'parseDocument':
         return this.idOf(this._documentOf(text(a)));
+      // a frame's document opened for writing: what the frame was loading
+      // goes no further, and holds no `load` of the page's
+      case 'openDocument': {
+        const frame = this._frameOf.get(this._node(a) as Document);
+        if (frame) {
+          this._frameLoads.set(frame, (this._frameLoads.get(frame) ?? 0) + 1);
+          this._frameDone(frame);
+        }
+        return null;
+      }
       // a page's own document made again of what it wrote between `open`
       // and `close`
       case 'fillDocument': {
@@ -4659,6 +4719,7 @@ export class DomHost {
           throw new DomError('InvalidStateError', 'Not a document of its own.');
         }
         this._fill(doc as Document, text(b));
+        this._wroteFrame(doc as Document);
         return null;
       }
       case 'title': {
@@ -4850,6 +4911,9 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
+        // and a file input's button, which only a document draws, for its
+        // widget (`Cascade.partStyle`)
+        const part = b === 'file-selector-button' ? b : pseudo;
         // a page's realm asks for the shorthands (`d`) only where it reads
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
@@ -4874,10 +4938,10 @@ export class DomHost {
         if (typeof c === 'string') {
           if (!comesFromBox(c)) return '';
         } else if (handle.styleWhileOwed) {
-          const json = send(handle.styleWhileOwed(this._element(a), pseudo));
+          const json = send(handle.styleWhileOwed(this._element(a), part));
           return json && !d && handle.layoutOwed?.() ? `~${json}` : json;
         }
-        return send(handle.computedStyle(this._element(a), pseudo));
+        return send(handle.computedStyle(this._element(a), part));
       }
       case 'computedShorthands':
         return JSON.stringify(SHORTHAND_NAMES);
@@ -6886,6 +6950,9 @@ export class DomHost {
       return;
     }
     this._s.foreignChanges += 1;
+    // no view draws it: where that is because it is shown as a picture, the
+    // picture no longer says what the document does
+    if (this._xml.has(doc)) this._goLive(doc);
   }
 
   /** A record queued for each observer interested in it: one watching the
@@ -7159,11 +7226,14 @@ export class DomHost {
     // the page in itself without end (HTML 7.8.1, the iframe's "process the
     // iframe attributes", an ancestor's URL)
     if (src && src.split('#')[0] === this.url.split('#')[0]) src = null;
+    // read as the address is set, since a page may revoke it as soon as it
+    // has (URL's "blob URL entry", which a parsed URL keeps)
+    const blob = src && /^blob:/i.test(src) ? this._blobResponse(src) : null;
     // another origin's frame is loaded where the browser draws frames, to
     // run in a realm of its own, at its own origin, which reaches this one
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
-    const foreign = !!src && !this._sameOrigin(src);
+    const foreign = !!src && !blob && !this._sameOrigin(src);
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
@@ -7181,22 +7251,26 @@ export class DomHost {
       }, 0);
       return;
     }
-    const landed = /^data:/i.test(src)
-      ? Promise.resolve(this._dataResponse(src))
-      : this._navigationFetch(
-          post
-            ? {
-                url: src,
-                method: 'POST',
-                headers: [['content-type', post.contentType]],
-                ...(typeof post.body === 'string'
-                  ? { body: post.body }
-                  : { body: null, bytes: post.body }),
-              }
-            : { url: src, method: 'GET', headers: [], body: null },
-          new AbortController().signal,
-          this._frameSandbox(frame),
-        );
+    const landed = /^blob:/i.test(src)
+      ? blob
+        ? Promise.resolve(blob)
+        : Promise.reject(new TypeError('A blob: URL that holds nothing.'))
+      : /^data:/i.test(src)
+        ? Promise.resolve(this._dataResponse(src))
+        : this._navigationFetch(
+            post
+              ? {
+                  url: src,
+                  method: 'POST',
+                  headers: [['content-type', post.contentType]],
+                  ...(typeof post.body === 'string'
+                    ? { body: post.body }
+                    : { body: null, bytes: post.body }),
+                }
+              : { url: src, method: 'GET', headers: [], body: null },
+            new AbortController().signal,
+            this._frameSandbox(frame),
+          );
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
@@ -7217,6 +7291,26 @@ export class DomHost {
           .split(';')[0]
           .trim()
           .toLowerCase();
+        // an `<object>` that could not be had shows its fallback (HTML
+        // 4.8.7), and an `<embed>` holds a document where it is answered
+        // one: an image is its picture, and anything else a plugin's, which
+        // nothing here is
+        const failed = frame.name === 'object' && response.status >= 400;
+        if (
+          failed ||
+          (frame.name === 'embed' &&
+            type !== 'text/html' &&
+            type !== 'text/plain' &&
+            !isXmlType(type))
+        ) {
+          release(response);
+          if (!failed) loaded();
+          else if (this.entries) {
+            this.entries.call('__fire', [this.idOf(frame), 'error']);
+            this._frameDone(frame);
+          }
+          return;
+        }
         let doc: Document;
         let scripts = true;
         const { text, encoding } = this._frameText(response, type, frame);
@@ -7293,6 +7387,33 @@ export class DomHost {
       /^(?:https?|data):/i.test(src) ||
       (/^file:/i.test(src) && /^file:/i.test(this.url))
     );
+  }
+
+  /**
+   * A `blob:` URL as a frame's document is read, from the realm that made it
+   * or one of its own origin around this one, since no network has one: every
+   * preview written to a blob came out an empty document, with its `load`.
+   * Null for one none of them holds, which is a failed load, and a blob of
+   * another origin is none of this document's to read.
+   */
+  private _blobResponse(src: string): FetchResponse | null {
+    const url = src.split('#')[0];
+    for (let host: DomHost | null = this; host; host = host.frameParent) {
+      if (host !== this && !this._sameOrigin(src)) break;
+      const bytes = host.entries?.call('__blobBytes', [url]);
+      if (typeof bytes !== 'string') continue;
+      const type = host.entries?.call('__blobType', [url]);
+      return {
+        url: src,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', typeof type === 'string' ? type : '']],
+        body: '',
+        bytes: Buffer.from(bytes, 'base64'),
+      };
+    }
+    return null;
   }
 
   /** A `data:` URL as a frame's document is read: no network has one. */
@@ -7397,18 +7518,22 @@ export class DomHost {
     sandbox = 0,
   ): void {
     // a frame the browser draws runs its own scripts, and tells its own
-    // `load` once they have, in a realm of its own — where it has any: a
-    // document with none has no code to want globals of its own, and the
-    // page's realm reaches into it at once, as Acid3's do into theirs,
-    // where a realm would answer once React had mounted it
+    // `load` once they have, in a realm of its own — where it has any,
+    // HTML's or XML's, which `_frameScripts` cannot run as a browser does:
+    // a drawing's it does not run at all. A document with none has no code
+    // to want globals of its own, and the page's realm reaches into it at
+    // once, as Acid3's do into theirs, where a realm would answer once
+    // React had mounted it
     // — and where a service worker can have it for a client, which a secure
     // page's frame of its own origin is, whether or not a scope holds it yet:
     // its `navigator` has to answer for it, and it can be claimed
     this._s.sandboxes.set(doc, sandbox);
+    const scripted =
+      (type === 'text/html' || isXmlType(type)) && hasScripts(doc);
     const realm =
       !!this._seams.drawsFrames &&
       !(sandbox & SB_SCRIPTS) &&
-      ((type === 'text/html' && hasScripts(doc)) ||
+      (scripted ||
         (!!this._seams.serviceWorkers &&
           this._secureContext() &&
           !(sandbox & SB_ORIGIN) &&
@@ -7422,7 +7547,11 @@ export class DomHost {
     this._frameAt.set(frame, address);
     this._s.frameList.add(frame);
     this._s.framesChanged();
-    if (realm) return;
+    if (realm) {
+      // told as the realm is linked to this one, an entry of the page's
+      if (scripted) this._goLive(doc);
+      return;
+    }
     if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
@@ -7438,10 +7567,11 @@ export class DomHost {
   /**
    * A frame's scripts, in tree order: the inline ones of HTML's (or of
    * XHTML's, in an XML document), run in the page's realm with the frame's
-   * window and document for their globals (`__frameScript`). A frame here
-   * has no realm of its own, so what one declares is its function's and not
-   * a window's — enough for a frame that tells its parent it loaded, which
-   * is what Acid3's XHTML frames do, and short of a page that builds an
+   * window and document for their globals (`__frameScript`), where the
+   * browser draws no frames: one that does runs them in a realm of the
+   * frame's (`_frameLoaded`). A frame here has no realm of its own, so what
+   * one declares is its function's and not a window's — enough for a frame
+   * that tells its parent it loaded, and short of a page that builds an
    * application in one.
    */
   private _frameScripts(doc: Document, url: string): void {
@@ -7469,6 +7599,26 @@ export class DomHost {
    *  `write` and `close`'s. */
   private _fill(doc: Document, markup: string): void {
     this._replaceAll(doc, this._htmlTree(markup));
+  }
+
+  /**
+   * A frame's document a script wrote has come to its end, and the frame
+   * hears `load` in a task of its own, as for a document it loaded (HTML
+   * 13.2.7, "the end"). A preview written with `open`, `write` and `close`
+   * and a page waiting on the frame's `onload` waited for good. A document
+   * that is no frame's has no `load` to tell, and one the frame has gone on
+   * from by then none either.
+   */
+  private _wroteFrame(doc: Document): void {
+    const frame = this._frameOf.get(doc);
+    if (!frame || this._frames.get(frame) !== doc) return;
+    const serial = (this._frameLoads.get(frame) ?? 0) + 1;
+    this._frameLoads.set(frame, serial);
+    setTimeout(() => {
+      if (this._disposed || !this.entries) return;
+      if (this._frameLoads.get(frame) !== serial) return;
+      this.entries.call('__fire', [this.idOf(frame), 'load']);
+    }, 0);
   }
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
@@ -7505,8 +7655,42 @@ export class DomHost {
     if (isForeign(frame) || (frame.name === 'object' && !frame.attribs.data)) {
       return;
     }
+    if (frame.name === 'embed' && !this._embedLoads(frame)) return;
     if (!this._frames.has(frame) && this._loadsFrame(frame)) {
       this._frameDocument(frame);
+    }
+  }
+
+  /** The `<embed>`s with an address that are not rendered yet, each looked
+   *  at again after a paint (`embedsPainted`). */
+  private _embedsWaiting = new Set<Element>();
+
+  /**
+   * Whether an `<embed>` loads what it names now, which it does only while
+   * it is rendered (HTML 4.8.6): one that is not waits, and loads if that
+   * changes. It holds nothing a page reaches at once, as an `<iframe>`'s
+   * first `about:blank` is, so nothing is lost by waiting, and a `javascript:`
+   * address is a network error to it, and no `load`.
+   */
+  private _embedLoads(embed: Element): boolean {
+    this._embedsWaiting.delete(embed);
+    const src = (embed.attribs.src ?? '').trim();
+    if (!src || !this._seams.drawsFrames || /^javascript:/i.test(src)) {
+      return false;
+    }
+    // a handle that cannot say has no document to hold it back
+    const rendered = this._seams.handle.embedRendered?.(embed);
+    if (rendered === undefined || rendered) return true;
+    this._embedsWaiting.add(embed);
+    return false;
+  }
+
+  /** A paint: an `<embed>` that was not rendered may be now, its sheets in
+   *  or a script having shown it. */
+  embedsPainted(): void {
+    for (const embed of [...this._embedsWaiting]) {
+      this._embedsWaiting.delete(embed);
+      if (this._loadsFrame(embed)) this._frameIn(embed);
     }
   }
 

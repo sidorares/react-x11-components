@@ -93,12 +93,17 @@ import {
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
 import { directionHolder } from './direction.js';
-import { controlsReached } from './form.js';
+import { controlsReached, inputType, legendMovedIn } from './form.js';
 import type { FieldSelection } from './form.js';
 import type { HtmlDownloadRequest } from './download.js';
 import type { HtmlDrop } from './drag.js';
 import type { HtmlFile } from './files.js';
-import { alphaOf, inkColor, isTransparent } from './css/values.js';
+import {
+  alphaOf,
+  cursorKeyword,
+  inkColor,
+  isTransparent,
+} from './css/values.js';
 import type { Len } from './css/values.js';
 import { cssomStyle, cssomTransform } from './computed.js';
 import type { UsedBox } from './computed.js';
@@ -136,6 +141,7 @@ import type {
   Tested,
   TransitionPart,
   ViewportOverflow,
+  WidgetPart,
 } from './css/cascade.js';
 import {
   mediaMatches,
@@ -634,6 +640,9 @@ export interface HtmlViewProps {
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
   canvasImage?: (element: Element) => unknown | null;
   canvasOpaque?: (element: Element) => boolean;
+  /** Whether an `<object>` or an `<embed>` shows its document as it stands,
+   *  over its box, where an image of it could otherwise be drawn. */
+  framed?: (element: Element) => boolean;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -4601,6 +4610,7 @@ export class HtmlViewNode extends Node {
           imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
           holdsDocument: (el) =>
             this._resources.holdsDocument(imageUrlOf(el) ?? ''),
+          framed: (el) => this._props().framed?.(el) ?? false,
           sizePending: (el) => this._sizePending(el),
           urlSize: (url) => this._resources.imageSize(url),
           faceAscent: (style) => {
@@ -4619,7 +4629,7 @@ export class HtmlViewNode extends Node {
               this._fonts(),
               look,
               this._scale,
-              this._sliderOf,
+              this._partOf,
             ),
         });
         const boxes = () => buildBoxes(this._source.document, options());
@@ -5417,13 +5427,13 @@ export class HtmlViewNode extends Node {
     return shown && size ? atDensity(size, shown.density) : null;
   }
 
-  /** What a range's thumb and track are styled as (`Cascade.sliderStyle`). */
-  private readonly _sliderOf = (
+  /** What a range's thumb and track and a file input's button are styled as
+   *  (`Cascade.partStyle`). */
+  private readonly _partOf = (
     el: Element,
     style: ComputedStyle,
-    part: 'slider-thumb' | 'slider-track',
-  ): ComputedStyle | null =>
-    this._cascade?.sliderStyle(el, style, part) ?? null;
+    part: Exclude<WidgetPart, 'placeholder'>,
+  ): ComputedStyle | null => this._cascade?.partStyle(el, style, part) ?? null;
 
   /** `near`: only the controls within it are asked what is over them,
    *  for a scroll, which moves boxes over the viewport alone. */
@@ -5456,7 +5466,7 @@ export class HtmlViewNode extends Node {
       near,
       this._covered,
       this._fonts(),
-      this._sliderOf,
+      this._partOf,
     ).map((r) =>
       s === 1
         ? r
@@ -7532,7 +7542,17 @@ export class HtmlViewNode extends Node {
       const own = this._highlightPseudo(element, key);
       return own ? cssomStyle(own, this._scale, null) : null;
     }
-    if (pseudo) return null;
+    // a file input's button, which the widget is handed, and of anything
+    // else with none the element's own, as before
+    const button =
+      pseudo === 'file-selector-button' &&
+      tagOf(element) === 'input' &&
+      inputType(element) === 'file';
+    if (button) {
+      const own = cascade.partStyle(element, style, pseudo);
+      return cssomStyle(own ?? style, this._scale, null);
+    }
+    if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
     if (!box) {
       return cssomStyle(
@@ -7559,6 +7579,29 @@ export class HtmlViewNode extends Node {
       if (this._styleOf(at)?.display === 'none') return true;
     }
     return false;
+  }
+
+  /**
+   * Whether an `<embed>` is being rendered and is no fallback of anything
+   * showing something else, which is when it may hold a document (HTML
+   * 4.8.6): by its style and not by a box, as what `content-visibility:
+   * hidden` holds is rendered in a browser and has none here. Null until
+   * there are styles to say.
+   */
+  embedRendered(element: Element): boolean | null {
+    // what the parser made since the last build has no style of its own
+    // yet, as a `getComputedStyle` that may wait has none (`computedStyle`)
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return null;
+    const style = this._styleOf(element);
+    if (!style || this._unrendered(element, style)) return false;
+    for (let at = flatParentOf(element); at; at = flatParentOf(at)) {
+      const tag = tagOf(at);
+      if (tag === 'video' || tag === 'audio') return false;
+      if (tag === 'object' && this._boxOf(tree, at)?.replaced) return false;
+    }
+    return true;
   }
 
   /** The style of the position option a box was placed by
@@ -8484,10 +8527,12 @@ export class HtmlViewNode extends Node {
    * asks a drawn element as the pointer moves over it (`cursorAt`,
    * react-x11#757). The `cursor` the document's styles give what is under
    * it — a link's `pointer`, the user-agent sheet's — and where they say
-   * nothing, text's I-beam over text and the arrow elsewhere, as a browser
-   * shows them. The arrow is named rather than left to null: null lets
-   * core fall through to the element's `defaultCursor`, which is the
-   * I-beam on a selectable surface, and every `<Html>` is one.
+   * nothing, text's I-beam over text a selection can start in and the arrow
+   * elsewhere, as Blink's `ShouldShowIBeamForNode` has them: the text of a
+   * `user-select: none` box is a button's to a reader. The arrow is named
+   * rather than left to null: null lets core fall through to the element's
+   * `defaultCursor`, which is the I-beam on a selectable surface, and every
+   * `<Html>` is one.
    */
   override cursorAt(x: number, y: number): string | null {
     this._followViewport();
@@ -8495,19 +8540,15 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     if (!tree) return null;
     const hit = { text: false };
-    const el = deepestAt(
-      tree,
-      x - this.abs.x,
-      y - this.abs.y,
-      hit,
-      this._fixedShift(),
+    const at = selectionHit({ x: x - this.abs.x, y: y - this.abs.y });
+    const el = deepestAt(tree, at.x, at.y, hit, this._fixedShift(), at);
+    const cursor = cursorKeyword(
+      (el && tree.styles.get(el)?.style.cursor) ?? null,
     );
-    const list = el ? tree.styles.get(el)?.style.cursor : null;
-    // the keyword a list of images ends on: none is loaded here, so it
-    // falls back as it would on images that failed
-    const cursor = list?.slice(list.lastIndexOf(',') + 1).trim();
-    if (cursor && cursor !== 'auto') return cursor;
-    return hit.text ? 'text' : 'default';
+    if (cursor !== 'auto') return cursor;
+    return hit.text && !withinRuns(tree.unselectable, at.run)
+      ? 'text'
+      : 'default';
   }
 
   /**
@@ -16573,6 +16614,8 @@ function sameRects(a: ControlRect[], b: ControlRect[]): boolean {
       p.fontFamily !== q.fontFamily ||
       p.fontSize !== q.fontSize ||
       p.colorScheme !== q.colorScheme ||
+      p.cursor !== q.cursor ||
+      p.buttonCursor !== q.buttonCursor ||
       p.opacity !== q.opacity ||
       p.placeholderColor !== q.placeholderColor ||
       p.atViewport !== q.atViewport ||
@@ -17945,7 +17988,9 @@ function textChangedAt(change: HtmlChange): AnyNode | null {
  * attributes nothing has that `:valid` and its kin and `:dir()` read: an
  * answer read from other elements than the one a change was made to
  * (`controlsReached`, `directionHolder`). None where no rule reads either,
- * so that a document with none pays nothing for it.
+ * so that a document with none pays nothing for it. A fieldset's first legend
+ * is apart from them: the UA sheet reads `:disabled`, so every document would
+ * pay for those, and it has a question of its own (`legendMovedIn`).
  */
 function derivedChanges(
   changes: readonly HtmlChange[],
@@ -17954,7 +17999,17 @@ function derivedChanges(
 ): HtmlChange[] {
   const controls = cascade.readsControls;
   const direction = cascade.readsDirection;
-  if (!controls && !direction) return [];
+  const told = (target: Element, attributeName: string): HtmlChange => ({
+    type: 'attributes',
+    target,
+    attributeName,
+  });
+  const disabled: HtmlChange[] = [];
+  for (const change of changes) {
+    const fieldset = legendMovedIn(change);
+    if (fieldset) disabled.push(told(fieldset, 'disabled'));
+  }
+  if (!controls && !direction) return disabled;
   const reached = new Set<Element>();
   const turned = new Set<Element>();
   for (const change of changes) {
@@ -17966,12 +18021,8 @@ function derivedChanges(
       if (around) turned.add(around);
     }
   }
-  const told = (target: Element, attributeName: string): HtmlChange => ({
-    type: 'attributes',
-    target,
-    attributeName,
-  });
   return [
+    ...disabled,
     ...[...reached].map((el) => told(el, '-rx-form')),
     ...[...turned].map((el) => told(el, '-rx-dir')),
   ];

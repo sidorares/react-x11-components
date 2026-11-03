@@ -981,6 +981,7 @@ export class ScriptRunner {
     this._paintSeen = setTimeout(() => {
       this._paintSeen = null;
       if (this._disposed) return;
+      this.host.embedsPainted();
       this.host.renderingMoved();
       this.host.askSelection();
       this._askUnder();
