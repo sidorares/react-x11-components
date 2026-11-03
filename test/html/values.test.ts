@@ -4878,7 +4878,10 @@ test('a value el.style keeps is checked where its grammar is read, and kept as w
     undefined,
   );
   assert.strictEqual(specifiedValue('clip-path', 'circle(10px)'), undefined);
-  assert.strictEqual(specifiedValue('mask-type', 'luminance'), undefined);
+  assert.strictEqual(specifiedValue('mix-blend-mode', 'multiply'), undefined);
+  // SVG's properties have theirs (`svg-properties.ts`)
+  assert.strictEqual(specifiedValue('mask-type', 'Alpha'), 'alpha');
+  assert.strictEqual(specifiedValue('mask-type', 'normal'), null);
   // `user-select` is one keyword (CSS UI 4, 6.1)
   assert.strictEqual(specifiedValue('user-select', ' NONE '), 'none');
   assert.strictEqual(specifiedValue('user-select', 'visible'), null);

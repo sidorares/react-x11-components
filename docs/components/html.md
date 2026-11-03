@@ -2216,6 +2216,24 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
+`isPointInFill` and `isPointInStroke` go by the same outlines, the fill rule,
+the stroke's width, caps and dashes, and take every join as round.
+
+**An SVG element's attributes are SVG 2's objects.** `rect.x.baseVal`, a
+`transform.baseVal` list with `consolidate()`, `viewBox.baseVal`,
+`preserveAspectRatio`, the enumerations, a filter primitive's numbers and the
+rest of SVG 2's and Filter Effects' `SVGAnimated…` attributes reflect their
+attribute: a write through one sets it, and an attribute set any other way
+shows in one a page holds. `SVGLength` converts between its units against the
+element's font and the nearest `<svg>`'s size; `SVGPoint`, `SVGRect` and
+`SVGMatrix` are interfaces of their own, as in every browser. Nothing animates
+an attribute (SMIL is not run), so an `animVal` reads its `baseVal` and is
+read only. Where the browsers differ this follows two of them, Chromium where
+all three do. `getComputedStyle` answers SVG's properties, `fill`, `stroke`,
+`stop-color`, the markers, `cx` to `ry` and the rest, for every element, and
+`el.style` keeps each in its canonical form. What an SVG property's value is
+while a CSS animation or transition runs on it is not worked out: it reads
+the value at rest.
 
 ### Windows
 

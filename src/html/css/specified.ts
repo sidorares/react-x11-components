@@ -13,6 +13,7 @@ import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
 import { parseZoom, splitValue } from './values.js';
 import { closingParen } from './vars.js';
+import { MARKER_LONGHANDS, SVG_PROPERTIES } from './svg-properties.js';
 import type { UnitContext } from './values.js';
 
 /** What a value is read against where it is only checked: its lengths
@@ -38,6 +39,14 @@ export function specifiedValue(
   // every property takes, is kept as written
   if (/\b(?:var|env|attr)\(/i.test(value)) return undefined;
   const name = prop.toLowerCase();
+  // SVG's properties (`svg-properties.ts`), and `marker`, which is one
+  // value for all three of its longhands
+  const svg = SVG_PROPERTIES[name === 'marker' ? 'marker-start' : name];
+  if (svg) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return svg.specified(word);
+  }
   // one keyword (CSS UI 4, 6.1)
   if (name === 'user-select' || name === '-webkit-user-select') {
     const word = value.trim().toLowerCase();
@@ -586,6 +595,7 @@ export function expandShorthand(
 ): [string, string][] | null {
   const name = prop.toLowerCase();
   if (name === 'animation') return animationLonghandsOf(value);
+  if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
     const order =
       /^(most-width|most-height|most-block-size|most-inline-size)\s+/.exec(
@@ -640,6 +650,11 @@ export function composeShorthand(
   longhand: (name: string) => string | null,
 ): string | null {
   const name = prop.toLowerCase();
+  if (name === 'marker') {
+    const sides = MARKER_LONGHANDS.map(longhand);
+    if (sides.some((v) => v === null)) return '';
+    return sides.every((v) => v === sides[0]) ? sides[0] : '';
+  }
   if (name === 'position-try') {
     const order = longhand('position-try-order');
     const fallbacks = longhand('position-try-fallbacks');

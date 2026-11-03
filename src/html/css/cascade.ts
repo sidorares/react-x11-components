@@ -8280,6 +8280,35 @@ export class Cascade {
     this._normalLines.clear();
   }
 
+  /** What one of a unit comes to in a computed style, in device pixels:
+   *  an `SVGLength`'s `value`, which a script reads for an `ex` or a `vw`
+   *  in a drawing (`svg-dom.ts`). Null for a unit this has no answer for. */
+  unitLength(
+    style: ComputedStyle,
+    unit: string,
+    rootStyle: ComputedStyle | null = null,
+  ): number | null {
+    const zoom = style.effectiveZoom;
+    const root = rootStyle ?? this._root ?? this.initial;
+    const rootZoom = zoom / root.effectiveZoom;
+    const read = this._faceRead;
+    const ctx: UnitContext = {
+      em: style.fontSize,
+      rem: root.fontSize * rootZoom,
+      vw: this.viewportWidth * zoom,
+      vh: this.viewportHeight * zoom,
+      scale: this.scale * zoom,
+      zoom,
+      ex: () => this._exOf(style),
+      ch: () => this._chOf(style),
+      lh: () => this._lineHeightOf(style),
+      rlh: () => this._lineHeightOf(root) * rootZoom,
+    };
+    const len = parseLength(`1${unit}`, ctx);
+    this._faceRead = read;
+    return typeof len === 'number' ? len : null;
+  }
+
   /** The x-height of a style's font: the font's own, asked once per face,
    *  or half an em. */
   private _exOf(style: FaceSource): number {
@@ -9791,6 +9820,26 @@ export class Cascade {
       consider(index.rootRules);
     }
     consider(index.universal);
+  }
+
+  /** The declarations that reach an element, in cascade order, its
+   *  `!important` ones apart and after: what SVG's properties are read from
+   *  as a page asks for one (`svg-properties.ts`), which no computed style
+   *  keeps. */
+  declarationsOf(el: Element): {
+    normal: Declaration[];
+    important: Declaration[];
+  } {
+    const normal: Declaration[] = [];
+    const important: Declaration[] = [];
+    for (const c of this._candidates(el)) {
+      const list = c.only >= 0 ? [c.declarations[c.only]] : c.declarations;
+      for (const d of list) {
+        if (d.prop === 'all' || d.prop.startsWith('--')) continue;
+        (d.important ? important : normal).push(d);
+      }
+    }
+    return { normal, important };
   }
 
   /** Every rule and hint that applies to `el`, in cascade order — and, into

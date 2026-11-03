@@ -89,6 +89,7 @@ import {
   isRootElement,
   isXmlDocument,
   isXmlType,
+  namespaceOf,
   scriptUrlOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
@@ -105,7 +106,10 @@ import {
   isTransparent,
 } from './css/values.js';
 import type { Len } from './css/values.js';
-import { cssomStyle, cssomTransform } from './computed.js';
+import { cssomColor, cssomStyle, cssomTransform } from './computed.js';
+import { SVG_PROPERTIES, presentsProperty } from './css/svg-properties.js';
+import type { SvgUnits } from './css/svg-properties.js';
+import { substitute } from './css/vars.js';
 import type { UsedBox } from './computed.js';
 import {
   Cascade,
@@ -7378,6 +7382,16 @@ export class HtmlViewNode extends Node {
     return {
       fontSize: size,
       box: (svg) => this.elementRect(svg),
+      unit: (el, unit) => {
+        const style = el ? this._styleOf(el) : (this._cascade?.initial ?? null);
+        let root: AnyNode | null = el;
+        while (root?.parent && isElement(root.parent)) root = root.parent;
+        const rootStyle = root && isElement(root) ? this._styleOf(root) : null;
+        const px = style && this._cascade?.unitLength(style, unit, rootStyle);
+        return typeof px === 'number' && style
+          ? px / (this._scale * style.effectiveZoom)
+          : null;
+      },
       hidden: (el) => {
         for (let at: AnyNode | null = el; at; at = at.parent) {
           if (!isElement(at)) break;
@@ -7566,6 +7580,107 @@ export class HtmlViewNode extends Node {
     }
     const own = this._placedStyle(box) ?? style;
     return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+  }
+
+  /**
+   * SVG's properties of an element as `getComputedStyle` reads them
+   * (`svg-properties.ts`), which no computed style keeps: from the rules,
+   * its `style` and, on an SVG element, its presentation attributes under
+   * both, each inherited or set back to its initial value as the property
+   * is, up the flat tree. Asked only as a page reads one.
+   */
+  svgComputed(element: Element): Record<string, string> | null {
+    const cascade = this._cascade;
+    if (!cascade) return null;
+    const memo = new Map<Element, Record<string, string>>();
+    const initial: Record<string, string> = {};
+    for (const name in SVG_PROPERTIES)
+      initial[name] = SVG_PROPERTIES[name].initial;
+    const of = (el: Element): Record<string, string> => {
+      const kept = memo.get(el);
+      if (kept) return kept;
+      const up = flatParentOf(el);
+      const parent = up && isElement(up) ? of(up) : initial;
+      const style = this._styleOf(el);
+      const scale = this._scale * (style?.effectiveZoom ?? 1);
+      const color = style?.color ?? '#000000';
+      let root: Element = el;
+      while (root.parent && isElement(root.parent)) root = root.parent;
+      const rootStyle = this._styleOf(root);
+      const units: SvgUnits = {
+        url: (url) => this._urls.resolve(url),
+        em: (style?.fontSize ?? 16 * scale) / scale,
+        rem: (rootStyle?.fontSize ?? 16 * scale) / scale,
+        vw: (cascade.viewportWidth || 0) / this._scale,
+        vh: (cascade.viewportHeight || 0) / this._scale,
+        ex: () =>
+          ((style ? cascade.unitLength(style, 'ex') : null) ?? 8) / scale,
+        ch: () =>
+          ((style ? cascade.unitLength(style, 'ch') : null) ?? 8) / scale,
+        color,
+        colorText: (c) => cssomColor(c, null, color, null),
+      };
+      const won: Record<string, string> = {};
+      const take = (name: string, value: string, attribute: boolean): void => {
+        const property = SVG_PROPERTIES[name];
+        if (!property) return;
+        let v = value.trim();
+        if (/\bvar\(/i.test(v)) {
+          const done = substitute(v, style?.custom ?? null);
+          if (done === null) return;
+          v = done.trim();
+        }
+        const word = v.toLowerCase();
+        if (
+          !attribute &&
+          /^(inherit|initial|unset|revert|revert-layer)$/.test(word)
+        ) {
+          won[name] = `\u0000${word}`;
+          return;
+        }
+        const read = attribute
+          ? (property.attribute ?? property.specified)
+          : property.specified;
+        const specified = read(v);
+        if (specified !== null) won[name] = specified;
+      };
+      if (namespaceOf(el) === 'http://www.w3.org/2000/svg') {
+        const tag = tagOf(el);
+        for (const name in el.attribs) {
+          if (name in SVG_PROPERTIES && presentsProperty(tag, name)) {
+            take(name, el.attribs[name], true);
+          }
+        }
+      }
+      const { normal, important } = cascade.declarationsOf(el);
+      for (const d of [...normal, ...important]) {
+        const name = d.prop.toLowerCase();
+        if (name === 'marker') {
+          for (const side of ['marker-start', 'marker-mid', 'marker-end']) {
+            take(side, d.value, false);
+          }
+        } else take(name, d.value, false);
+      }
+      const out: Record<string, string> = {};
+      for (const name in SVG_PROPERTIES) {
+        const property = SVG_PROPERTIES[name];
+        const w = won[name];
+        const inherit = property.inherited ? parent[name] : property.initial;
+        if (w === undefined) out[name] = inherit;
+        else if (w[0] === '\u0000') {
+          const word = w.slice(1);
+          out[name] =
+            word === 'inherit'
+              ? parent[name]
+              : word === 'initial'
+                ? property.initial
+                : inherit;
+        } else out[name] = property.computed(w, units);
+      }
+      memo.set(el, out);
+      return out;
+    };
+    return of(element);
   }
 
   /**

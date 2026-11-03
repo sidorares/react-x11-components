@@ -29,6 +29,9 @@ export interface SvgMeasure {
   box(svg: Element): Box | null;
   /** Whether a style hides an element, and all it holds, from the drawing. */
   hidden(el: Element): boolean;
+  /** What one of a relative unit comes to in an element's style, or the
+   *  initial style's for none, in CSS pixels; null where there is none. */
+  unit(el: Element | null, unit: string): number | null;
 }
 
 /** What a drawing holds and does not draw: it is drawn by what names it. */
@@ -510,6 +513,146 @@ export function pointAt(lines: number[][], distance: number): [number, number] {
   return last;
 }
 
+/** A property a drawing's element holds or inherits, from its own
+ *  attribute or `style` up to the `<svg>`: what a hit test reads. */
+function inheritedProperty(el: Element, name: string): string | undefined {
+  for (let at: AnyNode | null = el; at instanceof Element; at = at.parent) {
+    const style = attr(at, 'style');
+    if (style) {
+      const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;!]+)`, 'i').exec(
+        style,
+      );
+      if (m) return m[1].trim();
+    }
+    const own = attr(at, name);
+    if (own !== undefined) return own.trim();
+    if (isSvg(at)) break;
+  }
+  return undefined;
+}
+
+/** Whether a point in an element's user units is in its fill (SVG 2,
+ *  4.6.4, `isPointInFill`), by its `fill-rule`, an edge counted in. */
+export function pointInFill(
+  el: Element,
+  measure: SvgMeasure,
+  x: number,
+  y: number,
+): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  const evenodd = inheritedProperty(el, 'fill-rule') === 'evenodd';
+  let winding = 0;
+  let crossings = 0;
+  for (const line of shapeLines(el, measure)) {
+    if (line.length < 4) continue;
+    const n = line.length;
+    for (let i = 0; i < n; i += 2) {
+      const x0 = line[i];
+      const y0 = line[i + 1];
+      // each subpath is closed for its fill
+      const x1 = line[(i + 2) % n];
+      const y1 = line[(i + 3) % n];
+      if (nearSegment(x, y, x0, y0, x1, y1) < 1e-6) return true;
+      if (y0 <= y !== y1 <= y) {
+        const at = x0 + ((y - y0) * (x1 - x0)) / (y1 - y0);
+        if (at > x) {
+          winding += y1 > y0 ? 1 : -1;
+          crossings += 1;
+        }
+      }
+    }
+  }
+  return evenodd ? crossings % 2 === 1 : winding !== 0;
+}
+/** How far a point is from a segment. */
+function nearSegment(
+  x: number,
+  y: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): number {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const t =
+    dx || dy ? ((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy) : 0;
+  const k = Math.max(0, Math.min(1, t));
+  return Math.hypot(x - (x0 + dx * k), y - (y0 + dy * k));
+}
+
+/** Whether a point in an element's user units is in its stroke (SVG 2,
+ *  4.6.4, `isPointInStroke`): within half its width of the outline where a
+ *  dash is, its ends capped as `stroke-linecap` says and its joins round. */
+export function pointInStroke(
+  el: Element,
+  measure: SvgMeasure,
+  x: number,
+  y: number,
+): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  const em = measure.fontSize(el);
+  const width = length(inheritedProperty(el, 'stroke-width') ?? '1', em, 0);
+  if (!(width > 0)) return false;
+  const half = width / 2;
+  const cap = inheritedProperty(el, 'stroke-linecap') ?? 'butt';
+  const lines = shapeLines(el, measure);
+  const dashes = numbers(inheritedProperty(el, 'stroke-dasharray')).map((d) =>
+    Math.abs(d),
+  );
+  if (dashes.length % 2) dashes.push(...dashes);
+  const period = dashes.reduce((a, b) => a + b, 0);
+  // a dash is a length along the path as `pathLength` measures it
+  const declared = Number(attr(el, 'pathLength'));
+  const scale = declared > 0 ? totalLength(lines) / declared : 1;
+  const offset =
+    length(inheritedProperty(el, 'stroke-dashoffset') ?? '0', em, 0) * scale;
+  const dashed = (at: number): boolean => {
+    if (!(period > 0)) return true;
+    let t =
+      (((at + offset) % (period * scale)) + period * scale) % (period * scale);
+    for (let i = 0; i < dashes.length; i += 1) {
+      const d = dashes[i] * scale;
+      if (t <= d) return i % 2 === 0;
+      t -= d;
+    }
+    return false;
+  };
+  let along = 0;
+  for (const line of lines) {
+    const n = line.length;
+    const closed = n >= 6 && line[0] === line[n - 2] && line[1] === line[n - 1];
+    for (let i = 2; i + 1 < n; i += 2) {
+      const x0 = line[i - 2];
+      const y0 = line[i - 1];
+      const x1 = line[i];
+      const y1 = line[i + 1];
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const step = Math.hypot(dx, dy);
+      const t = step ? ((x - x0) * dx + (y - y0) * dy) / (step * step) : 0;
+      const first = i === 2 && !closed;
+      const last = i + 2 >= n && !closed;
+      // a butt end stops where the line does, a square one half a width on
+      const reach = cap === 'square' ? half / (step || 1) : 0;
+      const inside =
+        (t >= -reach || !first || cap === 'round') &&
+        (t <= 1 + reach || !last || cap === 'round');
+      const k = Math.max(first ? -reach : 0, Math.min(last ? 1 + reach : 1, t));
+      const distance = Math.hypot(x - (x0 + dx * k), y - (y0 + dy * k));
+      if (
+        inside &&
+        distance <= half &&
+        dashed(along + step * Math.max(0, Math.min(1, t)))
+      ) {
+        return true;
+      }
+      along += step;
+    }
+  }
+  return false;
+}
+
 /** A union of boxes, those of nothing left out. */
 function union(a: Box | null, b: Box | null): Box | null {
   if (!a) return b;
@@ -661,12 +804,41 @@ export function drawnWithin(
   return through(ctm, { ...rect, x: box.x + rect.x, y: box.y + rect.y });
 }
 
+/** What one of a unit comes to for an element's length attribute, in user
+ *  units (SVG 2, 4.6.2): a percentage of its viewport along an axis — the
+ *  nearest `<svg>`'s, or what holds an outermost one —, an `em` its font,
+ *  and every other unit its style's. A length of no element is a
+ *  percentage of 100. */
+export function unitSize(
+  el: Element | null,
+  unit: string,
+  axis: string,
+  measure: SvgMeasure,
+): number | null {
+  if (unit === 'em' && el) return measure.fontSize(el);
+  if (unit !== '%') return measure.unit(el, unit);
+  if (!el) return 1;
+  const svg = viewportOf(el);
+  let size: [number, number] | null = null;
+  if (svg) size = viewportSize(svg, measure);
+  else if (el.parent instanceof Element) {
+    const box = measure.box(el.parent);
+    if (box) size = [box.width, box.height];
+  }
+  if (!size) return null;
+  const [w, h] = size;
+  const base =
+    axis === 'x' ? w : axis === 'y' ? h : Math.sqrt((w * w + h * h) / 2);
+  return base / 100;
+}
+
 /** What the facade asks of a drawing, as the numbers it reads back. */
 export function svgAnswer(
   question: string,
   el: Element,
   measure: SvgMeasure,
   distance: number,
+  second = 0,
 ): readonly number[] | null {
   const box = (b: Box | null): number[] | null =>
     b && [b.x, b.y, b.width, b.height];
@@ -681,8 +853,22 @@ export function svgAnswer(
       return screenCtmOf(el, measure);
     case 'length':
       return [totalLength(shapeLines(el, measure))];
-    case 'point':
-      return pointAt(shapeLines(el, measure), distance);
+    case 'point': {
+      // a path with no segment has no point to answer (SVG 2, 4.6.4)
+      const lines = shapeLines(el, measure);
+      return lines.some((line) => line.length >= 2)
+        ? pointAt(lines, distance)
+        : [NaN];
+    }
+    case 'inFill':
+    case 'inStroke': {
+      const [x, y] = [distance, second];
+      return [
+        (question === 'inFill' ? pointInFill : pointInStroke)(el, measure, x, y)
+          ? 1
+          : 0,
+      ];
+    }
     case 'textLength':
       return [measure.text(el, el.children.map(textOf).join('')).width];
     default:

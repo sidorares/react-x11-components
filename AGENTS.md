@@ -5804,6 +5804,34 @@ drawing is asked goes through `svgAnswer`**, whose answer is numbers, as a
 bridge's has to be. `SvgView`'s private `_bbox` is not reached for, as nothing
 of it is here.
 
+**An SVG element's attributes are objects that reflect them, and nothing
+else holds what they say** (`src/html/scripts/svg-dom.ts`, SVG 2, 4).
+`rect.x.baseVal`, `g.transform.baseVal`, `svg.viewBox.baseVal` and their kin
+read the attribute each time the count `svgEpoch` has moved, which it does
+at every op that is not a read, every attribute set among them, and at every
+task; and parse it again only where its text changed. A write through one
+sets the attribute, so the tree is the only copy. Five things are
+load-bearing. **An attribute is read by the name the tree keeps it under**
+(`getAttr`): HTML's parser leaves SVG's camel case in lower case, and an
+element it nests in a drawing is still SVG's, so `viewBox` is looked for as
+written and then as `viewbox`. **A list keeps its items across a change of
+its attribute** (`syncList`, 4.5.4): a held item takes the value at its
+index and only one past the new end is detached, so an item's getter asks
+its list first, and anything new that holds a list's item goes through
+`fresh`. **`SVGPoint`, `SVGRect` and `SVGMatrix` are interfaces of their
+own**, with `float` numbers a non-finite value is a `TypeError` for, as every
+engine ships them and svgwg#706 resolved, and not the geometry interfaces'
+other names: `getBBox` answers an `SVGRect` and `getCTM` an `SVGMatrix`.
+**Whatever an element interface reflects is in the tables at the end of
+`svg-dom.ts`**, a mixin copied onto each interface it is in, and every
+member brand-checked and enumerable (`webIdl`). And **SVG's properties are
+in no computed style**: `getComputedStyle` asks for them as a group the
+first time a page reads one (`computedSvg`, the `svg` group of `computed`),
+which `HtmlViewNode.svgComputed` works out from the rules, the `style` and
+the presentation attributes up the flat tree, and `el.style` keeps each in
+the form `src/html/css/svg-properties.ts` gives it. A property added there is
+in both.
+
 **What is inside an inline `<svg>` has no boxes, and a cascade of its
 own.** An `<svg>` is one replaced box, so the builder never reaches a
 `<path>` and no `ComputedStyle` is made for one — a style for each would
