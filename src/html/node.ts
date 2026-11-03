@@ -18792,6 +18792,11 @@ function spreadAnchors(
     scope.anchored.set(anchors, asked);
   }
   const { around, beside } = asked;
+  // What a subject names is looked for below the elements whose answers
+  // changed once the walk up is done, and only below the highest of them:
+  // a `:has()` that names no element is every ancestor's, and below each,
+  // the walk would look through what the one above it looks through again
+  const walks = new Map<(el: Element) => boolean, Set<Element>>();
   const from = (at: Element, distance: number, aside = false): boolean => {
     // what is asked of what is around a change holds for what is beside
     // it, and not the other way round
@@ -18806,9 +18811,12 @@ function spreadAnchors(
     const bits = anchors.at(at, distance, aside, subjects);
     if (bits === null) return false;
     if (bits) spreadChange(at, bits, false, scope.own, crossing);
-    if (subjects.size && !(bits & CHANGES_BELOW)) {
-      const named = [...subjects];
-      addSubjects(at, scope.own, (el) => named.some((one) => one(el)));
+    if (!(bits & CHANGES_BELOW)) {
+      for (const one of subjects) {
+        let ats = walks.get(one);
+        if (!ats) walks.set(one, (ats = new Set()));
+        ats.add(at);
+      }
     }
     return true;
   };
@@ -18828,6 +18836,13 @@ function spreadAnchors(
   if (holder && anchors.siblings) {
     for (const child of el.children) {
       if (isElement(child) && !from(child, 0, true)) return false;
+    }
+  }
+  for (const [one, ats] of walks) {
+    for (const at of ats) {
+      let above: AnyNode | null = at.parent;
+      while (above && !ats.has(above as Element)) above = above.parent;
+      if (!above) addSubjects(at, scope.own, one);
     }
   }
   return true;
