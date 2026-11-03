@@ -29158,8 +29158,10 @@ export function installDom(
       return 'canceled';
     }
     if (!event._intercepted && !params.sameDocument) {
-      // another document: the host's, and these promises the old one's
-      s.ongoing = null;
+      // another document: the host's. The ongoing navigation stays until
+      // that document loads, `window.stop()` aborts it, or the next
+      // navigation does — so `event.signal` and the method's promises are
+      // still the ongoing one's (HTML 7.2.6.10, "ongoing navigation")
       return 'other';
     }
     const ongoing = s.ongoing!;
@@ -34542,7 +34544,17 @@ export function installDom(
   define('focus', () => WINDOWS!.focus());
   define('blur', () => {});
   define('print', () => {});
-  define('stop', () => {});
+  // HTML 7.3.1, `window.stop()`: stop document loading, which aborts the
+  // navigable's ongoing navigation (HTML 7.2.6.10). While `navigate` is
+  // still dispatching, the event is canceled too — a later listener sees
+  // `defaultPrevented` — and after dispatch only the navigation is aborted,
+  // so `defaultPrevented` stays as the listeners left it.
+  define('stop', () => {
+    const s = pageSession.session;
+    const running = s.ongoing;
+    if (running?.event?._dispatching) running.event.preventDefault();
+    abortOngoing(s);
+  });
   /** Whether a message may go where `options` says it is meant for: any
    *  origin, this one, or one written as this one is (HTML 9.4.3). Every
    *  realm a message goes to here is this page's origin's. */
@@ -36072,6 +36084,9 @@ export function installDom(
     // the document shown in its place, where there is one: what its
     // `pageswap` is told
     const [swap] = input() ?? [];
+    // a cross-document navigation still ongoing ends with the document:
+    // its promises reject, as a discarded document's do
+    abortOngoing(pageSession.session);
     unloadTree(
       document,
       windowTarget,
@@ -36087,7 +36102,7 @@ export function installDom(
   entry('__freeze', () => {
     const [swap] = input() ?? [];
     const s = pageSession.session;
-    s.ongoing = null;
+    abortOngoing(s);
     s.transition = null;
     hideTree(
       document,
