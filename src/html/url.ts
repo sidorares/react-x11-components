@@ -84,3 +84,33 @@ export class UrlResolver {
     return out;
   }
 }
+
+/** A CORS settings attribute's mode (HTML 2.5.4). */
+export type CorsMode = 'anonymous' | 'use-credentials';
+
+/** What separates a URL from the CORS mode it is asked in, in a store's key:
+ *  a character no URL holds. */
+export const CORS_MARK = '\u0000';
+
+/**
+ * Where a store keeps what an element asks for by CORS: the URL, with the mode
+ * after it. HTML keys its list of available images by the mode as well as the
+ * URL, since another origin's answer to a request without an `Origin` is no
+ * answer to one with, nor one without credentials to one with: an `<img>` and
+ * an `<img crossorigin>` of one URL are two requests, as in a browser. A
+ * `mode` of null is the URL as it is.
+ */
+export function corsKeyed(url: string, mode: CorsMode | null): string {
+  return mode ? url + CORS_MARK + mode : url;
+}
+
+/** A key's URL, and the CORS mode it is asked in (`corsKeyed`). */
+export function corsOfKey(key: string): {
+  url: string;
+  mode: CorsMode | null;
+} {
+  const at = key.indexOf(CORS_MARK);
+  return at < 0
+    ? { url: key, mode: null }
+    : { url: key.slice(0, at), mode: key.slice(at + 1) as CorsMode };
+}

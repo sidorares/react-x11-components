@@ -168,6 +168,9 @@ function FramePage({
     return host.onFrames(update);
     // the frame and its host are the view's for its life
   }, [host, frame]);
+  // a document of the page realm's the frame shows has its `load` wait for
+  // this view to have all it asked for (`followFrame`)
+  useEffect(() => host.followFrame(frame), [host, frame]);
   if (!shown) return null;
   return h(FrameDocument, {
     key: keyOf(shown.document),
@@ -248,6 +251,9 @@ function FrameDocument({
     title: () => {},
     log: (level, text) => outer.log(level, `[frame ${url}] ${text}`),
     drawsFrames: true,
+    // what this view mounts over its frames is `FramePage`, whatever the
+    // page's host mounts over the page's
+    framesFollowed: true,
     undrawn,
   };
   const scripts = useScripts(realm, handle, url, seams, {
@@ -346,7 +352,9 @@ function FrameDocument({
       scripting: scripts.scripting,
       onScript: scripts.onScript,
       onParsed: scripts.onParsed,
-      onLoaded: scripts.onLoaded,
+      // a document of the page realm's has the frame hear `load` once all
+      // it asked for is in (`followFrame`)
+      onLoaded: realm ? scripts.onLoaded : () => host.frameViewLoaded(document),
       // a document of the page realm's has its events heard there
       onDomEvent: realm
         ? scripts.onDomEvent
@@ -364,6 +372,7 @@ function FrameDocument({
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
         _embedderScheme: scheme,
+        _frameElement: frame,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,

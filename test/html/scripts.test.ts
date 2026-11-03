@@ -821,6 +821,22 @@ test('document.open starts a document again from nothing, and what a page builds
   ]);
 });
 
+test('a page with no doctype is a document, its head there for the first script, as a browser parses one', async () => {
+  const doc = await hosted(
+    '<title>t</title><script>' +
+      'window.r = [document.head && document.head.firstChild.nodeName,' +
+      '  String(document.body), document.documentElement.nodeName];' +
+      '</script><p id="out"></p><script>' +
+      'document.getElementById("out").textContent =' +
+      '  r.concat(document.body.nodeName).join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TITLE|null|HTML|BODY',
+  );
+});
+
 test('a frame sent to a blob: URL shows what the blob holds, whatever it is mounted in, and the network is never asked', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -1907,6 +1923,35 @@ test('a service worker is registered for a scope, installed and activated in a t
       ' String("serviceWorker" in navigator) + typeof ServiceWorker;</script>',
   );
   assert.equal(off.text('out'), 'falseundefined');
+});
+
+test("a worker has none of a window's interfaces: its input's events, its history's and its location's", async () => {
+  const names = [
+    'UIEvent',
+    'MouseEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'PointerEvent',
+    'PopStateEvent',
+    'Location',
+    'Navigator',
+  ];
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var names = ${JSON.stringify(names)};` +
+      'var src = "var names = " + JSON.stringify(names) + ";" +' +
+      '  "postMessage(names.filter(function (n) { return n in self; }).join());";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) {' +
+      '  document.getElementById("out").textContent =' +
+      '    names.filter(function (n) { return n in window; }).length + "|" + (e.data || "none"); };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    `${names.length}|none`,
+    doc.logs.join('\n'),
+  );
 });
 
 test('navigator.platform is the one the user agent names, in a worker as on the page', async () => {
@@ -4010,6 +4055,28 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
     errors: ['SyntaxError', 'NamespaceError', 'TypeError'],
     evaluator: 2,
   });
+});
+
+test('a rule inserted with anything after it is a syntax error, in a sheet of a style element and in one a script made', async () => {
+  const doc = await hosted(
+    '<style>p { color: rgb(0, 128, 0) }</style><p id="p">x</p><p id="out"></p><script>' +
+      'var r = [], made = new CSSStyleSheet();' +
+      'for (const sheet of [document.styleSheets[0], made]) {' +
+      '  for (const rule of ["p { color: red; } garbage", "p { color: red; } q;", "p { color: red; } /* end */ "]) {' +
+      '    try { sheet.insertRule(rule, sheet.cssRules.length); r.push("took"); }' +
+      '    catch (e) { r.push(e.name); }' +
+      '  }' +
+      '  r.push(sheet.cssRules.length);' +
+      '}' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    'SyntaxError|SyntaxError|took|2|SyntaxError|SyntaxError|took|1',
+    doc.logs.join('\n'),
+  );
 });
 
 test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
@@ -12826,6 +12893,80 @@ test('a key typed in an editing host the page focused is an edit of it at the se
   );
 });
 
+test('a host the page took every range from edits nothing on a key, and a focus puts the caret back in it', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><p id="out"></p><script>' +
+      'var ed = document.getElementById("ed"), r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'addEventListener("beforeinput", function (e) { log("before:" + e.inputType); });' +
+      '</script>',
+  );
+  doc.run(
+    'ed.focus(); log("focused:" + getSelection().rangeCount);' +
+      'getSelection().removeAllRanges(); log("ranges:" + getSelection().rangeCount);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'ab');
+  doc.run(
+    'ed.blur(); ed.focus(); var s = getSelection();' +
+      'log("again:" + s.rangeCount + ":" + (s.anchorNode === ed) + ":" + s.anchorOffset);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'xab');
+  assert.equal(
+    doc.text('out'),
+    'focused:1|ranges:0|again:1:true:0|before:insertText',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a blur and a focus of the same element in one task are each heard', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><button id="b">b</button>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'for (const id of ["ed", "b"]) {' +
+      '  const el = document.getElementById(id);' +
+      '  el.addEventListener("focus", () => log("focus:" + id));' +
+      '  el.addEventListener("blur", () => log("blur:" + id));' +
+      '}' +
+      '</script>',
+  );
+  for (const id of ['ed', 'b']) {
+    doc.run(`document.getElementById("${id}").focus()`);
+    // the box that takes it is mounted by now
+    await settle();
+    doc.run(
+      `{ const el = document.getElementById("${id}"); el.blur(); el.focus();` +
+        `log("active:" + document.activeElement.id); }`,
+    );
+    await settle();
+    doc.run(`document.getElementById("${id}").blur()`);
+    await settle();
+  }
+  assert.equal(
+    doc.text('out'),
+    [
+      'focus:ed',
+      'blur:ed',
+      'focus:ed',
+      'active:ed',
+      'blur:ed',
+      'focus:b',
+      'blur:b',
+      'focus:b',
+      'active:b',
+      'blur:b',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 metric(
   'a range of the text of an editing host is measured where its letters are drawn, and a press there puts the caret at the letter',
   async () => {
@@ -15758,6 +15899,31 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
  *  out none, its scripts its own runner's, linked to the page's. */
+test("a frame's window has its page's storage, as a frame of its origin has", async () => {
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'localStorage.setItem("k", "local"); sessionStorage.setItem("k", "session");' +
+      'f.onload = function () {' +
+      '  var w = f.contentWindow;' +
+      '  document.getElementById("out").textContent = [' +
+      '    w.localStorage && w.localStorage.getItem("k"),' +
+      '    w.sessionStorage && w.sessionStorage.getItem("k"),' +
+      '    Object.getPrototypeOf(w.localStorage) === Storage.prototype,' +
+      '  ].join("|");' +
+      '};' +
+      '</script>',
+    { 'frame.html': '<!doctype html><p>no script here</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'local|session|true',
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,

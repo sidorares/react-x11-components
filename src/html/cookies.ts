@@ -699,14 +699,23 @@ export class CookieJar implements HtmlDocumentCookies {
       return null;
     }
     if (cookie.sameSite === 'none' && !cookie.secure) return null;
-    // the prefixes (6265bis 4.1.3), case-insensitively, and a nameless
-    // cookie that would read as one
+    // the prefixes (6265bis 4.1.3, with layered cookies' `__Http-`),
+    // case-insensitively, and a nameless cookie that would read as one. A
+    // `__Host-` cookie says `Path=/` itself: a path of `/` its URL gave it is
+    // not one it asked for
     const prefixed = (cookie.name || cookie.value).toLowerCase();
-    if (!cookie.name && /^__(secure|host)-/.test(prefixed)) return null;
+    if (!cookie.name && /^__(secure|host|http)-/.test(prefixed)) return null;
     if (prefixed.startsWith('__secure-') && !cookie.secure) return null;
     if (
       prefixed.startsWith('__host-') &&
-      (!cookie.secure || !cookie.hostOnly || cookie.path !== '/')
+      (!cookie.secure || !cookie.hostOnly || parsed.path !== '/')
+    ) {
+      return null;
+    }
+    // and `__Http-`'s, `__Host-Http-`'s among them, are HTTP's alone
+    if (
+      /^__(host-)?http-/.test(prefixed) &&
+      (!cookie.secure || !cookie.httpOnly)
     ) {
       return null;
     }

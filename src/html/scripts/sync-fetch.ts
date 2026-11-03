@@ -124,7 +124,6 @@ export function fetchSync(
   const jar = network.cookies;
   const id = ++serial;
   const line = lineFor(network.setup);
-  Atomics.store(line.word, 0, 0);
   const job: SyncJob = {
     id,
     request,
@@ -136,16 +135,11 @@ export function fetchSync(
   line.port.postMessage(job);
   const end = performance.now() + timeout;
   let answer: SyncAnswer | undefined;
-  while (!answer) {
-    const left = end - performance.now();
-    if (left <= 0) {
-      line.port.postMessage({ abort: id });
-      const error = new Error(`${request.url} took too long.`);
-      error.name = 'TimeoutError';
-      throw error;
-    }
-    Atomics.wait(line.word, 0, 0, left);
-    // one a timeout gave up on may answer late, and is let go
+  for (;;) {
+    // the flag down before what came is read, so that an answer that comes
+    // after the read finds it up and wakes the wait at once: one a timeout
+    // gave up on may answer late, and is let go
+    Atomics.store(line.word, 0, 0);
     for (
       let got = receiveMessageOnPort(line.port);
       got;
@@ -154,7 +148,15 @@ export function fetchSync(
       const message = got.message as SyncAnswer;
       if (message.id === id) answer = message;
     }
-    if (!answer) Atomics.store(line.word, 0, 0);
+    if (answer) break;
+    const left = end - performance.now();
+    if (left <= 0) {
+      line.port.postMessage({ abort: id });
+      const error = new Error(`${request.url} took too long.`);
+      error.name = 'TimeoutError';
+      throw error;
+    }
+    Atomics.wait(line.word, 0, 0, left);
   }
   if (answer.failed !== undefined || !answer.answer) {
     throw new Error(answer.failed ?? 'The request failed.');

@@ -455,11 +455,16 @@ test("a request that passed through another origin asks the next in nobody's nam
 test('fetch keeps to the redirect mode it was asked for', async () => {
   const { logs, asked } = await scene(
     `
-    const go = (mode, name) => fetch('${APP}r', { redirect: mode }).then(
-      (r) => console.log(name, r.type, r.status, r.url === '', r.body === null, r.headers.has('location')),
+    const go = (mode, name, at = 'r') => fetch('${APP}' + at, { redirect: mode }).then(
+      (r) => console.log(name, r.type, r.status, r.url, r.body === null, r.headers.has('location')),
       (e) => console.log(name, 'failed', e.message),
     );
     go('manual', 'manual').then(() => go('error', 'error')).then(() => go('follow', 'follow'))
+      // one that says nowhere is a redirect all the same to one that asked to
+      // see it, or to be refused it
+      .then(() => go('manual', 'nowhere manual', 'nowhere'))
+      .then(() => go('error', 'nowhere error', 'nowhere'))
+      .then(() => go('follow', 'nowhere follow', 'nowhere'))
       .then(() => fetch('${OTHER}r', { mode: 'no-cors', redirect: 'manual' }))
       .then(() => console.log('no-cors answered'), (e) => console.log('no-cors', e.name));
     `,
@@ -467,12 +472,29 @@ test('fetch keeps to the redirect mode it was asked for', async () => {
       pages: {
         [`${APP}r`]: redirect(`${APP}target`),
         [`${APP}target`]: { body: 'there' },
+        [`${APP}nowhere`]: { status: 302 },
       },
     },
   );
-  assert.equal(await seen(logs, 'manual'), 'opaqueredirect 0 true true false');
+  // what it asked for, which is no more than it knew
+  assert.equal(
+    await seen(logs, 'manual'),
+    `opaqueredirect 0 ${APP}r true false`,
+  );
   assert.equal(await seen(logs, 'error'), 'failed Failed to fetch');
-  assert.equal(await seen(logs, 'follow'), 'basic 200 false false false');
+  assert.equal(
+    await seen(logs, 'nowhere manual'),
+    `opaqueredirect 0 ${APP}nowhere true false`,
+  );
+  assert.equal(await seen(logs, 'nowhere error'), 'failed Failed to fetch');
+  assert.equal(
+    await seen(logs, 'nowhere follow'),
+    `basic 302 ${APP}nowhere false false`,
+  );
+  assert.equal(
+    await seen(logs, 'follow'),
+    `basic 200 ${APP}target false false`,
+  );
   assert.equal(await seen(logs, 'no-cors'), 'TypeError');
   assert.ok(asked.every((r) => r.redirect === 'manual'));
 });
@@ -550,7 +572,7 @@ test('a method no page may send is sent by none, and a forged one is refused on 
 
 test("the user agent's own headers on an EventSource are all a request may leave out of CORS", () => {
   const given: [string, string][] = [
-    ['cache-control', 'no-store'],
+    ['cache-control', 'no-cache'],
     ['x-evil', '1'],
     ['last-event-id', '7'],
   ];
@@ -563,6 +585,68 @@ test("the user agent's own headers on an EventSource are all a request may leave
     agentHeaders(['cache-control'], 'GET', [['cache-control', 'no-cache, x']]),
     undefined,
   );
+});
+
+test('an EventSource to another origin asks no preflight: it sends what the user agent sends', async () => {
+  const { logs, asked } = await scene(
+    `
+    const source = new EventSource('${OTHER}stream');
+    source.onmessage = (e) => {
+      console.log('message', e.data);
+      source.close();
+    };
+    source.onerror = () => console.log('error', source.readyState);
+    `,
+    {
+      pages: {
+        [`${OTHER}stream`]: {
+          body: 'data: hello\n\n',
+          headers: [
+            ['content-type', 'text/event-stream'],
+            ['access-control-allow-origin', 'https://app.test'],
+          ],
+        },
+      },
+    },
+  );
+  assert.equal(await seen(logs, 'message'), 'hello');
+  assert.deepEqual(
+    asked.map((r) => r.method),
+    ['GET'],
+  );
+  assert.equal(
+    asked[0].headers.find(([k]) => k === 'cache-control')?.[1],
+    'no-cache',
+  );
+});
+
+test('an EventSource that CORS turns down is over, where one that lost its connection tries again', async () => {
+  const { logs, asked } = await scene(
+    `
+    const source = new EventSource('${OTHER}stream');
+    source.onerror = () => console.log('refused', source.readyState);
+    const lost = new EventSource('${APP}lost');
+    lost.onerror = () => {
+      console.log('lost', lost.readyState);
+      lost.close();
+    };
+    `,
+    {
+      pages: {
+        [`${OTHER}stream`]: {
+          body: 'data: hello\n\n',
+          headers: [['content-type', 'text/event-stream']],
+        },
+        [`${APP}lost`]: {
+          body: '',
+          headers: [['content-type', 'text/event-stream']],
+        },
+      },
+    },
+  );
+  assert.equal(await seen(logs, 'refused'), String(2));
+  assert.equal(await seen(logs, 'lost'), String(0));
+  assert.equal(asked.filter((r) => r.url === `${OTHER}stream`).length, 1);
 });
 
 test('what a hop owes is worked out as Fetch has it', () => {
@@ -714,6 +798,63 @@ test('a pattern and a bitmap carry where they came from, and creating one taints
   assert.equal(await seen(logs, 'bitmap'), 'SecurityError');
 });
 
+test('a pattern is of a picture there is: none of an image on its way, of no size or with no address, and a broken one or no image at all throws', async () => {
+  const logs: string[] = [];
+  const flat =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="10"></svg>';
+  await renderX11(
+    h(Html, {
+      source: `<!doctype html><body><img id=ok src="${APP}p.png"><img id=gone src="${APP}gone.png"><img id=flat src="${APP}flat.svg"><script>
+        ${READS}
+        const x = document.createElement('canvas').getContext('2d');
+        const of = (name, what) => read(name, () => {
+          if (x.createPattern(what, 'repeat') === null) throw { name: 'null' };
+        });
+        of('coming', new Image());
+        // an address nothing has asked for, or it would be complete at once
+        const loading = new Image();
+        loading.src = '${APP}q.png';
+        of('loading', loading);
+        of('nothing', null);
+        of('text', 'p.png');
+        onload = () => {
+          of('ok', document.getElementById('ok'));
+          of('gone', document.getElementById('gone'));
+          of('flat', document.getElementById('flat'));
+          const none = document.createElement('canvas');
+          none.width = 0;
+          of('canvas', none);
+        };
+      </script></body>`,
+      partial: false,
+      baseUrl: APP,
+      scripts: { log: (level, text) => void logs.push(`${level}: ${text}`) },
+      onResource: async ({ url }: ResourceRequest) =>
+        url.endsWith('gone.png')
+          ? null
+          : {
+              kind: 'image' as const,
+              bytes: url.endsWith('.svg')
+                ? new TextEncoder().encode(flat)
+                : Buffer.from(IMAGE, 'base64'),
+            },
+      style: { flexGrow: 1 },
+    }),
+    FONTS
+      ? { width: 320, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  assert.equal(await seen(logs, 'coming'), 'null');
+  assert.equal(await seen(logs, 'loading'), 'null');
+  assert.equal(await seen(logs, 'nothing'), 'TypeError');
+  assert.equal(await seen(logs, 'text'), 'TypeError');
+  assert.equal(await seen(logs, 'ok'), 'read');
+  assert.equal(await seen(logs, 'gone'), 'InvalidStateError');
+  assert.equal(await seen(logs, 'flat'), 'null');
+  // a canvas of no size throws as it always has
+  assert.equal(await seen(logs, 'canvas'), 'InvalidStateError');
+});
+
 test("the page's own image, and one asked for by CORS, leave a canvas its own", async () => {
   for (const src of [`${APP}p.png`, `data:image/png;base64,${IMAGE}`]) {
     const logs = await withImage(
@@ -727,6 +868,79 @@ test("the page's own image, and one asked for by CORS, leave a canvas its own", 
     assert.equal(await seen(logs, 'pixels'), 'read');
     await cleanup();
   }
+});
+
+test('an image taints a canvas by the response it came in, and one asked for by CORS is had only by the leave of its origin', async () => {
+  const logs: string[] = [];
+  const asked: string[] = [];
+  const bytes = Buffer.from(IMAGE, 'base64');
+  const ALLOW: [string, string][] = [
+    ['access-control-allow-origin', 'https://app.test'],
+  ];
+  /** Each address, with where its answer came from and the headers it had. */
+  const answers: Record<string, { url: string; headers: [string, string][] }> =
+    {
+      [`${OTHER}let.png`]: { url: `${OTHER}let.png`, headers: ALLOW },
+      [`${OTHER}shut.png`]: { url: `${OTHER}shut.png`, headers: [] },
+      [`${APP}moved.png`]: { url: `${OTHER}moved.png`, headers: [] },
+      [`${OTHER}both.png`]: {
+        url: `${OTHER}both.png`,
+        headers: [...ALLOW, ['access-control-allow-credentials', 'true']],
+      },
+    };
+  await renderX11(
+    h(Html, {
+      source: `<!doctype html><body><script>
+        ${READS}
+        const load = (name, src, cors) => {
+          const image = new Image();
+          if (cors) image.crossOrigin = cors;
+          image.onerror = () => console.log(name, 'failed');
+          image.onload = () => {
+            const x = document.createElement('canvas').getContext('2d');
+            x.drawImage(image, 0, 0);
+            read(name, () => x.getImageData(0, 0, 1, 1));
+          };
+          image.src = src;
+          return image;
+        };
+        console.log('reflected', load('let', '${OTHER}let.png', 'anonymous').getAttribute('crossorigin'));
+        load('shut', '${OTHER}shut.png', 'anonymous');
+        load('moved', '${APP}moved.png', '');
+        load('plain', '${OTHER}both.png', '');
+        load('cors', '${OTHER}both.png', 'use-credentials');
+      </script></body>`,
+      partial: false,
+      baseUrl: APP,
+      scripts: { log: (level, text) => void logs.push(`${level}: ${text}`) },
+      onResource: async (r: ResourceRequest) => {
+        asked.push(
+          `${r.url} ${r.cors ? `${r.cors.origin} ${r.cors.mode}` : '-'}`,
+        );
+        const answer = answers[r.url];
+        return answer ? { kind: 'image' as const, bytes, ...answer } : null;
+      },
+      style: { flexGrow: 1 },
+    }),
+    FONTS
+      ? { width: 320, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  assert.equal(await seen(logs, 'reflected'), 'anonymous');
+  // another origin's, which said this one may have it
+  assert.equal(await seen(logs, 'let'), 'read');
+  // another origin's, which said nothing of it: no image at all
+  assert.equal(await seen(logs, 'shut'), 'failed');
+  // asked for of this origin, and answered from another
+  assert.equal(await seen(logs, 'moved'), 'SecurityError');
+  // one address, two requests: what an `Origin` is answered is no answer to
+  // a request without one
+  assert.equal(await seen(logs, 'plain'), 'SecurityError');
+  assert.equal(await seen(logs, 'cors'), 'read');
+  assert.deepEqual(asked.filter((a) => a.includes('both')).sort(), [
+    `${OTHER}both.png -`,
+    `${OTHER}both.png https://app.test use-credentials`,
+  ]);
 });
 
 /** A server of its own, which is an origin of its own. */

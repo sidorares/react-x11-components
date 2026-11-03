@@ -595,6 +595,7 @@ function Tab(props: {
     const blank = {
       source: '',
       url,
+      status: 200,
       type: 'text/html',
       charset: 'utf-8',
       headers: [],
@@ -609,6 +610,9 @@ function Tab(props: {
     )
       .then((doc) => {
         if (page !== current) return;
+        // no content is no navigation (HTML 7.4.2.3.3): the window goes on
+        // showing what it was, its initial `about:blank` among it
+        if (doc.status === 204 || doc.status === 205) return;
         // at the fragment it was asked for, which a fetch's answer drops
         const hash = url.indexOf('#');
         const at =
