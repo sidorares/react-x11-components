@@ -489,8 +489,11 @@ const QUIET = new WeakMap<object, boolean>();
 let muting = 0;
 
 /** A rejection of the host's, which opens a muted script's quiet (`true`) or
- *  closes it. */
+ *  closes it. A listener added since the last engine is taken over first, or
+ *  it would hear the marks, and an application's that ends the process on a
+ *  rejection would end it at every script of another origin. */
 function quiet(from: boolean): void {
+  watchRejections();
   const mark = {};
   QUIET.set(mark, from);
   void Promise.reject(mark);

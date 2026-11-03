@@ -208,6 +208,29 @@ test("a promise another origin's script leaves rejected is none of the page's to
   assert.deepEqual(heard, ['log: heard page own', 'log: heard shared']);
 });
 
+test("a listener the application added after the engine hears nothing of a muted script's quiet", async () => {
+  const heard: unknown[] = [];
+  const late = (reason: unknown) => void heard.push(reason);
+  const { logs } = await scene(
+    `
+    setTimeout(() => {
+      const s = document.createElement('script');
+      s.src = '${OTHER}quiet.js';
+      s.onload = () => setTimeout(() => console.log('done'), 50);
+      document.body.append(s);
+    }, 300);
+    `,
+    { sources: { [`${OTHER}quiet.js`]: 'var ran = 1;' } },
+  );
+  process.on('unhandledRejection', late);
+  try {
+    await seen(logs, 'done');
+  } finally {
+    process.off('unhandledRejection', late);
+  }
+  assert.deepEqual(heard, []);
+});
+
 test('a script a redirect took to another origin is held to where it landed', async () => {
   const { logs } = await scene(
     `
