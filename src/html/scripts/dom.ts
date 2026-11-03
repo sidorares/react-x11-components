@@ -16666,9 +16666,13 @@ export function installDom(
       return documentOrigin() === 'null' ? '' : location.hostname;
     }
     // what a tag manager sets to share a document with its frames, which
-    // here are all the page's origin's or nothing of the page's
+    // here are all the page's origin's or nothing of the page's; a sandbox
+    // may not, whatever it allows (HTML 7.5.2, the domain setter)
     set domain(_v: Any) {
-      if (documentOrigin() === 'null') {
+      if (
+        documentOrigin() === 'null' ||
+        (this === document && call('sandboxed') === true)
+      ) {
         throw new DOMException(
           "Failed to set the 'domain' property on 'Document': Assignment is forbidden for sandboxed iframes.",
           'SecurityError',

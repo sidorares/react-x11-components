@@ -5646,6 +5646,10 @@ export class DomHost {
         return this._origin();
       case 'referrer':
         return this.referrer;
+      // any sandbox, whatever its tokens: none lifts `document.domain`'s flag
+      // (HTML 7.1.?, "sandboxed document.domain browsing context flag")
+      case 'sandboxed':
+        return this.sandbox !== 0;
       case 'frameNamed': {
         const frame = navigableFor(this.document, text(a));
         return typeof frame === 'string' ? 0 : this.idOf(frame);

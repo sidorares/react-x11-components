@@ -1003,6 +1003,28 @@ test("a sandbox that talks its facade round still starts no worker from an addre
   assert.ok(!s.asked.some((r) => /^file:|elsewhere/.test(r.url)));
 });
 
+test('a sandbox may not set document.domain, whatever its tokens let it keep', async () => {
+  const set = script(`
+    try { document.domain = document.domain; console.log('domain', location.pathname, 'set'); }
+    catch (e) { console.log('domain', location.pathname, e.name); }
+  `);
+  const s = await scene(
+    `<iframe sandbox="allow-scripts allow-same-origin" src="${APP}kept"></iframe>
+     <iframe src="${APP}plain"></iframe>`,
+    { [`${APP}kept`]: set, [`${APP}plain`]: set },
+  );
+  await until(s, 'domain /kept');
+  await until(s, 'domain /plain');
+  assert.ok(
+    s.logs.some((l) => l.endsWith('domain /kept SecurityError')),
+    s.logs.join('\n'),
+  );
+  assert.ok(
+    s.logs.some((l) => l.endsWith('domain /plain set')),
+    s.logs.join('\n'),
+  );
+});
+
 test('document.domain and the storage getters answer for an origin of none', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
