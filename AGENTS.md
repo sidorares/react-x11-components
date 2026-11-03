@@ -4736,7 +4736,7 @@ closes a way out a DOM binding opens by accident:
   `client`, `opaqueOrigin`). A frame's `<Html>` marks its `client`, and every
   `<Html>` with `_sandbox` its `opaqueOrigin`, which `HtmlNetwork` sends
   same-site with nothing, its cache kept apart. A script's comes by the
-  runner's `asker`, through `load`'s fourth argument, since the default `load`
+  runner's `asker`, through `load`'s fifth argument, after a module's `type`, since the default `load`
   asks the page's `onResource` and not the frame's. **Anything new that asks
   for a resource for a document goes through that document's `<Html>`, or
   hands on the `asker`**, or a sandbox's `<img>` carries the site's cookies.
