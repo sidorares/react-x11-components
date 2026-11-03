@@ -2846,11 +2846,17 @@ function anchorOf(
   // for one that asks only a few levels down, whose answer changes only
   // for the few elements that far above what changed: Apple's product
   // pages style `:has(>.caption-primary) .caption`, and every change to
-  // their tree restyled, built and laid out all of it
+  // their tree restyled, built and laid out all of it. Nor for one above a
+  // subject that names something, which restyles below each element around
+  // a change only what that subject names (`ChangeAnchors.at`'s
+  // `subjects`): YouTube's sheets hold `:has(>[role=dialog] .host)
+  // [dialog]`, and the player's clock, ticking once a second, restyled,
+  // built and laid out all of its watch page
   if (
     compound === '*' &&
     levels === undefined &&
-    at & (CHANGES_BELOW | CHANGES_LATER)
+    at & (CHANGES_BELOW | CHANGES_LATER) &&
+    (at !== CHANGES_BELOW || !subject || subject === '*')
   ) {
     return ANYWHERE_ANCHOR;
   }

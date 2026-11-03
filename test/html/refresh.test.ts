@@ -3491,6 +3491,95 @@ test('a :has() above its rule’s subject reaches what the subject names in its 
   assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
 });
 
+test('a :has() that names no element, above a subject that does, reaches what the subject names around a change, and not the document', async () => {
+  // YouTube's sheets hold `:has(>[role=dialog]:not([aria-hidden=true])
+  // .host) [dialog]:not(:has(.host))`: its `:has()` is every element's, and
+  // goes down past its children, so every change was taken to reach
+  // everything. The player's clock ticks once a second, and each tick
+  // restyled, built and laid out the whole watch page
+  const paragraphs = Array.from(
+    { length: 40 },
+    (_, i) => `<p id="p${i}">p${i}</p>`,
+  ).join('');
+  const { result, node } = await render(
+    '<style>body{margin:0} :has(>[role=dialog]:not([aria-hidden=true])' +
+      ' .host) [dialog]:not(:has(.host)){color:#ff0000}</style>' +
+      `<body>${paragraphs}<div id="player"><span id="time">0:01</span>` +
+      '<button id="play"><svg width="8" height="8"><rect width="8" height="8"/>' +
+      '</svg></button></div><div id="wrap"><b dialog id="dlg">d</b></div></body>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  // the clock: its text replaced, as `textContent` does
+  const time = byId(el, 'time');
+  const was = time.children[0] as ChildNode;
+  removeNode(was);
+  const now = createText('0:02');
+  appendChild(time, now);
+  const ticked: HtmlChange = {
+    type: 'childList',
+    target: time,
+    addedNodes: [now],
+    removedNodes: [was],
+    previousSibling: null,
+    nextSibling: null,
+  };
+  const own = scopeOf(el, [ticked]);
+  assert.ok(own, 'a refresh of everything');
+  assert.ok(!own.has(byId(el, 'p7')), 'all the document was reached');
+  const computed = await stylesComputed(el, async () => {
+    el.touchDocument([ticked]);
+    await snapshot(result, el);
+  });
+  assert.ok(computed < 10, `${computed} styles worked out`);
+  // an icon swapped in a button
+  const play = byId(el, 'play');
+  const icon = play.children.find((c) => (c as Element).name === 'svg')!;
+  removeNode(icon);
+  const swapped = createElement('svg', { width: '8', height: '8' });
+  appendChild(play, swapped);
+  const swap: HtmlChange = {
+    type: 'childList',
+    target: play,
+    addedNodes: [swapped],
+    removedNodes: [icon],
+    previousSibling: null,
+    nextSibling: null,
+  };
+  const own2 = scopeOf(el, [swap]);
+  assert.ok(own2, 'a refresh of everything');
+  assert.ok(!own2.has(byId(el, 'p7')), 'all the document was reached');
+  el.touchDocument([swap]);
+  await act();
+  // and a dialog put in, whose answer is its holder's: what its subject
+  // names below that holder turns red
+  const wrap = byId(el, 'wrap');
+  const dialog = createElement('div', { role: 'dialog' }, [
+    createElement('i', { class: 'host' }),
+  ]);
+  appendChild(wrap, dialog);
+  const opened: HtmlChange = {
+    type: 'childList',
+    target: wrap,
+    addedNodes: [dialog],
+    removedNodes: [],
+    previousSibling: byId(el, 'dlg'),
+    nextSibling: null,
+  };
+  const own3 = scopeOf(el, [opened]);
+  assert.ok(own3?.has(byId(el, 'dlg')), 'the [dialog] it styles is missed');
+  assert.ok(!own3?.has(byId(el, 'p7')), 'all the document was reached');
+  el.touchDocument([opened]);
+  await act();
+  const drawn = await snapshot(result, el);
+  assert.strictEqual(
+    el.computedStyle(byId(el, 'dlg'))?.color,
+    'rgb(255, 0, 0)',
+  );
+  assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+});
+
 metric(
   'a child put at the end of a <body> a :has() is anchored at builds the end of it, where its style stands',
   async () => {
@@ -4253,6 +4342,9 @@ function rulesFor(
     () => `[data-x=y]:has(.${c()}) ~ *`,
     () => `.${c()}:has([data-x=z])`,
     () => `.${c()}:has(> .${c()}:first-child)`,
+    // every element's, above a subject that names something: YouTube's
+    () => `:has(.${c()}) span`,
+    () => `:has(> [data-x] .${c()}) .${c()}:not(:has(.${c()}))`,
     () => `li:has(+ :empty)`,
     () => `${pick(TAGS)}:has(${pick(TAGS)}) .${c()}`,
     () => `.${c()}:has(:lang(fr)) > *`,
@@ -4266,11 +4358,12 @@ function rulesFor(
     () => `[data-x=Z i]`,
     () => `[id*="1"] *`,
   ];
-  // what a `:has()` reaches where every element is one's, which is
-  // everything around what changed, and what `:nth-child(… of …)` counts
-  // by: such a sheet styles every element again, as one in a few does
+  // what a `:has()` reaches where every element is one's and its subject
+  // names nothing, which is everything around what changed, and what
+  // `:nth-child(… of …)` counts by: such a sheet styles every element
+  // again, as one in a few does
   const reaching: (() => string)[] = [
-    () => `:has(.${c()}) span`,
+    () => `:has(.${c()}) *`,
     () => `.${c()}:nth-child(odd of .${c()})`,
   ];
   const declarations: (() => string)[] = [
