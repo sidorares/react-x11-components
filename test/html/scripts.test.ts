@@ -9619,6 +9619,69 @@ test('a media element loads its source where there is a network: its events, its
   assert.deepEqual(asked?.headers, [['range', 'bytes=0-']]);
 });
 
+test('a media element whose source is an HLS playlist hears its length and size from the playlists, as Safari tells them, where the playlist was a format error', async () => {
+  const text = (url: string, type: string, body: string) => ({
+    url,
+    status: 200,
+    statusText: 'OK',
+    redirected: false,
+    headers: [['content-type', type]] as [string, string][],
+    body,
+  });
+  const master =
+    '#EXTM3U\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.4d4015,mp4a.40.2",RESOLUTION=426x240\n' +
+    'v/240.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360\n' +
+    'v/360.m3u8\n';
+  const media = (end: boolean) =>
+    '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n' +
+    '#EXTINF:5.0,\nseg0.ts\n#EXTINF:5.0,\nseg1.ts\n#EXTINF:2.5,\nseg2.ts\n' +
+    (end ? '#EXT-X-ENDLIST\n' : '');
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function load(src) { return new Promise(function (res) {' +
+      '  var v = document.createElement("video");' +
+      '  v.addEventListener("suspend", function () { res([v.readyState, v.duration, v.videoWidth, v.videoHeight, v.networkState]); });' +
+      '  v.addEventListener("error", function () { res(["error", v.error.code]); });' +
+      '  v.src = src; }); }' +
+      'r.push(document.createElement("video").canPlayType("application/vnd.apple.mpegurl"));' +
+      'load("vod/master.m3u8").then(function (a) { r.push(a);' +
+      // one served as text, said only by its first line
+      '  return load("live.m3u8"); }).then(function (a) { r.push(a);' +
+      '  document.getElementById("out").textContent = JSON.stringify(r); });' +
+      '</script>',
+    {
+      network: true,
+      canPlayType: (type) => (/mpegurl/i.test(type) ? 'maybe' : ''),
+      answer: (request) => {
+        if (request.url.endsWith('/vod/master.m3u8')) {
+          return text(request.url, 'application/vnd.apple.mpegurl', master);
+        }
+        // the first variant is read for the length, relative to the master
+        if (request.url.endsWith('/vod/v/240.m3u8')) {
+          return text(request.url, 'application/x-mpegURL', media(true));
+        }
+        if (request.url.endsWith('/live.m3u8')) {
+          return text(request.url, 'text/plain', media(false));
+        }
+        return null;
+      },
+    },
+  );
+  const out = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(out, doc.logs.join('\n'));
+  // JSON has no Infinity: the live playlist's length reads as null here
+  assert.deepEqual(JSON.parse(out), [
+    'maybe',
+    [4, 12.5, 426, 240, 1],
+    [4, null, 0, 0, 1],
+  ]);
+  assert.ok(!doc.fetched.some((r) => r.url.endsWith('/v/360.m3u8')));
+  assert.ok(!doc.fetched.some((r) => r.url.endsWith('.ts')));
+});
+
 test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {
   const doc = await hosted(
     '<p id="out"></p><video id="v"></video><audio id="a" muted></audio><script>' +

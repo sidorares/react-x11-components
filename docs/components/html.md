@@ -3205,7 +3205,14 @@ things about it are decisions:
   plays. The page hears `loadstart`, `progress`, `loadedmetadata`,
   `loadeddata`, `canplay`, `canplaythrough` and `suspend`; `stalled` after
   three seconds with nothing; a source no container is read from is an
-  `error`. Its `readyState`, `duration`, `videoWidth` and `currentTime`
+  `error`. **An HLS playlist is read as one** (`readPlaylist`, by its type
+  or its `#EXTM3U` line): a media playlist's segments summed for the length,
+  `Infinity` where it has no end, and a multivariant playlist's first
+  variant, which a player starts on, for the size and, from its own
+  playlist, the length — and no segment, which is the player's. Read as a
+  container, every playlist was an `error`: YouTube's embed sets its
+  playlist as the `src` wherever `canPlayType` takes HLS, and loaded it
+  again and again, with the player under it mounted each time. Its `readyState`, `duration`, `videoWidth` and `currentTime`
   are this model's, and the clock runs while it plays, `timeupdate` four
   times a second, looping or ending at its duration. The bytes are read
   host-side and never reach the page's realm, since another origin's are
