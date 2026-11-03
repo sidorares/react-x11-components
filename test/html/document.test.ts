@@ -892,6 +892,10 @@ test('a source asked to be a document is one, its head there for what comes afte
 
 test('a frameset takes the body’s place while nothing has been put in the body, and holds frames alone', () => {
   documentHolds([
+    [
+      '<!doctype html><frameset></frameset></html>x z',
+      'html(head() frameset() " ")',
+    ],
     // text in a drawing keeps the frameset out, where a NULL in it does not
     [
       '<!doctype html><svg>x</svg><frameset><frame></frameset>',

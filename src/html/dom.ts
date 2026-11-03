@@ -3229,13 +3229,7 @@ const BLOCKS = new Set([
 ]);
 
 /** The end tags that pop to their element where it is in scope. */
-const BLOCK_ENDS = new Set([
-  ...BLOCKS,
-  'button',
-  'listing',
-  'pre',
-  'select',
-]);
+const BLOCK_ENDS = new Set([...BLOCKS, 'button', 'listing', 'pre', 'select']);
 
 const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 
@@ -3623,7 +3617,8 @@ function putNode(
   takeNode(node);
   const kids = parent.children;
   const at = before ? kids.indexOf(before) : -1;
-  const prev = at >= 0 ? (kids[at - 1] ?? null) : (kids[kids.length - 1] ?? null);
+  const prev =
+    at >= 0 ? (kids[at - 1] ?? null) : (kids[kids.length - 1] ?? null);
   if (at >= 0) kids.splice(at, 0, node);
   else kids.push(node);
   node.parent = parent;
@@ -3803,7 +3798,9 @@ class DocumentParser extends Parser {
   private _plaintext = false;
 
   override isInForeignContext(): boolean {
-    return (this as unknown as ParserInternals).foreignContext[0] !== NOT_FOREIGN;
+    return (
+      (this as unknown as ParserInternals).foreignContext[0] !== NOT_FOREIGN
+    );
   }
 
   /** A document from its first token, as `HtmlSource` asks for one. */
@@ -3908,7 +3905,10 @@ class DocumentParser extends Parser {
     this._made = '';
     this._startTag(name, attribs, selfClosing);
     const tokenizer = self.tokenizer;
-    if (tokenizer.isSpecial && (this._made !== name || self.stack[0] !== name)) {
+    if (
+      tokenizer.isSpecial &&
+      (this._made !== name || self.stack[0] !== name)
+    ) {
       tokenizer.isSpecial = false;
       tokenizer.currentSequence = NO_SEQUENCE;
     }
@@ -4103,13 +4103,18 @@ class DocumentParser extends Parser {
             this._pendingSpace = false;
           }
           return;
+        case AFTER_AFTER_FRAMESET: {
+          // the white space in it, wherever it is, as the body takes it
+          const space = data.replace(NOT_SPACES, '');
+          if (space) this._bodyText(space);
+          return;
+        }
         case INITIAL:
         case BEFORE_HTML:
         case BEFORE_HEAD:
-        case AFTER_AFTER_BODY:
-        case AFTER_AFTER_FRAMESET: {
+        case AFTER_AFTER_BODY: {
           const rest = data.replace(LEADING_SPACE, '');
-          if (this._mode >= AFTER_AFTER_BODY && rest.length < data.length) {
+          if (this._mode === AFTER_AFTER_BODY && rest.length < data.length) {
             this._bodyText(data.slice(0, data.length - rest.length));
           }
           data = rest;
@@ -4117,8 +4122,7 @@ class DocumentParser extends Parser {
           if (this._mode === INITIAL) this._initialElse();
           else if (this._mode === BEFORE_HTML) this._insertHtml({});
           else if (this._mode === BEFORE_HEAD) this._insertHead({});
-          else if (this._mode === AFTER_AFTER_BODY) this._mode = IN_BODY;
-          else return;
+          else this._mode = IN_BODY;
           continue;
         }
         case IN_HEAD:
@@ -4399,9 +4403,7 @@ class DocumentParser extends Parser {
             return;
           }
           const next =
-            name === 'caption' ||
-            name === 'colgroup' ||
-            SECTIONS.has(name)
+            name === 'caption' || name === 'colgroup' || SECTIONS.has(name)
               ? IN_TABLE
               : name === 'col'
                 ? IN_COLUMN_GROUP
@@ -4918,7 +4920,6 @@ class DocumentParser extends Parser {
     this._mode = BEFORE_HTML;
   }
 
-
   private _insertHtml(attribs: Record<string, string>): void {
     this._insert('html', attribs);
     this._mode = BEFORE_HEAD;
@@ -4995,13 +4996,23 @@ class DocumentParser extends Parser {
           this._initialElse();
           continue;
         case BEFORE_HTML:
-          if (name !== 'head' && name !== 'body' && name !== 'html' && name !== 'br') {
+          if (
+            name !== 'head' &&
+            name !== 'body' &&
+            name !== 'html' &&
+            name !== 'br'
+          ) {
             return;
           }
           this._insertHtml({});
           continue;
         case BEFORE_HEAD:
-          if (name !== 'head' && name !== 'body' && name !== 'html' && name !== 'br') {
+          if (
+            name !== 'head' &&
+            name !== 'body' &&
+            name !== 'html' &&
+            name !== 'br'
+          ) {
             return;
           }
           this._insertHead({});
@@ -5374,7 +5385,11 @@ class DocumentParser extends Parser {
         }
         const entry = list[ni]!;
         const clone = cbs.made(entry.name, { ...entry.attribs });
-        const replaced = { el: clone, name: entry.name, attribs: entry.attribs };
+        const replaced = {
+          el: clone,
+          name: entry.name,
+          attribs: entry.attribs,
+        };
         list[ni] = replaced;
         T[T.length - 1 - nk] = clone;
         cbs.openFormatting.delete(node);
@@ -5505,7 +5520,8 @@ class DocumentParser extends Parser {
   private _insert(name: string, attribs: Record<string, string>): void {
     const self = this as unknown as ParserInternals;
     const { stack, foreignContext, cbs } = self;
-    if (this._foster && FOSTERING.has(stack[0])) cbs.place = this._fosterPlace();
+    if (this._foster && FOSTERING.has(stack[0]))
+      cbs.place = this._fosterPlace();
     stack.unshift(name);
     if (FRAMED.has(name)) {
       foreignContext.unshift(
@@ -5538,7 +5554,8 @@ class DocumentParser extends Parser {
   ): void {
     const self = this as unknown as ParserInternals;
     const { stack, foreignContext, cbs } = self;
-    if (this._foster && FOSTERING.has(stack[0])) cbs.place = this._fosterPlace();
+    if (this._foster && FOSTERING.has(stack[0]))
+      cbs.place = this._fosterPlace();
     if (FRAMED.has(name)) {
       foreignContext.unshift(frameOf(name, around, stack[0], attribs));
     }
@@ -5739,7 +5756,8 @@ class DocumentParser extends Parser {
     const { stack, cbs } = this as unknown as ParserInternals;
     if (stack.length || this._contextual) return false;
     return !cbs.root.children.some(
-      (kid) => isElement(kid) || (kid instanceof Text && NOT_SPACE.test(kid.data)),
+      (kid) =>
+        isElement(kid) || (kid instanceof Text && NOT_SPACE.test(kid.data)),
     );
   }
 
@@ -5881,7 +5899,7 @@ class DocumentParser extends Parser {
       }
     }
     return -1;
-  }  /**
+  } /**
    * `_closedBy` with nothing foreign open, which is nearly every walk there is.
    * It looks as far as a document's tree goes (`MAX_DEPTH`), and past that takes
    * the name for what it finds, as htmlparser2 did: a walk costs what is open, so
@@ -5901,7 +5919,7 @@ class DocumentParser extends Parser {
       if (stops.has(el)) return -1;
     }
     return kin ? -1 : stack.indexOf(name, end);
-  }  /**
+  } /**
    * A start tag that ends foreign content closes it, as far as the nearest
    * HTML element or integration point, and what it opens, and all that comes
    * after, stands there (HTML 13.2.6.5). htmlparser2 keeps it in the drawing,
