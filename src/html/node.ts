@@ -76,7 +76,6 @@ import {
   isElement,
   isForeign,
   isStyleOrScript,
-  isInputButton,
   isText,
   loadsLazily,
   madeByParser,
@@ -202,6 +201,7 @@ import {
   inLightTree,
   tailFrom,
   containerBoxes,
+  drawnControl,
   CONTENT_IMAGES,
   CLEARED_FROM,
   COLUMN_LINES,
@@ -9297,11 +9297,9 @@ export class HtmlViewNode extends Node {
           if (change & FONT_LENGTHS && tree.firstLine) return false;
           resizedBoxes.push(box);
         }
-        // an input button the page took to styling, or stopped, is drawn
-        // by the document or mounted as the palette's widget: another box
-        if (kept.styledControl !== style.styledControl && isInputButton(el)) {
-          return false;
-        }
+        // a control the page took to drawing, or stopped, is drawn by the
+        // document or mounted as the palette's widget: another box
+        if (drawnControl(el, kept) !== drawnControl(el, style)) return false;
         if (WIDGETS.has(box.replaced)) {
           const kind = box.replaced!;
           if (styledField(kind, kept) !== styledField(kind, style)) {

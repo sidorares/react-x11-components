@@ -50,7 +50,15 @@ import {
 import type {} from 'react-x11/jsx-runtime';
 
 import { hx } from './hx.js';
-import { attr, flatChildrenOf, isElement, isText, tagOf } from './dom.js';
+import {
+  attr,
+  flatChildrenOf,
+  isCheckable,
+  isElement,
+  isText,
+  tagOf,
+} from './dom.js';
+import { inputType } from './form.js';
 import type { Element } from './dom.js';
 import { stepFrom } from './focus.js';
 import type { FocusStop } from './focus.js';
@@ -233,6 +241,12 @@ export function useFocusStops(options: StopsOptions): Stops {
     const space = ev.keysym === XK_SPACE || ev.codepoint === 32;
     const node = view.current;
     if (!node || !el || !(enter || space)) return;
+    // a box is ticked before its click is told, by Space alone (HTML's
+    // legacy pre-activation behaviour), which `activate` does
+    if (isCheckable(el)) {
+      if (space && forms.activate(el)) ev.preventDefault();
+      return;
+    }
     const href = node.hrefOf(el);
     // a link is followed by Enter alone: Space is the page's
     if (href !== null && !enter) return;
@@ -271,7 +285,14 @@ export function useFocusStops(options: StopsOptions): Stops {
       // mounting one damages nothing and costs the document no repaint.
       const sized = el === anchor;
       const link = node.hrefOf(el) !== null;
-      const role = link ? 'link' : BUTTONS.has(tagOf(el)) ? 'button' : null;
+      const checkable = isCheckable(el);
+      const role = link
+        ? 'link'
+        : checkable
+          ? inputType(el)
+          : BUTTONS.has(tagOf(el))
+            ? 'button'
+            : null;
       out.push({
         element: el,
         node: hx('box', {
@@ -280,6 +301,9 @@ export function useFocusStops(options: StopsOptions): Stops {
           tabIndex: stop.tabbable ? 0 : -1,
           selectable: false,
           ...(role && { role }),
+          ...(checkable && {
+            'aria-checked': attr(el, 'checked') !== undefined,
+          }),
           'aria-label': nameOf(el),
           style: {
             position: 'absolute',

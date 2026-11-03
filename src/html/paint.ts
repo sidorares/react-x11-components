@@ -4901,9 +4901,14 @@ function paintBackgroundOf(
     paintShapedBorder(ctx, box, options);
   } else {
     if (style.boxShadow) paintShadows(ctx, box, options, false);
-    // A range the page left its look draws neither: Blink's theme paints
-    // it in their place, unlike a field's, which gives way to them.
-    const themed = box.replaced === 'range' && style.appearance !== 'none';
+    // A range, a checkbox or a radio button the page left its look draws
+    // neither: Blink's theme paints it in their place, unlike a field's,
+    // which gives way to them.
+    const themed =
+      (box.replaced === 'range' ||
+        box.replaced === 'checkbox' ||
+        box.replaced === 'radio') &&
+      style.appearance !== 'none';
     if (box !== options.canvasSource && !themed) {
       paintLayers(ctx, box, options, frameImages(ctx, box, options));
     }

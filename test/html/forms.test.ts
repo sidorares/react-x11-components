@@ -639,6 +639,123 @@ metric(
   },
 );
 
+metric(
+  'a checkbox and a radio button at appearance: none are drawn by the document, and ticked by a press',
+  async () => {
+    // At `appearance: none` a checkbox has no look of its own in any
+    // engine: it is the page's box, as large as its size says, with its
+    // `::before` and `::after`. Bootstrap's, Tailwind's and Pico's are
+    // drawn so, and a widget mounted for one drew the palette's tick over
+    // the page's.
+    const changes: [string | undefined, unknown][] = [];
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;background:#ffffff}' +
+            '.c{appearance:none;margin:0 4px 0 0;width:20px;height:20px;' +
+            'border:2px solid #000000;background:#ff0000}' +
+            '.c:checked{background:#00ff00}' +
+            '.c::before{content:"";display:block;width:6px;height:6px;' +
+            'background:#0000ff}</style>' +
+            '<input id="box" class="c" type="checkbox">' +
+            '<input id="r1" class="c" type="radio" name="g">' +
+            '<input id="r2" class="c" type="radio" name="g" checked>' +
+            '<input id="off" class="c" type="checkbox" disabled>' +
+            '<input id="native" type="checkbox">',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void changes.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 120, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (
+      el as unknown as {
+        _tree: { controls: { el: { attribs: Record<string, string> } }[] };
+      }
+    )._tree;
+    assert.deepStrictEqual(
+      tree.controls.map((b) => b.el.attribs.id),
+      ['native'],
+      'a widget for the one the page left alone',
+    );
+    const box = boxOf(el, 'box');
+    assert.deepStrictEqual(
+      [box.width, box.height],
+      [24, 24],
+      'its size and its border',
+    );
+    const target = el as unknown as DrawnNode;
+    const at = (id: string, x: number, y: number) => {
+      const b = boxOf(el, id);
+      return [target.abs.x + b.x + x, target.abs.y + b.y + y] as const;
+    };
+    await expectPixel(result.ctx, ...at('box', 18, 18), '#ff0000', {
+      message: "the page's ground",
+    });
+    await expectPixel(result.ctx, ...at('box', 4, 4), '#0000ff', {
+      message: 'its ::before',
+    });
+    const press = async (id: string) => {
+      const b = boxOf(el, id);
+      const dx = b.x + b.width / 2 - target.abs.width / 2;
+      const dy = b.y + b.height / 2 - target.abs.height / 2;
+      await act(async () => {
+        fireEvent.mouseDown(target, { dx, dy });
+        fireEvent.mouseUp(target, { dx, dy });
+      });
+    };
+    await press('box');
+    assert.deepStrictEqual(changes, [['box', true]]);
+    await expectPixel(result.ctx, ...at('box', 18, 18), '#00ff00', {
+      message: ':checked restyles it',
+    });
+    await press('r1');
+    const checked = (id: string) =>
+      boxOf(el, id).el!.attribs.checked !== undefined;
+    assert.deepStrictEqual(
+      [checked('r1'), checked('r2')],
+      [true, false],
+      'a radio takes its group',
+    );
+    await press('off');
+    assert.strictEqual(changes.length, 2, 'a disabled one is not ticked');
+  },
+);
+
+test("a checkbox's native look takes none of the page's padding or border", async () => {
+  // Blink's and WebKit's checkbox at `appearance: auto` resets both: it is
+  // as large as its size, and a page that frames one frames nothing.
+  const { node } = await render(
+    '<input id="framed" type="checkbox" style="margin:0;border:5px solid red;' +
+      'padding:5px;background:red">' +
+      '<input id="plain" type="checkbox" style="margin:0">',
+  );
+  const el = view(node);
+  const framed = boxOf(el, 'framed');
+  const plain = boxOf(el, 'plain');
+  assert.deepStrictEqual(
+    [framed.width, framed.height],
+    [plain.width, plain.height],
+    'no larger for them',
+  );
+  const read = el.computedStyle(
+    boxOf(el, 'framed').el as unknown as Element,
+  )!;
+  assert.deepStrictEqual(
+    [read['border-top-width'], read['padding-top']],
+    ['0px', '0px'],
+    'and reads none of them',
+  );
+});
+
 test("a field set to appearance: none is the page's to draw", async () => {
   // `appearance: none` says a field's native look is off whether or not
   // the page gave it a border or a background — and it is how a design

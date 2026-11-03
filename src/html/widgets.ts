@@ -43,6 +43,7 @@ import {
   attr,
   isDropDown,
   isElement,
+  isCheckable,
   isInputButton,
   setPickerOpen,
   tagOf,
@@ -738,6 +739,7 @@ export function useForms(options: FormsOptions): Forms {
       toggleDetails(at.element);
     } else if (at.kind === 'image')
       press(at.element, imagePoint(at.element, ev));
+    else if (at.kind === 'check') activateLabel(at.element);
     else press(at.element);
   };
 
@@ -912,6 +914,12 @@ export function useForms(options: FormsOptions): Forms {
         press(el);
         return true;
       }
+      // ticked before its click is told, which this tells (HTML's legacy
+      // pre-activation behaviour)
+      if (isCheckable(el)) {
+        activateLabel(el);
+        return true;
+      }
       if (tag === 'input' && inputType(el) === 'image') {
         // from the keyboard, as a browser's: at the image's corner
         press(el, { x: 0, y: 0 });
@@ -943,6 +951,7 @@ export function useForms(options: FormsOptions): Forms {
 type Pressable =
   | { kind: 'button'; element: Element }
   | { kind: 'image'; element: Element }
+  | { kind: 'check'; element: Element }
   | { kind: 'summary'; element: Element }
   | { kind: 'label'; element: Element; control: Element };
 
@@ -974,6 +983,10 @@ function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
     }
     if (tag === 'input' && inputType(node) === 'image') {
       return isDisabled(node) ? null : { kind: 'image', element: node };
+    }
+    // a checkbox or a radio button the document draws (`drawnControl`)
+    if (isCheckable(node)) {
+      return isDisabled(node) ? null : { kind: 'check', element: node };
     }
     if (tag === 'label') {
       const control = labeledControl(node);

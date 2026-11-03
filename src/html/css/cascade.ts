@@ -34,6 +34,7 @@ import {
   inActiveTransition,
   isModal,
   isFullscreen,
+  isCheckable,
   isDropDown,
   isPickerOpen,
   isPopoverOpen,
@@ -8820,6 +8821,13 @@ export class Cascade {
     ) {
       style.styledControl = true;
     }
+    // A checkbox's or a radio button's native look takes no padding and no
+    // border, whatever the page set: Blink and WebKit reset both
+    // (`LayoutTheme::AdjustCheckboxStyle`), so it is as large as its size
+    // says, and reads none of them. Firefox keeps the width and draws none.
+    if (own && style.appearance !== 'none' && isCheckable(el)) {
+      noEdges(style);
+    }
     // a button is laid out as one, whatever `display` it was given, and
     // so is an input button the page draws (`styledControl`)
     if (
@@ -9734,6 +9742,22 @@ function dropPaletteChrome(el: Element, out: Candidate[]): void {
     out[kept++] = c;
   }
   out.length = kept;
+}
+
+/** A box with no padding and no border, as a native look resets them. */
+function noEdges(style: ComputedStyle): void {
+  style.paddingTop = 0;
+  style.paddingRight = 0;
+  style.paddingBottom = 0;
+  style.paddingLeft = 0;
+  style.borderTopWidth = 0;
+  style.borderRightWidth = 0;
+  style.borderBottomWidth = 0;
+  style.borderLeftWidth = 0;
+  style.borderTopStyle = 'none';
+  style.borderRightStyle = 'none';
+  style.borderBottomStyle = 'none';
+  style.borderLeftStyle = 'none';
 }
 
 /** The elements whose look is a control's own until the page styles it

@@ -26,6 +26,7 @@ import {
   flatParentOf,
   imageUrlOf,
   isElement,
+  isCheckable,
   isInputButton,
   isText,
   inImpliedHead,
@@ -4411,13 +4412,11 @@ class Builder {
     ) {
       this._awaitingKind.push(el);
     }
-    // An input button the page styled is drawn as the page has it, as a
-    // `<button>` is: a box with its label in it, and not the palette's
-    // widget, whose look and size would be the window's — a black pill
-    // with white text was a framed white button half as wide again.
-    const drawnButton =
-      replaced === 'button' && style.styledControl && isInputButton(el);
-    if (replaced !== 'none' && !drawnButton) {
+    // A control the page draws is a box like any (`drawnControl`), and not
+    // the palette's widget, whose look and size would be the window's.
+    const drawn = replaced !== 'none' && drawnControl(el, style);
+    const drawnButton = drawn && replaced === 'button';
+    if (replaced !== 'none' && !drawn) {
       this._replaced(el, tag, replaced, style, into);
       return;
     }
@@ -6929,6 +6928,22 @@ function anonymousOf(
  *  `white-space: pre`, it made a cell of the line break before every row. */
 function isDroppableWhitespace(box: Box): boolean {
   return box.kind === 'text' && isBlank(box.text);
+}
+
+/**
+ * Whether a control is drawn by the document, a box like any other, rather
+ * than mounted as the palette's widget. An input button the page styles is
+ * a `<button>` with its label in it (CSS UI 4, 7.2.1): a black pill with
+ * white text was a framed white button half as wide again. A checkbox or a
+ * radio button at `appearance: none` has no look of its own at all, in
+ * every engine, and is the page's box, its `::before` and `::after` with
+ * it: a design system draws its ticks and its switches so. Pressed, keyed
+ * and focused as a drawn button is (`pressableAt`, `activate`, `stops.ts`).
+ */
+export function drawnControl(el: Element, style: ComputedStyle): boolean {
+  if (el.name !== 'input' && tagOf(el) !== 'input') return false;
+  if (style.appearance === 'none' && isCheckable(el)) return true;
+  return style.styledControl && isInputButton(el);
 }
 
 /** The label an input button shows: its `value`, or what a submit or a
