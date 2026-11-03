@@ -37,7 +37,7 @@ import { parseStylesheet } from '../../src/html/css/parse.js';
 import type { RootLook } from '../../src/html/css/style.js';
 import { HtmlSource } from '../../src/html/dom.js';
 import { inkWalked } from '../../src/html/paint.js';
-import { boxLayoutsMade } from '../../src/html/layout/block.js';
+import { blocksKept, boxLayoutsMade } from '../../src/html/layout/block.js';
 import { Html } from '../../src/index.js';
 import { mulberry32 } from '../mulberry32.js';
 import {
@@ -242,7 +242,7 @@ metric(
       setAttr(
         byId(el, 'hover'),
         'style',
-        `left:${k * 9}px;transform:scaleX(0.2)`,
+        `left:${k * 9}px;width:${k * 7 + 20}px;transform:scaleX(0.2)`,
       ),
       setAttr(byId(el, 'scrub'), 'style', `transform:translateX(${k * 30}px)`),
     ];
@@ -256,6 +256,7 @@ metric(
     const facts = source.facts();
     const ink = inkWalked();
     const laid = boxLayoutsMade();
+    const kept = blocksKept();
     // and what the layout owed for the `left` compares of what it moved
     const owed = el as unknown as {
       _laidShapes(...a: unknown[]): { boxes: Map<unknown, unknown> } | null;
@@ -281,10 +282,17 @@ metric(
     assert.ok(source.facts() === facts, 'the document was scanned again');
     const walked = (inkWalked() - ink) / frames.length;
     const made = (boxLayoutsMade() - laid) / frames.length;
-    // the bars, the boxes around them, and the blocks a layout keeps beside
-    // them: a whole walk is some 900 boxes, and a comment laid out is two
+    // the bars and the boxes around them: a whole walk is some 900 boxes;
+    // and the bar that took lengths is laid out alone, against its list
+    // (`layoutApart`), where the document's layout kept every block
+    // beside the path down to it, and moved each
     assert.ok(walked < 150, `${walked} boxes' ink walked a frame`);
-    assert.ok(made < 40, `${made} boxes laid out a frame`);
+    assert.ok(made <= 1, `${made} boxes laid out a frame`);
+    assert.strictEqual(
+      blocksKept() - kept,
+      0,
+      'blocks kept: the document was laid out',
+    );
     assert.ok(
       compared > 0 && compared / frames.length < 10,
       `${compared / frames.length} boxes compared a frame`,
@@ -293,6 +301,62 @@ metric(
     assert.ok(!damage.includes(el), 'all of it repainted');
     const drawn = await snapshot(result, el);
     assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'lengths taken by a box out of the flow lay it out alone, and come out as a whole layout does',
+  async () => {
+    // what it holds is laid out with it — a relative box, a transform, a
+    // box positioned inside it — against a containing block a relative
+    // offset and a translation moved, and where it reaches past the
+    // document's foot the document is laid out
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0}' +
+        ' .wrap{position:relative;top:7px;transform:translate(5px,3px);' +
+        'margin:10px;height:80px;background:#eee}' +
+        ' #a{position:absolute;left:10px;top:10px;width:60px;' +
+        'background:#08f;padding:4px}' +
+        ' #a .r{position:relative;left:6px;background:#f80;height:10px}' +
+        ' #a .t{transform:translateX(9px);background:#0a0;height:8px}' +
+        ' #a .in{position:absolute;right:2px;bottom:2px;width:30%;' +
+        'height:6px;background:#a0a}</style>' +
+        '<p>before</p><div class="wrap"><div id="a"><div class="r"></div>' +
+        '<div class="t"></div><p>some words that wrap</p>' +
+        '<div class="in"></div></div></div><p style="height:400px">after</p>',
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const a = byId(el, 'a');
+    const steps = [
+      'left:30px;width:90px',
+      'left:12px;width:40px;top:20px',
+      'width:120px;padding:9px',
+      // past the foot of the document, whatever the fonts
+      'top:900px;height:300px',
+      'top:20px;height:auto',
+    ];
+    let apart = 0;
+    for (const style of steps) {
+      const tree = treeOf(el);
+      const kept = blocksKept();
+      const laid = boxLayoutsMade();
+      el.touchDocument([setAttr(a, 'style', style)]);
+      // laid out alone: the blocks of the document were neither kept nor
+      // laid out again
+      if (blocksKept() === kept && boxLayoutsMade() - laid < 12) apart += 1;
+      // a document of another height is measured again first
+      await act();
+      const drawn = await snapshot(result, el);
+      assert.ok(treeOf(el) === tree, `the boxes were built again: ${style}`);
+      assert.strictEqual(
+        bytesApart(drawn, await rebuilt(result, el)),
+        0,
+        `drawn otherwise than a rebuild: ${style}`,
+      );
+    }
+    assert.ok(apart >= 3, `${apart} of the changes laid out alone`);
   },
 );
 

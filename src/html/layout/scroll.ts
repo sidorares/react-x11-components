@@ -187,6 +187,40 @@ export function applyScrollOffsets(
 }
 
 /**
+ * `applyScrollOffsets` for what `box` holds alone, after a layout of it and
+ * of nothing else (`layoutApart` in `block.ts`): each box in it laid out
+ * where no scroll has it, and each scroll container in it moved by its
+ * offset; and the scrollable overflow kept for each scroll container around
+ * it forgotten, since what it holds may reach elsewhere now (`extentOf`).
+ * A container around it is scrolled from its start, or the layout is not
+ * one of `box` alone.
+ */
+export function applyScrollOffsetsIn(
+  tree: BoxTree,
+  box: Box,
+  move: MoveBox,
+): void {
+  for (let up = box.parent; up; up = up.parent) extents.delete(up);
+  const given = OFFSETS.get(tree);
+  const offsets = given?.offsets;
+  const s = given?.scale ?? 1;
+  const stack: Box[] = [box];
+  while (stack.length) {
+    const at = stack.pop()!;
+    APPLIED.delete(at);
+    extents.delete(at);
+    const want = at.el ? offsets?.get(at.el) : undefined;
+    if (want && (want.x || want.y) && isScroller(at)) {
+      SCROLLED.add(tree);
+      scrollContent(at, want.x * s, want.y * s, move);
+    }
+    for (let i = at.children.length - 1; i >= 0; i -= 1) {
+      stack.push(at.children[i]);
+    }
+  }
+}
+
+/**
  * Scroll a container's content to an offset, in the device pixels its boxes
  * are laid out in, kept within how far it can be: moved by the difference
  * from where it is now. Answers the offset it came to. The ink bounds are

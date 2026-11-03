@@ -1133,7 +1133,10 @@ export function boundsAfterMove(
   // are in `KeptInk.moves`, whose records no walk reads. Every other record
   // is of ink nothing moved: stale at each frame of a mail page's spinner,
   // all of them sent the layout after down its 12,000 boxes.
-  boundsOf(box, moved, null, false, false);
+  const reach = boundsOf(box, moved, null, false, false);
+  // and how far down it reaches, which its parent's walk would have noted
+  // and the document's height is read from (`layoutApart`)
+  if (box.outOfFlow) OUT_OF_FLOW_REACH.set(box, reach);
   let child = box;
   for (let at = box.parent; at; child = at, at = at.parent) {
     if (done?.has(at)) break;
