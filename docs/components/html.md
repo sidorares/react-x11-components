@@ -1070,7 +1070,9 @@ nothing.
 
 **`EventSource` is built on the page's own requests**, so a stream is held to
 CORS and to the document's network as a `fetch` is, and it connects again after
-`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
+`retry` with `Last-Event-ID`. What it sends of its own, `Cache-Control: no-cache`
+and `Last-Event-ID`, asks no preflight, and one another origin's CORS turns down
+is over, where a connection lost is made again. `CompressionStream` and `DecompressionStream` run
 on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
 and `brotli`.
 
@@ -2537,7 +2539,9 @@ Chrome's format.
 attribute, a cookie for its host or its domain, never for a public suffix,
 paths longest first, `Secure` set and sent over `https:` or a loopback host
 alone, `HttpOnly` never shown to a script nor set by one, `SameSite` held to
-in every context, the `__Secure-` and `__Host-` prefixes, and Chrome's caps.
+in every context, the `__Secure-`, `__Host-`, `__Http-` and `__Host-Http-`
+prefixes — a `__Host-` cookie says `Path=/` itself, and an `__Http-` one is
+`HttpOnly` and `Secure`, so HTTP's alone — and Chrome's caps.
 A cookie that names no `SameSite` is `None`'s, as Firefox and Safari have
 it; `thirdParty: false` sends none on another site's request. The Public
 Suffix List comes from the optional peer `tldts` through
@@ -2573,8 +2577,11 @@ page asks from, since the facade runs where a page can replace what it calls.
   does a `crossorigin` script, which is then told in full. One that is refused
   fires `error` and runs nothing. A host that says nothing of the headers leaves
   a `crossorigin` script running muted, and a module of another origin refused.
-- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`,
-  `'error'` fails. Each hop to another origin is held to CORS, and preflighted
+- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`
+  at the address asked for, and `'error'` fails, whether or not the redirect says
+  where it goes. Where the redirect goes stays on the host, and a navigation a
+  service worker answers with one, through its cache or a clone, follows it from
+  where that redirect was. Each hop to another origin is held to CORS, and preflighted
   where the request needs one, so a `DELETE` one server lets through does not go
   on to wherever that server sends it. A request that passed through a third
   origin asks the next with `Origin: null`, and one that left the page's origin
@@ -3376,12 +3383,21 @@ its scripts in a realm of its own (`src/html/scripts/frames.ts`): a host
 that turns scripts on gets them with no `renderEmbedded` of its own, and
 one that has one is asked first. An `<iframe srcdoc>` shows the markup its
 attribute holds, ahead of any `src`, as a document at `about:srcdoc` of the
-page's origin, with the page's base — and goes to it again when a script
+page's origin, with the page's base — `location.origin` reads `null` in one a
+sandbox gives no origin, as its blob URLs say — and goes to it again when a script
 sets the attribute, changes it or takes it away, to its `src` then, as
 HTML's "process the iframe attributes" has it; a `src` set while it has a
 `srcdoc` goes nowhere. A server-rendered `<iframe>` a React page hands its
 `srcdoc` after hydrating had its first `about:blank` by then, and stayed
 blank.
+
+**A response of no content navigates nothing** (HTML 7.4.2.3.3): a frame sent
+to a 204 or a 205 goes on showing what it showed and hears no `load`, and so do
+the example browser's tab and the WPT harness's windows, a popup's initial
+`about:blank` among them. A frame's `marginwidth` and `marginheight` are its
+document's body's margins, under the body's own `marginwidth`, `leftmargin`,
+`marginheight` and `topmargin`, each of which sets two sides; `rightmargin` and
+`bottommargin` set nothing, as in Chrome and Firefox.
 
 **A frame's document has a viewport of its own: its frame's content box.**
 Its window's `innerWidth` and `innerHeight`, `matchMedia`, `visualViewport`
