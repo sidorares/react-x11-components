@@ -55,6 +55,7 @@ import {
   flatChildrenOf,
   isCheckable,
   isElement,
+  isInputButton,
   isText,
   tagOf,
 } from './dom.js';
@@ -290,7 +291,7 @@ export function useFocusStops(options: StopsOptions): Stops {
         ? 'link'
         : checkable
           ? inputType(el)
-          : BUTTONS.has(tagOf(el))
+          : pressedAsButton(el)
             ? 'button'
             : null;
       out.push({
@@ -420,7 +421,17 @@ export function useFocusableMarkup(source: string): boolean {
 }
 
 /** The tags whose stop an assistive technology hears as a button. */
-const BUTTONS = new Set(['button', 'summary', 'input']);
+const BUTTONS = new Set(['button', 'summary']);
+
+/** Whether a stop is a button to an assistive technology: a `<button>`, a
+ *  summary, an input button the page draws and an image button. A colour
+ *  well is drawn too, and opens no picker here, so it is none. */
+function pressedAsButton(el: Element): boolean {
+  if (BUTTONS.has(tagOf(el))) return true;
+  return (
+    isInputButton(el) || (tagOf(el) === 'input' && inputType(el) === 'image')
+  );
+}
 
 /**
  * The stops whose boxes are mounted, in the document's order: the first and
