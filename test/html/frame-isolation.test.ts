@@ -40,6 +40,8 @@ afterEach(cleanup);
 await preloadHtmlScripts();
 
 const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
+/** A test that presses at a point, which only a real server can. */
+const pressing = SCRIPTS_CONTAINED && FONTS ? nodeTest : nodeTest.skip;
 
 const APP = 'https://app.test/';
 const OTHER = 'https://other.test/';
@@ -53,9 +55,13 @@ interface Scene {
   logs: string[];
   asked: FetchRequest[];
   submitted: string[];
+  /** What the host's `onLink` heard. */
+  linked: string[];
   navigated: string[];
   opened: HtmlPopup[];
   tabs: string[];
+  /** A press and a release at a point of the window, as a user's. */
+  click(x: number, y: number): Promise<void>;
 }
 
 const HTML: [string, string][] = [['content-type', 'text/html']];
@@ -71,9 +77,11 @@ async function scene(
     logs: [],
     asked: [],
     submitted: [],
+    linked: [],
     navigated: [],
     opened: [],
     tabs: [],
+    click: async () => {},
   };
   const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
     out.asked.push(request);
@@ -112,15 +120,34 @@ async function scene(
       baseUrl: base,
       scripts,
       onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
+      onLink: (href: string) => void out.linked.push(href),
       style: { flexGrow: 1 },
     });
   }
-  await renderX11(
+  const rendered = await renderX11(
     h(Host),
     FONTS
       ? { width: 480, height: 320, fonts: FONTS }
       : { backend: 'mock' as const },
   );
+  const server = (
+    rendered as unknown as {
+      server?: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    }
+  ).server;
+  out.click = async (x, y) => {
+    for (const step of [
+      () => server!.injectPointerMove(x, y),
+      () => server!.injectButton(1, true),
+      () => server!.injectButton(1, false),
+    ]) {
+      step();
+      await settle(40);
+    }
+  };
   return out;
 }
 
@@ -830,6 +857,54 @@ test('a page replacing what the facade reads an origin through gets no store, no
   );
   assert.equal(await until(s, 'forged store'), 'SecurityError');
   assert.equal(await until(s, 'forged worker'), 'SecurityError');
+});
+
+/** A link the size of its frame, to a new window. */
+const BLANK_LINK = `<body style="margin:0"><a href="${APP}x" target="_blank" style="display:block;height:90px">go</a></body>`;
+
+pressing('a sandbox with no script of its own opens a window that keeps its flags from a link a user follows, and no tab', async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-popups" style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+    { [`${APP}x`]: 'x' },
+  );
+  await settle(300);
+  await s.click(40, 30);
+  await settle(300);
+  assert.deepEqual(s.tabs, []);
+  assert.deepEqual(s.linked, []);
+  assert.equal(s.opened.length, 1);
+  const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+  assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+});
+
+pressing('a top-level document whose policy sandboxes it, with no scripts to run, opens a window that keeps its flags and no tab', async () => {
+  const s = await scene(
+    `<a href="${APP}x" target="_blank" style="display:block;height:90px">go</a>`,
+    { [`${APP}x`]: 'x' },
+    { headers: [['content-security-policy', 'sandbox allow-popups']] },
+  );
+  await settle(300);
+  await s.click(40, 30);
+  await settle(300);
+  assert.deepEqual(s.tabs, []);
+  assert.deepEqual(s.linked, []);
+  assert.equal(s.opened.length, 1);
+  const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+  assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+});
+
+pressing('a sandbox with no allow-popups opens nothing from a link a user follows', async () => {
+  const s = await scene(
+    `<iframe sandbox style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+    { [`${APP}x`]: 'x' },
+    { headers: [] },
+  );
+  await settle(300);
+  await s.click(40, 30);
+  await settle(300);
+  assert.deepEqual(s.tabs, []);
+  assert.deepEqual(s.linked, []);
+  assert.deepEqual(s.opened, []);
 });
 
 test('with no window seam, a sandbox opens no tab either, whatever it tells itself', async () => {

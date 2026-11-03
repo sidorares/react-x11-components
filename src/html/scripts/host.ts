@@ -1199,6 +1199,13 @@ const HEAD_CONTENT = new Set([
   'title',
 ]);
 
+/** A document of nothing, `about:blank`'s, for a window's first. */
+export function blankDocument(): Document {
+  const doc = new Document([]);
+  for (const kid of documentTree([])) DomUtils.appendChild(doc, kid);
+  return doc;
+}
+
 /**
  * A document's top as HTML's parser makes it (HTML 13.2.6.4.1–7): its
  * doctype and the comments before it, then an `<html>` holding a head and
@@ -2350,6 +2357,18 @@ export class DomHost {
     return this.sandbox & SB_PROPAGATES ? this.sandbox : 0;
   }
 
+  /** A window with no opener. That is a tab, the host's, unless this document
+   *  may open none, or has flags to hand on, which a tab cannot carry: a host
+   *  is told of no document that keeps them (`openApart`). */
+  private _openTab(url: string, target: string, noreferrer: boolean): void {
+    if (this.sandbox & SB_POPUPS) return;
+    const name = /^_blank$/i.test(target) ? '' : target;
+    if (this.popupSandbox) {
+      const features = { popup: false, noreferrer };
+      this.windows?.apart({ url, name, features, post: null });
+    } else this._seams.navigate(url, 'tab', null, name);
+  }
+
   /** Whether this document may send the window at the top of it somewhere
    *  (HTML 7.4.2.3, "allowed by sandboxing to navigate"), a gesture behind it
    *  or not. */
@@ -2360,11 +2379,6 @@ export class DomHost {
   frameDocumentAt(id: number): Document | null {
     const frame = this._nodes.get(id);
     return (frame && this._frames.get(frame as Element)) ?? null;
-  }
-
-  /** A document of nothing, `about:blank`'s, for a window's first. */
-  blankDocument(): Document {
-    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -5522,13 +5536,7 @@ export class DomHost {
         if (this.sandbox & SB_POPUPS) return 0;
         return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
       case 'windowTab':
-        if (this.sandbox & SB_POPUPS) return null;
-        this._seams.navigate(
-          text(a),
-          'tab',
-          null,
-          /^_blank$/i.test(text(c)) ? '' : text(c),
-        );
+        this._openTab(text(a), text(c), !!b);
         return null;
       case 'windowFind':
         return this.windows?.find(text(a)) ?? 0;
@@ -5619,9 +5627,8 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
-        if (to === 'tab' && this.sandbox & SB_POPUPS) return null;
         if (to === 'here') this._seams.navigate(text(a), 'here');
-        else if (to === 'tab') this._seams.navigate(text(a), 'tab');
+        else if (to === 'tab') this._openTab(text(a), text(b), false);
         else this.navigateFrame(to, text(a), null);
         return null;
       }

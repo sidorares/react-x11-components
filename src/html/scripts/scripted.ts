@@ -51,7 +51,13 @@ import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
 import type { LoadedScript } from './script-origin.js';
-import { SB_FORMS, SB_SCRIPTS, sandboxOfPolicy } from './sandbox.js';
+import {
+  SB_FORMS,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_SCRIPTS,
+  sandboxOfPolicy,
+} from './sandbox.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
@@ -737,6 +743,33 @@ export function useScriptedHtml(
       ?.followTarget(href, target, noopener, noreferrer, post);
   };
 
+  // What only a new window could be, from a document with flags: nothing, or
+  // one that keeps them, which is never the host's to open as a tab. Answers
+  // whether that has been seen to.
+  const heldByFlags = (
+    href: string,
+    target: string,
+    rel: string | undefined,
+    post: FramePost | null,
+  ): boolean => {
+    const { sandbox } = latest.current;
+    if (sandbox & SB_POPUPS) return true;
+    if (!(sandbox & SB_PROPAGATES)) return false;
+    if (follow(href, target, rel, post)) return true;
+    // no runner has this document: a sandbox with no `allow-scripts`
+    const { noreferrer } = linkOpener(target, rel);
+    scripts.openApart(
+      {
+        url: href,
+        name: target.toLowerCase() === '_blank' ? '' : target,
+        features: { popup: false, noreferrer },
+        post,
+      },
+      sandbox,
+    );
+    return true;
+  };
+
   // a link or a form whose target names one of the page's frames loads it
   // there; anything else is the application's, as it is with scripts off
   const onLink = useCallback(
@@ -746,9 +779,13 @@ export function useScriptedHtml(
       while (link && link.name !== 'a' && link.name !== 'area') {
         link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
       }
-      const to = navigableFor(document, linkTarget(link, document));
+      const target = linkTarget(link, document);
+      const to = navigableFor(document, target);
       if (typeof to !== 'string' && scripts.navigateFrame) {
         scripts.navigateFrame(to, href, null);
+        return;
+      }
+      if (to === 'tab' && heldByFlags(href, target, link?.attribs.rel, null)) {
         return;
       }
       latest.current.props.onLink?.(href, ev);
@@ -770,14 +807,11 @@ export function useScriptedHtml(
         scripts.navigateFrame(to, submission.url, post);
         return;
       }
+      const rel = submission.form.attribs.rel;
       if (
         to === 'tab' &&
-        follow(
-          submission.url,
-          submission.target,
-          submission.form.attribs.rel,
-          post,
-        )
+        (heldByFlags(submission.url, submission.target, rel, post) ||
+          follow(submission.url, submission.target, rel, post))
       ) {
         return;
       }

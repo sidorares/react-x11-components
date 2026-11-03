@@ -61,9 +61,9 @@ import type {
   HostSeams,
   WorkerInit,
 } from './host.js';
-import type { Popup } from './popups.js';
+import type { Popup, PopupAsk } from './popups.js';
 import { forgetKept, liveSession } from './session.js';
-import { slotFor, windowOps } from './popups.js';
+import { openApart, slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
 import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
@@ -203,6 +203,24 @@ interface FrameSeat {
 }
 
 /** One document's scripts: its engine, its host, and where it has got to. */
+/** `openApart` with what makes a runner, for a document that may have none:
+ *  a top-level document's sandbox with no `allow-scripts` has no chunk of this
+ *  to reach but through `loadScriptRuntime`. */
+export function openWindowApart(
+  ask: PopupAsk,
+  url: string,
+  flags: number,
+  seams: RunnerSeams,
+  runner: ScriptRunner | null = null,
+): void {
+  openApart(
+    ask,
+    { url, flags, seams, runner },
+    (blank, address, windowSeams) =>
+      new ScriptRunner(blank, address, windowSeams),
+  );
+}
+
 export class ScriptRunner {
   readonly host: DomHost;
   readonly engine: ScriptEngine;
@@ -454,6 +472,13 @@ export class ScriptRunner {
   ): boolean {
     if (this._disposed) return false;
     return this._windows.follow(url, target, noopener, noreferrer, post);
+  }
+
+  /** A document with flags to hand on and no runner of its own opens a window
+   *  that keeps them (`openApart`): a frame of this one, which `flags` and
+   *  `url` are of, a sandbox with no `allow-scripts`. */
+  openFor(url: string, flags: number, ask: PopupAsk): void {
+    openWindowApart(ask, url, flags, this._options, this);
   }
 
   /** A page closed the window it is in, which is the host's: one created by

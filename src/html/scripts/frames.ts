@@ -32,7 +32,12 @@ import { hx } from '../hx.js';
 import { throughWorker, useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
-import { SB_FORMS, SB_POPUPS, SB_TOP_GESTURE } from './sandbox.js';
+import {
+  SB_FORMS,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_TOP_GESTURE,
+} from './sandbox.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
@@ -290,9 +295,17 @@ function FrameDocument({
       if (sandbox & SB_POPUPS) return;
       const { noopener, noreferrer } = linkOpener(target, rel);
       const runner = scripts.runner?.();
-      if (!runner?.followTarget(to, target, noopener, noreferrer, post)) {
-        outer.navigate(to, 'tab');
-      }
+      if (runner?.followTarget(to, target, noopener, noreferrer, post)) return;
+      // a tab carries no flags, and a document with none of its own to run
+      // has its window opened by the page's runner
+      if (sandbox & SB_PROPAGATES) {
+        context.parent.openFor(url, sandbox, {
+          url: to,
+          name: target.toLowerCase() === '_blank' ? '' : target,
+          features: { popup: false, noreferrer },
+          post,
+        });
+      } else outer.navigate(to, 'tab');
     } else if (where === 'here') host.navigateFrame(frame, to, post);
     else scripts.navigateFrame?.(where, to, post);
   };
