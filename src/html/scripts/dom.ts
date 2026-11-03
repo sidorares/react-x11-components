@@ -29861,6 +29861,16 @@ export function installDom(
           ),
         );
       }
+      // a `file:` URL from a page that is not one (HTML 7.4.2.2, "navigate"):
+      // refused before `navigate` fires, as Chromium's Navigation API does
+      if (/^file:/i.test(href) && !/^file:/i.test(currentOf(s).url)) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'navigate' on 'Navigation': A file: URL may only be navigated to from a file: page.",
+            'AbortError',
+          ),
+        );
+      }
       const refused = unloadingRefusal(s, 'navigate');
       if (refused) return earlyError(refused);
       const type =
