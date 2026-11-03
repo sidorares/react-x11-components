@@ -4270,7 +4270,13 @@ closes a way out a DOM binding opens by accident:
   as `undefined` every binding to `undefined` came out "zClosurez". And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
-  page sandboxes a frame through `sandbox.supports()`. How a callback is
+  page sandboxes a frame through `sandbox.supports()`. **Anything new that
+  reflects a content attribute joins `REFLECTED`**, as the kind HTML 2.6.1
+  gives it, read and written by `attrValue` and `_setAttr`, past a page's
+  own `getAttribute`: read with `parseInt`, a `long` took a vertical tab for
+  white space and `-0` for itself, and an enumerated attribute answered
+  whatever it was set to, which WPT's `html/dom/reflection-*.html` found
+  for some 27,000 of its subtests. How a callback is
   called is the IDL's too: a global's `onerror` is handed an error's
   message, file, line, column and error rather than the event
   (`globalError`), and Closure's handler read the event as the message's
@@ -6052,7 +6058,16 @@ a `<clipPath>` is not copied**: a copy is a group, and a clipPath takes
 nothing from a group (CSS Masking 1, 6.3), so the clip came out empty and
 hid what it cut. It stays a use, and an element it names outside the root
 is copied into a `<defs>` at the end of the tree (`bring`), since `SvgView`
-looks a reference up in the tree it is given.
+looks a reference up in the tree it is given. **Nor is one whose copy paints
+with `context-fill` or `context-stroke`** (`paintsWithContext`): the
+`<use>` is the context element they paint with, and a group is none, so it
+stays a use of a copy put in that `<defs>`, under an id with a space in it,
+which no `url()` of the document's can name (`CONTEXT_COPY`). **Anything new
+that draws a `<use>` as a group asks `paintsWithContext` first.** What the
+keywords come to, a marker's and a use's, gradients in the context's space
+among them, is `SvgView`'s; `<Html>`'s part is to keep them: `svgPaint`
+takes them from a rule, and nothing between the cascade and the copy turns
+one into a colour.
 
 **What a `<foreignObject>` holds is a document of its own, which the
 drawing paints.** Its HTML is a `BoxTree` of its own (`ForeignObject`,

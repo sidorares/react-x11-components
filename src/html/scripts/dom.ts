@@ -6704,6 +6704,10 @@ export function installDom(
     return map;
   };
 
+  /** The nonces a script set on elements (HTML 2.6.3), apart from their
+   *  attributes, until an attribute sets one again (`NONCE`). */
+  const nonces = new WeakMap<object, string>();
+
   class Element extends ParentNode {
     _classList: Any;
     _dataset: Any;
@@ -6733,30 +6737,16 @@ export function installDom(
       const colon = this._ns === undefined ? -1 : this._name.indexOf(':');
       return colon < 0 ? null : this._name.slice(0, colon);
     }
-    get id(): string {
-      return this.getAttribute('id') ?? '';
-    }
-    set id(v: Any) {
-      this.setAttribute('id', v);
-    }
-    get className(): string {
-      return this.getAttribute('class') ?? '';
-    }
-    set className(v: Any) {
-      this.setAttribute('class', v);
-    }
+    // `REFLECTED`'s
+    declare id: string;
+    declare className: string;
+    declare slot: string;
     get classList(): Any {
       return (this._classList ??= new DOMTokenList(this, 'class'));
     }
     // `[PutForwards=value]`: the list's value, which is the attribute
     set classList(v: Any) {
-      this.setAttribute('class', v);
-    }
-    get slot(): string {
-      return this.getAttribute('slot') ?? '';
-    }
-    set slot(v: Any) {
-      this.setAttribute('slot', v);
+      this._setAttr('class', str(v));
     }
     get attributes(): Any {
       return namedNodeMapOf(this);
@@ -6868,6 +6858,8 @@ export function installDom(
       // before it is set, so that a handler finds the attribute it replaces
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
       call('setAttr', this._id, n, str(value));
+      // the attribute is the nonce again, whatever a script set (HTML 2.6.3)
+      if (n === 'nonce') nonces.delete(this);
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
       if (
         n === 'src' &&
@@ -6895,9 +6887,10 @@ export function installDom(
     _removeAttr(n: string): void {
       const attr = attrNodes.get(this)?.get(n);
       if (attr) detachAttr(attr);
-      if (n.startsWith('on') && this.getAttribute(n) !== null) {
+      if (n.startsWith('on') && attrValue(this, n) !== null) {
         handlerAttributeChanged(this, n.slice(2), false);
       }
+      if (n === 'nonce') nonces.delete(this);
       call('delAttr', this._id, n);
     }
     removeAttributeNS(ns: Any, name: Any): void {
@@ -7394,13 +7387,13 @@ export function installDom(
     // HTML 6.1: `until-found` is a state of its own, and every falsy value
     // but `false` itself takes the attribute off as well
     get hidden(): boolean | string {
-      const value = this.getAttribute('hidden');
+      const value = attrValue(this, 'hidden');
       if (value === null) return false;
-      return value.toLowerCase() === 'until-found' ? 'until-found' : true;
+      return asciiLower(value) === 'until-found' ? 'until-found' : true;
     }
     set hidden(v: Any) {
-      if (typeof v === 'string' && v.toLowerCase() === 'until-found') {
-        this.setAttribute('hidden', 'until-found');
+      if (typeof v === 'string' && asciiLower(v) === 'until-found') {
+        this._setAttr('hidden', 'until-found');
       } else if (
         v === false ||
         v === '' ||
@@ -7408,72 +7401,42 @@ export function installDom(
         v === 0 ||
         Number.isNaN(v)
       ) {
-        this.removeAttribute('hidden');
-      } else this.setAttribute('hidden', '');
-    }
-    get title(): string {
-      return this.getAttribute('title') ?? '';
-    }
-    set title(v: Any) {
-      this.setAttribute('title', v);
-    }
-    get lang(): string {
-      return this.getAttribute('lang') ?? '';
-    }
-    set lang(v: Any) {
-      this.setAttribute('lang', v);
-    }
-    get dir(): string {
-      return this.getAttribute('dir') ?? '';
-    }
-    set dir(v: Any) {
-      this.setAttribute('dir', v);
-    }
-    get tabIndex(): number {
-      const t = parseInt(this.getAttribute('tabindex') ?? '', 10);
-      return Number.isFinite(t) ? t : -1;
-    }
-    set tabIndex(v: Any) {
-      this.setAttribute('tabindex', String(Math.trunc(Number(v))));
-    }
-    get accessKey(): string {
-      return this.getAttribute('accesskey') ?? '';
-    }
-    set accessKey(v: Any) {
-      this.setAttribute('accesskey', v);
+        this._removeAttr('hidden');
+      } else this._setAttr('hidden', '');
     }
     get draggable(): boolean {
-      const said = (this.getAttribute('draggable') ?? '').toLowerCase();
+      const said = asciiLower(attrValue(this, 'draggable') ?? '');
       if (said === 'true') return true;
       if (said === 'false') return false;
       // HTML 6.11.6: `auto`, which an image and a link with an address are
       return (
         this.localName === 'img' ||
-        (this.localName === 'a' && this.hasAttribute('href'))
+        (this.localName === 'a' && attrValue(this, 'href') !== null)
       );
     }
     set draggable(v: Any) {
-      this.setAttribute('draggable', v ? 'true' : 'false');
+      this._setAttr('draggable', v ? 'true' : 'false');
     }
     /** The attribute's state (HTML 6.8.1): CodeMirror sets `false` on every
      *  widget it draws, and a page whose script is strict mode code threw
      *  where it could not. */
     get contentEditable(): string {
-      const value = this.getAttribute('contenteditable')?.toLowerCase();
+      const raw = attrValue(this, 'contenteditable');
+      const value = raw === null ? null : asciiLower(raw);
       if (value === '' || value === 'true') return 'true';
       return value === 'false' || value === 'plaintext-only'
         ? value
         : 'inherit';
     }
     set contentEditable(v: Any) {
-      const value = str(v).toLowerCase();
-      if (value === 'inherit') this.removeAttribute('contenteditable');
+      const value = asciiLower(str(v));
+      if (value === 'inherit') this._removeAttr('contenteditable');
       else if (
         value === 'true' ||
         value === 'false' ||
         value === 'plaintext-only'
       ) {
-        this.setAttribute('contenteditable', value);
+        this._setAttr('contenteditable', value);
       } else {
         throw new DOMException(
           `The value provided ('${str(v)}') is not one of 'true', 'false', 'plaintext-only', or 'inherit'.`,
@@ -7811,53 +7774,303 @@ export function installDom(
     'fieldset',
   ]);
 
-  /** A reflected URL: the attribute resolved against the document's base,
-   *  as `a.href` and `img.src` read. */
-  const urlProperty = (attr: string) => ({
-    get(this: Any): string {
-      const raw = this.getAttribute(attr);
-      return raw === null ? '' : String(call('resolve', raw));
-    },
-    set(this: Any, v: Any) {
-      this.setAttribute(attr, v);
-    },
-    configurable: true,
-  });
-  const reflect = (attr: string) => ({
-    get(this: Any): string {
-      return this.getAttribute(attr) ?? '';
-    },
-    set(this: Any, v: Any) {
-      this.setAttribute(attr, v);
-    },
-    configurable: true,
-  });
-  const flag = (attr: string) => ({
-    get(this: Any): boolean {
-      return this.hasAttribute(attr);
-    },
-    set(this: Any, v: Any) {
-      this.toggleAttribute(attr, !!v);
-    },
-    configurable: true,
-  });
-  /** `crossOrigin`, a CORS settings attribute (HTML 2.5.4): null where
-   *  there is none, `use-credentials` for that, and `anonymous` for any
-   *  other value; set null, the attribute goes. */
-  const corsSetting = {
-    get(this: Any): string | null {
-      const raw = this.getAttribute('crossorigin');
-      if (raw === null) return null;
-      return raw.toLowerCase() === 'use-credentials'
-        ? 'use-credentials'
-        : 'anonymous';
-    },
-    set(this: Any, v: Any) {
-      if (v === null) this.removeAttribute('crossorigin');
-      else this.setAttribute('crossorigin', v);
-    },
-    configurable: true,
+  // --- reflection (HTML 2.6.1) ---------------------------------------------
+  //
+  // An IDL attribute that reflects a content attribute reads and writes it
+  // by the name it is kept under, past anything a page put on the element:
+  // a page's own `getAttribute` hears nothing of `div.title` (WPT's
+  // `reflection-overridden-methods`). What each interface reflects is one
+  // table, `REFLECTED`, installed once every interface is made; these are
+  // the kinds it is made of.
+
+  /** A content attribute's value, or null where there is none. */
+  const attrValue = (el: Any, name: string): string | null => {
+    const v = call('attr', el._id, name);
+    return typeof v === 'string' ? v : null;
   };
+  /** HTML's ASCII whitespace, all the number rules skip (2.3.4): not a
+   *  vertical tab, and none of Unicode's other spaces, which JavaScript's
+   *  `parseInt` and `Number` skip as well. */
+  const isHtmlSpace = (c: number): boolean =>
+    c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d;
+  /** HTML's rules for parsing integers (2.3.4.1), null for an error. The
+   *  digits are read however many there are, so that a value past a
+   *  `long` comes out of range rather than wrapped. */
+  const parseHtmlInteger = (input: string): number | null => {
+    const end = input.length;
+    let at = 0;
+    while (at < end && isHtmlSpace(input.charCodeAt(at))) at += 1;
+    let sign = 1;
+    const c = input.charCodeAt(at);
+    if (c === 0x2d) {
+      sign = -1;
+      at += 1;
+    } else if (c === 0x2b) at += 1;
+    let value = 0;
+    const from = at;
+    for (; at < end; at += 1) {
+      const digit = input.charCodeAt(at) - 0x30;
+      if (digit < 0 || digit > 9) break;
+      value = value * 10 + digit;
+    }
+    if (at === from) return null;
+    // `-0` is 0
+    return value === 0 ? 0 : sign * value;
+  };
+  /** HTML's rules for parsing floating-point number values (2.3.4.3): the
+   *  longest such number at the start, after ASCII whitespace, rounded as
+   *  JavaScript rounds the same digits, and null past a double's range. */
+  const parseHtmlFloat = (input: string): number | null => {
+    const m = HTML_FLOAT.exec(input);
+    if (!m) return null;
+    const n = Number(m[1]);
+    // and `-0` is 0
+    return Number.isFinite(n) ? n + 0 : null;
+  };
+  const HTML_FLOAT =
+    /^[\t\n\f\r ]*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)/;
+  /** The greatest `long`, past which a reflected integer is out of range. */
+  const MAX_LONG = 2147483647;
+  /** ASCII lower case, which is how an enumerated attribute matches (HTML
+   *  2.3.3): `toLowerCase()` makes U+212A KELVIN SIGN a `k`. */
+  const asciiLower = (s: string): string => {
+    let out = '';
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      out += c >= 0x41 && c <= 0x5a ? String.fromCharCode(c + 0x20) : s[i];
+    }
+    return out;
+  };
+  /** WebIDL's `USVString`: a lone surrogate as U+FFFD. */
+  const usv = (v: Any): string => str(v).replace(LONE_SURROGATE, '\uFFFD');
+  const LONE_SURROGATE =
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+  /** An IDL attribute as WebIDL makes one: an accessor on its interface's
+   *  prototype, enumerable. */
+  const accessor = (
+    get: (this: Any) => Any,
+    set: ((this: Any, v: Any) => void) | undefined,
+  ): PropertyDescriptor => ({ get, set, enumerable: true, configurable: true });
+  /** What an IDL attribute is given the content attribute it reflects. */
+  type Reflection = (attr: string) => PropertyDescriptor;
+  /** A `DOMString`, as it is written; a `USVString`, its lone surrogates
+   *  replaced; and one `[LegacyNullToEmptyString]`, where null is "". */
+  const TEXT: Reflection = (attr) =>
+    accessor(
+      function () {
+        return attrValue(this, attr) ?? '';
+      },
+      function (v) {
+        this._setAttr(attr, str(v));
+      },
+    );
+  const USV_TEXT: Reflection = (attr) =>
+    accessor(
+      function () {
+        return attrValue(this, attr) ?? '';
+      },
+      function (v) {
+        this._setAttr(attr, usv(v));
+      },
+    );
+  const NULL_TEXT: Reflection = (attr) =>
+    accessor(
+      function () {
+        return attrValue(this, attr) ?? '';
+      },
+      function (v) {
+        this._setAttr(attr, v === null ? '' : str(v));
+      },
+    );
+  /** A URL: the attribute resolved against the document's base, or as it
+   *  is written where it is none, and "" where there is no attribute. */
+  const ADDRESS: Reflection = (attr) =>
+    accessor(
+      function () {
+        const raw = attrValue(this, attr);
+        return raw === null ? '' : String(call('resolve', raw));
+      },
+      function (v) {
+        this._setAttr(attr, usv(v));
+      },
+    );
+  /** A form's `action` and a button's `formAction`: the document's URL
+   *  where the attribute is missing or empty (HTML 4.10.18.6). */
+  const ACTION: Reflection = (attr) =>
+    accessor(
+      function () {
+        const raw = attrValue(this, attr);
+        return raw ? String(call('resolve', raw)) : String(call('location'));
+      },
+      function (v) {
+        this._setAttr(attr, usv(v));
+      },
+    );
+  /** A boolean attribute: there or not, and set true, the empty string. */
+  const FLAG: Reflection = (attr) =>
+    accessor(
+      function () {
+        return attrValue(this, attr) !== null;
+      },
+      function (v) {
+        if (v) this._setAttr(attr, '');
+        else this._removeAttr(attr);
+      },
+    );
+  /** An enumerated attribute limited to only known values (HTML 2.3.3):
+   *  the keyword of the state it is in, matched without ASCII case, a
+   *  synonym read as the keyword it stands for; `missing` where there is no
+   *  attribute and `invalid` where it is none of them, either "" where the
+   *  attribute has no such default. Set, it is what it is given, and where
+   *  it is nullable — `missing` null — null takes the attribute away. */
+  const keyword =
+    (
+      keywords: readonly string[],
+      missing: string | null = '',
+      invalid: string = missing ?? '',
+      synonyms: Record<string, string> = {},
+    ): Reflection =>
+    (attr) => {
+      const states = new Map<string, string>();
+      for (const k of keywords) states.set(k, k);
+      for (const k in synonyms) states.set(k, synonyms[k]);
+      let longest = 0;
+      for (const k of states.keys()) longest = Math.max(longest, k.length);
+      return accessor(
+        function () {
+          const raw = attrValue(this, attr);
+          if (raw === null) return missing;
+          if (raw.length > longest) return invalid;
+          return states.get(asciiLower(raw)) ?? invalid;
+        },
+        function (v) {
+          // WebIDL's nullable type takes undefined for null
+          if (v == null && missing === null) this._removeAttr(attr);
+          else this._setAttr(attr, str(v));
+        },
+      );
+    };
+  /** What a number set where it may not be is refused with. */
+  const indexSize = (what: string): DOMException =>
+    new DOMException(
+      `The value provided (${what}) is outside the range the attribute allows.`,
+      'IndexSizeError',
+    );
+  /** A `long` (HTML 2.6.1): HTML's integer where it is one in range, else
+   *  the default, which may be the element's to say; set, WebIDL's `long`
+   *  of what it is given. Limited to only non-negative numbers, a negative
+   *  one is not read and not taken. */
+  const integer =
+    (fallback: number | ((el: Any) => number) = 0, nonNegative = false) =>
+    (attr: string): PropertyDescriptor =>
+      accessor(
+        function () {
+          const raw = attrValue(this, attr);
+          const n = raw === null ? null : parseHtmlInteger(raw);
+          if (
+            n !== null &&
+            n <= MAX_LONG &&
+            n >= (nonNegative ? 0 : -MAX_LONG - 1)
+          ) {
+            return n;
+          }
+          return typeof fallback === 'function' ? fallback(this) : fallback;
+        },
+        function (v) {
+          const n = Number(v) | 0;
+          if (nonNegative && n < 0) throw indexSize(String(n));
+          this._setAttr(attr, String(n));
+        },
+      );
+  /** An `unsigned long` (HTML 2.6.1): a non-negative integer up to the
+   *  greatest `long`, else the default; set, WebIDL's `unsigned long` of
+   *  what it is given, and the default where that is past a `long`.
+   *  `positive` is limited to only positive numbers, where 0 is not read
+   *  and setting it throws; `fallback`, with fallback, where it is the
+   *  default instead; `clamp`, clamped to a range, read as its nearest end. */
+  const unsigned =
+    (
+      fallback: number,
+      limit: 'positive' | 'fallback' | readonly [number, number] | null = null,
+    ) =>
+    (attr: string): PropertyDescriptor => {
+      const least = limit === 'positive' || limit === 'fallback' ? 1 : 0;
+      const clamp = Array.isArray(limit) ? limit : null;
+      return accessor(
+        function () {
+          const raw = attrValue(this, attr);
+          const n = raw === null ? null : parseHtmlInteger(raw);
+          if (n === null || n < 0) return fallback;
+          if (clamp) return n < clamp[0] ? clamp[0] : Math.min(n, clamp[1]);
+          return n >= least && n <= MAX_LONG ? n : fallback;
+        },
+        function (v) {
+          let n = Number(v) >>> 0;
+          if (limit === 'positive' && n === 0) throw indexSize('0');
+          if (n < least || n > MAX_LONG) n = fallback;
+          this._setAttr(attr, String(n));
+        },
+      );
+    };
+  /** A `double` (HTML 2.6.1): HTML's floating-point number, else the
+   *  default; set, the shortest string for it, and WebIDL's `TypeError`
+   *  for what is not finite. Limited to only positive numbers, what is not
+   *  is not read and not taken. */
+  const decimal =
+    (fallback = 0, positive = false) =>
+    (attr: string): PropertyDescriptor =>
+      accessor(
+        function () {
+          const raw = attrValue(this, attr);
+          const n = raw === null ? null : parseHtmlFloat(raw);
+          return n === null || (positive && n <= 0) ? fallback : n;
+        },
+        function (v) {
+          const n = finiteDouble(v);
+          if (!positive || n > 0) this._setAttr(attr, String(n));
+        },
+      );
+  /** WebIDL's `double`, which refuses what is not finite. */
+  const finiteDouble = (v: Any): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) {
+      throw new TypeError('The provided double value is non-finite.');
+    }
+    return n;
+  };
+  /** One of these reflecting an attribute of another name than its own. */
+  const named =
+    (attr: string, reflection: Reflection): Reflection =>
+    () =>
+      reflection(attr);
+  /** A CORS settings attribute (HTML 2.5.4): null where there is none, and
+   *  `anonymous` for any value but `use-credentials`. */
+  const CORS = keyword(['anonymous', 'use-credentials'], null, 'anonymous', {
+    '': 'anonymous',
+  });
+  /** A referrer policy attribute (HTML 2.5.5). */
+  const REFERRER = keyword([
+    '',
+    'no-referrer',
+    'no-referrer-when-downgrade',
+    'same-origin',
+    'origin',
+    'strict-origin',
+    'origin-when-cross-origin',
+    'strict-origin-when-cross-origin',
+    'unsafe-url',
+  ]);
+  const LAZY = keyword(['lazy', 'eager'], 'eager');
+  const PRIORITY = keyword(['high', 'low', 'auto'], 'auto');
+  const ENCTYPES = [
+    'application/x-www-form-urlencoded',
+    'multipart/form-data',
+    'text/plain',
+  ];
+  /** A button's or an input's `formMethod` and `formEnctype` (HTML
+   *  4.10.18.6), which have no missing value default: the form's says. */
+  const FORM_METHOD = keyword(['get', 'post', 'dialog'], '', 'get');
+  const FORM_ENCTYPE = keyword(ENCTYPES, '', ENCTYPES[0]);
 
   /** The form a control is in: the one its `form` attribute names, or the
    *  one around it, or the one the parser gave it. */
@@ -7896,33 +8109,35 @@ export function installDom(
       return (this as Any).href;
     }
   }
-  Object.defineProperty(
-    HTMLAnchorElement.prototype,
-    'href',
-    urlProperty('href'),
-  );
-  for (const name of ['target', 'rel', 'download', 'hreflang', 'type']) {
-    Object.defineProperty(HTMLAnchorElement.prototype, name, reflect(name));
+  /** An image map's area: a hyperlink as an `<a>` is, but no `<a>`, with
+   *  none of the `name`, `text` or `rev` one has. */
+  class HTMLAreaElement extends HTMLElement {
+    override toString(): string {
+      return (this as Any).href;
+    }
   }
-  // each part but the origin set as well, which sets the `href` to the
-  // address with it, and nothing where the link has none (HTML 4.6.6)
-  for (const part of URL_PARTS) {
-    Object.defineProperty(HTMLAnchorElement.prototype, part, {
-      get(this: Any): string {
-        return urlParts(this.href)?.[part] ?? '';
-      },
-      ...(part !== 'origin' && {
-        set(this: Any, v: Any) {
-          const json = call('setUrl', this.href, part, str(v));
-          if (typeof json === 'string' && json) {
-            this.href = JSON.parse(json).href;
-          }
+  // HTMLHyperlinkElementUtils is a mixin, each interface's own: each part
+  // but the origin set as well, which sets the `href` to the address with
+  // it, and nothing where the link has none (HTML 4.6.6)
+  for (const Kind of [HTMLAnchorElement, HTMLAreaElement]) {
+    for (const part of URL_PARTS) {
+      Object.defineProperty(Kind.prototype, part, {
+        get(this: Any): string {
+          return urlParts(this.href)?.[part] ?? '';
         },
-      }),
-      configurable: true,
-    });
+        ...(part !== 'origin' && {
+          set(this: Any, v: Any) {
+            const json = call('setUrl', this.href, part, str(v));
+            if (typeof json === 'string' && json) {
+              this.href = JSON.parse(json).href;
+            }
+          },
+        }),
+        enumerable: true,
+        configurable: true,
+      });
+    }
   }
-  class HTMLAreaElement extends HTMLAnchorElement {}
 
   /** An image's width or height: as it is drawn, in the document; as its
    *  style says, in a frame's, which nothing here draws; and its
@@ -7939,7 +8154,7 @@ export function installDom(
     }
     // rendered nowhere: the attribute, else the image's own size
     return (
-      Number(img.getAttribute(side)) >>> 0 ||
+      Number(attrValue(img, side)) >>> 0 ||
       (call('image', img._id, side) as number)
     );
   };
@@ -7954,18 +8169,6 @@ export function installDom(
     }
     get naturalHeight(): number {
       return call('image', this._id, 'height') as number;
-    }
-    get width(): number {
-      return imageSize(this, 'width');
-    }
-    set width(v: Any) {
-      this.setAttribute('width', v);
-    }
-    get height(): number {
-      return imageSize(this, 'height');
-    }
-    set height(v: Any) {
-      this.setAttribute('height', v);
     }
     get currentSrc(): string {
       return call('image', this._id, 'src') as string;
@@ -7997,24 +8200,6 @@ export function installDom(
       });
     }
   }
-  Object.defineProperty(HTMLImageElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
-    Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
-  }
-  // what decides whether a canvas it is drawn on stays the page's to read
-  Object.defineProperty(HTMLImageElement.prototype, 'crossOrigin', corsSetting);
-  // limited to the keywords it has, which a page tests for support with
-  Object.defineProperty(HTMLImageElement.prototype, 'loading', {
-    get(this: Any) {
-      const value = this.getAttribute('loading');
-      return value?.toLowerCase() === 'lazy' ? 'lazy' : 'eager';
-    },
-    set(this: Any, value: Any) {
-      this.setAttribute('loading', value);
-    },
-    configurable: true,
-    enumerable: true,
-  });
 
   class HTMLScriptElement extends HTMLElement {
     get text(): string {
@@ -8024,22 +8209,6 @@ export function installDom(
       this.textContent = v;
     }
   }
-  Object.defineProperty(HTMLScriptElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['type', 'charset', 'integrity']) {
-    Object.defineProperty(HTMLScriptElement.prototype, name, reflect(name));
-  }
-  Object.defineProperty(
-    HTMLScriptElement.prototype,
-    'crossOrigin',
-    corsSetting,
-  );
-  for (const name of ['defer', 'noModule']) {
-    Object.defineProperty(
-      HTMLScriptElement.prototype,
-      name,
-      flag(name.toLowerCase()),
-    );
-  }
   // true in a script a script made until it is set, as the attribute's
   // absence alone would not say (HTML 4.12.1, "force async"): set false,
   // the script runs in the order it went in, which Google's module loader
@@ -8047,66 +8216,40 @@ export function installDom(
   Object.defineProperty(HTMLScriptElement.prototype, 'async', {
     get(this: Any): boolean {
       return (
-        this.hasAttribute('async') ||
+        attrValue(this, 'async') !== null ||
         call('scriptForceAsync', this._id) === true
       );
     },
     set(this: Any, v: Any) {
       call('scriptAsyncSet', this._id);
-      this.toggleAttribute('async', !!v);
-    },
-    configurable: true,
-  });
-
-  class HTMLLinkElement extends HTMLElement {}
-  Object.defineProperty(HTMLLinkElement.prototype, 'href', urlProperty('href'));
-  // the strings HTMLLinkElement reflects (HTML 4.2.4, and the obsolete
-  // `charset`, `rev` and `target`): Apple's locale switcher reads the
-  // `hreflang` of every `[hreflang]` in the document, its alternate links
-  for (const [name, attr] of [
-    ['rel', 'rel'],
-    ['media', 'media'],
-    ['type', 'type'],
-    ['as', 'as'],
-    ['hreflang', 'hreflang'],
-    ['integrity', 'integrity'],
-    ['imageSrcset', 'imagesrcset'],
-    ['imageSizes', 'imagesizes'],
-    ['referrerPolicy', 'referrerpolicy'],
-    ['charset', 'charset'],
-    ['rev', 'rev'],
-    ['target', 'target'],
-  ]) {
-    Object.defineProperty(HTMLLinkElement.prototype, name, reflect(attr));
-  }
-  Object.defineProperty(HTMLLinkElement.prototype, 'crossOrigin', corsSetting);
-  Object.defineProperty(
-    HTMLLinkElement.prototype,
-    'disabled',
-    flag('disabled'),
-  );
-  /** A `[SameObject, PutForwards=value]` `DOMTokenList` over an
-   *  attribute, with the tokens it supports, or none to ask about:
-   *  `relList`, `blocking` and `sizes`. */
-  const tokenList = (
-    attr: string,
-    supported: readonly string[] | null,
-  ): Any => ({
-    get(this: Any): Any {
-      const lists = (this._tokenLists ??= new Map<string, Any>());
-      let list = lists.get(attr);
-      if (!list) {
-        list = new DOMTokenList(this, attr, supported);
-        lists.set(attr, list);
-      }
-      return list;
-    },
-    set(this: Any, v: Any): void {
-      this.setAttribute(attr, v);
+      if (v) this._setAttr('async', '');
+      else this._removeAttr('async');
     },
     enumerable: true,
     configurable: true,
   });
+
+  class HTMLLinkElement extends HTMLElement {}
+  /** A `[SameObject, PutForwards=value]` `DOMTokenList` over an
+   *  attribute, with the tokens it supports, or none to ask about:
+   *  `relList`, `blocking` and `sizes`. */
+  const tokens =
+    (supported: readonly string[] | null): Reflection =>
+    (attr) =>
+      accessor(
+        function () {
+          const lists = (this._tokenLists ??= new Map<string, Any>());
+          let list = lists.get(attr);
+          if (!list) {
+            list = new DOMTokenList(this, attr, supported);
+            lists.set(attr, list);
+          }
+          return list;
+        },
+        function (v) {
+          this._setAttr(attr, str(v));
+        },
+      );
   // what Chromium's link types are (HTML 4.6.7)
   const LINK_TYPES = [
     'alternate',
@@ -8122,69 +8265,14 @@ export function installDom(
     'search',
     'stylesheet',
   ];
-  Object.defineProperty(
-    HTMLLinkElement.prototype,
-    'relList',
-    tokenList('rel', LINK_TYPES),
-  );
-  Object.defineProperty(
-    HTMLLinkElement.prototype,
-    'sizes',
-    tokenList('sizes', null),
-  );
-  // what a hyperlink's `rel` does something with (HTML 4.6.6), on an
-  // `<a>` and on an `<area>`, which is one here
-  Object.defineProperty(
-    HTMLAnchorElement.prototype,
-    'relList',
-    tokenList('rel', ['noopener', 'noreferrer', 'opener']),
-  );
-  // the one blocking token there is (HTML 2.5.8)
-  for (const Interface of [HTMLLinkElement, HTMLScriptElement]) {
-    Object.defineProperty(
-      Interface.prototype,
-      'blocking',
-      tokenList('blocking', ['render']),
-    );
-  }
 
   class HTMLTemplateElement extends HTMLElement {
     get content(): Any {
       return wrap(Number(call('content', this._id)));
     }
-    /** `shadowrootmode`, as an enumerated attribute reads (HTML 4.12.3):
-     *  `open` or `closed`, and nothing for anything else. */
-    get shadowRootMode(): string {
-      const mode = (this.getAttribute('shadowrootmode') ?? '').toLowerCase();
-      return mode === 'open' || mode === 'closed' ? mode : '';
-    }
-    set shadowRootMode(v: Any) {
-      this.setAttribute('shadowrootmode', str(v));
-    }
   }
-  Object.defineProperty(
-    HTMLTemplateElement.prototype,
-    'shadowRootDelegatesFocus',
-    flag('shadowrootdelegatesfocus'),
-  );
-  Object.defineProperty(
-    HTMLTemplateElement.prototype,
-    'shadowRootClonable',
-    flag('shadowrootclonable'),
-  );
-  Object.defineProperty(
-    HTMLTemplateElement.prototype,
-    'shadowRootSerializable',
-    flag('shadowrootserializable'),
-  );
-  Object.defineProperty(
-    HTMLTemplateElement.prototype,
-    'shadowRootCustomElementRegistry',
-    reflect('shadowrootcustomelementregistry'),
-  );
 
   class HTMLDetailsElement extends HTMLElement {}
-  Object.defineProperty(HTMLDetailsElement.prototype, 'open', flag('open'));
   // A dialog (HTML 4.11.4). Whether one is modal is the host's (`modal`):
   // `:modal` reads it, the cascade puts the dialog in the top layer for it,
   // and taking the dialog out of the document ends it there. What is the
@@ -8436,38 +8524,31 @@ export function installDom(
   }
   // `open` set is a dialog opened or closed as the attribute's change
   // steps have it: last of the open dialogs, or out of them
+  const DIALOG_OPEN = FLAG('open');
   Object.defineProperty(HTMLDialogElement.prototype, 'open', {
-    get(this: Any): boolean {
-      return this.hasAttribute('open');
-    },
+    ...DIALOG_OPEN,
     set(this: Any, v: Any) {
-      const was = this.hasAttribute('open');
-      this.toggleAttribute('open', !!v);
+      const was = attrValue(this, 'open') !== null;
+      DIALOG_OPEN.set!.call(this, v);
       if (!was && v) dialogOpened(this);
       else if (was && !v) {
         const i = openDialogs.indexOf(this);
         if (i >= 0) openDialogs.splice(i, 1);
       }
     },
-    configurable: true,
   });
   Object.defineProperty(HTMLDialogElement.prototype, 'closedBy', {
     get(this: Any): string {
       return closedByOf(this);
     },
     set(this: Any, v: Any) {
-      this.setAttribute('closedby', str(v));
+      this._setAttr('closedby', str(v));
     },
+    enumerable: true,
     configurable: true,
   });
 
   class HTMLLabelElement extends HTMLElement {
-    get htmlFor(): string {
-      return this.getAttribute('for') ?? '';
-    }
-    set htmlFor(v: Any) {
-      this.setAttribute('for', v);
-    }
     get control(): Any {
       const id = this.getAttribute('for');
       if (id !== null) return document.getElementById(id);
@@ -8483,7 +8564,7 @@ export function installDom(
   /** What every form control has: its form, its name, whether it is
    *  disabled, and HTML's validity, a little of it. */
   class FormControl extends HTMLElement {
-    // reflected from attributes, on the prototype below
+    // reflected on each interface's own prototype (`REFLECTED`)
     declare name: string;
     declare disabled: boolean;
     declare required: boolean;
@@ -8553,12 +8634,6 @@ export function installDom(
     'badInput',
     'customError',
   ];
-  for (const name of ['name', 'autocomplete']) {
-    Object.defineProperty(FormControl.prototype, name, reflect(name));
-  }
-  for (const name of ['disabled', 'required', 'autofocus']) {
-    Object.defineProperty(FormControl.prototype, name, flag(name));
-  }
 
   /** A control's value, as the widget holds it. */
   const controlValue = (el: Any): Any => call('value', el._id);
@@ -8763,13 +8838,8 @@ export function installDom(
 
   const BOX_TYPES = new Set(['checkbox', 'radio']);
   class HTMLInputElement extends FormControl {
-    get type(): string {
-      const t = (this.getAttribute('type') ?? '').toLowerCase();
-      return INPUT_TYPES.has(t) ? t : 'text';
-    }
-    set type(v: Any) {
-      this.setAttribute('type', v);
-    }
+    // its `type` is `REFLECTED`'s, and an enumerated attribute's
+    declare type: string;
     /** A checkedness goes with an input from type to type (HTML 4.10.5), and
      *  the widget of a box is what holds a box's. Vue's `v-model` sets
      *  `checked` as it makes a radio, ahead of its `type`, and every radio on
@@ -8830,12 +8900,6 @@ export function installDom(
     set valueAsNumber(v: number) {
       this.value = String(v);
     }
-    get defaultValue(): string {
-      return this.getAttribute('value') ?? '';
-    }
-    set defaultValue(v: Any) {
-      this.setAttribute('value', v);
-    }
     // Every input has a checkedness (HTML 4.10.5), which a box's and a
     // radio's widget shows and no other type's does: there it is the
     // element's alone, its attribute until a script sets it. React sets
@@ -8856,12 +8920,6 @@ export function installDom(
     }
     /** A checkedness a script set on a type no widget shows it for. */
     _checkedness?: boolean;
-    get defaultChecked(): boolean {
-      return this.hasAttribute('checked');
-    }
-    set defaultChecked(v: Any) {
-      this.toggleAttribute('checked', !!v);
-    }
     get indeterminate(): boolean {
       return call('indeterminate', this._id) === true;
     }
@@ -8946,39 +9004,6 @@ export function installDom(
       showPicker(this, 'HTMLInputElement');
     }
   }
-  for (const name of [
-    'placeholder',
-    'min',
-    'max',
-    'step',
-    'pattern',
-    'accept',
-    'alt',
-    'inputMode',
-    'size',
-  ]) {
-    Object.defineProperty(
-      HTMLInputElement.prototype,
-      name,
-      reflect(name.toLowerCase()),
-    );
-  }
-  for (const name of ['readOnly', 'multiple']) {
-    Object.defineProperty(
-      HTMLInputElement.prototype,
-      name,
-      flag(name.toLowerCase()),
-    );
-  }
-  Object.defineProperty(HTMLInputElement.prototype, 'maxLength', {
-    get(this: Any): number {
-      const n = parseInt(this.getAttribute('maxlength') ?? '', 10);
-      return Number.isFinite(n) ? n : -1;
-    },
-    set(this: Any, v: Any) {
-      this.setAttribute('maxlength', String(v));
-    },
-  });
   const DEFAULT_MODE = new Set([
     'hidden',
     'submit',
@@ -9064,33 +9089,15 @@ export function installDom(
       selectField(this, now.start, now.end, v);
     }
   }
-  for (const name of ['placeholder', 'rows', 'cols', 'wrap']) {
-    Object.defineProperty(HTMLTextAreaElement.prototype, name, reflect(name));
-  }
-  Object.defineProperty(
-    HTMLTextAreaElement.prototype,
-    'readOnly',
-    flag('readonly'),
-  );
 
   class HTMLOptionElement extends HTMLElement {
-    get value(): string {
-      return this.getAttribute('value') ?? this.text;
-    }
-    set value(v: Any) {
-      this.setAttribute('value', v);
-    }
+    // its `value` and `label` are `REFLECTED`'s, read as HTML 4.10.10 has
+    declare value: string;
     get text(): string {
       return this.textContent.replace(/[\t\n\f\r ]+/g, ' ').trim();
     }
     set text(v: Any) {
       this.textContent = v;
-    }
-    get label(): string {
-      return this.getAttribute('label') ?? this.text;
-    }
-    set label(v: Any) {
-      this.setAttribute('label', v);
     }
     get selected(): boolean {
       const select = this.closest('select');
@@ -9103,12 +9110,6 @@ export function installDom(
       if (v && select) select.value = this.value;
       else this.toggleAttribute('selected', !!v);
     }
-    get defaultSelected(): boolean {
-      return this.hasAttribute('selected');
-    }
-    set defaultSelected(v: Any) {
-      this.toggleAttribute('selected', !!v);
-    }
     get index(): number {
       const select = this.closest('select');
       return select ? Array.from(select.options).indexOf(this) : 0;
@@ -9117,11 +9118,6 @@ export function installDom(
       return this.closest('select')?.form ?? null;
     }
   }
-  Object.defineProperty(
-    HTMLOptionElement.prototype,
-    'disabled',
-    flag('disabled'),
-  );
 
   /** A `<select>`'s options (HTML 4.10.7): those among its children, and
    *  those among its groups' children, in tree order. */
@@ -9295,26 +9291,11 @@ export function installDom(
       showPicker(this, 'HTMLSelectElement');
     }
   }
-  Object.defineProperty(
-    HTMLSelectElement.prototype,
-    'multiple',
-    flag('multiple'),
-  );
 
   class HTMLButtonElement extends FormControl {
-    get type(): string {
-      const t = (this.getAttribute('type') ?? '').toLowerCase();
-      return t === 'reset' || t === 'button' ? t : 'submit';
-    }
-    set type(v: Any) {
-      this.setAttribute('type', v);
-    }
-    get value(): string {
-      return this.getAttribute('value') ?? '';
-    }
-    set value(v: Any) {
-      this.setAttribute('value', v);
-    }
+    // its `type` and `value` are `REFLECTED`'s
+    declare type: string;
+    declare value: string;
   }
 
   // --- popovers (HTML 6.12) ----------------------------------------------------------
@@ -9884,18 +9865,6 @@ export function installDom(
       },
       configurable: true,
     });
-    Object.defineProperty(Kind.prototype, 'popoverTargetAction', {
-      get(this: Any): string {
-        const v = (
-          this.getAttribute('popovertargetaction') ?? ''
-        ).toLowerCase();
-        return v === 'show' || v === 'hide' ? v : 'toggle';
-      },
-      set(this: Any, v: Any) {
-        this.setAttribute('popovertargetaction', str(v));
-      },
-      configurable: true,
-    });
   }
 
   class HTMLFieldSetElement extends FormControl {
@@ -9974,21 +9943,6 @@ export function installDom(
     get length(): number {
       return this.elements.length;
     }
-    get action(): string {
-      const raw = this.getAttribute('action');
-      return raw ? String(call('resolve', raw)) : String(call('location'));
-    }
-    set action(v: Any) {
-      this.setAttribute('action', v);
-    }
-    get method(): string {
-      return (this.getAttribute('method') ?? '').toLowerCase() === 'post'
-        ? 'post'
-        : 'get';
-    }
-    set method(v: Any) {
-      this.setAttribute('method', v);
-    }
     submit(): void {
       submitForm(this, null, false);
     }
@@ -10017,14 +9971,6 @@ export function installDom(
       return !!call('validate', this._id, 0);
     }
   }
-  for (const name of ['name', 'target', 'enctype', 'autocomplete']) {
-    Object.defineProperty(HTMLFormElement.prototype, name, reflect(name));
-  }
-  Object.defineProperty(
-    HTMLFormElement.prototype,
-    'noValidate',
-    flag('novalidate'),
-  );
 
   /** A frame's document, the page's own origin's, and null for another's
    *  (`frameDocument`). */
@@ -10786,43 +10732,6 @@ export function installDom(
       return this.contentDocument;
     }
   }
-  Object.defineProperty(HTMLIFrameElement.prototype, 'src', urlProperty('src'));
-  for (const name of [
-    'srcdoc',
-    'name',
-    'width',
-    'height',
-    'allow',
-    'loading',
-    'referrerPolicy',
-  ]) {
-    Object.defineProperty(
-      HTMLIFrameElement.prototype,
-      name,
-      reflect(name === 'referrerPolicy' ? 'referrerpolicy' : name),
-    );
-  }
-  // the tokens HTML's `sandbox` has (4.8.5), which a page asks
-  // `supports()` of before it adds one: Google's sign-in page does
-  Object.defineProperty(
-    HTMLIFrameElement.prototype,
-    'sandbox',
-    tokenList('sandbox', [
-      'allow-downloads',
-      'allow-forms',
-      'allow-modals',
-      'allow-orientation-lock',
-      'allow-pointer-lock',
-      'allow-popups',
-      'allow-popups-to-escape-sandbox',
-      'allow-presentation',
-      'allow-same-origin',
-      'allow-scripts',
-      'allow-top-navigation',
-      'allow-top-navigation-by-user-activation',
-      'allow-top-navigation-to-custom-protocols',
-    ]),
-  );
   // --- <canvas> --------------------------------------------------------------
 
   /** Pixels a page holds: straight RGBA, as a canvas reads them out. */
@@ -10924,10 +10833,11 @@ export function installDom(
   const placeholders = new WeakSet<object>();
   /** A canvas's `width` or `height` attribute (HTML 4.12.5): a valid
    *  non-negative integer, or its default. */
+  /** A canvas's `width` or `height`, an `unsigned long` that reflects its
+   *  attribute (HTML 4.12.5). */
   const canvasSize = (canvas: Any, name: string, fallback: number): number => {
-    const v = canvas.getAttribute(name);
-    const m = v === null ? null : /^[\t\n\f\r ]*\+?(\d+)/.exec(v);
-    return m ? Number(m[1]) : fallback;
+    const n = parseHtmlInteger(attrValue(canvas, name) ?? '');
+    return n !== null && n >= 0 && n <= MAX_LONG ? n : fallback;
   };
   const newCanvasState = (width: number, height: number): CanvasState => ({
     width,
@@ -13139,7 +13049,12 @@ export function installDom(
       `Failed to set the '${side}' property`,
       'Cannot resize canvas after call to transferControlToOffscreen().',
     );
-    canvas.setAttribute(side, String(Number(v) >>> 0));
+    // WebIDL's `unsigned long`, and the default past a `long`
+    const n = Number(v) >>> 0;
+    canvas._setAttr(
+      side,
+      String(n <= MAX_LONG ? n : side === 'width' ? 300 : 150),
+    );
     const state = canvases.get(canvas);
     if (state) resetCanvas(canvas, state, canvas.width, canvas.height);
     if (state?.kind === 'webgl' || state?.kind === 'webgl2') {
@@ -14110,25 +14025,6 @@ export function installDom(
     }
   }
 
-  for (const name of ['autoplay', 'controls', 'loop', 'playsInline']) {
-    Object.defineProperty(
-      HTMLMediaElement.prototype,
-      name,
-      flag(name.toLowerCase()),
-    );
-  }
-  Object.defineProperty(
-    HTMLMediaElement.prototype,
-    'defaultMuted',
-    flag('muted'),
-  );
-  Object.defineProperty(
-    HTMLMediaElement.prototype,
-    'preload',
-    reflect('preload'),
-  );
-  Object.defineProperty(HTMLMediaElement.prototype, 'crossOrigin', corsSetting);
-  Object.defineProperty(HTMLMediaElement.prototype, 'src', urlProperty('src'));
   class HTMLVideoElement extends HTMLMediaElement {
     /** Its source's size, as its container says it, once that is read. */
     get videoWidth(): number {
@@ -14138,11 +14034,6 @@ export function installDom(
       return askOf(this).ready > 0 ? askOf(this).height : 0;
     }
   }
-  Object.defineProperty(
-    HTMLVideoElement.prototype,
-    'poster',
-    urlProperty('poster'),
-  );
   class HTMLAudioElement extends HTMLMediaElement {}
   /** A media element's list of tracks: none, since nothing loads. */
   class TrackList extends EventTarget {
@@ -14178,10 +14069,6 @@ export function installDom(
     },
   };
   class HTMLSourceElement extends HTMLElement {}
-  Object.defineProperty(HTMLSourceElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['type', 'media', 'sizes', 'srcset']) {
-    Object.defineProperty(HTMLSourceElement.prototype, name, reflect(name));
-  }
   class HTMLTrackElement extends HTMLElement {}
   class HTMLPictureElement extends HTMLElement {}
   class HTMLPreElement extends HTMLElement {}
@@ -14190,49 +14077,45 @@ export function installDom(
   class HTMLTitleElement extends HTMLElement {}
   class HTMLBaseElement extends HTMLElement {}
   class HTMLTimeElement extends HTMLElement {}
-  Object.defineProperty(
-    HTMLTimeElement.prototype,
-    'dateTime',
-    reflect('datetime'),
-  );
   class HTMLQuoteElement extends HTMLElement {}
   class HTMLDListElement extends HTMLElement {}
   class HTMLTableCaptionElement extends HTMLElement {}
   class HTMLTableColElement extends HTMLElement {}
   class HTMLLegendElement extends HTMLElement {}
   class HTMLOptGroupElement extends HTMLElement {}
-  // its `disabled` disables the options it holds, which `:disabled` reads
-  Object.defineProperty(
-    HTMLOptGroupElement.prototype,
-    'disabled',
-    flag('disabled'),
-  );
-  Object.defineProperty(
-    HTMLOptGroupElement.prototype,
-    'label',
-    reflect('label'),
-  );
   class HTMLDataListElement extends HTMLElement {}
   class HTMLProgressElement extends HTMLElement {
-    get value(): number {
-      const n = parseFloat(this.getAttribute('value') ?? '');
-      return Number.isFinite(n) && n > 0 ? Math.min(n, this.max) : 0;
-    }
-    set value(v: Any) {
-      this.setAttribute('value', String(Number(v)));
-    }
-    get max(): number {
-      const n = parseFloat(this.getAttribute('max') ?? '');
-      return Number.isFinite(n) && n > 0 ? n : 1;
-    }
-    set max(v: Any) {
-      this.setAttribute('max', String(Number(v)));
-    }
+    // `value` and `max` are `REFLECTED`'s
+    declare value: number;
+    declare max: number;
     get position(): number {
-      return this.hasAttribute('value') ? this.value / this.max : -1;
+      return attrValue(this, 'value') !== null ? this.value / this.max : -1;
     }
   }
+  /** A `<progress>`'s current value (HTML 4.10.13): its attribute, none
+   *  under 0 and none past its maximum, and 0 where it has none. */
+  const progressValue = (el: Any): number => {
+    const n = parseHtmlFloat(attrValue(el, 'value') ?? '');
+    return n === null || n < 0 ? 0 : Math.min(n, el.max);
+  };
   class HTMLMeterElement extends HTMLElement {}
+  /** A `<meter>`'s numbers (HTML 4.10.14): each its attribute where it is
+   *  a number, else a default, then held between the others. */
+  const meterNumber = (el: Any, which: string): number => {
+    const read = (name: string): number | null =>
+      parseHtmlFloat(attrValue(el, name) ?? '');
+    const min = read('min') ?? 0;
+    const max = Math.max(read('max') ?? 1, min);
+    const between = (n: number, low: number, high: number): number =>
+      n < low ? low : n > high ? high : n;
+    if (which === 'min') return min;
+    if (which === 'max') return max;
+    if (which === 'value') return between(read('value') ?? 0, min, max);
+    const low = between(read('low') ?? min, min, max);
+    if (which === 'low') return low;
+    if (which === 'high') return between(read('high') ?? max, low, max);
+    return between(read('optimum') ?? (min + max) / 2, min, max);
+  };
   class HTMLOutputElement extends HTMLElement {}
   class HTMLObjectElement extends HTMLElement {
     get contentDocument(): Any {
@@ -14249,14 +14132,6 @@ export function installDom(
         : null;
     }
   }
-  Object.defineProperty(
-    HTMLObjectElement.prototype,
-    'data',
-    urlProperty('data'),
-  );
-  for (const name of ['type', 'name', 'width', 'height']) {
-    Object.defineProperty(HTMLObjectElement.prototype, name, reflect(name));
-  }
   class HTMLEmbedElement extends HTMLElement {
     /** The only way in to what an `<embed>` holds, which has no
      *  `contentDocument`: a drawing, and nothing else (HTML 2.1.10). */
@@ -14265,10 +14140,6 @@ export function installDom(
       const held = heldDocumentOf(this);
       return held?.contentType === 'image/svg+xml' ? held : null;
     }
-  }
-  Object.defineProperty(HTMLEmbedElement.prototype, 'src', urlProperty('src'));
-  for (const name of ['type', 'name', 'width', 'height']) {
-    Object.defineProperty(HTMLEmbedElement.prototype, name, reflect(name));
   }
   class HTMLSlotElement extends HTMLElement {
     /** What the slot is assigned (DOM 4.2.2.3), or with `flatten`, its
@@ -14536,23 +14407,6 @@ export function installDom(
         ? Array.from(row.cells).indexOf(this)
         : -1;
     }
-    get colSpan(): number {
-      const n = parseInt(this.getAttribute('colspan') ?? '', 10);
-      return n >= 1 ? Math.min(n, 1000) : 1;
-    }
-    set colSpan(v: Any) {
-      this.setAttribute('colspan', String(Number(v) >>> 0));
-    }
-    get rowSpan(): number {
-      const n = parseInt(this.getAttribute('rowspan') ?? '', 10);
-      return n >= 0 ? Math.min(n, 65534) : 1;
-    }
-    set rowSpan(v: Any) {
-      this.setAttribute('rowspan', String(Number(v) >>> 0));
-    }
-  }
-  for (const name of ['headers', 'abbr', 'scope']) {
-    Object.defineProperty(HTMLTableCellElement.prototype, name, reflect(name));
   }
   // --- CSSOM ---------------------------------------------------------------------
   //
@@ -15732,18 +15586,6 @@ export function installDom(
     }
   }
   Object.defineProperty(
-    HTMLStyleElement.prototype,
-    'blocking',
-    tokenList('blocking', ['render']),
-  );
-  for (const name of ['media', 'type']) {
-    Object.defineProperty(HTMLStyleElement.prototype, name, reflect(name));
-  }
-  // an HTML element's `title` is every HTML element's
-  for (const name of ['media', 'type', 'title']) {
-    Object.defineProperty(SVGStyleElement.prototype, name, reflect(name));
-  }
-  Object.defineProperty(
     SVGStyleElement.prototype,
     'sheet',
     Object.getOwnPropertyDescriptor(HTMLStyleElement.prototype, 'sheet')!,
@@ -15758,13 +15600,26 @@ export function installDom(
     configurable: true,
   });
   class HTMLMetaElement extends HTMLElement {}
-  Object.defineProperty(
-    HTMLMetaElement.prototype,
-    'httpEquiv',
-    reflect('http-equiv'),
-  );
-  for (const name of ['name', 'content', 'media', 'scheme']) {
-    Object.defineProperty(HTMLMetaElement.prototype, name, reflect(name));
+  // the interfaces of elements that do no more than reflect what they
+  // say, or once did (HTML 4 and 16.3)
+  class HTMLParamElement extends HTMLElement {}
+  class HTMLMapElement extends HTMLElement {
+    get areas(): Any {
+      return heldList(this, 'areas', () =>
+        liveCollection(() => wrapAll(call('query', this._id, 'area', true))),
+      );
+    }
+  }
+  class HTMLDataElement extends HTMLElement {}
+  class HTMLModElement extends HTMLElement {}
+  class HTMLMenuElement extends HTMLElement {}
+  class HTMLDirectoryElement extends HTMLElement {}
+  class HTMLFontElement extends HTMLElement {}
+  class HTMLFrameSetElement extends HTMLElement {}
+  class HTMLFrameElement extends HTMLElement {}
+  class HTMLMarqueeElement extends HTMLElement {
+    start(): void {}
+    stop(): void {}
   }
   class HTMLUnknownElement extends HTMLElement {}
   /** The HTML elements whose interface is `HTMLElement` itself (HTML 3.2.2,
@@ -15899,6 +15754,17 @@ export function installDom(
     th: HTMLTableCellElement,
     style: HTMLStyleElement,
     meta: HTMLMetaElement,
+    param: HTMLParamElement,
+    map: HTMLMapElement,
+    data: HTMLDataElement,
+    ins: HTMLModElement,
+    del: HTMLModElement,
+    menu: HTMLMenuElement,
+    dir: HTMLDirectoryElement,
+    font: HTMLFontElement,
+    frameset: HTMLFrameSetElement,
+    frame: HTMLFrameElement,
+    marquee: HTMLMarqueeElement,
   };
 
   /** What a click does once it was not cancelled (HTML 6.5.4, activation):
@@ -16003,6 +15869,7 @@ export function installDom(
       if (call('activate', at._id)) break;
       if (
         at instanceof HTMLAnchorElement ||
+        at instanceof HTMLAreaElement ||
         at instanceof SVGAElement ||
         at instanceof HTMLButtonElement ||
         at instanceof HTMLInputElement
@@ -17135,6 +17002,683 @@ export function installDom(
   /** A document made of XML's rules: `createDocument`'s. */
   class XMLDocument extends Document {}
   Object.defineProperty(Document.prototype, 'nodeType', nodeTypeOf(9));
+
+  // --- what each interface reflects (HTML 2.6.1) ---------------------------
+  //
+  // Every element and attribute of WPT's `html/dom/elements-*.js`, which
+  // `reflection.js` reads, as HTML's IDL has them, and a few it does not
+  // list: each an accessor on its interface's own prototype, keyed by the
+  // IDL attribute's name, its content attribute's that name in lower case
+  // where `named` says no other. What does more than reflect — a field's
+  // value, a box's checkedness, a dialog's `open`, a canvas's size — is
+  // its interface's own, beside it.
+
+  /** One of these whose getter is the interface's own, which WPT calls a
+   *  custom getter: what is read is worked out, and setting reflects. */
+  const computed =
+    (reflection: Reflection, get: (el: Any) => Any): Reflection =>
+    (attr) => ({
+      ...reflection(attr),
+      get(this: Any) {
+        return get(this);
+      },
+    });
+  /** One of these on another element than what it is read from —
+   *  `document.dir` the root's, `document.bgColor` the body's — and ""
+   *  where there is no such element, where setting does nothing. */
+  const through =
+    (target: (from: Any) => Any, reflection: Reflection): Reflection =>
+    (attr) => {
+      const on = reflection(attr);
+      return accessor(
+        function () {
+          const el = target(this);
+          return el ? on.get!.call(el) : '';
+        },
+        function (v) {
+          const el = target(this);
+          if (el) on.set!.call(el, v);
+        },
+      );
+    };
+  /** The document's root where it is an `<html>`, and its body where that
+   *  is a `<body>` (HTML 3.1.3, 3.1.4). */
+  const htmlRoot = (doc: Any): Any => {
+    const root = doc.documentElement;
+    return root?.localName === 'html' && root.namespaceURI === HTML_NS
+      ? root
+      : null;
+  };
+  const bodyElement = (doc: Any): Any => {
+    const body = doc.body;
+    return body?.localName === 'body' && body.namespaceURI === HTML_NS
+      ? body
+      : null;
+  };
+  /** `nonce` (HTML 2.6.3): the element's cryptographic nonce, which its
+   *  attribute sets as it changes and a script sets without it. */
+  const NONCE: Reflection = (attr) =>
+    accessor(
+      function () {
+        return nonces.get(this) ?? attrValue(this, attr) ?? '';
+      },
+      function (v) {
+        nonces.set(this, str(v));
+      },
+    );
+  /** What `tabIndex` is where it says nothing (HTML 6.6.3): 0 for what a
+   *  user can focus, and -1 for the rest. */
+  const tabStop = (el: Any): number => {
+    const name = el.localName;
+    if (el.namespaceURI !== HTML_NS) {
+      return el.namespaceURI === SVG_NS && name === 'a' ? 0 : -1;
+    }
+    if (TAB_STOPS.has(name)) return 0;
+    // a summary for its parent details
+    const parent = el.parentElement;
+    return name === 'summary' &&
+      parent?.localName === 'details' &&
+      parent.namespaceURI === HTML_NS &&
+      parent.querySelector(':scope > summary') === el
+      ? 0
+      : -1;
+  };
+  const TAB_STOPS = new Set([
+    'a',
+    'area',
+    'button',
+    'frame',
+    'iframe',
+    'input',
+    'object',
+    'select',
+    'textarea',
+  ]);
+  /** A `<base>`'s `href` (HTML 4.2.3): its attribute against the
+   *  document's own address, which the `<base>` does not change. */
+  const baseHref = (el: Any): string => {
+    const raw = attrValue(el, 'href');
+    const json = call('url', raw ?? '', String(call('location')));
+    return typeof json === 'string' && json
+      ? JSON.parse(json).href
+      : (raw ?? '');
+  };
+  /** An image button's `width` and `height` (HTML 4.10.5.1.20): as it is
+   *  drawn, and 0 for any other input, which shows no image. */
+  const inputImageSize = (el: Any, side: string): number =>
+    el.type === 'image' && el.isConnected
+      ? side === 'width'
+        ? el.offsetWidth
+        : el.offsetHeight
+      : 0;
+  const DIR = keyword(['ltr', 'rtl', 'auto']);
+  const ALIGNED = { align: TEXT };
+  /** A table part's alignment, as HTML 16.3 keeps it. */
+  const TABLE_PART = {
+    align: TEXT,
+    ch: named('char', TEXT),
+    chOff: named('charoff', TEXT),
+    vAlign: TEXT,
+  };
+  const ENCTYPE = keyword(ENCTYPES, ENCTYPES[0]);
+  const HYPERLINK_RELS = named(
+    'rel',
+    tokens(['noopener', 'noreferrer', 'opener']),
+  );
+  /** What an `<a>` and an `<area>` both reflect. */
+  const HYPERLINK = {
+    href: ADDRESS,
+    target: TEXT,
+    download: TEXT,
+    ping: USV_TEXT,
+    rel: TEXT,
+    // what a hyperlink's `rel` does something with (HTML 4.6.6)
+    relList: HYPERLINK_RELS,
+    hreflang: TEXT,
+    type: TEXT,
+    referrerPolicy: REFERRER,
+    coords: TEXT,
+    shape: TEXT,
+  };
+  const POPOVER_ACTION = keyword(['toggle', 'show', 'hide'], 'toggle');
+  /** A `<meter>`'s number, read as `meterNumber` holds it and set as a
+   *  `double` is. */
+  const meter =
+    (which: string): Reflection =>
+    (attr) =>
+      computed(decimal(0), (el) => meterNumber(el, which))(attr);
+  const REFLECTED: [Any, Record<string, Reflection>][] = [
+    [Element, { id: TEXT, className: named('class', TEXT), slot: TEXT }],
+    [
+      HTMLElement,
+      {
+        title: TEXT,
+        lang: TEXT,
+        dir: DIR,
+        accessKey: TEXT,
+        autofocus: FLAG,
+        inert: FLAG,
+        nonce: NONCE,
+        tabIndex: integer(tabStop),
+        enterKeyHint: keyword([
+          'enter',
+          'done',
+          'go',
+          'next',
+          'previous',
+          'search',
+          'send',
+        ]),
+        inputMode: keyword([
+          'none',
+          'text',
+          'tel',
+          'url',
+          'email',
+          'numeric',
+          'decimal',
+          'search',
+        ]),
+      },
+    ],
+    [
+      Document,
+      {
+        dir: through(htmlRoot, DIR),
+        fgColor: named('text', through(bodyElement, NULL_TEXT)),
+        linkColor: named('link', through(bodyElement, NULL_TEXT)),
+        vlinkColor: named('vlink', through(bodyElement, NULL_TEXT)),
+        alinkColor: named('alink', through(bodyElement, NULL_TEXT)),
+        bgColor: named('bgcolor', through(bodyElement, NULL_TEXT)),
+      },
+    ],
+    [HTMLAnchorElement, { ...HYPERLINK, charset: TEXT, name: TEXT, rev: TEXT }],
+    [HTMLAreaElement, { ...HYPERLINK, alt: TEXT, noHref: FLAG }],
+    [
+      HTMLImageElement,
+      {
+        alt: TEXT,
+        src: ADDRESS,
+        srcset: TEXT,
+        sizes: TEXT,
+        // what decides whether a canvas it is drawn on stays the page's to read
+        crossOrigin: CORS,
+        useMap: TEXT,
+        isMap: FLAG,
+        width: computed(unsigned(0), (el) => imageSize(el, 'width')),
+        height: computed(unsigned(0), (el) => imageSize(el, 'height')),
+        referrerPolicy: REFERRER,
+        decoding: keyword(['sync', 'async', 'auto'], 'auto'),
+        // limited to the keywords it has, which a page tests for support with
+        loading: LAZY,
+        fetchPriority: PRIORITY,
+        name: TEXT,
+        lowsrc: ADDRESS,
+        align: TEXT,
+        hspace: unsigned(0),
+        vspace: unsigned(0),
+        longDesc: ADDRESS,
+        border: NULL_TEXT,
+      },
+    ],
+    [
+      HTMLIFrameElement,
+      {
+        src: ADDRESS,
+        srcdoc: TEXT,
+        name: TEXT,
+        // the tokens HTML's `sandbox` has (4.8.5), which a page asks
+        // `supports()` of before it adds one: Google's sign-in page does
+        sandbox: tokens([
+          'allow-downloads',
+          'allow-forms',
+          'allow-modals',
+          'allow-orientation-lock',
+          'allow-pointer-lock',
+          'allow-popups',
+          'allow-popups-to-escape-sandbox',
+          'allow-presentation',
+          'allow-same-origin',
+          'allow-scripts',
+          'allow-top-navigation',
+          'allow-top-navigation-by-user-activation',
+          'allow-top-navigation-to-custom-protocols',
+        ]),
+        allow: TEXT,
+        allowFullscreen: FLAG,
+        width: TEXT,
+        height: TEXT,
+        referrerPolicy: REFERRER,
+        loading: LAZY,
+        align: TEXT,
+        scrolling: TEXT,
+        frameBorder: TEXT,
+        longDesc: ADDRESS,
+        marginHeight: NULL_TEXT,
+        marginWidth: NULL_TEXT,
+      },
+    ],
+    [
+      HTMLEmbedElement,
+      {
+        src: ADDRESS,
+        type: TEXT,
+        width: TEXT,
+        height: TEXT,
+        align: TEXT,
+        name: TEXT,
+      },
+    ],
+    [
+      HTMLObjectElement,
+      {
+        data: ADDRESS,
+        type: TEXT,
+        name: TEXT,
+        useMap: TEXT,
+        width: TEXT,
+        height: TEXT,
+        align: TEXT,
+        archive: TEXT,
+        code: TEXT,
+        declare: FLAG,
+        hspace: unsigned(0),
+        standby: TEXT,
+        vspace: unsigned(0),
+        codeBase: ADDRESS,
+        codeType: TEXT,
+        border: NULL_TEXT,
+      },
+    ],
+    [
+      HTMLParamElement,
+      { name: TEXT, value: TEXT, type: TEXT, valueType: TEXT },
+    ],
+    [
+      HTMLMediaElement,
+      {
+        src: ADDRESS,
+        crossOrigin: CORS,
+        // which state a missing or invalid one is in is the user agent's
+        // to say, and HTML suggests metadata
+        preload: keyword(['none', 'metadata', 'auto'], 'metadata', 'metadata', {
+          '': 'auto',
+        }),
+        loading: LAZY,
+        autoplay: FLAG,
+        loop: FLAG,
+        controls: FLAG,
+        controlsList: tokens([
+          'nodownload',
+          'nofullscreen',
+          'noremoteplayback',
+        ]),
+        defaultMuted: named('muted', FLAG),
+      },
+    ],
+    [
+      HTMLVideoElement,
+      {
+        width: unsigned(0),
+        height: unsigned(0),
+        poster: ADDRESS,
+        playsInline: FLAG,
+      },
+    ],
+    [
+      HTMLSourceElement,
+      {
+        src: ADDRESS,
+        type: TEXT,
+        srcset: TEXT,
+        sizes: TEXT,
+        media: TEXT,
+        width: unsigned(0),
+        height: unsigned(0),
+      },
+    ],
+    [
+      HTMLTrackElement,
+      {
+        kind: keyword(
+          ['subtitles', 'captions', 'descriptions', 'chapters', 'metadata'],
+          'subtitles',
+          'metadata',
+        ),
+        src: ADDRESS,
+        srclang: TEXT,
+        label: TEXT,
+        default: FLAG,
+      },
+    ],
+    [HTMLMapElement, { name: TEXT }],
+    [
+      HTMLFormElement,
+      {
+        acceptCharset: named('accept-charset', TEXT),
+        action: ACTION,
+        autocomplete: keyword(['on', 'off'], 'on'),
+        enctype: ENCTYPE,
+        encoding: named('enctype', ENCTYPE),
+        method: keyword(['get', 'post', 'dialog'], 'get'),
+        name: TEXT,
+        noValidate: FLAG,
+        target: TEXT,
+        rel: TEXT,
+        relList: HYPERLINK_RELS,
+      },
+    ],
+    [HTMLFieldSetElement, { disabled: FLAG, name: TEXT }],
+    [HTMLLegendElement, ALIGNED],
+    [HTMLLabelElement, { htmlFor: named('for', TEXT) }],
+    [
+      HTMLInputElement,
+      {
+        accept: TEXT,
+        alt: TEXT,
+        autocomplete: TEXT,
+        defaultChecked: named('checked', FLAG),
+        dirName: TEXT,
+        disabled: FLAG,
+        formAction: ACTION,
+        formEnctype: FORM_ENCTYPE,
+        formMethod: FORM_METHOD,
+        formNoValidate: FLAG,
+        formTarget: TEXT,
+        height: computed(unsigned(0), (el) => inputImageSize(el, 'height')),
+        max: TEXT,
+        maxLength: integer(-1, true),
+        min: TEXT,
+        minLength: integer(-1, true),
+        multiple: FLAG,
+        name: TEXT,
+        pattern: TEXT,
+        placeholder: TEXT,
+        readOnly: FLAG,
+        required: FLAG,
+        size: unsigned(20, 'positive'),
+        src: ADDRESS,
+        step: TEXT,
+        type: keyword([...INPUT_TYPES], 'text'),
+        width: computed(unsigned(0), (el) => inputImageSize(el, 'width')),
+        defaultValue: named('value', TEXT),
+        align: TEXT,
+        useMap: TEXT,
+        popoverTargetAction: POPOVER_ACTION,
+      },
+    ],
+    [
+      HTMLButtonElement,
+      {
+        disabled: FLAG,
+        formAction: ACTION,
+        formEnctype: FORM_ENCTYPE,
+        formMethod: FORM_METHOD,
+        formNoValidate: FLAG,
+        formTarget: TEXT,
+        name: TEXT,
+        type: keyword(['submit', 'reset', 'button'], 'submit'),
+        value: TEXT,
+        popoverTargetAction: POPOVER_ACTION,
+      },
+    ],
+    [
+      HTMLSelectElement,
+      {
+        autocomplete: TEXT,
+        disabled: FLAG,
+        multiple: FLAG,
+        name: TEXT,
+        required: FLAG,
+        size: unsigned(0),
+      },
+    ],
+    // its `disabled` disables the options it holds, which `:disabled` reads
+    [HTMLOptGroupElement, { disabled: FLAG, label: TEXT }],
+    [
+      HTMLOptionElement,
+      {
+        disabled: FLAG,
+        // its text where it has no label of its own
+        label: computed(TEXT, (el) => attrValue(el, 'label') ?? el.text),
+        defaultSelected: named('selected', FLAG),
+        value: computed(TEXT, (el) => attrValue(el, 'value') ?? el.text),
+      },
+    ],
+    [
+      HTMLTextAreaElement,
+      {
+        autocomplete: TEXT,
+        cols: unsigned(20, 'fallback'),
+        dirName: TEXT,
+        disabled: FLAG,
+        maxLength: integer(-1, true),
+        minLength: integer(-1, true),
+        name: TEXT,
+        placeholder: TEXT,
+        readOnly: FLAG,
+        required: FLAG,
+        rows: unsigned(2, 'fallback'),
+        wrap: TEXT,
+      },
+    ],
+    [HTMLOutputElement, { htmlFor: named('for', tokens(null)), name: TEXT }],
+    [
+      HTMLProgressElement,
+      { value: computed(decimal(0), progressValue), max: decimal(1, true) },
+    ],
+    [
+      HTMLMeterElement,
+      {
+        value: meter('value'),
+        min: meter('min'),
+        max: meter('max'),
+        low: meter('low'),
+        high: meter('high'),
+        optimum: meter('optimum'),
+      },
+    ],
+    [HTMLBaseElement, { href: computed(ADDRESS, baseHref), target: TEXT }],
+    [
+      HTMLLinkElement,
+      {
+        href: ADDRESS,
+        crossOrigin: CORS,
+        rel: TEXT,
+        as: keyword([
+          'fetch',
+          'audio',
+          'document',
+          'embed',
+          'font',
+          'image',
+          'manifest',
+          'object',
+          'report',
+          'script',
+          'sharedworker',
+          'style',
+          'track',
+          'video',
+          'worker',
+          'xslt',
+        ]),
+        relList: named('rel', tokens(LINK_TYPES)),
+        media: TEXT,
+        integrity: TEXT,
+        // Apple's locale switcher reads the `hreflang` of every
+        // `[hreflang]` in the document, its alternate links
+        hreflang: TEXT,
+        type: TEXT,
+        sizes: tokens(null),
+        referrerPolicy: REFERRER,
+        imageSrcset: TEXT,
+        imageSizes: TEXT,
+        fetchPriority: PRIORITY,
+        // the one blocking token there is (HTML 2.5.8)
+        blocking: tokens(['render']),
+        disabled: FLAG,
+        charset: TEXT,
+        rev: TEXT,
+        target: TEXT,
+      },
+    ],
+    [
+      HTMLMetaElement,
+      {
+        name: TEXT,
+        httpEquiv: named('http-equiv', TEXT),
+        content: TEXT,
+        media: TEXT,
+        scheme: TEXT,
+      },
+    ],
+    [
+      HTMLStyleElement,
+      { media: TEXT, type: TEXT, blocking: tokens(['render']) },
+    ],
+    // an HTML element's `title` is every HTML element's
+    [SVGStyleElement, { media: TEXT, type: TEXT, title: TEXT }],
+    [
+      HTMLScriptElement,
+      {
+        src: ADDRESS,
+        type: TEXT,
+        noModule: FLAG,
+        defer: FLAG,
+        crossOrigin: CORS,
+        integrity: TEXT,
+        referrerPolicy: REFERRER,
+        fetchPriority: PRIORITY,
+        blocking: tokens(['render']),
+        charset: TEXT,
+        event: TEXT,
+        htmlFor: named('for', TEXT),
+      },
+    ],
+    [
+      HTMLTemplateElement,
+      {
+        shadowRootMode: keyword(['open', 'closed']),
+        shadowRootDelegatesFocus: FLAG,
+        shadowRootClonable: FLAG,
+        shadowRootSerializable: FLAG,
+        shadowRootCustomElementRegistry: TEXT,
+      },
+    ],
+    [HTMLSlotElement, { name: TEXT }],
+    [HTMLDetailsElement, { open: FLAG, name: TEXT }],
+    [HTMLModElement, { cite: ADDRESS, dateTime: TEXT }],
+    [HTMLQuoteElement, { cite: ADDRESS }],
+    [HTMLTimeElement, { dateTime: TEXT }],
+    [HTMLDataElement, { value: TEXT }],
+    [HTMLHtmlElement, { version: TEXT }],
+    [
+      HTMLBodyElement,
+      {
+        text: NULL_TEXT,
+        link: NULL_TEXT,
+        vLink: NULL_TEXT,
+        aLink: NULL_TEXT,
+        bgColor: NULL_TEXT,
+        background: TEXT,
+      },
+    ],
+    [HTMLParagraphElement, ALIGNED],
+    [HTMLHeadingElement, ALIGNED],
+    [HTMLDivElement, ALIGNED],
+    [HTMLTableCaptionElement, ALIGNED],
+    [
+      HTMLHRElement,
+      { align: TEXT, color: TEXT, noShade: FLAG, size: TEXT, width: TEXT },
+    ],
+    [HTMLPreElement, { width: integer(0) }],
+    [HTMLBRElement, { clear: TEXT }],
+    [
+      HTMLOListElement,
+      { reversed: FLAG, start: integer(1), type: TEXT, compact: FLAG },
+    ],
+    [HTMLUListElement, { compact: FLAG, type: TEXT }],
+    [HTMLLIElement, { value: integer(0), type: TEXT }],
+    [HTMLDListElement, { compact: FLAG }],
+    [HTMLMenuElement, { compact: FLAG }],
+    [HTMLDirectoryElement, { compact: FLAG }],
+    [
+      HTMLTableElement,
+      {
+        align: TEXT,
+        border: TEXT,
+        frame: TEXT,
+        rules: TEXT,
+        summary: TEXT,
+        width: TEXT,
+        bgColor: NULL_TEXT,
+        cellPadding: NULL_TEXT,
+        cellSpacing: NULL_TEXT,
+      },
+    ],
+    [
+      HTMLTableColElement,
+      { span: unsigned(1, [1, 1000]), width: TEXT, ...TABLE_PART },
+    ],
+    [HTMLTableSectionElement, TABLE_PART],
+    [HTMLTableRowElement, { bgColor: NULL_TEXT, ...TABLE_PART }],
+    [
+      HTMLTableCellElement,
+      {
+        colSpan: unsigned(1, [1, 1000]),
+        rowSpan: unsigned(1, [0, 65534]),
+        headers: TEXT,
+        scope: keyword(['row', 'col', 'rowgroup', 'colgroup']),
+        abbr: TEXT,
+        axis: TEXT,
+        height: TEXT,
+        width: TEXT,
+        noWrap: FLAG,
+        bgColor: NULL_TEXT,
+        ...TABLE_PART,
+      },
+    ],
+    [
+      HTMLMarqueeElement,
+      {
+        behavior: keyword(['scroll', 'slide', 'alternate'], 'scroll'),
+        bgColor: TEXT,
+        direction: keyword(['up', 'right', 'down', 'left'], 'left'),
+        height: TEXT,
+        hspace: unsigned(0),
+        scrollAmount: unsigned(6),
+        scrollDelay: unsigned(85),
+        trueSpeed: FLAG,
+        vspace: unsigned(0),
+        width: TEXT,
+      },
+    ],
+    [HTMLFrameSetElement, { cols: TEXT, rows: TEXT }],
+    [
+      HTMLFrameElement,
+      {
+        name: TEXT,
+        scrolling: TEXT,
+        src: ADDRESS,
+        frameBorder: TEXT,
+        longDesc: ADDRESS,
+        noResize: FLAG,
+        marginHeight: NULL_TEXT,
+        marginWidth: NULL_TEXT,
+      },
+    ],
+    [HTMLFontElement, { color: NULL_TEXT, face: TEXT, size: TEXT }],
+  ];
+  for (const [Interface, reflected] of REFLECTED) {
+    for (const name of Object.keys(reflected)) {
+      Object.defineProperty(
+        Interface.prototype,
+        name,
+        reflected[name](name.toLowerCase()),
+      );
+    }
+  }
 
   // HTMLOrSVGElement is a mixin as well: without it `focus()` on an element
   // of a drawing threw, and `tabIndex` was an expando that said nothing
@@ -32523,10 +33067,7 @@ export function installDom(
     });
   }
   for (const name of ['rel', 'download', 'ping', 'hreflang', 'type']) {
-    Object.defineProperty(SVGAElement.prototype, name, {
-      ...reflect(name),
-      enumerable: true,
-    });
+    Object.defineProperty(SVGAElement.prototype, name, TEXT(name));
   }
 
   const classes: Record<string, Any> = {
@@ -32714,6 +33255,16 @@ export function installDom(
     HTMLTableCellElement,
     HTMLStyleElement,
     HTMLMetaElement,
+    HTMLParamElement,
+    HTMLMapElement,
+    HTMLDataElement,
+    HTMLModElement,
+    HTMLMenuElement,
+    HTMLDirectoryElement,
+    HTMLFontElement,
+    HTMLFrameSetElement,
+    HTMLFrameElement,
+    HTMLMarqueeElement,
     HTMLUnknownElement,
     DOMTokenList,
     DOMStringMap,

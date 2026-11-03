@@ -2087,6 +2087,36 @@ function fitTransform(
   return `translate(${x - box[0] * sx},${y - box[1] * sy}) scale(${sx},${sy})`;
 }
 
+/** A paint that is the element's a marker or a `<use>` is drawn for, which
+ *  `SvgView` resolves against the `<use>` it draws a copy through. */
+const CONTEXT_PAINT = /\bcontext-(?:fill|stroke)\b/i;
+
+/**
+ * Whether what a `<use>` is copied as paints with its context's paint
+ * (`CONTEXT_PAINT`), which a group the copy is put in has none of: such a
+ * copy is drawn through a `<use>` of its own (`copyTree`).
+ */
+function paintsWithContext(nodes: readonly ChildNode[]): boolean {
+  const stack = [...nodes];
+  for (let node = stack.pop(); node; node = stack.pop()) {
+    if (node.type !== 'tag') continue;
+    const { attribs, children } = node as Element;
+    if (
+      (attribs.fill && CONTEXT_PAINT.test(attribs.fill)) ||
+      (attribs.stroke && CONTEXT_PAINT.test(attribs.stroke)) ||
+      (attribs.style && CONTEXT_PAINT.test(attribs.style))
+    ) {
+      return true;
+    }
+    stack.push(...children);
+  }
+  return false;
+}
+
+/** The ids of the copies `paintsWithContext` puts in a `<defs>`: with a
+ *  space in them, which no id a document can name by a `url()` has. */
+const CONTEXT_COPY = 'rx-context copy ';
+
 /** What a `<use>` says of where its element goes, and not of how it looks:
  *  the rest is the group's the element is drawn in. */
 const USE_PLACEMENT = new Set([
@@ -2254,8 +2284,17 @@ function copyTree(
     } else if (shown(target, hidden, styles)) {
       children.push(copy(target, within, depth + 1, hidden, styles, size));
     }
+    if (paintsWithContext(children)) {
+      // the `<use>` is what a `context-fill` in it paints: it stays one, of
+      // a copy at the end of the tree, which is drawn as the group would be
+      const id = `${CONTEXT_COPY}${contextCopies.length}`;
+      contextCopies.push(new Element('g', { id }, children));
+      return new Element('use', { ...attribs, href: `#${id}` }, []);
+    }
     return new Element('g', attribs, children);
   };
+  /** The copies of what a `<use>` draws that are drawn through one. */
+  const contextCopies: Element[] = [];
   /** What the drawing names outside the root, copied, by its id: an
    *  element a `<use>` in a `<clipPath>` names, and one a `url(#…)` names
    *  (`urlIds`) — a marker, a gradient, a clip path. `SvgView` looks a
@@ -2375,6 +2414,7 @@ function copyTree(
   const tree = copy(root, true);
   const defs: Element[] = [];
   for (const el of brought.values()) if (el) defs.push(el);
+  defs.push(...contextCopies);
   if (defs.length) tree.children.push(new Element('defs', {}, defs));
   return tree;
 }

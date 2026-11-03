@@ -281,6 +281,23 @@ test('a script that changes an image in the document is told of the new one', as
   assert.deepEqual(await logged(page, 2), ['load a.png', 'load b.png']);
 });
 
+test("an image's crossorigin or referrerpolicy set to another value of the state it is in loads nothing again", async () => {
+  // HTML 4.8.4.3.8's relevant mutations are of those two's states: once
+  // `referrerPolicy` reflected its attribute, every set of it loaded the
+  // image again, as WPT's `relevant-mutations` found
+  const page = await show(
+    '<img id="a" src="a.png" crossorigin referrerpolicy="no-referrer" onload="log(\'load\')">' +
+      '<script>window.addEventListener("load", function () {' +
+      '  var a = document.getElementById("a");' +
+      '  a.crossOrigin = "anonymous"; a.setAttribute("crossorigin", "x");' +
+      '  a.referrerPolicy = "NO-REFERRER";' +
+      '  setTimeout(function () { log("then"); a.referrerPolicy = "origin"; }, 20);' +
+      '});</script>',
+    { 'a.png': RED_PNG },
+  );
+  assert.deepEqual(await logged(page, 3), ['load', 'then', 'load']);
+});
+
 test('the window is loaded after the images, in the document and out of it', async () => {
   const late = held<Uint8Array | null>();
   const page = await show(
