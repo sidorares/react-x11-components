@@ -5864,6 +5864,9 @@ function controlRulesFor(next: () => number): string {
       'input:indeterminate',
       'button:default',
       'input:default',
+      'fieldset:disabled',
+      'fieldset:enabled',
+      'option:disabled',
     ]);
   const own = () =>
     pick([
@@ -5878,6 +5881,8 @@ function controlRulesFor(next: () => number): string {
       ':read-only',
       ':dir(rtl)',
       ':dir(ltr)',
+      ':disabled',
+      ':enabled',
     ]);
   const state = () => (next() < 0.6 ? around() : `${what()}${own()}`);
   const what = () => pick(['', 'input', 'select', 'button', `.${c()}`]);
@@ -5954,7 +5959,9 @@ function controlMarkupFor(next: () => number): string {
   return (
     `<section class="a"><form id="f0">${lines(2)}<fieldset class="b">${lines(2)}<b>f</b></fieldset><b>f</b></form></section>` +
     `<section class="b"><form id="f1">${lines(2)}<b>f</b></form></section>` +
-    `<section class="c">${lines(3)}<div dir="auto" class="d">text<b>b</b></div><bdi>text</bdi><b>s</b></section>`
+    `<section class="c">${lines(3)}<div dir="auto" class="d">text<b>b</b></div><bdi>text</bdi><b>s</b></section>` +
+    // a fieldset whose first legend is what stays live in it
+    `<section class="d"><fieldset class="c" disabled><legend>${lines(1)}</legend><legend>${lines(1)}</legend>${lines(1)}<fieldset>${lines(1)}</fieldset></fieldset></section>`
   );
 }
 
@@ -6031,6 +6038,54 @@ function controlChangeFor(
       {
         type: 'childList',
         target: holder,
+        addedNodes: [made],
+        removedNodes: [],
+      },
+    ];
+  }
+  if (kind === 8 && next() < 0.6) {
+    // a fieldset disabled or not, or another legend made its first: what
+    // `:disabled` reads around a control
+    const fieldset = pick(all.filter((e) => e.name === 'fieldset'));
+    const legend = fieldset.children.find(
+      (n) => (n as Element).name === 'legend',
+    ) as Element | undefined;
+    const way = Math.floor(next() * 3);
+    if (way === 0) {
+      const oldValue = fieldset.attribs.disabled ?? null;
+      if (oldValue === null) fieldset.attribs.disabled = '';
+      else delete fieldset.attribs.disabled;
+      return [
+        {
+          type: 'attributes',
+          target: fieldset,
+          attributeName: 'disabled',
+          oldValue,
+        },
+      ];
+    }
+    if (way === 1 && legend) {
+      DomUtils.removeElement(legend);
+      return [
+        {
+          type: 'childList',
+          target: fieldset,
+          addedNodes: [],
+          removedNodes: [legend],
+        },
+      ];
+    }
+    const added = new HtmlSource();
+    added.setSource(`<legend>${controlFor(next)}</legend>`, true);
+    const made = added.document.children.find(
+      (n) => n.type === 'tag',
+    ) as Element;
+    DomUtils.removeElement(made);
+    DomUtils.prependChild(fieldset, made);
+    return [
+      {
+        type: 'childList',
+        target: fieldset,
         addedNodes: [made],
         removedNodes: [],
       },

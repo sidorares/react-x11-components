@@ -2323,9 +2323,9 @@ function answered(
   };
 }
 
-/** What an `<object>` shows as a document of its own. */
-const DOCUMENT_TYPES =
-  /^(?:text\/html|text\/plain|text\/xml|application\/xml|application\/xhtml\+xml)$/;
+/** What an `<object>` shows as a document of its own, with any XML that is
+ *  no drawing: a drawing is an image as well. */
+const DOCUMENT_TYPES = /^(?:text\/html|text\/plain)$/;
 
 /**
  * A fetched subresource as `<Html>` takes it back from `onResource`: a
@@ -2364,7 +2364,12 @@ export function resourceResult(
   // a page or text where an image was asked for is a document, which an
   // `<object>` shows as a frame and not its fallback: Acid3's second object
   // holds a page, and its third a picture it must not show
-  if (DOCUMENT_TYPES.test(fetched.type)) return { kind: 'document' };
+  if (
+    DOCUMENT_TYPES.test(fetched.type) ||
+    (isXmlType(fetched.type) && fetched.type !== 'image/svg+xml')
+  ) {
+    return { kind: 'document' };
+  }
   return { kind: 'image', bytes: fetched.bytes };
 }
 
