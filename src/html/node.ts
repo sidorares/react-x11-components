@@ -1485,6 +1485,9 @@ export class HtmlViewNode extends Node {
     // before the first scan: a document that runs scripts asks for nothing
     // in a `<noscript>`, from its first render on
     this._source.setScripting(this._props().scripting ?? false);
+    // and a page whose scripts run is a document, its head there for the
+    // first of them, whatever its source starts with
+    this._source.setDocument(this._props().scripting ?? false);
     this._read();
   }
 
@@ -4646,10 +4649,21 @@ export class HtmlViewNode extends Node {
         // can differ in, the tree keeps every box they cannot, and only
         // their subtrees are built (`_subtreeBuild`) — the first build of
         // the pass only, whose `restyleOnly` is still theirs.
+        // What animates is among them: a frame waits for a build that is
+        // coming (`_makeFrame`), and a build of subtrees styles nothing
+        // outside them, so an element a script's animation had moved on
+        // since the last frame was drawn where that frame left it. Seeded,
+        // it is styled at its time, and one that comes out as it was is no
+        // seed, as any is not.
         const subtrees =
           kept && seeds && restyleOnly === seededWith
             ? this._seedsThatMoved(
-                seeds,
+                this._animating()
+                  ? new Set([
+                      ...seeds,
+                      ...this._animationReach(this._tree!).reach,
+                    ])
+                  : seeds,
                 always,
                 tails,
                 pseudoRules,
@@ -6248,6 +6262,7 @@ export class HtmlViewNode extends Node {
     // what the scan finds — a `<noscript>`'s images and sheets — before the
     // source is read, so a document that runs scripts never asks for them
     const scripted = this._source.setScripting(next.scripting ?? false);
+    this._source.setDocument(next.scripting ?? false);
     if (scripted) this._invalidate(Stale.Style);
     if (
       next.look !== prev.look ||

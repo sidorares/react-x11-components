@@ -1507,6 +1507,11 @@ export class HtmlSource {
    *  written. */
   private _taken: ParseRecord | null = null;
 
+  /** Whether a source is parsed as a document whatever it starts with
+   *  (`setDocument`), and whether its declarative shadow roots attach. */
+  private _asDocument = false;
+  private _declarative = true;
+
   constructor() {
     const { parser, handler } = createParser();
     handler.marksSheets = true;
@@ -1977,7 +1982,10 @@ export class HtmlSource {
     this._record = null;
     this._taken = null;
     this._parser.reset();
-    const { parser, handler } = xml ? createXmlParser() : createParser();
+    const { parser, handler } = xml
+      ? createXmlParser()
+      : createParser(this._declarative, this._asDocument);
+    if (parser instanceof DocumentParser) parser.setScripting(this.scripting);
     handler.marksSheets = true;
     this._parser = parser;
     this._handler = handler;
@@ -2016,11 +2024,40 @@ export class HtmlSource {
     if (!told) untold += 1;
   }
 
+  /**
+   * Parse a source as a document, as HTML's parser parses one, into an
+   * `<html>` with its head and its body whatever it starts with, the head
+   * there from the first script on: a page whose scripts run is one, as a
+   * frame's and a written one are. Off, a source with no doctype and no
+   * `<html>` at its start is a fragment, which the root stands in a body
+   * for. Taken at the next parse from nothing, and at once where nothing has
+   * been parsed. `declarative` off attaches no shadow root a template
+   * declares, as `DOMParser` attaches none.
+   */
+  setDocument(on: boolean, declarative = true): void {
+    if (on === this._asDocument && declarative === this._declarative) return;
+    this._asDocument = on;
+    this._declarative = declarative;
+    if (!this._written && !this._input && !this._adopted && !this._xml) {
+      this.reset();
+    }
+  }
+
   /** Run scripts or not: what the scan finds changes with it. True when
    *  it changed. */
   setScripting(on: boolean): boolean {
     if (on === this.scripting) return false;
     this.scripting = on;
+    // and the parse, where it has yet to read anything: a `<noscript>`
+    // holds text where scripts run
+    if (
+      this._parser instanceof DocumentParser &&
+      !this._written &&
+      !this._input &&
+      !this._adopted
+    ) {
+      this._parser.setScripting(on);
+    }
     this.revision += 1;
     this._facts = freshFacts();
     // a scan that walks into other elements than the one before
@@ -2351,6 +2388,12 @@ class TreeHandler extends DomHandler {
    *  takeAppended`). */
   recording: ParseRecord | null = null;
 
+  /** Where the next node goes where that is not the end of the current
+   *  node: in front of a table, for what is foster parented, at the end of
+   *  the `<html>` or the document, for a comment after the body (HTML
+   *  13.2.6.1, "the appropriate place for inserting a node"). */
+  place: { parent: ParentNode; before: ChildNode | null } | null = null;
+
   /** Whether an element is open: its end tag not met yet. */
   isOpen(el: Element): boolean {
     return this.tagStack.includes(el);
@@ -2370,6 +2413,14 @@ class TreeHandler extends DomHandler {
     if (record) {
       record.added.push(node);
       record.addedSet.add(node);
+    }
+    const place = this.place;
+    if (place) {
+      putNode(place.parent, node, place.before);
+      // foster parented, which no record of a chunk says
+      if (record && place.before) record.unknown = true;
+      this.lastNode = null;
+      return;
     }
     const stack = this.tagStack;
     if (stack.length <= MAX_DEPTH) {
@@ -2405,31 +2456,18 @@ class TreeHandler extends DomHandler {
 }
 
 /**
- * domhandler's handler, with the one rule of HTML's tree construction about
- * text that htmlparser2 leaves out: a newline straight after the start tag
- * of a `<pre>`, a `<listing>` or a `<textarea>` is not content (HTML
- * 13.2.6.4.7, "newlines at the start of pre blocks are ignored as an
- * authoring convenience"). Without it every code block written `<pre>` and
- * a line break began with an empty line. A chunk of a stream that ends
- * between the tag and the newline keeps the rule, since the handler does.
+ * domhandler's handler, building what `DocumentParser` decides: an element
+ * for each start tag it inserts, text and comments where it says, and the
+ * one rule of HTML's tree construction about text that the parser leaves to
+ * it: a newline straight after the start tag of a `<pre>`, a `<listing>` or
+ * a `<textarea>` is not content (HTML 13.2.6.4.7, "newlines at the start of
+ * pre blocks are ignored as an authoring convenience"). Without it every
+ * code block written `<pre>` and a line break began with an empty line. A
+ * chunk of a stream that ends between the tag and the newline keeps the
+ * rule, since the handler does.
  */
 class Handler extends TreeHandler {
   private _afterPre = false;
-  /** A written `<html>` at the top of the document, and the document's
-   *  body, written or implied: where HTML's parser puts content the markup
-   *  leaves outside them. */
-  private _html: Element | null = null;
-  private _body: Element | null = null;
-  /** The `<head>` HTML's parser implies in a written `<html>` that has
-   *  none, while it is open: htmlparser2 never saw it open, so it is closed
-   *  here, before whatever comes that is not head content. */
-  private _impliedHead: Element | null = null;
-  private _headSeen = false;
-  /** Whether the source declares itself a document, with a doctype at its
-   *  start: one is parsed as HTML's parser parses every document, into an
-   *  `<html>` with its head and its body, written or implied (13.2.6.4.1,
-   *  "initial", and "before html"). A source with none is a fragment. */
-  private _document = false;
   /** Whether a `<template shadowrootmode>` attaches a shadow root, as it
    *  does in a document a browser's parser builds, and not in a fragment
    *  parsed for `innerHTML` (HTML 13.2.6.4.4). */
@@ -2439,54 +2477,34 @@ class Handler extends TreeHandler {
    *  of the stack to find there is none to close. */
   paragraphs = 0;
 
-  /** What end tag the parser last met of the two it leaves open, with only
-   *  comments and white space since: a comment then goes outside what ended
-   *  (13.2.6.4.19, "after body", and 13.2.6.4.22, "after after body"), and
-   *  anything else back in the body, which is why neither is closed. */
-  ended: 'body' | 'html' | null = null;
-
   /** HTML's form element pointer (13.2.4.4): the `<form>` the parser met
    *  last, which outlives its end on the stack, and until its own end tag
    *  turns another away and owns the controls that come. */
   form: Element | null = null;
-  /** Whether the `<form>` being opened is that form. */
-  pointing = false;
+
+  /** The formatting elements of the parser's list that are open, which
+   *  saves the list's every reconstruction a walk of the stack. */
+  readonly openFormatting = new Set<Element>();
+
+  /** The stack of open nodes, bottom first, the document's root under all
+   *  of them, as the parser reads and rearranges it. */
+  get openNodes(): ParentNode[] {
+    return this.tagStack;
+  }
+
+  /** No text is written on to from here: what comes next is a node of its
+   *  own. */
+  breakText(): void {
+    this.lastNode = null;
+  }
 
   /**
-   * HTML's parser puts a document's content in a `<body>` whether or not
-   * the markup wrote one, and htmlparser2's puts it where it stands. So
-   * with a written `<html>`, the first thing that is not head content opens
-   * the body it goes in (HTML 13.2.6.4.6, "after head"); without one, a
-   * `<body>` written after content takes that content in, which HTML's
-   * parser had put in the body it implied; and what comes after the body
-   * has ended goes back into it ("after body"), as does a second
-   * `<body>`'s attributes. Without it the root box stood in for a body
-   * around the `<html>`, and a first paragraph's margin stood below the
-   * body's rather than collapsing with it. A fragment — no `<html>`, no
-   * `<body>` — is left as it was written, and the root box stands in.
+   * An element for a start tag the parser inserts, at the end of what is
+   * open or at `place`. A `<template shadowrootmode>` that the element open
+   * can host a shadow root from is that root instead (`_shadowRoot`).
    */
   override onopentag(name: string, attribs: Record<string, string>): void {
-    this.ended = null;
     if (name === 'p') this.paragraphs += 1;
-    if (name !== 'html') this._impliedHtml();
-    if (this._ignored(name, attribs)) return;
-    this._closeImpliedHead(name);
-    this._openImpliedHead(name);
-    if (name === 'body' && this._body) {
-      // a second body is its attributes, on the first; the parser will end
-      // it, so what it ends is the body outside one, or else what is open
-      this._mergeAttributes(this._body, attribs);
-      const stack = this.tagStack;
-      if (this._outsideBody()) this._reopen();
-      else stack.push(stack[stack.length - 1]);
-      this._afterPre = false;
-      return;
-    }
-    if (this._outsideBody()) {
-      if (this._body) {
-        if (name !== 'html') this._reopen();
-      } else if (this._html && inBody(name)) this._reopen();
-    }
     if (name === 'template' && this._shadowRoot(attribs)) return;
     super.onopentag(name, attribs);
     const opened = this.tagStack[this.tagStack.length - 1] as Element;
@@ -2506,10 +2524,7 @@ class Handler extends TreeHandler {
       NULL_REGISTRY.add(opened);
       nullRegistriesParsed = true;
     }
-    if (this.pointing && name === 'form') {
-      this.pointing = false;
-      this.form = opened;
-    } else if (
+    if (
       this.form &&
       FORM_CONTROLS.has(name) &&
       !isForeign(opened) &&
@@ -2517,106 +2532,24 @@ class Handler extends TreeHandler {
     ) {
       PARSED_FORMS.set(opened, this.form);
     }
-    if (name === 'head') this._headSeen = true;
-    if (name === 'html' && !this._html && opened.parent === this.root) {
-      this._html = opened;
-    } else if (name === 'body' && !this._body) {
-      if (opened.parent === this._html) this._body = opened;
-      else if (!this._html && opened.parent === this.root) {
-        this._body = opened;
-        this._adopt(opened);
-      }
-    }
     this._afterPre =
       name === 'pre' || name === 'listing' || name === 'textarea';
   }
 
-  /**
-   * A start tag HTML's parser makes no element of (13.2.6.4.7, "in body"):
-   * an `<html>` once the document has one, or past where it would start,
-   * whose attributes go on the `<html>` there is where it has none of its
-   * own; and a `<head>` once the head is behind it. WordPress saves a post
-   * through PHP's DOM, which writes a whole document, `<!DOCTYPE>`,
-   * `<html>` and `<body>`, round the post: on github.blog the article's
-   * blocks were the children of an `<html>` inside the content column, and
-   * `.is-layout-constrained > *`, which takes a figure's side margins away,
-   * reached none of them. True where it is ignored, and stood in for on the
-   * stack by what is open, which the parser then closes at its end tag, or
-   * with what holds it, as it would close the element.
-   */
-  private _ignored(name: string, attribs: Record<string, string>): boolean {
-    const stack = this.tagStack;
-    const top = stack[stack.length - 1];
-    if (name === 'html') {
-      if (top === this.root && !this._html && !this._body) return false;
-      // in SVG or MathML it is an element like any, and no document's
-      if (namespaceIn(top) !== undefined) return false;
-      if (this._html) this._mergeAttributes(this._html, attribs);
-    } else if (name === 'head') {
-      if (
-        !this._headSeen &&
-        !this._body &&
-        (top === this.root || top === this._html)
-      ) {
-        return false;
-      }
-    } else {
-      return false;
-    }
-    stack.push(top);
-    this._afterPre = false;
-    return true;
+  /** An element made for what the adoption agency or a reconstruction of
+   *  the formatting elements makes again, which the parser puts in place. */
+  made(name: string, attribs: Record<string, string>): Element {
+    const el = new Element(name, attribs);
+    this.inserted?.push(el);
+    if (this.recording) this.recording.unknown = true;
+    return el;
   }
 
-  /** The attributes of a second `<html>` or `<body>` that the first has
-   *  none of, set on it — and told, where a chunk is recorded. */
-  private _mergeAttributes(el: Element, attribs: Record<string, string>): void {
-    for (const key in attribs) {
-      if (el.attribs[key] !== undefined) continue;
-      el.attribs[key] = attribs[key];
-      this.recording?.attributes.push({ target: el, name: key, old: null });
-    }
-  }
-
-  /** A doctype past the start of the document, which HTML's parser leaves
-   *  out (13.2.6.4.7, "a DOCTYPE token"): it is the document's only where
-   *  no element has been opened before it, and makes the source one. */
-  override onprocessinginstruction(name: string, data: string): void {
-    if (
-      name === '!doctype' &&
-      (this.tagStack.length > 1 || this.root.children.some(isElement))
-    ) {
-      return;
-    }
-    if (name === '!doctype') this._document = true;
-    super.onprocessinginstruction(name, data);
-  }
-
-  /**
-   * The `<html>` HTML's parser implies in a document that does not write
-   * one, before its first element or text (13.2.6.4.2, "before html"),
-   * which the head and the body are then implied in as in a written one.
-   * Without it a WPT test that starts `<!doctype html><title>` had no
-   * `<head>` for `document.head` to answer, no `<body>`, and a `:root`
-   * that was the `<title>`.
-   */
-  private _impliedHtml(): void {
-    if (!this._document || this._html || this._body) return;
-    if (this.tagStack[this.tagStack.length - 1] !== this.root) return;
-    super.onopentag('html', {});
-    this._html = this.tagStack[this.tagStack.length - 1] as Element;
-  }
-
-  /** A document ends with its `<html>`, head and body, however little it
-   *  wrote of them: an empty one has all three. */
-  override onend(): void {
-    if (this._document) {
-      this._impliedHtml();
-      this._openImpliedHead(null);
-      this._closeImpliedHead(null);
-      if (this._html && !this._body) this._reopen();
-    }
-    super.onend();
+  /** What the adoption agency moves: taken from where it is, which no
+   *  record of a chunk says. */
+  moved(): void {
+    if (this.recording) this.recording.unknown = true;
+    this.lastNode = null;
   }
 
   /**
@@ -2659,83 +2592,19 @@ class Handler extends TreeHandler {
     return true;
   }
 
-  /**
-   * A `<head>` round the head content a written `<html>` starts with, as
-   * HTML's parser implies one (13.2.6.4.3, "before head"): without it the
-   * document's tree was not a browser's, `:first-child + *` was the
-   * `<title>`'s sibling and not the body, and Acid3's coloured boxes,
-   * styled through that selector, were never inline blocks. Implied
-   * once, before the first thing in the `<html>`, and empty where that is
-   * not head content — a `<noscript>` neither, whose content `<Html>` draws
-   * where the parser would have taken it into the body.
-   */
-  private _openImpliedHead(name: string | null): void {
-    if (
-      this._headSeen ||
-      this._body ||
-      !this._html ||
-      this.tagStack[this.tagStack.length - 1] !== this._html ||
-      name === 'head' ||
-      name === 'html'
-    ) {
-      return;
+  /** The attributes of a second `<html>` or `<body>` that the first has
+   *  none of, set on it — and told, where a chunk is recorded. */
+  mergeAttributes(el: Element, attribs: Record<string, string>): void {
+    for (const key in attribs) {
+      if (el.attribs[key] !== undefined) continue;
+      el.attribs[key] = attribs[key];
+      this.recording?.attributes.push({ target: el, name: key, old: null });
     }
-    this._headSeen = true;
-    super.onopentag('head', {});
-    this._impliedHead = this.tagStack[this.tagStack.length - 1] as Element;
-    this._closeImpliedHead(name);
   }
 
-  /** The implied head closed, where what comes next is not head content
-   *  (`name`, an element's, or null for text, a close or the end). */
-  private _closeImpliedHead(name: string | null): void {
-    const head = this._impliedHead;
-    if (!head) return;
-    const stack = this.tagStack;
-    if (stack[stack.length - 1] !== head) return;
-    if (name && HEAD_CONTENT.has(name) && name !== 'noscript') return;
-    // and the stand-ins for it an ignored `<html>` or `<head>` in it left
-    // (`_ignored`) stand for what holds it, so that each one's end tag
-    // still closes one: left standing for the head, the one a `<meta>`
-    // before `<html class>` leaves kept it open, and the body's content
-    // went into the head
-    let standIns = 0;
-    while (stack[stack.length - 1] === head) {
-      stack.pop();
-      standIns += 1;
-    }
-    const holder = stack[stack.length - 1];
-    for (let i = 1; i < standIns; i += 1) stack.push(holder);
-    this._impliedHead = null;
-    this.lastNode = null;
-  }
-
-  /** Whether what is open is the top of the document, or the written
-   *  `<html>`: where content is outside any body. */
-  private _outsideBody(): boolean {
-    const top = this.tagStack[this.tagStack.length - 1];
-    return top === this.root || (top === this._html && top !== null);
-  }
-
-  /** Open the `<html>` and its body again, or the body for the first time.
-   *  The parser never saw them open, so it closes them in the place of what
-   *  it did open — which is where they would end anyway. */
-  private _reopen(): void {
-    const stack = this.tagStack;
-    if (stack[stack.length - 1] === this.root && this._html) {
-      stack.push(this._html);
-    }
-    if (this._body) stack.push(this._body);
-    else {
-      super.onopentag('body', {});
-      this._body = stack[stack.length - 1] as Element;
-    }
-    this.lastNode = null;
-  }
-
-  /** Move into a `<body>` written at the top of the document what went
+  /** Move into a `<body>` written at the top of a fragment what went
    *  before it there from the first thing that is not head content on. */
-  private _adopt(body: Element): void {
+  adopt(body: Element): void {
     // nodes moved, which no record of a chunk says
     if (this.recording) this.recording.unknown = true;
     const kids = this.root.children;
@@ -2761,18 +2630,19 @@ class Handler extends TreeHandler {
   /** Take what stands `fromTop` under what is open off the stack and leave
    *  all it holds open, which is the tree staying as it is. */
   removeOpen(fromTop: number): void {
-    this.tagStack.splice(this.tagStack.length - 1 - fromTop, 1);
+    const [gone] = this.tagStack.splice(this.tagStack.length - 1 - fromTop, 1);
+    if (gone instanceof Element && gone.name === 'p') this.paragraphs -= 1;
+    this.openFormatting.delete(gone as Element);
   }
 
   override onclosetag(name?: string): void {
-    this.ended = null;
     if (name === 'p') this.paragraphs -= 1;
     this._afterPre = false;
-    // a close htmlparser2 makes is of what it opened, which the implied
-    // head is not: it closes with it
-    this._closeImpliedHead(null);
     const closing = this.tagStack[this.tagStack.length - 1];
     super.onclosetag();
+    if (this.openFormatting.size) {
+      this.openFormatting.delete(closing as Element);
+    }
     if (closing instanceof Element && closing.name === 'script') {
       this.closedScript = closing;
     }
@@ -2780,31 +2650,15 @@ class Handler extends TreeHandler {
 
   override oncomment(data: string): void {
     this._afterPre = false;
-    const { ended, tagStack } = this;
-    if (!ended) {
-      super.oncomment(data);
-      return;
-    }
-    // a fragment's root stands for the `<html>` it was read in
-    tagStack.push(ended === 'body' ? (this._html ?? this.root) : this.root);
-    super.oncomment(data);
-    tagStack.pop();
+    super.oncomment(data.includes('\0') ? data.replace(/\0/g, '\ufffd') : data);
+  }
+
+  override onprocessinginstruction(name: string, data: string): void {
+    this._afterPre = false;
+    super.onprocessinginstruction(name, data);
   }
 
   override ontext(data: string): void {
-    if (NOT_SPACE.test(data)) {
-      this.ended = null;
-      this._impliedHtml();
-      this._openImpliedHead(null);
-      this._closeImpliedHead(null);
-    }
-    if (
-      (this._html || this._body) &&
-      NOT_SPACE.test(data) &&
-      this._outsideBody()
-    ) {
-      this._reopen();
-    }
     if (this._afterPre) {
       this._afterPre = false;
       const skip = data.startsWith('\r\n') ? 2 : data.startsWith('\n') ? 1 : 0;
@@ -2813,7 +2667,33 @@ class Handler extends TreeHandler {
         data = data.slice(skip);
       }
     }
+    const place = this.place;
+    if (place) {
+      this._textAt(place, data);
+      return;
+    }
     super.ontext(data);
+  }
+
+  /** Text where `place` says, on the end of a text just before it, where
+   *  there is one, as HTML's parser puts it (13.2.6.1, "insert a
+   *  character"). */
+  private _textAt(
+    place: { parent: ParentNode; before: ChildNode | null },
+    data: string,
+  ): void {
+    const { parent, before } = place;
+    const prev = before
+      ? before.prev
+      : (parent.children[parent.children.length - 1] ?? null);
+    if (prev instanceof Text) {
+      prev.data += data;
+      if (this.recording) this.recording.unknown = true;
+    } else {
+      const node = new Text(data);
+      this.addNode(node);
+    }
+    this.lastNode = null;
   }
 }
 
@@ -3144,6 +3024,82 @@ const MAX_DEPTH = 256;
 /** Text that is not all the white space HTML's parser leaves in the head. */
 const NOT_SPACE = /[^ \t\n\f\r]/;
 
+/** What is neither white space nor a NULL. */
+const NOT_SPACE_OR_NULL = /[^ \t\n\f\r\0]/;
+
+/** White space at the start of a text, and what is not white space. */
+const LEADING_SPACE = /^[\t\n\f\r ]+/;
+const NOT_SPACES = /[^\t\n\f\r ]/g;
+
+/** What the tokenizer is set to where the tree builder makes no element of
+ *  a tag that would have started raw text. */
+const NO_SEQUENCE = new Uint8Array(0);
+
+/** What ends a `<noscript>` read as raw text, `</noscript`, as htmlparser2's
+ *  tokenizer spells the end of the elements it reads so. */
+const NOSCRIPT_END = new Uint8Array(
+  [...'</noscript'].map((c) => c.charCodeAt(0)),
+);
+
+/** The end tags of the current node that "in body" has more to do for than
+ *  closing it. */
+const SPECIAL_END = new Set([
+  'applet',
+  'body',
+  'form',
+  'html',
+  'marquee',
+  'object',
+  'template',
+]);
+
+/** The end tags each of a table's modes ignores. */
+const IGNORED_IN_TABLE = new Set([
+  'body',
+  'caption',
+  'col',
+  'colgroup',
+  'html',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+]);
+const IGNORED_IN_CAPTION = new Set([
+  'body',
+  'col',
+  'colgroup',
+  'html',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+]);
+const IGNORED_IN_BODY_OF_TABLE = new Set([
+  'body',
+  'caption',
+  'col',
+  'colgroup',
+  'html',
+  'td',
+  'th',
+  'tr',
+]);
+const IGNORED_IN_ROW = new Set([
+  'body',
+  'caption',
+  'col',
+  'colgroup',
+  'html',
+  'td',
+  'th',
+]);
+const IGNORED_IN_CELL = new Set(['body', 'caption', 'col', 'colgroup', 'html']);
+
 /** Whether an element opened before the body goes in the body HTML's
  *  parser implies, rather than in the head or the `<html>` itself. */
 function inBody(name: string): boolean {
@@ -3163,7 +3119,10 @@ function startsBody(node: ChildNode): boolean {
   return node instanceof Text && NOT_SPACE.test(node.data);
 }
 
-function createParser(declarative = true): {
+function createParser(
+  declarative = true,
+  document = false,
+): {
   parser: DocumentParser;
   handler: Handler;
 } {
@@ -3185,34 +3144,62 @@ function createParser(declarative = true): {
     recognizeSelfClosing: false,
     decodeEntities: true,
   });
+  if (document) parser.asDocument();
   return { parser, handler };
 }
 
 /** What `DocumentParser` reads of htmlparser2's parser beyond its typed
  *  surface: the stack of open tag names, top first, its frames of what those
- *  hold, and the steps a tag is made in. Held to htmlparser2 12 by
+ *  hold, the tag being read and its tokenizer. Held to htmlparser2 12 by
  *  `test/html/document.test.ts`. */
 interface ParserInternals {
   readonly stack: string[];
   readonly foreignContext: number[];
   readonly cbs: Handler;
+  readonly tokenizer: TokenizerInternals;
   attribs: Record<string, string> | null;
   tagname: string;
   openTagStart: number;
   startIndex: number;
   endIndex: number;
   readTagName(start: number, endIndex: number): string;
-  endOpenTag(isImplied: boolean): void;
-  closeCurrentTag(isOpenImplied: boolean): void;
+  getSlice(start: number, end: number): string;
   popElement(implied: boolean): void;
 }
 
-/** A table's row groups, where a cell opens a row; and what may be open
- *  where a table's rows imply something. */
-const SECTIONS = new Set(['tbody', 'thead', 'tfoot']);
-const IN_TABLE = new Set(['table', 'colgroup', ...SECTIONS]);
+/** What the parser reads of htmlparser2's tokenizer: whether the tag it
+ *  has just read starts raw text, which the tree builder may say it does
+ *  not (13.2.6.2). */
+interface TokenizerInternals {
+  isSpecial: boolean;
+  currentSequence: Uint8Array;
+}
 
-/** The end tags HTML takes in a table, which go by its table scope. */
+/** HTML's insertion modes (13.2.4.1). "text" is the tokenizer's here, and
+ *  "in select" and "in select in table" are gone from HTML. */
+const INITIAL = 0;
+const BEFORE_HTML = 1;
+const BEFORE_HEAD = 2;
+const IN_HEAD = 3;
+const IN_HEAD_NOSCRIPT = 4;
+const AFTER_HEAD = 5;
+const IN_BODY = 6;
+const IN_TABLE = 7;
+const IN_TABLE_TEXT = 8;
+const IN_CAPTION = 9;
+const IN_COLUMN_GROUP = 10;
+const IN_TABLE_BODY = 11;
+const IN_ROW = 12;
+const IN_CELL = 13;
+const IN_TEMPLATE = 14;
+const AFTER_BODY = 15;
+const IN_FRAMESET = 16;
+const AFTER_FRAMESET = 17;
+const AFTER_AFTER_BODY = 18;
+const AFTER_AFTER_FRAMESET = 19;
+
+/** A table's row groups, and the end tags HTML takes by table scope. */
+const SECTIONS = new Set(['tbody', 'thead', 'tfoot']);
 const TABLE_END_TAGS = new Set([
   ...SECTIONS,
   'caption',
@@ -3222,30 +3209,29 @@ const TABLE_END_TAGS = new Set([
   'tr',
 ]);
 
-/** A table's parts, and the part each holds as a child, or by what it opens
- *  round it (`_impliedBy`): a cell and a caption hold none of them, and close
- *  for any. */
-const TABLE_PARTS = new Set([...TABLE_END_TAGS, 'colgroup', 'template']);
-const IN_A_ROW = new Set(['td', 'th']);
-const IN_A_SECTION = new Set(['td', 'th', 'tr']);
-const HOLDS = new Map([
-  [
-    'table',
-    new Set([...IN_A_SECTION, ...SECTIONS, 'caption', 'col', 'colgroup']),
-  ],
-  ['colgroup', new Set(['col'])],
-  ['tbody', IN_A_SECTION],
-  ['tfoot', IN_A_SECTION],
-  ['thead', IN_A_SECTION],
-  ['tr', IN_A_ROW],
+/** Where foster parenting takes what is out of place: what is inserted while
+ *  one of these is the current node (13.2.6.1). */
+const FOSTERING = new Set(['table', ...SECTIONS, 'tr']);
+
+/** Where the stack is cleared back to, for a table, its body and a row. */
+const TABLE_CONTEXT = new Set(['table', 'template', 'html']);
+const TABLE_BODY_CONTEXT = new Set([...SECTIONS, 'template', 'html']);
+const ROW_CONTEXT = new Set(['tr', 'template', 'html']);
+
+/** The start tags a cell, a caption, a row or a row group closes for. */
+const CELL_ENDERS = new Set([
+  'caption',
+  'col',
+  'colgroup',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
 ]);
 
-/** Where the parser stands in a table and not in a cell or a caption, where
- *  HTML takes what is out of place out of the table (13.2.6.4.9). */
-const BETWEEN_PARTS = new Set([...SECTIONS, 'colgroup', 'table', 'tr']);
-
-/** The elements whose end tag goes by whether they are in scope, and whose
- *  start tag ends a `<p>` (HTML 13.2.6.4.7, "in body"). */
+/** The start tags that close a `<p>` in button scope and are inserted. */
 const BLOCKS = new Set([
   'address',
   'article',
@@ -3263,39 +3249,24 @@ const BLOCKS = new Set([
   'footer',
   'header',
   'hgroup',
-  'listing',
   'main',
   'menu',
   'nav',
   'ol',
-  'pre',
+  'p',
   'search',
   'section',
   'summary',
   'ul',
 ]);
 
-const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
-const DESCRIPTIONS = new Set(['dd', 'dt']);
+/** The end tags that pop to their element where it is in scope. */
+const BLOCK_ENDS = new Set([...BLOCKS, 'button', 'listing', 'pre', 'select']);
 
-/** The start tags that end a `<p>` as they open. A `<table>` does in a
- *  document with no quirks, and `<Html>` has no quirks mode. */
-const ENDS_A_PARAGRAPH = new Set([
-  ...BLOCKS,
-  ...DESCRIPTIONS,
-  ...HEADINGS,
-  'form',
-  'hr',
-  'li',
-  'p',
-  'plaintext',
-  'table',
-  'xmp',
-]);
+const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 
 /** The elements a list keeps for what comes after them, and brings back
- *  where one is closed from under it (13.2.4.3). Nothing here keeps that list,
- *  so nothing a start tag implies closes one. */
+ *  where one is closed from under it (13.2.4.3). */
 const FORMATTING = new Set([
   'a',
   'b',
@@ -3313,8 +3284,75 @@ const FORMATTING = new Set([
   'u',
 ]);
 
-/** HTML's scopes (13.2.4.2), but for `html`: there is one, under everything,
- *  and what stands for an ignored one on the stack is no stop. */
+/** What "in head" takes wherever it is asked to (13.2.6.4.4). */
+const HEAD_TAGS = new Set([
+  'base',
+  'basefont',
+  'bgsound',
+  'link',
+  'meta',
+  'noframes',
+  'script',
+  'style',
+  'template',
+  'title',
+]);
+
+/** The start tags "in body" has a rule of its own for, other than a block's
+ *  and a formatting element's (13.2.6.4.7). */
+const BODY_RULES = new Set([
+  ...HEAD_TAGS,
+  ...HEADINGS,
+  ...TABLE_END_TAGS,
+  'a',
+  'applet',
+  'area',
+  'body',
+  'br',
+  'button',
+  'col',
+  'colgroup',
+  'dd',
+  'dt',
+  'embed',
+  'form',
+  'frame',
+  'frameset',
+  'head',
+  'hr',
+  'html',
+  'iframe',
+  'image',
+  'img',
+  'input',
+  'keygen',
+  'li',
+  'listing',
+  'marquee',
+  'math',
+  'nobr',
+  'noembed',
+  'noscript',
+  'object',
+  'optgroup',
+  'option',
+  'param',
+  'plaintext',
+  'pre',
+  'rb',
+  'rp',
+  'rt',
+  'rtc',
+  'select',
+  'source',
+  'svg',
+  'textarea',
+  'track',
+  'wbr',
+  'xmp',
+]);
+
+/** HTML's scopes (13.2.4.2), but for `html`: there is one, under everything. */
 const SCOPE = new Set([
   'applet',
   'caption',
@@ -3331,58 +3369,70 @@ const BUTTON_SCOPE = new Set([...SCOPE, 'button']);
 const TABLE_SCOPE = new Set(['table', 'template']);
 const NO_SCOPE = new Set<string>();
 
-/** HTML's special category (13.2.4.2), which "any other end tag" stops at,
- *  less what cannot be open and what stands for an ignored tag. */
+/** HTML's special category (13.2.4.2), which "any other end tag" stops at
+ *  and the adoption agency's furthest block is one of. */
 const SPECIAL = new Set([
   ...BLOCKS,
-  ...DESCRIPTIONS,
   ...HEADINGS,
-  ...TABLE_PARTS,
-  ...SCOPE,
+  ...TABLE_END_TAGS,
+  ...HEAD_TAGS,
+  'applet',
+  'area',
+  'body',
+  'br',
   'button',
+  'col',
+  'colgroup',
+  'dd',
+  'dt',
+  'embed',
   'form',
+  'frame',
   'frameset',
+  'head',
+  'hr',
+  'html',
   'iframe',
+  'img',
+  'input',
+  'keygen',
   'li',
+  'listing',
+  'marquee',
   'noembed',
-  'noframes',
   'noscript',
-  'p',
+  'object',
+  'param',
   'plaintext',
+  'pre',
   'select',
+  'source',
+  'textarea',
+  'track',
+  'wbr',
   'xmp',
 ]);
+/** The same in SVG and MathML: their integration points. */
+const SPECIAL_FOREIGN = new Set([
+  'mi',
+  'mo',
+  'mn',
+  'ms',
+  'mtext',
+  'annotation-xml',
+  'foreignObject',
+  'desc',
+  'title',
+]);
 
-/** What a start tag that closes something implied looks past (`_implied`).
- *  An `<li>` closes its like past anything but what is special, and of what
- *  is special, past these three. */
+/** What an `<li>`, a `<dd>` and a `<dt>` look past for one to close. */
 const SPECIAL_TO_AN_ITEM = new Set(
-  [...SPECIAL, ...FORMATTING].filter(
+  [...SPECIAL].filter(
     (name) => name !== 'address' && name !== 'div' && name !== 'p',
   ),
 );
-const TO_A_PARAGRAPH = new Set([...BUTTON_SCOPE, ...FORMATTING]);
-const IMPLYING = new Set([...SCOPE, ...FORMATTING]);
 
-/** The end tags HTML takes by a default scope, as a `<div>`'s: past what
- *  "any other end tag" stops at. A formatting element's takes that much and
- *  its adoption agency the rest (`onclosetag`). */
-const ENDS_IN_SCOPE = new Set([
-  ...BLOCKS,
-  ...DESCRIPTIONS,
-  ...HEADINGS,
-  ...FORMATTING,
-  'applet',
-  'body',
-  'button',
-  'form',
-  'html',
-  'marquee',
-  'object',
-  'select',
-]);
-
-/** What "generate implied end tags" pops from the top of the stack. */
+/** What "generate implied end tags" pops, and what it pops "thoroughly". */
 const ENDS_IMPLIED = new Set([
   'dd',
   'dt',
@@ -3395,27 +3445,31 @@ const ENDS_IMPLIED = new Set([
   'rt',
   'rtc',
 ]);
-
-/** The start tags with something to do before they open (`_implied`). */
-const IMPLIES = new Set([
-  ...DESCRIPTIONS,
-  ...HEADINGS,
-  ...TABLE_END_TAGS,
-  'a',
-  'button',
-  'col',
+const ENDS_THOROUGHLY = new Set([
+  ...ENDS_IMPLIED,
+  'caption',
   'colgroup',
-  'form',
-  'hr',
-  'input',
-  'li',
-  'optgroup',
-  'option',
-  'rb',
-  'rp',
-  'rt',
-  'rtc',
-  'select',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+]);
+
+/** The elements whose text the tokenizer reads raw, so that what comes in
+ *  them is text whatever the mode (13.2.6.4.8, "text"). A `<plaintext>` is
+ *  not one: its text is the body's, which the formatting elements open
+ *  again around. */
+const RAW_ELEMENTS = new Set([
+  'iframe',
+  'noembed',
+  'noframes',
+  'script',
+  'style',
+  'textarea',
+  'title',
+  'xmp',
 ]);
 
 /** The elements a form owns (HTML 4.10.18.1, "listed"). */
@@ -3436,6 +3490,189 @@ const PARSED_FORMS = new WeakMap<Element, Element>();
 /** The form the parser gave a control that is in none. */
 export function parsedForm(el: Element): Element | null {
   return PARSED_FORMS.get(el) ?? null;
+}
+
+/** A formatting element on the parser's list, with the attributes of the
+ *  token it was made for, which what is made again for it takes. Null is a
+ *  marker. */
+type Formatting = {
+  el: Element;
+  name: string;
+  attribs: Record<string, string>;
+} | null;
+
+/** The attributes of a formatting element's token that had none, shared. */
+const NO_ATTRIBUTES: Record<string, string> = Object.freeze({}) as Record<
+  string,
+  string
+>;
+
+/** The public identifiers that put a document in quirks mode, by what each
+ *  starts with (13.2.6.4.1), lower-cased. */
+const QUIRKS_PREFIXES = [
+  '+//silmaril//dtd html pro v0r11 19970101//',
+  '-//as//dtd html 3.0 aswedit + extensions//',
+  '-//advasoft ltd//dtd html 3.0 aswedit + extensions//',
+  '-//ietf//dtd html 2.0 level 1//',
+  '-//ietf//dtd html 2.0 level 2//',
+  '-//ietf//dtd html 2.0 strict level 1//',
+  '-//ietf//dtd html 2.0 strict level 2//',
+  '-//ietf//dtd html 2.0 strict//',
+  '-//ietf//dtd html 2.0//',
+  '-//ietf//dtd html 2.1e//',
+  '-//ietf//dtd html 3.0//',
+  '-//ietf//dtd html 3.2 final//',
+  '-//ietf//dtd html 3.2//',
+  '-//ietf//dtd html 3//',
+  '-//ietf//dtd html level 0//',
+  '-//ietf//dtd html level 1//',
+  '-//ietf//dtd html level 2//',
+  '-//ietf//dtd html level 3//',
+  '-//ietf//dtd html strict level 0//',
+  '-//ietf//dtd html strict level 1//',
+  '-//ietf//dtd html strict level 2//',
+  '-//ietf//dtd html strict level 3//',
+  '-//ietf//dtd html strict//',
+  '-//ietf//dtd html//',
+  '-//metrius//dtd metrius presentational//',
+  '-//microsoft//dtd internet explorer 2.0 html strict//',
+  '-//microsoft//dtd internet explorer 2.0 html//',
+  '-//microsoft//dtd internet explorer 2.0 tables//',
+  '-//microsoft//dtd internet explorer 3.0 html strict//',
+  '-//microsoft//dtd internet explorer 3.0 html//',
+  '-//microsoft//dtd internet explorer 3.0 tables//',
+  '-//netscape comm. corp.//dtd html//',
+  '-//netscape comm. corp.//dtd strict html//',
+  "-//o'reilly and associates//dtd html 2.0//",
+  "-//o'reilly and associates//dtd html extended 1.0//",
+  "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+  '-//sq//dtd html 2.0 hotmetal + extensions//',
+  '-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//',
+  '-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//',
+  '-//spyglass//dtd html 2.0 extended//',
+  '-//sun microsystems corp.//dtd hotjava html//',
+  '-//sun microsystems corp.//dtd hotjava strict html//',
+  '-//w3c//dtd html 3 1995-03-24//',
+  '-//w3c//dtd html 3.2 draft//',
+  '-//w3c//dtd html 3.2 final//',
+  '-//w3c//dtd html 3.2//',
+  '-//w3c//dtd html 3.2s draft//',
+  '-//w3c//dtd html 4.0 frameset//',
+  '-//w3c//dtd html 4.0 transitional//',
+  '-//w3c//dtd html experimental 19960712//',
+  '-//w3c//dtd html experimental 970421//',
+  '-//w3c//dtd w3 html//',
+  '-//w3o//dtd w3 html 3.0//',
+  '-//webtechs//dtd mozilla html 2.0//',
+  '-//webtechs//dtd mozilla html//',
+];
+const QUIRKS_EXACT = new Set([
+  '-//w3o//dtd w3 html strict 3.0//en//',
+  '-/w3c/dtd html 4.0 transitional/en',
+  'html',
+]);
+
+/**
+ * Whether a doctype, as htmlparser2 hands it over (`!DOCTYPE …`), puts the
+ * document in quirks mode (13.2.6.4.1). Only `<p><table>` asks, and only
+ * of a document with no doctype or an old one.
+ */
+function quirksDoctype(value: string): boolean {
+  const m =
+    /^!doctype(?:\s+([^\s>]+))?(?:\s+public\s*(?:"([^"]*)"?|'([^']*)'?))?(?:\s+(?:system\s*)?(?:"([^"]*)"?|'([^']*)'?))?/i.exec(
+      value,
+    );
+  if (!m || !m[1] || m[1].toLowerCase() !== 'html') return true;
+  const pub = (m[2] ?? m[3])?.toLowerCase();
+  const sys = (m[4] ?? m[5])?.toLowerCase();
+  if (sys === 'http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd') {
+    return true;
+  }
+  if (pub === undefined) return false;
+  if (QUIRKS_EXACT.has(pub)) return true;
+  if (QUIRKS_PREFIXES.some((prefix) => pub.startsWith(prefix))) return true;
+  return (
+    sys === undefined &&
+    (pub.startsWith('-//w3c//dtd html 4.01 frameset//') ||
+      pub.startsWith('-//w3c//dtd html 4.01 transitional//'))
+  );
+}
+
+/**
+ * What an SVG or MathML element made in `around`, under `holder`, holds
+ * (13.2.6.5): a name is an integration point in its own language only, so
+ * in SVG an `<mi>` and a `<math>` are SVG's, and in MathML a `<title>` and
+ * an `<svg>` MathML's, but for an `<svg>` an `<annotation-xml>` opens, and
+ * an `<annotation-xml>` that says it holds HTML is a point. From HTML, an
+ * `<svg>` and a `<math>` start their languages.
+ */
+function frameOf(
+  name: string,
+  around: number,
+  holder: string | undefined,
+  attribs: Record<string, string>,
+): number {
+  if (around === NOT_FOREIGN) {
+    return name === 'svg' ? IN_SVG : name === 'math' ? IN_MATHML : NOT_FOREIGN;
+  }
+  if (around === IN_SVG) {
+    return SVG_POINTS.has(name.toLowerCase()) ? NOT_FOREIGN : IN_SVG;
+  }
+  if (name === 'svg' && holder === 'annotation-xml') return IN_SVG;
+  return MATHML_POINTS.has(name) ||
+    (name === 'annotation-xml' &&
+      HTML_ENCODINGS.has((attribs.encoding ?? '').toLowerCase()))
+    ? NOT_FOREIGN
+    : IN_MATHML;
+}
+
+/** Whether attributes are the same, for the list's three of a kind. */
+function sameAttributes(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  let count = 0;
+  for (const key in a) {
+    if (b[key] !== a[key]) return false;
+    count += 1;
+  }
+  for (const _ in b) count -= 1;
+  return count === 0;
+}
+
+/** A node put in `parent` before `before`, or at its end, taken from
+ *  wherever it was. Nothing is told: the parser is building the tree. */
+function putNode(
+  parent: ParentNode,
+  node: ChildNode,
+  before: ChildNode | null = null,
+): void {
+  takeNode(node);
+  const kids = parent.children;
+  const at = before ? kids.indexOf(before) : -1;
+  const prev =
+    at >= 0 ? (kids[at - 1] ?? null) : (kids[kids.length - 1] ?? null);
+  if (at >= 0) kids.splice(at, 0, node);
+  else kids.push(node);
+  node.parent = parent;
+  node.prev = prev;
+  node.next = at >= 0 ? before : null;
+  if (prev) prev.next = node;
+  if (at >= 0 && before) before.prev = node;
+}
+
+/** A node taken out of its parent, if it has one. */
+function takeNode(node: ChildNode): void {
+  const parent = node.parent;
+  if (!parent) return;
+  const kids = parent.children;
+  const at = kids.indexOf(node);
+  if (at >= 0) kids.splice(at, 1);
+  if (node.prev) node.prev.next = node.next;
+  if (node.next) node.next.prev = node.prev;
+  node.prev = null;
+  node.next = null;
+  node.parent = null;
 }
 
 /** htmlparser2's foreign contexts, which it does not export. */
@@ -3481,7 +3718,7 @@ const MARKED = new Set([
 /**
  * The start tags that end foreign content, as all three engines have them
  * (HTML 13.2.6.5). A `<font>` with a `color`, a `face` or a `size` is one too,
- * which `_tagEnds` asks: its attributes come after the name this is asked of.
+ * which `_startTag` asks once its attributes are read.
  */
 const BREAKS_OUT = new Set([
   'b',
@@ -3531,45 +3768,87 @@ const BREAKS_OUT = new Set([
 ]);
 
 /**
- * htmlparser2's tokenizer, with HTML's tree construction where htmlparser2's
- * parser has a table of its own: a tree builder goes by the language an element
- * is in and the stack of open elements, where htmlparser2 goes by its name and
- * the top of the stack. Each is at its own method: what a start tag closes and
- * whether it opens anything (`_implied`, `_tablePart`), what opens in SVG or
- * MathML (`_openForeign`), what its attributes decide (`_tagEnds`), what ends
- * foreign content (`_breakOut`) and what an end tag closes (`_closedBy`). The
- * adoption agency, the list it keeps and foster parenting are not here: nothing
- * a start tag implies closes a formatting element, and what a table holds out
- * of place stays in it.
+ * htmlparser2's tokenizer, with HTML's tree construction in place of
+ * htmlparser2's (13.2.6): the insertion modes, the list of active formatting
+ * elements and the adoption agency, foster parenting, and the stack of open
+ * elements its scopes are read from. htmlparser2 keeps a table of what each
+ * start tag closes and asks the top of the stack alone, and closes the
+ * nearest element of an end tag's name whatever stands between.
  *
- * It decides a `/>` from the context its tag was read in, as HTML's does.
- * htmlparser2 decides from the context the tag opens, and an integration point
- * — SVG's `<title>`, `<desc>` and `<foreignObject>`, MathML's `<mi>` and its
- * kin — opens an HTML one, so an `<svg><title/><path/>` took its path into the
- * title.
+ * A start tag is acted on once its attributes are read (`_tag`), since what
+ * an `<input>` in a table, a `<font>` in a drawing or an `<annotation-xml>`
+ * does turns on them. What is open is two stacks kept in step: htmlparser2's
+ * of names, top first, with its frames of the language each holds, and the
+ * handler's of nodes, the document's root under all of them. The tokenizer
+ * decides raw text as it reads a tag's name, and is told so where the tree
+ * builder makes no element of the tag (`_tag`).
+ *
+ * A source is a document or a fragment. A document is parsed as HTML's
+ * parser parses one, into an `<html>` with its head and its body, and a
+ * source becomes one with a doctype, an `<html>` or a `<head>` at its start,
+ * or where `HtmlSource` says so (`asDocument`). A fragment is read as the
+ * content of its context (`readIn`), or of a body the root stands in for:
+ * no `<html>`, no `<head>`, and a `<body>` written in it takes in what came
+ * before it.
  */
 class DocumentParser extends Parser {
-  private _foreignTag = false;
-  private _acknowledging = false;
-  /** Whether `_tagEnds` has anything to ask of the tag being read. */
-  private _tagDecides = false;
+  private _mode = IN_BODY;
+  /** The mode "in table text" goes back to. */
+  private _original = IN_BODY;
+  private _templateModes: number[] = [];
+  /** The list of active formatting elements (13.2.4.3). */
+  private _formatting: Formatting[] = [];
+  private _framesetOk = true;
+  /** Whether what is inserted goes in front of the table, where the current
+   *  node is one of a table's parts (13.2.6.1). */
+  private _foster = false;
+  /** "In table text"'s pending characters, and whether all of them are
+   *  white space. */
+  private _pending: string[] = [];
+  private _pendingSpace = true;
+  private _head: Element | null = null;
+  private _body: Element | null = null;
+  private _quirks = false;
+  /** Whether the source is a fragment, which no `<html>` holds. */
+  private _fragment = true;
+  /** Whether the fragment is read as an element's content (`readIn`), which
+   *  nothing in it makes a document. */
+  private _contextual = false;
   /** What a fragment is read in (`readIn`). */
   private _context = NOT_FOREIGN;
   /** What it is read as the content of, where that is HTML's: the part of a
-   *  table a row is read in, or a `<template>`, which holds any. */
+   *  table a row is read in, a `<select>`, or a `<template>`, which holds
+   *  any; '' for a body. */
   private _holder = '';
-  /** Whether the `<form>` being opened closes as it opens, as one between a
-   *  table's parts does. */
-  private _closesAsItOpens = false;
+  /** The name of the element `_insert` made last, which a raw text element's
+   *  start tag checks it made. */
+  private _made = '';
+  /** Whether a carriage return ended the last chunk, whose line feed a next
+   *  one may start with. */
+  private _carriage = false;
+  /** Whether the document runs scripts, which reads a `<noscript>`'s
+   *  content as text (13.2.6.4.4). */
+  private _scripting = false;
+  /** Whether a `<plaintext>` has started, after which the tokenizer reads
+   *  everything as text, a NULL as U+FFFD among it. */
+  private _plaintext = false;
 
   override isInForeignContext(): boolean {
-    return this._acknowledging || super.isInForeignContext();
+    return (
+      (this as unknown as ParserInternals).foreignContext[0] !== NOT_FOREIGN
+    );
   }
 
-  /** A name is void in HTML alone: `<svg><input><g>` puts the `<g>` in it. */
-  protected override isVoidElement(name: string): boolean {
-    if (this._closesAsItOpens) return name === 'form';
-    return super.isVoidElement(name) && !this.isInForeignContext();
+  /** Parse as a document whose scripts run, where a `<noscript>` holds its
+   *  content as text, or as one with scripting off, where it holds markup. */
+  setScripting(on: boolean): void {
+    this._scripting = on;
+  }
+
+  /** A document from its first token, as `HtmlSource` asks for one. */
+  asDocument(): void {
+    this._fragment = false;
+    this._mode = INITIAL;
   }
 
   /** Read what comes as what an element of `namespace` holds, as `innerHTML`
@@ -3590,14 +3869,44 @@ class DocumentParser extends Parser {
           : NOT_FOREIGN;
     self.foreignContext[0] = this._context;
     this._holder = holder;
+    this._contextual = true;
     self.cbs.form = form;
+    if (holder === 'template') this._templateModes.push(IN_TEMPLATE);
+    this._resetMode();
   }
+
+  override reset(): void {
+    super.reset();
+    this._mode = this._fragment ? IN_BODY : INITIAL;
+    this._original = IN_BODY;
+    this._templateModes = [];
+    this._formatting = [];
+    this._framesetOk = true;
+    this._foster = false;
+    this._pending = [];
+    this._head = null;
+    this._body = null;
+    this._quirks = false;
+    this._carriage = false;
+    this._plaintext = false;
+  }
+
+  /** A chunk with its line breaks as HTML's input stream has them (13.2.3.5):
+   *  a carriage return and a line feed one line feed, and a carriage return
+   *  alone too, across chunks as within one. */
+  override write(chunk: string): void {
+    if (this._carriage && chunk.charCodeAt(0) === 10) chunk = chunk.slice(1);
+    this._carriage = chunk.charCodeAt(chunk.length - 1) === 13;
+    if (chunk.includes('\r')) chunk = chunk.replace(/\r\n?/g, '\n');
+    super.write(chunk);
+  }
+
+  // --- tokens -----------------------------------------------------------------
 
   override onopentagname(start: number, endIndex: number): void {
     const self = this as unknown as ParserInternals;
     // what broke out of a fragment's context left it until it closed
     if (!self.stack.length) self.foreignContext[0] = this._context;
-    // read once, for all of this: every tag of a drawing comes through here
     let name = self.readTagName(start, endIndex);
     const { foreignContext } = self;
     // SVG's casing, which it finds for an element open anywhere, as an end
@@ -3605,70 +3914,1750 @@ class DocumentParser extends Parser {
     if (foreignContext.length > 1 && foreignContext[0] !== IN_SVG) {
       name = name.toLowerCase();
     }
-    if (foreignContext[0] !== NOT_FOREIGN && BREAKS_OUT.has(name)) {
-      this._breakOut();
-    }
     self.endIndex = endIndex;
-    if (foreignContext[0] !== NOT_FOREIGN) {
-      this._foreignTag = true;
-      this._tagDecides =
-        name === 'font' ||
-        (name === 'annotation-xml' && foreignContext[0] === IN_MATHML);
-      this._openForeign(name);
+    self.openTagStart = self.startIndex;
+    self.tagname = name;
+    self.attribs = {};
+  }
+
+  override onopentagend(endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    self.endIndex = endIndex;
+    this._tag(false);
+    self.startIndex = endIndex + 1;
+  }
+
+  override onselfclosingtag(endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    self.endIndex = endIndex;
+    this._tag(true);
+    self.startIndex = endIndex + 1;
+  }
+
+  /** A start tag whose attributes are read. Where it started raw text in the
+   *  tokenizer and the tree builder made no element of it, as it makes none
+   *  of a `<textarea>` in a frameset, the text is HTML's after all. */
+  private _tag(selfClosing: boolean): void {
+    const self = this as unknown as ParserInternals;
+    const name = self.tagname;
+    const attribs = self.attribs ?? {};
+    self.attribs = null;
+    self.tagname = '';
+    if (this._mode === IN_TABLE_TEXT) this._flushTableText();
+    this._made = '';
+    this._startTag(name, attribs, selfClosing);
+    const tokenizer = self.tokenizer;
+    if (
+      tokenizer.isSpecial &&
+      (this._made !== name || self.stack[0] !== name)
+    ) {
+      tokenizer.isSpecial = false;
+      tokenizer.currentSequence = NO_SEQUENCE;
+    } else if (
+      name === 'noscript' &&
+      this._scripting &&
+      this._made === name &&
+      self.stack[0] === name &&
+      self.foreignContext[0] === NOT_FOREIGN
+    ) {
+      // where scripts run, what it holds is text, which the tokenizer reads
+      // to its end tag as it reads a `<noembed>`'s
+      tokenizer.isSpecial = true;
+      tokenizer.currentSequence = NOSCRIPT_END;
+    }
+  }
+
+  /** Whether the current node is one whose text the tokenizer reads raw. */
+  private _inRawText(): boolean {
+    const { stack, foreignContext } = this as unknown as ParserInternals;
+    const top = stack[0];
+    return (
+      (RAW_ELEMENTS.has(top) || (top === 'noscript' && this._scripting)) &&
+      (foreignContext.length === 1 || this._isHtml(0))
+    );
+  }
+
+  override onclosetag(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    const name = self.readTagName(start, endIndex);
+    self.endIndex = endIndex;
+    if (this._mode === IN_TABLE_TEXT) this._flushTableText();
+    // what nearly every end tag is: the current node's, in a mode with
+    // nothing to say of it, or the end of raw text, which HTML's "text"
+    // mode closes whatever the mode it came from (13.2.6.4.8); and a
+    // formatting element's, where it is the current node and the last on
+    // the list, which is all the adoption agency would do for it
+    const list = this._formatting;
+    if (
+      list.length &&
+      self.stack[0] === name &&
+      this._mode === IN_BODY &&
+      self.foreignContext[0] === NOT_FOREIGN &&
+      list[list.length - 1]?.el === this._current()
+    ) {
+      list.pop();
+      self.popElement(false);
+    } else if (
+      self.stack[0] === name &&
+      (RAW_ELEMENTS.has(name) || (name === 'noscript' && this._scripting)
+        ? this._inRawText()
+        : this._mode === IN_BODY &&
+          !FORMATTING.has(name) &&
+          !SPECIAL_END.has(name) &&
+          self.foreignContext[0] === NOT_FOREIGN)
+    ) {
+      self.popElement(false);
     } else {
+      this._endTag(name);
+    }
+    self.startIndex = endIndex + 1;
+  }
+
+  override ontext(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    const data = self.getSlice(start, endIndex);
+    self.endIndex = endIndex - 1;
+    this._characters(data);
+    self.startIndex = endIndex;
+  }
+
+  override ontextentity(cp: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    self.endIndex = endIndex - 1;
+    this._characters(String.fromCodePoint(cp));
+    self.startIndex = endIndex;
+  }
+
+  override oncomment(start: number, endIndex: number, offset: number): void {
+    this._comment(() => super.oncomment(start, endIndex, offset));
+  }
+
+  override oncdata(start: number, endIndex: number, offset: number): void {
+    // in HTML it is a comment, and in SVG or MathML text
+    if (this.isInForeignContext()) super.oncdata(start, endIndex, offset);
+    else this._comment(() => super.oncdata(start, endIndex, offset));
+  }
+
+  override onprocessinginstruction(start: number, endIndex: number): void {
+    this._comment(() => super.onprocessinginstruction(start, endIndex));
+  }
+
+  /** A comment, where the mode puts one: in the document before the
+   *  `<html>` and after it, in the `<html>` after the body, and anywhere
+   *  else at the current node. */
+  private _comment(insert: () => void): void {
+    const self = this as unknown as ParserInternals;
+    if (this._mode === IN_TABLE_TEXT) this._flushTableText();
+    const cbs = self.cbs;
+    const mode = this._mode;
+    if (
+      mode === INITIAL ||
+      mode === BEFORE_HTML ||
+      mode === AFTER_AFTER_BODY ||
+      mode === AFTER_AFTER_FRAMESET
+    ) {
+      cbs.place = { parent: cbs.root, before: null };
+    } else if (mode === AFTER_BODY) {
+      // the `<html>`, which the root stands in for in a fragment
+      const html = this._fragment ? cbs.root : (cbs.openNodes[1] ?? cbs.root);
+      cbs.place = { parent: html, before: null };
+    }
+    insert();
+    cbs.place = null;
+  }
+
+  override ondeclaration(start: number, endIndex: number): void {
+    const self = this as unknown as ParserInternals;
+    if (this._mode === IN_TABLE_TEXT) this._flushTableText();
+    // a fragment with nothing in it yet is a document from its doctype on
+    if (this._fragment && this._mode === IN_BODY && this._atStart()) {
+      this._fragment = false;
+      this._mode = INITIAL;
+      this._dropLeadingSpace();
+    }
+    if (this._mode !== INITIAL) {
+      self.startIndex = endIndex + 1;
+      return;
+    }
+    this._quirks = quirksDoctype('!' + self.getSlice(start, endIndex));
+    super.ondeclaration(start, endIndex);
+    this._mode = BEFORE_HTML;
+  }
+
+  /** The end of the input (13.2.6.4.7, "an end-of-file token"): what a
+   *  document has yet to have, and the templates left open closed. */
+  override onend(): void {
+    if (this._mode === IN_TABLE_TEXT) this._flushTableText();
+    // raw text ends with the input, and its element with it (13.2.6.4.8)
+    if (this._inRawText()) this._pop();
+    for (let guard = 0; guard < 16; guard++) {
+      const mode = this._mode;
+      if (mode === INITIAL) this._initialElse();
+      else if (mode === BEFORE_HTML) this._insertHtml({});
+      else if (mode === BEFORE_HEAD) this._insertHead({});
+      else if (mode === IN_HEAD || mode === IN_HEAD_NOSCRIPT) {
+        this._pop();
+        this._mode = mode === IN_HEAD ? AFTER_HEAD : IN_HEAD;
+      } else if (mode === AFTER_HEAD) this._insertBody({}, true);
+      else if (this._templateModes.length && this._templateOpen() >= 0) {
+        if (!this._endOfTemplate()) break;
+      } else break;
+    }
+    super.onend();
+  }
+
+  // --- text -------------------------------------------------------------------
+
+  /** Characters, as each mode takes them. */
+  private _characters(data: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    // raw text is the element's whatever the mode, as HTML's "text" has it
+    if (this._inRawText()) {
+      cbs.ontext(data.includes('\0') ? data.replace(/\0/g, '\ufffd') : data);
+      return;
+    }
+    if (self.foreignContext[0] !== NOT_FOREIGN) {
+      // a NULL is U+FFFD there, and no reason a frameset cannot come
+      if (this._framesetOk && NOT_SPACE_OR_NULL.test(data)) {
+        this._framesetOk = false;
+      }
+      if (data.includes('\0')) data = data.replace(/\0/g, '\ufffd');
+      cbs.ontext(data);
+      return;
+    }
+    if (this._plaintext && data.includes('\0')) {
+      data = data.replace(/\0/g, '\ufffd');
+    }
+    for (let guard = 0; data && guard < 16; guard++) {
+      switch (this._mode) {
+        case IN_BODY:
+        case IN_CAPTION:
+        case IN_CELL:
+        case IN_TEMPLATE:
+          this._bodyText(data);
+          return;
+        case IN_TABLE:
+        case IN_TABLE_BODY:
+        case IN_ROW:
+          if (FOSTERING.has(stack[0]) || stack[0] === 'template') {
+            this._original = this._mode;
+            this._mode = IN_TABLE_TEXT;
+            this._pending = [];
+            this._pendingSpace = true;
+            continue;
+          }
+          this._foster = true;
+          this._bodyText(data);
+          this._foster = false;
+          return;
+        case IN_TABLE_TEXT:
+          this._pending.push(data);
+          if (this._pendingSpace && NOT_SPACE.test(data)) {
+            this._pendingSpace = false;
+          }
+          return;
+        case AFTER_AFTER_FRAMESET: {
+          // the white space in it, wherever it is, as the body takes it
+          const space = data.replace(NOT_SPACES, '');
+          if (space) this._bodyText(space);
+          return;
+        }
+        case INITIAL:
+        case BEFORE_HTML:
+        case BEFORE_HEAD:
+        case AFTER_AFTER_BODY: {
+          const rest = data.replace(LEADING_SPACE, '');
+          if (this._mode === AFTER_AFTER_BODY && rest.length < data.length) {
+            this._bodyText(data.slice(0, data.length - rest.length));
+          }
+          data = rest;
+          if (!data) return;
+          if (this._mode === INITIAL) this._initialElse();
+          else if (this._mode === BEFORE_HTML) this._insertHtml({});
+          else if (this._mode === BEFORE_HEAD) this._insertHead({});
+          else this._mode = IN_BODY;
+          continue;
+        }
+        case IN_HEAD:
+        case IN_HEAD_NOSCRIPT:
+        case AFTER_HEAD:
+        case IN_COLUMN_GROUP: {
+          const rest = data.replace(LEADING_SPACE, '');
+          if (rest.length < data.length) {
+            cbs.ontext(data.slice(0, data.length - rest.length));
+          }
+          data = rest;
+          if (!data) return;
+          if (this._mode === IN_HEAD) {
+            this._pop();
+            this._mode = AFTER_HEAD;
+          } else if (this._mode === IN_HEAD_NOSCRIPT) {
+            this._pop();
+            this._mode = IN_HEAD;
+          } else if (this._mode === AFTER_HEAD) {
+            this._insertBody({}, true);
+          } else {
+            if (stack[0] !== 'colgroup') {
+              // each character that is not white space ignored, and the white
+              // space among them put in
+              const space = data.replace(NOT_SPACES, '');
+              if (space) cbs.ontext(space);
+              return;
+            }
+            this._pop();
+            this._mode = IN_TABLE;
+          }
+          continue;
+        }
+        case AFTER_BODY: {
+          const rest = data.replace(LEADING_SPACE, '');
+          if (rest.length < data.length) {
+            this._bodyText(data.slice(0, data.length - rest.length));
+          }
+          data = rest;
+          if (!data) return;
+          this._mode = IN_BODY;
+          continue;
+        }
+        case IN_FRAMESET:
+        case AFTER_FRAMESET: {
+          // the white space in it, wherever it is, and nothing else
+          const space = data.replace(NOT_SPACES, '');
+          if (space) cbs.ontext(space);
+          return;
+        }
+        default:
+          return;
+      }
+    }
+  }
+
+  /** Characters in a body (13.2.6.4.7): no NULL, the formatting elements
+   *  open again around them, and no frameset after them. */
+  private _bodyText(data: string): void {
+    const self = this as unknown as ParserInternals;
+    if (data.includes('\0')) {
+      data = data.replace(/\0/g, '');
+      if (!data) return;
+    }
+    if (this._formatting.length) this._reconstruct();
+    if (this._framesetOk && NOT_SPACE.test(data)) this._framesetOk = false;
+    const cbs = self.cbs;
+    if (this._foster && FOSTERING.has(self.stack[0])) {
+      cbs.place = this._fosterPlace();
+      cbs.ontext(data);
+      cbs.place = null;
+    } else cbs.ontext(data);
+  }
+
+  /** "In table text" ends: its characters go in the table where all are
+   *  white space, and in front of it otherwise (13.2.6.4.10). */
+  private _flushTableText(): void {
+    const pending = this._pending.join('').replace(/\0/g, '');
+    this._mode = this._original;
+    this._pending = [];
+    if (!pending) return;
+    if (this._pendingSpace) {
+      (this as unknown as ParserInternals).cbs.ontext(pending);
+      return;
+    }
+    this._foster = true;
+    this._bodyText(pending);
+    this._foster = false;
+  }
+
+  // --- start tags ---------------------------------------------------------------
+
+  /** The tree construction dispatcher (13.2.6): a start tag in SVG or MathML
+   *  is foreign content's, but for what ends it, and anywhere else the
+   *  mode's. */
+  private _startTag(
+    name: string,
+    attribs: Record<string, string>,
+    selfClosing: boolean,
+  ): void {
+    const self = this as unknown as ParserInternals;
+    const { foreignContext, stack } = self;
+    if (foreignContext[0] !== NOT_FOREIGN) {
+      if (
+        BREAKS_OUT.has(name) ||
+        (name === 'font' &&
+          (attribs.color !== undefined ||
+            attribs.face !== undefined ||
+            attribs.size !== undefined))
+      ) {
+        this._breakOut();
+      } else {
+        this._foreign(name, attribs, selfClosing, foreignContext[0]);
+        return;
+      }
+    } else if (
+      foreignContext.length > 1 &&
+      (name === 'mglyph' || name === 'malignmark') &&
+      MATHML_POINTS.has(stack[0]) &&
+      foreignContext[1] === IN_MATHML
+    ) {
       // a MathML text point takes these two as MathML's, and `/>` ends them
-      this._foreignTag =
-        foreignContext.length > 1 &&
-        (name === 'mglyph' || name === 'malignmark') &&
-        MATHML_POINTS.has(self.stack[0]) &&
-        foreignContext[1] === IN_MATHML;
-      this._open(name);
+      this._foreign(name, attribs, selfClosing, IN_MATHML);
+      return;
+    }
+    this._htmlStart(name, attribs, selfClosing);
+  }
+
+  /** A start tag in HTML content, in the mode the parser is in, and again
+   *  in the mode it goes on to where the mode says to reprocess it. */
+  private _htmlStart(
+    name: string,
+    attribs: Record<string, string>,
+    selfClosing: boolean,
+  ): void {
+    const self = this as unknown as ParserInternals;
+    for (let guard = 0; guard < 16; guard++) {
+      const { stack } = self;
+      switch (this._mode) {
+        case INITIAL:
+          this._initialElse();
+          continue;
+        case BEFORE_HTML:
+          if (name === 'html') {
+            this._insertHtml(attribs);
+            return;
+          }
+          this._insertHtml({});
+          continue;
+        case BEFORE_HEAD:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (name === 'head') {
+            this._insertHead(attribs);
+            return;
+          }
+          this._insertHead({});
+          continue;
+        case IN_HEAD:
+          if (this._inHead(name, attribs)) return;
+          if (name === 'head') return;
+          this._pop();
+          this._mode = AFTER_HEAD;
+          continue;
+        case IN_HEAD_NOSCRIPT:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (
+            name === 'basefont' ||
+            name === 'bgsound' ||
+            name === 'link' ||
+            name === 'meta' ||
+            name === 'noframes' ||
+            name === 'style'
+          ) {
+            this._inHead(name, attribs);
+            return;
+          }
+          if (name === 'head' || name === 'noscript') return;
+          this._pop();
+          this._mode = IN_HEAD;
+          continue;
+        case AFTER_HEAD:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (name === 'body') {
+            this._insertBody(attribs, false);
+            return;
+          }
+          if (name === 'frameset') {
+            this._insert(name, attribs);
+            this._mode = IN_FRAMESET;
+            return;
+          }
+          if (HEAD_TAGS.has(name)) {
+            this._inHeadAfterIt(name, attribs);
+            return;
+          }
+          if (name === 'head') return;
+          this._insertBody({}, true);
+          continue;
+        case IN_BODY:
+          this._inBody(name, attribs, selfClosing);
+          return;
+        case IN_TABLE:
+          if (this._inTable(name, attribs, selfClosing)) return;
+          continue;
+        case IN_TABLE_TEXT:
+          this._flushTableText();
+          continue;
+        case IN_CAPTION:
+          if (CELL_ENDERS.has(name)) {
+            if (!this._endCaption()) return;
+            continue;
+          }
+          this._inBody(name, attribs, selfClosing);
+          return;
+        case IN_COLUMN_GROUP:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (name === 'col') {
+            this._insert(name, attribs);
+            this._pop();
+            return;
+          }
+          if (name === 'template') {
+            this._inHead(name, attribs);
+            return;
+          }
+          if (stack[0] !== 'colgroup') return;
+          this._pop();
+          this._mode = IN_TABLE;
+          continue;
+        case IN_TABLE_BODY:
+          if (name === 'tr') {
+            this._clearTo(TABLE_BODY_CONTEXT);
+            this._insert(name, attribs);
+            this._mode = IN_ROW;
+            return;
+          }
+          if (name === 'th' || name === 'td') {
+            this._clearTo(TABLE_BODY_CONTEXT);
+            this._insert('tr', {});
+            this._mode = IN_ROW;
+            continue;
+          }
+          if (
+            name === 'caption' ||
+            name === 'col' ||
+            name === 'colgroup' ||
+            SECTIONS.has(name)
+          ) {
+            if (!this._endSection()) return;
+            continue;
+          }
+          if (this._inTable(name, attribs, selfClosing)) return;
+          continue;
+        case IN_ROW:
+          if (name === 'th' || name === 'td') {
+            this._clearTo(ROW_CONTEXT);
+            this._insert(name, attribs);
+            this._mode = IN_CELL;
+            this._formatting.push(null);
+            return;
+          }
+          if (CELL_ENDERS.has(name)) {
+            if (!this._endRow()) return;
+            continue;
+          }
+          if (this._inTable(name, attribs, selfClosing)) return;
+          continue;
+        case IN_CELL:
+          if (CELL_ENDERS.has(name)) {
+            if (!this._closeCell()) return;
+            continue;
+          }
+          this._inBody(name, attribs, selfClosing);
+          return;
+        case IN_TEMPLATE: {
+          if (HEAD_TAGS.has(name)) {
+            this._inHead(name, attribs);
+            return;
+          }
+          const next =
+            name === 'caption' || name === 'colgroup' || SECTIONS.has(name)
+              ? IN_TABLE
+              : name === 'col'
+                ? IN_COLUMN_GROUP
+                : name === 'tr'
+                  ? IN_TABLE_BODY
+                  : name === 'td' || name === 'th'
+                    ? IN_ROW
+                    : IN_BODY;
+          this._templateModes[this._templateModes.length - 1] = next;
+          this._mode = next;
+          continue;
+        }
+        case AFTER_BODY:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          this._mode = IN_BODY;
+          continue;
+        case IN_FRAMESET:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (name === 'frameset') this._insert(name, attribs);
+          else if (name === 'frame') {
+            this._insert(name, attribs);
+            this._pop();
+          } else if (name === 'noframes') this._inHead(name, attribs);
+          return;
+        case AFTER_FRAMESET:
+        case AFTER_AFTER_FRAMESET:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          if (name === 'noframes') this._inHead(name, attribs);
+          return;
+        case AFTER_AFTER_BODY:
+          if (name === 'html') return this._mergeIntoHtml(attribs);
+          this._mode = IN_BODY;
+          continue;
+        default:
+          return;
+      }
+    }
+  }
+
+  /** "In head" (13.2.6.4.4), for what it takes; false for anything else. */
+  private _inHead(name: string, attribs: Record<string, string>): boolean {
+    switch (name) {
+      case 'html':
+        this._mergeIntoHtml(attribs);
+        return true;
+      case 'base':
+      case 'basefont':
+      case 'bgsound':
+      case 'link':
+      case 'meta':
+        this._insert(name, attribs);
+        this._pop();
+        return true;
+      case 'title':
+      case 'noframes':
+      case 'style':
+      case 'script':
+        this._insert(name, attribs);
+        return true;
+      case 'noscript':
+        // where scripts run its content is text (`_tag`), and where they do
+        // not, markup, of which the head keeps what is head content
+        // (13.2.6.4.5)
+        this._insert(name, attribs);
+        if (!this._scripting) this._mode = IN_HEAD_NOSCRIPT;
+        return true;
+      case 'template':
+        this._insert(name, attribs);
+        this._formatting.push(null);
+        this._framesetOk = false;
+        this._mode = IN_TEMPLATE;
+        this._templateModes.push(IN_TEMPLATE);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** Head content after the head: in the head after all (13.2.6.4.6). */
+  private _inHeadAfterIt(name: string, attribs: Record<string, string>): void {
+    const self = this as unknown as ParserInternals;
+    const head = this._head;
+    if (!head) {
+      this._inHead(name, attribs);
+      return;
+    }
+    // back on the stack, and out of it again from wherever it is then
+    self.stack.unshift('head');
+    self.cbs.openNodes.push(head);
+    this._inHead(name, attribs);
+    const at = this._stackIndex(head);
+    if (at >= 0) this._dropFromStack(at);
+  }
+
+  /** "In body" (13.2.6.4.7). */
+  private _inBody(
+    name: string,
+    attribs: Record<string, string>,
+    selfClosing: boolean,
+  ): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    // the tags with no rule of their own, which nearly all are, ask no more
+    if (!BODY_RULES.has(name)) {
+      if (BLOCKS.has(name)) {
+        this._closeParagraph();
+        this._insert(name, attribs);
+        return;
+      }
+      this._reconstruct();
+      this._insert(name, attribs);
+      if (FORMATTING.has(name)) this._remember(name, attribs);
+      return;
+    }
+    switch (name) {
+      case 'html':
+        this._mergeIntoHtml(attribs);
+        return;
+      case 'base':
+      case 'basefont':
+      case 'bgsound':
+      case 'link':
+      case 'meta':
+      case 'noframes':
+      case 'script':
+      case 'style':
+      case 'template':
+      case 'title':
+        this._inHead(name, attribs);
+        return;
+      case 'body':
+        this._bodyAgain(attribs);
+        return;
+      case 'frameset':
+        this._framesetInBody(attribs);
+        return;
+      case 'h1':
+      case 'h2':
+      case 'h3':
+      case 'h4':
+      case 'h5':
+      case 'h6':
+        this._closeParagraph();
+        if (HEADINGS.has(stack[0]) && this._isHtml(0)) this._pop();
+        this._insert(name, attribs);
+        return;
+      case 'pre':
+      case 'listing':
+        this._closeParagraph();
+        this._insert(name, attribs);
+        this._framesetOk = false;
+        return;
+      case 'form':
+        if (cbs.form && !this._inTemplate()) return;
+        this._closeParagraph();
+        this._insert(name, attribs);
+        if (!this._inTemplate()) cbs.form = this._current();
+        return;
+      case 'li':
+      case 'dd':
+      case 'dt':
+        this._item(name);
+        this._closeParagraph();
+        this._insert(name, attribs);
+        return;
+      case 'plaintext':
+        this._closeParagraph();
+        this._insert(name, attribs);
+        this._plaintext = true;
+        return;
+      case 'button':
+        if (this._inScope('button') >= 0) {
+          this._impliedEnds();
+          this._popTo('button');
+        }
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._framesetOk = false;
+        return;
+      case 'a': {
+        const open = this._formattingNamed('a');
+        if (open) {
+          this._adoption('a');
+          this._forget(open);
+        }
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._remember(name, attribs);
+        return;
+      }
+      case 'nobr':
+        this._reconstruct();
+        if (this._inScope('nobr') >= 0) {
+          this._adoption('nobr');
+          this._reconstruct();
+        }
+        this._insert(name, attribs);
+        this._remember(name, attribs);
+        return;
+      case 'applet':
+      case 'marquee':
+      case 'object':
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._formatting.push(null);
+        this._framesetOk = false;
+        return;
+      case 'table':
+        if (!this._quirks) this._closeParagraph();
+        this._insert(name, attribs);
+        this._framesetOk = false;
+        this._mode = IN_TABLE;
+        return;
+      case 'area':
+      case 'br':
+      case 'embed':
+      case 'img':
+      case 'keygen':
+      case 'wbr':
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._pop();
+        this._framesetOk = false;
+        return;
+      case 'input':
+        if (this._holder === 'select') return;
+        if (this._inScope('select') >= 0) this._popTo('select');
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._pop();
+        if ((attribs.type ?? '').toLowerCase() !== 'hidden') {
+          this._framesetOk = false;
+        }
+        return;
+      case 'param':
+      case 'source':
+      case 'track':
+        this._insert(name, attribs);
+        this._pop();
+        return;
+      case 'hr':
+        this._closeParagraph();
+        if (this._inScope('select') >= 0) this._impliedEnds();
+        this._insert(name, attribs);
+        this._pop();
+        this._framesetOk = false;
+        return;
+      case 'image':
+        this._inBody('img', attribs, selfClosing);
+        return;
+      case 'textarea':
+        this._insert(name, attribs);
+        this._framesetOk = false;
+        return;
+      case 'xmp':
+        this._closeParagraph();
+        this._reconstruct();
+        this._framesetOk = false;
+        this._insert(name, attribs);
+        return;
+      case 'iframe':
+        this._framesetOk = false;
+        this._insert(name, attribs);
+        return;
+      case 'noembed':
+        this._insert(name, attribs);
+        return;
+      case 'noscript':
+        // raw text where scripts run, and an element like any where not
+        if (!this._scripting) this._reconstruct();
+        this._insert(name, attribs);
+        return;
+      case 'select':
+        if (this._holder === 'select') return;
+        if (this._inScope('select') >= 0) {
+          this._popTo('select');
+          return;
+        }
+        this._reconstruct();
+        this._insert(name, attribs);
+        this._framesetOk = false;
+        return;
+      case 'option':
+        if (this._inScope('select') >= 0) this._impliedEnds('optgroup');
+        else if (stack[0] === 'option') this._pop();
+        this._reconstruct();
+        this._insert(name, attribs);
+        return;
+      case 'optgroup':
+        if (this._inScope('select') >= 0) this._impliedEnds();
+        else if (stack[0] === 'option') this._pop();
+        this._reconstruct();
+        this._insert(name, attribs);
+        return;
+      case 'rb':
+      case 'rtc':
+        if (this._inScope('ruby') >= 0) this._impliedEnds();
+        this._insert(name, attribs);
+        return;
+      case 'rp':
+      case 'rt':
+        if (this._inScope('ruby') >= 0) this._impliedEnds('rtc');
+        this._insert(name, attribs);
+        return;
+      case 'math':
+      case 'svg':
+        this._reconstruct();
+        this._foreign(name, attribs, selfClosing, NOT_FOREIGN);
+        return;
+      case 'head':
+        // a fragment that starts as a document is one
+        if (this._fragment && this._atStart()) {
+          this._fragment = false;
+          this._dropLeadingSpace();
+          this._mode = BEFORE_HTML;
+          this._htmlStart(name, attribs, selfClosing);
+        }
+        return;
+      case 'caption':
+      case 'col':
+      case 'colgroup':
+      case 'frame':
+      case 'tbody':
+      case 'td':
+      case 'tfoot':
+      case 'th':
+      case 'thead':
+      case 'tr':
+        return;
+    }
+  }
+
+  /** A second `<body>`: its attributes on the first, where there is one to
+   *  take them. In a fragment the first one written takes in what came
+   *  before it. */
+  private _bodyAgain(attribs: Record<string, string>): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    if (this._templateOpen() >= 0) return;
+    if (this._fragment) {
+      if (this._body) {
+        cbs.mergeAttributes(this._body, attribs);
+      } else if (!stack.length && !this._contextual) {
+        this._insert('body', attribs);
+        this._body = this._current();
+        cbs.adopt(this._body);
+      }
+      this._framesetOk = false;
+      return;
+    }
+    const second = stack.length >= 2 ? stack[stack.length - 2] : '';
+    if (second !== 'body') return;
+    this._framesetOk = false;
+    cbs.mergeAttributes(cbs.openNodes[2] as Element, attribs);
+  }
+
+  /** A `<frameset>` in a body that holds nothing yet takes its place
+   *  (13.2.6.4.7). */
+  private _framesetInBody(attribs: Record<string, string>): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    if (this._fragment || stack.length < 2) return;
+    if (stack[stack.length - 2] !== 'body' || !this._framesetOk) return;
+    const body = cbs.openNodes[2];
+    if (body.parent) {
+      takeNode(body);
+      cbs.moved();
+    }
+    while (stack.length > 1) this._pop();
+    this._insert('frameset', attribs);
+    this._mode = IN_FRAMESET;
+  }
+
+  /** What an `<li>`, a `<dd>` or a `<dt>` closes before it opens. */
+  private _item(name: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
+    this._framesetOk = false;
+    const end = Math.min(stack.length, MAX_DEPTH);
+    for (let at = 0; at < end; at++) {
+      const el = stack[at];
+      const same = name === 'li' ? el === 'li' : el === 'dd' || el === 'dt';
+      if (same && this._isHtml(at)) {
+        this._impliedEnds(el);
+        this._popTo(el);
+        return;
+      }
+      if (SPECIAL_TO_AN_ITEM.has(el) && this._isHtml(at)) return;
+      if (!this._isHtml(at) && SPECIAL_FOREIGN.has(el)) return;
+    }
+  }
+
+  /** "In table" (13.2.6.4.9), and for the modes that fall back on it; false
+   *  where the token is reprocessed in the mode it switched to. */
+  private _inTable(
+    name: string,
+    attribs: Record<string, string>,
+    selfClosing: boolean,
+  ): boolean {
+    const self = this as unknown as ParserInternals;
+    const { cbs } = self;
+    switch (name) {
+      case 'caption':
+        this._clearTo(TABLE_CONTEXT);
+        this._formatting.push(null);
+        this._insert(name, attribs);
+        this._mode = IN_CAPTION;
+        return true;
+      case 'colgroup':
+        this._clearTo(TABLE_CONTEXT);
+        this._insert(name, attribs);
+        this._mode = IN_COLUMN_GROUP;
+        return true;
+      case 'col':
+        this._clearTo(TABLE_CONTEXT);
+        this._insert('colgroup', {});
+        this._mode = IN_COLUMN_GROUP;
+        return false;
+      case 'tbody':
+      case 'tfoot':
+      case 'thead':
+        this._clearTo(TABLE_CONTEXT);
+        this._insert(name, attribs);
+        this._mode = IN_TABLE_BODY;
+        return true;
+      case 'td':
+      case 'th':
+      case 'tr':
+        this._clearTo(TABLE_CONTEXT);
+        this._insert('tbody', {});
+        this._mode = IN_TABLE_BODY;
+        return false;
+      case 'table':
+        if (this._inScope('table', TABLE_SCOPE) < 0) return true;
+        this._popTo('table');
+        this._resetMode();
+        return false;
+      case 'style':
+      case 'script':
+      case 'template':
+        this._inHead(name, attribs);
+        return true;
+      case 'input':
+        if ((attribs.type ?? '').toLowerCase() !== 'hidden') break;
+        this._insert(name, attribs);
+        this._pop();
+        return true;
+      case 'form': {
+        const template = this._inTemplate();
+        if (cbs.form && !template) return true;
+        this._insert(name, attribs);
+        if (!template) cbs.form = this._current();
+        this._pop();
+        return true;
+      }
+    }
+    this._foster = true;
+    this._inBody(name, attribs, selfClosing);
+    this._foster = false;
+    return true;
+  }
+
+  /** A caption closed for what cannot go in it; false where none is open
+   *  to close. */
+  private _endCaption(): boolean {
+    if (this._inScope('caption', TABLE_SCOPE) < 0) return false;
+    this._impliedEnds();
+    this._popTo('caption');
+    this._clearFormatting();
+    this._mode = IN_TABLE;
+    return true;
+  }
+
+  /** A row group closed for what cannot go in it. */
+  private _endSection(): boolean {
+    if (
+      this._inScope('tbody', TABLE_SCOPE) < 0 &&
+      this._inScope('thead', TABLE_SCOPE) < 0 &&
+      this._inScope('tfoot', TABLE_SCOPE) < 0
+    ) {
+      return false;
+    }
+    this._clearTo(TABLE_BODY_CONTEXT);
+    this._pop();
+    this._mode = IN_TABLE;
+    return true;
+  }
+
+  /** A row closed for what cannot go in it. */
+  private _endRow(): boolean {
+    if (this._inScope('tr', TABLE_SCOPE) < 0) return false;
+    this._clearTo(ROW_CONTEXT);
+    this._pop();
+    this._mode = IN_TABLE_BODY;
+    return true;
+  }
+
+  /** "Close the cell" (13.2.6.4.15). */
+  private _closeCell(): boolean {
+    const self = this as unknown as ParserInternals;
+    const td = this._inScope('td', TABLE_SCOPE);
+    const th = td < 0 ? this._inScope('th', TABLE_SCOPE) : -1;
+    if (td < 0 && th < 0) return false;
+    this._impliedEnds();
+    const { stack } = self;
+    while (stack.length) {
+      const name = stack[0];
+      this._pop();
+      if (name === 'td' || name === 'th') break;
+    }
+    this._clearFormatting();
+    this._mode = IN_ROW;
+    return true;
+  }
+
+  /** "Anything else" in "initial": a document with no doctype is in quirks
+   *  mode. */
+  private _initialElse(): void {
+    this._quirks = true;
+    this._mode = BEFORE_HTML;
+  }
+
+  private _insertHtml(attribs: Record<string, string>): void {
+    this._insert('html', attribs);
+    this._mode = BEFORE_HEAD;
+  }
+
+  private _insertHead(attribs: Record<string, string>): void {
+    this._insert('head', attribs);
+    this._head = this._current();
+    this._mode = IN_HEAD;
+  }
+
+  private _insertBody(attribs: Record<string, string>, implied: boolean): void {
+    this._insert('body', attribs);
+    this._body = this._current();
+    this._framesetOk = implied;
+    this._mode = IN_BODY;
+  }
+
+  /** A second `<html>`'s attributes, on the first, where it has none of
+   *  them. A fragment written as a document, its `<html>` the first thing
+   *  in it, is one. */
+  private _mergeIntoHtml(attribs: Record<string, string>): void {
+    const self = this as unknown as ParserInternals;
+    const { cbs, stack } = self;
+    // not from a template's content, wherever its mode sends it
+    if (this._templateOpen() >= 0) return;
+    if (this._fragment) {
+      if (!stack.length && !this._contextual && !this._body) {
+        this._fragment = false;
+        this._dropLeadingSpace();
+        this._insertHtml(attribs);
+      }
+      return;
+    }
+    const html = cbs.openNodes[1];
+    if (html instanceof Element) cbs.mergeAttributes(html, attribs);
+  }
+
+  // --- end tags -----------------------------------------------------------------
+
+  /**
+   * An end tag (13.2.6). Where the current node is SVG's or MathML's, it
+   * closes the nearest element of its name up to the first HTML one, and a
+   * `</p>` and a `</br>` end foreign content; from an HTML element it is the
+   * mode's.
+   */
+  private _endTag(name: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack } = self;
+    if (stack.length && !this._isHtml(0)) {
+      if (name === 'p' || name === 'br') this._breakOut();
+      else {
+        const lower = name.toLowerCase();
+        for (let at = 0; at < stack.length; at++) {
+          if (at > 0 && this._isHtml(at)) break;
+          if (stack[at].toLowerCase() === lower) {
+            this._closeTo(at);
+            return;
+          }
+          if (at === stack.length - 1) return;
+        }
+      }
+    }
+    this._htmlEnd(name);
+  }
+
+  /** An end tag in the mode the parser is in. */
+  private _htmlEnd(name: string): void {
+    const self = this as unknown as ParserInternals;
+    for (let guard = 0; guard < 16; guard++) {
+      const { stack } = self;
+      switch (this._mode) {
+        case INITIAL:
+          this._initialElse();
+          continue;
+        case BEFORE_HTML:
+          if (
+            name !== 'head' &&
+            name !== 'body' &&
+            name !== 'html' &&
+            name !== 'br'
+          ) {
+            return;
+          }
+          this._insertHtml({});
+          continue;
+        case BEFORE_HEAD:
+          if (
+            name !== 'head' &&
+            name !== 'body' &&
+            name !== 'html' &&
+            name !== 'br'
+          ) {
+            return;
+          }
+          this._insertHead({});
+          continue;
+        case IN_HEAD:
+          if (name === 'head') {
+            this._pop();
+            this._mode = AFTER_HEAD;
+            return;
+          }
+          if (name === 'template') {
+            this._endTemplate();
+            return;
+          }
+          if (name !== 'body' && name !== 'html' && name !== 'br') return;
+          this._pop();
+          this._mode = AFTER_HEAD;
+          continue;
+        case IN_HEAD_NOSCRIPT:
+          if (name === 'noscript') {
+            this._pop();
+            this._mode = IN_HEAD;
+            return;
+          }
+          if (name !== 'br') return;
+          this._pop();
+          this._mode = IN_HEAD;
+          continue;
+        case AFTER_HEAD:
+          if (name === 'template') {
+            this._endTemplate();
+            return;
+          }
+          if (name !== 'body' && name !== 'html' && name !== 'br') return;
+          this._insertBody({}, true);
+          continue;
+        case IN_BODY:
+          if (this._inBodyEnd(name)) return;
+          continue;
+        case IN_TABLE:
+          if (this._inTableEnd(name)) return;
+          continue;
+        case IN_TABLE_TEXT:
+          this._flushTableText();
+          continue;
+        case IN_CAPTION:
+          if (name === 'caption') {
+            this._endCaption();
+            return;
+          }
+          if (name === 'table') {
+            if (!this._endCaption()) return;
+            continue;
+          }
+          if (IGNORED_IN_CAPTION.has(name)) return;
+          if (this._inBodyEnd(name)) return;
+          continue;
+        case IN_COLUMN_GROUP:
+          if (name === 'colgroup') {
+            if (stack[0] !== 'colgroup') return;
+            this._pop();
+            this._mode = IN_TABLE;
+            return;
+          }
+          if (name === 'col') return;
+          if (name === 'template') {
+            this._endTemplate();
+            return;
+          }
+          if (stack[0] !== 'colgroup') return;
+          this._pop();
+          this._mode = IN_TABLE;
+          continue;
+        case IN_TABLE_BODY:
+          if (SECTIONS.has(name)) {
+            if (this._inScope(name, TABLE_SCOPE) < 0) return;
+            this._clearTo(TABLE_BODY_CONTEXT);
+            this._pop();
+            this._mode = IN_TABLE;
+            return;
+          }
+          if (name === 'table') {
+            if (!this._endSection()) return;
+            continue;
+          }
+          if (IGNORED_IN_BODY_OF_TABLE.has(name)) return;
+          if (this._inTableEnd(name)) return;
+          continue;
+        case IN_ROW:
+          if (name === 'tr') {
+            this._endRow();
+            return;
+          }
+          if (name === 'table') {
+            if (!this._endRow()) return;
+            continue;
+          }
+          if (SECTIONS.has(name)) {
+            if (this._inScope(name, TABLE_SCOPE) < 0) return;
+            if (!this._endRow()) return;
+            continue;
+          }
+          if (IGNORED_IN_ROW.has(name)) return;
+          if (this._inTableEnd(name)) return;
+          continue;
+        case IN_CELL:
+          if (name === 'td' || name === 'th') {
+            if (this._inScope(name, TABLE_SCOPE) < 0) return;
+            this._impliedEnds();
+            this._popTo(name);
+            this._clearFormatting();
+            this._mode = IN_ROW;
+            return;
+          }
+          if (IGNORED_IN_CELL.has(name)) return;
+          if (name === 'table' || SECTIONS.has(name) || name === 'tr') {
+            if (this._inScope(name, TABLE_SCOPE) < 0) return;
+            this._closeCell();
+            continue;
+          }
+          if (this._inBodyEnd(name)) return;
+          continue;
+        case IN_TEMPLATE:
+          if (name === 'template') this._endTemplate();
+          return;
+        case AFTER_BODY:
+          if (name === 'html') {
+            if (!this._contextual) this._mode = AFTER_AFTER_BODY;
+            return;
+          }
+          this._mode = IN_BODY;
+          continue;
+        case IN_FRAMESET:
+          if (name !== 'frameset') return;
+          if (stack.length <= 1 && !this._fragment) return;
+          if (!stack.length) return;
+          this._pop();
+          if (!this._contextual && stack[0] !== 'frameset') {
+            this._mode = AFTER_FRAMESET;
+          }
+          return;
+        case AFTER_FRAMESET:
+          if (name === 'html') this._mode = AFTER_AFTER_FRAMESET;
+          return;
+        case AFTER_AFTER_BODY:
+          this._mode = IN_BODY;
+          continue;
+        default:
+          return;
+      }
+    }
+  }
+
+  /** "In body"'s end tags; false where the token is reprocessed. */
+  private _inBodyEnd(name: string): boolean {
+    const self = this as unknown as ParserInternals;
+    const { cbs } = self;
+    switch (name) {
+      case 'template':
+        this._endTemplate();
+        return true;
+      case 'body':
+      case 'html':
+        if (this._fragment && !this._body) return true;
+        if (this._inScope('body') < 0) return true;
+        this._mode = AFTER_BODY;
+        return name === 'body';
+      case 'form': {
+        if (this._inTemplate()) {
+          if (this._inScope('form') < 0) return true;
+          this._impliedEnds();
+          this._popTo('form');
+          return true;
+        }
+        const form = cbs.form;
+        cbs.form = null;
+        const at = form ? this._stackIndex(form) : -1;
+        if (at < 0 || !this._elementInScope(at)) return true;
+        this._impliedEnds();
+        this._leaveOpen(this._stackIndex(form!));
+        return true;
+      }
+      case 'p':
+        if (this._inScope('p', BUTTON_SCOPE) < 0) {
+          this._insert('p', {});
+        }
+        this._closeParagraph();
+        return true;
+      case 'li':
+        if (this._inScope('li', LIST_SCOPE) < 0) return true;
+        this._impliedEnds('li');
+        this._popTo('li');
+        return true;
+      case 'dd':
+      case 'dt':
+        if (this._inScope(name) < 0) return true;
+        this._impliedEnds(name);
+        this._popTo(name);
+        return true;
+      case 'h1':
+      case 'h2':
+      case 'h3':
+      case 'h4':
+      case 'h5':
+      case 'h6': {
+        const at = this._closedBy(name, SCOPE, HEADINGS, true);
+        if (at < 0) return true;
+        this._impliedEnds();
+        const { stack } = self;
+        while (stack.length) {
+          const top = stack[0];
+          this._pop();
+          if (HEADINGS.has(top)) break;
+        }
+        return true;
+      }
+      case 'applet':
+      case 'marquee':
+      case 'object':
+        if (this._inScope(name) < 0) return true;
+        this._impliedEnds();
+        this._popTo(name);
+        this._clearFormatting();
+        return true;
+      case 'br':
+        this._inBody('br', {}, false);
+        return true;
+    }
+    if (FORMATTING.has(name)) {
+      this._adoption(name);
+      return true;
+    }
+    if (BLOCK_ENDS.has(name)) {
+      if (this._inScope(name) < 0) return true;
+      this._impliedEnds();
+      this._popTo(name);
+      return true;
+    }
+    this._anyOtherEnd(name);
+    return true;
+  }
+
+  /** "In table"'s end tags; false where the token is reprocessed. */
+  private _inTableEnd(name: string): boolean {
+    if (name === 'table') {
+      if (this._inScope('table', TABLE_SCOPE) < 0) return true;
+      this._popTo('table');
+      this._resetMode();
+      return true;
+    }
+    if (IGNORED_IN_TABLE.has(name)) return true;
+    if (name === 'template') {
+      this._endTemplate();
+      return true;
+    }
+    this._foster = true;
+    const done = this._inBodyEnd(name);
+    this._foster = false;
+    return done;
+  }
+
+  /** "Any other end tag" (13.2.6.4.7): what is open of its name before
+   *  anything special, closed. */
+  private _anyOtherEnd(name: string): void {
+    const self = this as unknown as ParserInternals;
+    const at = this._closedBy(name, SPECIAL, null, true);
+    if (at < 0) return;
+    const el = self.cbs.openNodes[self.cbs.openNodes.length - 1 - at];
+    this._impliedEnds(name);
+    const now = this._stackIndex(el);
+    if (now >= 0) this._closeTo(now);
+  }
+
+  /** A `</template>` (13.2.6.4.4). */
+  private _endTemplate(): void {
+    if (this._templateOpen() < 0) return;
+    this._impliedEnds(undefined, ENDS_THOROUGHLY);
+    this._popTo('template');
+    this._clearFormatting();
+    this._templateModes.pop();
+    this._resetMode();
+  }
+
+  /** The end of the input in a `<template>`; false where nothing is left to
+   *  close. */
+  private _endOfTemplate(): boolean {
+    if (this._templateOpen() < 0) return false;
+    this._popTo('template');
+    this._clearFormatting();
+    this._templateModes.pop();
+    this._resetMode();
+    return true;
+  }
+
+  // --- the adoption agency --------------------------------------------------------
+
+  /**
+   * The adoption agency algorithm (13.2.6.4.7): a formatting element's end
+   * tag closes it from under what it holds, and the elements it held are
+   * made again inside what is left open, so that a `<b>` closed in a `<p>`
+   * it opened outside of is a `<b>` in the `<p>` as well as one before it.
+   */
+  private _adoption(subject: string): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, cbs } = self;
+    const T = cbs.openNodes;
+    const list = this._formatting;
+    if (
+      stack[0] === subject &&
+      this._isHtml(0) &&
+      !this._listed(T[T.length - 1] as Element)
+    ) {
+      this._pop();
+      return;
+    }
+    for (let outer = 0; outer < 8; outer++) {
+      let fi = -1;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const entry = list[i];
+        if (entry === null) break;
+        if (entry.name === subject) {
+          fi = i;
+          break;
+        }
+      }
+      if (fi < 0) {
+        this._anyOtherEnd(subject);
+        return;
+      }
+      const feEntry = list[fi]!;
+      const fe = feEntry.el;
+      const fk = this._stackIndex(fe);
+      if (fk < 0) {
+        list.splice(fi, 1);
+        return;
+      }
+      if (!this._elementInScope(fk)) return;
+      let bk = -1;
+      for (let k = fk - 1; k >= 0; k--) {
+        if (this._specialAt(k)) {
+          bk = k;
+          break;
+        }
+      }
+      if (bk < 0) {
+        this._closeTo(fk);
+        list.splice(list.indexOf(feEntry), 1);
+        return;
+      }
+      const fb = T[T.length - 1 - bk] as Element;
+      const common = T[T.length - 1 - (fk + 1)] as ParentNode;
+      let bookmark: Formatting = null;
+      let lastNode: Element = fb;
+      let nk = bk;
+      let removed = false;
+      for (let inner = 1; ; inner++) {
+        if (!removed) nk += 1;
+        removed = false;
+        const node = T[T.length - 1 - nk] as Element;
+        if (node === fe) break;
+        let ni = this._listIndex(node);
+        if (inner > 3 && ni >= 0) {
+          list.splice(ni, 1);
+          ni = -1;
+        }
+        if (ni < 0) {
+          this._dropFromStack(nk);
+          removed = true;
+          continue;
+        }
+        const entry = list[ni]!;
+        const clone = cbs.made(entry.name, { ...entry.attribs });
+        const replaced = {
+          el: clone,
+          name: entry.name,
+          attribs: entry.attribs,
+        };
+        list[ni] = replaced;
+        T[T.length - 1 - nk] = clone;
+        cbs.openFormatting.delete(node);
+        cbs.openFormatting.add(clone);
+        bookmark ??= replaced;
+        putNode(clone, lastNode);
+        cbs.moved();
+        lastNode = clone;
+      }
+      // what is left goes where the common ancestor would take it
+      if (this._foster && FOSTERING.has(isElement(common) ? common.name : '')) {
+        const place = this._fosterPlace();
+        putNode(place.parent, lastNode, place.before);
+      } else putNode(common, lastNode);
+      cbs.moved();
+      // and the formatting element is made again in the furthest block
+      const made = cbs.made(feEntry.name, { ...feEntry.attribs });
+      const kids = fb.children.slice();
+      for (const kid of kids) putNode(made, kid);
+      putNode(fb, made);
+      const entry = { el: made, name: feEntry.name, attribs: feEntry.attribs };
+      list.splice(list.indexOf(feEntry), 1);
+      if (bookmark) list.splice(list.indexOf(bookmark) + 1, 0, entry);
+      else list.splice(fi, 0, entry);
+      this._dropFromStack(this._stackIndex(fe));
+      const at = this._stackIndex(fb);
+      stack.splice(at, 0, feEntry.name);
+      T.splice(T.length - at, 0, made);
+      cbs.openFormatting.add(made);
+      cbs.breakText();
+    }
+  }
+
+  /** Whether an element is on the list of active formatting elements. */
+  private _listed(el: Element): boolean {
+    return this._listIndex(el) >= 0;
+  }
+
+  private _listIndex(el: Element): number {
+    const list = this._formatting;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i]?.el === el) return i;
+    }
+    return -1;
+  }
+
+  /** The `<a>` on the list after its last marker, or null. */
+  private _formattingNamed(name: string): Element | null {
+    const list = this._formatting;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const entry = list[i];
+      if (entry === null) return null;
+      if (entry.name === name) return entry.el;
+    }
+    return null;
+  }
+
+  /** An element taken off the list and the stack, where the adoption agency
+   *  left it on them. */
+  private _forget(el: Element): void {
+    const at = this._listIndex(el);
+    if (at >= 0) this._formatting.splice(at, 1);
+    const k = this._stackIndex(el);
+    if (k >= 0) this._dropFromStack(k);
+  }
+
+  /** The current node pushed on the list, the earliest of three like it
+   *  after the last marker taken off it first (13.2.4.3, Noah's Ark). */
+  private _remember(name: string, attribs: Record<string, string>): void {
+    const el = this._current();
+    const list = this._formatting;
+    let alike = 0;
+    let earliest = -1;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const entry = list[i];
+      if (entry === null) break;
+      if (entry.name === name && sameAttributes(entry.attribs, attribs)) {
+        alike += 1;
+        earliest = i;
+      }
+    }
+    if (alike >= 3) list.splice(earliest, 1);
+    // the token's, which a script may change on the element
+    let copy = NO_ATTRIBUTES;
+    for (const _ in attribs) {
+      copy = { ...attribs };
+      break;
+    }
+    list.push({ el, name, attribs: copy });
+    (this as unknown as ParserInternals).cbs.openFormatting.add(el);
+  }
+
+  /** "Reconstruct the active formatting elements" (13.2.4.3): the ones
+   *  closed from under what is open made again around what comes next. */
+  private _reconstruct(): void {
+    const list = this._formatting;
+    if (!list.length) return;
+    const cbs = (this as unknown as ParserInternals).cbs;
+    const open = cbs.openFormatting;
+    const last = list[list.length - 1];
+    if (last === null || open.has(last.el)) return;
+    let i = list.length - 1;
+    while (i > 0) {
+      const before = list[i - 1];
+      if (before === null || open.has(before.el)) break;
+      i -= 1;
+    }
+    for (; i < list.length; i++) {
+      const entry = list[i]!;
+      this._insert(entry.name, { ...entry.attribs });
+      const el = this._current();
+      list[i] = { el, name: entry.name, attribs: entry.attribs };
+      open.add(el);
+    }
+  }
+
+  /** "Clear the list of active formatting elements up to the last
+   *  marker". */
+  private _clearFormatting(): void {
+    const list = this._formatting;
+    while (list.length) if (list.pop() === null) break;
+  }
+
+  // --- inserting --------------------------------------------------------------------
+
+  /** An HTML element for a start tag, where foster parenting says or at the
+   *  current node, and on the stack. */
+  private _insert(name: string, attribs: Record<string, string>): void {
+    const self = this as unknown as ParserInternals;
+    const { stack, foreignContext, cbs } = self;
+    if (this._foster && FOSTERING.has(stack[0]))
+      cbs.place = this._fosterPlace();
+    stack.unshift(name);
+    if (FRAMED.has(name)) {
+      foreignContext.unshift(
+        name === 'svg' ? IN_SVG : name === 'math' ? IN_MATHML : NOT_FOREIGN,
+      );
+    }
+    this._made = name;
+    cbs.onopentag(name, attribs);
+    cbs.place = null;
+    // at the top of a fragment read in SVG or MathML, which says nothing
+    // of an element the parser made HTML's there
+    if (stack.length === 1 && this._context !== NOT_FOREIGN) {
+      this._current().namespace = HTML_NAMESPACE;
     }
   }
 
   /**
-   * What HTML's parser does with a start tag in HTML content, where
-   * htmlparser2's keeps a table of what each closes and asks only the top of
-   * the stack. A tag with nothing to do pays two lookups.
+   * An element in SVG or MathML (13.2.6.5). The frame htmlparser2 keeps
+   * goes by the name alone, in one list for both languages, where a name is
+   * an integration point in its own language only: in SVG an `<mi>` and a
+   * `<math>` are SVG's, and in MathML a `<title>` and an `<svg>` MathML's,
+   * but for an `<svg>` an `<annotation-xml>` opens, and an
+   * `<annotation-xml>` that says it holds HTML is a point.
    */
-  private _open(name: string): void {
+  private _foreign(
+    name: string,
+    attribs: Record<string, string>,
+    selfClosing: boolean,
+    around: number,
+  ): void {
     const self = this as unknown as ParserInternals;
-    const { stack } = self;
-    // a head ends at the first thing that is not head content, with what
-    // stands in for it where the markup wrote another `<head>` or `<html>` in
-    // it (`_ignored`): with one of those left, the body opened in the head
-    while (
-      (stack[0] === 'head' ||
-        (stack[0] === 'html' && stack.includes('head'))) &&
-      !HEAD_CONTENT.has(name) &&
-      name !== 'head' &&
-      name !== 'html'
-    ) {
-      self.popElement(true);
+    const { stack, foreignContext, cbs } = self;
+    if (this._foster && FOSTERING.has(stack[0]))
+      cbs.place = this._fosterPlace();
+    if (FRAMED.has(name)) {
+      foreignContext.unshift(frameOf(name, around, stack[0], attribs));
     }
-    if (IMPLIES.has(name) && !this._implied(name)) return;
-    if (self.cbs.paragraphs > 0 && ENDS_A_PARAGRAPH.has(name)) {
-      this._endParagraph();
-    }
-    this._impliedBy(name);
-    this._push(name);
+    stack.unshift(name);
+    this._made = name;
+    cbs.onopentag(name, attribs);
+    cbs.place = null;
+    if (selfClosing) this._pop();
   }
 
-  /** An element on the stack, as htmlparser2's parser puts one, with no table
-   *  of what that closes. Its frame goes by the name, as `popElement` does. */
-  private _push(name: string): void {
+  /**
+   * Where foster parenting puts a node (13.2.6.1): in front of the last
+   * table open, or at the end of the last template if that is nearer, or
+   * of what holds the table on the stack where the table is in no tree.
+   */
+  private _fosterPlace(): { parent: ParentNode; before: ChildNode | null } {
     const self = this as unknown as ParserInternals;
-    self.openTagStart = self.startIndex;
-    self.tagname = name;
-    if (!this.isVoidElement(name)) {
-      self.stack.unshift(name);
-      if (FRAMED.has(name)) {
-        self.foreignContext.unshift(
-          name === 'svg' ? IN_SVG : name === 'math' ? IN_MATHML : NOT_FOREIGN,
-        );
+    const { stack, cbs } = self;
+    const T = cbs.openNodes;
+    for (let k = 0; k < stack.length; k++) {
+      const name = stack[k];
+      if ((name !== 'table' && name !== 'template') || !this._isHtml(k)) {
+        continue;
       }
+      const el = T[T.length - 1 - k];
+      if (name === 'template') return { parent: el, before: null };
+      if (el.parent) return { parent: el.parent, before: el as ChildNode };
+      return { parent: T[T.length - 2 - k], before: null };
     }
-    self.attribs = {};
+    return { parent: T[1] ?? cbs.root, before: null };
+  }
+
+  // --- the stack ----------------------------------------------------------------------
+
+  /** The current node. */
+  private _current(): Element {
+    const T = (this as unknown as ParserInternals).cbs.openNodes;
+    return T[T.length - 1] as Element;
+  }
+
+  private _pop(): void {
+    (this as unknown as ParserInternals).popElement(true);
   }
 
   /** The element at `at` in the stack closed, and what stands above it. */
@@ -3677,338 +5666,241 @@ class DocumentParser extends Parser {
     for (let k = 0; k <= at; k++) self.popElement(true);
   }
 
-  /** "Close a p element", where one is in button scope. */
-  private _endParagraph(): void {
-    const at = this._closedBy('p', TO_A_PARAGRAPH);
+  /** Pop until an HTML element of `name` has been popped. */
+  private _popTo(name: string): void {
+    const at = this._htmlIndex(name);
     if (at >= 0) this._closeTo(at);
   }
 
-  /** "Generate implied end tags", but for `except`. */
-  private _impliedEnds(except?: string): void {
-    const self = this as unknown as ParserInternals;
-    const { stack } = self;
-    while (ENDS_IMPLIED.has(stack[0]) && stack[0] !== except) {
-      self.popElement(true);
+  /** Where an element is in the stack, top first, or -1. */
+  private _stackIndex(el: ParentNode): number {
+    const T = (this as unknown as ParserInternals).cbs.openNodes;
+    for (let i = T.length - 1; i > 0; i--) {
+      if (T[i] === el) return T.length - 1 - i;
     }
+    return -1;
   }
 
-  /** Where one of `name` stands in scope, or -1, which most documents answer
-   *  without a walk: a tag asks it at each control. A foreign one is none of
-   *  these, as a start tag read in an integration point is HTML. */
-  private _inScope(name: string): number {
-    const { stack } = this as unknown as ParserInternals;
-    return stack.includes(name)
-      ? this._closedBy(name, IMPLYING, null, true)
-      : -1;
-  }
-
-  /**
-   * What a start tag closes before it opens (HTML 13.2.6.4.7, "in body"), and
-   * false where it opens nothing. Nothing here closes a formatting element, as
-   * a stop in what each walk looks past: HTML brings one back around what comes
-   * after it, from a list nothing here keeps, and without that a `<p><a><div>`
-   * would have its block out of the link it is in.
-   */
-  private _implied(name: string): boolean {
-    const self = this as unknown as ParserInternals;
-    const { stack } = self;
-    switch (name) {
-      case 'a':
-        if (stack[0] === 'a') self.popElement(true);
-        return true;
-      case 'li': {
-        const at = this._closedBy('li', SPECIAL_TO_AN_ITEM);
-        if (at >= 0) this._closeTo(at);
-        return true;
-      }
-      case 'dd':
-      case 'dt': {
-        const at = this._closedBy(name, SPECIAL_TO_AN_ITEM, DESCRIPTIONS);
-        if (at >= 0) this._closeTo(at);
-        return true;
-      }
-      case 'h1':
-      case 'h2':
-      case 'h3':
-      case 'h4':
-      case 'h5':
-      case 'h6':
-        if (self.cbs.paragraphs > 0) this._endParagraph();
-        if (HEADINGS.has(stack[0])) self.popElement(true);
-        return true;
-      case 'button': {
-        const at = this._inScope('button');
-        if (at >= 0) this._closeTo(at);
-        return true;
-      }
-      case 'input': {
-        const at = this._inScope('select');
-        if (at >= 0) this._closeTo(at);
-        return true;
-      }
-      case 'select': {
-        // a second one ends the first, and is no element
-        const at = this._inScope('select');
-        if (at >= 0) this._closeTo(at);
-        return at < 0 && this._holder !== 'select';
-      }
-      case 'option':
-        if (this._inScope('select') >= 0) this._impliedEnds('optgroup');
-        else if (stack[0] === 'option') self.popElement(true);
-        return true;
-      case 'optgroup':
-        if (this._inScope('select') >= 0) this._impliedEnds();
-        else if (stack[0] === 'option') self.popElement(true);
-        return true;
-      case 'hr':
-        if (this._inScope('select') >= 0) this._impliedEnds();
-        return true;
-      case 'rb':
-      case 'rtc':
-        if (this._inScope('ruby') >= 0) this._impliedEnds();
-        return true;
-      case 'rp':
-      case 'rt':
-        if (this._inScope('ruby') >= 0) this._impliedEnds('rtc');
-        return true;
-      case 'form':
-        return this._openForm();
-      case 'table':
-        return this._openTable();
-      default:
-        return this._tablePart(name);
+  /** Where the nearest HTML element of `name` is in the stack, or -1. */
+  private _htmlIndex(name: string): number {
+    const { stack, foreignContext } = this as unknown as ParserInternals;
+    if (foreignContext.length === 1) return stack.indexOf(name);
+    for (let k = 0; k < stack.length; k++) {
+      if (stack[k] === name && this._isHtml(k)) return k;
     }
+    return -1;
   }
 
-  /** A `<form>` is turned away while the form pointer holds one, outside a
-   *  `<template>`, and between a table's parts it closes as it opens, which
-   *  leaves the table as it was and the controls that come to the pointer. */
-  private _openForm(): boolean {
+  /** The element at `at` taken off the stack, wherever it is in it, and
+   *  what it holds left as it is. */
+  private _dropFromStack(at: number): void {
     const self = this as unknown as ParserInternals;
-    const { stack, cbs } = self;
-    const template = stack.includes('template');
-    if (cbs.form && !template) return false;
-    cbs.pointing = !template;
-    this._closesAsItOpens = BETWEEN_PARTS.has(stack[0] ?? this._holder);
-    return true;
+    const { stack, foreignContext } = self;
+    const name = stack[at];
+    stack.splice(at, 1);
+    self.cbs.removeOpen(at);
+    if (FRAMED.has(name) || foreignContext.length > 1) this._reframe();
   }
 
-  /** The end of a form, by the pointer: the form leaves the stack and what it
-   *  holds stays open, so that `<form><div></form>x` has the `x` in the
-   *  `<div>` (13.2.6.4.7). A second `<form>`, which was turned away, has its
-   *  end tag end none of this. */
-  private _closeForm(at: number): void {
-    const self = this as unknown as ParserInternals;
-    const { stack, cbs } = self;
-    if (stack.includes('template')) {
-      if (at >= 0) this._closeTo(at);
-      return;
-    }
-    const pointed = cbs.form !== null;
-    cbs.form = null;
-    if (!pointed || at < 0) return;
-    this._impliedEnds();
-    this._leaveOpen(this._closedBy('form', SCOPE));
-  }
-
-  /** The element at `at` in the stack off it, and what it holds still open. */
+  /** The element at `at` in the stack off it, and what it holds still open:
+   *  the end of a form, by the form pointer (13.2.6.4.7). */
   private _leaveOpen(at: number): void {
     const self = this as unknown as ParserInternals;
     if (at === 0) {
       self.popElement(false);
       return;
     }
-    self.stack.splice(at, 1);
-    self.cbs.removeOpen(at);
-  }
-
-  /** The nearest of a table's parts open, or -1. */
-  private _nearestPart(): number {
-    return this._closedBy('', NO_SCOPE, TABLE_PARTS);
-  }
-
-  /** A `<table>` between a table's parts ends that table, which has to be
-   *  there to end: `innerHTML` on a `<table>` has none on the stack. */
-  private _openTable(): boolean {
-    const { stack } = this as unknown as ParserInternals;
-    const at = this._nearestPart();
-    if (!BETWEEN_PARTS.has(at < 0 ? this._holder : stack[at])) return true;
-    const table = this._closedBy('table', TABLE_SCOPE);
-    if (table >= 0) this._closeTo(table);
-    return table >= 0;
+    this._dropFromStack(at);
   }
 
   /**
-   * A table's part, which HTML's modes for a table place (13.2.6.4.9 to
-   * 13.2.6.4.15). Those modes say what is open, and the stack says the same:
-   * from the nearest part open, each that does not hold this one closes, with
-   * all that stands above it, until one does. In a cell or a caption that
-   * closes them, and past that none has anything open: a `<td>` in a `<div>`
-   * outside a table is ignored, and a row in a row's `innerHTML` as well. A
-   * `<template>` holds whichever comes first, which says what it is a template
-   * of.
+   * htmlparser2's frames worked out again from the stack, bottom up, as
+   * each element's start tag made its own: where the stack is taken apart
+   * in the middle (`_dropFromStack`), what is left of it has to say what it
+   * holds.
    */
-  private _tablePart(name: string): boolean {
-    const { stack } = this as unknown as ParserInternals;
-    for (;;) {
-      const at = this._nearestPart();
-      const part = at < 0 ? this._holder : stack[at];
-      if (part === 'template') return at === 0 || !stack.length;
-      if (HOLDS.get(part)?.has(name)) {
-        this._closeTo((at < 0 ? stack.length : at) - 1);
-        return true;
-      }
-      if (at < 0) return false;
-      this._closeTo(at);
-    }
-  }
-
-  /**
-   * `emitOpenTag` for an element in SVG or MathML, where what HTML implies is
-   * nothing to do with the name: a `<td>` in a `<td>` nests and a second
-   * `<form>` is an element. The frame htmlparser2 keeps goes by the name
-   * alone, in one list for both languages, where a name is an integration
-   * point in its own language only: in SVG an `<mi>` and a `<math>` are SVG's,
-   * and in MathML a `<title>` and an `<svg>` MathML's, but for an `<svg>` an
-   * `<annotation-xml>` opens, which HTML's rules take (13.2.6.5).
-   */
-  private _openForeign(name: string): void {
+  private _reframe(): void {
     const self = this as unknown as ParserInternals;
-    self.openTagStart = self.startIndex;
-    self.tagname = name;
-    if (FRAMED.has(name)) {
-      const around = self.foreignContext[0];
-      self.foreignContext.unshift(
-        around === IN_SVG
-          ? SVG_POINTS.has(name.toLowerCase())
-            ? NOT_FOREIGN
-            : IN_SVG
-          : name === 'svg' && self.stack[0] === 'annotation-xml'
-            ? IN_SVG
-            : MATHML_POINTS.has(name)
-              ? NOT_FOREIGN
-              : IN_MATHML,
+    const { stack, foreignContext, cbs } = self;
+    const T = cbs.openNodes;
+    const frames = [this._context];
+    for (let k = stack.length - 1; k >= 0; k--) {
+      const name = stack[k];
+      if (!FRAMED.has(name)) continue;
+      const el = T[T.length - 1 - k] as Element;
+      frames.push(
+        frameOf(
+          name,
+          frames[frames.length - 1],
+          stack[k + 1],
+          el.attribs ?? {},
+        ),
       );
     }
-    self.stack.unshift(name);
-    self.attribs = {};
+    foreignContext.length = 0;
+    for (let i = frames.length - 1; i >= 0; i--) foreignContext.push(frames[i]);
   }
 
-  /** What only a tag's attributes can decide, known as its tag ends: an
-   *  `<annotation-xml>` that says it holds HTML is an integration point, and
-   *  a `<font>` with a `color`, a `face` or a `size` ends foreign content. */
-  private _tagEnds(): void {
-    this._tagDecides = false;
+  /** Pop until the current node is one of `context`, or nothing is open. */
+  private _clearTo(context: ReadonlySet<string>): void {
+    const { stack } = this as unknown as ParserInternals;
+    while (stack.length && !context.has(stack[0])) this._pop();
+  }
+
+  /** "Close a p element", where one is in button scope. */
+  private _closeParagraph(): void {
     const self = this as unknown as ParserInternals;
-    const { color, encoding, face, size } = self.attribs!;
-    if (self.tagname !== 'font') {
-      if (HTML_ENCODINGS.has((encoding ?? '').toLowerCase())) {
-        self.foreignContext[0] = NOT_FOREIGN;
-      }
-    } else if (
-      color !== undefined ||
-      face !== undefined ||
-      size !== undefined
+    if (self.cbs.paragraphs <= 0) return;
+    if (this._inScope('p', BUTTON_SCOPE) < 0) return;
+    this._impliedEnds('p');
+    this._popTo('p');
+  }
+
+  /** "Generate implied end tags", but for `except`. */
+  private _impliedEnds(except?: string, ends = ENDS_IMPLIED): void {
+    const { stack } = this as unknown as ParserInternals;
+    while (
+      stack.length &&
+      ends.has(stack[0]) &&
+      stack[0] !== except &&
+      this._isHtml(0)
     ) {
-      // it has no element yet, so it stands where what it ended leaves it
-      self.stack.shift();
-      this._breakOut();
-      self.stack.unshift('font');
-      this._foreignTag = false;
+      this._pop();
     }
   }
 
-  override onopentagend(endIndex: number): void {
-    if (this._tagDecides) this._tagEnds();
-    super.onopentagend(endIndex);
-    this._closesAsItOpens = false;
+  /** Where the nearest HTML element of `name` stands in a scope, or -1,
+   *  which most documents answer without a walk. */
+  private _inScope(name: string, stops: ReadonlySet<string> = SCOPE): number {
+    const { stack } = this as unknown as ParserInternals;
+    return stack.includes(name) ? this._closedBy(name, stops, null, true) : -1;
   }
 
-  /**
-   * HTML's end tag (13.2.6.4.7, and 13.2.6.5 where a foreign element is open).
-   * htmlparser2 closes the nearest element of the name, whatever stands
-   * between, so a `</span>` closed a block it was never in and the block's own
-   * end tag an outer one, and a `</svg>` after an inner drawing ended closed
-   * the outer one from inside its `<foreignObject>`. A `</p>` and a `</br>` end
-   * foreign content, as the start tags in `BREAKS_OUT` do. An end tag that
-   * closes what is current, as nearly all do, costs what htmlparser2's would.
-   */
-  override onclosetag(start: number, endIndex: number): void {
-    const self = this as unknown as ParserInternals;
-    const name = self.readTagName(start, endIndex);
-    self.endIndex = endIndex;
-    if (
-      self.stack[0] === name &&
-      name !== 'form' &&
-      name !== 'body' &&
-      name !== 'html'
-    ) {
-      self.popElement(false);
-      self.startIndex = endIndex + 1;
-    } else {
-      this._endTag(name, start, endIndex);
+  /** Whether the element at `at` in the stack is in scope: no element that
+   *  bounds a scope is above it. */
+  private _elementInScope(at: number): boolean {
+    for (let k = 0; k < at; k++) {
+      if (this._boundsScope(k)) return false;
     }
+    return true;
   }
 
-  /** An end tag that closes something other than what is current, or has a
-   *  rule of its own. */
-  private _endTag(name: string, start: number, endIndex: number): void {
-    const self = this as unknown as ParserInternals;
-    const { stack } = self;
-    if ((name === 'p' || name === 'br') && this.isInForeignContext()) {
-      this._breakOut();
-    }
-    if (name === 'br') {
-      super.onclosetag(start, endIndex);
-      return;
-    }
-    const closes = this._closedBy(
-      name,
-      this._stopsAt(name),
-      HEADINGS.has(name) ? HEADINGS : null,
+  private _boundsScope(k: number): boolean {
+    const { stack } = this as unknown as ParserInternals;
+    const name = stack[k];
+    if (this._isHtml(k)) return SCOPE.has(name);
+    return SPECIAL_FOREIGN.has(name);
+  }
+
+  /** Whether the element at `k` is in the special category. */
+  private _specialAt(k: number): boolean {
+    const { stack } = this as unknown as ParserInternals;
+    const name = stack[k];
+    if (this._isHtml(k)) return SPECIAL.has(name);
+    return SPECIAL_FOREIGN.has(name);
+  }
+
+  /** Where the nearest `<template>` is in the stack, or -1. */
+  private _templateOpen(): number {
+    return this._htmlIndex('template');
+  }
+
+  /** Whether the parser is "parsing template contents" (13.2.4.4). */
+  private _inTemplate(): boolean {
+    return this._holder === 'template' || this._templateOpen() >= 0;
+  }
+
+  /** Whether nothing that is not white space or a comment has been put in
+   *  the document yet, so that a doctype or an `<html>` makes it one. */
+  private _atStart(): boolean {
+    const { stack, cbs } = this as unknown as ParserInternals;
+    if (stack.length || this._contextual) return false;
+    return !cbs.root.children.some(
+      (kid) =>
+        isElement(kid) || (kid instanceof Text && NOT_SPACE.test(kid.data)),
     );
-    if (
-      (name === 'form' || name === 'body' || name === 'html') &&
-      (closes < 0 || this._isHtml(closes))
-    ) {
-      // a body and a document end where the input does: what comes after
-      // them goes where the last of what they held left it, but for a comment
-      if (name === 'form') this._closeForm(closes);
-      else if (closes >= 0) self.cbs.ended = name as 'body' | 'html';
-    } else if (closes >= 0) {
-      // the adoption agency would move a block out of this; it stays where
-      // it is, and open, as its end tag expects
-      if (
-        FORMATTING.has(name) &&
-        stack.slice(0, closes).some((el) => SPECIAL.has(el))
-      ) {
-        this._leaveOpen(closes);
-      } else {
-        for (let k = 0; k < closes; k++) self.popElement(true);
-        self.popElement(false);
-      }
-    } else if (name === 'p' && (stack[0] ?? this._holder) !== 'template') {
-      this._push('p');
-      self.closeCurrentTag(true);
-    }
-    self.startIndex = endIndex + 1;
   }
 
-  /** What stops the end tag of `name`: its own scope, or, where it has no rule
-   *  of its own, what is special ("any other end tag"). */
-  private _stopsAt(name: string): ReadonlySet<string> {
-    if (TABLE_END_TAGS.has(name)) return TABLE_SCOPE;
-    if (name === 'p') return BUTTON_SCOPE;
-    if (name === 'li') return LIST_SCOPE;
-    if (name === 'template') return NO_SCOPE;
-    return ENDS_IN_SCOPE.has(name) ? SCOPE : SPECIAL;
+  /** White space a fragment began with, which a document has none of before
+   *  its `<html>`. */
+  private _dropLeadingSpace(): void {
+    const { cbs } = this as unknown as ParserInternals;
+    for (const kid of cbs.root.children.slice()) {
+      if (kid instanceof Text && !NOT_SPACE.test(kid.data)) {
+        takeNode(kid);
+        cbs.moved();
+      }
+    }
+    cbs.breakText();
   }
+
+  /** "Reset the insertion mode appropriately" (13.2.4.1). */
+  private _resetMode(): void {
+    const { stack } = this as unknown as ParserInternals;
+    const n = this._fragment ? stack.length + 1 : stack.length;
+    for (let k = 0; k < n; k++) {
+      const last = k === n - 1;
+      const name = k < stack.length ? stack[k] : this._holder || 'body';
+      if (k < stack.length && !this._isHtml(k)) continue;
+      switch (name) {
+        case 'td':
+        case 'th':
+          if (last) break;
+          this._mode = IN_CELL;
+          return;
+        case 'tr':
+          this._mode = IN_ROW;
+          return;
+        case 'tbody':
+        case 'thead':
+        case 'tfoot':
+          this._mode = IN_TABLE_BODY;
+          return;
+        case 'caption':
+          this._mode = IN_CAPTION;
+          return;
+        case 'colgroup':
+          this._mode = IN_COLUMN_GROUP;
+          return;
+        case 'table':
+          this._mode = IN_TABLE;
+          return;
+        case 'template':
+          this._mode =
+            this._templateModes[this._templateModes.length - 1] ?? IN_TEMPLATE;
+          return;
+        case 'head':
+          if (last) break;
+          this._mode = IN_HEAD;
+          return;
+        case 'body':
+          this._mode = IN_BODY;
+          return;
+        case 'frameset':
+          this._mode = IN_FRAMESET;
+          return;
+        case 'html':
+          this._mode = this._head ? AFTER_HEAD : BEFORE_HEAD;
+          return;
+      }
+      if (last) {
+        this._mode = IN_BODY;
+        return;
+      }
+    }
+    this._mode = IN_BODY;
+  }
+
+  // --- scopes, as #1254 and #1261 read them --------------------------------------------
 
   /** Whether the element at `at` in the stack is HTML's: it stands in the
    *  frame under its own, if it has one, and an `<svg>` or a `<math>` in any
    *  frame is not. */
   private _isHtml(at: number): boolean {
     const { stack, foreignContext } = this as unknown as ParserInternals;
+    if (foreignContext.length === 1 && foreignContext[0] === NOT_FOREIGN) {
+      return true;
+    }
     let frame = 0;
     for (let k = 0; k <= at; k++) if (FRAMED.has(stack[k])) frame++;
     const el = stack[at];
@@ -4067,9 +5959,7 @@ class DocumentParser extends Parser {
       }
     }
     return -1;
-  }
-
-  /**
+  } /**
    * `_closedBy` with nothing foreign open, which is nearly every walk there is.
    * It looks as far as a document's tree goes (`MAX_DEPTH`), and past that takes
    * the name for what it finds, as htmlparser2 did: a walk costs what is open, so
@@ -4089,9 +5979,7 @@ class DocumentParser extends Parser {
       if (stops.has(el)) return -1;
     }
     return kin ? -1 : stack.indexOf(name, end);
-  }
-
-  /**
+  } /**
    * A start tag that ends foreign content closes it, as far as the nearest
    * HTML element or integration point, and what it opens, and all that comes
    * after, stands there (HTML 13.2.6.5). htmlparser2 keeps it in the drawing,
@@ -4104,50 +5992,6 @@ class DocumentParser extends Parser {
       self.popElement(true);
     }
     self.foreignContext[0] = NOT_FOREIGN;
-  }
-
-  /**
-   * The elements HTML's parser opens in a table before a row or a cell
-   * that has none to go in (HTML 13.2.6.4.9, "in table": a `<tr>`, a `<td>`
-   * or a `<th>` opens a `<tbody>`, and a cell in a section a `<tr>`; a
-   * `<col>` a `<colgroup>`). htmlparser2 opens none, so a table's rows
-   * were its children, and `table.tBodies`, `tbody > tr` and a walk of the
-   * tree all found another tree than a browser's. They are opened on the
-   * parser's own stack, as it opens what it implies, so that its end tags
-   * close them: `</tbody>` in a cell closes the cell and the row, as
-   * Acid3's table has it.
-   */
-  private _impliedBy(name: string): void {
-    const self = this as unknown as ParserInternals;
-    // asked only where a table is open, since every tag comes through here
-    if (!IN_TABLE.has(self.stack[0] ?? this._holder)) return;
-    // a column group holds columns and nothing else
-    if (self.stack[0] === 'colgroup' && name !== 'col') self.popElement(true);
-    if (name !== 'tr' && name !== 'td' && name !== 'th' && name !== 'col') {
-      return;
-    }
-    const top = (): string => self.stack[0] ?? this._holder;
-    const open = (tag: string): void => {
-      this._push(tag);
-      self.endOpenTag(true);
-    };
-    if (name === 'col') {
-      if (top() === 'table') open('colgroup');
-      return;
-    }
-    if (top() === 'table') open('tbody');
-    if (name !== 'tr' && SECTIONS.has(top())) open('tr');
-  }
-
-  override onselfclosingtag(endIndex: number): void {
-    if (this._tagDecides) this._tagEnds();
-    this._acknowledging = this._foreignTag;
-    try {
-      super.onselfclosingtag(endIndex);
-    } finally {
-      this._acknowledging = false;
-      this._closesAsItOpens = false;
-    }
   }
 }
 
