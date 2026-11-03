@@ -689,15 +689,15 @@ metric(
     const box = boxOf(el, 'box');
     assert.deepStrictEqual(
       [box.width, box.height],
-      [24, 24],
-      'its size and its border',
+      [20, 20],
+      'its size, its border inside it as in Blink',
     );
     const target = el as unknown as DrawnNode;
     const at = (id: string, x: number, y: number) => {
       const b = boxOf(el, id);
       return [target.abs.x + b.x + x, target.abs.y + b.y + y] as const;
     };
-    await expectPixel(result.ctx, ...at('box', 18, 18), '#ff0000', {
+    await expectPixel(result.ctx, ...at('box', 15, 15), '#ff0000', {
       message: "the page's ground",
     });
     await expectPixel(result.ctx, ...at('box', 4, 4), '#0000ff', {
@@ -714,7 +714,7 @@ metric(
     };
     await press('box');
     assert.deepStrictEqual(changes, [['box', true]]);
-    await expectPixel(result.ctx, ...at('box', 18, 18), '#00ff00', {
+    await expectPixel(result.ctx, ...at('box', 15, 15), '#00ff00', {
       message: ':checked restyles it',
     });
     await press('r1');
@@ -1194,8 +1194,8 @@ metric("a select the page styled is the page's to draw", async () => {
   }[];
   assert.deepStrictEqual(
     [trigger.abs.x - at.x, trigger.abs.y - at.y, trigger.abs.width],
-    [15, 15, 200],
-    'bare in the content box',
+    [15, 15, 170],
+    "bare in the content box, which a border box's width holds, as Blink's",
   );
 
   const content = (id: string, from: number, width: number) => {
@@ -1211,10 +1211,10 @@ metric("a select the page styled is the page's to draw", async () => {
     countPixels(result.ctx, content(id, from, width), '#ff0000', 60);
   await waitFor(async () => {
     assert.ok((await red('own', 0, 100)) > 20, "the value, in the page's ink");
-    assert.ok((await red('own', 176, 24)) > 4, 'the arrow, in it too');
+    assert.ok((await red('own', 146, 24)) > 4, 'the arrow, in it too');
     const [r, g, b] = await pixelAt(
       result.ctx,
-      at.x + own.x + 15 + 140,
+      at.x + own.x + 15 + 120,
       at.y + own.y + own.height / 2,
     );
     assert.ok(
@@ -1222,8 +1222,46 @@ metric("a select the page styled is the page's to draw", async () => {
       `the page's fill, not the palette's, under the trigger: ${r},${g},${b}`,
     );
   });
-  assert.strictEqual(await red('none', 176, 24), 0, 'no arrow');
+  assert.strictEqual(await red('none', 146, 24), 0, 'no arrow');
 });
+
+metric(
+  'a select the page styled is as wide as its widest option and the room its arrow takes',
+  async () => {
+    // Its text set in its font, and Blink's 1.6em for the arrow, which
+    // holds core's chevron and the gaps beside the spacer before it. Read
+    // as a count of letters, a drop-down cut its own label short.
+    const { node } = await render(
+      '<style>select{margin:0;border:1px solid;padding:0;font-size:20px}' +
+        '</style><select id="s"><option>x</option><option>Drop-down</option>' +
+        '</select><select id="n" style="appearance:none">' +
+        '<option>Drop-down</option></select>',
+    );
+    const el = view(node);
+    const fonts = (
+      el as unknown as {
+        _fonts(): {
+          layout(runs: object[], style: object, o: object): { width: number };
+        };
+      }
+    )._fonts();
+    const style = edgesOf(boxOf(el, 's')).style as unknown as {
+      fontFamily: string;
+      fontWeight: number;
+      fontStretch: number;
+    };
+    const run = {
+      family: style.fontFamily,
+      size: 20,
+      weight: style.fontWeight,
+      style: 'normal',
+      stretch: style.fontStretch,
+    };
+    const text = fonts.layout([{ text: 'Drop-down', ...run }], run, {}).width;
+    assert.strictEqual(boxOf(el, 's').width - 2, Math.ceil(text + 20 * 1.6));
+    assert.strictEqual(boxOf(el, 'n').width - 2, Math.ceil(text), 'no arrow');
+  },
+);
 
 metric(
   "a select's list is the platform's menu where the backend has one, styled or not",

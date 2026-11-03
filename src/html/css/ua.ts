@@ -354,6 +354,10 @@ textarea {
   border: 1px solid ${fieldEdge};
   background-color: Field;
 }
+/* Blink's border box for these, so a page's width holds their edges */
+select, input[type=checkbox], input[type=radio], input[type=search] {
+  box-sizing: border-box;
+}
 select {
   border: 1px solid ${fieldEdge};
   border-radius: 0;

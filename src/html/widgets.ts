@@ -1438,13 +1438,16 @@ function renderControl(
     case 'gauge': {
       const gauge = rect.gauge!;
       if (rect.bare) return null;
+      // half as thick as its box and across the middle of it, as a
+      // browser's native bar is
+      const bar = Math.max(1, Math.round(height / 2));
       widget = h(ProgressBar, {
         value: gauge.share ?? 0,
         indeterminate: gauge.share === null,
-        height,
+        height: bar,
         ...(gauge.region &&
           gauge.region !== 'optimum' && { color: METER_INK[gauge.region] }),
-        style: { width: '100%', height: '100%' },
+        style: { width: '100%', marginTop: Math.floor((height - bar) / 2) },
       });
       break;
     }

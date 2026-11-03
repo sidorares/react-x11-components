@@ -877,12 +877,15 @@ export function measureControl(
     case 'select': {
       const widest = optionWidths(el);
       // a select the page styled is its widest option and its arrow, and
-      // the room around them is the page's
+      // the room around them is the page's: the arrow's is Blink's, some
+      // 1.6em, or where it is more, what core's trigger takes for it, its
+      // chevron as tall as the capitals and a gap either side of the
+      // spacer before it
       if (styledField(kind, style)) {
+        const text = widestText(el, style, fonts) ?? ch * widest;
+        const arrow = Math.max(em * 1.6, 16 * scale + Math.ceil(em * 0.72));
         return {
-          width: Math.round(
-            ch * widest + (style.appearance === 'none' ? 0 : em),
-          ),
+          width: Math.ceil(text + (style.appearance === 'none' ? 0 : arrow)),
           height: lineHeight,
         };
       }
@@ -1016,6 +1019,38 @@ function numberAttr(el: Element, name: string): number | null {
   if (!raw) return null;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** How wide a `<select>`'s widest option is set in its font, or null
+ *  where the engine sets no text. */
+function widestText(
+  el: Element,
+  style: ComputedStyle,
+  fonts: FontsLike | null,
+): number | null {
+  if (!fonts) return null;
+  const run = {
+    family: style.fontFamily,
+    size: style.fontSize,
+    weight: style.fontWeight,
+    style: style.fontStyle === 'normal' ? 'normal' : 'italic',
+    stretch: style.fontStretch,
+  } as const;
+  try {
+    let widest = 0;
+    for (const option of optionsOf(el)) {
+      if (!option.label) continue;
+      const width = fonts.layout(
+        [{ text: option.label, ...run }],
+        run,
+        {},
+      ).width;
+      widest = Math.max(widest, width);
+    }
+    return widest;
+  } catch {
+    return null;
+  }
 }
 
 function optionWidths(el: Element): number {
