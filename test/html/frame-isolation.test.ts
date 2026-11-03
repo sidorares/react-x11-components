@@ -144,6 +144,7 @@ async function settle(ms = 250): Promise<void> {
 }
 
 const script = (code: string): string => `<script>${code}<\/script>`;
+const escapeQuotes = (html: string): string => html.replaceAll('"', '&quot;');
 
 const FRAME = `${APP}frame`;
 
@@ -407,6 +408,80 @@ test('a window a sandbox lets out is of the opaque origin that opened it, and no
   assert.equal(await until(s, 'window origin'), 'null');
   assert.equal(await until(s, 'its document'), 'true');
   assert.equal(await until(s, 'from it'), 'refused SecurityError');
+});
+
+test('a frame of no content stays what it was, and hears no load', async () => {
+  const noContent = `${APP}none`;
+  const s = await scene(
+    `<iframe id="f" src="${noContent}"></iframe>${script(`
+      const frame = document.getElementById('f');
+      frame.onload = () => console.log('heard load');
+      setTimeout(() => {
+        console.log('still blank', frame.contentWindow.location.href);
+        frame.onload = () => console.log('then', frame.contentDocument.title);
+        frame.src = '${APP}next';
+      }, 100);
+    `)}`,
+    { [`${APP}next`]: '<title>next</title>' },
+    {
+      fetch: async (request) => ({
+        url: request.url,
+        status: request.url === noContent ? 204 : 200,
+        statusText: '',
+        redirected: false,
+        headers: HTML,
+        body: request.url === noContent ? '' : '<title>next</title>',
+      }),
+    },
+  );
+  assert.equal(await until(s, 'still blank'), 'about:blank');
+  assert.equal(await until(s, 'then'), 'next');
+  assert.ok(!s.logs.some((l) => l.includes('heard load')), s.logs.join('\n'));
+});
+
+test("a frame's marginwidth and marginheight are its document's body's, under the body's own", async () => {
+  const read = `
+    const s = getComputedStyle(document.body);
+    console.log(location.pathname, s.marginTop, s.marginLeft);
+  `;
+  const s = await scene(
+    `<iframe marginwidth="70" marginheight="60" src="${APP}a"></iframe>
+     <iframe marginwidth="70" src="${APP}b"></iframe>
+     <iframe id="still" marginwidth="70"></iframe>
+     ${script(`
+       const body = document.getElementById('still').contentDocument.body;
+       console.log('blank', getComputedStyle(body).marginLeft);
+     `)}`,
+    {
+      [`${APP}a`]: `<!doctype html><body>${script(read)}`,
+      [`${APP}b`]: `<!doctype html><body leftmargin="30">${script(read)}`,
+    },
+  );
+  assert.equal(await until(s, '/a'), '60px 70px');
+  assert.equal(await until(s, '/b'), '8px 30px');
+  assert.equal(await until(s, 'blank'), '70px');
+});
+
+test("a sandbox's srcdoc reads the origin it has, which its blob URLs say", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" srcdoc="${escapeQuotes(
+      script(`
+        console.log('blob', new URL(URL.createObjectURL(new Blob(['x']))).origin);
+        console.log('location', location.origin);
+        console.log('window', self.origin);
+      `),
+    )}"></iframe>
+    <iframe srcdoc="${escapeQuotes(
+      script(`console.log('unsandboxed', location.origin);`),
+    )}"></iframe>
+    <iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
+    { [FRAME]: script(`console.log('addressed', location.origin);`) },
+  );
+  assert.equal(await until(s, 'blob'), 'null');
+  assert.equal(await until(s, 'location'), 'null');
+  assert.equal(await until(s, 'window'), 'null');
+  assert.equal(await until(s, 'unsandboxed'), new URL(APP).origin);
+  assert.equal(await until(s, 'addressed'), new URL(FRAME).origin);
 });
 
 test('a frame sends the top window somewhere only as its flags say', async () => {

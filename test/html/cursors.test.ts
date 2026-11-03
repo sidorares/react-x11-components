@@ -3,8 +3,8 @@
 // what the window shows over it: a widget mounted for a control is a node of
 // core's, and core shows the deepest node's cursor.
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { act, fireEvent } from 'react-x11/test';
+import test, { afterEach } from 'node:test';
+import { act, cleanup, fireEvent } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 
 import type { HtmlChange } from '../../src/html/index.js';
@@ -12,6 +12,11 @@ import { findById, pointIn, render, scriptedPage, view } from './harness.js';
 import { CHROME_CURSORS, CURSOR_DOCUMENT } from './cursors.js';
 
 const BUTTON = '::file-selector-button';
+
+// a page left mounted keeps what it runs running: an indeterminate
+// <progress> is core's bar, which slides on the window's clock until the
+// window goes, and held every test after it, and the process, open
+afterEach(cleanup);
 
 test('what an element computes for `cursor` is what Chromium computes', async () => {
   const { node } = await render(CURSOR_DOCUMENT, 800);

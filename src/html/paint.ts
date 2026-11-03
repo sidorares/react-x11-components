@@ -28,6 +28,8 @@ import {
 } from '../richtext/runs.js';
 import type { FillContext, LaidLine, LaidRun } from '../richtext/runs.js';
 import type { TextRun } from '../richtext/index.js';
+import { gaugeOf } from './controls.js';
+import { controlValue } from './form.js';
 import {
   AUTO,
   alphaOf,
@@ -4676,6 +4678,10 @@ function paintContent(
   if (visible) {
     if (box.replaced === 'image') paintImage(ctx, box, options);
     else if (box.replaced === 'svg') paintSvg(ctx, box, options);
+    // a gauge the page styled, and a colour well, which have no widget
+    else if (box.replaced === 'gauge' && box.style.styledControl) {
+      paintGauge(ctx, box, options);
+    } else if (box.replaced === 'color') paintColorWell(ctx, box, options);
     // a canvas the host has a picture of, drawn as an image is
     else if (box.replaced === 'frame' && options.imageFor(box)) {
       paintImage(ctx, box, options);
@@ -4901,9 +4907,14 @@ function paintBackgroundOf(
     paintShapedBorder(ctx, box, options);
   } else {
     if (style.boxShadow) paintShadows(ctx, box, options, false);
-    // A range the page left its look draws neither: Blink's theme paints
-    // it in their place, unlike a field's, which gives way to them.
-    const themed = box.replaced === 'range' && style.appearance !== 'none';
+    // A range, a checkbox or a radio button the page left its look draws
+    // neither: Blink's theme paints it in their place, unlike a field's,
+    // which gives way to them.
+    const themed =
+      (box.replaced === 'range' ||
+        box.replaced === 'checkbox' ||
+        box.replaced === 'radio') &&
+      style.appearance !== 'none';
     if (box !== options.canvasSource && !themed) {
       paintLayers(ctx, box, options, frameImages(ctx, box, options));
     }
@@ -13591,6 +13602,70 @@ function paintReplacedHighlights(
     ctx.fillRect(x, y, w, h);
   }
 }
+
+/**
+ * A `<meter>` or a `<progress>` the page styled, as Chrome draws one that
+ * has no native look: its bar across its content box, and its value over
+ * the bar from the line's start, as far as it is full. A progress bar's are
+ * grey and green, and a meter's Blink's gradients, by its region. A page's
+ * rules for the parts, `::-webkit-progress-value` and its kin, are not read.
+ */
+function paintGauge(ctx: PaintContext, box: Box, options: PaintOptions): void {
+  const gauge = gaugeOf(box.el!);
+  const left = box.contentX + options.originX;
+  const top = box.contentY + options.originY;
+  const w = box.contentWidth;
+  const h = box.contentHeight;
+  if (w <= 0 || h <= 0) return;
+  const meter = gauge.region !== undefined;
+  const fill = (x: number, width: number, stops: readonly string[]) => {
+    if (width <= 0) return;
+    if (stops.length > 1 && ctx.createLinearGradient) {
+      const g = ctx.createLinearGradient(0, top, 0, top + h);
+      METER_STOPS.forEach((at, i) => g.addColorStop(at, stops[i]));
+      ctx.fillStyle = g as unknown as string;
+    } else ctx.fillStyle = stops[0];
+    ctx.fillRect(x, top, width, h);
+  };
+  fill(left, w, meter ? METER_BAR : ['#808080']);
+  if (gauge.share === null) return;
+  const value = w * gauge.share;
+  const x = box.style.direction === 'rtl' ? left + w - value : left;
+  fill(x, value, meter ? METER_VALUES[gauge.region!] : ['#008000']);
+}
+
+/**
+ * An `<input type=color>`'s well, as Blink's `::-webkit-color-swatch` draws
+ * it: its value in a swatch with a grey edge, inside the content box less
+ * 4px above and below and 2px beside. What a page's rules for the swatch
+ * say is not read.
+ */
+function paintColorWell(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+): void {
+  const unit = box.style.effectiveZoom * (options.scale ?? 1);
+  const x = Math.round(box.contentX + options.originX + 2 * unit);
+  const y = Math.round(box.contentY + options.originY + 4 * unit);
+  const w = Math.round(box.contentWidth - 4 * unit);
+  const h = Math.round(box.contentHeight - 8 * unit);
+  if (w <= 0 || h <= 0) return;
+  const edge = Math.max(1, Math.round(unit));
+  ctx.fillStyle = '#777777';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = controlValue(box.el!);
+  ctx.fillRect(x + edge, y + edge, w - 2 * edge, h - 2 * edge);
+}
+
+/** Where Blink's meter gradients change colour, top to bottom. */
+const METER_STOPS = [0, 0.2, 0.45, 0.55];
+const METER_BAR = ['#dddddd', '#eeeeee', '#cccccc', '#cccccc'];
+const METER_VALUES = {
+  optimum: ['#aadd77', '#cceeaa', '#77aa33', '#77aa33'],
+  suboptimum: ['#ffee77', '#ffffcc', '#ddbb33', '#ddbb33'],
+  'even-less-good': ['#ff7777', '#ffcccc', '#dd4444', '#dd4444'],
+};
 
 function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
   if (TRANSITION_IMAGES.has(box)) {

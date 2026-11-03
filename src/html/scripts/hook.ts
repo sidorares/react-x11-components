@@ -38,6 +38,7 @@ import { readyFor } from '../encoding.js';
 import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceRequest, ResourceResult } from '../resources.js';
+import type { CorsMode } from '../url.js';
 
 declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
@@ -140,7 +141,7 @@ export interface ScriptProps {
   workerResource?: (
     url: string,
     kind: ResourceKind,
-    cors: boolean,
+    cors: CorsMode | null,
   ) => Promise<ResourceResult | null | undefined>;
 }
 
@@ -156,10 +157,17 @@ export async function throughWorker(
 ): Promise<unknown> {
   const { kind } = request;
   if (kind === 'image' || kind === 'stylesheet' || kind === 'font') {
+    // the mode an image asks in is the store's, and a sheet's its element's
+    const raw = request.element?.attribs?.crossorigin;
     const answered = await scripts.workerResource?.(
       request.url,
       kind,
-      request.element?.attribs?.crossorigin !== undefined,
+      request.cors?.mode ??
+        (raw === undefined
+          ? null
+          : raw.toLowerCase() === 'use-credentials'
+            ? 'use-credentials'
+            : 'anonymous'),
     );
     if (answered !== undefined) return answered;
   }
@@ -253,11 +261,9 @@ export function useScripts(
       return latest.current.network;
     },
     load: async (src, element, cors, type) => {
-      const answered = await workerResource(
-        src,
-        'script',
-        element?.attribs.crossorigin !== undefined,
-      );
+      // by CORS where it is asked by CORS: a module, or a script whose
+      // element says so
+      const answered = await workerResource(src, 'script', cors?.mode ?? null);
       if (answered === undefined) {
         return type
           ? latest.current.load(src, element, cors, type)
@@ -343,6 +349,9 @@ export function useScripts(
     },
     get drawsFrames() {
       return latest.current.drawsFrames;
+    },
+    get framesFollowed() {
+      return latest.current.framesFollowed;
     },
     get undrawn() {
       return latest.current.undrawn;
@@ -441,7 +450,7 @@ export function useScripts(
     async (
       url: string,
       kind: ResourceKind,
-      cors: boolean,
+      cors: CorsMode | null,
     ): Promise<ResourceResult | null | undefined> => {
       const workers = keeper();
       if (!workers || !/^https?:/i.test(url)) return undefined;

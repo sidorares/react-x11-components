@@ -76,7 +76,6 @@ import {
   isElement,
   isForeign,
   isStyleOrScript,
-  isInputButton,
   isText,
   loadsLazily,
   madeByParser,
@@ -208,6 +207,7 @@ import {
   inLightTree,
   tailFrom,
   containerBoxes,
+  drawnControl,
   CONTENT_IMAGES,
   CLEARED_FROM,
   COLUMN_LINES,
@@ -473,6 +473,7 @@ import { ResourceStore } from './resources.js';
 import type { AnimatedImage } from './animated.js';
 import type {
   AudioSource,
+  ImageResponse,
   PlayerKind,
   ResourceRequest,
   ResourceResult,
@@ -518,7 +519,7 @@ import type { IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
-import { resolveUrl, UrlResolver } from './url.js';
+import { corsOfKey, resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -635,6 +636,8 @@ export interface HtmlViewProps {
   /** The colour scheme of what it is embedded in, for a frame's document,
    *  which a root in another is drawn on an opaque canvas against. */
   embedderScheme?: 'light' | 'dark';
+  /** The frame this document is shown in (`Cascade.frameElement`). */
+  frameElement?: Element;
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -1482,6 +1485,9 @@ export class HtmlViewNode extends Node {
     // before the first scan: a document that runs scripts asks for nothing
     // in a `<noscript>`, from its first render on
     this._source.setScripting(this._props().scripting ?? false);
+    // and a page whose scripts run is a document, its head there for the
+    // first of them, whatever its source starts with
+    this._source.setDocument(this._props().scripting ?? false);
     this._read();
   }
 
@@ -2495,7 +2501,7 @@ export class HtmlViewNode extends Node {
     }
     // what the store has is there as it is asked for, and no src is no image
     if (!chooses) {
-      const url = attr(el, 'src');
+      const url = imageUrlOf(el);
       const state = url ? this._resources.state(url) : 'failed';
       if (state === 'ready' || state === 'failed') {
         this._watchImage(el, true);
@@ -2528,7 +2534,7 @@ export class HtmlViewNode extends Node {
           ),
         );
       } else {
-        const url = attr(el, 'src');
+        const url = imageUrlOf(el);
         if (url && !this._waitsLazily(el, url)) {
           this._resources.request(
             { url, kind: 'image', element: el },
@@ -2619,7 +2625,7 @@ export class HtmlViewNode extends Node {
       if (!loadsLazily(el)) return;
       const url = choosesSource(el)
         ? this._images.chosen(el)?.url
-        : attr(el, 'src');
+        : imageUrlOf(el);
       if (!url || this._resources.state(url) !== null) return;
       const box = boxes.get(el);
       const away = box
@@ -2713,7 +2719,7 @@ export class HtmlViewNode extends Node {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
     if (chosen === undefined) return;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const key = url ? this._resources.keyOf(url) : '';
     const was = this._imageKeys.get(el);
     if (was === key && !again) return;
@@ -2797,7 +2803,8 @@ export class HtmlViewNode extends Node {
    * something (`complete`), its size in CSS pixels at the density it was
    * chosen at, 0 until that is known and for one that failed, and the URL
    * it has shown (`_imageShown`). A broken image is complete, and shows
-   * nothing (`available`).
+   * nothing (`available`). And where what it shows came from, which a canvas
+   * it is drawn on is tainted by (`ResourceStore.response`).
    */
   imageState(el: Element): {
     complete: boolean;
@@ -2805,10 +2812,11 @@ export class HtmlViewNode extends Node {
     width: number;
     height: number;
     src: string;
+    response: ImageResponse | null;
   } {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const state = url ? this._resources.state(url) : null;
     const size = this._imageSize(el);
     return {
@@ -2819,7 +2827,9 @@ export class HtmlViewNode extends Node {
       available: !!url && state === 'ready' && !!this._resources.image(url),
       width: Math.floor(size?.width ?? 0),
       height: Math.floor(size?.height ?? 0),
-      src: this._imageShown.get(el) ?? '',
+      // where it is kept, less the CORS mode it was asked in (`corsKeyed`)
+      src: corsOfKey(this._imageShown.get(el) ?? '').url,
+      response: url ? this._resources.response(url) : null,
     };
   }
 
@@ -4418,6 +4428,7 @@ export class HtmlViewNode extends Node {
     cascade.viewportWidth = target;
     cascade.viewportHeight = viewport;
     cascade.dimensionSource = this._dimensionSource;
+    cascade.frameElement = this._props().frameElement ?? null;
     // An image chosen for this viewport (`_choose`) that shows another
     // candidate, or the same one at another density, is another size: its
     // box takes the size in place and the document is laid out again
@@ -4638,10 +4649,21 @@ export class HtmlViewNode extends Node {
         // can differ in, the tree keeps every box they cannot, and only
         // their subtrees are built (`_subtreeBuild`) — the first build of
         // the pass only, whose `restyleOnly` is still theirs.
+        // What animates is among them: a frame waits for a build that is
+        // coming (`_makeFrame`), and a build of subtrees styles nothing
+        // outside them, so an element a script's animation had moved on
+        // since the last frame was drawn where that frame left it. Seeded,
+        // it is styled at its time, and one that comes out as it was is no
+        // seed, as any is not.
         const subtrees =
           kept && seeds && restyleOnly === seededWith
             ? this._seedsThatMoved(
-                seeds,
+                this._animating()
+                  ? new Set([
+                      ...seeds,
+                      ...this._animationReach(this._tree!).reach,
+                    ])
+                  : seeds,
                 always,
                 tails,
                 pseudoRules,
@@ -6240,6 +6262,7 @@ export class HtmlViewNode extends Node {
     // what the scan finds — a `<noscript>`'s images and sheets — before the
     // source is read, so a document that runs scripts never asks for them
     const scripted = this._source.setScripting(next.scripting ?? false);
+    this._source.setDocument(next.scripting ?? false);
     if (scripted) this._invalidate(Stale.Style);
     if (
       next.look !== prev.look ||
@@ -7555,17 +7578,25 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
+    const own = (box && this._placedStyle(box)) ?? style;
+    const parent = flatParentOf(element);
+    const read = cascade.styleAsRead(
+      element,
+      own,
+      (parent && this._styleOf(parent)) ?? tree.root.style,
+    );
     if (!box) {
       return cssomStyle(
-        style,
+        read,
         this._scale,
         null,
         false,
         !!style.transform && this._unrendered(element, style),
       );
     }
-    const own = this._placedStyle(box) ?? style;
-    return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+    const used = this._usedBox(box, own);
+    if (read !== own) edgesAsRead(used, read);
+    return cssomStyle(read, this._scale, used, isItem(box));
   }
 
   /**
@@ -7603,6 +7634,19 @@ export class HtmlViewNode extends Node {
       if (tag === 'object' && this._boxOf(tree, at)?.replaced) return false;
     }
     return true;
+  }
+
+  /**
+   * Whether a host is handed a rect to mount over an embedded element, as the
+   * last layout reported them (`onEmbedded`): what a frame's view is mounted
+   * by. Null where the document owes a layout, which may report it, or has
+   * set part of itself aside.
+   */
+  mountsEmbedded(element: Element): boolean | null {
+    if (!this._tree || this._stale !== Stale.Nothing || this._partial) {
+      return null;
+    }
+    return this._embedded.some((rect) => rect.element === element);
   }
 
   /** The style of the position option a box was placed by
@@ -9333,11 +9377,9 @@ export class HtmlViewNode extends Node {
           if (change & FONT_LENGTHS && tree.firstLine) return false;
           resizedBoxes.push(box);
         }
-        // an input button the page took to styling, or stopped, is drawn
-        // by the document or mounted as the palette's widget: another box
-        if (kept.styledControl !== style.styledControl && isInputButton(el)) {
-          return false;
-        }
+        // a control the page took to drawing, or stopped, is drawn by the
+        // document or mounted as the palette's widget: another box
+        if (drawnControl(el, kept) !== drawnControl(el, style)) return false;
         if (WIDGETS.has(box.replaced)) {
           const kind = box.replaced!;
           if (styledField(kind, kept) !== styledField(kind, style)) {
@@ -15998,6 +16040,22 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
 }
 
 /**
+ * The border a page reads of a control the palette draws (`styleAsRead`),
+ * where its box has none. Its `width` and `height` read what its box holds,
+ * its padding as laid out, so a page that writes them back keeps the box
+ * the size it is, as it would in a browser; beside the web's border they
+ * come to more than its `offsetWidth`, which nothing writes back.
+ */
+function edgesAsRead(used: UsedBox, read: ComputedStyle): void {
+  used.borderRead = [
+    read.borderTopWidth,
+    read.borderRightWidth,
+    read.borderBottomWidth,
+    read.borderLeftWidth,
+  ];
+}
+
+/**
  * Whether a box is a flex or a grid item, which is all that keeps a
  * `min-width: auto` (`cssomStyle`): in the flow of such a box, `grid` being
  * a flex box here, and not of a `-webkit-box`, which is one here alone.
@@ -19026,6 +19084,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'checkbox',
   'radio',
   'range',
+  'gauge',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

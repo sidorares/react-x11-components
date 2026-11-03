@@ -74,6 +74,9 @@ export interface UsedBox {
   /** Whether only its margins and padding are to be read, by what otherwise
    *  takes the computed value (`HtmlViewNode._edgesOf`). */
   edgesOnly?: boolean;
+  /** The border widths a page reads where they are not those laid out: a
+   *  control the palette draws, which reads the web's (`edgesAsRead`). */
+  borderRead?: [number, number, number, number];
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -1266,7 +1269,7 @@ function cssomAt(
     out[`border-${side}-width`] =
       styles[i] === 'none' || styles[i] === 'hidden'
         ? '0px'
-        : px(box ? box.border[i] : widths[i], scale);
+        : px(box ? (box.borderRead ?? box.border)[i] : widths[i], scale);
     out[`border-${side}-color`] = cssomColor(
       colors[i],
       sources[i],
@@ -1514,6 +1517,43 @@ function backgroundSizeText(
     : `${len(size[0], scale)} ${len(size[1], scale)}`;
 }
 
+/** A background longhand's values, one for each layer an image has, each
+ *  list taken in turn and over again as a layer's image does. */
+function eachLayer<T>(
+  all: Record<string, string>,
+  list: readonly T[] | null,
+  one: T,
+  text: (value: T) => string = String,
+): string {
+  const layers = splitCommas(all['background-image']).length;
+  const out: string[] = [];
+  for (let i = 0; i < layers; i += 1) {
+    out.push(text(list ? list[i % list.length] : one));
+  }
+  return out.join(', ');
+}
+
+/** The first layer's position, which a style keeps apart from the list. */
+function positionOf(style: ComputedStyle): readonly [Len, Len] {
+  return [style.backgroundPositionX, style.backgroundPositionY];
+}
+
+/** The logical corners, start-start first: the block side, then the
+ *  inline one. */
+const LOGICAL_CORNERS = ['start-start', 'start-end', 'end-start', 'end-end'];
+
+/** The physical corner one of `LOGICAL_CORNERS` is in a style's flow, by its
+ *  index (CSS Backgrounds 4, 5.2), as its radius reads. */
+function physicalCorner(style: ComputedStyle, i: number): string {
+  const [blockStart, blockEnd, inlineStart, inlineEnd] = flowSides(style);
+  const block = i < 2 ? blockStart : blockEnd;
+  const inline = i % 2 === 0 ? inlineStart : inlineEnd;
+  const upright = block === 'top' || block === 'bottom';
+  return upright
+    ? `border-${block}-${inline}-radius`
+    : `border-${inline}-${block}-radius`;
+}
+
 /** `background`, a layer for each image, each list taken in turn and over
  *  again as a layer's image does, and the colour in the last. */
 function backgroundText(
@@ -1683,6 +1723,73 @@ const SHORTHANDS: Record<string, Composer> = {
   'scroll-margin': (_, style, scale) => shortest(scrollMargins(style, scale)),
   'scroll-padding': (_, style, scale) => shortest(scrollPaddings(style, scale)),
   background: backgroundText,
+  // Longhands read as the shorthands are, by name and composed as they are
+  // read, which keeps them out of the record every read makes: a page
+  // seldom asks for them, and a test of CSS UI 4's list writes back what it
+  // reads of each, where '' set nothing and kept a control's native look.
+  // They are no item of the list a page walks, which a browser's has.
+  'background-attachment': (all, style) =>
+    eachLayer(all, style.backgroundAttachments, style.backgroundAttachment),
+  'background-clip': (all, style) =>
+    style.backgroundClipText
+      ? 'text'
+      : eachLayer(all, style.backgroundClips, style.backgroundClip),
+  'background-origin': (all, style) =>
+    eachLayer(all, style.backgroundOrigins, style.backgroundOrigin),
+  'background-repeat': (all, style) =>
+    eachLayer(all, style.backgroundRepeats, style.backgroundRepeat, repeatText),
+  // a height of `auto` is left out, which the shorthand writes
+  'background-size': (all, style, scale) =>
+    eachLayer(all, style.backgroundSizes, style.backgroundSize, (size) =>
+      backgroundSizeText(size, scale).replace(/^(?!auto)(\S+) auto$/, '$1'),
+    ),
+  'background-position': (all, style, scale) =>
+    eachLayer(
+      all,
+      style.backgroundPositions,
+      positionOf(style),
+      ([x, y]) => `${len(x, scale)} ${len(y, scale)}`,
+    ),
+  'background-position-x': (all, style, scale) =>
+    eachLayer(all, style.backgroundPositions, positionOf(style), ([x]) =>
+      len(x, scale),
+    ),
+  'background-position-y': (all, style, scale) =>
+    eachLayer(all, style.backgroundPositions, positionOf(style), ([, y]) =>
+      len(y, scale),
+    ),
+  'border-image-source': (_, style) => {
+    const source = style.borderImage.source;
+    if (!source) return 'none';
+    const url = urlOf(source);
+    return url === null ? '' : urlText(url);
+  },
+  'border-image-slice': (_, style) =>
+    shortest(
+      style.borderImage.slice.map((s) =>
+        typeof s === 'number' ? num(s) : `${num(s.pct)}%`,
+      ),
+    ) + (style.borderImage.fill ? ' fill' : ''),
+  'border-image-width': (_, style, scale) =>
+    shortest(
+      style.borderImage.width.map((w) =>
+        typeof w === 'object' && 'times' in w ? num(w.times) : len(w, scale),
+      ),
+    ),
+  'border-image-outset': (_, style, scale) =>
+    shortest(
+      // nothing, which the initial value is, as a number, as Chrome has it
+      style.borderImage.outset.map((o) =>
+        typeof o !== 'number' ? num(o.times) : o === 0 ? '0' : px(o, scale),
+      ),
+    ),
+  'border-image-repeat': (_, style) => pair(...style.borderImage.repeat),
+  ...Object.fromEntries(
+    LOGICAL_CORNERS.map((corner, i): [string, Composer] => [
+      `border-${corner}-radius`,
+      (all, style) => all[physicalCorner(style, i)],
+    ]),
+  ),
   'list-style': (all, style) => {
     const url = style.listStyleImage ? urlOf(style.listStyleImage) : null;
     const image = url === null ? 'none' : urlText(url);

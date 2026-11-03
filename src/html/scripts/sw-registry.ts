@@ -38,6 +38,7 @@ import type {
 import { contentType, resourceResult } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceResult } from '../resources.js';
+import type { CorsMode } from '../url.js';
 import { wholeBytes } from './host.js';
 import { askCaches, memoryCaches } from '../cache-storage.js';
 import type {
@@ -80,6 +81,18 @@ const DESTINATIONS: Record<ResourceKind, string> = {
   font: 'font',
   script: 'script',
 };
+
+/** What a response's type comes to for a canvas an image of it is drawn on
+ *  (HTML's "CORS-same-origin"): another origin's that no CORS let through
+ *  taints it, and anything the worker made, or had of its own origin, does
+ *  not. */
+function tainting(type: FetchResponse['type']): 'basic' | 'cors' | 'opaque' {
+  return type === 'opaque' || type === 'opaqueredirect'
+    ? 'opaque'
+    : type === 'cors'
+      ? 'cors'
+      : 'basic';
+}
 
 const JS_MIME =
   /^(?:application\/(?:javascript|x-javascript|ecmascript|x-ecmascript)|text\/(?:javascript|ecmascript|jscript|livescript|x-javascript|x-ecmascript|javascript1\.[0-5]))$/;
@@ -294,13 +307,18 @@ export class ServiceClient {
     return this._registry.subresource(this, request, signal);
   }
   /** A subresource `<Html>` asked for, as it takes one back: undefined where
-   *  the network is to answer, and null for nothing there. */
+   *  the network is to answer, and null for nothing there. `cors` is the
+   *  mode its element asks by CORS in, where it does. An image says what
+   *  type of response the worker gave, which is what a canvas it is drawn on
+   *  is tainted by, wherever it says it came from (`ImageOrigin`). */
   async resource(
     url: string,
     kind: ResourceKind,
-    cors: boolean,
+    cors: CorsMode | null,
   ): Promise<ResourceResult | null | undefined> {
     const controller = new AbortController();
+    // a font is asked for by CORS whatever its element says (CSS Fonts 4.9)
+    const mode = cors ?? (kind === 'font' ? 'anonymous' : null);
     let response: FetchResponse | null;
     try {
       response = await this.fetch(
@@ -309,8 +327,8 @@ export class ServiceClient {
           method: 'GET',
           headers: [],
           body: null,
-          mode: cors || kind === 'font' ? 'cors' : 'no-cors',
-          credentials: cors || kind === 'font' ? 'same-origin' : 'include',
+          mode: mode ? 'cors' : 'no-cors',
+          credentials: mode === 'anonymous' ? 'same-origin' : 'include',
           destination: DESTINATIONS[kind],
           referrer: this.url,
         },
@@ -329,16 +347,20 @@ export class ServiceClient {
     const { type, charset } = contentType(
       headerIn(response.headers, 'content-type'),
     );
-    return resourceResult(
+    const result = resourceResult(
       {
         url: response.url || url,
         status: response.status,
         type,
         charset,
         bytes: await wholeBytes(response),
+        headers: response.headers,
       },
       kind,
     );
+    return result?.kind === 'image'
+      ? { ...result, type: tainting(response.type) }
+      : result;
   }
   /** The document is gone. */
   detach(): void {
@@ -1895,6 +1917,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
           headers: head.headers,
           body: '',
           type: head.type as FetchResponse['type'],
+          // where an opaque redirect goes, which only the host says
+          // (`DomHost._heldHead`)
+          ...(head.location !== undefined
+            ? { location: head.location, redirectStatus: head.redirectStatus }
+            : {}),
         };
         if (m.streaming) {
           const body = new BodyQueue(() => {
@@ -1999,6 +2026,8 @@ type FetchSaid =
         redirected: boolean;
         headers: [string, string][];
         type: string;
+        location?: string | null;
+        redirectStatus?: number;
       };
       base64?: string;
       streaming?: boolean;

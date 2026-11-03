@@ -186,6 +186,27 @@ test('a press that starts no selection still drags: on what user-select keeps ou
   assert.ok(await shown.until('dragstart c'));
 });
 
+test('a drag starts from what is under the press as it starts, whatever the page moved in its mousedown', async () => {
+  // WPT's mousedown-move-inner-when-dragging-2: the press is on an element
+  // slotted into a draggable, and the page moves the slot out of it
+  const shown = await page(
+    `<div id=host><template shadowrootmode=open>
+      <div id=drag draggable=true style="width:60px;height:60px;background:red"><slot></slot></div>
+      <div id=other></div>
+    </template><div id=inner style="width:40px;height:40px;background:black"></div></div>
+    <div id=b style="height:40px">drop</div><script>
+      const shadow = host.shadowRoot;
+      const drag = shadow.getElementById('drag');
+      drag.addEventListener('mousedown', () => {
+        shadow.getElementById('other').appendChild(shadow.querySelector('slot'));
+      });
+      drag.addEventListener('dragstart', (e) => console.log('dragstart', e.target.id));
+    </script>`,
+  );
+  await shown.drag('inner', 'b');
+  assert.equal(await shown.until('dragstart'), 'drag');
+});
+
 test('a target that does not cancel dragover takes no drop', async () => {
   const shown = await page(
     `<div id=a draggable=true>drag</div><div id=b>drop</div>${WATCH}<script>
