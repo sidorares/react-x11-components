@@ -449,6 +449,9 @@ export interface InternalHtmlProps extends HtmlProps {
    *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
    *  page's scripts. */
   _onParserBlocked?: (script: Element) => void;
+  /** Whether an `<object>` or an `<embed>` shows its document as it stands,
+   *  over its box (`HtmlViewProps.framed`). */
+  _framed?: (element: Element) => boolean;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of
@@ -917,6 +920,7 @@ export function useScriptedHtml(
     _inspectValue: inspectValue,
     _releaseValues: releaseValues,
     _onParserBlocked: scripts._onParserBlocked,
+    _framed: scripts.framed,
     _movesHeard: movesHeard,
     ...(config.clipboard && {
       _readClipboard: () => latest.current.config.clipboard!.read(),

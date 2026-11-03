@@ -1893,6 +1893,17 @@ a control is handed it.** Where a core component takes no style for it,
 `<Radio>`, and on macOS the box inside a native `<Button>` and `<Select>`,
 what core needs is written down rather than covered over.
 
+**The pointer over a widget is over its element** (`pointerBeside`). Core
+tells the `<htmlview>` the pointer left it as it goes onto a widget or a
+frame's mount, and hands it none of their moves, so the root's move capture
+hovers the element whose widget or mount it is, and the `<htmlview>`'s own
+leave clears nothing: the root's does (`pointerLeft`). A leave with no move
+after it is content that moved under a still pointer, and holds the hover as
+a scroll does. **Anything new mounted beside the document that takes the
+pointer is found from the root's capture** — `controlOf`, `elementOf`, or
+what the document draws at the point — or `input:hover`, and the card around
+the field, go off over it.
+
 **A field's selection is its widget's, and `FormState` holds it only
 between widgets.** A script's `setSelectionRange()` selects in the
 `<textinput>` mounted for the field, through core's selection API, which is
@@ -5163,8 +5174,8 @@ out at one pixel, with `innerWidth` 0. Three more things:
   suite runs (`threadEntry` in `platform.ts`); a bundler that moves the engine
   has to carry that file with it, and `sync-fetch-thread` beside it.
 
-**A frame a page's scripts load as HTML is drawn over its box, and one
-with a script in it runs in a realm of its own, which is the frame's**
+**A frame a page's scripts load as HTML or XML is drawn over its box, and
+one with a script in it runs in a realm of its own, which is the frame's**
 (`src/html/scripts/frames.ts`).
 Each realm is a host and an engine over one tree of nodes (`DomShared`),
 and the page's engine and the frame's are linked (`ScriptEngine.link`): the
@@ -5183,14 +5194,51 @@ not before. Three things are load-bearing:
   HTML's "already started"). Made by the view, the realm was made again
   each time a frame was shown, and a page that kept a frame hidden until
   it was ready lost everything the frame had set up.
-- **Only a document loaded as HTML with a script in it has a realm**
+- **Only a document loaded as HTML or XML with a script in it has a realm**
   (`DomShared.realms`). A frame's first `about:blank`, what a script writes
   into one and a document with no script are the page realm's: a page
   reaches into them at once, and a realm answers only once React has
   mounted its view. Acid3 drives its static frames from the page that way,
   and with a realm each it scored 92 where it scores 96. Such a frame is
   drawn, and told of what the page's scripts change in it, and runs nothing
-  of its own.
+  of its own. XML's are held to the same rule because `_frameScripts` cannot
+  stand in for a realm: it runs no drawing's `<script>` and no `src`, and what
+  a script there declares is its function's. It is left for a host with
+  `frames: false`. **`hasScripts` asks `tagOf` and `isStyleOrScript`**, since
+  an XML document's scripts have a namespace and a prefix, and a `<script>` in
+  no namespace is no script.
+- **An `<object>` and an `<embed>` hold a document as an `<iframe>` does, and
+  a drawing in either is shown two ways** (`DomHost.framed`, `DomShared.live`).
+  A drawing is also an image, which the store decodes from what `onResource`
+  answers, so its box has the size an image has and `object-fit` reaches it.
+  It stays that picture until something can change it: a script in it from the
+  start (`_frameLoaded`), a page's write into it from then on (`_tell`). Then
+  it goes live (`_goLive`): told as `-rx-framed`, which builds its box as a
+  frame, of the size the image gave it, with the picture gone, since a mount
+  over a picture shows the picture through what a script took away. Three
+  things are load-bearing. **`live` is no `realms`**: a service worker's client
+  has a realm and no script, and mounted it would lose `object-fit`. **Only a
+  box that is a `'frame'` is in `tree.embedded`**, so a host is never handed an
+  element the document draws an image in. And **an `<embed>` holds a document
+  only where it is answered one** (`_loadFrame`), and lists no blank one in
+  `frames()`: it has no `contentDocument`, so nothing could write in one, and
+  a mount there is a box over the page that takes its presses.
+- **An `<embed>` loads only while it is rendered, which is a style's to say
+  and not a box's** (`embedRendered`, `_embedLoads`, HTML 4.8.6). What
+  `content-visibility: hidden` holds has no box here and is rendered in a
+  browser, whose `load` waits for it, so a test of a box loses that; and a
+  media element and an `<object>` showing something else hold what has a style
+  and no box, which a test of the style alone loads. It brings the styles up
+  to date first (`_prepare`, not `_settle`): the parser may have made the
+  element since the last build, and `_styleOf` then answers from a cascade
+  that has not seen it. One that is not rendered waits (`_embedsWaiting`), and
+  is looked at after each paint, which is what loads one a script shows.
+- **An address given to an `<object>` or an `<embed>` during the parse is
+  `loadFrames`' to find** (`_framesLoaded`). Loaded as it is set, its `load`
+  comes before the first layout, and before the image that sizes it: a page
+  that reads its size in `onload` read 0, and a click a script asks for there
+  lands before what it clicks is drawn. What it is given once the parse is
+  over loads at once, as nothing else would look.
 - **What a same-origin frame's realm made is of no class here**, so
   `instanceof` says no of what a page hands its frame's window: a `Request`
   was read as a URL and lost its method and body (`requestIn`). Anything new

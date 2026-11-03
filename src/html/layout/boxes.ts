@@ -1413,6 +1413,10 @@ export interface BuildOptions {
   /** Whether what an `<object>` or an `<embed>` names is a document, which
    *  it shows as a frame, rather than its fallback content. */
   holdsDocument?(el: Element): boolean;
+  /** Whether an `<object>` or an `<embed>` shows its document as it stands,
+   *  in a view of its own over its box, where it is a drawing that an image
+   *  could otherwise show (`DomHost.framed`). */
+  framed?(el: Element): boolean;
   /** Whether the size an element's box takes is still to come, whatever
    *  it shows meanwhile — the one it chose before, where that is in: the
    *  box it is built with waits for it (`BoxTree.awaiting`). Not whether
@@ -4390,9 +4394,13 @@ class Builder {
     // names is a document, and its content until either; an `<embed>` its
     // image, and a `<video>` its poster, or a frame; an image button its
     // image, and a button saying what it is for until it has one, so it can
-    // be pressed either way
-    const replaced =
-      tag === 'object'
+    // be pressed either way. A drawing a script can change is a frame
+    // whatever an image of it would show, of the size that image has
+    const framed =
+      (tag === 'object' || tag === 'embed') && !!this._options.framed?.(el);
+    const replaced = framed
+      ? 'frame'
+      : tag === 'object'
         ? this._options.imageSize(el)
           ? 'image'
           : this._options.holdsDocument?.(el)
@@ -4410,6 +4418,7 @@ class Builder {
     if (
       replaced !== 'image' &&
       !this._options.holdsDocument?.(el) &&
+      !(framed && this._options.imageSize(el)) &&
       (tag === 'object' ||
         tag === 'embed' ||
         tag === 'video' ||
@@ -4622,9 +4631,7 @@ class Builder {
     box.replaced = replaced;
     into.append(box);
     if (tag === 'video') this._media.push(box);
-    else if (tag === 'iframe' || tag === 'canvas' || tag === 'embed') {
-      this._embedded.push(box);
-    }
+    else if (replaced === 'frame') this._embedded.push(box);
     if (focusableElement(el, tag)) this._focusables.push(box);
     if (namesImages(style)) this._backgrounds.push(box);
     placeInFlow(box, style, into);
@@ -4696,6 +4703,15 @@ class Builder {
           missing: 0,
           ratio: width > 0 && height > 0 ? width / height : 0,
         };
+        return;
+      }
+      // a drawing has the size it would as an image, a frame or not
+      const drawing =
+        tag === 'object' || tag === 'embed'
+          ? this._options.imageSize(el)
+          : null;
+      if (drawing) {
+        setIntrinsics(box, drawing, scale);
         return;
       }
       // HTML's default object size, in CSS pixels; `width` and `height`
