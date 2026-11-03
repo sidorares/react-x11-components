@@ -399,8 +399,8 @@ test("a written <html> has the head HTML's parser implies, round the head conten
   );
   assert.strictEqual(
     shapeOf('<html><title>t</title></html>'),
-    'html(head(title(t)))',
-    'and closed with what holds it',
+    'html(head(title(t)) body())',
+    'and closed with what holds it, before the body a document has',
   );
   assert.strictEqual(
     shapeOf('<title>t</title><p>a</p>'),
@@ -1603,7 +1603,7 @@ test("a select's list of options goes on down what it holds, and stops where HTM
 });
 
 test('innerHTML on an <html> keeps a comment after its body', () => {
-  const html = parseFragment('<html></html>')[0] as Element;
+  const html = createElement('html');
   const kids = parseFragment(
     '<head></head><body></body><!-- c -->',
     false,
@@ -1645,38 +1645,34 @@ test('a </body> and a </html> close nothing, so what comes after goes where the 
 });
 
 /**
- * These two are ours and no engine's: an engine keeps a list of the formatting
- * elements open and brings each back around what comes after one closed from
- * under it, which nothing here does. So what is written here is what is left
- * until something does, and each comment says what the engines make of it.
+ * The list of active formatting elements and the adoption agency (HTML
+ * 13.2.4.3 and 13.2.6.4.7): a formatting element closed from under what it
+ * holds is made again around what comes after it. Each row is what Chrome,
+ * Firefox and Safari make of it, where these two pinned what was left before
+ * the parser kept the list.
  */
-test('nothing a start tag implies closes a formatting element, which nothing here would bring back', () => {
+test('a formatting element a start tag closes from under it is made again around what comes after it', () => {
   holds([
-    // the engines: p(a()) div(a(x)) y p()
-    ['<p><a><div>x</div></a>y</p>', 'p(a(div(x)) y)'],
-    // p(b()) p(b(x))
-    ['<p><b><p>x', 'p(b(p(x)))'],
-    // p(b()) li(b(x))
-    ['<p><b><li>x', 'p(b(li(x)))'],
-    // li(b()) li(b(x))
-    ['<li><b><li>x', 'li(b(li(x)))'],
-    // dd(i()) dt(i(x))
-    ['<dd><i><dt>x', 'dd(i(dt(x)))'],
-    // button(b()) button(b(x))
-    ['<button><b><button>x', 'button(b(button(x)))'],
-    // the one they share: an `<a>` ends the `<a>` on top of the stack
+    ['<p><a><div>x</div></a>y</p>', 'p(a()) div(a(x)) y p()'],
+    ['<p><b><p>x', 'p(b()) p(b(x))'],
+    ['<p><b><li>x', 'p(b()) li(b(x))'],
+    ['<li><b><li>x', 'li(b()) li(b(x))'],
+    ['<dd><i><dt>x', 'dd(i()) dt(i(x))'],
+    // the second `<button>` closes the first, and opens in the `<b>` made again
+    ['<button><b><button>x', 'button(b()) b(button(x))'],
+    // an `<a>` ends the `<a>` before it, wherever it is open
     ['<a>x<a>y', 'a(x) a(y)'],
+    ['<a>x<div><a>y', 'a(x) div(a() a(y))'],
+    // and a `<p>` closes none of it
+    ['<b><b><b><b><p>x', 'b(b(b(b(p(x)))))'],
   ]);
 });
 
-test('a formatting element’s end tag leaves the block its adoption agency would move open, as that block’s end tag expects', () => {
+test('a formatting element’s end tag moves the block its adoption agency finds out of it, and makes it again in it', () => {
   holds([
-    // b() div(b(y) x) z
-    ['<b><div>y</b>x</div>z', 'b(div(yx)) z'],
-    // div(a() div(a(y)) z) w
-    ['<div><a><div>y</a></div>z</div>w', 'div(a(div(y)) z) w'],
-    // font() p(font(x)) y
-    ['<font><p>x</font></p>y', 'font(p(x)) y'],
+    ['<b><div>y</b>x</div>z', 'b() div(b(y) x) z'],
+    ['<div><a><div>y</a></div>z</div>w', 'div(a() div(a(y)) z) w'],
+    ['<font><p>x</font></p>y', 'font() p(font(x)) y'],
     // what stands between goes with it, where nothing special does
     ['<b><span></b>y', 'b(span()) y'],
     ['<b><x-a><i></b></i>y', 'b(x-a(i())) y'],
@@ -1684,6 +1680,22 @@ test('a formatting element’s end tag leaves the block its adoption agency woul
     [
       '<b><table><tr><td></b><style></style></table>',
       'b(table(tbody(tr(td(style())))))',
+    ],
+  ]);
+});
+
+test('what is out of place in a table is put in front of it, as foster parenting has it', () => {
+  holds([
+    ['<table>x<tr><td>y</td></tr></table>', 'x table(tbody(tr(td(y))))'],
+    ['<table><div>x</div><tr><td>y', 'div(x) table(tbody(tr(td(y))))'],
+    // white space stays in it, and a formatting element is made again
+    ['<table> <tr> </tr></table>', 'table(tbody(tr()))'],
+    ['<b><table><td>x</td>y</table>z', 'b(y table(tbody(tr(td(x)))) z)'],
+    ['<table><b>x<tr><td>y</table>z', 'b(x) table(tbody(tr(td(y)))) b(z)'],
+    // a hidden input, a script and a form are the table's own
+    [
+      '<table><input type=hidden><script></script><input></table>',
+      'input() table(input() script())',
     ],
   ]);
 });
@@ -2132,19 +2144,28 @@ test('a fragment is read as what its context holds', () => {
   }
   // every row is what `innerHTML` makes of `<link id=a><div id=b><link
   // id=c></div><a><link id=d></a>` in all three engines
-  for (const [context, a, c, d] of [
-    [g, SVG, undefined, SVG],
-    [inNamespace('g', SVG), SVG, undefined, SVG],
-    [inNamespace('svg', SVG), SVG, undefined, SVG],
-    [findById(drawing, 't')!, undefined, undefined, undefined],
-    [inNamespace('foreignObject', SVG), undefined, undefined, undefined],
-    [inNamespace('title', SVG), undefined, undefined, undefined],
-    [inNamespace('math', MATHML), MATHML, undefined, MATHML],
-    [inNamespace('mrow', MATHML), MATHML, undefined, MATHML],
-    [inNamespace('mi', MATHML), undefined, undefined, undefined],
-    [createElement('div'), undefined, undefined, undefined],
-    [createElement('g'), undefined, undefined, undefined],
-    [null, undefined, undefined, undefined],
+  // the `<div>` that breaks out of SVG or MathML says it is HTML's, since
+  // where it stands, in the context, says otherwise
+  const HTML = 'http://www.w3.org/1999/xhtml';
+  for (const [context, a, b, c, d] of [
+    [g, SVG, HTML, undefined, SVG],
+    [inNamespace('g', SVG), SVG, HTML, undefined, SVG],
+    [inNamespace('svg', SVG), SVG, HTML, undefined, SVG],
+    [findById(drawing, 't')!, undefined, undefined, undefined, undefined],
+    [
+      inNamespace('foreignObject', SVG),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ],
+    [inNamespace('title', SVG), undefined, undefined, undefined, undefined],
+    [inNamespace('math', MATHML), MATHML, HTML, undefined, MATHML],
+    [inNamespace('mrow', MATHML), MATHML, HTML, undefined, MATHML],
+    [inNamespace('mi', MATHML), undefined, undefined, undefined, undefined],
+    [createElement('div'), undefined, undefined, undefined, undefined],
+    [createElement('g'), undefined, undefined, undefined, undefined],
+    [null, undefined, undefined, undefined, undefined],
   ] as const) {
     const held = parseFragment(
       '<link id="a"><div id="b"><link id="c"></div><a><link id="d"></a>',
@@ -2155,7 +2176,7 @@ test('a fragment is read as what its context holds', () => {
     const made = (id: string) => findById(holder, id)!.namespace;
     const named = context?.name ?? 'no context';
     assert.strictEqual(made('a'), a, `<link> in ${named}`);
-    assert.strictEqual(made('b'), undefined, `<div> in ${named}`);
+    assert.strictEqual(made('b'), b, `<div> in ${named}`);
     assert.strictEqual(made('c'), c, `<link> in a <div> in ${named}`);
     assert.strictEqual(made('d'), d, `<link> after a <div> in ${named}`);
   }

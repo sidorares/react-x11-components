@@ -1187,102 +1187,6 @@ function hasScripts(doc: Document): boolean {
   );
 }
 
-/** The elements HTML's parser keeps in the head while no body content has
- *  come (HTML 13.2.6.4.4). */
-const HEAD_CONTENT = new Set([
-  'base',
-  'basefont',
-  'bgsound',
-  'link',
-  'meta',
-  'noframes',
-  'noscript',
-  'script',
-  'style',
-  'template',
-  'title',
-]);
-
-/**
- * A document's top as HTML's parser makes it (HTML 13.2.6.4.1–7): its
- * doctype and the comments before it, then an `<html>` holding a head and
- * a body, what goes in each sorted as the parser sorts it — where markup
- * left any of them out, as `document.write`'s and a frame's often do, and
- * as `<Html>`'s parser leaves a fragment. Acid3's test 71 writes a title, a
- * span and a script, and counts what the document came to.
- */
-function documentTree(kids: ChildNode[]): ChildNode[] {
-  const out: ChildNode[] = [];
-  let html: Element | null = null;
-  const content: ChildNode[] = [];
-  for (const kid of kids) {
-    if (kid instanceof Element && kid.name === 'html' && !html) {
-      html = kid;
-      content.push(...kid.children);
-      for (const inner of kid.children.slice()) DomUtils.removeElement(inner);
-    } else if (
-      !html &&
-      !content.length &&
-      (isDoctype(kid) || kid instanceof Comment)
-    ) {
-      out.push(kid);
-    } else if (
-      kid instanceof Text &&
-      !/[^ \t\n\f\r]/.test(kid.data) &&
-      !content.length
-    ) {
-      // white space before the document's content is no part of it
-    } else content.push(kid);
-  }
-  html ??= new Element('html', {}, []);
-  let head: Element | null = null;
-  let body: Element | null = null;
-  const headOf = (): Element => {
-    if (!head) {
-      head = new Element('head', {}, []);
-      DomUtils.appendChild(html!, head);
-    }
-    return head;
-  };
-  for (const node of content) {
-    if (node instanceof Element && node.name === 'head' && !head && !body) {
-      head = node;
-      DomUtils.appendChild(html, node);
-    } else if (
-      node instanceof Element &&
-      (node.name === 'body' || node.name === 'frameset')
-    ) {
-      if (!body) {
-        headOf();
-        body = node;
-        DomUtils.appendChild(html, node);
-      } else {
-        for (const key in node.attribs) body.attribs[key] ??= node.attribs[key];
-        for (const inner of node.children.slice()) {
-          DomUtils.appendChild(body, inner);
-        }
-      }
-    } else if (
-      !body &&
-      ((node instanceof Element && HEAD_CONTENT.has(node.name)) ||
-        node instanceof Comment ||
-        (node instanceof Text && !/[^ \t\n\f\r]/.test(node.data)))
-    ) {
-      DomUtils.appendChild(headOf(), node);
-    } else {
-      if (!body) {
-        headOf();
-        body = new Element('body', {}, []);
-        DomUtils.appendChild(html, body);
-      }
-      DomUtils.appendChild(body, node);
-    }
-  }
-  headOf();
-  if (!body) DomUtils.appendChild(html, new Element('body', {}, []));
-  out.push(html);
-  return out;
-}
 
 /** Text as it goes in markup, and an attribute's value. */
 const escapeText = (text: string): string =>
@@ -2981,7 +2885,7 @@ export class DomHost {
     if (kept) return kept;
     const data = (node as ProcessingInstruction).data ?? '';
     const m =
-      /^!doctype\s+([^\s>]+)(?:\s+public\s+(?:"([^"]*)"|'([^']*)'))?(?:\s+(?:system\s+)?(?:"([^"]*)"|'([^']*)'))?/i.exec(
+      /^!doctype\s+([^\s>]+)(?:\s+public\s*(?:"([^"]*)"|'([^']*)'))?(?:\s*(?:system\s*)?(?:"([^"]*)"|'([^']*)'))?/i.exec(
         data,
       );
     const out: [string, string, string] = m
@@ -7476,8 +7380,13 @@ export class DomHost {
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
    *  and made a document's tree; its scripts never run where it goes. */
-  private _htmlTree(markup: string, live = false): ChildNode[] {
+  private _htmlTree(
+    markup: string,
+    live = false,
+    declarative = true,
+  ): ChildNode[] {
     const source = new HtmlSource();
+    source.setDocument(true, declarative);
     source.setSource(markup, true);
     const kids = source.document.children.slice();
     for (const kid of kids) DomUtils.removeElement(kid);
@@ -7488,7 +7397,7 @@ export class DomHost {
         this.inert.add(el);
       }
     }
-    return documentTree(kids);
+    return kids;
   }
 
   /** The frames in what went into the document, each given its document
@@ -7768,11 +7677,9 @@ export class DomHost {
     document = false,
     live = false,
   ): Document {
-    // what a frame loads is a document's markup, and `DOMParser`'s is read
-    // as a fragment is, attaching no shadow root a template declares
-    const tree = document
-      ? this._htmlTree(markup, live)
-      : documentTree(this._parse(markup));
+    // what a frame loads is a document's markup, and so is `DOMParser`'s,
+    // which attaches no shadow root a template declares
+    const tree = this._htmlTree(markup, document && live, document);
     const doc = new Document([]);
     for (const kid of tree) DomUtils.appendChild(doc, kid);
     this._documents.add(doc);
