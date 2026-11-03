@@ -1107,20 +1107,27 @@ function boundsOf(
  * inside it, so the walk ends there. A box around it is left as large as
  * it was where the moved box left an edge of it, which a culled paint and
  * a damage rectangle take as more to draw, never less; the next layout
- * works them out exact. False, and nothing done, where the bounds of a box
- * around it are not what it holds, which only the whole walk can say: one
- * drawn through a matrix, a filter or a clip path. Every frame of a scroll
- * of Wikipedia's article on the United States walked its 21,830 elements
- * for its sticky header, 7.6 ms of a 9 ms frame.
+ * works them out exact. False, and nothing done, for a box whose ink is its
+ * line's or that a clamp hides. Every frame of a scroll of Wikipedia's
+ * article on the United States walked its 21,830 elements for its sticky
+ * header, 7.6 ms of a 9 ms frame.
+ *
+ * A box around it whose bounds are not the union of what it holds — one
+ * drawn through a matrix, a filter or a clip path — is worked out again
+ * whole (`boundsOf`), all it holds and nothing above it, and the walk goes
+ * on up from there. `done` holds what was worked out whole for one of a
+ * set of boxes that all moved before the first was asked about: what a
+ * later one meets of it holds them all already, and its walk ends there.
+ * Given up at such a box, YouTube's progress bar, in a list turned by
+ * `scaleY(.6)`, walked the ink of the whole page at every frame it played.
  */
-export function boundsAfterMove(box: Box, moved = false): boolean {
+export function boundsAfterMove(
+  box: Box,
+  moved = false,
+  done?: Set<Box>,
+): boolean {
   // one on a line is its line's ink too, and one past a clamp has none
   if (box.style.display.startsWith('inline') || CLAMPED.has(box)) return false;
-  for (let at = box.parent; at; at = at.parent) {
-    const style = at.style;
-    if (style.filter !== null || style.clipPath) return false;
-    if (hasRect(at) && placedMatrix(at)) return false;
-  }
   // A record of a block in it says where the block stood, which goes by
   // itself as the block moves (`frontierBounds`), and the boxes around it
   // are in `KeptInk.moves`, whose records no walk reads. Every other record
@@ -1129,6 +1136,12 @@ export function boundsAfterMove(box: Box, moved = false): boolean {
   boundsOf(box, moved, null, false, false);
   let child = box;
   for (let at = box.parent; at; child = at, at = at.parent) {
+    if (done?.has(at)) break;
+    if (boundsNotHeld(at)) {
+      boundsOf(at, moved, null, false, false);
+      done?.add(at);
+      continue;
+    }
     buildChildIndexes(at);
     if (child.boundsY === Infinity) break;
     const x2 = child.boundsX + child.boundsWidth;
@@ -1158,18 +1171,31 @@ export function boundsAfterMove(box: Box, moved = false): boolean {
   return true;
 }
 
+/** Whether a box's bounds are something other than the union of its own
+ *  and what it holds, which only `boundsOf` works out: what its matrix, its
+ *  filter or its clip path does to that union. */
+function boundsNotHeld(box: Box): boolean {
+  const style = box.style;
+  if (style.filter !== null || style.clipPath) return true;
+  return hasRect(box) && placedMatrix(box) !== null;
+}
+
 /**
  * `boundsAfterMove` of a box a transform moved, which goes with what it
  * holds and moves nothing else (`retranslate`): one on a line from the block
  * those lines are in, since how far it reaches past its line is the block's
  * to say (`LINE_INK`) and a spinner in a line of text turns out of its line.
  */
-export function inkAfterMove(box: Box, moved = false): boolean {
+export function inkAfterMove(
+  box: Box,
+  moved = false,
+  done?: Set<Box>,
+): boolean {
   let from = box;
   while (from.style.display.startsWith('inline') && from.parent) {
     from = from.parent;
   }
-  return boundsAfterMove(from, moved);
+  return boundsAfterMove(from, moved, done);
 }
 
 /**

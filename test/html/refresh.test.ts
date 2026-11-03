@@ -36,6 +36,8 @@ import {
 import { parseStylesheet } from '../../src/html/css/parse.js';
 import type { RootLook } from '../../src/html/css/style.js';
 import { HtmlSource } from '../../src/html/dom.js';
+import { inkWalked } from '../../src/html/paint.js';
+import { boxLayoutsMade } from '../../src/html/layout/block.js';
 import { Html } from '../../src/index.js';
 import { mulberry32 } from '../mulberry32.js';
 import {
@@ -195,6 +197,136 @@ metric(
     assert.ok(computed > 0 && computed < 5, `${computed} styles worked out`);
     assert.ok(damage.length > 0 && !damage.includes(el), 'all of it repainted');
     const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a player that writes its bars at every frame costs what the bars hold, however long the page around it',
+  async () => {
+    // YouTube's watch page writes a `transform` on three bars of its
+    // progress bar and its scrubber at every frame it plays, in a list it
+    // scales by `scaleY(.6)`, and a `left` on one; its comments are blocks
+    // in `#primary`, a flex item its row stretches. Each frame scanned the
+    // whole document for its sheets and scripts, walked the ink of all of
+    // it, laid every comment out twice, and repainted the window.
+    const comments = Array.from(
+      { length: 240 },
+      (_, i) =>
+        `<div class="c"><p>Comment ${i} with <b>a word</b> in it.</p></div>`,
+    ).join('');
+    const side = '<div class="s"><span>A video</span></div>'.repeat(40);
+    const { result, node } = await render(
+      '<style>body{margin:0} p{margin:0} .cols{display:flex}' +
+        ' .main{flex:1;min-width:0} .side{width:90px;flex:none}' +
+        ' .player{position:relative;height:60px;overflow:hidden;' +
+        'background:#000} .list{position:absolute;left:4px;right:4px;' +
+        'bottom:8px;height:6px;transform:scaleY(.6);background:#444}' +
+        ' .bar{position:absolute;left:0;top:0;width:100%;height:100%;' +
+        'transform-origin:0 0} #load{background:#888} #play{background:#f00}' +
+        ' #hover{background:#ccc} #scrub{position:absolute;top:-3px;left:0;' +
+        'width:8px;height:8px;background:#f00}</style>' +
+        '<div class="cols"><div class="main"><div class="player">' +
+        '<div class="list"><div class="bar" id="load"></div>' +
+        '<div class="bar" id="play"></div><div class="bar" id="hover"></div>' +
+        `<div id="scrub"></div></div></div>${comments}</div>` +
+        `<div class="side">${side}</div></div>`,
+      400,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const source = (el as unknown as { _source: HtmlSource })._source;
+    const frame = (k: number): HtmlChange[] => [
+      setAttr(byId(el, 'load'), 'style', `transform:scaleX(${k / 10 + 0.1})`),
+      setAttr(byId(el, 'play'), 'style', `transform:scaleX(${k / 10})`),
+      setAttr(
+        byId(el, 'hover'),
+        'style',
+        `left:${k * 9}px;transform:scaleX(0.2)`,
+      ),
+      setAttr(byId(el, 'scrub'), 'style', `transform:translateX(${k * 30}px)`),
+    ];
+    // the first frame turns the bars and builds them, and a second settles
+    // what the first layout after it keeps
+    for (const k of [1, 2]) {
+      el.touchDocument(frame(k));
+      await snapshot(result, el);
+    }
+    const tree = treeOf(el);
+    const facts = source.facts();
+    const ink = inkWalked();
+    const laid = boxLayoutsMade();
+    // and what the layout owed for the `left` compares of what it moved
+    const owed = el as unknown as {
+      _laidShapes(...a: unknown[]): { boxes: Map<unknown, unknown> } | null;
+    };
+    const shapes = owed._laidShapes.bind(el);
+    let compared = 0;
+    owed._laidShapes = (...a) => {
+      const got = shapes(...a);
+      compared += got?.boxes.size ?? Infinity;
+      return got;
+    };
+    const damage: unknown[] = [];
+    const frames = [3, 4, 5, 6];
+    try {
+      for (const k of frames) {
+        damage.push(...(await damageOf(el, () => el.touchDocument(frame(k)))));
+        await snapshot(result, el);
+      }
+    } finally {
+      delete (owed as { _laidShapes?: unknown })._laidShapes;
+    }
+    assert.ok(treeOf(el) === tree, 'the boxes were built again');
+    assert.ok(source.facts() === facts, 'the document was scanned again');
+    const walked = (inkWalked() - ink) / frames.length;
+    const made = (boxLayoutsMade() - laid) / frames.length;
+    // the bars, the boxes around them, and the blocks a layout keeps beside
+    // them: a whole walk is some 900 boxes, and a comment laid out is two
+    assert.ok(walked < 150, `${walked} boxes' ink walked a frame`);
+    assert.ok(made < 40, `${made} boxes laid out a frame`);
+    assert.ok(
+      compared > 0 && compared / frames.length < 10,
+      `${compared / frames.length} boxes compared a frame`,
+    );
+    assert.ok(damage.length > 0, 'nothing repainted');
+    assert.ok(!damage.includes(el), 'all of it repainted');
+    const drawn = await snapshot(result, el);
+    assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
+  },
+);
+
+metric(
+  'a box out of the flow that shrinks in a scrolled container repaints what the container is scrolled back to',
+  async () => {
+    // its layout keeps the container's offset within what its content
+    // reaches now, which moves all the container holds, and not only it
+    const rows = ['#f00', '#0a0', '#00f', '#aa0', '#0aa', '#a0a']
+      .map((c) => `<div style="height:20px;background:${c}"></div>`)
+      .join('');
+    const { result, node } = await render(
+      '<style>body{margin:0}</style>' +
+        '<div id="s" style="position:relative;height:40px;overflow:auto">' +
+        `${rows}<div id="a" style="position:absolute;top:0;right:0;` +
+        'width:10px;height:400px;background:#888"></div></div>' +
+        '<p>after</p>',
+      300,
+    );
+    const el = view(node);
+    el.scrollElementTo(byId(el, 's'), { y: 300 });
+    await snapshot(result, el);
+    const tree = treeOf(el);
+    el.touchDocument([
+      setAttr(
+        byId(el, 'a'),
+        'style',
+        'position:absolute;top:0;right:0;width:10px;height:60px;' +
+          'background:#888',
+      ),
+    ]);
+    const drawn = await snapshot(result, el);
+    assert.ok(treeOf(el) === tree, 'the boxes were built again');
+    assert.strictEqual(el.scrollStateOf(byId(el, 's'))?.y, 80);
     assert.strictEqual(bytesApart(drawn, await rebuilt(result, el)), 0);
   },
 );

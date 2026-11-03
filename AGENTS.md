@@ -3291,6 +3291,48 @@ moves it, and no scroll places it (`stickyBlock`). Taken for a sticky
 box, a sticky element's text was held where its rect had drifted to, and
 the ink around it grown to reach it.
 
+**A page that writes a few styles at every frame costs what they reach.**
+YouTube's watch page writes a `transform` on three bars of its progress bar
+and its scrubber at every frame it plays, and a length on one, in a list it
+scales by `scaleY(.6)`, over 10,000 elements: each frame scanned the
+document for its sheets and scripts, walked the ink of all of it, laid each
+block of `#primary` out twice, compared every box before and after the
+layout, and repainted the window. 110–130% of a core in a `<Frame>` pane,
+which starved its `<video>` of frames. Five things keep it to the bars, and
+`a player that writes its bars at every frame` in
+`test/html/refresh.test.ts` holds each, a case apiece in its assertions.
+
+- **A refresh keeps the scan where no change is to what it reads**
+  (`HtmlSource.touch`'s `changes`, `changesFacts`): an attribute of an
+  element the scan reads none of, and a text in no `<style>` or `<title>`.
+  **Anything new `scanElements` reads joins `FACT_TAGS`**, or what reads it
+  in `changesFacts`.
+- **`boundsAfterMove` works out whole a box around what moved whose bounds
+  are not what it holds** (`boundsNotHeld`: a matrix, a filter, a clip
+  path), and goes on up from it, where it gave up and the tree was walked.
+  A set of boxes that all moved first shares `done`, so what one worked out
+  whole ends the walks of the rest.
+- **What an owed layout moved is claimed through the matrices around it**
+  (`_claimLaidOut`, as `inkOf` places ink): nothing around a box claimed
+  was laid out other than it was, and a matrix of the plane is its box's
+  style and rect. Only a box out of the plane around it still repaints the
+  element.
+- **A block handed another percentage base is kept where it reads none**
+  (`reuseLaid`, `readsPercentBase`, as `keptNatural` has it): a stretched
+  flex item is laid out before its height is definite and after, and the
+  base it hands its blocks differs between the two.
+- **An owed layout of lengths taken by boxes out of the flow compares what
+  they hold** (`apartRoots`), since such a box moves nothing else (CSS 2.1,
+  9.6) — but not where the tree has anchors, or a container around one is
+  scrolled from its start, whose offset a layout keeps within what it holds
+  and so moves all of it.
+
+What is left of a frame with a length in it is the document's layout, which
+keeps every block beside the bars' path and moves it: some 15 boxes laid out
+and 200 walked whatever the page's size, and a step a kept sibling. A box
+out of the flow laid out alone, with the passes after the flow done for what
+it holds, would take that to the bars.
+
 **The order of the layers is worked out once for a tree, and a build brings
 it up to date** (`LAYERS_HELD`, `stackAfterLayout`, `carryLayers`).
 `hoistNegative` and `stackLayers` read styles and the tree's shape, which no

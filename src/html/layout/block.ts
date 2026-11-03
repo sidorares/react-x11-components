@@ -187,6 +187,7 @@ import {
   forgetMaxContent,
   layoutFlex,
   measuredMaxContent,
+  readsPercentBase,
   replacedMinimum,
 } from './flex.js';
 import { finishCaptions, givenHeight, layoutTable } from './table.js';
@@ -1055,7 +1056,11 @@ function noteLaid(
  * relative offset and those of the boxes it is in are put on again after
  * the flow, and the offsets inside it are still on, which those passes
  * leave (`LayoutContext.reused`). False where anything it was laid out from
- * is otherwise, or it was laid out since: a probe of what it is in.
+ * is otherwise, or it was laid out since: a probe of what it is in. The
+ * height its percentages are of is otherwise only where it reads one
+ * (`readsPercentBase`): a stretched flex item is laid out before its height
+ * is definite and after, and every block in YouTube's `#primary` was laid
+ * out twice at every frame its player wrote a length.
  *
  * Laid out earlier in this layout it is only moved: none of that is on it
  * yet, what is in it is waiting to be positioned already, and its ink is no
@@ -1077,7 +1082,8 @@ function reuseLaid(
     laid === undefined ||
     laid.serial !== child.layoutSerial ||
     laid.width !== width ||
-    !Object.is(laid.base, child.percentHeightBase) ||
+    (!Object.is(laid.base, child.percentHeightBase) &&
+      readsPercentBase(child)) ||
     !heightHolds(laid.under, ctx) ||
     laid.scale !== ctx.scale ||
     laid.fonts !== ctx.engine ||

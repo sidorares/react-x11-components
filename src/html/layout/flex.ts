@@ -2388,8 +2388,9 @@ function readsContaining(box: Box): boolean {
 /** Whether a box's own layout reads the height its percentages are of: a
  *  height, a least or greatest one, or an offset that is a percentage, a
  *  height that is a keyword — `stretch` fills it — or an anonymous box,
- *  which hands it on to what is in it (`percentBaseInside`). */
-function readsPercentBase(box: Box): boolean {
+ *  which hands it on to what is in it (`percentBaseInside`). One that does
+ *  not hands what it holds none of it either, whatever it was handed. */
+export function readsPercentBase(box: Box): boolean {
   if (!box.el && !box.pseudo) return true;
   const style = box.style;
   return (
