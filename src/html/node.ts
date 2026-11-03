@@ -7605,6 +7605,19 @@ export class HtmlViewNode extends Node {
     return true;
   }
 
+  /**
+   * Whether a host is handed a rect to mount over an embedded element, as the
+   * last layout reported them (`onEmbedded`): what a frame's view is mounted
+   * by. Null where the document owes a layout, which may report it, or has
+   * set part of itself aside.
+   */
+  mountsEmbedded(element: Element): boolean | null {
+    if (!this._tree || this._stale !== Stale.Nothing || this._partial) {
+      return null;
+    }
+    return this._embedded.some((rect) => rect.element === element);
+  }
+
   /** The style of the position option a box was placed by
    *  (`placedStyleOf`), which is its computed style; null where it was
    *  placed by its own, or is laid out in a vertical flow's frame, whose

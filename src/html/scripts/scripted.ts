@@ -641,6 +641,11 @@ export function useScriptedHtml(
     cookies: config.cookies,
     storage: config.storage,
     drawsFrames: frames,
+    // a host that mounts its own views over embedded elements draws its
+    // frames' documents itself, and says nothing of what they asked for
+    get framesFollowed() {
+      return frames && !latest.current.props.renderEmbedded;
+    },
   };
   const url = props.baseUrl ?? 'about:blank';
   // the document a window opened with is the one `window.open` made, which

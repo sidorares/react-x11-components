@@ -5215,6 +5215,19 @@ not before. Three things are load-bearing:
   element since the last build, and `_styleOf` then answers from a cascade
   that has not seen it. One that is not rendered waits (`_embedsWaiting`), and
   is looked at after each paint, which is what loads one a script shows.
+- **An `<iframe>` whose document has no realm hears `load` from the view over
+  it** (`followFrame`, `frameViewLoaded`): only a view asks for a document's
+  images, and HTML's frame `load` waits for them, so told as the document
+  went in, a page's `onload` read every image in its frames as not there yet.
+  The view is `FramePage`'s, which follows the frame from the commit that
+  mounts it, and a document can arrive first: the page then says whether it
+  mounts one over the frame (`mountsEmbedded`), null while it owes a layout,
+  asked again after each paint (`_awaitView`), and a frame it mounts nothing
+  over hears `load` at once. Never decide by the holder: a view of no size
+  chooses a `<picture>`'s source for no width, and the page's view, mounted
+  after it, asks and tells every image again. **Anything new that mounts a
+  view of its own over a frame says so through `framesFollowed`**, or the
+  frame's `load` waits for a view that never says anything.
 - **An address given to an `<object>` or an `<embed>` during the parse is
   `loadFrames`' to find** (`_framesLoaded`). Loaded as it is set, its `load`
   comes before the first layout, and before the image that sizes it: a page
