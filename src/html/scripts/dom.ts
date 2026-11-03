@@ -20053,6 +20053,9 @@ export function installDom(
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
   const UA_HEADERS = Symbol('uaHeaders');
+  /** The errors of requests CORS turned down, which say so to no page but
+   *  tell an `EventSource` that asking again would come to the same. */
+  const CORS_REFUSED = new WeakSet<object>();
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
@@ -27413,11 +27416,13 @@ export function installDom(
         [UA_HEADERS]: ['cache-control', 'last-event-id'],
       }).then(
         (response: Any) => this._opened(response, controller),
-        () => {
+        (error: Any) => {
           if (this._controller !== controller) return;
-          // a request nothing here can make is never made again
-          if (/^https?:/i.test(this._url)) this._reconnect();
-          else this._fail();
+          // a request nothing here can make is never made again, nor one
+          // another origin has turned down (HTML 9.2.3, "futile")
+          if (/^https?:/i.test(this._url) && !CORS_REFUSED.has(error)) {
+            this._reconnect();
+          } else this._fail();
         },
       );
     }
@@ -34567,12 +34572,15 @@ export function installDom(
   });
   // what came of a `fetch`
   entry('__fetched', () => {
-    const [id, answer] = input();
+    const [id, answer, refused] = input();
     const pending = fetches.get(id);
     if (!pending) return false;
     fetches.delete(id);
-    if (typeof answer === 'string') pending.reject(new TypeError(answer));
-    else if (pending.streamed && answer.status === 401) {
+    if (typeof answer === 'string') {
+      const error = new TypeError(answer);
+      if (refused) CORS_REFUSED.add(error);
+      pending.reject(error);
+    } else if (pending.streamed && answer.status === 401) {
       // and a body on its way is let go
       if (answer.streaming) call('abortFetch', id);
       pending.reject(new TypeError('Failed to fetch'));

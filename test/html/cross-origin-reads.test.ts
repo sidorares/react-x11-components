@@ -550,7 +550,7 @@ test('a method no page may send is sent by none, and a forged one is refused on 
 
 test("the user agent's own headers on an EventSource are all a request may leave out of CORS", () => {
   const given: [string, string][] = [
-    ['cache-control', 'no-store'],
+    ['cache-control', 'no-cache'],
     ['x-evil', '1'],
     ['last-event-id', '7'],
   ];
@@ -563,6 +563,68 @@ test("the user agent's own headers on an EventSource are all a request may leave
     agentHeaders(['cache-control'], 'GET', [['cache-control', 'no-cache, x']]),
     undefined,
   );
+});
+
+test('an EventSource to another origin asks no preflight: it sends what the user agent sends', async () => {
+  const { logs, asked } = await scene(
+    `
+    const source = new EventSource('${OTHER}stream');
+    source.onmessage = (e) => {
+      console.log('message', e.data);
+      source.close();
+    };
+    source.onerror = () => console.log('error', source.readyState);
+    `,
+    {
+      pages: {
+        [`${OTHER}stream`]: {
+          body: 'data: hello\n\n',
+          headers: [
+            ['content-type', 'text/event-stream'],
+            ['access-control-allow-origin', 'https://app.test'],
+          ],
+        },
+      },
+    },
+  );
+  assert.equal(await seen(logs, 'message'), 'hello');
+  assert.deepEqual(
+    asked.map((r) => r.method),
+    ['GET'],
+  );
+  assert.equal(
+    asked[0].headers.find(([k]) => k === 'cache-control')?.[1],
+    'no-cache',
+  );
+});
+
+test('an EventSource that CORS turns down is over, where one that lost its connection tries again', async () => {
+  const { logs, asked } = await scene(
+    `
+    const source = new EventSource('${OTHER}stream');
+    source.onerror = () => console.log('refused', source.readyState);
+    const lost = new EventSource('${APP}lost');
+    lost.onerror = () => {
+      console.log('lost', lost.readyState);
+      lost.close();
+    };
+    `,
+    {
+      pages: {
+        [`${OTHER}stream`]: {
+          body: 'data: hello\n\n',
+          headers: [['content-type', 'text/event-stream']],
+        },
+        [`${APP}lost`]: {
+          body: '',
+          headers: [['content-type', 'text/event-stream']],
+        },
+      },
+    },
+  );
+  assert.equal(await seen(logs, 'refused'), String(2));
+  assert.equal(await seen(logs, 'lost'), String(0));
+  assert.equal(asked.filter((r) => r.url === `${OTHER}stream`).length, 1);
 });
 
 test('what a hop owes is worked out as Fetch has it', () => {

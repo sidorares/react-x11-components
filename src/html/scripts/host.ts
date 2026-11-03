@@ -8543,7 +8543,7 @@ export class DomHost {
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
    *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
-    const answer = (value: FetchResponse | string) => {
+    const answer = (value: FetchResponse | string, refused = false) => {
       if (!this._fetches.has(id) || this._disposed) {
         if (typeof value !== 'string') release(value);
         return;
@@ -8572,7 +8572,10 @@ export class DomHost {
           ? { ...rest, body: '', base64: base64Of(bytes) }
           : rest;
       }
-      this.entries?.call('__fetched', [id, crossing]);
+      this.entries?.call(
+        '__fetched',
+        refused ? [id, crossing, true] : [id, crossing],
+      );
     };
     let request: PageRequest;
     try {
@@ -8593,6 +8596,7 @@ export class DomHost {
         error instanceof CorsError || !(error instanceof TypeError)
           ? 'Failed to fetch'
           : error.message,
+        error instanceof CorsError,
       );
     });
   }

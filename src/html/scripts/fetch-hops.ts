@@ -117,7 +117,7 @@ export function agentHeaders(
     (name): name is string =>
       name === 'last-event-id' ||
       (name === 'cache-control' &&
-        headerOf(headers, 'cache-control') === 'no-store'),
+        headerOf(headers, 'cache-control') === 'no-cache'),
   );
   return out.length ? out : undefined;
 }
