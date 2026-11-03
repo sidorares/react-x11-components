@@ -1397,6 +1397,320 @@ test('a form control or a frame keeps its height when only its width is set', as
   assert.strictEqual(f.width, e.width, 'a frame 96px tall is as wide');
 });
 
+test("what styles a control is an author's value the cascade leaves it, by name, and appearance by the one that wins", async () => {
+  // CSS UI 4's list (7.2.1), cascaded: a `revert` takes the author's value
+  // back and a `revert-layer` its own layer's, and any value left counts,
+  // whatever it is. `menulist-button` is a drop-down's look without its
+  // native one, and `auto` to anything else.
+  const { node } = await render(
+    '<style>@layer a { #layered { background-color: red } }' +
+      '@layer b { #layered { background-color: revert-layer } }' +
+      '@layer a { #alone { border-top-color: revert-layer } }</style>' +
+      '<input id="plain">' +
+      '<input id="reverted" style="background-color: revert">' +
+      '<input id="layered"><input id="alone">' +
+      '<input id="written" style="border-top-width: 2px">' +
+      '<input id="logical" style="border-inline-start-color: currentcolor">' +
+      '<input id="image" style="border-image-repeat: stretch">' +
+      '<input id="corner" style="border-end-start-radius: 0px">' +
+      '<input id="position" style="background-position-x: 0%">' +
+      '<input id="repeat" style="background-repeat: repeat">' +
+      '<select id="menulist" style="appearance: menulist-button">' +
+      '<option>a</select>' +
+      '<select id="dropdown"><option>a</select>' +
+      '<input id="field" style="appearance: menulist-button">',
+  );
+  const el = view(node);
+  const styled = (id: string) => edgesOf(boxOf(el, id)).style.styledControl;
+  assert.deepStrictEqual(
+    [
+      'plain',
+      'reverted',
+      'layered',
+      'alone',
+      'written',
+      'logical',
+      'image',
+      'corner',
+      'position',
+      'repeat',
+      'menulist',
+      'dropdown',
+      'field',
+    ].filter(styled),
+    [
+      'layered',
+      'written',
+      'logical',
+      'image',
+      'corner',
+      'position',
+      'menulist',
+    ],
+  );
+  const rects = (
+    el as unknown as {
+      _controls: {
+        element: { attribs: Record<string, string> };
+        bare?: { chevron?: boolean } | null;
+      }[];
+    }
+  )._controls;
+  const menulist = rects.find((r) => r.element.attribs.id === 'menulist');
+  assert.strictEqual(menulist?.bare?.chevron, true, 'its arrow on a bare box');
+});
+
+test("a control the palette draws reads the web's edges, and they add up to its box", async () => {
+  // The palette's chrome takes a field's padding and border away, so the box
+  // is the widget's size; a page reads the web's, which it writes back where
+  // it copies a style, and where a test of CSS UI 4's list does: written
+  // back as the palette's, every field and button lost its look.
+  const { node } = await render(
+    '<input id="field" value="x"><textarea id="area"></textarea>' +
+      '<button id="go">Go</button>' +
+      '<input id="own" style="padding: 5px">',
+  );
+  const el = view(node);
+  const read = (id: string) =>
+    el.computedStyle(boxOf(el, id).el as unknown as Element)!;
+  const edges = (id: string, ...props: string[]) =>
+    props.map((prop) => read(id)[prop]);
+  const sides = [
+    'border-top-width',
+    'border-top-style',
+    'padding-top',
+    'padding-left',
+    'border-top-left-radius',
+  ];
+  assert.deepStrictEqual(edges('field', ...sides), [
+    '2px',
+    'inset',
+    '1px',
+    '2px',
+    '0px',
+  ]);
+  assert.deepStrictEqual(edges('area', ...sides), [
+    '1px',
+    'solid',
+    '2px',
+    '2px',
+    '0px',
+  ]);
+  assert.deepStrictEqual(edges('go', ...sides), [
+    '2px',
+    'outset',
+    '1px',
+    '6px',
+    '0px',
+  ]);
+  assert.strictEqual(
+    edges('own', 'padding-top')[0],
+    '5px',
+    "the page's own padding",
+  );
+  assert.notStrictEqual(read('field')['background-color'], 'rgba(0, 0, 0, 0)');
+  const box = boxOf(el, 'field');
+  assert.strictEqual(
+    edgesOf(box).padTop,
+    0,
+    "the box keeps the palette's edges",
+  );
+  assert.strictEqual(
+    parseFloat(read('field').width) + 2 * 2 + 2 * 2,
+    box.width,
+    'and its width is what they leave of it',
+  );
+});
+
+metric(
+  'a select with multiple or a size is a list box the document draws, its options selected by a press',
+  async () => {
+    // HTML draws one as a box of rows (15.5.17): no widget, its options
+    // the document's, as many rows tall as its size says, and none selected
+    // until one is pressed. Drawn as a drop-down box, it showed nothing.
+    const changes: [string | undefined, unknown][] = [];
+    await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0}select{font-size:16px;line-height:18px;' +
+            'border:1px solid}</style>' +
+            '<select id="few" size="3"><option id="one">one' +
+            '<option id="two">two<option>three<option>four</select>' +
+            '<select id="many" multiple><option id="a">a<option id="b">b' +
+            '<option id="c">c<option id="d">d</select>',
+          partial: false,
+          onControlChange: (
+            el: { attribs: Record<string, string> },
+            v: unknown,
+          ) => void changes.push([el.attribs.id, v]),
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const tree = (el as unknown as { _tree: { controls: unknown[] } })._tree;
+    assert.strictEqual(tree.controls.length, 0, 'no widget');
+    const row = Math.max(18, 16 * 1.2) + 1;
+    assert.strictEqual(boxOf(el, 'few').height, 3 * row + 2, 'three rows');
+    assert.strictEqual(boxOf(el, 'many').height, 4 * row + 2, 'four rows');
+    const selected = (...ids: string[]) =>
+      ids.filter((id) => boxOf(el, id).el!.attribs.selected !== undefined);
+    assert.deepStrictEqual(selected('one', 'a'), [], 'none until pressed');
+    const target = el as unknown as DrawnNode;
+    const press = async (
+      id: string,
+      modifiers: ('Control' | 'Shift')[] = [],
+    ) => {
+      const b = boxOf(el, id);
+      const dx = b.x + b.width / 2 - target.abs.width / 2;
+      const dy = b.y + b.height / 2 - target.abs.height / 2;
+      await act(async () => {
+        fireEvent.mouseDown(target, { dx, dy, modifiers });
+        fireEvent.mouseUp(target, { dx, dy, modifiers });
+      });
+    };
+    await press('two');
+    assert.deepStrictEqual(changes, [['few', 'two']]);
+    await press('one');
+    assert.deepStrictEqual(selected('one', 'two'), ['one'], 'one at a time');
+    await press('a');
+    await press('c', ['Control']);
+    assert.deepStrictEqual(selected('a', 'b', 'c', 'd'), ['a', 'c']);
+    await press('c', ['Control']);
+    assert.deepStrictEqual(selected('a', 'b', 'c', 'd'), ['a'], 'toggled');
+    // from the one last pressed, as Chrome runs it: a Ctrl-press is one
+    await press('d', ['Shift']);
+    assert.deepStrictEqual(selected('a', 'b', 'c', 'd'), ['c', 'd']);
+    await press('b');
+    assert.deepStrictEqual(selected('a', 'b', 'c', 'd'), ['b'], 'and alone');
+  },
+);
+
+metric(
+  'a meter and a progress bar take their size, and draw their bar where the page styled them',
+  async () => {
+    // HTML's 5em and 10em by 1em, which they had none of. Left alone, each
+    // is core's progress bar; styled, the document draws Chrome's primitive
+    // bar, a progress bar's grey and green and a meter's gradients.
+    const result = await renderX11(
+      h(
+        'box',
+        { style: { width: 400, flexDirection: 'column' } },
+        h(Html, {
+          source:
+            '<style>body{margin:0;font-size:16px}</style>' +
+            '<meter id="m" value="0.5"></meter>' +
+            '<progress id="p" value="0.5"></progress><br>' +
+            '<progress id="ps" value="0.25" style="appearance:none"></progress>' +
+            '<meter id="ms" value="0.9" low="0.3" high="0.6" optimum="0.1"' +
+            ' style="background:none"></meter><progress id="pi"></progress>',
+          partial: false,
+          'data-testname': 'doc',
+        }),
+      ),
+      { width: 440, height: 200, fonts: FONTS! },
+    );
+    const el = view(screen.getByTestName('doc') as DrawnNode);
+    const size = (id: string) => [boxOf(el, id).width, boxOf(el, id).height];
+    assert.deepStrictEqual(size('m'), [80, 16]);
+    assert.deepStrictEqual(size('p'), [160, 16]);
+    const gauges = Object.fromEntries(
+      (
+        el as unknown as {
+          _controls: {
+            element: { attribs: Record<string, string> };
+            gauge?: { share: number | null; region?: string };
+            bare?: unknown;
+          }[];
+        }
+      )._controls.map((r) => [r.element.attribs.id, r]),
+    );
+    assert.deepStrictEqual(gauges.m.gauge, { share: 0.5, region: 'optimum' });
+    assert.deepStrictEqual(gauges.pi.gauge, { share: null });
+    assert.ok(!gauges.m.bare && gauges.ps.bare, 'a widget for the plain ones');
+    assert.strictEqual(gauges.ms.gauge?.region, 'even-less-good');
+    const target = el as unknown as DrawnNode;
+    const at = (id: string, x: number) => {
+      const b = boxOf(el, id);
+      return [target.abs.x + b.x + x, target.abs.y + b.y + 8] as const;
+    };
+    await expectPixel(result.ctx, ...at('ps', 20), '#008000', {
+      message: 'its value',
+    });
+    await expectPixel(result.ctx, ...at('ps', 100), '#808080', {
+      message: 'its bar',
+    });
+    await expectPixel(result.ctx, ...at('ms', 20), '#dd4444', {
+      message: "a meter's region",
+    });
+  },
+);
+
+metric('a colour input is a well with its colour in it', async () => {
+  // Blink's 50px by 27px, its value in a swatch, whether or not the page
+  // styles it: it was a text field that showed nothing.
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<style>body{margin:0}</style>' +
+          '<input id="c" type="color" value="#FF8000">' +
+          '<input id="d" type="color" value="nope" style="border:3px solid #0000ff">',
+        partial: false,
+        'data-testname': 'doc',
+      }),
+    ),
+    { width: 440, height: 100, fonts: FONTS! },
+  );
+  const el = view(screen.getByTestName('doc') as DrawnNode);
+  const c = boxOf(el, 'c');
+  assert.deepStrictEqual([c.width, c.height], [50, 27]);
+  const tree = (el as unknown as { _tree: { controls: unknown[] } })._tree;
+  assert.strictEqual(tree.controls.length, 0, 'no widget');
+  const target = el as unknown as DrawnNode;
+  const middle = (id: string) => {
+    const b = boxOf(el, id);
+    return [
+      target.abs.x + b.x + b.width / 2,
+      target.abs.y + b.y + b.height / 2,
+    ] as const;
+  };
+  await expectPixel(result.ctx, ...middle('c'), '#ff8000', {
+    message: 'its value',
+  });
+  await expectPixel(result.ctx, ...middle('d'), '#000000', {
+    message: 'black where it holds no colour',
+  });
+});
+
+test("a file input's widget is in its content box, inside the page's edges", async () => {
+  // A file input has no look of its own to give way, in any engine: its
+  // border and padding are the page's, and the widget was drawn over them.
+  const { node } = await render(
+    '<input id="f" type="file" style="margin:0;border:4px solid red;padding:6px">',
+  );
+  const rects = (
+    view(node) as unknown as {
+      _controls: {
+        x: number;
+        y: number;
+        bare?: { x: number; y: number } | null;
+      }[];
+    }
+  )._controls;
+  assert.ok(rects[0].bare, 'bare');
+  assert.deepStrictEqual(
+    [rects[0].bare!.x - rects[0].x, rects[0].bare!.y - rects[0].y],
+    [10, 10],
+  );
+});
+
 test("a button the page styled takes the web's UA edges, not the palette's", async () => {
   // Codex gives Wikipedia's search button its side padding and a 32px
   // min-height, and leaves the padding above and below the label to the

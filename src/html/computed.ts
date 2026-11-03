@@ -1735,13 +1735,17 @@ const SHORTHANDS: Record<string, Composer> = {
     eachLayer(all, style.backgroundOrigins, style.backgroundOrigin),
   'background-repeat': (all, style) =>
     eachLayer(all, style.backgroundRepeats, style.backgroundRepeat, repeatText),
+  // a height of `auto` is left out, which the shorthand writes
   'background-size': (all, style, scale) =>
     eachLayer(all, style.backgroundSizes, style.backgroundSize, (size) =>
-      backgroundSizeText(size, scale),
+      backgroundSizeText(size, scale).replace(/^(?!auto)(\S+) auto$/, '$1'),
     ),
   'background-position': (all, style, scale) =>
-    eachLayer(all, style.backgroundPositions, positionOf(style), ([x, y]) =>
-      pair(len(x, scale), len(y, scale)),
+    eachLayer(
+      all,
+      style.backgroundPositions,
+      positionOf(style),
+      ([x, y]) => `${len(x, scale)} ${len(y, scale)}`,
     ),
   'background-position-x': (all, style, scale) =>
     eachLayer(all, style.backgroundPositions, positionOf(style), ([x]) =>
@@ -1771,8 +1775,9 @@ const SHORTHANDS: Record<string, Composer> = {
     ),
   'border-image-outset': (_, style, scale) =>
     shortest(
+      // nothing, which the initial value is, as a number, as Chrome has it
       style.borderImage.outset.map((o) =>
-        typeof o === 'number' ? px(o, scale) : num(o.times),
+        typeof o !== 'number' ? num(o.times) : o === 0 ? '0' : px(o, scale),
       ),
     ),
   'border-image-repeat': (_, style) => pair(...style.borderImage.repeat),

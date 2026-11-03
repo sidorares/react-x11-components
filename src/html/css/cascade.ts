@@ -9794,7 +9794,7 @@ function settleListBox(
   }
   const size = parseInt(attr(el, 'size') ?? '', 10);
   const rows = size > 1 ? size : 4;
-  const row = Math.ceil(Math.max(line + scale, style.fontSize * 1.2));
+  const row = Math.max(line, style.fontSize * 1.2) + scale;
   const edges =
     style.boxSizing === 'border-box'
       ? style.borderTopWidth +

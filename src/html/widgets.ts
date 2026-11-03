@@ -765,7 +765,9 @@ export function useForms(options: FormsOptions): Forms {
     pressed.current = null;
     if (ev.button !== 1) return;
     const at = pressableAt(ev);
-    if (at) pressed.current = { at, x: ev.x, y: ev.y };
+    // a list box takes its option as the button goes down, as Blink's does
+    if (at?.kind === 'option') pickOption(at.control, at.element, ev);
+    else if (at) pressed.current = { at, x: ev.x, y: ev.y };
   };
   const onMouseUp = (ev: X11MouseEvent<DrawnNode>) => {
     const start = pressed.current;
@@ -791,8 +793,7 @@ export function useForms(options: FormsOptions): Forms {
     } else if (at.kind === 'image')
       press(at.element, imagePoint(at.element, ev));
     else if (at.kind === 'check') activateLabel(at.element);
-    else if (at.kind === 'option') pickOption(at.control, at.element, ev);
-    else press(at.element);
+    else if (at.kind !== 'option') press(at.element);
   };
 
   /** Where in an image button a press landed, in its own CSS pixels. */
