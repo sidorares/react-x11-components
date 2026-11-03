@@ -7534,17 +7534,25 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo) return null;
     const box = this._ownBoxOf(tree, element);
+    const own = (box && this._placedStyle(box)) ?? style;
+    const parent = flatParentOf(element);
+    const read = cascade.styleAsRead(
+      element,
+      own,
+      (parent && this._styleOf(parent)) ?? tree.root.style,
+    );
     if (!box) {
       return cssomStyle(
-        style,
+        read,
         this._scale,
         null,
         false,
         !!style.transform && this._unrendered(element, style),
       );
     }
-    const own = this._placedStyle(box) ?? style;
-    return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+    const used = this._usedBox(box, own);
+    if (read !== own) edgesAsRead(used, read);
+    return cssomStyle(read, this._scale, used, isItem(box));
   }
 
   /**
@@ -15924,6 +15932,31 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
     at = at.parent ?? (at instanceof ShadowRoot ? at.host : null);
   }
   return true;
+}
+
+/**
+ * The edges a page reads of a control the palette draws (`styleAsRead`),
+ * where its box has none: its border box is the widget's, and its `width`
+ * and `height` read what those edges leave of it, so that they add up to
+ * its `offsetWidth`. A percentage stays what layout made of it.
+ */
+function edgesAsRead(used: UsedBox, read: ComputedStyle): void {
+  used.border = [
+    read.borderTopWidth,
+    read.borderRightWidth,
+    read.borderBottomWidth,
+    read.borderLeftWidth,
+  ];
+  const padding = [
+    read.paddingTop,
+    read.paddingRight,
+    read.paddingBottom,
+    read.paddingLeft,
+  ];
+  used.padding = used.padding.map((laid, i) => {
+    const length = padding[i];
+    return typeof length === 'number' ? length : laid;
+  }) as UsedBox['padding'];
 }
 
 /**
