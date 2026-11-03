@@ -4,10 +4,6 @@
 // context, the DOM facade, the canvas rasterizer, WebGL's stand-in, the
 // workers and the frames (`test/treeshake.test.ts`).
 export { SCRIPTS_CONTAINED } from './engine.js';
-export {
-  ScriptRunner,
-  SCRIPT_TIMEOUT_MS,
-  openWindowApart,
-} from './runner.js';
+export { ScriptRunner, SCRIPT_TIMEOUT_MS, openWindowApart } from './runner.js';
 export { FrameHolder, embeddedMounts } from './frames.js';
 export { registryOf } from './sw-registry.js';

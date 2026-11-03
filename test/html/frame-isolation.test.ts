@@ -563,7 +563,7 @@ test("what a sandbox's document loads is asked for as of no origin, and as the f
   assert.deepEqual(of(`${APP}b.js`), { client: `${APP}b`, opaque: false });
 });
 
-test("a top-level document its policy sandboxes asks for what it loads as of no origin", async () => {
+test('a top-level document its policy sandboxes asks for what it loads as of no origin', async () => {
   const s = await scene(
     `<img src="${APP}top.png">${script(`console.log('ran');`)}`,
     {},
@@ -981,50 +981,59 @@ test('a page replacing what the facade reads an origin through gets no store, no
 /** A link the size of its frame, to a new window. */
 const BLANK_LINK = `<body style="margin:0"><a href="${APP}x" target="_blank" style="display:block;height:90px">go</a></body>`;
 
-pressing('a sandbox with no script of its own opens a window that keeps its flags from a link a user follows, and no tab', async () => {
-  const s = await scene(
-    `<iframe sandbox="allow-popups" style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
-    { [`${APP}x`]: 'x' },
-  );
-  await settle(300);
-  await s.click(40, 30);
-  await settle(300);
-  assert.deepEqual(s.tabs, []);
-  assert.deepEqual(s.linked, []);
-  assert.equal(s.opened.length, 1);
-  const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
-  assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
-});
+pressing(
+  'a sandbox with no script of its own opens a window that keeps its flags from a link a user follows, and no tab',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox="allow-popups" style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+      { [`${APP}x`]: 'x' },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.equal(s.opened.length, 1);
+    const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+    assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+  },
+);
 
-pressing('a top-level document whose policy sandboxes it, with no scripts to run, opens a window that keeps its flags and no tab', async () => {
-  const s = await scene(
-    `<a href="${APP}x" target="_blank" style="display:block;height:90px">go</a>`,
-    { [`${APP}x`]: 'x' },
-    { headers: [['content-security-policy', 'sandbox allow-popups']] },
-  );
-  await settle(300);
-  await s.click(40, 30);
-  await settle(300);
-  assert.deepEqual(s.tabs, []);
-  assert.deepEqual(s.linked, []);
-  assert.equal(s.opened.length, 1);
-  const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
-  assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
-});
+pressing(
+  'a top-level document whose policy sandboxes it, with no scripts to run, opens a window that keeps its flags and no tab',
+  async () => {
+    const s = await scene(
+      `<a href="${APP}x" target="_blank" style="display:block;height:90px">go</a>`,
+      { [`${APP}x`]: 'x' },
+      { headers: [['content-security-policy', 'sandbox allow-popups']] },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.equal(s.opened.length, 1);
+    const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+    assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+  },
+);
 
-pressing('a sandbox with no allow-popups opens nothing from a link a user follows', async () => {
-  const s = await scene(
-    `<iframe sandbox style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
-    { [`${APP}x`]: 'x' },
-    { headers: [] },
-  );
-  await settle(300);
-  await s.click(40, 30);
-  await settle(300);
-  assert.deepEqual(s.tabs, []);
-  assert.deepEqual(s.linked, []);
-  assert.deepEqual(s.opened, []);
-});
+pressing(
+  'a sandbox with no allow-popups opens nothing from a link a user follows',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+      { [`${APP}x`]: 'x' },
+      { headers: [] },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.deepEqual(s.opened, []);
+  },
+);
 
 /** A document with scripts off, its response's headers handed in, and what
  *  it asked of the host. */
@@ -1067,7 +1076,11 @@ async function plain(source: string, headers: [string, string][]) {
       await settle(40);
     }
   };
-  type Mounted = { focused?: boolean; children: Mounted[]; props: { placeholder?: string } };
+  type Mounted = {
+    focused?: boolean;
+    children: Mounted[];
+    props: { placeholder?: string };
+  };
   out.focused = () => {
     const find = (node: Mounted): Mounted | null => {
       if (node.focused) return node;
@@ -1088,64 +1101,79 @@ const ROWS = `<form action="${APP}posted"><button style="display:block;width:300
   <a href="${APP}saved" download style="display:block;height:50px">save</a>
   <a href="${APP}here" style="display:block;height:50px">here</a>`;
 
-pressing("with scripts off, a document's own policy keeps its forms, its new windows and its downloads from it", async () => {
-  const s = await plain(ROWS, [['content-security-policy', 'sandbox']]);
-  for (const y of [25, 75, 125, 175]) await s.click(40, y);
-  assert.deepEqual(s.submitted, []);
-  assert.deepEqual(s.downloads, []);
-  assert.deepEqual(s.linked, [`${APP}here`]);
-});
+pressing(
+  "with scripts off, a document's own policy keeps its forms, its new windows and its downloads from it",
+  async () => {
+    const s = await plain(ROWS, [['content-security-policy', 'sandbox']]);
+    for (const y of [25, 75, 125, 175]) await s.click(40, y);
+    assert.deepEqual(s.submitted, []);
+    assert.deepEqual(s.downloads, []);
+    assert.deepEqual(s.linked, [`${APP}here`]);
+  },
+);
 
-pressing('with scripts off, what a policy gives back a document has', async () => {
-  const s = await plain(ROWS, [
-    [
-      'content-security-policy',
-      'sandbox allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads',
-    ],
-  ]);
-  for (const y of [25, 75, 125, 175]) await s.click(40, y);
-  assert.deepEqual(s.submitted, [`${APP}posted?`]);
-  assert.deepEqual(s.downloads, [`${APP}saved`]);
-  assert.deepEqual(s.linked, [`${APP}blank`, `${APP}here`]);
-});
+pressing(
+  'with scripts off, what a policy gives back a document has',
+  async () => {
+    const s = await plain(ROWS, [
+      [
+        'content-security-policy',
+        'sandbox allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads',
+      ],
+    ]);
+    for (const y of [25, 75, 125, 175]) await s.click(40, y);
+    assert.deepEqual(s.submitted, [`${APP}posted?`]);
+    assert.deepEqual(s.downloads, [`${APP}saved`]);
+    assert.deepEqual(s.linked, [`${APP}blank`, `${APP}here`]);
+  },
+);
 
-pressing('with scripts off and allow-popups, a link to a new window has no tab to carry its flags in, and goes nowhere', async () => {
-  const s = await plain(ROWS, [
-    ['content-security-policy', 'sandbox allow-popups'],
-  ]);
-  await s.click(40, 75);
-  assert.deepEqual(s.linked, []);
-});
+pressing(
+  'with scripts off and allow-popups, a link to a new window has no tab to carry its flags in, and goes nowhere',
+  async () => {
+    const s = await plain(ROWS, [
+      ['content-security-policy', 'sandbox allow-popups'],
+    ]);
+    await s.click(40, 75);
+    assert.deepEqual(s.linked, []);
+  },
+);
 
-pressing('a sandbox with no allow-scripts focuses nothing by autofocus, and one with it does', async () => {
-  const field = '<input placeholder="wants" autofocus>';
-  const held = await plain(field, [['content-security-policy', 'sandbox']]);
-  assert.equal(held.focused(), undefined);
-  cleanup();
-  const given = await plain(field, [
-    ['content-security-policy', 'sandbox allow-scripts'],
-  ]);
-  assert.equal(given.focused(), 'wants');
-});
+pressing(
+  'a sandbox with no allow-scripts focuses nothing by autofocus, and one with it does',
+  async () => {
+    const field = '<input placeholder="wants" autofocus>';
+    const held = await plain(field, [['content-security-policy', 'sandbox']]);
+    assert.equal(held.focused(), undefined);
+    cleanup();
+    const given = await plain(field, [
+      ['content-security-policy', 'sandbox allow-scripts'],
+    ]);
+    assert.equal(given.focused(), 'wants');
+  },
+);
 
-pressing("a sandboxed frame's autofocus is held back too, and one that may focuses", async () => {
-  type Mounted = { focused?: boolean; props: { placeholder?: string } };
-  const { screen } = await import('react-x11/test');
-  const field = async (tokens: string): Promise<Mounted> => {
-    await scene(
-      `<iframe sandbox="${tokens}" style="border:0;display:block" srcdoc='<input placeholder="framed" autofocus>'></iframe>`,
-    );
-    await settle(400);
-    const found = screen.all(
-      (n) => (n as unknown as Mounted).props?.placeholder === 'framed',
-    )[0] as unknown as Mounted | undefined;
-    assert.ok(found, 'the frame drew no field');
-    return found;
-  };
-  assert.ok(!(await field('allow-same-origin')).focused);
-  cleanup();
-  assert.ok((await field('allow-same-origin allow-scripts')).focused);
-});
+pressing(
+  "a sandboxed frame's autofocus is held back too, and one that may focuses",
+  async () => {
+    type Mounted = { focused?: boolean; props: { placeholder?: string } };
+    const { screen } = await import('react-x11/test');
+    const field = async (tokens: string): Promise<Mounted> => {
+      await scene(
+        `<iframe sandbox="${tokens}" style="border:0;display:block" srcdoc='<input placeholder="framed" autofocus>'></iframe>`,
+      );
+      await settle(400);
+      const found = screen.all(
+        (n) => (n as unknown as Mounted).props?.placeholder === 'framed',
+      )[0] as unknown as Mounted | undefined;
+      assert.ok(found, 'the frame drew no field');
+      return found;
+    };
+    assert.ok(!(await field('allow-same-origin')).focused);
+    cleanup();
+    assert.ok((await field('allow-same-origin allow-scripts')).focused);
+  },
+);
 
 test('with no window seam, a sandbox opens no tab either, whatever it tells itself', async () => {
   const s = await scene(
@@ -1491,6 +1519,51 @@ test('what the realm gates, the host asks again: a page that talks it round read
   assert.equal(read, 1);
   assert.equal(wrote, 1);
   assert.deepEqual(shown, ['hello']);
+});
+
+test('a clipboard write with no grant takes a press the host saw, whatever the realm says it saw', async () => {
+  let wrote = 0;
+  const host = hostOf(FRAME, {
+    secureContext: true,
+    clipboard: {
+      read: async () => ({ text: '' }),
+      write: async () => {
+        wrote += 1;
+      },
+    },
+  } as unknown as Partial<HostSeams>);
+  const settled = () => act(() => new Promise((r) => setTimeout(r, 20)));
+  const write = JSON.stringify([{ t: 'text/plain', s: 'pasted over' }]);
+  // the realm's gate passed it, as a page that set its own clock can have it
+  host.bridge('clipboard', 'write', 1, write);
+  await settled();
+  assert.equal(wrote, 0);
+  const body = new Element('body', {});
+  host.document.children.push(body);
+  body.parent = host.document;
+  host.dispatch({ type: 'mousedown', target: body } as never);
+  host.bridge('clipboard', 'write', 2, write);
+  await settled();
+  assert.equal(wrote, 1);
+  // a key is one, and Escape is none
+  const later = hostOf(FRAME, {
+    secureContext: true,
+    clipboard: {
+      read: async () => ({ text: '' }),
+      write: async () => {
+        wrote += 1;
+      },
+    },
+  } as unknown as Partial<HostSeams>);
+  later.document.children.push(body);
+  later.dispatch({ type: 'keydown', key: 'Escape', target: body } as never);
+  later.bridge('clipboard', 'write', 3, write);
+  await settled();
+  assert.equal(wrote, 1);
+  later.dispatch({ type: 'keydown', key: 'c', target: body } as never);
+  later.bridge('clipboard', 'write', 4, write);
+  await settled();
+  assert.equal(wrote, 2);
 });
 
 test('a read a user just said yes to goes through, where the host answers no state of it', async () => {

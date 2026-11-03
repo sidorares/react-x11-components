@@ -1199,6 +1199,10 @@ const HEAD_CONTENT = new Set([
   'title',
 ]);
 
+/** How long a user's press or key lets a page do what takes one: the realm's
+ *  window, as Chrome's (`dom.ts`). */
+const TRANSIENT_ACTIVATION_MS = 5000;
+
 /** A document of nothing, `about:blank`'s, for a window's first. */
 export function blankDocument(): Document {
   const doc = new Document([]);
@@ -2259,6 +2263,15 @@ export class DomHost {
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
     if (event.type.startsWith('mouse')) this._under = event.target;
+    // a user's press or key has used the page (HTML 6.4.1, "activation
+    // triggering input event"): what the realm notes of it is the page's to
+    // say, so what a gesture lets through asks this
+    if (
+      event.type === 'mousedown' ||
+      (event.type === 'keydown' && event.key !== 'Escape')
+    ) {
+      this._activatedAt = Date.now();
+    }
     const answer = this.entries?.call('__event', {
       type: event.type,
       target: this.idOf(event.target),
@@ -2367,6 +2380,17 @@ export class DomHost {
       const features = { popup: false, noreferrer };
       this.windows?.apart({ url, name, features, post: null });
     } else this._seams.navigate(url, 'tab', null, name);
+  }
+
+  /** When a user last pressed or keyed in this document, as the host saw it
+   *  (`dispatch`). */
+  private _activatedAt = -Infinity;
+
+  /** Whether a user's press or key is behind what a page does now (HTML
+   *  6.4.1, "transient activation"), by the host's clock: as long as the
+   *  realm's `TRANSIENT_ACTIVATION_MS`. */
+  private _transientlyActive(): boolean {
+    return Date.now() - this._activatedAt < TRANSIENT_ACTIVATION_MS;
   }
 
   /** Whether this document may send the window at the top of it somewhere
@@ -8152,12 +8176,17 @@ export class DomHost {
       return null;
     }
     // the realm's gate is a gesture's, and a page can talk it round: what the
-    // clipboard holds is a user's, so whether it is read is decided here
+    // clipboard holds is a user's, so whether it is read is decided here, and
+    // whether it is written over, which without a grant takes a press or a
+    // key the host saw
+    const writes =
+      what === 'read' ? null : this._permissionState('clipboard-write');
     const refused =
-      what === 'read'
+      writes === null
         ? !this._clipboardGranted &&
           this._permissionState('clipboard-read') !== 'granted'
-        : this._permissionState('clipboard-write') === 'denied';
+        : writes === 'denied' ||
+          (writes !== 'granted' && !this._transientlyActive());
     if (refused) {
       tell(
         false,
@@ -8538,9 +8567,7 @@ export class DomHost {
     // a blob it made is `blob:null`, whatever a page's own `String` wrote
     if (/^blob:/i.test(url)) return given && originOf(url) === 'null';
     if (/^data:/i.test(url)) return true;
-    return (
-      !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url)
-    );
+    return !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url);
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
