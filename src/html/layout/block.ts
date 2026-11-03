@@ -3979,7 +3979,9 @@ function layoutBoxAt(
  * and padding down it: fit-content, its max-content where that fits and no
  * narrower than its min-content. The root is as tall as that, and as wide
  * as its parent's layout made it, which asks it for what the frame came to
- * down its own block axis (`intrinsicWidth`); the frame's corner goes where
+ * down its own block axis — a probe through `intrinsicWidth`, and a block's
+ * flow, where `auto` would fill the line, through `framedWidth`, which lays
+ * the frame out for it here; the frame's corner goes where
  * the turn puts the flow's start, the right of the root's content box for
  * the modes turned clockwise and its bottom left for `sideways-lr`.
  *
@@ -3990,6 +3992,40 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
   const mode = box.style.writingMode;
   const inline = frameInlineSize(box, frame, ctx);
   const across = box.contentWidth;
+  // laid out already, at this inline size, for its root's width to be
+  // found from (`framedWidth`), and by nothing since
+  const sized = SIZED_FROM.get(frame);
+  SIZED_FROM.delete(frame);
+  if (
+    sized === undefined ||
+    sized.serial !== frame.layoutSerial ||
+    sized.inline !== inline
+  ) {
+    layFrame(frame, ctx, inline, across);
+  } else {
+    // as it was laid out, where the root has handed its own height on
+    frame.percentHeightBase = NaN;
+  }
+  const block = frame.height;
+  // an orthogonal flow is as wide as its block size, at its least and its
+  // most alike (7.3.2): what its parent sizes it from
+  box.intrinsicMinContent = block + box.horizontalExtra;
+  finishHeight(box, inline);
+  const room = Number.isFinite(across) ? across : block;
+  if (turnsUp(mode)) {
+    moveTo(frame, box.contentX, box.contentY + box.contentHeight);
+  } else moveTo(frame, box.contentX + room, box.contentY);
+  if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+}
+
+/** Lay a frame out at its corner at an inline size, a percentage height in
+ *  it of `across`, its root's content width, and whole (`layoutFramed`). */
+function layFrame(
+  frame: Box,
+  ctx: LayoutContext,
+  inline: number,
+  across: number,
+): void {
   const { until, reach, keep } = ctx;
   ctx.until = undefined;
   ctx.reach = undefined;
@@ -4003,17 +4039,72 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     ctx.reach = reach;
     ctx.keep = keep;
   }
-  const block = frame.height;
-  // an orthogonal flow is as wide as its block size, at its least and its
-  // most alike (7.3.2): what its parent sizes it from
-  box.intrinsicMinContent = block + box.horizontalExtra;
-  finishHeight(box, inline);
-  const room = Number.isFinite(across) ? across : block;
-  if (turnsUp(mode)) {
-    moveTo(frame, box.contentX, box.contentY + box.contentHeight);
-  } else moveTo(frame, box.contentX + room, box.contentY);
-  if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
 }
+
+/**
+ * The border-box width of an orthogonal flow's root whose `width` is
+ * `auto`, in a block's flow: its frame's block size and its own edges. Its
+ * width is its block size, which comes to what it holds where it has none
+ * of its own, as a block's height does (CSS Writing Modes 4, 7.3.2) — and
+ * not the room its margins leave, which is the page's inline size and runs
+ * across it. Stretched so, `<div style="writing-mode:vertical-lr">` around
+ * a line of text was as wide as the line it stood on, where all three
+ * engines make it as wide as its own line.
+ *
+ * The frame is laid out here, at the inline size `layoutFramed` lays it out
+ * at, and is not laid out again there (`SIZED_FROM`): its layout reads no
+ * width of the root's but a percentage of it, which is of nothing while the
+ * width is what it comes to.
+ */
+function framedWidth(box: Box, frame: Box, ctx: LayoutContext): number {
+  const inline = frameInlineSize(box, frame, ctx);
+  // as the root lays it out, a formatting context of its own, which a
+  // clamp around it does not reach (`layoutInternals`)
+  const outer = ctx.clamp;
+  const queued = ctx.positioned.length;
+  ctx.clamp = null;
+  try {
+    layFrame(frame, ctx, inline, NaN);
+  } finally {
+    ctx.clamp = outer;
+  }
+  // a clamp of its own is a layout of its own, which the frame is laid out
+  // again in, and what this one queued is queued again there
+  if (box.style.lineClamp === null) {
+    SIZED_FROM.set(frame, { serial: frame.layoutSerial, inline });
+  } else ctx.positioned.length = queued;
+  const block = Number.isFinite(frame.height) ? frame.height : 0;
+  return block + box.horizontalExtra;
+}
+
+/**
+ * Whether an orthogonal flow's root is the root element or its `<body>`,
+ * whose writing mode is the document's principal one, which a browser hands
+ * to the initial containing block and lays the root element out in (CSS
+ * Writing Modes 4, 8): no orthogonal flow there, and its lines start at the
+ * viewport's start, the right of it for `vertical-rl`, where all three
+ * engines start them. No principal writing mode is handed on here, so the
+ * box fills the line as before, and its lines start there too.
+ */
+function principal(box: Box): boolean {
+  const el = box.el;
+  if (el === null) return false;
+  if (isRootElement(el)) return true;
+  if (tagOf(el) !== 'body') return false;
+  // in the root element's box, or in the tree's root standing in for the
+  // `<html>` a document that wrote none implies — and with no containment
+  // on either, which keeps the body's writing mode to the body, as it
+  // keeps its `overflow` (CSS Containment 2, 3; `propagateOverflow`)
+  const up = box.parent;
+  if (!up || (up.el ? !isRootElement(up.el) : up.parent !== null)) {
+    return false;
+  }
+  return !box.style.contain && !up.style.contain;
+}
+
+/** A frame `framedWidth` laid out for its root's width, the layout it was
+ *  and the inline size it was at, until `layoutFramed` takes it. */
+const SIZED_FROM = new WeakMap<Box, { serial: number; inline: number }>();
 
 /** How wide a frame is laid out, which is how tall its root's content box
  *  is (`layoutFramed`). */
@@ -5161,7 +5252,9 @@ function blockWidth(
     let width =
       keyword && ctx
         ? contentSizedWidth(box, ctx, keyword, room, percentBase)
-        : room;
+        : ctx && framed.any && FRAMES.has(box) && !principal(box)
+          ? framedWidth(box, FRAMES.get(box)!, ctx)
+          : room;
     return clampWidth(
       box,
       transferredWidth(box, sizedWidth(box, width, percentBase)),
@@ -9837,8 +9930,11 @@ export function establishesBFC(box: Box): boolean {
   const style = box.style;
   if (scrolls(style)) return true;
   if (style.flowRoot) return true;
-  // the root of a flow in another writing mode (CSS Writing Modes 4, 3.1)
-  if (framed.any && FRAMES.has(box)) return true;
+  // the root of a flow in another writing mode (CSS Writing Modes 4, 3.1),
+  // and its frame, which is what is inside it: a margin of the flow's that
+  // reached the frame's edge hung out of it, past the root's padding, and
+  // the root came to a margin less than its blocks
+  if (framed.any && (FRAMES.has(box) || FRAME_ROOTS.has(box))) return true;
   // layout and paint containment make an independent formatting context,
   // and so does being a size container (CSS Conditional 5, 3.1), where
   // its containment applies
