@@ -299,6 +299,7 @@ import {
   scrollBarsOf,
   anchoredAcross,
   anchorScrollsOf,
+  movesAnchors,
   followPane,
   positionVisibilityBoxes,
   refitAnchored,
@@ -9789,6 +9790,10 @@ export class HtmlViewNode extends Node {
       retranslate(box, was);
       tree.relative = true;
       if (before >= this._documentHeight) relayout = true;
+      // an anchor's position includes its transforms, and those around it
+      // (CSS Anchor Positioning 1, 2), so what is placed against one this
+      // moved is placed again
+      if (tree.anchors && movesAnchors(tree.root, box)) relayout = true;
     }
     // how far the boxes' ink reaches, and the order their layers paint in,
     // as layout leaves them (`layoutDocument`) — but where boxes only moved:

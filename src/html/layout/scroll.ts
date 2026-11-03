@@ -646,6 +646,7 @@ const DEFAULT_ANCHORS = new WeakMap<
  *  last one noted is of boxes it may have replaced. */
 export function clearDefaultAnchors(root: Box): void {
   DEFAULT_ANCHORS.delete(root);
+  READ_ANCHORS.delete(root);
   VISIBILITY.delete(root);
   ANCHOR_SCROLLS.delete(root);
 }
@@ -755,6 +756,32 @@ function clippedAway(anchor: Box, box: Box): boolean {
       })
     ) {
       return true;
+    }
+  }
+  return false;
+}
+
+/** Every anchor a placement read where it was, by the root of its tree:
+ *  what a transform that changes in place moves out from under the boxes
+ *  placed against it (`movesAnchors`). */
+const READ_ANCHORS = new WeakMap<Box, Set<Box>>();
+
+/** Layout placed a box against `anchor` where it was then. */
+export function noteAnchorRead(root: Box, anchor: Box): void {
+  let set = READ_ANCHORS.get(root);
+  if (!set) READ_ANCHORS.set(root, (set = new Set()));
+  set.add(anchor);
+}
+
+/** Whether `box` is, or holds, an anchor some placement read — whose
+ *  transform moving it moves where the boxes placed against it go (CSS
+ *  Anchor Positioning 1, 2: an anchor's position includes transforms). */
+export function movesAnchors(root: Box, box: Box): boolean {
+  const set = READ_ANCHORS.get(root);
+  if (!set) return false;
+  for (const anchor of set) {
+    for (let at: Box | null = anchor; at; at = at.parent) {
+      if (at === box) return true;
     }
   }
   return false;
