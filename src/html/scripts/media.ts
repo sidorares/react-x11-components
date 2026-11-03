@@ -6,6 +6,12 @@
 // not read, never reach the page's realm: the page hears the duration,
 // the size and how much has arrived, as a browser tells it. ISO BMFF,
 // Matroska and WebM, MPEG audio, RIFF WAVE and Ogg.
+//
+// An HLS playlist is no container, and is read as what it says
+// (`readPlaylist`): the platform's player opens the playlist itself, so a
+// source that is one is the player's as much as a file is, and a page that
+// sets one as its `src` — YouTube's player does wherever `canPlayType` takes
+// HLS — is told its length and its size as Safari tells it.
 
 /** How far past its metadata a source is read before it can play
  *  through: what a player would have buffered. */
@@ -344,6 +350,89 @@ export const mediaInfoOf = (
     return mp3Head(b, n, complete, total);
   }
   return null;
+};
+
+/** Whether a source's first bytes are an HLS playlist's (RFC 8216,
+ *  4.3.1.1), a byte order mark and all. */
+export const isPlaylist = (b: Uint8Array): boolean => {
+  const at = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? 3 : 0;
+  return String.fromCharCode(...b.subarray(at, at + 7)) === '#EXTM3U';
+};
+
+/** What an HLS playlist says (`readPlaylist`). */
+export interface Playlist {
+  /** A multivariant playlist's variants, in its order: each its URI as
+   *  written, and its size where it says one, else 0. Empty for a media
+   *  playlist. */
+  variants: { uri: string; width: number; height: number }[];
+  /** A media playlist's length: its segments' summed where it ends, and
+   *  +Infinity where it is live, as HTML has an unbounded resource's.
+   *  NaN for a multivariant playlist, whose variants say it. */
+  duration: number;
+}
+
+/** An attribute list's value for `name` (RFC 8216, 4.2): a quoted string
+ *  may hold a comma, so the list is walked rather than split. */
+const attribute = (list: string, name: string): string | null => {
+  let at = 0;
+  while (at < list.length) {
+    const eq = list.indexOf('=', at);
+    if (eq < 0) return null;
+    const key = list.slice(at, eq).trim();
+    let end: number;
+    let value: string;
+    if (list[eq + 1] === '"') {
+      const close = list.indexOf('"', eq + 2);
+      end = close < 0 ? list.length : close + 1;
+      value = list.slice(eq + 2, close < 0 ? list.length : close);
+    } else {
+      const comma = list.indexOf(',', eq + 1);
+      end = comma < 0 ? list.length : comma;
+      value = list.slice(eq + 1, end).trim();
+    }
+    if (key === name) return value;
+    const next = list.indexOf(',', end);
+    if (next < 0) return null;
+    at = next + 1;
+  }
+  return null;
+};
+
+/** An HLS playlist's variants or length (RFC 8216), or null where the text
+ *  is none. */
+export const readPlaylist = (text: string): Playlist | null => {
+  const lines = text.replace(/^\ufeff/, '').split(/\r?\n/);
+  if (!lines[0]?.startsWith('#EXTM3U')) return null;
+  const variants: Playlist['variants'] = [];
+  let pending: { width: number; height: number } | null = null;
+  let total = 0;
+  let ends = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      const size = /^(\d+)x(\d+)$/.exec(
+        attribute(line.slice(18), 'RESOLUTION') ?? '',
+      );
+      pending = size
+        ? { width: Number(size[1]), height: Number(size[2]) }
+        : { width: 0, height: 0 };
+    } else if (line.startsWith('#EXTINF:')) {
+      const seconds = parseFloat(line.slice(8));
+      if (Number.isFinite(seconds) && seconds >= 0) total += seconds;
+    } else if (
+      line === '#EXT-X-ENDLIST' ||
+      line === '#EXT-X-PLAYLIST-TYPE:VOD'
+    ) {
+      ends = true;
+    } else if (!line.startsWith('#') && pending) {
+      // the URI line after a variant's tag (4.3.4.2)
+      variants.push({ uri: line, ...pending });
+      pending = null;
+    }
+  }
+  if (variants.length) return { variants, duration: NaN };
+  return { variants, duration: ends ? total : Infinity };
 };
 
 /** A source as it arrives: its bytes kept until its head is read, and
