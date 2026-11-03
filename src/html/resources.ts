@@ -50,8 +50,10 @@ export interface ResourceRequest {
   /**
    * A video's or an audio's: the type its `<source>` says it is
    * (`video/mp4`, `audio/mpeg`, and maybe its `codecs`), for a host that
-   * knows what its player plays. Absent where the markup says none, and
-   * for every other kind.
+   * knows what its player plays. A module's: `json` or `text`, where an
+   * import's attributes name it a JSON or a text module, which `HtmlNetwork`
+   * asks for with the `Accept` a browser sends for one. Absent where the
+   * markup says none, for a script, and for every other kind.
    */
   type?: string;
   /** The element that referred to it, for a host that wants the context:

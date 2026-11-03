@@ -272,6 +272,42 @@ test("a worker's answer takes the network's place, and one it leaves alone goes 
   assert.ok(!site.asked.includes('/made'), 'the network never heard');
 });
 
+test('a module worker imports a JSON and a text module statically, and nothing with import()', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER.replace("'/sw.js'", "'/sw.js', { type: 'module' }"),
+      '/page': ANSWERED,
+      '/data.json': ['application/json', '{"word":"hi"}'],
+      // a text module is text whatever its response says it is
+      '/note.txt': ['image/png', 'there'],
+      '/sw.js': `import data from '/data.json' with { type: 'json' };
+        import note from '/note.txt' with { type: 'text' };
+        self.addEventListener('fetch', function (e) {
+          if (new URL(e.request.url).pathname !== '/made') return;
+          e.respondWith(import('/data.json', { with: { type: 'json' } }).then(
+            function () { return 'imported'; },
+            function (error) { return error.name; },
+          ).then(function (got) { return new Response(data.word + ' ' + note + ' ' + got); }));
+        });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(
+    await page.text('out'),
+    'hi there TypeError',
+    page.logs.join('\n'),
+  );
+  assert.equal(
+    site.headers.get('/data.json')?.accept,
+    'application/json,*/*;q=0.5',
+  );
+  assert.equal(site.headers.get('/note.txt')?.accept, 'text/plain,*/*;q=0.5');
+});
+
 test('what a frame left behind as it was taken out asks the registry nothing, and posts nothing', async (t) => {
   const site = await serve(
     {

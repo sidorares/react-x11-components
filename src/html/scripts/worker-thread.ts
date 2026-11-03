@@ -14,7 +14,7 @@ import type { FromWorker, ToWorker, WorkerThreadData } from './workers.js';
 import { TransportProxy } from './transport-relay.js';
 import { SocketProxy } from './socket-relay.js';
 import { addKeySecret } from './subtle.js';
-import { judgeScript } from './script-origin.js';
+import { MODULE_ACCEPT, judgeScript } from './script-origin.js';
 import { nodeModule } from './platform.js';
 import type {
   AbortControllerClass,
@@ -32,6 +32,7 @@ import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
 declare const AbortController: AbortControllerClass;
 declare const performance: { now(): number };
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 const { parentPort, receiveMessageOnPort, workerData } =
   await nodeModule<WorkerThreadsModule>('worker_threads');
@@ -309,9 +310,9 @@ seams.fetchSync = (request, timeout) => {
 };
 
 const host = new DomHost(new Document([]), seams, init.url);
-const importScript = (url: string): string | null => {
+const importScript = (url: string, type?: 'json' | 'text'): string | null => {
   Atomics.store(word, 0, 0);
-  sync.postMessage({ url });
+  sync.postMessage(type ? { url, type } : { url });
   Atomics.wait(word, 0, 0, 60_000);
   const answer = receiveMessageOnPort(sync)?.message as
     { source: string | null } | undefined;
@@ -334,13 +335,21 @@ const engine = new ScriptEngine(host.bridge, {
     log('error', 'A script in a worker ran too long, and was stopped.'),
   log,
   settled: () => host.flush(),
-  load: async (url) => {
+  load: async (url, type) => {
     // a service worker's modules are those it was installed with, as its
     // `importScripts` are
-    if (init.service) return importScript(url);
+    if (init.service) {
+      return importScript(url, type === 'javascript' ? undefined : type);
+    }
     try {
       const response = await fetchThrough(
-        { url, method: 'GET', headers: [], body: null },
+        {
+          url,
+          method: 'GET',
+          headers:
+            type === 'javascript' ? [] : [['accept', MODULE_ACCEPT[type]]],
+          body: null,
+        },
         new AbortController().signal,
       );
       if (response.status < 200 || response.status >= 300) return null;
@@ -348,7 +357,11 @@ const engine = new ScriptEngine(host.bridge, {
       // has to say so, wherever its address came to
       const judged = judgeScript(
         {
-          text: response.body,
+          // a JSON or a text module is UTF-8, whatever the response names
+          text:
+            type !== 'javascript' && response.bytes
+              ? new TextDecoder().decode(response.bytes)
+              : response.body,
           url: response.url || url,
           headers: response.headers,
         },
@@ -356,6 +369,7 @@ const engine = new ScriptEngine(host.bridge, {
         host.origin,
         'anonymous',
         true,
+        type,
       );
       return judged && judged.text;
     } catch {
@@ -363,6 +377,9 @@ const engine = new ScriptEngine(host.bridge, {
     }
   },
   base: () => host.url,
+  // a service worker imports nothing with `import()` (HTML's
+  // HostLoadImportedModule)
+  dynamicImport: !init.service,
 });
 host.entries = engine;
 engine.call('__becomeWorker', {
@@ -456,7 +473,17 @@ script = () => {
     if (init.service) engine.call('__serviceStarted', [false]);
   } else if (init.type === 'module') {
     void engine.module(source, init.url, init.source === null).then((ran) => {
-      if (init.service) engine.call('__serviceStarted', [ran]);
+      // one whose graph did not all come is its worker's `error`, as one
+      // whose script did not
+      if (ran === 'unfetched') {
+        host.workerScope!.error(
+          `A module the worker's script at ${init.url} imports could not be loaded.`,
+          init.url,
+          0,
+          0,
+        );
+      }
+      if (init.service) engine.call('__serviceStarted', [ran === 'ran']);
     });
   } else {
     const ran = engine.exec(source, init.url, 0);

@@ -39,6 +39,8 @@ import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceRequest, ResourceResult } from '../resources.js';
 
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
 
@@ -250,14 +252,16 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element, cors) => {
+    load: async (src, element, cors, type) => {
       const answered = await workerResource(
         src,
         'script',
         element?.attribs.crossorigin !== undefined,
       );
       if (answered === undefined) {
-        return latest.current.load(src, element, cors);
+        return type
+          ? latest.current.load(src, element, cors, type)
+          : latest.current.load(src, element, cors);
       }
       if (answered?.kind !== 'script') return null;
       if ('text' in answered) {
@@ -267,9 +271,12 @@ export function useScripts(
           headers: answered.headers,
         };
       }
-      await readyFor(answered.charset);
+      // a JSON or a text module is UTF-8, whatever the response names
+      if (!type) await readyFor(answered.charset);
       return {
-        text: decodeText(answered.bytes, answered.charset ?? null),
+        text: type
+          ? new TextDecoder().decode(answered.bytes)
+          : decodeText(answered.bytes, answered.charset ?? null),
         url: answered.url,
         headers: answered.headers,
       };
