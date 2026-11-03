@@ -821,6 +821,106 @@ test('document.open starts a document again from nothing, and what a page builds
   ]);
 });
 
+test('a frame sent to a blob: URL shows what the blob holds, whatever it is mounted in, and the network is never asked', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function show(type, text) {' +
+      '  var f = document.createElement("iframe"); f.style.display = "none";' +
+      '  document.body.appendChild(f);' +
+      '  var u = URL.createObjectURL(new Blob([text], { type: type }));' +
+      '  return new Promise(function (go) {' +
+      '    f.onload = function () {' +
+      '      var d = f.contentDocument;' +
+      '      r.push(f.contentWindow.location.href === u, d.body.firstChild.nodeName, d.body.textContent);' +
+      '      go();' +
+      '    };' +
+      // a page may let the URL go as soon as it has set it: the frame took
+      // what it names as the address was set
+      '    f.src = u; URL.revokeObjectURL(u);' +
+      '  });' +
+      '}' +
+      'var gone = URL.createObjectURL(new Blob(["gone"], { type: "text/html" }));' +
+      'URL.revokeObjectURL(gone);' +
+      'show("text/html", "<!doctype html><p id=x>élève</p>")' +
+      '.then(function () { return show("text/plain", "<p>as text"); })' +
+      '.then(function () { return show("text/html", "<!doctype html><script>document.body.textContent = \\"ran\\";<\\/script>"); })' +
+      '.then(function () {' +
+      '  var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      '  return new Promise(function (go) {' +
+      '    f.onload = function () { r.push(f.contentDocument.body.childNodes.length); go(); };' +
+      '    f.src = gone;' +
+      '  });' +
+      '})' +
+      '.then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    'true',
+    'P',
+    'élève',
+    'true',
+    'PRE',
+    '<p>as text',
+    'true',
+    '#text',
+    'ran',
+    // a blob nobody holds is a load that failed, heard as any failed load
+    '0',
+  ]);
+  assert.deepEqual(
+    doc.fetched.filter((request) => request.url.startsWith('blob:')),
+    [],
+  );
+});
+
+test("a frame's document written with open, write and close tells the frame load, once, a task after close", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'var f = document.createElement("iframe"); f.style.display = "none";' +
+      'document.body.appendChild(f);' +
+      'var loads = 0;' +
+      'f.onload = function () {' +
+      '  loads += 1; r.push(f.contentDocument.body.innerHTML);' +
+      '  if (loads === 1) {' +
+      // a second round, on a frame that has loaded, tells it again
+      '    var d = f.contentDocument; d.open(); d.write("<i>second</i>"); d.close();' +
+      '    r.push("wrote");' +
+      '  } else setTimeout(function () {' +
+      '    r.push(loads); document.getElementById("out").textContent = r.join("|");' +
+      '  }, 20);' +
+      '};' +
+      // straight after the frame goes in, where its first `about:blank` has
+      // yet to say so: that `load` is not told as well
+      'var d = f.contentDocument; d.open(); d.write("<b>first"); d.write("</b>");' +
+      'r.push(loads); d.close(); r.push(loads);' +
+      '</script>',
+  );
+  assert.deepEqual((await settled(doc, 'out', (t) => t !== '')).split('|'), [
+    '0',
+    '0',
+    '<b>first</b>',
+    'wrote',
+    '<i>second</i>',
+    '2',
+  ]);
+});
+
+test('a frame opened for writing and never closed tells no load, and holds no load of the page', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var f = document.createElement("iframe"); document.body.appendChild(f);' +
+      'var loads = 0; f.onload = function () { loads += 1; };' +
+      'f.contentDocument.open(); f.contentDocument.write("<b>x</b>");' +
+      'addEventListener("load", function () {' +
+      '  setTimeout(function () { document.getElementById("out").textContent = "page loaded, " + loads; }, 20);' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), 'page loaded, 0');
+});
+
 test('what document.write writes is parsed where the script is, before what follows it, and is there when write returns', async () => {
   const doc = await hosted(
     '<!doctype html><html id="root"><head><script>' +

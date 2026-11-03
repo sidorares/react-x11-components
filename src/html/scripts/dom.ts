@@ -17103,6 +17103,8 @@ export function installDom(
       // `== null`: a wrapper is made without its class's fields
       if (this !== document && this._written == null) {
         this._written = '';
+        // what its frame was on its way to goes no further (HTML 8.4.2)
+        call('openDocument', this._id);
         // it starts again from nothing (HTML 8.4.2): a loader tldraw uses
         // builds an `<html>` of its own in a frame's document after `open`
         this.replaceChildren();
@@ -35201,6 +35203,13 @@ export function installDom(
     const [url] = input();
     const blob = blobUrls.get(str(url));
     return blob instanceof Blob ? base64OfBytes(blob._bytes) : null;
+  });
+
+  // and the type of one, which a frame sent to it reads as a response's
+  entry('__blobType', () => {
+    const [url] = input();
+    const blob = blobUrls.get(str(url));
+    return blob instanceof Blob ? str(blob.type) : null;
   });
 
   // a plain event at an element: a script's `load` or `error`
