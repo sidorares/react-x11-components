@@ -22841,6 +22841,25 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone (`[Exposed=Window]`): a worker has no input of its
+    // own, no history, no address bar and no document to make
+    'UIEvent',
+    'FocusEvent',
+    'MouseEvent',
+    'PointerEvent',
+    'WheelEvent',
+    'InputEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'TextEvent',
+    'BeforeUnloadEvent',
+    'PopStateEvent',
+    'HashChangeEvent',
+    'PageTransitionEvent',
+    'Location',
+    'Navigator',
+    'Audio',
+    'DOMImplementation',
     // a window's alone: a worker has no clipboard and nothing dragged to it
     'DataTransfer',
     'DataTransferItem',

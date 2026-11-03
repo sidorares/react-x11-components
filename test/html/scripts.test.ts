@@ -1809,6 +1809,35 @@ test('a service worker is registered for a scope, installed and activated in a t
   assert.equal(off.text('out'), 'falseundefined');
 });
 
+test("a worker has none of a window's interfaces: its input's events, its history's and its location's", async () => {
+  const names = [
+    'UIEvent',
+    'MouseEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'PointerEvent',
+    'PopStateEvent',
+    'Location',
+    'Navigator',
+  ];
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var names = ${JSON.stringify(names)};` +
+      'var src = "var names = " + JSON.stringify(names) + ";" +' +
+      '  "postMessage(names.filter(function (n) { return n in self; }).join());";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) {' +
+      '  document.getElementById("out").textContent =' +
+      '    names.filter(function (n) { return n in window; }).length + "|" + (e.data || "none"); };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    `${names.length}|none`,
+    doc.logs.join('\n'),
+  );
+});
+
 test('navigator.platform is the one the user agent names, in a worker as on the page', async () => {
   // a page that reads one and then the other is told of one machine:
   // diabrowser.com offers a Mac's reader the Mac build, and a Linux
