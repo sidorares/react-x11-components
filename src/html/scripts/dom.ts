@@ -13246,6 +13246,9 @@ export function installDom(
     abort: (() => void) | null;
     /** The `MediaSource` it is attached to (`mse.ts`). */
     source: Any;
+    /** Where what is buffered at the clock ends, which a `MediaSource`'s
+     *  clock stops at (`mediaBuffered`); null for any other source. */
+    limit: number | null;
     /** When the clock last started, on `now()`, while it runs. */
     since: number | null;
     ticker: number | null;
@@ -13283,6 +13286,7 @@ export function installDom(
         load: 0,
         abort: null,
         source: null,
+        limit: null,
         since: null,
         ticker: null,
         stallTimer: null,
@@ -13343,9 +13347,10 @@ export function installDom(
   const mediaTime = (ask: MediaAsk): number => {
     if (ask.since === null) return ask.time;
     const ran = ((now() - ask.since) / 1000) * ask.playbackRate;
-    const t =
+    let t =
       ask.time +
       (ask.player ? Math.min(ran, PLAYER_AHEAD * ask.playbackRate) : ran);
+    if (ask.limit !== null) t = Math.min(t, Math.max(ask.time, ask.limit));
     return Number.isFinite(ask.duration) ? Math.min(t, ask.duration) : t;
   };
   /** Whether the clock runs: playing, with enough to go on, not seeking
@@ -13389,6 +13394,12 @@ export function installDom(
   const mediaTick = (el: Any): void => {
     const ask = askOf(el);
     if (!mediaRuns(ask)) return;
+    // a `MediaSource`'s clock that has reached the end of what is buffered
+    // waits there (`mediaBuffered`)
+    if (ask.source) {
+      mediaBuffered(el);
+      if (!mediaRuns(ask)) return;
+    }
     fireMedia(el, 'timeupdate');
     if (!Number.isFinite(ask.duration) || mediaTime(ask) < ask.duration) {
       return;
@@ -13472,6 +13483,8 @@ export function installDom(
     ask.ended = false;
     ask.time = time;
     mediaSync(el);
+    // what a `MediaSource` has there, or a wait for what the page appends
+    if (ask.source) mediaBuffered(el);
     const load = ask.load;
     mediaTask(() => {
       if (ask.load !== load || !ask.seeking) return;
@@ -13536,6 +13549,41 @@ export function installDom(
         if (was < 4) fireMedia(el, 'canplaythrough');
       }
     });
+  };
+  /** The ready state went back to `ready`: the clock stops, and where it
+   *  was playing it waits (HTML 4.8.11.7: `timeupdate`, then `waiting`). */
+  const mediaReadyDown = (el: Any, ready: number): void => {
+    const ask = askOf(el);
+    const was = ask.ready;
+    if (ready >= was) return;
+    ask.ready = ready;
+    mediaSync(el);
+    if (was < 3 || ready > 2 || ask.paused !== false || ask.ended) return;
+    const load = ask.load;
+    mediaTask(() => {
+      if (ask.load !== load) return;
+      fireMedia(el, 'timeupdate');
+      fireMedia(el, 'waiting');
+    });
+  };
+  /** MSE 3.5.11's ready state, as what is buffered at the clock says: past
+   *  the end of it, metadata alone, and the clock waits there; with some of
+   *  it ahead, future data, and with enough, enough. A stream that has
+   *  ended plays to its end. */
+  const mediaBuffered = (el: Any): void => {
+    const ask = askOf(el);
+    const source = ask.source;
+    if (!source || ask.ready < 1) return;
+    const at = mediaTime(ask);
+    const ahead = MSE.ahead(source, at);
+    if (ahead < 0) {
+      if (MSE.ended(source)) return;
+      ask.limit = at;
+      mediaReadyDown(el, 1);
+      return;
+    }
+    ask.limit = MSE.ended(source) ? null : at + ahead;
+    mediaReady(el, ahead >= MEDIA_ENOUGH || MSE.ended(source) ? 4 : 3);
   };
   /** HTML's "dedicated media source failure steps", and those of a
    *  `<source>` that was the last: an error, `error`, and the promises
@@ -13607,6 +13655,8 @@ export function installDom(
     const load = ask.load;
     const attached = MSE.attach(source, {
       id: el._id,
+      src: ask.src,
+      time: () => mediaTime(ask),
       durationChanged(duration: number): void {
         ask.duration = duration;
         mediaTask(() => {
@@ -13618,15 +13668,16 @@ export function installDom(
         ask.duration = duration;
         ask.width = width;
         ask.height = height;
+        // a stream the player plays as it is appended: the clock is the
+        // player's from the start, where it would run ahead of the player
+        // and come back when it first spoke
+        if (MSE.streams(source)) ask.player = true;
         mediaReady(el, 1);
+        mediaBuffered(el);
       },
       // HTML 4.8.11.7, as MSE 3.5.11's coded frame processing has it: what
       // is buffered at the clock, and a little on from it, is enough to go on
-      buffered(): void {
-        const ahead = MSE.ahead(source, ask.time);
-        if (ahead < 0 || ask.ready < 1) return;
-        mediaReady(el, ahead >= MEDIA_ENOUGH ? 4 : 3);
-      },
+      buffered: () => mediaBuffered(el),
       // all of it is in, so enough of it; and it stays loading, as Chrome's
       // does, since a page may append again
       ended(): void {
@@ -13639,6 +13690,7 @@ export function installDom(
   const mediaDetach = (ask: MediaAsk): void => {
     if (ask.source) MSE.detach(ask.source);
     ask.source = null;
+    ask.limit = null;
   };
   /** What the host's read of a source came to (`__media`): bytes in, so
    *  `progress` and nothing stalled; its head read, its data past it, or

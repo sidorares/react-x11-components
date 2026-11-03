@@ -35,19 +35,22 @@ const TIME_SCALE = 90_000;
 /** What a last sample lasts where nothing says, in seconds. */
 const ONE_FRAME = 1 / 30;
 
-const ascii = (text: string): number[] =>
+export const ascii = (text: string): number[] =>
   Array.from(text, (c) => c.charCodeAt(0));
-const u16 = (n: number): number[] => [(n >>> 8) & 0xff, n & 0xff];
-const u32 = (n: number): number[] => [
+export const u16 = (n: number): number[] => [(n >>> 8) & 0xff, n & 0xff];
+export const u32 = (n: number): number[] => [
   (n >>> 24) & 0xff,
   (n >>> 16) & 0xff,
   (n >>> 8) & 0xff,
   n & 0xff,
 ];
-const zeros = (n: number): number[] => new Array<number>(n).fill(0);
+export const zeros = (n: number): number[] => new Array<number>(n).fill(0);
 
 /** A box: its size, its type, and what is in it. */
-function box(type: string, ...parts: (number[] | Uint8Array)[]): Uint8Array {
+export function box(
+  type: string,
+  ...parts: (number[] | Uint8Array)[]
+): Uint8Array {
   const size = parts.reduce((sum, p) => sum + p.length, 8);
   const out = new Uint8Array(size);
   out.set([...u32(size), ...ascii(type)]);
@@ -60,14 +63,14 @@ function box(type: string, ...parts: (number[] | Uint8Array)[]): Uint8Array {
 }
 
 /** A box with a version and flags (`FullBox`). */
-const fullBox = (
+export const fullBox = (
   type: string,
   version: number,
   flags: number,
   ...parts: (number[] | Uint8Array)[]
 ): Uint8Array => box(type, [version, ...u32(flags).slice(1)], ...parts);
 
-const MATRIX = [
+export const MATRIX = [
   ...u32(0x00010000),
   ...zeros(12),
   ...u32(0x00010000),

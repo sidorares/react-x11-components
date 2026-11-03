@@ -5137,14 +5137,19 @@ list.
   its track is silent with nothing failing. A node is kept by what it is
   connected to (`inputs`), never by its context, since a page makes one a
   note.
-- **`MediaSource` holds a clip for the platform's player, and says it
-  supports nothing** (`mse.ts`, `clips.ts`). What plays a page's media is a
-  player that opens a URL, and nothing hands it bytes as they arrive, so
-  `isTypeSupported` says no to every type: hls.js asks it first, and goes on
-  to `canPlayType` and the playlist as the `src`, which the player plays.
-  **Anything that makes it say yes feeds a player as the bytes arrive**, or
-  every HLS stream goes from a player that plays it to a buffer nothing
-  reads. Apple's product pages do not ask: they make a `MediaSource` in every
+- **`MediaSource` streams fragmented MP4 to the platform's player, and holds
+  a clip of VP9 for it** (`mse.ts`, `feeds.ts`, `clips.ts`). What plays a
+  page's media is a player that opens a URL and is handed no bytes, so what a
+  page appends of H.264 and AAC is handed to it as an HLS stream the host
+  writes as the page appends and serves over loopback (`feeds.ts`, the next
+  rule), and `isTypeSupported` says yes to those types where `canPlayType`
+  says the player reads HLS and MP4, and to no other. YouTube's watch page
+  has no other way: its `web` client is given no file it could play whole.
+  hls.js asks first and streams through it there, as on Safari, where it set
+  its playlist as the `src`. **Anything that makes it say yes to another
+  type feeds the player as the bytes arrive**, or a stream goes from a player
+  that plays it to a buffer nothing reads. Apple's product pages do not ask:
+  they make a `MediaSource` in every
   browser but Safari, fetch a few seconds of VP9 in WebM and move
   `currentTime` with the scroll. So `addSourceBuffer` takes that one type
   where `canPlayType` says the player reads `vp09` in an MP4, the packets are
@@ -5168,6 +5173,38 @@ list.
   kept apart from the blobs' (`mediaSourceUrls`), since a `fetch` finds
   nothing behind one, and an element goes through the load algorithm for one
   with no network, or a page waits for a `sourceopen` that never comes.
+- **A feed is a playlist that only grows, and what AVFoundation does with
+  one decided its shape** (`feeds.ts`, `fmp4.ts`, `loopback.ts`, each found
+  by playing a playlist to it, docs/components/html.md). The host keeps a
+  page's appends as MSE's track buffers, which `buffered`, `remove()` and the
+  quota answer from, and cuts their frames into segments of its own, each
+  sample's bytes as appended. Six things are load-bearing. **A listed segment
+  never changes** (`EVENT`), so what a page appends or removes after it is
+  none of the player's, and a seek outside what the player has, or near the
+  end of what is listed, is a session of its own (`Feed.seek`, `_restart`):
+  a new URL, a new player, sought where the page went. Anything new that
+  changes what the player is to play goes through `_restart`. **Segments are
+  `TARGET`, two seconds, and need not start at a key frame**: AVFoundation
+  will not start, seek or go on within three target durations of the end of
+  a playlist that grows, and refuses a shorter `HOLD-BACK` outright; it
+  decodes across a segment cut inside a GOP and seeks into one correctly.
+  **A blocking reload is held until there is something new** (`_blocked`),
+  and let go only with its request: answered with the playlist it had, a
+  player at its end failed with `-15416` or said it had ended. **The first
+  playlist of a kind lists `HEAD_START` segments**, since AVFoundation starts
+  a few segments from the end of the first it reads, whatever `EXT-X-START`
+  says: YouTube appends twenty seconds in half a second, and the player
+  started fourteen in. **The page's clock is the player's** from the
+  element's metadata (`ask.player`), so it waits where the player waits, and
+  what a feed's player says reaches the page through `Feed.playerSaid`,
+  which takes a session's time to the page's and drops a gone session's:
+  anything new a feed's player says goes through it. And **audio that starts
+  after the session's key frame is `EXT-X-GAP` until it does**
+  (`audioStarted`): YouTube appends ten seconds of audio around where a seek
+  went, which can start after the video's key frame, and a session that
+  waited for audio before it waited for good. `test/html/feeds.test.ts`
+  holds the reader, the buffers, the playlists and the page's clock, over
+  `test/fmp4-fixture.ts`, which writes fMP4 as YouTube's is.
 - **A data store's mode is what keeps what was pasted**
   (`datatransfer.ts`, a `DataTransfer`'s state in a `WeakMap`). A store is
   read/write for `copy`, read-only for `paste`, and protected from the moment

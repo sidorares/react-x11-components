@@ -240,6 +240,9 @@ import {
 } from './media.js';
 import type { Playlist } from './media.js';
 import { removeClip, VideoClips, writeClip } from './clips.js';
+import { Feeds, feedTakes } from './feeds.js';
+import type { AppendParams } from './feeds.js';
+import { serve, unserve } from './loopback.js';
 import { PageContexts } from './gl.js';
 import { PageSources } from './media-sources.js';
 import type { HtmlGLOptions, HtmlWebGL } from '../webgl.js';
@@ -710,9 +713,11 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
-  /** The file a page's `MediaSource` came to, for a `<video>`'s player to
-   *  play, or null for none any more (`clips.ts`). */
-  showClip(element: Element, file: string | null): void;
+  /** What a page's `MediaSource` came to, for its element's player to
+   *  play, or null for none any more: a file of a clip (`clips.ts`), or the
+   *  URL of a feed (`feeds.ts`), whose player says what it does
+   *  (`reports`). */
+  showClip(element: Element, file: string | null, reports?: boolean): void;
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
@@ -1924,6 +1929,22 @@ export class DomHost {
     remove: removeClip,
     show: (element, file) => this._seams.handle.showClip?.(element, file),
   });
+  /** What a page's `MediaSource`s of fragmented MP4 were appended, handed
+   *  to the player as HLS over loopback (`feeds.ts`). */
+  private readonly _feeds = new Feeds({
+    show: (element, url, at) => {
+      this._seams.handle.showClip?.(element, url, url !== null);
+      // past the key frame the stream starts at, where the page is
+      if (url && at)
+        this._seams.handle.setMediaState(element, { currentTime: at });
+    },
+    serve,
+    unserve,
+  });
+  /** A `SourceBuffer`'s id, as the page's realm knows it, to the clip or
+   *  the feed that holds it. */
+  private readonly _mse = new Map<number, { feed: boolean; id: number }>();
+  private _mseNext = 1;
   /** A page's WebGL contexts, where the host has a GL (`gl.ts`). */
   private readonly _contexts = new PageContexts({
     webgl: () => this._seams.webgl,
@@ -2854,7 +2875,27 @@ export class DomHost {
     value: string,
   ): void {
     if (this._disposed || !this.entries) return;
+    const feed = this._feeds.of(el);
+    if (feed) {
+      // a feed's player, in its session's seconds, as the page hears it
+      const said = feed.playerSaid(src, kind, value);
+      if (!said) return;
+      this.entries.call('__player', [
+        this.idOf(el),
+        feed.pageSrc,
+        said.kind,
+        said.value,
+      ]);
+      return;
+    }
     this.entries.call('__player', [this.idOf(el), src, kind, value]);
+  }
+
+  /** Whether what plays the page's media plays a feed: HLS of fragmented
+   *  MP4. */
+  private _feedsPlay(): boolean {
+    const plays = this._seams.canPlayType;
+    return !!plays?.('application/vnd.apple.mpegurl') && !!plays('video/mp4');
   }
 
   /** And each one's `scrollend`, a frame after its last `scroll`. */
@@ -2921,6 +2962,8 @@ export class DomHost {
     for (const fetch of this._mediaFetches.values()) fetch.abort();
     this._mediaFetches.clear();
     this._clips.dispose();
+    this._feeds.dispose();
+    this._mse.clear();
     this._contexts.dispose();
     for (const body of this._bodies.values()) void body.return?.();
     this._bodies.clear();
@@ -5457,6 +5500,17 @@ export class DomHost {
             });
           }
         } else if (
+          name === 'currentTime' &&
+          typeof c === 'number' &&
+          Number.isFinite(c) &&
+          this._feeds.of(el)
+        ) {
+          // a feed's player is sought in its session's seconds, or handed a
+          // session of its own (`Feed.seek`)
+          const t = this._feeds.of(el)!.seek(c);
+          if (t !== null)
+            this._seams.handle.setMediaState(el, { currentTime: t });
+        } else if (
           (name === 'volume' ||
             name === 'playbackRate' ||
             name === 'currentTime') &&
@@ -6229,23 +6283,84 @@ export class DomHost {
       case 'glPresent':
         this._contexts.present(Number(a), this._element(b));
         return null;
-      // a page's `MediaSource` (`mse.ts`), its bytes kept here (`clips.ts`)
-      case 'mseOpen':
-        return this._clips.open(text(a), this._element(b));
-      case 'mseAppend':
+      // a page's `MediaSource` (`mse.ts`), its bytes kept here: a clip of
+      // VP9 to be played whole (`clips.ts`), or fragmented MP4 played as
+      // it is appended (`feeds.ts`)
+      case 'mseSupports':
+        return this._feedsPlay() && feedTakes(text(a));
+      case 'mseOpen': {
+        const type = text(a);
+        const el = this._element(b);
+        const id = this._mseNext;
+        if (this._feedsPlay() && feedTakes(type)) {
+          this._mseNext += 1;
+          this._feeds.open(id, el, text(c), Number(d) || 0);
+          this._mse.set(id, { feed: true, id });
+          return JSON.stringify({ id, stream: true });
+        }
+        const clip = this._clips.open(type, el);
+        if (!clip) return JSON.stringify({ id: 0 });
+        this._mseNext += 1;
+        this._mse.set(id, { feed: false, id: clip });
+        return JSON.stringify({ id });
+      }
+      case 'mseAppend': {
+        const held = this._mse.get(Number(a));
+        const bytes = Buffer.from(text(b), 'base64');
+        if (!held) return JSON.stringify({ failed: true, ranges: [] });
+        if (!held.feed) {
+          return JSON.stringify(this._clips.append(held.id, bytes));
+        }
+        const asked = JSON.parse(text(c) || '{}') as Partial<AppendParams>;
         return JSON.stringify(
-          this._clips.append(Number(a), Buffer.from(text(b), 'base64')),
+          this._feeds.append(held.id, bytes, {
+            offset: Number(asked.offset) || 0,
+            mode: asked.mode === 'sequence' ? 'sequence' : 'segments',
+            windowStart: Number(asked.windowStart) || 0,
+            windowEnd:
+              asked.windowEnd === null || asked.windowEnd === undefined
+                ? Infinity
+                : Number(asked.windowEnd),
+            time: Number(asked.time) || 0,
+          }),
         );
-      case 'mseRemove':
+      }
+      case 'mseRemove': {
+        const held = this._mse.get(Number(a));
+        if (!held) return JSON.stringify({ ranges: [] });
         return JSON.stringify(
-          this._clips.remove(Number(a), Number(b), Number(c)),
+          held.feed
+            ? this._feeds.remove(held.id, Number(b), Number(c))
+            : this._clips.remove(held.id, Number(b), Number(c)),
         );
-      case 'mseEnd':
-        this._clips.end(Number(a));
+      }
+      case 'mseAbort': {
+        const held = this._mse.get(Number(a));
+        if (held?.feed) this._feeds.reset(held.id);
         return null;
-      case 'mseClose':
-        this._clips.close(Number(a));
+      }
+      case 'mseChangeType': {
+        // a feed takes another type it takes, as a reset of its parser
+        const held = this._mse.get(Number(a));
+        if (!held?.feed || !this._feedsPlay() || !feedTakes(text(b))) {
+          return false;
+        }
+        this._feeds.reset(held.id);
+        return true;
+      }
+      case 'mseEnd': {
+        const held = this._mse.get(Number(a));
+        if (held?.feed) this._feeds.end(held.id);
+        else if (held) this._clips.end(held.id);
         return null;
+      }
+      case 'mseClose': {
+        const held = this._mse.get(Number(a));
+        this._mse.delete(Number(a));
+        if (held?.feed) this._feeds.close(held.id);
+        else if (held) this._clips.close(held.id);
+        return null;
+      }
       case 'mediaFetch':
         this._mediaFetch(this._element(a), Number(b), text(c));
         return null;

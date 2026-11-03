@@ -4684,7 +4684,7 @@ test('blobs, files, form data and the media a page reads at rest', async () => {
   );
 });
 
-test("a media element's canPlayType is the host's, and an HLS player MediaSource turns down hands the playlist to the element's player", async () => {
+test("a media element's canPlayType is the host's; hls.js takes MediaSource where the player reads HLS, and hands the playlist to the element's player where MediaSource takes nothing", async () => {
   // diabrowser.com's hero: hls.js where `MediaSource` takes its types, the
   // playlist as the `src` where the element says it plays one, and the
   // poster else. This is `Hls.isSupported` as hls.js 1.6 has it
@@ -4705,20 +4705,33 @@ test("a media element's canPlayType is the host's, and an HLS player MediaSource
     '}' +
     'document.getElementById("out").textContent = r.join(",");' +
     '</script>';
-  const doc = await hosted(page, {
+  // a player of HLS and of MP4, as the example browser's on a Mac: hls.js
+  // streams what it fetches into `MediaSource`, which the host plays over
+  // a playlist of its own (`feeds.ts`), as Safari's MSE is chosen there
+  const both = await hosted(page, {
     videos: true,
     // an answer HTML has no word for is none
     canPlayType: (type) =>
       type === 'bogus/type' ? ('yes' as 'maybe') : canPlayMedia(type),
   });
   assert.equal(
-    await settled(doc, 'out', (t) => t !== ''),
-    'false,maybe,,maybe,',
+    await settled(both, 'out', (t) => t !== ''),
+    'true,maybe,,maybe,',
   );
+  await settle();
+  assert.deepEqual(both.videos, [], 'hls.js asks the host for nothing');
+  cleanup();
+  // a player of HLS that reads no MP4 takes no feed, so `MediaSource` takes
+  // nothing and the playlist is the player's
+  const hls = await hosted(page, {
+    videos: true,
+    canPlayType: (type) => (/mpegurl/i.test(type) ? 'maybe' : ''),
+  });
+  assert.equal(await settled(hls, 'out', (t) => t !== ''), 'false,maybe,,,');
   const end = Date.now() + 3000;
-  while (!doc.videos.length && Date.now() < end) await settle();
+  while (!hls.videos.length && Date.now() < end) await settle();
   assert.deepEqual(
-    doc.videos,
+    hls.videos,
     ['https://stream.example/hero.m3u8'],
     'the playlist, asked of the host as the video',
   );
@@ -4864,11 +4877,14 @@ async function holds(ok: () => boolean): Promise<void> {
 /** What the element's player was handed, and the seek it was last told. */
 function clipOf(doc: Hosted): { file?: string; seek?: { time: number } } {
   const view = doc.view as unknown as {
-    _clips: WeakMap<object, string>;
+    _clips: WeakMap<object, { src: string }>;
     _mediaAsked: WeakMap<object, { seek?: { time: number } }>;
   };
   const el = doc.byId('v');
-  return { file: view._clips.get(el), seek: view._mediaAsked.get(el)?.seek };
+  return {
+    file: view._clips.get(el)?.src,
+    seek: view._mediaAsked.get(el)?.seek,
+  };
 }
 
 test("the clip's end hands the player a file, a seek reaches it, and the file goes with the source", async () => {
