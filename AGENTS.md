@@ -5703,6 +5703,60 @@ parser's trees is not true here. Nine things are load-bearing.
   cut to that, so `draw` sets it to the box: that is an old bug inline, and passed
   a reftest only while both pages stopped at 150.
 
+**A sheet's prefixes end at its parse, and everything after that reads a name
+it knows** (`qualifiedSelector`, in `parse.ts`). css-select refuses a bar in a
+type and in an attribute, and every scan of a rule reads the selector as text,
+so a rule's selector is written with what its `@namespace`s say the first time
+it is final, in `emit`: `svg|rect` is `rect:-rx-ns(2)`, `*|p` is `p`, `|p` is
+`p:-rx-ns(0)`, a compound under a default namespace has the mark though it names
+no type, and `[svg|a=b]` is `[-rx-2|a=b]`. The number is the namespace's place in
+`NAMESPACE_URLS`, since a URL is any text and a selector is scanned for dots and
+colons by a dozen readers that know nothing of one. Nothing carries a sheet's
+declarations past that point, so a compound `pointerCompounds` or `stableCompound`
+cuts out of a rule compiles on its own, and filing is `compoundKey`'s as it was:
+the type's bucket for `rect:-rx-ns(2)`, the universal one for `*:-rx-ns(2)`. Eight
+things are load-bearing.
+
+- **It runs once, on a rule's final text.** A second pass would give `p`, which
+  is what `*|p` came to, the default namespace, so a nested rule's `&` is
+  expanded on selectors as written, and `emit` qualifies what comes of that. `walk`
+  asks first only so that an undeclared prefix takes what is nested with it.
+- **`-rx-ns` is no specificity** (`specificityOf`): anything that adds such a
+  pseudo-class says so there, or a type counts as a class.
+- **What reads an attribute selector's name goes through `attributeBar`.** A
+  namespaced one stays in its brackets so that `stableCompound`, `compoundKey` and
+  `scanCompoundChanges` read it as what it is, and only `compileHoisted` turns it
+  into a `:-rx-hoisted()`, a test of each attribute by `attributeName`, one at a
+  time, with css-select's own operators (`namespacedAttribute`). `compileHoisted`
+  is why **anything new that hands css-select a selector goes through it** holds
+  for this too.
+- **A change is told by the name an attribute is kept under, and a selector by its
+  local name**, and neither says the other. So a namespaced test is filed under
+  `|name` (`MutationRules.namespacedTests`), and any change of that local name is
+  one: an element made up with the attribute, as `_flips` asks, says nothing of
+  what is declared around it. `refresh.test.ts`'s namespaced sheet fails without it.
+- **An element's namespace is `namespaceOf`, and an attribute's `attributeName`**,
+  in `dom.ts`, since the cascade asks both and `scripts/` is a chunk of its own.
+  The first is a walk up, which only a sheet with namespaces pays: `-rx-ns` is in
+  no selector of any other. `MADE_AS_HTML` is there for it. **What a script can
+  say of an attribute reaches the host through `attrSpace`**, or a selector asks
+  a tree that keeps a written name and no namespace.
+- **A sharing key holds an element's namespace** where it says one, and so does
+  what `:nth-of-type()` counts by in an XML document (`expandedNameOf`), so
+  `nthKept` turns `:first-of-type` and its kin into the pseudo-classes `placeOf`
+  answers. A page's own query cannot use `placeOf`, which goes by `treeGeneration`,
+  and a page's script is ahead of that: the docs' "Not here" has what that leaves.
+- **A default namespace stops at what the text says it stops at**
+  (`qualifiedCompound`'s `resists`): the subject of each entry of an `:is()`, a
+  `:where()`, a `:not()` or a `:has()`, where it names no type and no `*`, and not
+  `:nth-child(… of S)`, nor a `:host()`'s or a `::slotted()`'s compound. The second
+  half is what all three engines do, read off them. `:has()`'s is in no text and
+  all three do it. A list is where they part: Chromium and WebKit let only the last
+  entry stand clear, and this is Firefox's and the text's. Ask the engines before
+  changing any of it (`test/html/namespaces.test.ts`'s tables are their answers).
+- **`:host` is no compound a default namespace can reach**, since nothing else
+  may stand in one (`hostCompound`).
+
 **`<?xml-stylesheet?>` is a `<link>`** (`instructionSheets`): one element a
 processing instruction, in no children and with the document for its parent, so
 `compareDocumentPosition` has it before everything, and all that holds a script
@@ -5905,9 +5959,9 @@ capital in its name.** The parser keeps SVG's camelCase (`foreignObject`,
 `getName` hands it the name as parsed. So SVG's UA rule for an object,
 `overflow: hidden`, is a presentation hint (`presentationHints`), under
 its own `overflow` attribute and every rule, where it is in no worse
-place. A page's own query folds the name (`QUERY_ADAPTER`), since d3 finds
-an object with `select('foreignObject')`; a sheet's rule still does not,
-which would need the rule index's type buckets to fold it as well.
+place. Both a sheet's rule and a page's query fold the name (`typeNameOf`), as
+d3 finds an object with `select('foreignObject')`, and the rule index's type
+buckets are folded already (`compoundKey`, `bucketTag`).
 
 **A transform is two halves, and inside one every number is the box's
 own.** Its translation is layout's — `applyRelativeOffsets` moves the box

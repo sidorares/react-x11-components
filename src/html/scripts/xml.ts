@@ -5,7 +5,8 @@
 import { Comment, Element, ProcessingInstruction, Text } from 'domhandler';
 import type { AnyNode, ParentNode } from 'domhandler';
 
-import { HTML_NS, namespaceOf } from './xpath.js';
+import { namespaceOf } from '../dom.js';
+import { HTML_NS } from './xpath.js';
 
 const VOID = new Set([
   'area',

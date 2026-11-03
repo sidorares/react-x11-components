@@ -85,8 +85,12 @@ export interface FunctionRule extends CustomFunction {
 
 export interface StyleRule {
   /** One selector — a `a, b` list becomes two rules, so specificity and the
-   *  matcher are per-selector rather than per-rule. */
+   *  matcher are per-selector rather than per-rule — with what its sheet's
+   *  `@namespace`s say written into it (`qualifiedSelector`). */
   selector: string;
+  /** It as the sheet has it, where that is another text: for a developer's
+   *  tools, as nothing else reads a prefix. */
+  written?: string;
   /** Packed (ids, classes, types); comparable as a single number. */
   specificity: number;
   /** Document order, the cascade's last tie-breaker. */
@@ -386,9 +390,9 @@ export function parseStylesheet(
   // `@import` counts only ahead of every other rule, `@charset` aside
   let importsAllowed = true;
   // and `@namespace` after those and ahead of the rest (CSS Namespaces 3):
-  // the prefixes it declares, for the `attr()`s in the sheet's rules
+  // what it declares, for the selectors and the `attr()`s in the sheet's rules
   let namespacesAllowed = true;
-  let namespaces: Map<string, string> | null = null;
+  const names: SelectorNamespaces = { prefixes: null, fallback: null };
 
   /** A layer's rank, named for the first time if it has not been. */
   const rankOf = (name: string): number => {
@@ -443,9 +447,9 @@ export function parseStylesheet(
             : null;
           if (declared) {
             importsAllowed = false;
-            if (declared.prefix !== null) {
-              (namespaces ??= new Map()).set(declared.prefix, declared.url);
-            }
+            if (declared.prefix === null) names.fallback = declared.url;
+            else
+              (names.prefixes ??= new Map()).set(declared.prefix, declared.url);
           }
           continue;
         }
@@ -577,7 +581,11 @@ export function parseStylesheet(
       const selectors = rawSelectors(prelude, written);
       for (let k = 0; k < written.length; k += 1) written[k] += origin + i;
       i = block.end;
-      if (!selectors) continue;
+      // a prefix no `@namespace` above declares makes the selector none,
+      // and what is nested in it goes with it
+      if (!selectors?.every((s) => qualifiedSelector(s, names) !== null)) {
+        continue;
+      }
       importsAllowed = false;
       namespacesAllowed = false;
       styleRule(
@@ -716,17 +724,22 @@ export function parseStylesheet(
     if (base !== null) {
       for (const d of declarations) d.value = absoluteUrls(d.value, base);
     }
-    if (namespaces) {
+    if (names.prefixes) {
       for (const d of declarations) {
         if (d.value.includes('|'))
-          d.value = namespacedAttrs(d.value, namespaces);
+          d.value = namespacedAttrs(d.value, names.prefixes);
       }
     }
+    // the prefixes stop here: what reads a rule reads it with each name
+    // resolved, so that nothing after this needs to know its sheet
+    const qualified = selectors.map((s) => qualifiedSelector(s, names));
+    if (qualified.includes(null)) return;
     for (let k = 0; k < selectors.length; k += 1) {
-      const raw = selectors[k];
+      const raw = qualified[k]!;
       const selector = raw.includes('\\') ? forMatcher(raw) : raw;
       const rule: StyleRule = {
         selector,
+        ...(raw !== selectors[k] && { written: selectors[k] }),
         specificity: specificityOf(selector),
         order: order++,
         declarations,
@@ -956,21 +969,317 @@ function closedAtEnd(value: string): string {
  * An `@namespace` rule (CSS Namespaces 3, 2): an optional prefix and the
  * namespace's URL, a string or a `url()`, and nothing else; null where it
  * is none and is dropped. The prefix is case-sensitive, and null where
- * the rule declares the default namespace.
+ * the rule declares the default namespace. Either may be written with
+ * escapes, `u\00072l(` among them, and the URL is a string to the end: no
+ * two spellings of one are the same namespace.
  */
 function namespaceRule(
   prelude: string,
   block: string | null,
 ): { prefix: string | null; url: string } | null {
   if (block !== null) return null;
-  const m =
-    /^\s*(?:((?:[\w-]|[^\x00-\x7f])+)\s+)?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\([^)]*\))\s*$/i.exec(
-      prelude,
-    );
-  if (!m || (m[1] && /^url$/i.test(m[1]))) return null;
-  const url = parseUrl(m[2]);
+  const spaces = (from: number): number => {
+    let at = from;
+    while (at < prelude.length && isSpace(prelude[at])) at += 1;
+    return at;
+  };
+  let i = spaces(0);
+  let prefix: string | null = null;
+  if (startsIdent(prelude, i)) {
+    const ident = readIdent(prelude, i);
+    if (prelude[ident.end] !== '(') {
+      prefix = ident.value;
+      i = spaces(ident.end);
+    }
+  }
+  const written = prelude.slice(i);
+  const value = startsIdent(written, 0)
+    ? urlAsWritten(written)
+    : /^(?:"(?:[^"\\]|\\[^])*"|'(?:[^'\\]|\\[^])*')\s*$/.test(written)
+      ? written
+      : null;
+  if (value === null) return null;
+  const url = parseUrl(value);
+  return url === undefined ? null : { prefix, url: url ?? '' };
+}
+
+/** A `url()` at the start of a text that holds nothing after it, its name
+ *  as an escape-free `url`; null for anything else. */
+function urlAsWritten(text: string): string | null {
+  const name = readIdent(text, 0);
+  if (name.value.toLowerCase() !== 'url' || text[name.end] !== '(') return null;
+  const end = urlEnd(text, name.end);
+  if (text[end - 1] !== ')' || text.slice(end).trim()) return null;
+  return `url${text.slice(name.end, end)}`;
+}
+
+/** What a sheet's `@namespace` rules declare, for its selectors: the URL of
+ *  each prefix, and of the default namespace, null where none is declared. */
+export interface SelectorNamespaces {
+  prefixes: Map<string, string> | null;
+  fallback: string | null;
+}
+
+/** A page's own query, which declares none (DOM 4.2.6). */
+export const NO_NAMESPACES: SelectorNamespaces = {
+  prefixes: null,
+  fallback: null,
+};
+
+/** Each namespace a selector names, by the number `:-rx-ns()` calls it: a
+ *  URL is any text, so it stays out of the selector, which so many scans read.
+ *  No namespace is the first. */
+const NAMESPACE_URLS = [''];
+const NAMESPACE_IDS = new Map([['', 0]]);
+
+/** The number `:-rx-ns()` calls a namespace. */
+function namespaceId(url: string): number {
+  let id = NAMESPACE_IDS.get(url);
+  if (id === undefined) {
+    id = NAMESPACE_URLS.push(url) - 1;
+    NAMESPACE_IDS.set(url, id);
+  }
+  return id;
+}
+
+/** The namespace `:-rx-ns()` calls by a number; undefined for one no selector
+ *  named, as a sheet can write the pseudo-class too. */
+export function namespaceAt(id: number): string | undefined {
+  return NAMESPACE_URLS[id];
+}
+
+/** The pseudo-classes that are a compound with a compound or a selector list
+ *  in it, each to be read for its names: what forgives an entry that is no
+ *  selector, what takes a list without, and what takes one compound. */
+const FORGIVING_LISTS = new Set(['is', 'where', 'matches']);
+const STRICT_LISTS = new Set(['not', 'has', '-webkit-any', '-moz-any', 'any']);
+const COMPOUND_ARGUMENTS = new Set([
+  'host',
+  'host-context',
+  'slotted',
+  'cue',
+  'cue-region',
+]);
+
+/**
+ * A selector, or a list of them, with what its names' namespaces say written
+ * so that a matcher can ask it with no sheet to hand (CSS Namespaces 3, 4;
+ * Selectors 4, 5): null where it names a prefix `names` does not declare,
+ * which makes it none. `*|e` is `e`, which matches a name in any namespace,
+ * and `*|*` is `*`. `ns|e` is `e:-rx-ns(n)`, and `|e` the same with no
+ * namespace's number. A default namespace is the same on every compound with
+ * no prefix, whether it names a type or not. And an attribute's prefix goes
+ * in its brackets as that number (`[-rx-n|a]`, `[|a]` the same with no
+ * namespace's), `[*|a]` staying as it is, for `compileHoisted` to compile:
+ * every scan of a rule reads it as an attribute selector, as it is one, and a
+ * page's own writing of the name is a prefix it did not declare.
+ *
+ * Done once, where a rule's text is final: this is what `rule.selector` is, so
+ * filing a rule, reading its reach and its hover all see a type and a
+ * pseudo-class they know, and none of them learns what a bar means.
+ */
+export function qualifiedSelector(
+  selector: string,
+  names: SelectorNamespaces = NO_NAMESPACES,
+): string | null {
+  if (names.fallback === null && !selector.includes('|')) return selector;
+  return qualifiedList(selector, names, false, false);
+}
+
+/** `qualifiedSelector` of a list: `resists` where it is the argument of a
+ *  function whose subjects no default namespace reaches, and `forgiving`
+ *  where an entry that is no selector matches nothing rather than making all
+ *  of it none. */
+function qualifiedList(
+  list: string,
+  names: SelectorNamespaces,
+  resists: boolean,
+  forgiving: boolean,
+): string | null {
+  const entries: string[] = [];
+  for (const entry of splitTopLevelCommas(list)) {
+    const one = qualifiedComplex(entry, names, resists);
+    if (one === null && !forgiving) return null;
+    entries.push(one ?? ':not(*)');
+  }
+  return entries.join(',');
+}
+
+function qualifiedComplex(
+  text: string,
+  names: SelectorNamespaces,
+  resists: boolean,
+): string | null {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (isSpace(c) || c === '>' || c === '+' || c === '~') {
+      out += c;
+      i += 1;
+    } else if (c === '/' && text[i + 1] === '*') {
+      // a page's own selector keeps its comments
+      const end = text.indexOf('*/', i + 2);
+      const stop = end < 0 ? text.length : end + 2;
+      out += text.slice(i, stop);
+      i = stop;
+    } else {
+      const end = compoundEnd(text, i);
+      const subject = !/[^\s>+~]/.test(text.slice(end));
+      const one = qualifiedCompound(
+        text.slice(i, end),
+        names,
+        resists && subject,
+      );
+      if (one === null) return null;
+      out += one;
+      i = end;
+    }
+  }
+  return out;
+}
+
+/** Where a compound selector from `from` ends: at white space, a combinator
+ *  or a comment outside its brackets. */
+function compoundEnd(text: string, from: number): number {
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (isSpace(c) || c === '>' || c === '+' || c === '~') return i;
+    if (c === '/' && text[i + 1] === '*') return i;
+    i = opens(text.charCodeAt(i)) ? componentEnd(text, i) : i + 1;
+  }
+  return i;
+}
+
+/** Where the name of a type or universal selector at `at` ends: `at` for
+ *  none. */
+function typeNameEnd(text: string, at: number): number {
+  if (text[at] === '*') return at + 1;
+  return startsIdent(text, at) ? identEnd(text, at) : at;
+}
+
+/**
+ * Where the type or universal selector at `at` ends, its namespace prefix with
+ * it (Selectors 4, 5.1): `at` where there is none, or a bar with no name after
+ * it, which what reads on refuses. No space may stand either side of the bar,
+ * and `||` is a column combinator.
+ */
+function typeSelectorEnd(text: string, at: number): number {
+  const i = typeNameEnd(text, at);
+  if (text[i] !== '|' || text[i + 1] === '|') return i;
+  const end = typeNameEnd(text, i + 1);
+  return end > i + 1 ? end : at;
+}
+
+function qualifiedCompound(
+  text: string,
+  names: SelectorNamespaces,
+  resists: boolean,
+): string | null {
+  const end = typeSelectorEnd(text, 0);
+  const rest = qualifiedSimple(text.slice(end), names);
+  if (rest === null) return null;
+  const bar = typeNameEnd(text, 0);
+  const prefix = bar < end && text[bar] === '|' ? text.slice(0, bar) : null;
+  const local = text.slice(prefix === null ? 0 : bar + 1, end);
+  if (prefix === '*') return local + rest;
+  if (prefix === '') return `${local}:-rx-ns(0)${rest}`;
+  if (prefix !== null) {
+    const url = names.prefixes?.get(readIdent(prefix, 0).value);
+    if (url === undefined) return null;
+    return `${local}:-rx-ns(${namespaceId(url)})${rest}`;
+  }
+  // a shadow tree's host is featureless in it (CSS Scoping 1, 3.2.1), so
+  // nothing but `:host` may stand in a compound that names it
+  const unnamed =
+    names.fallback === null ||
+    (!local && (resists || /^:host(?:-context)?(?![\w-])/i.test(rest)));
+  if (unnamed) return local + rest;
+  return `${local}:-rx-ns(${namespaceId(names.fallback!)})${rest}`;
+}
+
+/** What follows a compound's type, with the names in it read. */
+function qualifiedSimple(
+  text: string,
+  names: SelectorNamespaces,
+): string | null {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '[') {
+      const end = componentEnd(text, i);
+      const one = qualifiedAttribute(text.slice(i, end), names);
+      if (one === null) return null;
+      out += one;
+      i = end;
+    } else if (c === ':') {
+      const from = text[i + 1] === ':' ? i + 2 : i + 1;
+      const name = readIdent(text, from);
+      const after = Math.max(name.end, from);
+      out += text.slice(i, after);
+      i = after;
+      if (text[i] !== '(') continue;
+      const end = componentEnd(text, i);
+      const arg = text.slice(i + 1, end - 1);
+      const one = qualifiedArgument(asciiLower(name.value), arg, names);
+      if (one === null) return null;
+      out += `(${one})`;
+      i = end;
+    } else {
+      const end = opens(text.charCodeAt(i)) ? componentEnd(text, i) : i + 1;
+      out += text.slice(i, end);
+      i = end;
+    }
+  }
+  return out;
+}
+
+/** A pseudo-class's argument with the names in it read, where it holds a
+ *  selector. Selectors 4, 4.2 to 4.4 leave the subject of each entry of an
+ *  `:is()`, a `:where()` or a `:not()` to say its own namespace: no default
+ *  namespace reaches one that names no type and no `*`, which all three
+ *  engines take a `:has()`'s to be as well, and Chromium's and WebKit's the
+ *  last entry's alone, where this is Firefox's and the text's. */
+function qualifiedArgument(
+  pseudo: string,
+  arg: string,
+  names: SelectorNamespaces,
+): string | null {
+  if (FORGIVING_LISTS.has(pseudo)) return qualifiedList(arg, names, true, true);
+  if (STRICT_LISTS.has(pseudo)) return qualifiedList(arg, names, true, false);
+  if (COMPOUND_ARGUMENTS.has(pseudo)) {
+    return qualifiedComplex(arg, names, false);
+  }
+  if (NTH_OF_PSEUDOS.has(pseudo)) {
+    const of = /\sof\s/i.exec(arg);
+    if (!of) return arg;
+    const list = arg.slice(of.index + of[0].length);
+    const read = qualifiedList(list, names, false, false);
+    return read === null ? null : arg.slice(0, of.index + of[0].length) + read;
+  }
+  return arg;
+}
+
+/** An attribute selector, brackets and all, as `qualifiedSelector` says. No
+ *  default namespace reaches an attribute (CSS Namespaces 3, 4). */
+function qualifiedAttribute(
+  text: string,
+  names: SelectorNamespaces,
+): string | null {
+  let i = 1;
+  while (i < text.length && isSpace(text[i])) i += 1;
+  if (text[i] === '|' && text[i + 1] !== '=') return `[-rx-0${text.slice(i)}`;
+  if (text[i] === '*' && text[i + 1] === '|' && text[i + 2] !== '=') {
+    return `[${text.slice(i)}`;
+  }
+  if (!startsIdent(text, i)) return text;
+  const prefix = readIdent(text, i);
+  if (text[prefix.end] !== '|' || text[prefix.end + 1] === '=') return text;
+  const url = names.prefixes?.get(prefix.value);
   if (url === undefined) return null;
-  return { prefix: m[1] ?? null, url: url ?? '' };
+  return `[-rx-${namespaceId(url)}${text.slice(prefix.end)}`;
 }
 
 /**
@@ -1310,16 +1619,18 @@ function isSelector(s: string): boolean {
       ) {
         return false;
       }
-      if (d === '*' || d === '|') {
-        i += 1;
+      const typed = i === from ? typeSelectorEnd(s, i) : i;
+      if (typed > i) {
+        i = typed;
       } else if (d === '.' || d === '#') {
         if (!startsIdent(s, i + 1)) return false;
         i = identEnd(s, i + 1);
       } else if (d === '[') {
         let j = i + 1;
         while (j < n && isSpace(s[j])) j += 1;
-        if (s[j] === '*' || s[j] === '|') j += 1;
+        if (s[j] === '*') j += 1;
         if (s[j] === '|') j += 1;
+        else if (s[j - 1] === '*') return false;
         if (!startsIdent(s, j)) return false;
         const end = componentEnd(s, i);
         if (s[end - 1] !== ']') return false;
@@ -1366,8 +1677,6 @@ function isSelector(s: string): boolean {
           }
           i = end;
         } else if (!element && NEEDS_ARGUMENT.has(lower)) return false;
-      } else if (startsIdent(s, i) && i === from) {
-        i = identEnd(s, i);
       } else {
         return false;
       }
@@ -1645,6 +1954,8 @@ export function specificityOf(selector: string): number {
         // CSS 2 spelled the four pseudo-elements it had with one colon
         if (LEGACY_PSEUDO_ELEMENTS.test(name.value)) {
           types += 1;
+        } else if (lower === '-rx-ns') {
+          // a namespace is the type's, and counts nothing of its own
         } else if (argument !== null && SELECTOR_LIST_PSEUDOS.has(lower)) {
           inner += mostSpecific(argument);
         } else if (argument !== null && HOST_PSEUDOS.has(lower)) {
@@ -1662,8 +1973,8 @@ export function specificityOf(selector: string): number {
           }
         }
       }
-    } else if (c === '*' || c === '|') {
-      // the universal selector, and a namespace's bar, count nothing
+    } else if (c === '*') {
+      // the universal selector counts nothing
       i += 1;
     } else if (startsIdent(selector, i)) {
       types += 1;

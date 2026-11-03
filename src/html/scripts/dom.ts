@@ -6873,6 +6873,7 @@ export function installDom(
       const held = this._attrNS(ns, qualified.slice(colon + 1));
       const key = held ?? (ns ? qualified : qualified.slice(colon + 1));
       if (ns && colon >= 0) (this._attrSpaces ??= new Map()).set(key, str(ns));
+      if (ns) call('attrSpace', this._id, key, str(ns));
       this._setAttr(key, value);
     }
     removeAttribute(name: Any): void {
