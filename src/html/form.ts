@@ -424,6 +424,9 @@ export function controlValue(
     case 'time':
     case 'datetime-local':
       return fieldNumber(inputType(el), raw) === null ? '' : raw;
+    // a simple colour, in lower case, and black where it is none
+    case 'color':
+      return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : '#000000';
     default:
       return raw;
   }

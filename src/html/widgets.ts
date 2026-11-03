@@ -21,6 +21,7 @@ import type { ReactElement, ReactNode } from 'react';
 import {
   Button,
   Checkbox,
+  ProgressBar,
   Radio,
   RadioGroup,
   Select,
@@ -1393,6 +1394,7 @@ function renderControl(
           {
             key: 'chosen',
             style: {
+              ...(rect.bare && { color: rect.bare.fill ?? rect.bare.color }),
               flexGrow: 1,
               flexShrink: 1,
               flexBasis: 0,
@@ -1425,6 +1427,20 @@ function renderControl(
         settled: () => ctx.settled(el),
         focused: (on) => ctx.focused(el, on),
         redraws: ctx.ranges,
+      });
+      break;
+    }
+    // a gauge the page styled is drawn by the document (`paintGauge`)
+    case 'gauge': {
+      const gauge = rect.gauge!;
+      if (rect.bare) return null;
+      widget = h(ProgressBar, {
+        value: gauge.share ?? 0,
+        indeterminate: gauge.share === null,
+        height,
+        ...(gauge.region &&
+          gauge.region !== 'optimum' && { color: METER_INK[gauge.region] }),
+        style: { width: '100%', height: '100%' },
       });
       break;
     }
@@ -1956,6 +1972,9 @@ const BARE_TRIGGER: Style = {
   ':hover': { backgroundColor: 'transparent' },
   ':active': { backgroundColor: 'transparent' },
 };
+
+/** A meter's bar outside its optimum: Chrome's amber and red. */
+const METER_INK = { suboptimum: '#e3a21a', 'even-less-good': '#d93025' };
 
 /** Select the option of a drop-down `<select>` whose value is `value`, and
  *  no other: what that did to them. */

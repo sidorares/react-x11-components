@@ -615,6 +615,11 @@ export type ReplacedKind =
   | 'radio'
   /** An `<input type=range>`: a track and a thumb, and no text. */
   | 'range'
+  /** A `<meter>` or a `<progress>`: a bar, and none of its content. */
+  | 'gauge'
+  /** An `<input type=color>`: a well with its colour in it, which the
+   *  document draws whether or not the page styles it. */
+  | 'color'
   | 'hr'
   /** An `<iframe>`, `<video>`, `<embed>` or `<canvas>`: what it would
    *  show is never loaded or drawn, so it is a box of its size with nothing
@@ -4659,7 +4664,9 @@ class Builder {
       return;
     }
 
-    if (replaced === 'hr') return;
+    // sized by the UA sheet as Blink's is, and drawn by the document
+    // (`paintColorWell`), which has no widget to put over it
+    if (replaced === 'hr' || replaced === 'color') return;
     if (replaced === 'svg') {
       // its `em` is its own font size, in CSS pixels like the rest of it
       const scale = (this._options.scale ?? 1) * style.effectiveZoom;
@@ -6441,6 +6448,9 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'frame';
     case 'textarea':
       return 'textarea';
+    case 'meter':
+    case 'progress':
+      return 'gauge';
     // a list box is the document's, its options boxes in a box that
     // scrolls (`settleListBox`); a drop-down box is a widget
     case 'select':
@@ -6453,6 +6463,7 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       if (type === 'checkbox') return 'checkbox';
       if (type === 'radio') return 'radio';
       if (type === 'range') return 'range';
+      if (type === 'color') return 'color';
       if (type === 'button' || type === 'submit' || type === 'reset')
         return 'button';
       if (type === 'hidden') return 'none';

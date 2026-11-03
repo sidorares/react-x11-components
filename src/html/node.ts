@@ -18976,6 +18976,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'checkbox',
   'radio',
   'range',
+  'gauge',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

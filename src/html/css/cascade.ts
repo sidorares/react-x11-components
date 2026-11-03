@@ -7625,7 +7625,11 @@ export class Cascade {
     style: ComputedStyle,
     parentStyle: ComputedStyle,
   ): ComputedStyle {
-    if (style.styledControl || !CONTROL_TAGS.has(tagOf(el)) || isListBox(el)) {
+    if (
+      style.styledControl ||
+      !PALETTE_TAGS.has(tagOf(el)) ||
+      drawnByDocument(el)
+    ) {
       return style;
     }
     const kept = READ_STYLES.get(style);
@@ -9738,7 +9742,7 @@ function dropPaletteChrome(el: Element, out: Candidate[]): void {
   for (; i < out.length && out[i].origin === Origin.UserAgent; i += 1) {
     if (PALETTE_CHROME.has(out[i].declarations)) chrome = true;
   }
-  if (!chrome || !(isListBox(el) || stylesControl(el, out))) return;
+  if (!chrome || !(drawnByDocument(el) || stylesControl(el, out))) return;
   let kept = 0;
   for (const c of out) {
     if (c.origin === Origin.UserAgent && PALETTE_CHROME.has(c.declarations)) {
@@ -9747,6 +9751,17 @@ function dropPaletteChrome(el: Element, out: Candidate[]): void {
     out[kept++] = c;
   }
   out.length = kept;
+}
+
+/** Whether a control has no palette's look, and so no widget, the page's
+ *  rules or none: a list box, and a colour well. The web's UA sheet draws
+ *  it, as in a browser (`dropPaletteChrome`). */
+function drawnByDocument(el: Element): boolean {
+  if (isListBox(el)) return true;
+  return (
+    tagOf(el) === 'input' &&
+    (attr(el, 'type') ?? '').trim().toLowerCase() === 'color'
+  );
 }
 
 /** Whether an element is a `<select>` drawn as a list box (HTML 15.5.17):
@@ -9807,8 +9822,19 @@ function noEdges(style: ComputedStyle): void {
 }
 
 /** The elements whose look is a control's own until the page styles it
- *  (`stylesControl`): the fields a widget is mounted for, and a button. */
-const CONTROL_TAGS = new Set(['input', 'textarea', 'select', 'button']);
+ *  (`stylesControl`): the fields a widget is mounted for, a button and a
+ *  gauge. */
+const CONTROL_TAGS = new Set([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'meter',
+  'progress',
+]);
+
+/** The controls the palette's chrome is for (`chromeText`). */
+const PALETTE_TAGS = new Set(['input', 'textarea', 'select', 'button']);
 
 /** What the palette's chrome sets (`chromeText`), which a page reads the web's
  *  values of (`styleAsRead`). */

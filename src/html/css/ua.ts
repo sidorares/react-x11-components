@@ -259,7 +259,9 @@ input, button, select, textarea, meter, progress {
   vertical-align: baseline;
   margin: 0;
 }
-meter, progress { vertical-align: -0.2em; }
+meter, progress { vertical-align: -0.2em; box-sizing: border-box; height: 1em; }
+meter { width: 5em; }
+progress { width: 10em; }
 /* A control's text is a system font's, not its parent's: Chrome gives these
    four \`font: -webkit-small-control\`, Arial at the default size less 2pt
    (13.33px) whatever the text around it is set in, and Gecko \`-moz-field\`
@@ -340,6 +342,9 @@ input[type=image] {
   background-color: initial;
 }
 input[type=color] {
+  box-sizing: border-box;
+  inline-size: 50px;
+  block-size: 27px;
   padding: 1px 2px;
   border: 1px solid ButtonBorder;
   background-color: ButtonFace;
