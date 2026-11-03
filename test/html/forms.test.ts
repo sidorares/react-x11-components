@@ -28,9 +28,14 @@ import {
   XK_TAB,
   XK_UP,
 } from 'react-x11/keysyms';
-import { appendChild, removeElement } from 'domutils';
+import {
+  appendChild,
+  getElementsByTagName,
+  prependChild,
+  removeElement,
+} from 'domutils';
 import type { Element } from 'domhandler';
-import { elementsIn } from '../../src/html/dom.js';
+import { HtmlSource, elementsIn } from '../../src/html/dom.js';
 import { Html, useHtmlHandle } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
 import { controlValue, selectedOptions } from '../../src/html/form.js';
@@ -4278,6 +4283,79 @@ test("a stylesheet's pseudo-classes of a control's state answer as Chromium's do
     if (got !== want) differ.push(`${id}: ${got}, where Chromium has ${want}`);
   }
   assert.deepStrictEqual(differ, []);
+});
+
+test("the UA sheet's :disabled turns on nothing a document that reads no control's state would pay for", async () => {
+  // `readsControls` is what has every change asked what it moved of a
+  // control's state, and a keystroke tell the cascade: `:disabled` reads a
+  // fieldset's first legend apart from it (`legendMovedIn`)
+  const { node } = await render('<p>text</p><input id="i">', 300);
+  await act();
+  const el = view(node) as HtmlViewNode & { readsControls: boolean };
+  assert.strictEqual(el.readsControls, false);
+});
+
+test('a legend put first in a disabled fieldset turns :disabled for what each legend holds, in a rule and in what it styles', async () => {
+  // WPT's `disabled-nested-legend.html`, as a rule reads it
+  const { node } = await render(
+    '<style>input:disabled{color:#ff0000} input:enabled{color:#008000}</style>' +
+      '<fieldset disabled id="c"><legend><fieldset id="d"><input id="i3"></fieldset></legend>' +
+      '<legend><input id="i4"></legend></fieldset>',
+    300,
+  );
+  await act();
+  const el = view(node);
+  const colour = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)?.color;
+  assert.strictEqual(colour('i3'), 'rgb(0, 128, 0)', 'in the first legend');
+  assert.strictEqual(colour('i4'), 'rgb(255, 0, 0)', 'in the second');
+  const fieldset = findById(el.document, 'c')!;
+  const doc = new HtmlSource();
+  doc.setSource('<legend></legend>', true);
+  const legend = doc.document.children.find((n) => n.type === 'tag') as Element;
+  removeElement(legend);
+  prependChild(fieldset, legend);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: fieldset,
+      addedNodes: [legend],
+      removedNodes: [],
+    },
+  ]);
+  await act();
+  assert.strictEqual(colour('i3'), 'rgb(255, 0, 0)', 'no longer the first');
+  assert.strictEqual(colour('i4'), 'rgb(255, 0, 0)');
+  // and taken out again
+  removeElement(legend);
+  el.touchDocument([
+    {
+      type: 'childList',
+      target: fieldset,
+      addedNodes: [],
+      removedNodes: [legend],
+    },
+  ]);
+  await act();
+  assert.strictEqual(colour('i3'), 'rgb(0, 128, 0)');
+});
+
+test("two controls alike in every attribute, in a disabled fieldset's first legend and its second, share no style", async () => {
+  // the sharing key is an element's ancestors' tags and attributes, which
+  // are the same for both: it says which legend is the first
+  const { node } = await render(
+    '<style>input:disabled{color:#ff0000} input:enabled{color:#008000}</style>' +
+      '<fieldset disabled><legend><input class="x"></legend>' +
+      '<legend><input class="x"></legend><input class="x"></fieldset>',
+    300,
+  );
+  await act();
+  const el = view(node);
+  const inputs = getElementsByTagName('input', el.document);
+  assert.deepStrictEqual(
+    inputs.map((input) => el.computedStyle(input)?.color),
+    ['rgb(0, 128, 0)', 'rgb(255, 0, 0)', 'rgb(255, 0, 0)'],
+  );
 });
 
 /** A rule's ink on an element: which of a test's rules is in force. */

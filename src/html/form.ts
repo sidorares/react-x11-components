@@ -288,6 +288,61 @@ function firstLegend(fieldset: Element): Element | null {
   return null;
 }
 
+/** Whether a legend is its fieldset's first, which a disabled fieldset
+ *  leaves live (`isDisabled`). */
+export function isFirstLegend(el: Element): boolean {
+  const parent = el.parent;
+  return (
+    !!parent &&
+    isElement(parent) &&
+    tagOf(parent) === 'fieldset' &&
+    firstLegend(parent) === el
+  );
+}
+
+/** Whether a custom element takes part in forms (`markFormAssociated`). */
+export function isFormAssociated(el: Element): boolean {
+  return FORM_ASSOCIATED.has(el);
+}
+
+/** What `:disabled` and `:enabled` are asked of (HTML 4.16.3), besides a
+ *  custom element that takes part in forms. */
+const DISABLEABLE = new Set([
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'optgroup',
+  'option',
+  'fieldset',
+]);
+
+function disableable(el: Element): boolean {
+  return (
+    (DISABLEABLE.has(tagOf(el)) && !isForeign(el)) || FORM_ASSOCIATED.has(el)
+  );
+}
+
+/**
+ * `:disabled` (HTML 4.16.3, "actually disabled"): what `isDisabled` says of a
+ * control and of a fieldset, a disabled fieldset around it included; and of
+ * an option or an optgroup what it says itself, its optgroup, and the
+ * `<select>` it is in, which Chromium and WebKit read and Firefox does not.
+ */
+export function isActuallyDisabled(el: Element): boolean {
+  if (!disableable(el)) return false;
+  const tag = tagOf(el);
+  if (tag !== 'option' && tag !== 'optgroup') return isDisabled(el);
+  if (optionDisabled(el)) return true;
+  const { select } = optionPlace(el);
+  return !!select && isDisabled(select);
+}
+
+/** `:enabled`: what can be disabled and is not. */
+export function isEnabled(el: Element): boolean {
+  return disableable(el) && !isActuallyDisabled(el);
+}
+
 // --- what each control holds -------------------------------------------------------
 
 /** A `<select>`'s `<option>`s, in tree order, through its `<optgroup>`s. */
@@ -328,23 +383,40 @@ export function optionValue(option: Element): string {
   return attr(option, 'value') ?? optionLabel(option);
 }
 
-export function optionDisabled(option: Element): boolean {
-  if (attr(option, 'disabled') !== undefined) return true;
-  const parent = option.parent;
-  return (
-    !!parent &&
-    isElement(parent) &&
-    tagOf(parent) === 'optgroup' &&
-    attr(parent, 'disabled') !== undefined
-  );
+/**
+ * The optgroup and the `<select>` an option or an optgroup is in, past what
+ * either may be wrapped in, nearest first (HTML 4.10.10, "option element
+ * nearest ancestor optgroup"). An optgroup in an optgroup is in neither, nor
+ * is what `OPTIONS_NOT_IN` or an option holds: a `<select>` lists no such
+ * option, and what is around it says nothing of it.
+ */
+function optionPlace(el: Element): {
+  optgroup: Element | null;
+  select: Element | null;
+} {
+  let optgroup = tagOf(el) === 'optgroup' ? el : null;
+  for (let at = el.parent; at && isElement(at); at = at.parent) {
+    const tag = tagOf(at);
+    if (tag === 'select') return { optgroup, select: at };
+    if (OPTIONS_NOT_IN.has(tag) || tag === 'option') break;
+    if (tag === 'optgroup') {
+      if (optgroup) break;
+      optgroup = at;
+    }
+  }
+  return { optgroup: tagOf(el) === 'option' ? optgroup : null, select: null };
 }
 
-/** The `<select>` whose list an `<option>` is in, straight or through an
- *  `<optgroup>`, as `optionElements` finds them. */
+export function optionDisabled(option: Element): boolean {
+  if (attr(option, 'disabled') !== undefined) return true;
+  const { optgroup } = optionPlace(option);
+  return !!optgroup && attr(optgroup, 'disabled') !== undefined;
+}
+
+/** The `<select>` whose list an `<option>` is in, past what it may be
+ *  wrapped in (`optionPlace`). */
 export function selectOf(option: Element): Element | null {
-  let at = option.parent;
-  if (at && isElement(at) && tagOf(at) === 'optgroup') at = at.parent;
-  return at && isElement(at) && tagOf(at) === 'select' ? at : null;
+  return optionPlace(option).select;
 }
 
 /** Whether a `<select>` is a list box that takes many options. */
@@ -1865,6 +1937,26 @@ function holdsControl(node: AnyNode): boolean {
   if (reads(node)) return true;
   for (const el of elementsIn(node, NON_RENDERED)) if (reads(el)) return true;
   return false;
+}
+
+/**
+ * The disabled fieldset whose first `<legend>` a change may have made another
+ * one, which moves `:disabled` for what either holds: a key says only that
+ * something went in or out. Told as a change of its `disabled`, which reads
+ * inside it (`PSEUDO_INHERITED`), and asked of every change where the sheets
+ * read `:disabled`, which the UA sheet does: it is a question about one tag,
+ * and `controlsReached` is for what costs more.
+ */
+export function legendMovedIn(change: HtmlChange): Element | null {
+  if (change.type !== 'childList') return null;
+  const { target } = change;
+  if (!isElement(target) || tagOf(target) !== 'fieldset') return null;
+  if (attr(target, 'disabled') === undefined) return null;
+  const legend = (node: AnyNode): boolean =>
+    isElement(node) && tagOf(node) === 'legend';
+  return change.addedNodes.some(legend) || change.removedNodes.some(legend)
+    ? target
+    : null;
 }
 
 /**

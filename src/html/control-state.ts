@@ -7,7 +7,9 @@ import type { Element } from 'domhandler';
 import { hasCustomState } from './dom.js';
 import { directionOf } from './direction.js';
 import {
+  isActuallyDisabled,
   isDefault,
+  isEnabled,
   isInRange,
   isIndeterminate,
   isInvalid,
@@ -24,7 +26,8 @@ import {
  * css-select's `aliases` come before a function of the same name, so a
  * pseudo-class it has an alias for is taken over by a string naming a
  * function of ours: its `:read-only` and `:read-write` are text fields'
- * alone, and need a `type` written out.
+ * alone, and need a `type` written out, and its `:disabled` and `:enabled`
+ * read a control's own attribute, and no fieldset around it.
  *
  * `:blank` and `:local-link` are not here, and a rule that names one is
  * dropped: Chromium, Firefox and WebKit all refuse them, so a page that
@@ -44,6 +47,10 @@ export const CONTROL_PSEUDOS = {
   'read-write': ':-rx-read-write',
   '-rx-read-only': (el: Element) => isReadOnly(el),
   '-rx-read-write': (el: Element) => isReadWrite(el),
+  disabled: ':-rx-disabled',
+  enabled: ':-rx-enabled',
+  '-rx-disabled': (el: Element) => isActuallyDisabled(el),
+  '-rx-enabled': (el: Element) => isEnabled(el),
   // nothing here fills a form in
   autofill: (_el: Element) => false,
   '-webkit-autofill': (_el: Element) => false,

@@ -4604,6 +4604,16 @@ export class DomHost {
       }
       case 'parseDocument':
         return this.idOf(this._documentOf(text(a)));
+      // a frame's document opened for writing: what the frame was loading
+      // goes no further, and holds no `load` of the page's
+      case 'openDocument': {
+        const frame = this._frameOf.get(this._node(a) as Document);
+        if (frame) {
+          this._frameLoads.set(frame, (this._frameLoads.get(frame) ?? 0) + 1);
+          this._frameDone(frame);
+        }
+        return null;
+      }
       // a page's own document made again of what it wrote between `open`
       // and `close`
       case 'fillDocument': {
@@ -4612,6 +4622,7 @@ export class DomHost {
           throw new DomError('InvalidStateError', 'Not a document of its own.');
         }
         this._fill(doc as Document, text(b));
+        this._wroteFrame(doc as Document);
         return null;
       }
       case 'title': {
@@ -4803,6 +4814,9 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
+        // and a file input's button, which only a document draws, for its
+        // widget (`Cascade.partStyle`)
+        const part = b === 'file-selector-button' ? b : pseudo;
         // a page's realm asks for the shorthands (`d`) only where it reads
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
@@ -4827,10 +4841,10 @@ export class DomHost {
         if (typeof c === 'string') {
           if (!comesFromBox(c)) return '';
         } else if (handle.styleWhileOwed) {
-          const json = send(handle.styleWhileOwed(this._element(a), pseudo));
+          const json = send(handle.styleWhileOwed(this._element(a), part));
           return json && !d && handle.layoutOwed?.() ? `~${json}` : json;
         }
-        return send(handle.computedStyle(this._element(a), pseudo));
+        return send(handle.computedStyle(this._element(a), part));
       }
       case 'computedShorthands':
         return JSON.stringify(SHORTHAND_NAMES);
@@ -7112,11 +7126,14 @@ export class DomHost {
     // the page in itself without end (HTML 7.8.1, the iframe's "process the
     // iframe attributes", an ancestor's URL)
     if (src && src.split('#')[0] === this.url.split('#')[0]) src = null;
+    // read as the address is set, since a page may revoke it as soon as it
+    // has (URL's "blob URL entry", which a parsed URL keeps)
+    const blob = src && /^blob:/i.test(src) ? this._blobResponse(src) : null;
     // another origin's frame is loaded where the browser draws frames, to
     // run in a realm of its own, at its own origin, which reaches this one
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
-    const foreign = !!src && !this._sameOrigin(src);
+    const foreign = !!src && !blob && !this._sameOrigin(src);
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
@@ -7134,22 +7151,26 @@ export class DomHost {
       }, 0);
       return;
     }
-    const landed = /^data:/i.test(src)
-      ? Promise.resolve(this._dataResponse(src))
-      : this._navigationFetch(
-          post
-            ? {
-                url: src,
-                method: 'POST',
-                headers: [['content-type', post.contentType]],
-                ...(typeof post.body === 'string'
-                  ? { body: post.body }
-                  : { body: null, bytes: post.body }),
-              }
-            : { url: src, method: 'GET', headers: [], body: null },
-          new AbortController().signal,
-          this._frameSandbox(frame),
-        );
+    const landed = /^blob:/i.test(src)
+      ? blob
+        ? Promise.resolve(blob)
+        : Promise.reject(new TypeError('A blob: URL that holds nothing.'))
+      : /^data:/i.test(src)
+        ? Promise.resolve(this._dataResponse(src))
+        : this._navigationFetch(
+            post
+              ? {
+                  url: src,
+                  method: 'POST',
+                  headers: [['content-type', post.contentType]],
+                  ...(typeof post.body === 'string'
+                    ? { body: post.body }
+                    : { body: null, bytes: post.body }),
+                }
+              : { url: src, method: 'GET', headers: [], body: null },
+            new AbortController().signal,
+            this._frameSandbox(frame),
+          );
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
@@ -7236,6 +7257,33 @@ export class DomHost {
       /^(?:https?|data):/i.test(src) ||
       (/^file:/i.test(src) && /^file:/i.test(this.url))
     );
+  }
+
+  /**
+   * A `blob:` URL as a frame's document is read, from the realm that made it
+   * or one of its own origin around this one, since no network has one: every
+   * preview written to a blob came out an empty document, with its `load`.
+   * Null for one none of them holds, which is a failed load, and a blob of
+   * another origin is none of this document's to read.
+   */
+  private _blobResponse(src: string): FetchResponse | null {
+    const url = src.split('#')[0];
+    for (let host: DomHost | null = this; host; host = host.frameParent) {
+      if (host !== this && !this._sameOrigin(src)) break;
+      const bytes = host.entries?.call('__blobBytes', [url]);
+      if (typeof bytes !== 'string') continue;
+      const type = host.entries?.call('__blobType', [url]);
+      return {
+        url: src,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: [['content-type', typeof type === 'string' ? type : '']],
+        body: '',
+        bytes: Buffer.from(bytes, 'base64'),
+      };
+    }
+    return null;
   }
 
   /** A `data:` URL as a frame's document is read: no network has one. */
@@ -7407,6 +7455,26 @@ export class DomHost {
    *  `write` and `close`'s. */
   private _fill(doc: Document, markup: string): void {
     this._replaceAll(doc, this._htmlTree(markup));
+  }
+
+  /**
+   * A frame's document a script wrote has come to its end, and the frame
+   * hears `load` in a task of its own, as for a document it loaded (HTML
+   * 13.2.7, "the end"). A preview written with `open`, `write` and `close`
+   * and a page waiting on the frame's `onload` waited for good. A document
+   * that is no frame's has no `load` to tell, and one the frame has gone on
+   * from by then none either.
+   */
+  private _wroteFrame(doc: Document): void {
+    const frame = this._frameOf.get(doc);
+    if (!frame || this._frames.get(frame) !== doc) return;
+    const serial = (this._frameLoads.get(frame) ?? 0) + 1;
+    this._frameLoads.set(frame, serial);
+    setTimeout(() => {
+      if (this._disposed || !this.entries) return;
+      if (this._frameLoads.get(frame) !== serial) return;
+      this.entries.call('__fire', [this.idOf(frame), 'load']);
+    }, 0);
   }
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,

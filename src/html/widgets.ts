@@ -1243,6 +1243,12 @@ function renderControl(
   const key = `${rect.kind}:${ctx.widgets.idOf(el)}`;
   const disabled = isDisabled(el);
   const readOnly = attr(el, 'readonly') !== undefined;
+  // The element's, handed to each widget: core shows the deepest node's, and
+  // a widget names its own, last in the style it is handed but for the
+  // caller's. `<Radio>` takes no style, and a native `<Button>` or `<Select>`
+  // has it on the box around the one that names `pointer`, so those three
+  // show their own.
+  const { cursor } = rect;
   // a field whose box the document draws takes its content box
   const at = rect.bare ?? rect;
   const left = Math.round(at.x);
@@ -1275,6 +1281,10 @@ function renderControl(
     // reaches `useTheme` and not the cascade.
     fontFamily: rect.fontFamily,
     fontSize: rect.fontSize,
+    // for what in the widget names no cursor of its own, which is all of a
+    // disabled one: past this box is the document's root, whose I-beam says
+    // its text can be taken
+    cursor,
     // core's `opacity` is CSS's: the widget faded as a group, and at 0 not
     // drawn and still hit
     ...(rect.opacity !== undefined && { opacity: rect.opacity }),
@@ -1325,7 +1335,7 @@ function renderControl(
         ...order,
         // the element's whole box takes the press, as it does in a browser:
         // a page that sizes one over its label, invisible, means the label
-        style: { width: '100%', height: '100%' },
+        style: { width: '100%', height: '100%', cursor },
         onChange: (ev) => ctx.setChecked(el, ev.value),
       });
       break;
@@ -1350,7 +1360,7 @@ function renderControl(
         disabled,
         ...order,
         ...(ownFont && { native: false }),
-        style: { width: '100%', height: '100%' },
+        style: { width: '100%', height: '100%', cursor },
         // a key that presses it is a click of no count, and no pointer's
         onPress: (ev) =>
           ctx.click(
@@ -1387,6 +1397,7 @@ function renderControl(
           disabled,
           ...order,
           ...(ownFont && { native: false }),
+          style: { cursor: rect.buttonCursor },
           // the keyboard's, and a press on it, which goes no further
           onPress: (ev) => {
             ev.stopPropagation?.();
@@ -1420,6 +1431,7 @@ function renderControl(
         forms,
         disabled,
         ...order,
+        cursor,
         size: { width: content.width, height: content.height },
         reach: {
           top: content.y - rect.y,
@@ -1477,8 +1489,8 @@ function renderControl(
         disabled,
         ...order,
         style: rect.bare
-          ? [BARE_TRIGGER, { width: '100%', height: '100%' }]
-          : { width: '100%', height: '100%' },
+          ? [BARE_TRIGGER, { width: '100%', height: '100%', cursor }]
+          : { width: '100%', height: '100%', cursor },
         // the slots choose the drawn trigger on every backend, and put the
         // caption and the arrow in the page's ink
         ...(rect.bare && {
@@ -1523,7 +1535,7 @@ function renderControl(
         ...order,
         // its caret is the field's text colour, as a text input's is
         ...(rect.bare && { caretColor: rect.bare.color }),
-        style: [field, FIELD_BOX],
+        style: [field, FIELD_BOX, { cursor }],
         onChange: readOnly ? undefined : (ev) => typed(ev.value),
         ...selectionWatch,
         onFocus: () => ctx.focused(el, true),
@@ -1552,7 +1564,7 @@ function renderControl(
         // palette's own field keeps the palette's caret — and not what its
         // glyphs are filled with, which `-webkit-text-fill-color` may hide
         ...(rect.bare && { caretColor: rect.bare.color }),
-        style: [field, FIELD_BOX],
+        style: [field, FIELD_BOX, { cursor }],
         // What is typed is the field's value and not its `value`
         // attribute, which is its default (HTML 4.10.5.4): a script tells
         // `value` from `defaultValue`, and `[value=…]` matches the markup.
