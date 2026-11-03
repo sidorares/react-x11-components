@@ -7017,7 +7017,8 @@ of the page's padding or border, as Blink and WebKit reset both, and draws
 none of its background, so it stays as large as its size says. At
 `appearance: none` it has no look of its own at all, in every engine, and is
 the page's box, 0 by 0 unless the page sizes it, its `::before` and
-`::after` with it. That is how Bootstrap's, Tailwind's and Pico's
+`::after` with it. It is a border box, as a select and a search field are,
+as in Blink, so a page's `width` holds its edges. That is how Bootstrap's, Tailwind's and Pico's
 checkboxes and switches are drawn. A press or Space ticks it, its click told
 after it has ticked, and a stop takes the focus for it, named to an
 assistive technology as a checkbox or a radio button with its state. A file
@@ -7063,7 +7064,10 @@ above. A
 `<select>` keeps its arrow, in that colour, as a browser keeps one on a
 select the page gave a border or a background, and loses it at
 `appearance: none`, where the page draws its own — as a background image,
-most often. Its widget is core's `<Select>` restyled through its
+most often. It is as wide as its widest option set in its font, and its
+arrow's room beside it, Blink's 1.6em or what core's trigger takes for its
+chevron where that is more; read as a count of letters, a drop-down cut its
+own label short. Its widget is core's `<Select>` restyled through its
 `labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
 on every backend: under a native popup bezel the page's box would have
 AppKit's drawn over it. Its list is the platform's own menu wherever the
@@ -7107,7 +7111,8 @@ keyboard does not move its selection, and an `<optgroup>` draws no label.
 
 **A meter and a progress bar are the size HTML gives them.** 5em and 10em
 wide, 1em tall, border-box, as Blink and WebKit size them; they took no room
-at all. One the page leaves alone is core's `<ProgressBar>`, sliding
+at all. One the page leaves alone is core's `<ProgressBar>`, half as thick
+as its box and across its middle, as a browser's native bar is, sliding
 through its track where a `<progress>` has no `value`, and a meter outside
 its optimum is amber or red. One the page styles is drawn by the document
 as Chrome draws one with no native look: a progress bar's bar grey and its
