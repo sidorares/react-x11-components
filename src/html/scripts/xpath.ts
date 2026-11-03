@@ -9,8 +9,9 @@
 import { Comment, Element, ProcessingInstruction, Text } from 'domhandler';
 import type { AnyNode, ParentNode } from 'domhandler';
 
+import { namespaceFor, namespaceOf } from '../dom.js';
+
 export const HTML_NS = 'http://www.w3.org/1999/xhtml';
-const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** An attribute, as an expression selects one. */
 export class XAttr {
@@ -377,34 +378,11 @@ const parentOf = (n: XNode): AnyNode | null =>
 const local = (name: string): string => name.slice(name.indexOf(':') + 1);
 const asciiLower = (text: string): string =>
   text.replace(/[A-Z]/g, (c) => c.toLowerCase());
-/** An element's namespace: what it was made in, or where it stands, as the
- *  HTML parser keeps none. */
-export function namespaceOf(el: Element): string {
-  if (el.namespace !== undefined) return el.namespace;
-  for (let at: AnyNode | null = el; at instanceof Element; at = at.parent) {
-    if (at.name.toLowerCase() === 'svg') return SVG_NS;
-    if (at.name.toLowerCase() === 'foreignobject' && at !== el) break;
-  }
-  return HTML_NS;
-}
 /** An attribute's namespace, by the declarations around its element. */
 function attrNamespace(attr: XAttr): string {
   const colon = attr.name.indexOf(':');
   if (colon < 0) return '';
   return namespaceFor(attr.el, attr.name.slice(0, colon)) ?? '';
-}
-export function namespaceFor(el: AnyNode, prefix: string): string | null {
-  if (prefix === 'xml') return 'http://www.w3.org/XML/1998/namespace';
-  if (prefix === 'xmlns') return 'http://www.w3.org/2000/xmlns/';
-  for (let at: AnyNode | null = el; at; at = at.parent) {
-    if (!(at instanceof Element)) continue;
-    const value = at.attribs[prefix ? `xmlns:${prefix}` : 'xmlns'];
-    if (value !== undefined) return value;
-    if (prefix && at.name.startsWith(`${prefix}:`)) {
-      return at.namespace ?? null;
-    }
-  }
-  return null;
 }
 
 /** A node's string value (XPath 1.0, 5). */

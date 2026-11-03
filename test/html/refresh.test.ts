@@ -4227,6 +4227,58 @@ function reachRulesFor(next: () => number): string {
 }
 
 /**
+ * Rules with namespaces in them, in a sheet of their own, as `@namespace` has
+ * to start one: every selector here is matched with what a bar says written
+ * out (`qualifiedSelector`), and `data-x` is told by a change as a name
+ * alone, so what a test of it in a namespace reaches is found by that name.
+ */
+function namespaceRulesFor(next: () => number): string {
+  const pick = <T>(list: readonly T[]): T =>
+    list[Math.floor(next() * list.length)];
+  const c = () => pick(CLASSES);
+  const t = () => pick(TAGS);
+  const v = () => pick(['y', 'z', 'Z', 'yy']);
+  const shapes: (() => string)[] = [
+    () => `*|${t()}`,
+    () => `h|${t()}.${c()}`,
+    () => `s|${t()}`,
+    () => `|${t()}`,
+    () => `*|*.${c()}`,
+    () => `.${c()}`,
+    () => `h|*.${c()} > *|${t()}`,
+    () => `h|${t()}:not(.${c()}) + *|*`,
+    () => `:not(s|*):first-child`,
+    () => `[*|data-x=${v()}]`,
+    () => `[|data-x]`,
+    () => `[h|data-x]`,
+    () => `.${c()} [*|data-x~=${v()}]`,
+    () => `[*|data-x=${v()}] .${c()}`,
+    () => `:is([|data-x=${v()}]) ~ .${c()}`,
+    () => `*|*:not([*|data-x]) > *|*.${c()}`,
+    () => `h|*:has(> [*|data-x=${v()}]) .${c()}`,
+    () => `*|*:has(.${c()}) > h|${t()}`,
+    () => `*|*:nth-child(1 of h|${t()})`,
+  ];
+  const declarations: (() => string)[] = [
+    () => `color: ${pick(INKS)}`,
+    () => 'font-weight: bold',
+    () => `display: ${pick(['none', 'block', 'inline-block'])}`,
+    () => `padding-left: ${Math.floor(next() * 20)}px`,
+  ];
+  const rules: string[] = [
+    '</style><style>',
+    next() < 0.5 ? '@namespace "http://www.w3.org/1999/xhtml";' : '',
+    '@namespace h "http://www.w3.org/1999/xhtml";',
+    '@namespace s "http://www.w3.org/2000/svg";',
+  ];
+  const count = 6 + Math.floor(next() * 8);
+  for (let i = 0; i < count; i += 1) {
+    rules.push(`${pick(shapes)()} { ${pick(declarations)()} }`);
+  }
+  return rules.join('\n');
+}
+
+/**
  * Rules with a function in a `:has()`'s argument, which is compiled by
  * itself (`compileHoisted`): `apart` for those with a selector in it that
  * has a combinator, which reads elements no walk from a change finds, and
@@ -5739,6 +5791,37 @@ test('in a document of :has()s that ask only of their children and of sibling co
   // and with shadow trees, and rules across their edges: an element a
   // script moves into a tree is styled by that tree's rules
   await refreshesAgree(20, true, true, undefined, 1, reachRulesFor);
+});
+
+test('a namespace no change can change leaves what a change reaches as narrow as it was', async () => {
+  // every compound here has its namespace written beside it, and a `:has()`
+  // of an element's children with a pseudo-class in it would be asked of
+  // every element there is
+  const rows = Array.from(
+    { length: 200 },
+    (_, i) => `<li class="r"><b id="b${i}"></b></li>`,
+  ).join('');
+  const { node } = await render(
+    `<style>@namespace "http://www.w3.org/1999/xhtml";:has(> b.on) .r{color:#ff0000}</style><ul>${rows}</ul>`,
+  );
+  await act();
+  const el = view(node);
+  const target = findById(el.document, 'b7')!;
+  const reach = scopeOf(el, [setClass(target, 'on')]);
+  assert.ok(reach, 'a refresh of everything');
+  assert.ok(reach.size < 20, `${reach.size} elements for one class`);
+});
+
+test('in a document of namespaced selectors, a refresh told what changed comes to the same styles', async () => {
+  const ways = await refreshesAgree(
+    120,
+    false,
+    false,
+    undefined,
+    1,
+    namespaceRulesFor,
+  );
+  assert.ok(ways.inPlace + ways.build > ways.whole, JSON.stringify(ways));
 });
 
 test('in a document of functions in :has()s, a refresh told what changed comes to the same styles', async () => {
