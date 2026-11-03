@@ -14232,6 +14232,17 @@ export function installDom(
   class HTMLTableColElement extends HTMLElement {}
   class HTMLLegendElement extends HTMLElement {}
   class HTMLOptGroupElement extends HTMLElement {}
+  // its `disabled` disables the options it holds, which `:disabled` reads
+  Object.defineProperty(
+    HTMLOptGroupElement.prototype,
+    'disabled',
+    flag('disabled'),
+  );
+  Object.defineProperty(
+    HTMLOptGroupElement.prototype,
+    'label',
+    reflect('label'),
+  );
   class HTMLDataListElement extends HTMLElement {}
   class HTMLProgressElement extends HTMLElement {
     get value(): number {

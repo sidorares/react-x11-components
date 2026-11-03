@@ -372,20 +372,27 @@ button, input[type=button], input[type=submit], input[type=reset] {
   background-color: ButtonFace;
   color: ButtonText;
   text-align: center;
-  cursor: pointer;
 }
 /* an input button's label is one line, which it does not wrap */
 input[type=button], input[type=submit], input[type=reset] { white-space: pre; }
 button[disabled], input[type=button][disabled], input[type=submit][disabled],
-input[type=reset][disabled] { color: GrayText; cursor: default; }
+input[type=reset][disabled] { color: GrayText; }
 fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.6em; border: 1px solid ${look.borderColor}; }
 legend { display: block; padding: 0 2px; }
-label { cursor: pointer; }
+/* What a control shows under the pointer (csswg-drafts#14251, read off the
+   three engines for what the resolution leaves out): an arrow over what is
+   clicked or dragged as a whole, an I-beam over what takes text, and an
+   arrow again over a text field that is disabled. \`cursor\` inherits, so
+   these keep a control from taking the page's. */
+label, select, option, optgroup, button, input, ::file-selector-button { cursor: default; }
+textarea, input:not([type=hidden i], [type=checkbox i], [type=radio i], [type=button i], [type=submit i], [type=reset i], [type=color i], [type=file i], [type=image i], [type=range i], [type=date i], [type=datetime-local i], [type=month i], [type=time i], [type=week i]) { cursor: text; }
+textarea:disabled, input:disabled { cursor: default; }
+input[type=image i]:enabled, area[href] { cursor: pointer; }
 
 /* no margin: the rendering section of HTML gives a details none, and nor
    do Chrome, Firefox or Safari — with half an em above and below it, the
    accordions in GitHub's pricing cards were 16px taller than a browser's */
-summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; cursor: pointer; }
+summary { display: list-item; counter-increment: list-item 0; list-style: disclosure-closed inside; }
 details[open] > summary:first-of-type { list-style-type: disclosure-open; }
 /* what a details holds but its summary is in a box of its own (HTML 15.3.4,
    CSS Pseudo 4), which a closed one keeps and hides, so that a page can

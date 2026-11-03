@@ -7092,6 +7092,27 @@ test("a page's matches() answers a control's state as Chromium's does", async ()
   assert.deepStrictEqual(differ, []);
 });
 
+test("an optgroup's disabled disables the options it holds, past a wrapper, to matches() and to a rule", async () => {
+  // WPT's option-disabled-optgroup and its wrapper: an optgroup reflected
+  // no `disabled`, so setting it set nothing
+  const doc = await hosted(
+    '<style>option{color:#000000} option:disabled{color:#808080}</style>' +
+      '<select><optgroup id="g"><div><option id="o">x</option></div></optgroup></select>' +
+      '<p id="out"></p><script>' +
+      'var g = document.getElementById("g"), o = document.getElementById("o");' +
+      'var r = [o.matches(":disabled"), getComputedStyle(o).color];' +
+      'g.disabled = true;' +
+      'r.push(g.hasAttribute("disabled"), o.matches(":disabled"), getComputedStyle(o).color);' +
+      'g.label = "l"; r.push(g.getAttribute("label"));' +
+      'document.getElementById("out").textContent = r.join(" ");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false rgb(0, 0, 0) true true rgb(128, 128, 128) l',
+  );
+});
+
 test("a control's validity is one answer to a rule, to matches() and to the script that asks it, and a :has() follows it", async () => {
   const doc = await hosted(
     '<style>.w:has(input:invalid) b{color:#ff0000}</style>' +

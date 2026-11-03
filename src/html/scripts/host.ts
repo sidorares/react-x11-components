@@ -4814,6 +4814,9 @@ export class DomHost {
       case 'computed': {
         this.flush();
         const pseudo = computedPseudo(b);
+        // and a file input's button, which only a document draws, for its
+        // widget (`Cascade.partStyle`)
+        const part = b === 'file-selector-button' ? b : pseudo;
         // a page's realm asks for the shorthands (`d`) only where it reads
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
@@ -4838,10 +4841,10 @@ export class DomHost {
         if (typeof c === 'string') {
           if (!comesFromBox(c)) return '';
         } else if (handle.styleWhileOwed) {
-          const json = send(handle.styleWhileOwed(this._element(a), pseudo));
+          const json = send(handle.styleWhileOwed(this._element(a), part));
           return json && !d && handle.layoutOwed?.() ? `~${json}` : json;
         }
-        return send(handle.computedStyle(this._element(a), pseudo));
+        return send(handle.computedStyle(this._element(a), part));
       }
       case 'computedShorthands':
         return JSON.stringify(SHORTHAND_NAMES);
