@@ -10715,8 +10715,14 @@ export function installDom(
         },
       },
       reload: {
+        // a reload, not a replace: `navigate` fires with `navigationType`
+        // "reload" and no formData (WPT navigate-form-reload)
         value() {
-          go(at(), true);
+          at();
+          const doc = frameDocumentOf(frame);
+          const made = doc && frameSessions.get(doc);
+          if (made) void made.navigation.reload();
+          else call('frameNavigate', frame._id, at());
         },
       },
       toString: {
@@ -19614,9 +19620,11 @@ export function installDom(
     replace(url: Any): void {
       navigateDocument(String(call('resolve', str(url))), true);
     },
-    // another document, which unloads this one
+    // another document, which unloads this one — but `navigate` fires first
+    // (HTML 7.2.4 / 7.2.6.10), as `navigation.reload()` does, so a handler
+    // may intercept or cancel it (WPT navigate-destination-getState-reload)
     reload(): void {
-      pageSession.session.ctx.reload();
+      void navigation.reload();
     },
     toString(): string {
       return this.href;
@@ -30095,7 +30103,8 @@ export function installDom(
       const s = historyOf(this);
       const delta = Number(n) || 0;
       if (delta) traverseBy(s, delta);
-      else s.ctx.reload();
+      // `go(0)` is a reload: `navigate` fires, as `location.reload` does
+      else void s.navigation!.reload();
     }
     pushState(state: Any, _title: Any, url?: Any): void {
       updateHistory(historyOf(this), state, url, 'push', 'pushState');
