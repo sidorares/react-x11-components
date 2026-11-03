@@ -2027,8 +2027,24 @@ and its keyboard activation a `<button>`'s (`pressableAt`, `activate`); one
 it leaves alone is the palette's widget. **Anything that asks whether a box
 is a button asks `isButton` or `isButtonBlock`**, which answer for both,
 and a restyle that turns the styling on or off builds the box again
-(`isInputButton` in `_restyleInPlace`): a black pill was the palette's
-white framed button, half as wide again.
+(`drawnControl` in `_restyleInPlace`): a black pill was the palette's
+white framed button, half as wide again. A checkbox or a radio button at
+`appearance: none` is the same, a box the document draws with its
+`::before` and `::after`, ticked by a press and by Space: **anything that
+asks whether a control is mounted or drawn asks `drawnControl`**.
+
+**What styles a control is CSS UI 4's list, cascaded** (`stylesControl`):
+an author's value left, after `revert` and `revert-layer` roll theirs back,
+for a property `DISABLING` names, or `appearance: none`, or a drop-down's
+`menulist-button`. Who set it counts, not what to, so a page that writes
+back what it read takes the look off. Two things are load-bearing. **A name
+that sets one of the listed properties joins `DISABLING`**, a shorthand or a
+prefixed name among them, or a page that writes it keeps the palette's look.
+And **anything that answers a page from a control's style reads
+`styleAsRead`**, which has the web's edges where the palette's are in the
+style: read as the palette's, every value a page wrote back was a look no
+browser draws, and 480 of WPT's 802 tests of the list failed for it. A list
+box and a colour well have no palette's look at all (`drawnByDocument`).
 
 **A `<select>`'s menu is the document's to hold.** Its widget is core's
 `<Select>` given `open` and `onOpenChange` (`renderControl`), so a press
