@@ -8,12 +8,12 @@
 // the element by.
 //
 // **What plays a page's media is a player the host mounts over the box, which
-// opens a URL** (`videos.ts`, `sounds.ts`), and nothing hands it bytes as a
-// page appends them. So `isTypeSupported` says no to every type, and hls.js,
-// which asks it before it chooses, goes on to `canPlayType` and sets the
-// playlist as the element's `src`, where the player has it. A yes to what
-// `canPlayType` says yes to would take those streams from a player that plays
-// them to a buffer nothing reads.
+// opens a URL** (`videos.ts`, `sounds.ts`). So what a page appends of
+// fragmented MP4 — H.264 and AAC, what YouTube streams — is handed to it as
+// an HLS stream the host serves over loopback, a few seconds at a time as it
+// is appended (`feeds.ts`), and `isTypeSupported` says yes to those types
+// where the player reads HLS and to no other. YouTube's watch page plays
+// nothing without them: its player gets no file it could play whole.
 //
 // **A clip is another matter.** Apple's product pages make a `MediaSource` in
 // every browser that is not Safari, without asking, and `addSourceBuffer` a
@@ -21,8 +21,8 @@
 // the scroll. That is the one type `addSourceBuffer` takes, where the host's
 // player plays VP9 (`clips.ts`): what is appended is kept on the host's side,
 // and when the page ends the stream the host hands the player a file of it.
-// Asked first, `isTypeSupported` still says no, since a streaming player would
-// append and show nothing until its end.
+// Asked first, `isTypeSupported` still says no to it, since a streaming player
+// would append and show nothing until its end.
 //
 // **A page's other types have the path they always had**: `addSourceBuffer`
 // throws the `NotSupportedError` a browser throws for a type it cannot decode.
@@ -55,6 +55,10 @@ export interface MseDeps {
 export interface MseElement {
   /** The element, as the host numbers it. */
   id: number;
+  /** The URL its source was set as, which its player's news is told by. */
+  src: string;
+  /** Where its clock is, which what a full buffer evicts keeps clear of. */
+  time(): number;
   durationChanged(duration: number): void;
   /** The stream ended with nothing to play. */
   failed(): void;
@@ -78,6 +82,11 @@ export interface MseInstalled {
   buffered(source: unknown): unknown;
   /** Whether it has `time`, and how far on it has it from there. */
   ahead(source: unknown, time: number): number;
+  /** Whether what it holds plays as it is appended (`feeds.ts`), so that
+   *  the element's clock is its player's from the start. */
+  streams(source: unknown): boolean;
+  /** Whether the page ended its stream. */
+  ended(source: unknown): boolean;
 }
 
 export function installMse(deps: MseDeps): MseInstalled {
@@ -93,6 +102,7 @@ export function installMse(deps: MseDeps): MseInstalled {
   const host: Any = D.host;
   const base64: Any = D.base64;
   const parse: Any = JSON.parse;
+  const stringify: Any = JSON.stringify;
   const isView: Any = ArrayBuffer.isView;
   const classOf: Any = Object.prototype.toString;
   const Uint8: Any = Uint8Array;
@@ -240,7 +250,12 @@ export function installMse(deps: MseDeps): MseInstalled {
     new DOMException(sbFailed(method, message), 'InvalidStateError');
 
   class SourceBuffer extends EventTarget {
-    constructor(token: Any = undefined, source: Any = null, id = 0) {
+    constructor(
+      token: Any = undefined,
+      source: Any = null,
+      id = 0,
+      stream = false,
+    ) {
       super();
       if (token !== TOKEN) throw illegalConstructor('SourceBuffer');
       apply(wmSet, slots, [
@@ -249,8 +264,15 @@ export function installMse(deps: MseDeps): MseInstalled {
           sourceBuffer: true,
           source,
           id,
+          stream,
           updating: false,
           removed: false,
+          /** Which append or removal is under way: one `abort()` stopped
+           *  finds another, and fires `abort` for it. */
+          run: 0,
+          aborted: 0,
+          initialized: false,
+          init: null,
           mode: 'segments',
           offset: 0,
           windowStart: 0,
@@ -326,32 +348,74 @@ export function installMse(deps: MseDeps): MseInstalled {
         media.state = 'open';
         task(() => fire(s.source, new Event('sourceopen')));
       }
+      // a feed is told the buffer's attributes, which its frames are
+      // processed by (MSE 3.5.8), and where the clock is
+      const told = parse(
+        host(
+          'mseAppend',
+          s.id,
+          base64(bytes),
+          s.stream
+            ? stringify({
+                offset: s.offset,
+                mode: s.mode,
+                windowStart: s.windowStart,
+                windowEnd: s.windowEnd === Infinity ? null : s.windowEnd,
+                time: media.element ? media.element.time() : 0,
+              })
+            : undefined,
+        ),
+      );
+      // MSE 3.5.10's prepare append: too full even with what is behind the
+      // clock evicted, and nothing of it is taken
+      if (told.refused) {
+        throw new DOMException(
+          sbFailed(
+            'appendBuffer',
+            'The SourceBuffer is full, and cannot free space to append additional buffers.',
+          ),
+          'QuotaExceededError',
+        );
+      }
       s.updating = true;
-      const told = parse(host('mseAppend', s.id, base64(bytes)));
+      s.run += 1;
+      const run = s.run;
       // one task for all of it: a page that reads and appends as a stream
       // arrives has a few hundred of these, each a turn of a busy thread
       task(() => {
         if (s.removed) return;
-        fire(this, new Event('updatestart'));
-        s.updating = false;
+        const aborted = s.aborted === run;
+        if (!aborted) {
+          fire(this, new Event('updatestart'));
+          s.updating = false;
+        }
         s.ranges = told.ranges;
+        if (told.offset !== undefined) s.offset = told.offset;
         if (told.failed) {
+          if (aborted) return;
           fire(this, new Event('error'));
           fire(this, new Event('updateend'));
           if (media.state === 'open') s.source.endOfStream('decode');
           return;
+        }
+        if (told.init && !s.initialized) {
+          s.initialized = true;
+          s.init = told.init;
+          initialized(media);
         }
         if (told.width !== undefined) {
           media.duration = told.duration;
           media.element?.metadata(told.duration, told.width, told.height);
         }
         media.element?.buffered();
+        if (aborted) return;
         fire(this, new Event('update'));
         fire(this, new Event('updateend'));
       });
     }
-    /** MSE 3.5, `abort`: nothing is ever under way past a task, so all there
-     *  is to stop is the append that task has not reported. */
+    /** MSE 3.5, `abort`: the append under way, whose bytes the host has
+     *  already read, says `abort` and not `update`, and the parser starts
+     *  again at the next segment. */
     abort(): void {
       const s = slotOf(this, 'sourceBuffer');
       if (s.removed || slotOf(s.source, 'source').state !== 'open') {
@@ -360,14 +424,59 @@ export function installMse(deps: MseDeps): MseInstalled {
           'This SourceBuffer has been removed from the parent media source.',
         );
       }
+      if (s.updating && s.removing) {
+        throw sbInvalid(
+          'abort',
+          "This SourceBuffer is still processing a 'remove' operation.",
+        );
+      }
+      if (s.updating) {
+        s.updating = false;
+        s.aborted = s.run;
+        task(() => {
+          if (s.removed) return;
+          fire(this, new Event('abort'));
+          fire(this, new Event('updateend'));
+        });
+      }
+      if (s.stream) host('mseAbort', s.id);
+      s.windowStart = 0;
+      s.windowEnd = Infinity;
     }
-    /** MSE 3.5: nothing else is a type a clip's player takes. */
+    /** MSE 3.5: another type a feed takes, read from the next initialization
+     *  segment on; nothing else is a type a clip's player takes. */
     changeType(type: Any): void {
-      slotOf(this, 'sourceBuffer');
-      throw new DOMException(
-        sbFailed('changeType', `The type provided ('${type}') is unsupported.`),
-        'NotSupportedError',
-      );
+      const s = slotOf(this, 'sourceBuffer');
+      const named = `${type}`;
+      if (!named) {
+        throw typeError(sbFailed('changeType', 'The type provided is empty.'));
+      }
+      if (s.removed) {
+        throw sbInvalid(
+          'changeType',
+          'This SourceBuffer has been removed from the parent media source.',
+        );
+      }
+      if (s.updating) {
+        throw sbInvalid(
+          'changeType',
+          "This SourceBuffer is still processing an 'appendBuffer' or 'remove' operation.",
+        );
+      }
+      if (!s.stream || host('mseChangeType', s.id, named) !== true) {
+        throw new DOMException(
+          sbFailed(
+            'changeType',
+            `The type provided ('${named}') is unsupported.`,
+          ),
+          'NotSupportedError',
+        );
+      }
+      const media = slotOf(s.source, 'source');
+      if (media.state === 'ended') {
+        media.state = 'open';
+        task(() => fire(s.source, new Event('sourceopen')));
+      }
     }
     /** MSE 3.5, `remove`. */
     remove(start: Any, end: Any): void {
@@ -404,12 +513,15 @@ export function installMse(deps: MseDeps): MseInstalled {
         );
       }
       s.updating = true;
+      s.removing = true;
       const told = parse(host('mseRemove', s.id, from, to));
       task(() => {
+        s.removing = false;
         if (s.removed) return;
         fire(this, new Event('updatestart'));
         s.updating = false;
         s.ranges = told.ranges;
+        media.element?.buffered();
         fire(this, new Event('update'));
         fire(this, new Event('updateend'));
       });
@@ -418,6 +530,62 @@ export function installMse(deps: MseDeps): MseInstalled {
   for (const name of ['updatestart', 'update', 'updateend', 'error', 'abort']) {
     handler(SourceBuffer.prototype, name);
   }
+
+  /** MSE 3.5.7's last step: once every buffer has had an initialization
+   *  segment, the element has its metadata — the length the page set, or
+   *  the stream's own, or no end — and the picture's size. */
+  const initialized = (media: Any): void => {
+    if (media.metadata) return;
+    const buffers = slotOf(media.buffers, 'list').items.map((b: Any) =>
+      apply(wmGet, slots, [b]),
+    );
+    if (!buffers.length || buffers.some((b: Any) => !b.initialized)) return;
+    media.metadata = true;
+    const sized = buffers.find((b: Any) => b.init.width > 0)?.init;
+    if (media.duration !== media.duration) {
+      const said = buffers.find((b: Any) => b.init.duration)?.init.duration;
+      media.duration = said > 0 ? said : Infinity;
+    }
+    media.element?.metadata(
+      media.duration,
+      sized ? sized.width : 0,
+      sized ? sized.height : 0,
+    );
+  };
+
+  /** What all of a source's active buffers hold (MSE 2.4.5, `buffered`):
+   *  the intersection of theirs, its last range to the highest end of any
+   *  once the stream has ended. */
+  const holds = (source: Any): [number, number][] => {
+    const media = slotOf(source, 'source');
+    const lists = slotOf(media.active, 'list').items.map(
+      (b: Any) => apply(wmGet, slots, [b]).ranges as [number, number][],
+    );
+    if (!lists.length) return [];
+    let out: [number, number][] = lists[0].map((r: Any) => [r[0], r[1]]);
+    let highest = 0;
+    for (const ranges of lists) {
+      if (ranges.length)
+        highest = Math.max(highest, ranges[ranges.length - 1][1]);
+    }
+    for (const ranges of lists.slice(1)) {
+      const next: [number, number][] = [];
+      let i = 0;
+      let j = 0;
+      while (i < out.length && j < ranges.length) {
+        const start = Math.max(out[i][0], ranges[j][0]);
+        const end = Math.min(out[i][1], ranges[j][1]);
+        if (end > start) next.push([start, end]);
+        if (out[i][1] < ranges[j][1]) i += 1;
+        else j += 1;
+      }
+      out = next;
+    }
+    if (media.state === 'ended' && out.length) {
+      out[out.length - 1][1] = Math.max(out[out.length - 1][1], highest);
+    }
+    return out;
+  };
 
   class MediaSource extends EventTarget {
     constructor() {
@@ -429,6 +597,8 @@ export function installMse(deps: MseDeps): MseInstalled {
           state: 'closed',
           duration: NaN,
           element: null,
+          /** Whether the element was told its metadata (`initialized`). */
+          metadata: false,
           buffers: new SourceBufferList(TOKEN),
           active: new SourceBufferList(TOKEN),
         },
@@ -478,8 +648,19 @@ export function installMse(deps: MseDeps): MseInstalled {
           failed('addSourceBuffer', 'The type provided is empty'),
         );
       }
-      const id =
-        s.state === 'closed' ? 0 : Number(host('mseOpen', named, s.element.id));
+      const opened =
+        s.state === 'closed'
+          ? { id: 0 }
+          : parse(
+              host(
+                'mseOpen',
+                named,
+                s.element.id,
+                s.element.src,
+                s.element.time(),
+              ),
+            );
+      const id = Number(opened.id);
       if (!id) {
         throw new DOMException(
           failed(
@@ -493,7 +674,7 @@ export function installMse(deps: MseDeps): MseInstalled {
         host('mseClose', id);
         throw notOpen("Failed to execute 'addSourceBuffer' on 'MediaSource'");
       }
-      const buffer = new SourceBuffer(TOKEN, this, id);
+      const buffer = new SourceBuffer(TOKEN, this, id, opened.stream === true);
       addTo(s.buffers, buffer);
       addTo(s.active, buffer);
       return buffer;
@@ -627,14 +808,15 @@ export function installMse(deps: MseDeps): MseInstalled {
     static get canConstructInDedicatedWorker(): boolean {
       return false;
     }
+    /** What a feed takes, where the player reads HLS (`feeds.ts`): never
+     *  a clip's VP9, which plays only once the stream ends. */
     static isTypeSupported(type: Any): boolean {
       if (arguments.length < 1) {
         throw typeError(
           failed('isTypeSupported', '1 argument required, but only 0 present.'),
         );
       }
-      void `${type}`;
-      return false;
+      return host('mseSupports', `${type}`) === true;
     }
   }
   for (const name of ['sourceopen', 'sourceended', 'sourceclose']) {
@@ -666,6 +848,7 @@ export function installMse(deps: MseDeps): MseInstalled {
       s.state = 'closed';
       s.duration = NaN;
       s.element = null;
+      s.metadata = false;
       for (const b of [...slotOf(s.buffers, 'list').items]) {
         const buffer = apply(wmGet, slots, [b]);
         buffer.removed = true;
@@ -681,16 +864,22 @@ export function installMse(deps: MseDeps): MseInstalled {
       task(() => fire(source, new Event('sourceclose')));
     },
     buffered(source: Any): Any {
-      const [first] = slotOf(slotOf(source, 'source').active, 'list').items;
-      return timeRanges(first ? apply(wmGet, slots, [first]).ranges : []);
+      return timeRanges(holds(source));
     },
     ahead(source: Any, time: number): number {
-      const [first] = slotOf(slotOf(source, 'source').active, 'list').items;
-      if (!first) return -1;
-      for (const [start, end] of apply(wmGet, slots, [first]).ranges) {
-        if (time >= start && time < end) return end - time;
+      for (const [start, end] of holds(source)) {
+        if (time >= start - 0.0005 && time < end) return end - time;
       }
       return -1;
+    },
+    ended(source: Any): boolean {
+      return slotOf(source, 'source').state === 'ended';
+    },
+    streams(source: Any): boolean {
+      const media = slotOf(source, 'source');
+      return slotOf(media.buffers, 'list').items.some(
+        (b: Any) => apply(wmGet, slots, [b]).stream === true,
+      );
     },
   };
 }
