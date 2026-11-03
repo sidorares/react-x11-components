@@ -292,8 +292,10 @@ metric(
   async () => {
     // Its writing mode is the document's principal one, which a browser
     // lays the root element out in (CSS Writing Modes 4, 8): its lines
-    // start at the right, 391 in a viewport 400 wide with an 8px margin
-    // in all three engines, written or implied `<html>` alike
+    // start at the right, the first 20 across from 392, in a viewport 400
+    // wide with an 8px margin, and its text in the middle of it at 382 in
+    // all three engines, written or implied `<html>` alike — the middle,
+    // which no face's ascent and descent move
     const sheet = '<style>html{font:16px/20px sans-serif}</style>';
     for (const source of [
       `${sheet}<body style="writing-mode:vertical-rl"><span id="t">aaa bbb</span></body>`,
@@ -302,7 +304,8 @@ metric(
     ]) {
       const { node } = await render(source, 400);
       const t = rectOf(view(node), 't');
-      assert.ok(Math.abs(t.x + t.width - 391) < 0.01, `${source}: ${t.x}`);
+      const middle = t.x + t.width / 2;
+      assert.ok(Math.abs(middle - 382) < 0.5, `${source}: ${middle}`);
       cleanup();
     }
     // and containment on the root keeps the body's to the body, which is
@@ -324,10 +327,12 @@ metric(
     // A box with no baseline of its own has its central one made up at its
     // middle (CSS Inline 3), so an image 50 across is a line 50 across and
     // the block 150 of borders and 50, where it was the strut's descent
-    // more; and a 10px one beside text sits 5 from the line's edge. Set
-    // sideways, the dominant baseline is the alphabetic one, and it sits
-    // on it by its edge, the line some 55 across: 55, 55.5 and 54.67 in
-    // Chromium, Firefox and WebKit
+    // more; and one 30 across beside text a line 30 across, the strut in
+    // the middle of it, in every face: so in all three engines in sans,
+    // serif and monospace alike. Set sideways, the dominant baseline is
+    // the alphabetic one, and it sits on it by its edge, the line wider by
+    // the strut's descent: 55, 55.5 and 54.67 in Chromium, Firefox and
+    // WebKit
     const edges = 'border-left:100px solid;border-right:50px solid';
     const { node } = await render(
       '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
@@ -336,7 +341,7 @@ metric(
         `<div id="lr" style="writing-mode:vertical-lr;${edges}">` +
         '<img id="li" width="50" height="50"></div>' +
         '<div id="s" style="writing-mode:vertical-rl">ab' +
-        '<img id="si" width="10" height="10">cd</div>' +
+        '<img id="si" width="30" height="30">cd</div>' +
         '<div id="w" style="writing-mode:vertical-rl;text-orientation:sideways">' +
         'ab<img width="50" height="50">cd</div>',
       400,
@@ -349,10 +354,10 @@ metric(
       assert.ok(Math.abs(img.x - box.x - 100) < 0.01, `${id}: ${img.x}`);
     }
     const s = rectOf(el, 's');
-    assert.ok(Math.abs(s.width - 20) < 0.01, `${s.width}`);
-    assert.ok(Math.abs(rectOf(el, 'si').x - s.x - 5) < 0.2);
+    assert.ok(Math.abs(s.width - 30) < 0.01, `${s.width}`);
+    assert.ok(Math.abs(rectOf(el, 'si').x - s.x) < 0.01);
     const w = rectOf(el, 'w').width;
-    assert.ok(w > 54 && w < 56, `sideways: ${w}`);
+    assert.ok(w > 51, `sideways: ${w}`);
   },
 );
 
