@@ -7026,18 +7026,20 @@ input and a colour well have no native look to give way: a file input's
 edges are the page's and its widget is in its content box, and a colour
 well is drawn by the document either way.
 
-**A page reads a control's style as the web's.** A control the palette draws
-has the palette's edges in its style, which is how its box comes to the
-widget's size. Its `getComputedStyle` reads the web's UA sheet instead: a
-text field's 2px inset border and 1px by 2px padding, a button's 2px outset
-border and 1px by 6px padding, square corners, the field's ground. Its
-`width` and `height` read what those edges leave of the box, so the parts
-add up to `offsetWidth`. A page that copies a style, as html2canvas and
-every autosizing text area do, builds on what a browser would hand it, and
-one that writes it back draws the control as the web's. The background's
-longhands, the border image's and the logical corners are read by name as
-Chrome reads them, and, like the shorthands, are not items of the list a
-page walks.
+**A page reads a control's border and ground as the web's.** A control the
+palette draws has the palette's border and ground in its style, none and
+transparent, which is how its box comes to the widget's size. Its
+`getComputedStyle` reads the web's UA sheet's instead, for each property on
+CSS UI 4's list: a text field's 2px inset border and its `Field` ground, a
+button's 2px outset border and `ButtonFace`, square corners. A page that
+copies a style writes back what a browser would hand it, which takes the
+palette's look off as it takes a browser's native one, and the control is
+drawn as the web's. Its padding, `width` and `height` read what its box has,
+so a page that writes those back, as WPT's test of what is not on the list
+does, keeps the control the size it is: beside the web's border they come to
+more than its `offsetWidth`, which is the cost. The background's longhands,
+the border image's and the logical corners are read by name as Chrome reads
+them, and, like the shorthands, are not items of the list a page walks.
 
 **A text field the page styled is the page's to draw.** Style an
 `<input>`, a `<textarea>` or a drop-down `<select>`, as above, and the

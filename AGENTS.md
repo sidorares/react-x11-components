@@ -2041,9 +2041,11 @@ back what it read takes the look off. Two things are load-bearing. **A name
 that sets one of the listed properties joins `DISABLING`**, a shorthand or a
 prefixed name among them, or a page that writes it keeps the palette's look.
 And **anything that answers a page from a control's style reads
-`styleAsRead`**, which has the web's edges where the palette's are in the
-style: read as the palette's, every value a page wrote back was a look no
-browser draws, and 480 of WPT's 802 tests of the list failed for it. A list
+`styleAsRead`**, which has the web's border and ground where the palette's
+are in the style: read as the palette's, every value a page wrote back was
+a look no browser draws, and 480 of WPT's 802 tests of the list failed for
+it. Only what is on the list reads the web's: a padding or a size written
+back takes no look off, and read as the web's it moved the box. A list
 box and a colour well have no palette's look at all (`drawnByDocument`).
 
 **A `<select>`'s menu is the document's to hold.** Its widget is core's
