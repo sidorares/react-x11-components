@@ -3289,8 +3289,10 @@ rest keep their posters:
 - **What the document paints after the video is painted over the player
   again.** A player is over the whole document, so a caption laid across a
   video, a play button in its corner or a gradient over a hero would be
-  hidden under it. Up to four such boxes are painted a second time, on a
-  `<canvas>` mounted after the player, as the document paints them: through
+  hidden under it. Up to four such boxes, with the boxes in them the
+  document paints as layers of their own, 32 layers in all, are painted a
+  second time, on a `<canvas>` mounted after the player, as the document
+  paints them: through
   a box's own transform, at its own opacity, through its own filter, blur
   and all — diabrowser.com's hero plays under a dock whose arc a scroll
   scales and whose halo is blurred and faded. The test is the one a
@@ -3302,8 +3304,8 @@ rest keep their posters:
   caption pulled up across it — which no box after the player can paint
   again, so that keeps its poster. So do a video and a box over it that a
   box around both fades, which the document fades as one group, a box over
-  it that a box with round corners clips, more than four of them, and both
-  under a scale. On macOS a player with a box over it is drawn into the
+  it that a box with round corners clips, more than four of them or more
+  than 32 layers, and both under a scale. On macOS a player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
 - **A box fixed to the viewport is asked about as the pane scrolls**, and
@@ -3320,10 +3322,22 @@ rest keep their posters:
   by what it cannot be cut around — joshwcomeau.com's floating like button,
   fixed beside its article and before its playgrounds in the tree, hid each
   playground's result.
+- **A video in a box fixed to the viewport plays where the viewport is.**
+  Its rect is where layout put it, at the document's top, with `atViewport`
+  set, and the player goes in a box core keeps at the viewport, as a
+  [frame](#embedded-content)'s mount does, so it stays with the fixed box as
+  the pane scrolls and a scroll tells `onMedia` nothing. m.youtube.com keeps
+  its player in a fixed box under its header. What the fixed box paints over
+  the video — the controls a phone's YouTube lays over its player and fades
+  in, one box the document paints as thirteen layers — and the boxes fixed
+  over it after it are painted over the player again, as for any video, in
+  the same terms: no scroll moves one against the other. What the document
+  scrolls under it cannot be, and a video with such a box over it keeps its
+  poster, as one with more over it than is painted again does.
 - **What a rectangle cannot follow** — a transform that turns or scales the
-  video or a box around it, a `clip-path` or a mask, a video fixed to the
-  viewport, or corners of its own, or of a box around it that cuts it, that
-  are not all one circle — keeps the poster. A box that clips it cuts the
+  video or a box around it, a `clip-path` or a mask, or corners of its own,
+  or of a box around it that cuts it, that are not all one circle — keeps
+  the poster. A box that clips it cuts the
   player, a card with round corners rounding it, and corners of its own
   that are one circle round it.
 
@@ -3477,7 +3491,8 @@ fixed over the window keeps its frame on the slide as the pane scrolls,
 and a scroll asks `renderEmbedded` nothing. A box fixed beside it does not
 cut it, since the scroll moves neither against the other; one fixed over
 it and painted after it keeps it from being mounted. A video fixed to the
-viewport still keeps its poster.
+viewport is mounted the same way, and what is painted over it is painted
+over its player again (see [Video](#video)).
 
 **An element in a sticky box goes with the box.** Where the box is one the
 viewport keeps, the rect is where the flow has the element, with `held` set,

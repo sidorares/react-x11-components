@@ -7318,7 +7318,8 @@ load-bearing. **What the document paints after the video over its picture
 is painted again over the player, or no player is mounted**, the sprite
 test (`coverersOver`, `crowded`), because a sibling over the document hides
 what is drawn over the video. Up to four such boxes, cut by a rectangle, go
-on a `<canvas>` after the player (`coversOf`, `paintCovers`), as a sprite's
+on a `<canvas>` after the player (`coversOf`, `paintCovers`), a box in another
+counting as part of it (`separateCovers`, `MAX_COVER_LAYERS`), as a sprite's
 coverers go on layers of their own (`overLiftOf`): GitHub's hero has a play
 button in its video's corner. Each is painted as the document paints a
 layer (`paintCover`), through its own matrix, opacity and filter — not
@@ -7374,6 +7375,27 @@ rect needs no telling: anything that changes a cover claims its damage as
 anything else does. And **a cover's rect is where the scroll has the box**,
 and `paintCovers` moves the viewport to the canvas's origin, which is what
 `atViewport` places a fixed box from.
+
+**A video in a fixed box plays at the viewport, and what covers it is laid
+out with it** (`MediaRect.atViewport`, `keptMount`'s `AT_VIEWPORT`).
+m.youtube.com keeps its player in a fixed box and lays its controls over it
+there: refused for being fixed, the page played a video nobody saw, and
+placed with no covers it was refused again as the controls drew. Nothing
+fixed moves against it, so `coverersOver` asks of the fixed boxes in the
+same terms (`fixedExtent`), and the covers are decided with the layout,
+not at each paint (`_fixedOver` skips it). Three things are load-bearing.
+**A cover's rect is in one of two places, and `Cover.atViewport` says
+which**: at the document's top for a player at the viewport, where the
+scroll has it for the rest, and `paintCovers` clips from the viewport or
+from the element by it. **`paintCover` places what is drawn at the
+viewport from the viewport** (`drawnAtViewport`, as `paintLiftedBox` does),
+since a box in a fixed one is no box `atViewport` moves. And **a cover of
+such a player is at the viewport, or there is none** (`coversOf`): a box
+the document scrolls under it is in no place a cover laid out once could
+say, so it keeps the poster. Its controls are one box painted as thirteen
+layers, a progress bar a part at a time, so a cap on covers counts the boxes
+that are in no other cover (`separateCovers`), and the room left for the
+fixed boxes over an in-flow player does too.
 
 **What an `<iframe>`, a `<canvas>` or an `<embed>` shows is the host's,
 mounted over its box** (`renderEmbedded`, `embedded.ts`). The document
