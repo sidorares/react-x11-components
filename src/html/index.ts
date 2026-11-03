@@ -1920,6 +1920,11 @@ function documentInteraction(
       }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
+      // and the page hears it before `blur()` returns (HTML 6.6.4, the
+      // unfocusing steps), where core's blur is told a microtask later for a
+      // move between two fields: a `focus()` straight after it found the
+      // element still holding the focus, and told nothing
+      forms?.letGo();
     },
     activeElement: () =>
       live.current?.forms.owed() ?? owner(focusedNode(view.current)),

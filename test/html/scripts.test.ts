@@ -12705,6 +12705,80 @@ test('a key typed in an editing host the page focused is an edit of it at the se
   );
 });
 
+test('a host the page took every range from edits nothing on a key, and a focus puts the caret back in it', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><p id="out"></p><script>' +
+      'var ed = document.getElementById("ed"), r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'addEventListener("beforeinput", function (e) { log("before:" + e.inputType); });' +
+      '</script>',
+  );
+  doc.run(
+    'ed.focus(); log("focused:" + getSelection().rangeCount);' +
+      'getSelection().removeAllRanges(); log("ranges:" + getSelection().rangeCount);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'ab');
+  doc.run(
+    'ed.blur(); ed.focus(); var s = getSelection();' +
+      'log("again:" + s.rangeCount + ":" + (s.anchorNode === ed) + ":" + s.anchorOffset);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'xab');
+  assert.equal(
+    doc.text('out'),
+    'focused:1|ranges:0|again:1:true:0|before:insertText',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a blur and a focus of the same element in one task are each heard', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><button id="b">b</button>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'for (const id of ["ed", "b"]) {' +
+      '  const el = document.getElementById(id);' +
+      '  el.addEventListener("focus", () => log("focus:" + id));' +
+      '  el.addEventListener("blur", () => log("blur:" + id));' +
+      '}' +
+      '</script>',
+  );
+  for (const id of ['ed', 'b']) {
+    doc.run(`document.getElementById("${id}").focus()`);
+    // the box that takes it is mounted by now
+    await settle();
+    doc.run(
+      `{ const el = document.getElementById("${id}"); el.blur(); el.focus();` +
+        `log("active:" + document.activeElement.id); }`,
+    );
+    await settle();
+    doc.run(`document.getElementById("${id}").blur()`);
+    await settle();
+  }
+  assert.equal(
+    doc.text('out'),
+    [
+      'focus:ed',
+      'blur:ed',
+      'focus:ed',
+      'active:ed',
+      'blur:ed',
+      'focus:b',
+      'blur:b',
+      'focus:b',
+      'active:b',
+      'blur:b',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 metric(
   'a range of the text of an editing host is measured where its letters are drawn, and a press there puts the caret at the letter',
   async () => {

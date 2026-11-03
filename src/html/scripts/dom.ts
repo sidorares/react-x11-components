@@ -31295,10 +31295,13 @@ export function installDom(
   };
 
   /** The selection's range where it is in `host`, put at the host's start
-   *  where it is anywhere else, as focusing a host puts it. */
+   *  where it is anywhere else, as focusing a host puts it, and null where
+   *  there is none: a page that took every range away has no edit made, in
+   *  any browser. */
   const editRange = (host: Any): Any => {
     const r = selection._range;
-    if (r && host.contains(r.startContainer) && host.contains(r.endContainer)) {
+    if (!r) return null;
+    if (host.contains(r.startContainer) && host.contains(r.endContainer)) {
       return r;
     }
     selection.collapse(host, 0);
@@ -31891,7 +31894,9 @@ export function installDom(
     const field = editableField(at);
     if (field && field.selectionStart === field.selectionEnd) return false;
     const host = field ? null : editingHostOf(at);
-    if (!field && (!host || editRange(host).collapsed)) return false;
+    if (!field && (!host || (editRange(host)?.collapsed ?? true))) {
+      return false;
+    }
     CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
     if (field) editField(field, 'deleteByCut', null);
     else edit(host, 'deleteByCut', null);
@@ -34180,12 +34185,12 @@ export function installDom(
           target,
           trusted(new Event('reset', { bubbles: true, cancelable: true })),
         );
-      case 'focusin':
+      case 'focusin': {
         dispatch(
           target,
           trusted(new FocusEvent('focus', { relatedTarget: related })),
         );
-        return dispatch(
+        const go = dispatch(
           target,
           trusted(
             new FocusEvent('focusin', {
@@ -34194,6 +34199,18 @@ export function installDom(
             }),
           ),
         );
+        // an editing host the focus came to has the caret, at its start
+        // where the selection is anywhere else or nowhere, as Chrome and
+        // Safari put it once its `focus` is told: a page may take it away
+        // after, and a key then edits nothing (`editRange`)
+        if (editingHostOf(target) === target) {
+          const r = selection._range;
+          if (!r || !target.contains(r.startContainer)) {
+            selection.collapse(target, 0);
+          }
+        }
+        return go;
+      }
       case 'focusout':
         dispatch(
           target,
