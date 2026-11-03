@@ -42,6 +42,7 @@ import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
+import type { installSvgDom } from './svg-dom.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installUIEvents } from './ui-events.js';
@@ -86,6 +87,7 @@ export function installDom(
   webaudio: typeof installWebAudio,
   mse: typeof installMse,
   geometry: typeof installGeometry,
+  svgDom: typeof installSvgDom,
   webcrypto: typeof installWebCrypto,
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
@@ -140,6 +142,7 @@ export function installDom(
     if (
       op !== 'computed' &&
       op !== 'computedShorthands' &&
+      op !== 'computedSvg' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
       op !== 'parsedForm' &&
@@ -152,11 +155,13 @@ export function installDom(
       op !== 'random' &&
       op !== 'uuid' &&
       op !== 'eventPath' &&
+      op !== 'svgLength' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
     }
     if (!mutatesHas.call(KEEPS_LISTS, op)) {
+      svgEpoch += 1;
       if (op !== 'setAttr' && op !== 'delAttr') {
         treeEpoch += 1;
         attrEpoch += 1;
@@ -206,6 +211,11 @@ export function installDom(
    *  through an op or between two tasks. */
   let treeEpoch = 0;
   let attrEpoch = 0;
+  /** What an SVG object reflecting an attribute checks before it answers
+   *  from what it read last (`svg-dom.ts`): it moves with `attrEpoch` and
+   *  at every attribute set besides, which no list's count does, since d3
+   *  sets an `x` or a `transform` on every element it draws. */
+  let svgEpoch = 0;
   /** The ops that change nothing a list holds. Anything else, an op added
    *  later among them, reads the lists again, which costs a read and is
    *  never wrong. Setting a style is here because a page's loop over a list
@@ -269,12 +279,15 @@ export function installDom(
     'color',
     'supports',
     'rect',
+    'svg',
+    'svgLength',
     'atViewport',
     'scrollMoves',
     'geometry',
     'offset',
     'computed',
     'computedShorthands',
+    'computedSvg',
     'customProperty',
     'at',
     'viewport',
@@ -6451,8 +6464,6 @@ export function installDom(
   const GEOMETRY = geometry({ DOMException });
   const DOMRect: Any = GEOMETRY.classes.DOMRect;
   const DOMRectReadOnly: Any = GEOMETRY.classes.DOMRectReadOnly;
-  const DOMMatrix: Any = GEOMETRY.classes.DOMMatrix;
-  const DOMPoint: Any = GEOMETRY.classes.DOMPoint;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -7560,61 +7571,19 @@ export function installDom(
       return this._name;
     }
   }
-  /** An SVG length an element's attribute is (SVG 2, 4.6.10), read from
-   *  the attribute each time: nothing animates one here, so its animated
-   *  value is its base one. */
-  const animatedLength = (el: Any, name: string): Any => {
-    const length = (): Any => {
-      const raw = el.getAttribute(name) ?? '0';
-      const value = parseFloat(raw) || 0;
-      return {
-        value,
-        valueInSpecifiedUnits: value,
-        valueAsString: raw,
-        unitType: /^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?\s*$/i.test(raw)
-          ? 1
-          : 0,
-      };
-    };
-    return {
-      get baseVal(): Any {
-        return length();
-      },
-      get animVal(): Any {
-        return length();
-      },
-    };
-  };
-  const lengths = (Kind: Any, names: string[]): void => {
-    for (const name of names) {
-      Object.defineProperty(Kind.prototype, name, {
-        get(this: Any) {
-          return animatedLength(this, name);
-        },
-        configurable: true,
-      });
-    }
-  };
   /** What the host works out of a drawing (`svg-geometry.ts`), as numbers,
    *  or null where the element is in none that is laid out. */
-  const svgNumbers = (el: Any, question: string, at = 0): number[] | null => {
-    const raw = call('svg', el._id, question, at);
+  const svgNumbers = (
+    el: Any,
+    question: string,
+    at = 0,
+    second = 0,
+  ): number[] | null => {
+    const raw = call('svg', el._id, question, at, second);
     return typeof raw === 'string' && raw ? raw.split(',').map(Number) : null;
   };
-  const matrixFrom = (n: number[] | null): Any =>
-    n ? new DOMMatrix([n[0], n[1], n[2], n[3], n[4], n[5]]) : null;
-  /** An attribute read as a reflected string (SVG 2, 4.6.8). */
-  const animatedString = (el: Any, name: string): Any => ({
-    get baseVal(): string {
-      return el.getAttribute(name) ?? '';
-    },
-    set baseVal(v: Any) {
-      el.setAttribute(name, str(v));
-    },
-    get animVal(): string {
-      return el.getAttribute(name) ?? '';
-    },
-  });
+  /** An `SVGMatrix` of what the host answered (`svg-dom.ts`). */
+  const matrixFrom = (n: number[] | null): Any => (n ? SVG.matrix(n) : null);
   class SVGGraphicsElement extends SVGElement {
     get farthestViewportElement(): Any {
       let last: Any = null;
@@ -7630,7 +7599,7 @@ export function installDom(
     }
     getBBox(): Any {
       const n = svgNumbers(this, 'bbox');
-      return n ? new DOMRect(n[0], n[1], n[2], n[3]) : new DOMRect();
+      return n ? SVG.rect(n[0], n[1], n[2], n[3]) : SVG.rect(0, 0, 0, 0);
     }
     getCTM(): Any {
       return matrixFrom(svgNumbers(this, 'ctm'));
@@ -7666,37 +7635,32 @@ export function installDom(
   }
   /** A shape, whose outline is a length a page can walk (SVG 2, 8.3). */
   class SVGGeometryElement extends SVGGraphicsElement {
+    /** Whether a point in the element's user units is in its fill or its
+     *  stroke (SVG 2, 4.6.4): a `DOMPointInit`, the origin where none. */
+    isPointInFill(point: Any = undefined): boolean {
+      const p = point ?? {};
+      return !!svgNumbers(this, 'inFill', +(p.x ?? 0), +(p.y ?? 0))?.[0];
+    }
+    isPointInStroke(point: Any = undefined): boolean {
+      const p = point ?? {};
+      return !!svgNumbers(this, 'inStroke', +(p.x ?? 0), +(p.y ?? 0))?.[0];
+    }
     getTotalLength(): number {
       return svgNumbers(this, 'length')?.[0] ?? 0;
     }
     getPointAtLength(distance: Any): Any {
       const n = svgNumbers(this, 'point', Number(distance));
-      return n ? new DOMPoint(n[0], n[1]) : new DOMPoint();
+      if (n && Number.isNaN(n[0])) {
+        throw new DOMException(
+          "Failed to execute 'getPointAtLength' on 'SVGGeometryElement': The element's path is empty.",
+          'InvalidStateError',
+        );
+      }
+      return n ? SVG.point(n[0], n[1]) : SVG.point(0, 0);
     }
   }
   class SVGSVGElement extends SVGGraphicsElement {
-    /** A viewBox as a rectangle, read from the attribute each time. */
-    get viewBox(): Any {
-      const rect = (): Any => {
-        const n = (this.getAttribute('viewBox') ?? '')
-          .split(/[\s,]+/)
-          .filter(Boolean)
-          .map(Number);
-        return n.length === 4 && n.every(Number.isFinite)
-          ? new DOMRect(n[0], n[1], n[2], n[3])
-          : null;
-      };
-      return {
-        get baseVal(): Any {
-          return rect();
-        },
-        get animVal(): Any {
-          return rect();
-        },
-      };
-    }
     declare _scale: number | undefined;
-    declare _translate: Any;
     get currentScale(): number {
       return this._scale ?? 1;
     }
@@ -7708,35 +7672,6 @@ export function installDom(
         );
       }
       if (!this.parentElement?.closest('svg')) this._scale = scale;
-    }
-    get currentTranslate(): Any {
-      return (this._translate ??= new DOMPoint());
-    }
-    createSVGMatrix(): Any {
-      return new DOMMatrix();
-    }
-    createSVGPoint(): Any {
-      return new DOMPoint();
-    }
-    createSVGRect(): Any {
-      return new DOMRect();
-    }
-    createSVGNumber(): Any {
-      return { value: 0 };
-    }
-    createSVGLength(): Any {
-      return {
-        value: 0,
-        valueInSpecifiedUnits: 0,
-        valueAsString: '0',
-        unitType: 1,
-      };
-    }
-    createSVGTransform(): Any {
-      return this.createSVGTransformFromMatrix(new DOMMatrix());
-    }
-    createSVGTransformFromMatrix(matrix: Any): Any {
-      return { type: 1, matrix: DOMMatrix.fromMatrix(matrix), angle: 0 };
     }
     getElementById(id: Any): Any {
       return wrap(
@@ -7759,43 +7694,20 @@ export function installDom(
     }
     setCurrentTime(_t: Any): void {}
   }
-  lengths(SVGSVGElement, ['x', 'y', 'width', 'height']);
   class SVGRectElement extends SVGGeometryElement {}
-  lengths(SVGRectElement, ['x', 'y', 'width', 'height', 'rx', 'ry']);
   class SVGCircleElement extends SVGGeometryElement {}
-  lengths(SVGCircleElement, ['cx', 'cy', 'r']);
   class SVGEllipseElement extends SVGGeometryElement {}
-  lengths(SVGEllipseElement, ['cx', 'cy', 'rx', 'ry']);
   class SVGLineElement extends SVGGeometryElement {}
-  lengths(SVGLineElement, ['x1', 'y1', 'x2', 'y2']);
   class SVGPathElement extends SVGGeometryElement {}
   class SVGPolylineElement extends SVGGeometryElement {}
   class SVGPolygonElement extends SVGGeometryElement {}
   class SVGGElement extends SVGGraphicsElement {}
   class SVGDefsElement extends SVGGraphicsElement {}
   class SVGSwitchElement extends SVGGraphicsElement {}
-  class SVGImageElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-  }
-  lengths(SVGImageElement, ['x', 'y', 'width', 'height']);
-  class SVGUseElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-  }
-  lengths(SVGUseElement, ['x', 'y', 'width', 'height']);
+  class SVGImageElement extends SVGGraphicsElement {}
+  class SVGUseElement extends SVGGraphicsElement {}
   class SVGForeignObjectElement extends SVGGraphicsElement {}
-  lengths(SVGForeignObjectElement, ['x', 'y', 'width', 'height']);
-  class SVGAElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-    get target(): Any {
-      return animatedString(this, 'target');
-    }
-  }
+  class SVGAElement extends SVGGraphicsElement {}
   /** Text's: its length is its font's, in a run as it is written. */
   class SVGTextContentElement extends SVGGraphicsElement {
     getNumberOfChars(): number {
@@ -26427,6 +26339,20 @@ export function installDom(
     return shorthandNames;
   };
 
+  /** SVG's properties, which a computed style answers as a page reads one
+   *  (`svg-properties.ts`): asked for once, in either spelling. */
+  let svgNames: Set<string> | null = null;
+  const computedSvgNames = (): Set<string> => {
+    if (!svgNames) {
+      svgNames = new Set();
+      for (const name of JSON.parse(call('computedSvg'))) {
+        svgNames.add(name);
+        svgNames.add(camel(name));
+      }
+    }
+    return svgNames;
+  };
+
   /** The empty declaration `getComputedStyle` answers where its argument
    *  names no pseudo-element: no properties, and each one the element's
    *  style has reads as '' rather than as nothing. */
@@ -26450,7 +26376,11 @@ export function installDom(
         () => [],
       ),
       (key) =>
-        names().has(key) || computedShorthandNames().has(key) ? '' : undefined,
+        names().has(key) ||
+        computedShorthandNames().has(key) ||
+        computedSvgNames().has(key)
+          ? ''
+          : undefined,
       () => {},
       () => [],
     );
@@ -26466,6 +26396,7 @@ export function installDom(
     let json = '';
     let values: Record<string, string> = {};
     let shorthands: Map<string, string> | null = null;
+    let svg: Map<string, string> | null = null;
     let names: string[] | null = null;
     let readAt = -1;
     let readIn = -1;
@@ -26483,6 +26414,7 @@ export function installDom(
       values = json ? JSON.parse(json) : {};
       names = null;
       shorthands = null;
+      svg = null;
     };
     /** Its items, made where a page asks for them: what it reads by a name
      *  it reads of `values`, on a path a page takes tens of thousands of
@@ -26517,7 +26449,7 @@ export function installDom(
      *  at once, since one that reads one may well read them all, and a walk
      *  of the style's keys does. Undefined for a name that is none. */
     const shorthand = (name: string): string | undefined => {
-      if (!computedShorthandNames().has(name)) return undefined;
+      if (!computedShorthandNames().has(name)) return svgProperty(name);
       if (!shorthands) {
         shorthands = new Map();
         const r = call('computed', id, which, undefined, true);
@@ -26528,6 +26460,21 @@ export function installDom(
         }
       }
       return shorthands.get(name);
+    };
+    /** One of SVG's properties, all of them asked for at once, as a page
+     *  reads the first: what no read of anything else pays for. */
+    const svgProperty = (name: string): string | undefined => {
+      if (!computedSvgNames().has(name)) return undefined;
+      if (!svg) {
+        svg = new Map();
+        const r = json ? call('computed', id, which, undefined, 'svg') : '';
+        const all = typeof r === 'string' && r ? JSON.parse(r) : {};
+        for (const key in all) {
+          svg.set(key, all[key]);
+          svg.set(camel(key), all[key]);
+        }
+      }
+      return svg.get(name) ?? '';
     };
     read();
     const block = computedBlock(
@@ -28876,7 +28823,7 @@ export function installDom(
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
-        ? new URL(anchor.href.baseVal, str(document.baseURI)).href
+        ? new URL((anchor as Any).href.baseVal, str(document.baseURI)).href
         : anchor.href;
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
@@ -32464,9 +32411,124 @@ export function installDom(
     });
   };
 
+  // --- SVG's types -------------------------------------------------------------
+  //
+  // `svg-dom.ts`: what an SVG element's attributes are as objects, the lists
+  // of them, and the element interfaces the facade did not have.
+  const setAttrOwn = Element.prototype._setAttr;
+  const attrNameOwn = Element.prototype._attrName;
+  const SVG = svgDom({
+    DOMException,
+    // by the name the tree keeps it under, which HTML's parser leaves in
+    // lower case in a drawing, where SVG's own spelling is camel case
+    getAttr: (el: Any, name: string) => {
+      const kept = reflectApply(attrNameOwn, el, [name]);
+      let v = call('attr', el._id, kept);
+      if (typeof v !== 'string' && kept !== kept.toLowerCase()) {
+        v = call('attr', el._id, kept.toLowerCase());
+      }
+      return typeof v === 'string' ? v : null;
+    },
+    setAttr: (el: Any, name: string, value: string) => {
+      let kept = reflectApply(attrNameOwn, el, [name]);
+      const lower = kept.toLowerCase();
+      if (
+        kept !== lower &&
+        typeof call('attr', el._id, kept) !== 'string' &&
+        typeof call('attr', el._id, lower) === 'string'
+      ) {
+        kept = lower;
+      }
+      reflectApply(setAttrOwn, el, [kept, value]);
+    },
+    epoch: () => svgEpoch,
+    unitSize: (el: Any, unit: string, axis: string) => {
+      const v = call('svgLength', el ? el._id : 0, unit, axis);
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    },
+    listOf: (Proto: Any, read: () => Any[]) => {
+      const list = listMade(Proto, [], read, false, null);
+      listState(list).unkept = true;
+      return list;
+    },
+    listState,
+    values2D: GEOMETRY.values2D,
+    idlAttributes,
+    elements: {
+      SVGElement,
+      SVGGraphicsElement,
+      SVGGeometryElement,
+      SVGSVGElement,
+      SVGRectElement,
+      SVGCircleElement,
+      SVGEllipseElement,
+      SVGLineElement,
+      SVGPolylineElement,
+      SVGPolygonElement,
+      SVGImageElement,
+      SVGUseElement,
+      SVGForeignObjectElement,
+      SVGAElement,
+      SVGTextContentElement,
+      SVGTextPositioningElement,
+      SVGTextPathElement,
+      SVGSymbolElement,
+      SVGViewElement,
+      SVGClipPathElement,
+      SVGMaskElement,
+      SVGMarkerElement,
+      SVGPatternElement,
+      SVGFilterElement,
+      SVGStopElement,
+      SVGGradientElement,
+      SVGLinearGradientElement,
+      SVGRadialGradientElement,
+      SVGScriptElement,
+    },
+    Document,
+  });
+  Object.assign(SVG_CLASSES, SVG.tags);
+  // an SVG link's `HyperlinkElementUtils` (SVG 2, 16.3.1): the parts of the
+  // address its `href` resolves to, each but the origin settable, where its
+  // `href` is the animated string an `href` is in a drawing
+  const svgLinkAddress = (a: Any): string | null => {
+    try {
+      return new URL(a.href.baseVal, str(document.baseURI)).href;
+    } catch {
+      return null;
+    }
+  };
+  for (const part of URL_PARTS) {
+    Object.defineProperty(SVGAElement.prototype, part, {
+      get(this: Any): string {
+        const address = svgLinkAddress(this);
+        return (address !== null && urlParts(address)?.[part]) || '';
+      },
+      ...(part !== 'origin' && {
+        set(this: Any, v: Any) {
+          const address = svgLinkAddress(this);
+          if (address === null) return;
+          const json = call('setUrl', address, part, str(v));
+          if (typeof json === 'string' && json) {
+            this.href.baseVal = JSON.parse(json).href;
+          }
+        },
+      }),
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  for (const name of ['rel', 'download', 'ping', 'hreflang', 'type']) {
+    Object.defineProperty(SVGAElement.prototype, name, {
+      ...reflect(name),
+      enumerable: true,
+    });
+  }
+
   const classes: Record<string, Any> = {
     DOMException,
     QuotaExceededError,
+    ...SVG.interfaces,
     Event,
     UIEvent,
     FocusEvent,
@@ -33784,6 +33846,7 @@ export function installDom(
         taskEpoch += 1;
         treeEpoch += 1;
         attrEpoch += 1;
+        svgEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();

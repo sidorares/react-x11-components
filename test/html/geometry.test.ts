@@ -547,14 +547,16 @@ test('a quad keeps its points, and is bounded by them', () => {
   );
 });
 
-test('the interfaces have the names a window keeps for them, and are cloned as themselves', () => {
+test('the matrix has the other name a window keeps for it, and the interfaces are cloned as themselves', () => {
   const { run } = realm();
+  // SVG's point, rectangle and matrix are interfaces of their own, as every
+  // engine ships them and as svgwg#706 resolved (`svg-dom.ts`)
   assert.deepEqual(
     run(
       'return [WebKitCSSMatrix === DOMMatrix, SVGMatrix === DOMMatrix, SVGPoint === DOMPoint, SVGRect === DOMRect,' +
         ' Object.prototype.toString.call(new DOMMatrix()), Object.prototype.toString.call(new DOMQuad())];',
     ),
-    [true, true, true, true, '[object DOMMatrix]', '[object DOMQuad]'],
+    [true, false, false, false, '[object DOMMatrix]', '[object DOMQuad]'],
   );
   assert.deepEqual(
     run(

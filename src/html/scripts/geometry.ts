@@ -1,8 +1,8 @@
 // Geometry Interfaces Module Level 1, as a page's scripts see it: a point, a
 // rectangle, a quadrilateral and a matrix, each with its read-only parent —
-// `DOMPoint`, `DOMRect`, `DOMQuad` and `DOMMatrix` — and the names a window
-// keeps for them besides (`WebKitCSSMatrix`, `SVGPoint`, `SVGRect`,
-// `SVGMatrix`).
+// `DOMPoint`, `DOMRect`, `DOMQuad` and `DOMMatrix` — and the name a window
+// keeps for the matrix besides, `WebKitCSSMatrix`. `SVGPoint`, `SVGRect` and
+// `SVGMatrix` are interfaces of their own (`svg-dom.ts`).
 //
 // **This function is source text**, as `installDom` is (`dom.ts`): the
 // engine hands it to the context through `Function.prototype.toString()`,
@@ -1511,9 +1511,6 @@ export function installGeometry(deps: GeometryDeps): GeometryInstall {
       // a window's other names for them (`[LegacyWindowAlias]`), which a
       // worker's global drops (`dom.ts`, `WINDOW_ONLY`)
       WebKitCSSMatrix: DOMMatrix,
-      SVGMatrix: DOMMatrix,
-      SVGPoint: DOMPoint,
-      SVGRect: DOMRect,
     },
     matrix2D: (v) =>
       matrixOf({ m: of2D(v[0], v[1], v[2], v[3], v[4], v[5]), is2D: true }),

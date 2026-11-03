@@ -166,7 +166,8 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
-import { drawnWithin, svgAnswer } from './svg-geometry.js';
+import { drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
+import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
@@ -598,6 +599,8 @@ export interface HandleInternals {
   scriptFontsChanged(id: number, added: boolean): void;
   /** What `svg-geometry.ts` asks of the document. */
   svgMeasure(): SvgMeasure | null;
+  /** SVG's properties of an element as `getComputedStyle` reads them. */
+  svgComputed(element: Element): Record<string, string> | null;
   /** What a canvas's context asks of the fonts. */
   canvasText(): CanvasText | null;
   /** Where what a `<foreignObject>` holds was laid out in it. */
@@ -4881,6 +4884,8 @@ export class DomHost {
           ...Object.keys(style),
           ...SHORTHAND_NAMES,
           ...declaredProperties(),
+          ...Object.keys(SVG_PROPERTIES),
+          'marker',
         ].join(',');
       }
       case 'computed': {
@@ -4893,6 +4898,15 @@ export class DomHost {
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
           style ? JSON.stringify(d ? cssomShorthands(style) : style) : '';
+        // SVG's properties, asked for apart as a page reads one
+        // (`svg-properties.ts`)
+        if (d === 'svg') {
+          const el = this._element(a);
+          if (!this._inDocument(el)) return '';
+          const handle = this._drawing(el) as Partial<HandleInternals> | null;
+          const svg = handle?.svgComputed?.(el);
+          return svg ? JSON.stringify(svg) : '';
+        }
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
           return send(
@@ -4920,6 +4934,8 @@ export class DomHost {
       }
       case 'computedShorthands':
         return JSON.stringify(SHORTHAND_NAMES);
+      case 'computedSvg':
+        return JSON.stringify(Object.keys(SVG_PROPERTIES));
       // one custom property's, by its name: a theme's hundreds are no part
       // of what `computed` sends
       case 'customProperty': {
@@ -5161,8 +5177,20 @@ export class DomHost {
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
-        const answer = svgAnswer(text(b), el, measure, Number(c));
+        const answer = svgAnswer(text(b), el, measure, Number(c), Number(d));
         return answer ? answer.join(',') : '';
+      }
+      // what one of a relative unit comes to for an element's length, in
+      // user units, or for no element's (`svg-dom.ts`)
+      case 'svgLength': {
+        this.flush();
+        const el = a ? this._element(a) : null;
+        const handle = (
+          el ? this._drawing(el) : this._seams.handle
+        ) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        return unitSize(el, text(b), text(c), measure) ?? '';
       }
       // the page told once none of the document's faces is on its way
       // (`__fontsSettled`), which `document.fonts.ready` waits for
@@ -5964,8 +5992,20 @@ export class DomHost {
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
-        const answer = svgAnswer(text(b), el, measure, Number(c));
+        const answer = svgAnswer(text(b), el, measure, Number(c), Number(d));
         return answer ? answer.join(',') : '';
+      }
+      // what one of a relative unit comes to for an element's length, in
+      // user units, or for no element's (`svg-dom.ts`)
+      case 'svgLength': {
+        this.flush();
+        const el = a ? this._element(a) : null;
+        const handle = (
+          el ? this._drawing(el) : this._seams.handle
+        ) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        return unitSize(el, text(b), text(c), measure) ?? '';
       }
       case 'uuid':
         return crypto.randomUUID();

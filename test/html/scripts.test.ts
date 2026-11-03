@@ -7166,7 +7166,7 @@ test("what HTML's parser makes in a drawing is SVG's, whatever its name, and wha
     linearGradient: svg('linearGradient', 'SVGLinearGradientElement'),
     marker: svg('marker', 'SVGMarkerElement'),
     filter: svg('filter', 'SVGFilterElement'),
-    feBlend: svg('feBlend', 'SVGElement'),
+    feBlend: svg('feBlend', 'SVGFEBlendElement'),
     a: svg('a', 'SVGAElement'),
     text: svg('text', 'SVGTextElement'),
     foreignObject: svg('foreignObject', 'SVGForeignObjectElement'),

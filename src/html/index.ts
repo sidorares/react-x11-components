@@ -1727,6 +1727,7 @@ export function makeHtmlHandle(
     scriptFontsChanged: (id: number, added: boolean) =>
       nodeRef.current?.scriptFontsChanged(id, added),
     svgMeasure: () => nodeRef.current?.svgMeasure() ?? null,
+    svgComputed: (el: Element) => nodeRef.current?.svgComputed(el) ?? null,
     canvasText: () => nodeRef.current?.canvasText() ?? null,
     foreignRect: (element) => nodeRef.current?.foreignRect(element) ?? null,
     mediaEnvironment: () => nodeRef.current?.mediaEnvironment() ?? '',
