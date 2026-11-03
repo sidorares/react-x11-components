@@ -149,6 +149,7 @@ import type { UnitContext } from './values.js';
 import {
   FIXED_SIZE,
   keywordFontSize,
+  legacyColor,
   parseColor,
   parseLength,
 } from './values.js';
@@ -11163,8 +11164,10 @@ function presentationHints(
     );
   }
 
+  // each a legacy colour value, which needs no `#`
   const bgcolor = attr(el, 'bgcolor');
-  if (bgcolor) push('background-color', bgcolor);
+  const background = bgcolor === undefined ? null : legacyColor(bgcolor);
+  if (background) push('background-color', background);
   if (BACKGROUNDS.has(tag)) {
     const background = attr(el, 'background')?.trim();
     if (background) {
@@ -11174,7 +11177,8 @@ function presentationHints(
   if (tag === 'body') {
     // the text's colour, and the links'
     const text = attr(el, 'text');
-    if (text) push('color', text);
+    const ink = text === undefined ? null : legacyColor(text);
+    if (ink) push('color', ink);
     // and its margins, by the first of these that is a number, each of two
     // sides (HTML 15.3.2): the frame's are the document's body's alone, and
     // no `rightmargin` or `bottommargin` is read, as Chrome and Firefox read
@@ -11200,17 +11204,20 @@ function presentationHints(
   } else if (tag === 'a' && attr(el, 'href') !== undefined) {
     const body = closestBody(el);
     const link = body ? attr(body, 'link') : undefined;
-    if (link) push('color', link);
+    const ink = link === undefined ? null : legacyColor(link);
+    if (ink) push('color', ink);
   }
   const color = attr(el, 'color');
-  if (color && (tag === 'font' || tag === 'basefont')) push('color', color);
+  if (color !== undefined && (tag === 'font' || tag === 'basefont')) {
+    const ink = legacyColor(color);
+    if (ink) push('color', ink);
+  }
   const face = attr(el, 'face');
   if (face && tag === 'font') push('font-family', face);
   const size = attr(el, 'size');
   if (size && tag === 'font') {
-    const n = Number(size.replace('+', ''));
-    if (Number.isFinite(n))
-      push('font-size', `${FONT_SIZE_STEPS[Math.max(1, Math.min(7, n))]}em`);
+    const keyword = legacyFontSize(size);
+    if (keyword) push('font-size', keyword);
   }
 
   // `width`/`height` are lengths on the replaced and table elements and mean
@@ -11474,7 +11481,26 @@ function htmlInteger(value: string | undefined): number | null {
   return Math.max(-2147483648, Math.min(2147483647, Number(match[1])));
 }
 
-const FONT_SIZE_STEPS = [1, 0.63, 0.82, 1, 1.13, 1.5, 2, 3];
+/** `<font size>`'s keyword (HTML 15.3.4, "rules for parsing a legacy font
+ *  size"): digits from 1 to 7, or a step up or down from 3, which is
+ *  `medium`; null for no digits. */
+function legacyFontSize(value: string): string | null {
+  const m = /^[\t\n\f\r ]*([+-]?)([0-9]+)/.exec(value);
+  if (!m) return null;
+  let n = parseInt(m[2], 10);
+  if (m[1] === '+') n += 3;
+  else if (m[1] === '-') n = 3 - n;
+  return LEGACY_FONT_SIZES[Math.max(1, Math.min(7, n)) - 1];
+}
+const LEGACY_FONT_SIZES = [
+  'x-small',
+  'small',
+  'medium',
+  'large',
+  'x-large',
+  'xx-large',
+  'xxx-large',
+];
 
 /** A presentational length: bare numbers are pixels, `50%` stays a percent. */
 function lengthAttr(value: string): string {

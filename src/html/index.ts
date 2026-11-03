@@ -1772,6 +1772,7 @@ export function makeHtmlHandle(
     styleWhileOwed: (element, pseudo) =>
       nodeRef.current?.computedStyle(element, pseudo, true) ?? null,
     layoutOwed: () => nodeRef.current?.layoutOwed() ?? false,
+    fontMedium: () => nodeRef.current?.fontMedium() ?? 16,
     computedStyle: (
       element: Element,
       pseudo?: 'before' | 'after' | HighlightPseudo | null,

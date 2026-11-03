@@ -3762,6 +3762,43 @@ edit to core; the `input` the widget's change raises takes them. A composition
 is core's own three events, told through the root's capture phase, which is a
 key's route.
 
+**`execCommand` is the editing specification's reference implementation,
+ported, and it asks the page nothing the page could see** (`scripts/editing.ts`,
+source text `installDom` makes the first time a page asks about a command).
+WPT's `editing/data` was generated from that implementation, which is why a
+port, and not a reading of the specification, is what passes `editing/run`.
+What the reference asked of the page is a question to the host: a computed
+style is `editingStyle`, a dozen properties an element, kept until an op
+changes the tree (`opEdits`, since every read of the tree moves `opEpoch`); a
+colour is `colorText`; a legacy font size is worked out of the document's
+`medium`, which is the palette's and no 16px (`fontMedium`); and whether a
+`<br>` holds a line is read off the tree (`lineHoldsMore`). The reference set
+styles and read `offsetHeight`, put a zero-width space in, and put elements in
+the body, each a layout and each a change a page's observer hears, which ran
+`editing/run` thirty times slower and into the page's time. Four things are
+load-bearing. **Anything new the algorithms need of the page goes through
+`EditingDeps`**, never through a node they put in the document. **The active
+range is the selection's** (`holdRange`): the reference was run on a range it
+was handed, and a step that makes the selection a new one, as collapsing it
+does, left the selection behind the range it went on moving. **A key's edit in
+a rich host is the command's** (`editedByCommand`), which is what carries a
+bold the caret holds to what is typed and keeps typed white space visible; a
+`plaintext-only` host's inserts stay `edit`'s, since the specification knows
+nothing of one, and its deletes are the commands'. And **anything new that
+edits a host goes through `recorded`**, which is what undo is: the records of
+an observer of the facade's own, through the ops, put back newest first, so the
+nodes a page holds stay the nodes it held. Where the engines differ the
+specification is kept, which is Firefox's, and `docs/components/html.md` says
+where. Where WPT's tests have moved past the reference — a host that cannot
+hold a paragraph, a line feed where white space keeps one, a `<select>`'s
+contents, a `contenteditable=false` island, a document in design mode, whose
+root no climb goes past, a letter typed at a link's edge — the port is the
+browsers', and each place says it departs. Where the browsers differ for a
+user and not for a script, as at a link's edge, the command is told it was
+typed (`execCommand`'s third argument), and `editing/run`, which is a
+script's, keeps the specification's answer. One step of the reference threw (an end block taken for its own
+parent) and is put right where it stands.
+
 **A `<link>`'s `load` and `error` are told after the fact, by the element**
 (`_tellSheets`, through `onSheet`): `load` once the restyle that reads the
 sheet, and everything it imports, has run (`_sheetsInForce`), not when the

@@ -2828,7 +2828,7 @@ test('navigator.permissions answers what a browser answers before it has asked, 
   ]);
 });
 
-test("execCommand makes the edits a key makes, in an editing host and a text field, and says of the rest that it can't", async () => {
+test('execCommand edits an editing host and a text field, tells each edit as an input, and with nothing selected does nothing', async () => {
   // Monaco's setup asks `queryCommandSupported` of `cut` and `copy`, and
   // threw at the first line that did: a TS Playground with no editor
   const doc = await hosted(
@@ -2842,7 +2842,7 @@ test("execCommand makes the edits a key makes, in an editing host and a text fie
          answers: [
            document.queryCommandState('bold'),
            document.queryCommandValue('bold'),
-           document.queryCommandIndeterminate('bold'),
+           document.queryCommandIndeterm('bold'),
            document.execCommand('bold'),
          ],
          nothingToEdit: [
@@ -2875,11 +2875,14 @@ test("execCommand makes the edits a key makes, in an editing host and a text fie
   );
   await settle();
   assert.deepEqual(JSON.parse(doc.text('out')), {
-    supported: [true, true, true, true, false, false],
+    // a clipboard command only where the host has a clipboard
+    supported: [true, true, true, true, true, false],
+    // nothing selected, so nothing to make bold
     answers: [false, '', false, false],
     nothingToEdit: [false, false, true],
     inserted: true,
-    host: ['aZb', ['before:insertText:Z', 'input:insertText']],
+    // a command's edit is told as an `input` alone (Input Events 2)
+    host: ['aZb', ['input:insertText']],
     deleted: 'a',
     selected: 'a',
     field: ['xQy', 2, ['insertText:Q']],
@@ -13173,13 +13176,15 @@ test('a key typed in an editing host the page focused is an edit of it at the se
   await typed(() => fireEvent.key(XK_DELETE));
   assert.equal(doc.text('ed'), 'a');
   await typed(() => fireEvent.key(XK_RETURN));
+  doc.run('log(ed.innerHTML)');
+  await settle();
   assert.equal(
-    doc.text('ed'),
-    'a\n\n',
-    'pre keeps a line feed for Enter, and a second for the line the caret goes to where the first ends the block',
+    doc.text('out').split('|').pop(),
+    '<div>a</div><div><br></div>',
+    'Enter puts in a paragraph, as insertParagraph does, white-space or none',
   );
   doc.run(
-    'var s = getSelection(); s.setBaseAndExtent(ed.firstChild, 2, ed.firstChild, 0);' +
+    'ed.textContent = "ab"; var s = getSelection(); s.setBaseAndExtent(ed.firstChild, 2, ed.firstChild, 0);' +
       'log([s.type, s.direction, s.anchorOffset, s.focusOffset, s.toString().length].join(":"));',
   );
   await typed(() => fireEvent.char('q'));
@@ -13201,6 +13206,7 @@ test('a key typed in an editing host the page focused is an edit of it at the se
       'input:deleteContentForward',
       'before:insertParagraph:null',
       'input:insertParagraph',
+      '<div>a</div><div><br></div>',
       'Range:backward:2:0:2',
       'before:insertText:q',
       'input:insertText',
@@ -13503,7 +13509,7 @@ metric(
 );
 
 metric(
-  'Enter at the end of a plain editing host puts a placeholder after its line break, which the caret stands on and typing takes, and Backspace takes both again',
+  'Enter at the end of an editing host puts in a paragraph a placeholder holds, which the caret stands on and typing takes, and Backspace joins the two again',
   async (t) => {
     holdClock(t, caretClock);
     const doc = await hosted(
@@ -13526,8 +13532,14 @@ metric(
     assert.ok(first.count > 10, `a caret on the first line: ${first.count}`);
     const line = first.bottom - first.top + 1;
 
+    // the editing specification's, and Firefox's: Chromium leaves the first
+    // line unwrapped, `ab<div><br></div>`
     await typed(() => fireEvent.key(XK_RETURN));
-    assert.equal(html(), 'ab<br><br>', 'a line break and its placeholder');
+    assert.equal(
+      html(),
+      '<div>ab</div><div><br></div>',
+      'a paragraph and its placeholder',
+    );
     let now = await caret();
     assert.ok(
       Math.abs(now.top - (first.top + line)) <= 2,
@@ -13536,17 +13548,29 @@ metric(
     assert.ok(now.left < first.left, 'at the line start');
 
     await typed(() => fireEvent.char('c'));
-    assert.equal(html(), 'ab<br>c', 'what is typed takes the placeholder');
+    assert.equal(
+      html(),
+      '<div>ab</div><div>c</div>',
+      'what is typed takes the placeholder',
+    );
     now = await caret();
     assert.ok(Math.abs(now.top - (first.top + line)) <= 2, `${now.top}`);
 
     await typed(() => fireEvent.key(XK_BACKSPACE));
-    assert.equal(html(), 'ab<br><br>', 'a line emptied keeps one');
+    assert.equal(
+      html(),
+      '<div>ab</div><div><br></div>',
+      'a line emptied keeps one',
+    );
     now = await caret();
     assert.ok(Math.abs(now.top - (first.top + line)) <= 2, `${now.top}`);
 
     await typed(() => fireEvent.key(XK_BACKSPACE));
-    assert.equal(html(), 'ab', 'the line break, and its placeholder with it');
+    assert.equal(
+      html(),
+      '<div>ab</div>',
+      'the paragraph, and its placeholder with it',
+    );
     now = await caret();
     assert.equal(now.top, first.top, 'the caret back on the first line');
     assert.equal(now.left, first.left, 'after the b');
@@ -13558,7 +13582,7 @@ metric(
     );
     await settle();
     await typed(() => fireEvent.key(XK_RETURN));
-    assert.equal(html(), 'ab<br><br>cd');
+    assert.equal(html(), '<div>ab</div><div><br>cd</div>');
     now = await caret();
     assert.ok(
       Math.abs(now.top - (first.top + line)) <= 2,
@@ -13567,7 +13591,7 @@ metric(
   },
 );
 
-test('a delete beside a line break takes the break, Delete on an empty last line takes nothing, and a host a delete empties keeps a line', async () => {
+test('a delete beside a line break takes the break, Delete on an empty last line takes its placeholder, and a host a delete empties keeps a line', async () => {
   const doc = await hosted(
     '<div id="ed" contenteditable>ab<br>cd</div>' +
       '<p id="m"></p><script>var ed = document.getElementById("ed");' +
@@ -13595,15 +13619,17 @@ test('a delete beside a line break takes the break, Delete on an empty last line
   await at('ab<br>cd', 'ed.firstChild, 2');
   await typed(() => fireEvent.key(XK_DELETE));
   assert.equal(html(), 'abcd');
-  // the line a placeholder holds is the host's last: nothing after it
+  // the line a placeholder holds is the host's last, and Delete there takes
+  // the placeholder, as the editing specification has it and Firefox does:
+  // Chromium takes nothing
   await at('ab<br><br>', 'ed, 2');
   await typed(() => fireEvent.key(XK_DELETE));
-  assert.equal(html(), 'ab<br><br>');
-  // and Delete at the end of the line before it takes the break, and the
-  // placeholder that held a line after it
+  assert.equal(html(), 'ab<br>');
+  // and Delete at the end of the line before it takes the break, which
+  // leaves the placeholder ending the line, as Chromium and WebKit leave it
   await at('ab<br><br>', 'ed.firstChild, 2');
   await typed(() => fireEvent.key(XK_DELETE));
-  assert.equal(html(), 'ab');
+  assert.equal(html(), 'ab<br>');
   // a host emptied holds a placeholder, which what is typed takes
   await at('a', 'ed.firstChild, 1');
   await typed(() => fireEvent.key(XK_BACKSPACE));

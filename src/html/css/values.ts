@@ -652,6 +652,41 @@ const NAMED_COLORS = new Set(
   ).split(' '),
 );
 
+/**
+ * A colour an attribute names, `<font color>`, `bgcolor` and their kin, as
+ * HTML parses a legacy colour value (2.3.6): a named colour, `#rgb`, or any
+ * other text read as hex digits three ways, each letter that is none a 0,
+ * so `0000ff` is blue and `chucknorris` is a red. A `#rrggbb`, a name, or
+ * null for nothing, and `transparent` is nothing.
+ */
+export function legacyColor(value: string): string | null {
+  let input = value.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+  if (!input || input.toLowerCase() === 'transparent') return null;
+  if (NAMED_COLORS.has(input.toLowerCase())) return input.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(input)) {
+    return `#${input[1]}${input[1]}${input[2]}${input[2]}${input[3]}${input[3]}`;
+  }
+  input = [...input]
+    .map((c) => (c.codePointAt(0)! > 0xffff ? '00' : c))
+    .join('')
+    .slice(0, 128);
+  if (input[0] === '#') input = input.slice(1);
+  input = input.replace(/[^0-9a-f]/gi, '0');
+  while (!input.length || input.length % 3) input += '0';
+  let length = input.length / 3;
+  let parts = [0, 1, 2].map((i) => input.slice(i * length, (i + 1) * length));
+  if (length > 8) {
+    parts = parts.map((p) => p.slice(length - 8));
+    length = 8;
+  }
+  while (length > 2 && parts.every((p) => p[0] === '0')) {
+    parts = parts.map((p) => p.slice(1));
+    length -= 1;
+  }
+  const hex = parts.map((p) => p.slice(0, 2).padStart(2, '0'));
+  return `#${hex.join('')}`;
+}
+
 /** `font-weight`, as the number ntk's font matcher wants. */
 export function parseWeight(value: string, inherited: number): number {
   const v = value.trim().toLowerCase();
@@ -727,10 +762,11 @@ export const FIXED_SIZE = 13 / 16;
 
 /**
  * The absolute-size keywords as fractions of `medium`: a browser's table
- * for its 16px default, 9, 10, 13, 16, 18, 24 and 32 pixels, and the row
- * for its 13px fixed-width default the generic `monospace` is read from,
- * 9, 10, 12, 13, 16, 20 and 26 — a `<pre>` at `large` is 16px in Blink,
- * Gecko and WebKit alike.
+ * for its 16px default, 9, 10, 13, 16, 18, 24, 32 and 48 pixels, and the
+ * row for its 13px fixed-width default the generic `monospace` is read
+ * from, 9, 10, 12, 13, 16, 20, 26 and 39 — a `<pre>` at `large` is 16px in
+ * Blink, Gecko and WebKit alike. `xxx-large` is CSS Fonts 4's, three times
+ * `medium`, and `<font size=7>`'s.
  */
 const KEYWORD_SIZES = new Map<string, readonly [number, number]>([
   ['xx-small', [9 / 16, 9 / 16]],
@@ -740,6 +776,7 @@ const KEYWORD_SIZES = new Map<string, readonly [number, number]>([
   ['large', [18 / 16, 1]],
   ['x-large', [24 / 16, 20 / 16]],
   ['xx-large', [2, 26 / 16]],
+  ['xxx-large', [3, 39 / 16]],
 ]);
 
 /** Absolute and relative `font-size` keywords, against the CSS scale, or
@@ -774,7 +811,8 @@ export type FontSizeBasis =
   | 'medium'
   | 'large'
   | 'x-large'
-  | 'xx-large';
+  | 'xx-large'
+  | 'xxx-large';
 
 /**
  * The basis of a `font-size` an element sets itself, under a parent's
