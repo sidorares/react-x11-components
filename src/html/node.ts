@@ -636,6 +636,8 @@ export interface HtmlViewProps {
   /** The colour scheme of what it is embedded in, for a frame's document,
    *  which a root in another is drawn on an opaque canvas against. */
   embedderScheme?: 'light' | 'dark';
+  /** The frame this document is shown in (`Cascade.frameElement`). */
+  frameElement?: Element;
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -4423,6 +4425,7 @@ export class HtmlViewNode extends Node {
     cascade.viewportWidth = target;
     cascade.viewportHeight = viewport;
     cascade.dimensionSource = this._dimensionSource;
+    cascade.frameElement = this._props().frameElement ?? null;
     // An image chosen for this viewport (`_choose`) that shows another
     // candidate, or the same one at another density, is another size: its
     // box takes the size in place and the document is laid out again

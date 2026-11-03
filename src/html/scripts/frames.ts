@@ -372,6 +372,7 @@ function FrameDocument({
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
         _embedderScheme: scheme,
+        _frameElement: frame,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,

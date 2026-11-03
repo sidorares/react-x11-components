@@ -208,6 +208,7 @@ import {
   forbiddenMethod,
   headerOf,
   nextHop,
+  isRedirectStatus,
   redirectOf,
   redirectTainted,
 } from './fetch-hops.js';
@@ -471,6 +472,12 @@ export interface FetchResponse {
   /** The number an opaque response's body is held by here, which a realm
    *  hands back to keep it or to answer with it. */
   held?: number;
+  /** Where the redirect an `opaqueredirect` stands for goes, as its
+   *  `Location` said, and its status: the host's alone, which no realm is
+   *  told, and what a navigation a worker answers with one follows (Fetch
+   *  4.4, a navigation's manual redirect). */
+  location?: string | null;
+  redirectStatus?: number;
 }
 
 /** A page's request as the facade hands it over, with what decides
@@ -909,18 +916,6 @@ const OPAQUE_HEAD = {
   type: 'opaque',
   url: '',
   redirected: false,
-};
-
-/** All a page is told of a redirect it asked to see (Fetch 2.2.6, "an opaque-
- *  redirect filtered response"): that there was one. */
-const OPAQUE_REDIRECT: FetchResponse = {
-  url: '',
-  status: 0,
-  statusText: '',
-  redirected: false,
-  headers: [],
-  body: '',
-  type: 'opaqueredirect',
 };
 
 /** How many opaque responses a document holds at once (`_opaques`). */
@@ -1616,7 +1611,12 @@ const RAW_TEXT = new Set([
  * comments before it left out; `<!--` and `-->` are not rules, and
  * neither is what a `;` ends that is no at-rule, which CSS drops.
  */
-export function cssRulesOf(css: string): string[] {
+export function cssRulesOf(
+  css: string,
+  /** Told of what was no rule and dropped, which `insertRule`, handed one
+   *  rule and nothing else, refuses (CSSOM 1, "parse a CSS rule"). */
+  dropped?: { any: boolean },
+): string[] {
   const out: string[] = [];
   const n = css.length;
   // the closing bracket of each block open, innermost last
@@ -1628,7 +1628,10 @@ export function cssRulesOf(css: string): string[] {
     const rule = css.slice(start, at).trim();
     start = at;
     if (!rule || rule === '<!--' || rule === '-->') return;
-    if (statement && !rule.startsWith('@')) return;
+    if (statement && !rule.startsWith('@')) {
+      if (dropped) dropped.any = true;
+      return;
+    }
     out.push(rule);
   };
   for (let i = 0; i < n; i++) {
@@ -1678,7 +1681,10 @@ export function cssRulesOf(css: string): string[] {
     let rule = out.pop() as string;
     const atRule = rule[0] === '@';
     // what has no block by then is no rule, but for an at-rule
-    if (!atRule && !open.includes('}')) return out;
+    if (!atRule && !open.includes('}')) {
+      if (dropped) dropped.any = true;
+      return out;
+    }
     if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
       rule = rule.slice(0, -1);
     }
@@ -4271,7 +4277,9 @@ export class DomHost {
       case 'sheetInsert': {
         const el = this._element(a);
         const state = this._sheetOf(el);
-        const rules = cssRulesOf(text(b));
+        // one rule, and what follows it as much a syntax error as nothing
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(b), dropped);
         const brace = rules.length === 1 ? rules[0].indexOf('{') : -1;
         const prelude =
           brace > 0 && !rules[0].startsWith('@')
@@ -4281,6 +4289,7 @@ export class DomHost {
           prelude === null ? null : highlightSelectorValid(prelude);
         if (
           rules.length !== 1 ||
+          dropped.any ||
           (prelude !== null &&
             (transitionSelectorValid(prelude) === false ||
               highlights === false))
@@ -4593,8 +4602,12 @@ export class DomHost {
       }
       // a sheet's text as rules, for a sheet of the page's own and what a
       // grouping rule holds
-      case 'cssRules':
-        return JSON.stringify(cssRulesOf(text(a)));
+      case 'cssRules': {
+        // with `b`, one rule and nothing after it, as `insertRule` takes it
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(a), b === true ? dropped : undefined);
+        return JSON.stringify(dropped.any ? [] : rules);
+      }
       // the document's sheets, in tree order: its `<style>`s and the
       // `<link>`s that are a stylesheet
       case 'sheets': {
@@ -5759,6 +5772,14 @@ export class DomHost {
       }
       case 'documentOrigin':
         return this._origin();
+      case 'opaqueSrcdoc': {
+        const frame = this._frameOf.get(this.document);
+        return (
+          !!frame &&
+          this._frameAt.get(frame) === 'about:srcdoc' &&
+          !!(this.sandbox & SB_ORIGIN)
+        );
+      }
       case 'referrer':
         return this.referrer;
       case 'frameNamed': {
@@ -7322,6 +7343,13 @@ export class DomHost {
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        // no content is no navigation (HTML 7.4.2.3.3): the frame goes on
+        // showing what it was, and hears no `load`
+        if (response.status === 204 || response.status === 205) {
+          release(response);
+          this._frameDone(frame);
+          return;
+        }
         const sandbox =
           this._frameSandbox(frame) | sandboxOfPolicy(response.headers);
         const refused = this._refusedFraming(
@@ -7904,6 +7932,7 @@ export class DomHost {
         null,
         this._xml.has(doc),
       );
+      cascade.frameElement = this._frameOf.get(doc) ?? null;
       kept = { key, cascade };
       this._frameStyles.set(doc, kept);
     }
@@ -8843,7 +8872,7 @@ export class DomHost {
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
    *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
-    const answer = (value: FetchResponse | string) => {
+    const answer = (value: FetchResponse | string, refused = false) => {
       if (!this._fetches.has(id) || this._disposed) {
         if (typeof value !== 'string') release(value);
         return;
@@ -8872,7 +8901,10 @@ export class DomHost {
           ? { ...rest, body: '', base64: base64Of(bytes) }
           : rest;
       }
-      this.entries?.call('__fetched', [id, crossing]);
+      this.entries?.call(
+        '__fetched',
+        refused ? [id, crossing, true] : [id, crossing],
+      );
     };
     let request: PageRequest;
     try {
@@ -8893,6 +8925,7 @@ export class DomHost {
         error instanceof CorsError || !(error instanceof TypeError)
           ? 'Failed to fetch'
           : error.message,
+        error instanceof CorsError,
       );
     });
   }
@@ -9272,7 +9305,12 @@ export class DomHost {
         throw new TypeError('Failed to fetch');
       }
       const location = redirectOf(response.status, response.headers);
-      if (location === null) {
+      // one that asks to see a redirect, or to be refused one, is so whether
+      // or not it says where it goes (Fetch 4.4, "HTTP fetch", step 8)
+      const redirect =
+        location !== null ||
+        (request.redirect !== 'follow' && isRedirectStatus(response.status));
+      if (!redirect) {
         const answer = {
           ...response,
           url: response.url || hop.url,
@@ -9306,10 +9344,16 @@ export class DomHost {
       }
       release(response);
       if (request.redirect === 'error') throw new TypeError('Failed to fetch');
-      if (request.redirect === 'manual') return OPAQUE_REDIRECT;
+      if (request.redirect === 'manual') {
+        return this._opaqueRedirect(
+          hop.url,
+          headerOf(response.headers, 'location'),
+          response.status,
+        );
+      }
       const next = nextHop(
         hop,
-        location,
+        location!,
         response.status,
         urls.length,
         tainting === 'opaque'
@@ -9330,6 +9374,8 @@ export class DomHost {
     request: FetchRequest,
     signal: AbortSignalLike,
     sandbox = 0,
+    /** How many redirects a worker answered with brought it here. */
+    hops = 0,
   ): Promise<FetchResponse> {
     const keeper = this._seams.serviceWorkers;
     // no origin of its own to be a client of any scope in
@@ -9346,6 +9392,38 @@ export class DomHost {
         signal,
       );
       if (answered) {
+        // a redirect it answered with, an opaque one its own `fetch` saw
+        // among them, is one the navigation follows from where that redirect
+        // was (Fetch 4.4, a navigation's manual redirect), and asks again
+        const opaque = answered.type === 'opaqueredirect';
+        const status = opaque
+          ? (answered.redirectStatus ?? 0)
+          : answered.status;
+        const location = opaque
+          ? (answered.location ?? null)
+          : redirectOf(answered.status, answered.headers);
+        if (location !== null && isRedirectStatus(status)) {
+          release(answered);
+          const next = nextHop(
+            {
+              url: answered.url || request.url,
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+              ...(request.bytes ? { bytes: request.bytes } : {}),
+            },
+            location,
+            status,
+            hops,
+            null,
+          );
+          return this._navigationFetch(
+            { ...request, ...next },
+            signal,
+            sandbox,
+            hops + 1,
+          );
+        }
         const bytes = await wholeBytes(answered);
         return {
           ...answered,
@@ -9387,6 +9465,8 @@ export class DomHost {
     const type = response.type ?? 'default';
     if (
       (type === 'opaque' && request.mode !== 'no-cors') ||
+      // a redirect is a request's to see only where it asked to see one
+      (type === 'opaqueredirect' && request.redirect !== 'manual') ||
       (type === 'cors' && request.mode === 'same-origin') ||
       (response.redirected && request.redirect && request.redirect !== 'follow')
     ) {
@@ -9394,6 +9474,14 @@ export class DomHost {
       throw new TypeError('Failed to fetch');
     }
     if (type === 'opaque') return this._opaque(response);
+    if (type === 'opaqueredirect') {
+      release(response);
+      return this._opaqueRedirect(
+        response.url || request.url,
+        response.location ?? null,
+        response.redirectStatus ?? 0,
+      );
+    }
     return {
       ...response,
       url: response.url || request.url.split('#')[0],
@@ -9428,6 +9516,37 @@ export class DomHost {
       release(response);
       return hidden;
     }
+    return { ...hidden, held: this._hold(response) };
+  }
+
+  /** What a page is told of a redirect it asked to see (Fetch 2.2.6, "an
+   *  opaque-redirect filtered response"): that there was one, at the address
+   *  it asked for, and a number that holds where it goes, which a worker that
+   *  answers a navigation with it has the navigation follow. */
+  private _opaqueRedirect(
+    url: string,
+    location: string | null,
+    status: number,
+  ): FetchResponse {
+    const told: FetchResponse = {
+      url: url.split('#')[0],
+      status: 0,
+      statusText: '',
+      redirected: false,
+      headers: [],
+      body: '',
+      type: 'opaqueredirect',
+    };
+    if (!this._secureContext()) return told;
+    return {
+      ...told,
+      held: this._hold({ ...told, location, redirectStatus: status }),
+    };
+  }
+
+  /** A response kept here by a number a realm holds, the oldest let go past
+   *  `OPAQUE_HELD`. */
+  private _hold(response: FetchResponse): number {
     const held = ++this._opaqueSeq;
     this._opaques.set(held, response);
     for (const [key, oldest] of this._opaques) {
@@ -9435,7 +9554,24 @@ export class DomHost {
       this._opaques.delete(key);
       release(oldest);
     }
-    return { ...hidden, held };
+    return held;
+  }
+
+  /** The head of what a number holds, as the host made it: `_held` is a
+   *  field a page can write, so nothing that came with it is believed. */
+  private _heldHead(held: number): typeof OPAQUE_HEAD & {
+    location?: string | null;
+    redirectStatus?: number;
+  } {
+    const kept = this._opaques.get(held);
+    if (kept?.type !== 'opaqueredirect') return OPAQUE_HEAD;
+    return {
+      ...OPAQUE_HEAD,
+      type: 'opaqueredirect',
+      url: kept.url,
+      location: kept.location ?? null,
+      redirectStatus: kept.redirectStatus ?? 0,
+    };
   }
 
   /** An opaque response's bytes, read the first time they are asked for and
@@ -9459,15 +9595,26 @@ export class DomHost {
   private _serviceSaid(said: string): void {
     const scope = this.workerScope;
     if (!scope?.service) return;
-    const m = JSON.parse(said) as { op: string; held?: number; f?: number };
+    const m = JSON.parse(said) as {
+      op: string;
+      held?: number;
+      f?: number;
+      head?: { location?: unknown; redirectStatus?: unknown };
+    };
     if (m.op !== 'respond' || m.held === undefined) {
-      scope.service(said);
+      // where a redirect goes is the host's to say, never a realm's
+      if (m.head && ('location' in m.head || 'redirectStatus' in m.head)) {
+        delete m.head.location;
+        delete m.head.redirectStatus;
+        scope.service(JSON.stringify(m));
+      } else scope.service(said);
       return;
     }
     const { held, ...rest } = m;
+    const head = this._heldHead(held);
     void this._opaqueBytes(held).then((bytes) =>
       scope.service!(
-        JSON.stringify({ ...rest, head: OPAQUE_HEAD }),
+        JSON.stringify({ ...rest, head }),
         bytes ?? new Uint8Array(0),
       ),
     );
@@ -9501,13 +9648,13 @@ export class DomHost {
           response?: unknown;
         }[]) {
           if ('held' in step && step.held !== undefined) {
-            step.bytes =
-              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
-            delete step.held;
             // what the number holds stays opaque whatever came with it:
             // `_held` is a field a page can write, and a body it put under
             // its own URL and a type of its own it could read back
-            step.response = OPAQUE_HEAD;
+            step.response = this._heldHead(step.held);
+            step.bytes =
+              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
+            delete step.held;
           } else if (typeof step.base64 === 'string') {
             step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
             delete step.base64;
@@ -9521,20 +9668,32 @@ export class DomHost {
       return {
         ...answer,
         responses: answer.responses.map(({ bytes, ...head }) => {
-          if (head.type !== 'opaque') {
+          if (head.type !== 'opaque' && head.type !== 'opaqueredirect') {
             return { ...head, base64: base64Of(bytes) };
           }
-          const held = ++this._opaqueSeq;
-          this._opaques.set(held, {
-            url: '',
+          // and where a redirect goes stays here
+          const { location, redirectStatus, ...told } = head as typeof head & {
+            location?: string | null;
+            redirectStatus?: number;
+          };
+          const redirect = head.type === 'opaqueredirect';
+          const held = this._hold({
+            url: redirect ? head.url : '',
             status: 0,
             statusText: '',
             redirected: false,
             headers: [],
             body: '',
             bytes,
+            ...(redirect
+              ? {
+                  type: 'opaqueredirect' as const,
+                  location: location ?? null,
+                  redirectStatus: redirectStatus ?? 0,
+                }
+              : {}),
           });
-          return { ...head, held };
+          return { ...told, held };
         }),
       };
     };

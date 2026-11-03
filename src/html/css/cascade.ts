@@ -18,7 +18,7 @@
 // a framework stylesheet attached.
 import { compile } from 'css-select';
 import * as DomUtils from 'domutils';
-import { Element as DomElement, isTag } from 'domhandler';
+import { Element as DomElement, isDocument, isTag } from 'domhandler';
 import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
@@ -4624,6 +4624,9 @@ export class Cascade {
    *  `<picture>` chose where that has either (`ImageSources`), and the
    *  `<img>` where none says otherwise. */
   dimensionSource: ((img: Element) => Element) | null = null;
+  /** The frame this document is shown in, whose `marginwidth` and
+   *  `marginheight` are its body's (`presentationHints`). */
+  frameElement: Element | null = null;
   /** Each system colour as the `light-dark()` it is: the palette's where
    *  the element's scheme is the palette's, and Chrome's in an SVG image,
    *  which has none. */
@@ -5727,7 +5730,11 @@ export class Cascade {
           sheet && rule.at !== undefined ? ruleSource(sheet, rule.at) : null,
       });
     }
-    const hints = presentationHints(el, this.dimensionSource);
+    const hints = presentationHints(
+      el,
+      this.dimensionSource,
+      this.frameElement,
+    );
     if (hints.length) {
       // above the user agent's rules, as the cascade has them
       const ua = out.findIndex((r) => r.origin === 'user-agent');
@@ -9802,7 +9809,11 @@ export class Cascade {
     const tree = this._scoped ? this._treeInfo(el) : this._docInfo;
     if (this._scoped) this._scopedInto(el, '', out, matched);
 
-    const hints = presentationHints(el, this.dimensionSource);
+    const hints = presentationHints(
+      el,
+      this.dimensionSource,
+      this.frameElement,
+    );
     // the page's colour schemes are its root's where no rule sets them —
     // the scheme it is drawn in, and not its computed `color-scheme`, which
     // stays `normal` (CSS Color Adjust 1, 3), as `getComputedStyle` reads it
@@ -10749,6 +10760,7 @@ function compareLayers(
 function presentationHints(
   el: Element,
   dimensionSource: ((img: Element) => Element) | null = null,
+  frameElement: Element | null = null,
 ): Declaration[] {
   const out: Declaration[] = [];
   const tag = tagOf(el);
@@ -10827,6 +10839,28 @@ function presentationHints(
     // the text's colour, and the links'
     const text = attr(el, 'text');
     if (text) push('color', text);
+    // and its margins, by the first of these that is a number, each of two
+    // sides (HTML 15.3.2): the frame's are the document's body's alone, and
+    // no `rightmargin` or `bottommargin` is read, as Chrome and Firefox read
+    // none and WPT has it
+    const up = el.parent?.parent;
+    const frame = up && isDocument(up) ? frameElement : null;
+    const across =
+      pixelAttr(attr(el, 'marginwidth')) ??
+      pixelAttr(attr(el, 'leftmargin')) ??
+      (frame && pixelAttr(attr(frame, 'marginwidth')));
+    if (across) {
+      push('margin-left', across);
+      push('margin-right', across);
+    }
+    const down =
+      pixelAttr(attr(el, 'marginheight')) ??
+      pixelAttr(attr(el, 'topmargin')) ??
+      (frame && pixelAttr(attr(frame, 'marginheight')));
+    if (down) {
+      push('margin-top', down);
+      push('margin-bottom', down);
+    }
   } else if (tag === 'a' && attr(el, 'href') !== undefined) {
     const body = closestBody(el);
     const link = body ? attr(body, 'link') : undefined;
@@ -11112,6 +11146,15 @@ function lengthAttr(value: string): string {
   if (v.endsWith('%')) return v;
   const n = parseFloat(v);
   return Number.isFinite(n) ? `${n}px` : v;
+}
+
+/** An attribute that maps to a pixel length (HTML 15.2): a non-negative
+ *  integer, followed by anything at all, or undefined where there is none. */
+function pixelAttr(value: string | undefined): string | undefined {
+  const m = value === undefined ? null : /^\s*([+-]?)(\d+)/.exec(value);
+  if (!m) return undefined;
+  const n = Number(m[2]);
+  return m[1] === '-' && n !== 0 ? undefined : `${n}px`;
 }
 
 /** A number and a unit, as an SVG's `width` and `height` are written. */

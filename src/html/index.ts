@@ -1324,6 +1324,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onDomEvent,
     embedded,
     pressed: events.pressedElement,
+    pressPoint: events.pressPoint,
     controlOf: forms.controlOf,
     onDropFiles: props.onDropFiles,
   });
@@ -1402,6 +1403,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
     embedderScheme: props._embedderScheme,
+    frameElement: props._frameElement,
     onCssEvents: props._onCssEvents,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
@@ -1931,6 +1933,11 @@ function documentInteraction(
       }
       const node = focusedNode(view.current);
       if (node && owner(node)) node.blur();
+      // and the page hears it before `blur()` returns (HTML 6.6.4, the
+      // unfocusing steps), where core's blur is told a microtask later for a
+      // move between two fields: a `focus()` straight after it found the
+      // element still holding the focus, and told nothing
+      forms?.letGo();
     },
     activeElement: () =>
       live.current?.forms.owed() ?? owner(focusedNode(view.current)),
@@ -1990,6 +1997,8 @@ function useDocumentEvents(
   movesHeard?: () => boolean,
 ) {
   const pressed = React.useRef<Element | null>(null);
+  /** Where that press was, on what the document draws. */
+  const pressPoint = React.useRef<{ x: number; y: number } | null>(null);
   const released = React.useRef<Element | null>(null);
   /** The element each button held was pressed on: a click needs its own
    *  press, whatever was pressed since. */
@@ -2156,6 +2165,8 @@ function useDocumentEvents(
       const target = pointedAt(ev);
       if (!target) return;
       pressed.current = target;
+      pressPoint.current =
+        ev.target === (node as unknown) ? { x: ev.x, y: ev.y } : null;
       pressedBy.current.set(ev.button, target);
       if (ev.button !== lastButton.current) countFrom.current = ev.detail - 1;
       else if (ev.detail === 1) countFrom.current = 0;
@@ -2272,6 +2283,7 @@ function useDocumentEvents(
     onBar: () => barPress.current,
     /** The element the press now under way was on. */
     pressedElement: () => pressed.current,
+    pressPoint: () => (pressed.current ? pressPoint.current : null),
     clicked: (ev: X11MouseEvent<DrawnNode>): boolean => {
       const down = pressedBy.current.get(ev.button);
       const up = released.current;
