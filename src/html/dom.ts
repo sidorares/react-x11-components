@@ -464,6 +464,14 @@ export function isInputButton(el: Element): boolean {
   return type === 'submit' || type === 'reset' || type === 'button';
 }
 
+/** Whether an element is a checkbox or a radio button: an `<input>` whose
+ *  look is a mark to tick, and none of whose edges its native look keeps. */
+export function isCheckable(el: Element): boolean {
+  if (el.name !== 'input' && tagOf(el) !== 'input') return false;
+  const type = (attr(el, 'type') ?? '').trim().toLowerCase();
+  return type === 'checkbox' || type === 'radio';
+}
+
 /** Where an image element's image is: an `<img>`'s `src`, an `<object>`'s
  *  `data` — which is shown as an image when it is one (HTML's "the object
  *  element"), and as the element's fallback content otherwise — an

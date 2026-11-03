@@ -76,7 +76,6 @@ import {
   isElement,
   isForeign,
   isStyleOrScript,
-  isInputButton,
   isText,
   loadsLazily,
   madeByParser,
@@ -208,6 +207,7 @@ import {
   inLightTree,
   tailFrom,
   containerBoxes,
+  drawnControl,
   CONTENT_IMAGES,
   CLEARED_FROM,
   COLUMN_LINES,
@@ -7578,17 +7578,25 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
+    const own = (box && this._placedStyle(box)) ?? style;
+    const parent = flatParentOf(element);
+    const read = cascade.styleAsRead(
+      element,
+      own,
+      (parent && this._styleOf(parent)) ?? tree.root.style,
+    );
     if (!box) {
       return cssomStyle(
-        style,
+        read,
         this._scale,
         null,
         false,
         !!style.transform && this._unrendered(element, style),
       );
     }
-    const own = this._placedStyle(box) ?? style;
-    return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+    const used = this._usedBox(box, own);
+    if (read !== own) edgesAsRead(used, read);
+    return cssomStyle(read, this._scale, used, isItem(box));
   }
 
   /**
@@ -9369,11 +9377,9 @@ export class HtmlViewNode extends Node {
           if (change & FONT_LENGTHS && tree.firstLine) return false;
           resizedBoxes.push(box);
         }
-        // an input button the page took to styling, or stopped, is drawn
-        // by the document or mounted as the palette's widget: another box
-        if (kept.styledControl !== style.styledControl && isInputButton(el)) {
-          return false;
-        }
+        // a control the page took to drawing, or stopped, is drawn by the
+        // document or mounted as the palette's widget: another box
+        if (drawnControl(el, kept) !== drawnControl(el, style)) return false;
         if (WIDGETS.has(box.replaced)) {
           const kind = box.replaced!;
           if (styledField(kind, kept) !== styledField(kind, style)) {
@@ -16034,6 +16040,22 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
 }
 
 /**
+ * The border a page reads of a control the palette draws (`styleAsRead`),
+ * where its box has none. Its `width` and `height` read what its box holds,
+ * its padding as laid out, so a page that writes them back keeps the box
+ * the size it is, as it would in a browser; beside the web's border they
+ * come to more than its `offsetWidth`, which nothing writes back.
+ */
+function edgesAsRead(used: UsedBox, read: ComputedStyle): void {
+  used.borderRead = [
+    read.borderTopWidth,
+    read.borderRightWidth,
+    read.borderBottomWidth,
+    read.borderLeftWidth,
+  ];
+}
+
+/**
  * Whether a box is a flex or a grid item, which is all that keeps a
  * `min-width: auto` (`cssomStyle`): in the flow of such a box, `grid` being
  * a flex box here, and not of a `-webkit-box`, which is one here alone.
@@ -19062,6 +19084,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'checkbox',
   'radio',
   'range',
+  'gauge',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

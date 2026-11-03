@@ -37,6 +37,7 @@ import {
   inActiveTransition,
   isModal,
   isFullscreen,
+  isCheckable,
   isDropDown,
   isPickerOpen,
   isPopoverOpen,
@@ -7790,6 +7791,47 @@ export class Cascade {
     }
   }
 
+  /**
+   * A control as a page reads it. One the palette draws has the palette's
+   * border and ground in its style, none and transparent, which is how the
+   * box comes to the widget's size, and a page is owed the web's: what a
+   * browser's `getComputedStyle` answers, and what a page that writes a
+   * read value back builds on, as a library that copies an element's style
+   * does, and every test of CSS UI 4's list. Written back, any of them takes
+   * the palette's look off, as it takes a browser's; read as the palette's,
+   * the control drew neither the web's look nor its own. The style itself
+   * where the page styles the control, and where it is no control. Kept by
+   * the style, as elements share one only where the same rules match them.
+   */
+  styleAsRead(
+    el: Element,
+    style: ComputedStyle,
+    parentStyle: ComputedStyle,
+  ): ComputedStyle {
+    if (
+      style.styledControl ||
+      !PALETTE_TAGS.has(tagOf(el)) ||
+      drawnByDocument(el)
+    ) {
+      return style;
+    }
+    const kept = READ_STYLES.get(style);
+    if (kept) return kept;
+    const web = this._cascadeStyle(
+      el,
+      parentStyle,
+      false,
+      this._candidates(el).filter((c) => !PALETTE_CHROME.has(c.declarations)),
+      false,
+    );
+    const read = copyStyle(style);
+    for (const field of PALETTE_FIELDS) {
+      (read as unknown as Record<string, unknown>)[field] = web[field];
+    }
+    READ_STYLES.set(style, read);
+    return read;
+  }
+
   /** An element's style under its animations and transitions: what an
    *  animation's keyframes run from and to where they give no value. */
   underlyingStyleFor(
@@ -8967,9 +9009,24 @@ export class Cascade {
       el.name.length >= 5 &&
       el.name.length <= 8 &&
       CONTROL_TAGS.has(tagOf(el)) &&
-      stylesControl(candidates)
+      stylesControl(el, candidates)
     ) {
       style.styledControl = true;
+    }
+    // A checkbox's or a radio button's native look takes no padding and no
+    // border, whatever the page set: Blink and WebKit reset both
+    // (`LayoutTheme::AdjustCheckboxStyle`), so it is as large as its size
+    // says, and reads none of them. Firefox keeps the width and draws none.
+    if (
+      own &&
+      el.name.length === 5 &&
+      style.appearance !== 'none' &&
+      isCheckable(el)
+    ) {
+      noEdges(style);
+    }
+    if (own && el.name.length === 6 && isListBox(el)) {
+      settleListBox(el, style, this._lineHeightOf(style), this.scale * zoom);
     }
     // a button is laid out as one, whatever `display` it was given, and
     // so is an input button the page draws (`styledControl`)
@@ -9862,7 +9919,7 @@ export class Cascade {
     }
 
     out.sort(byCascade);
-    dropPaletteChrome(out);
+    dropPaletteChrome(el, out);
     return out;
   }
 }
@@ -9874,13 +9931,13 @@ export class Cascade {
  * is in cascade order, so the UA's candidates are the ones before the first
  * of any other origin.
  */
-function dropPaletteChrome(out: Candidate[]): void {
+function dropPaletteChrome(el: Element, out: Candidate[]): void {
   let chrome = false;
   let i = 0;
   for (; i < out.length && out[i].origin === Origin.UserAgent; i += 1) {
     if (PALETTE_CHROME.has(out[i].declarations)) chrome = true;
   }
-  if (!chrome || !stylesControl(out)) return;
+  if (!chrome || !(drawnByDocument(el) || stylesControl(el, out))) return;
   let kept = 0;
   for (const c of out) {
     if (c.origin === Origin.UserAgent && PALETTE_CHROME.has(c.declarations)) {
@@ -9891,56 +9948,286 @@ function dropPaletteChrome(out: Candidate[]): void {
   out.length = kept;
 }
 
-/** The elements whose look is a control's own until the page styles it
- *  (`stylesControl`): the fields a widget is mounted for, and a button. */
-const CONTROL_TAGS = new Set(['input', 'textarea', 'select', 'button']);
+/** Whether a control has no palette's look, and so no widget, the page's
+ *  rules or none: a list box, and a colour well. The web's UA sheet draws
+ *  it, as in a browser (`dropPaletteChrome`). */
+function drawnByDocument(el: Element): boolean {
+  if (isListBox(el)) return true;
+  return (
+    tagOf(el) === 'input' &&
+    (attr(el, 'type') ?? '').trim().toLowerCase() === 'color'
+  );
+}
+
+/** Whether an element is a `<select>` drawn as a list box (HTML 15.5.17):
+ *  one with `multiple`, or a size over one. */
+function isListBox(el: Element): boolean {
+  return tagOf(el) === 'select' && !isDropDown(el);
+}
 
 /**
- * Whether the page styles a control: declares one of its background or
- * border properties, a radius among them, or an `appearance` of `none`.
- * Who declared them decides, not what to: CSS UI 4 devolves a widget for
- * any of them declared in the author origin (7.2.1), and Blink
- * (`LayoutTheme::IsControlStyled`, over the author's declarations its
- * cascade applies), Gecko and WebKit all do, so `border: none; background:
- * transparent` takes the native look off as a red border does. The
+ * A list box: a box the document draws its options in, one a row, which
+ * scrolls across none of them and down what does not fit, as many rows tall
+ * as its size says, four where it says none (HTML 15.5.17), wherever the
+ * page leaves its height alone. A row is Blink's option: a line of its font
+ * and a pixel under it, and no less than `1.2em`. It has no widget, and the
+ * palette has no look for it (`dropPaletteChrome`): an unstyled one is the
+ * web's, as in a browser.
+ */
+function settleListBox(
+  el: Element,
+  style: ComputedStyle,
+  line: number,
+  scale: number,
+): void {
+  style.overflowX = 'hidden';
+  style.overflowY = 'auto';
+  style.verticalAlign = 'text-bottom';
+  style.userSelect = 'none';
+  if (style.height !== 'auto' || style.heightKeyword || style.heightSize) {
+    return;
+  }
+  const size = parseInt(attr(el, 'size') ?? '', 10);
+  const rows = size > 1 ? size : 4;
+  const row = Math.max(line, style.fontSize * 1.2) + scale;
+  const edges =
+    style.boxSizing === 'border-box'
+      ? style.borderTopWidth +
+        style.borderBottomWidth +
+        (typeof style.paddingTop === 'number' ? style.paddingTop : 0) +
+        (typeof style.paddingBottom === 'number' ? style.paddingBottom : 0)
+      : 0;
+  style.height = rows * row + edges;
+}
+
+/** A box with no padding and no border, as a native look resets them. */
+function noEdges(style: ComputedStyle): void {
+  style.paddingTop = 0;
+  style.paddingRight = 0;
+  style.paddingBottom = 0;
+  style.paddingLeft = 0;
+  style.borderTopWidth = 0;
+  style.borderRightWidth = 0;
+  style.borderBottomWidth = 0;
+  style.borderLeftWidth = 0;
+  style.borderTopStyle = 'none';
+  style.borderRightStyle = 'none';
+  style.borderBottomStyle = 'none';
+  style.borderLeftStyle = 'none';
+}
+
+/** The elements whose look is a control's own until the page styles it
+ *  (`stylesControl`): the fields a widget is mounted for, a button and a
+ *  gauge. */
+const CONTROL_TAGS = new Set([
+  'input',
+  'textarea',
+  'select',
+  'button',
+  'meter',
+  'progress',
+]);
+
+/** The controls the palette's chrome is for (`chromeText`). */
+const PALETTE_TAGS = new Set(['input', 'textarea', 'select', 'button']);
+
+/** What the palette's chrome sets (`chromeText`) and a page's value for
+ *  which takes a control's look off, which a page reads the web's values of
+ *  (`styleAsRead`). Its padding is not one, and reads as laid out: a page
+ *  that writes it back, as one that copies a style does, keeps the control
+ *  as it was drawn. */
+const PALETTE_FIELDS = [
+  'borderTopWidth',
+  'borderRightWidth',
+  'borderBottomWidth',
+  'borderLeftWidth',
+  'borderTopStyle',
+  'borderRightStyle',
+  'borderBottomStyle',
+  'borderLeftStyle',
+  'borderTopColor',
+  'borderRightColor',
+  'borderBottomColor',
+  'borderLeftColor',
+  'borderTopColorSource',
+  'borderRightColorSource',
+  'borderBottomColorSource',
+  'borderLeftColorSource',
+  'borderRadius',
+  'borderRadiusY',
+  'backgroundColor',
+  'backgroundColorSource',
+] as const satisfies readonly (keyof ComputedStyle)[];
+
+/** `styleAsRead`'s answers, by the style they were read from. */
+const READ_STYLES = new WeakMap<ComputedStyle, ComputedStyle>();
+
+/**
+ * Whether the page takes a control's native look away: an author's value
+ * for one of the appearance-disabling properties (CSS UI 4, 7.2.1), or an
+ * `appearance` of `none`. Who declared them decides, not what to. Every
+ * author-origin declaration is cascaded, `revert` rolling back what came
+ * before it, and any value left counts: `border: none; background:
+ * transparent` takes the look off as a red border does, and so does a page
+ * writing back the value `getComputedStyle` read. Blink
+ * (`LayoutTheme::IsControlStyled`), Gecko and WebKit do the same. The
  * palette's chrome goes on this answer (`dropPaletteChrome`), and the
  * document draws a field on it (`ComputedStyle.styledControl`). An
  * animation's values are not the page's declarations, and do not count.
+ *
+ * `menulist-button` is a drop-down `<select>`'s devolved look by name: its
+ * arrow on a box the page draws, whether or not the page set anything on
+ * the box. To every other control it is `auto`.
  */
-function stylesControl(candidates: readonly Candidate[]): boolean {
-  // `appearance` by the value that wins: `appearance: none; appearance:
-  // auto` keeps the control's look, as a reset a page takes back does
+function stylesControl(el: Element, candidates: readonly Candidate[]): boolean {
+  // what the author's declarations leave of each property, with the
+  // candidates that set it: a `revert-layer` takes back only its own layer's
+  let left: Map<string, Candidate[]> | null = null;
   let appearance = '';
   for (const c of candidates) {
     if (fromUserAgent(c.origin) || c.origin === Origin.Animation) {
       continue;
     }
     for (const d of pick(c)) {
-      if (d.prop === 'appearance' || d.prop === '-webkit-appearance') {
-        const v = d.value.trim().toLowerCase();
-        if (/^[a-z-]+$/.test(v)) appearance = v;
-      } else if (stylesChrome(d)) return true;
+      const value = d.value.trim().toLowerCase();
+      const back = value === 'revert' || value === 'revert-layer';
+      if (APPEARANCE_NAMES.has(d.prop)) {
+        // by the value that wins: `appearance: none; appearance: auto` keeps
+        // the control's look, as a reset a page takes back does
+        if (back) appearance = '';
+        else if (/^[a-z-]+$/.test(value)) appearance = value;
+        continue;
+      }
+      // every one of them, and `appearance` back to its initial `none`
+      if (d.prop === 'all') appearance = back ? '' : 'none';
+      const names = d.prop === 'all' ? EVERY_DISABLING : DISABLING.get(d.prop);
+      if (!names) continue;
+      left ??= new Map();
+      for (const name of names) {
+        const under = left.get(name);
+        if (value === 'revert') left.delete(name);
+        else if (!back) {
+          if (under) under.push(c);
+          else left.set(name, [c]);
+        } else if (under) {
+          const kept = under.filter(
+            (o) => o.origin !== c.origin || compareLayers(o.layer, c.layer),
+          );
+          if (kept.length) left.set(name, kept);
+          else left.delete(name);
+        }
+      }
     }
   }
-  return appearance === 'none';
+  if (left?.size) return true;
+  return (
+    appearance === 'none' ||
+    (appearance === 'menulist-button' && isDropDown(el))
+  );
 }
 
-/** Whether a declaration styles what a control's native look draws: Blink's
- *  `is_background` and `is_border` properties and their shorthands. An
- *  `appearance` of `none` does too, where it is the one that wins
- *  (`stylesControl`). */
-function stylesChrome(d: Declaration): boolean {
-  const prop = d.prop;
-  // every one of them, and `appearance` back to `none`, but where it
-  // takes the UA sheet's values back
-  if (prop === 'all') return !/^\s*revert/i.test(d.value);
-  if (prop.startsWith('background')) {
-    return prop !== 'background-repeat' && prop !== 'background-blend-mode';
+/** `appearance`, under each name a page writes it. */
+const APPEARANCE_NAMES = new Set([
+  'appearance',
+  '-webkit-appearance',
+  '-moz-appearance',
+]);
+
+/**
+ * Each name a declaration can set an appearance-disabling property under
+ * (CSS UI 4, 7.2.1) and what it sets: the listed names, their shorthands
+ * and the prefixed names pages write beside them. `background-repeat`,
+ * `background-blend-mode`, `border-spacing` and `border-collapse` are not
+ * on the list. A logical side stands for the side it is on a horizontal
+ * line, which is enough to tell whether an author's value is left: it
+ * matters only to a `revert` of a side another name set.
+ */
+const DISABLING = disablingProperties();
+
+/** Every property `DISABLING` stands for, as `all` sets them. */
+const EVERY_DISABLING = [...new Set([...DISABLING.values()].flat())];
+
+function disablingProperties(): Map<string, readonly string[]> {
+  const out = new Map<string, readonly string[]>();
+  const background = [
+    'color',
+    'image',
+    'attachment',
+    'position',
+    'clip',
+    'origin',
+    'size',
+  ].map((part) => `background-${part}`);
+  for (const name of background) out.set(name, [name]);
+  out.set('background', background);
+  out.set('background-position-x', ['background-position']);
+  out.set('background-position-y', ['background-position']);
+  out.set('-webkit-background-clip', ['background-clip']);
+  out.set('-webkit-background-origin', ['background-origin']);
+  out.set('-webkit-background-size', ['background-size']);
+
+  const image = ['source', 'slice', 'width', 'outset', 'repeat'].map(
+    (part) => `border-image-${part}`,
+  );
+  for (const name of image) out.set(name, [name]);
+  out.set('border-image', image);
+  out.set('-webkit-border-image', image);
+
+  const parts = ['color', 'style', 'width'];
+  const named = (side: string) => parts.map((p) => `border-${side}-${p}`);
+  const sides: Record<string, string> = {
+    top: 'top',
+    right: 'right',
+    bottom: 'bottom',
+    left: 'left',
+    'block-start': 'top',
+    'block-end': 'bottom',
+    'inline-start': 'left',
+    'inline-end': 'right',
+  };
+  for (const [side, on] of Object.entries(sides)) {
+    const edges = named(on);
+    out.set(`border-${side}`, edges);
+    parts.forEach((p, i) => out.set(`border-${side}-${p}`, [edges[i]]));
   }
-  if (prop.startsWith('border')) {
-    return prop !== 'border-collapse' && prop !== 'border-spacing';
+  const spans: Record<string, readonly string[]> = {
+    block: ['top', 'bottom'],
+    inline: ['left', 'right'],
+  };
+  for (const [span, around] of Object.entries(spans)) {
+    out.set(`border-${span}`, around.flatMap(named));
+    parts.forEach((p, i) =>
+      out.set(
+        `border-${span}-${p}`,
+        around.map((side) => named(side)[i]),
+      ),
+    );
   }
-  return false;
+  const physical = ['top', 'right', 'bottom', 'left'];
+  parts.forEach((p, i) =>
+    out.set(
+      `border-${p}`,
+      physical.map((side) => named(side)[i]),
+    ),
+  );
+  // `border` sets the border image back as well
+  out.set('border', [...physical.flatMap(named), ...image]);
+
+  const corners: Record<string, string> = {
+    'top-left': 'start-start',
+    'top-right': 'start-end',
+    'bottom-right': 'end-end',
+    'bottom-left': 'end-start',
+  };
+  for (const [corner, logical] of Object.entries(corners)) {
+    const name = `border-${corner}-radius`;
+    out.set(name, [name]);
+    out.set(`border-${logical}-radius`, [name]);
+  }
+  const radii = Object.keys(corners).map((c) => `border-${c}-radius`);
+  out.set('border-radius', radii);
+  out.set('-webkit-border-radius', radii);
+  return out;
 }
 
 /** The declarations that name an element's animations. */

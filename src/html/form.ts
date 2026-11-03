@@ -27,6 +27,7 @@ import {
   attr,
   childrenOf,
   elementsIn,
+  isDropDown,
   isElement,
   isForeign,
   parsedForm,
@@ -406,10 +407,16 @@ function optionPlace(el: Element): {
   return { optgroup: tagOf(el) === 'option' ? optgroup : null, select: null };
 }
 
-function optionDisabled(option: Element): boolean {
+export function optionDisabled(option: Element): boolean {
   if (attr(option, 'disabled') !== undefined) return true;
   const { optgroup } = optionPlace(option);
   return !!optgroup && attr(optgroup, 'disabled') !== undefined;
+}
+
+/** The `<select>` whose list an `<option>` is in, past what it may be
+ *  wrapped in (`optionPlace`). */
+export function selectOf(option: Element): Element | null {
+  return optionPlace(option).select;
 }
 
 /** Whether a `<select>` is a list box that takes many options. */
@@ -428,6 +435,8 @@ export function selectedOptions(select: Element): Element[] {
   const marked = options.filter((o) => attr(o, 'selected') !== undefined);
   if (isMultiple(select)) return marked;
   if (marked.length) return [marked[marked.length - 1]];
+  // a list box selects none of itself, where a drop-down box shows one
+  if (!isDropDown(select)) return [];
   const first = options.find((o) => !optionDisabled(o));
   return first ? [first] : [];
 }
@@ -487,6 +496,9 @@ export function controlValue(
     case 'time':
     case 'datetime-local':
       return fieldNumber(inputType(el), raw) === null ? '' : raw;
+    // a simple colour, in lower case, and black where it is none
+    case 'color':
+      return /^#[0-9a-f]{6}$/i.test(raw) ? raw.toLowerCase() : '#000000';
     default:
       return raw;
   }

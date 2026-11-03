@@ -7118,10 +7118,60 @@ An `<input type=image>` is drawn the same way, as its image, and submits
 the point it was pressed at; until its image arrives, or where it is
 declined, it is a button saying its `alt`, so it can be pressed either way.
 
-**A text field the page styled is the page's to draw.** Set any of the
-border or background properties of an `<input>`, a `<textarea>` or a
-`<select>`, a radius among them, `appearance: none`, or an `all` that
-sets them all, and the document paints that box, as a browser drops a field's native look for the author's;
+**What counts as a styled control is CSS UI 4's rule.** The page styles a
+control when an author's declaration is left, once the cascade is done, for
+one of the properties CSS UI 4 lists as appearance-disabling (7.2.1):
+`background-color`, `-image`, `-attachment`, `-position`, `-clip`,
+`-origin` and `-size`, every border side's colour, style and width, physical
+or logical, the five `border-image` longhands, and the eight corners'
+radii, through any shorthand or prefixed name that sets them. Or when
+`appearance` comes to `none`, `all` among the ways it can. `background-repeat`
+is not on the list, and neither are `border-spacing` and `border-collapse`.
+What the page set them to does not count, only that it set them: a page that
+writes back what `getComputedStyle` read of a control takes its native look
+off, as each of WPT's 802 tests of the list does, and as Chrome, Firefox and
+Safari all do. `revert` takes the author's value back, and the control keeps
+its look; `revert-layer` takes back only its own layer's. An animation's
+values are not the page's. `appearance: menulist-button` is a drop-down
+`<select>`'s look without its native one, its arrow on a box the page draws,
+whether or not the page set anything else; to any other control it is
+`auto`, as `textfield` is.
+
+That decides it for a button, an input button, a text field of any type, a
+text area, a drop-down `<select>`, a `<meter>` and a `<progress>`, the
+controls HTML lets devolve. A checkbox, a radio button and a range do not
+(HTML 15.5): at `appearance: auto` a checkbox or a radio button takes none
+of the page's padding or border, as Blink and WebKit reset both, and draws
+none of its background, so it stays as large as its size says. At
+`appearance: none` it has no look of its own at all, in every engine, and is
+the page's box, 0 by 0 unless the page sizes it, its `::before` and
+`::after` with it. It is a border box, as a select and a search field are,
+as in Blink, so a page's `width` holds its edges. That is how Bootstrap's, Tailwind's and Pico's
+checkboxes and switches are drawn. A press or Space ticks it, its click told
+after it has ticked, and a stop takes the focus for it, named to an
+assistive technology as a checkbox or a radio button with its state. A file
+input and a colour well have no native look to give way: a file input's
+edges are the page's and its widget is in its content box, and a colour
+well is drawn by the document either way.
+
+**A page reads a control's border and ground as the web's.** A control the
+palette draws has the palette's border and ground in its style, none and
+transparent, which is how its box comes to the widget's size. Its
+`getComputedStyle` reads the web's UA sheet's instead, for each property on
+CSS UI 4's list: a text field's 2px inset border and its `Field` ground, a
+button's 2px outset border and `ButtonFace`, square corners. A page that
+copies a style writes back what a browser would hand it, which takes the
+palette's look off as it takes a browser's native one, and the control is
+drawn as the web's. Its padding, `width` and `height` read what its box has,
+so a page that writes those back, as WPT's test of what is not on the list
+does, keeps the control the size it is: beside the web's border they come to
+more than its `offsetWidth`, which is the cost. The background's longhands,
+the border image's and the logical corners are read by name as Chrome reads
+them, and, like the shorthands, are not items of the list a page walks.
+
+**A text field the page styled is the page's to draw.** Style an
+`<input>`, a `<textarea>` or a drop-down `<select>`, as above, and the
+document paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
 go on that background — its glyphs in its `-webkit-text-fill-color` where
@@ -7135,16 +7185,19 @@ spaces its lines by it. Its size is then its text's, a line as tall as its
 `line-height` makes it — at `normal`, its font's own, as a browser's text
 field is — and the border and padding around it are the author's, or the
 web's where the author set only some of them. It is the page setting them
-that counts, not what it set them to, as CSS UI 4 has it (7.2.1) and
-Chrome, Firefox and Safari do: `border: none; background: transparent` is
-a page taking the frame off to draw the field in a box of its own, as
-joshwcomeau.com's newsletter form does in a white pill, and read as values
-it was a field left alone, the palette's frame mounted inside the pill. The
-answer is the one that takes the palette's look off a button, above. A
+that counts, not what it set them to: `border: none; background:
+transparent` is a page taking the frame off to draw the field in a box of
+its own, as joshwcomeau.com's newsletter form does in a white pill, and read
+as values it was a field left alone, the palette's frame mounted inside the
+pill. The answer is the one that takes the palette's look off a button,
+above. A
 `<select>` keeps its arrow, in that colour, as a browser keeps one on a
 select the page gave a border or a background, and loses it at
 `appearance: none`, where the page draws its own — as a background image,
-most often. Its widget is core's `<Select>` restyled through its
+most often. It is as wide as its widest option set in its font, and its
+arrow's room beside it, Blink's 1.6em or what core's trigger takes for its
+chevron where that is more; read as a count of letters, a drop-down cut its
+own label short. Its widget is core's `<Select>` restyled through its
 `labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
 on every backend: under a native popup bezel the page's box would have
 AppKit's drawn over it. Its list is the platform's own menu wherever the
@@ -7169,6 +7222,46 @@ border rounded. The checkables, a range, a file, an image and an input
 button have none, as in Blink's sheet. A field the page left alone has
 none either: its box is the palette's widget, frame and all, which the
 widget draws.
+
+**A list box is the document's.** A `<select>` with `multiple`, or a `size`
+over 1, is a list box (HTML 15.5.17), drawn as Blink draws one: a box with a
+1px border, its options the document's boxes, a row each, and as many rows
+tall as its `size` says, four where it says none, unless the page sets its
+height. It scrolls down what does not fit. A row is an option's line and a
+pixel under it, and no less than `1.2em`. What is selected is grey, and the
+selection's colour while the list box has the focus, as `option:checked`
+rules in the UA sheet say, so a page restyles them as it restyles anything.
+A press selects an option as the button goes down, and only it. In one that
+takes many, Ctrl or Cmd adds it or takes it away, and Shift selects every
+option from the one last pressed. Each change is told as `input` and
+`change`. A single-select list box selects none of its options until one is
+pressed, where a drop-down box shows its first. It has no widget, and the
+palette has no look for it, so one the page leaves alone is the web's. The
+keyboard does not move its selection, and an `<optgroup>` draws no label.
+
+**A meter and a progress bar are the size HTML gives them.** 5em and 10em
+wide, 1em tall, border-box, as Blink and WebKit size them; they took no room
+at all. One the page leaves alone is core's `<ProgressBar>`, half as thick
+as its box and across its middle, as a browser's native bar is, sliding
+through its track where a `<progress>` has no `value`, and a meter outside
+its optimum is amber or red. One the page styles is drawn by the document
+as Chrome draws one with no native look: a progress bar's bar grey and its
+value green, a meter's in Blink's gradients by its region (HTML 4.10.14),
+from the start of the line. A page's rules for the parts,
+`::-webkit-progress-value`, `::-moz-progress-bar` and the meter's, are not
+read yet, and neither the bar's nor the value's colour follows them.
+
+**A colour input is a well.** Blink's 50px by 27px, border-box, with a 1px
+border round a swatch of its value, inside the content box less 4px above and
+below and 2px beside, styled or not. Its value is a colour in lower case, and
+black where it holds none, as HTML sanitizes it. It opens no picker: a press
+on it is told as a click, and nothing chooses another colour.
+
+**A file input's widget is in its content box.** Its border, its padding and
+its background are the page's in every engine, so the document draws them
+and the widget, its button and what it holds, goes inside them, the text in
+the element's colour. A page's `::file-selector-button` rules are not read:
+the button is the palette's.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
