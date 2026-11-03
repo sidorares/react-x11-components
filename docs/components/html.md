@@ -7414,7 +7414,8 @@ What that changes:
   one, so `<h:div xmlns:h="http://www.w3.org/1999/xhtml">` is a `<div>`, and a
   `<div>` in no namespace is an inline box of no look, which only a sheet's
   rules for that name reach. A selector with no `@namespace` matches a local
-  name in any namespace, as it does in a browser.
+  name in any namespace, as it does in a browser, and one with a prefix what
+  [its sheet declares](#namespaces-in-selectors).
 - **The root element is whatever it says.** `:root`, a `rem` and the canvas's
   background are of it, and it is blockified. A drawing at the top has nothing
   around it: an `<svg>` that says no size fills the window, and one that says a
@@ -7445,10 +7446,61 @@ decides what it is, and that may be its last byte. So `partial` defaults to
 false for one, and a host that streams sees nothing until it says the stream
 has ended, where HTML is drawn as it comes.
 
-Not here: XSLT, which a `text/xsl` instruction asks for and nothing does;
-`@namespace` selectors (`svg|rect` drops its rule, as css-select refuses a
-namespaced type selector); and drawing a frame whose document is XML, whose
-scripts run and whose box stays empty.
+Not here: XSLT, which a `text/xsl` instruction asks for and nothing does; and
+drawing a frame whose document is XML, whose scripts run and whose box stays
+empty.
+
+### Namespaces in selectors
+
+A sheet's `@namespace` rules say what its selectors' prefixes mean, in an HTML
+document as much as in an XML one (CSS Namespaces 3; Selectors 4, 5.1 and 6.1).
+
+| Selector               | Matches                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `ns\|e`, `ns\|*`       | `e`, or any name, in the namespace `@namespace ns` declares                    |
+| `*\|e`, `*\|*`         | in any namespace, and in none                                                  |
+| `\|e`, `\|*`           | in no namespace                                                                |
+| `e`, `*`, `.a`         | in the default namespace where the sheet declares one, and any where not       |
+| `[ns\|a]`, `[ns\|a=v]` | an attribute in that namespace, with any of `=`, `~=`, `\|=`, `^=`, `$=`, `*=` |
+| `[*\|a]`, `[\|a]`      | an attribute in any namespace, and in none                                     |
+
+- **An `<svg>` in an HTML document is SVG's**, so a prefix for
+  `http://www.w3.org/2000/svg` and `svg|rect` work there, a `<math>` is
+  MathML's, an HTML element is XHTML's, and what a page's `createElementNS` or
+  `createElement` makes is in what it was made in, wherever it is put.
+- **A default namespace is every compound's**, a compound with no type among
+  them: under `@namespace "http://www.w3.org/1999/xhtml"`, `.a` is no element of
+  a drawing. It stops at the subject of each entry of an `:is()`, a `:where()`, a
+  `:not()` and a `:has()`, unless that names a type or `*`, so `*|*:not(.a)` is
+  of every namespace. No default namespace reaches an attribute.
+- **A prefix nothing declares makes its selector none**, and the rule goes with
+  every selector in its list and all that is nested in it. An `:is()` and a
+  `:where()` forgive it, as they forgive any entry, and a `:not()` does not.
+- **A declaration is its sheet's**: no other sheet sees it, an imported one
+  included. It stands after `@charset` and `@import` and ahead of everything
+  else, anywhere else it is dropped, and the last one of a prefix is the one
+  that counts. A URL is compared as the text it is, so
+  `http://www.w3.org/1999/xhtml/`, with its slash, is another namespace.
+- **In an HTML document an attribute is in a namespace only where the HTML
+  parser puts it**: `xlink:`, `xml:` and `xmlns:` on an SVG or a MathML element.
+  On an HTML element, and for any other prefix, the colon is a letter of the
+  name. An XML document's prefixes mean what its `xmlns` declarations say, and
+  what `setAttributeNS` sets is in the namespace it was told.
+- **A page's own query declares no namespace**, so `querySelector('*|e')`,
+  `|e` and `[*|a]` work, and `ns|e` throws a `SyntaxError` unless an `:is()`
+  forgives it, as in a browser.
+
+All three engines were asked some 1,600 of these, in an HTML document and an
+XML one. Where they differ this is mostly with two of them, and in one place
+with the specification against two: in a list, Chromium and WebKit let only the
+last entry's subject stand clear of a default namespace, and Firefox and
+Selectors 4 let every entry's, which is what this does.
+
+Not here: a plain `[xlink\:href]` asks for the name an attribute is kept under,
+so it finds SVG's `xlink:href` and `[xmlns]` finds a declaration, where in a
+browser neither is an attribute of that name. And `:first-of-type` and its kin
+in a page's own query of an XML document go by local name alone, where a sheet's
+go by namespace as well.
 
 ## Streaming
 

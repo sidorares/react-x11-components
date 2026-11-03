@@ -25,8 +25,10 @@ import { CONTROL_PSEUDOS } from '../control-state.js';
 import {
   NON_RENDERED,
   ShadowRoot,
+  anyXmlDocuments,
   assignedSlot,
   attr,
+  attributeName,
   flatParentOf,
   isDefinedElement,
   isElement,
@@ -49,6 +51,8 @@ import {
   isRootElement,
   isXmlDocument,
   localNameOf,
+  namespaceOf,
+  typeNameOf,
 } from '../dom.js';
 import {
   BLOCK_AXIS,
@@ -72,6 +76,7 @@ import {
   escapeEnd,
   familyList,
   mediaMatches,
+  namespaceAt,
   parseMediaQuery,
   readIdent,
   specificityOf,
@@ -1820,7 +1825,11 @@ function insideHas(arg: string): string {
  * and each such argument held inside its element (`insideHas`). `inHas` says
  * `text` is such a `:has()`'s argument.
  */
-function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
+function hoistFromHas(
+  text: string,
+  hoisted: Hoisted[],
+  inHas: boolean,
+): string {
   const hoist = (whole: string): string => {
     hoisted.push(whole);
     return `:-rx-hoisted(${hoisted.length - 1})`;
@@ -1863,6 +1872,94 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
   return out;
 }
 
+/** The bar of an attribute selector's namespace, in what is inside its
+ *  brackets: `-1` for one with none, where a `|` is only a `|=`. */
+function attributeBar(inside: string): number {
+  const bar = inside.indexOf('|');
+  if (bar < 1 || inside[bar + 1] === '=') return -1;
+  return /^(?:\*|-rx-\d+)$/.test(inside.slice(0, bar)) ? bar : -1;
+}
+
+/**
+ * The test of an attribute selector in a namespace, or of any, as the inside
+ * of its brackets, `[-rx-n|a=b]` or `[*|a=b]` (`qualifiedSelector`). css-select
+ * refuses both, and the tree keeps an attribute under the name it was
+ * written with, so each of an element's attributes is read for what it
+ * means (`attributeName`), and css-select is handed one at a time: a test
+ * holds where any of the attributes it names answers, and its operators and
+ * its case are the matcher's.
+ */
+function namespacedAttribute(inside: string): (el: Element) => boolean {
+  const bar = attributeBar(inside);
+  const spec = inside.slice(0, bar);
+  const namespace = spec === '*' ? null : namespaceAt(Number(spec.slice(4)));
+  const written = inside.slice(bar + 1);
+  const { value: name } = readIdent(written, 0);
+  const lower = asciiLower(name);
+  let held: string | undefined;
+  const test = compile(`[${written}]`, {
+    xmlMode: true,
+    adapter: {
+      ...DomUtils,
+      isTag,
+      getAttributeValue: () => held,
+      hasAttrib: () => held !== undefined,
+    },
+  } as unknown as Parameters<typeof compile>[1]) as unknown as (
+    el: Element,
+  ) => boolean;
+  return (el) => {
+    // what HTML's parser made keeps its names in lower case
+    const folded = el.namespace === undefined;
+    for (const key in el.attribs) {
+      const found = attributeName(el, key);
+      if (folded ? asciiLower(found.local) !== lower : found.local !== name) {
+        continue;
+      }
+      if (namespace !== null && found.namespace !== namespace) continue;
+      held = el.attribs[key];
+      if (test(el)) return true;
+    }
+    return false;
+  };
+}
+
+/** `text` with each attribute selector in a namespace, or of any, taken out
+ *  of it into `hoisted`, and `:-rx-hoisted(n)` left in its place. Asked only
+ *  of a selector with a bar in it. */
+function hoistAttributes(text: string, hoisted: Hoisted[]): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    let end = i + 1;
+    if (c === '\\') end = escapeEnd(text, i);
+    else if (c === '"' || c === "'") {
+      while (end < text.length && text[end] !== c) {
+        end = text[end] === '\\' ? escapeEnd(text, end) : end + 1;
+      }
+      end += 1;
+    } else if (c === '[') {
+      const close = bracketEnd(text, i);
+      const inside = text.slice(i + 1, close);
+      end = close + 1;
+      const bar = attributeBar(inside);
+      if (bar > 0 && startsIdent(inside, bar + 1)) {
+        hoisted.push(namespacedAttribute(inside));
+        out += `:-rx-hoisted(${hoisted.length - 1})`;
+        i = end;
+        continue;
+      }
+    }
+    out += text.slice(i, end);
+    i = end;
+  }
+  return out;
+}
+
+/** What `compileHoisted` compiles apart: a selector, or a matcher already. */
+type Hoisted = string | ((el: Element) => boolean);
+
 /**
  * A selector compiled by `make`, with what a `:has()` holds compiled apart.
  *
@@ -1883,6 +1980,9 @@ function hoistFromHas(text: string, hoisted: string[], inHas: boolean): string {
  * `el.closest(':has(:scope .a)')` found `el` for an `.a` in it, where it finds
  * what `el` is in. What is left of an argument goes through `insideHas`.
  *
+ * An attribute selector in a namespace goes the same way, since css-select
+ * refuses it (`namespacedAttribute`).
+ *
  * Only what is compiled changes: what reads a rule for what it reaches reads
  * it as written, and never sees `-rx-hoisted` or the `* > `.
  */
@@ -1891,9 +1991,11 @@ export function compileHoisted<Pseudos extends object>(
   pseudos: Pseudos,
   make: (selector: string, pseudos: Pseudos) => (el: Element) => boolean,
 ): (el: Element) => boolean {
-  if (!/:has\(/i.test(selector)) return make(selector, pseudos);
-  const hoisted: string[] = [];
-  const text = hoistFromHas(selector, hoisted, false);
+  const hoisted: Hoisted[] = [];
+  let text = selector.includes('|')
+    ? hoistAttributes(selector, hoisted)
+    : selector;
+  if (/:has\(/i.test(text)) text = hoistFromHas(text, hoisted, false);
   if (!hoisted.length) return make(text, pseudos);
   const matchers: ((el: Element) => boolean)[] = [];
   const own = {
@@ -1902,7 +2004,9 @@ export function compileHoisted<Pseudos extends object>(
     '-rx-hoisted': (el: Element, at: string | null) =>
       matchers[Number(at)]?.(el) === true,
   };
-  for (const one of hoisted) matchers.push(make(one, own));
+  for (const one of hoisted) {
+    matchers.push(typeof one === 'string' ? make(one, own) : one);
+  }
   return make(text, own);
 }
 
@@ -1993,13 +2097,28 @@ interface Place {
 }
 const PLACES = new WeakMap<Element, Place>();
 
-const nameOf = (el: Element): string =>
+const plainNameOf = (el: Element): string =>
   el.name.endsWith(':svg') ? tagOf(el) : el.name;
+
+/** The same in an XML document, where an element's type is its namespace and
+ *  its local name (Selectors 4, 13.4): `<p>` and `<html:p>` are of one type
+ *  under `xmlns:html`, and `<p xmlns="">` is of another. */
+const expandedNameOf = (el: Element): string =>
+  `${el.namespace} ${localNameOf(el)}`;
+
+/** Whether an element is in an XML document. */
+function inXmlDocument(el: Element): boolean {
+  if (!anyXmlDocuments()) return false;
+  let at: AnyNode = el;
+  while (at.parent) at = at.parent;
+  return isXmlDocument(at);
+}
 
 function placeOf(el: Element): Place {
   const gen = treeGeneration();
   const kept = PLACES.get(el);
   if (kept !== undefined && kept.gen === gen) return kept;
+  const nameOf = inXmlDocument(el) ? expandedNameOf : plainNameOf;
   const siblings = DomUtils.getSiblings(el);
   const elements: Element[] = [];
   const ofName = new Map<string, number>();
@@ -2071,14 +2190,24 @@ function nthHolds(
 }
 
 /** `:nth-child()` and its kin, where their argument is a plain `An+B`, as
- *  the pseudo-classes that answer them from `placeOf`. */
+ *  the pseudo-classes that answer them from `placeOf`, and the three that
+ *  are `:nth-of-type()`s by other names, since css-select tells types apart
+ *  by name alone. */
 function nthKept(selector: string): string {
-  if (!/:nth-/i.test(selector)) return selector;
-  return selector.replace(
-    /(?<!\\):nth-(child|last-child|of-type|last-of-type)\(([^()]*)\)/gi,
-    (whole, kind: string, arg: string) =>
-      nthOf(arg) ? `:-rx-nth-${kind.toLowerCase()}(${arg})` : whole,
-  );
+  if (!/:(?:nth-|(?:first|last|only)-of-type)/i.test(selector)) return selector;
+  return selector
+    .replace(
+      /(?<!\\):nth-(child|last-child|of-type|last-of-type)\(([^()]*)\)/gi,
+      (whole, kind: string, arg: string) =>
+        nthOf(arg) ? `:-rx-nth-${kind.toLowerCase()}(${arg})` : whole,
+    )
+    .replace(
+      /(?<!\\):(first|last|only)-of-type(?![\w-])/gi,
+      (_whole, kind: string) => {
+        const end = kind.toLowerCase();
+        return `${end === 'last' ? '' : ':-rx-nth-of-type(1)'}${end === 'first' ? '' : ':-rx-nth-last-of-type(1)'}`;
+      },
+    );
 }
 
 function mapBucket(
@@ -2799,7 +2928,9 @@ function stableCompound(text: string): string {
       if (fn) {
         const open = i + fn[0].length - 1;
         const close = closeOf(text, open);
-        if (MATCHES_ANY.test(fn[1])) {
+        // an element's namespace is its for good
+        if (fn[1] === '-rx-ns') out += text.slice(i, close + 1);
+        else if (MATCHES_ANY.test(fn[1])) {
           const entries = selectorsOf(text.slice(open + 1, close));
           const stable = entries.every((entry) => {
             const one = entry.trim();
@@ -3115,8 +3246,12 @@ function scanCompoundChanges(
       i = Math.max(name.end, i + 1);
     } else if (c === '[') {
       const close = bracketEnd(text, i);
-      const name = attributeNameOf(text.slice(i + 1, close));
-      note(`v:${name}\u0000${text.slice(i, close + 1)}`, bits, has, subject);
+      const inside = text.slice(i + 1, close);
+      const name = attributeNameOf(inside);
+      // one in a namespace, or any, by its local name: the name an attribute
+      // is kept under says neither (`MutationRules.tests`)
+      const named = attributeBar(inside) > 0 ? `|${name}` : name;
+      note(`v:${named}\u0000${text.slice(i, close + 1)}`, bits, has, subject);
       i = close + 1;
     } else if (c === ':' && text[i + 1] === ':') {
       // a pseudo-element left in a compound — `::slotted()`, `::part()` —
@@ -3690,6 +3825,12 @@ class MutationRules {
   /** The attribute selectors that test an attribute, as `v:` keys. */
   tests(name: string): ReadonlySet<string> | undefined {
     return this._tests.get(name);
+  }
+
+  /** Those that test an attribute of a local name in a namespace, or in
+   *  any, whichever prefix the name a change tells is written with. */
+  namespacedTests(name: string): ReadonlySet<string> | undefined {
+    return this._tests.get(`|${name.slice(name.indexOf(':') + 1)}`);
   }
 
   /** The pseudo-elements whose rules test a key: 0 none, 1 a `::before`
@@ -4633,12 +4774,14 @@ export class Cascade {
       isTag,
       // a type selector sees `tagOf`'s name — XHTML's `<svg:svg>` is an
       // `svg` — asked only of a name that could be one: this runs for every
-      // type selector tried, and the parser has lowercased the rest. An XML
-      // document's are local names, of any namespace: `svg` with no
-      // `@namespace` is that name in all of them.
+      // type selector tried, and the parser has lowercased all but SVG's
+      // capitals, which a selector's name has lost. An XML document's are
+      // local names, of any namespace: `svg` with no `@namespace` is that
+      // name in all of them.
       getName: xml
         ? localNameOf
-        : (el: Element) => (el.name.endsWith(':svg') ? tagOf(el) : el.name),
+        : (el: Element) =>
+            el.name.endsWith(':svg') ? tagOf(el) : typeNameOf(el),
       isHovered: (el: Element) => now.cascade._pointer.hovered.has(el),
       isActive: (el: Element) => now.cascade._pointer.active.has(el),
       isVisited: () => false,
@@ -5075,6 +5218,10 @@ export class Cascade {
         if (was === undefined || this._flips(key, was, now, holders)) add(key);
       }
     }
+    // an element made up with an attribute says nothing of a namespace,
+    // which is what's around it as well, so any change may be one
+    const namespaced = rules.namespacedTests(name);
+    if (namespaced) for (const key of namespaced) add(key);
     if (name === 'class') {
       if (was === undefined) {
         below = null;
@@ -5550,7 +5697,7 @@ export class Cascade {
       const spec = rule.specificity;
       const sheet = sources.get(rule);
       out.push({
-        selector: rule.selector,
+        selector: rule.written ?? rule.selector,
         origin: rule.order < 0 ? 'user-agent' : 'author',
         specificity: [
           Math.floor(spec / 1_000_000),
@@ -7286,6 +7433,8 @@ export class Cascade {
     // a name in no language this knows is one to a rule all the same
     const called = tag || `\u0002${el.name}`;
     key += `\u0001${called.length}:${called}`;
+    // an XML document's `<html:p>` and `<svg:p>` have one tag
+    if (el.namespace) key += `\u0001n${el.namespace}`;
     if (this._index.hoverSensitive) {
       if (this._pointer.hovered.has(el)) key += '\u0001:hover';
       if (this._pointer.active.has(el)) key += '\u0001:active';
@@ -9843,6 +9992,13 @@ function asRoot(style: ComputedStyle): ComputedStyle {
   return style;
 }
 
+/** What `qualifiedSelector` leaves for a matcher to ask, here and of a page's
+ *  own query: an element's namespace, by the number it calls it. */
+export const NAMESPACE_PSEUDOS = {
+  '-rx-ns': (el: Element, id?: string | null): boolean =>
+    namespaceOf(el) === namespaceAt(Number(id)),
+};
+
 /** `:root` is the `<html>` element: the one a browser implies around a
  *  fragment, whose style the root box takes (`rootStyle`), and never a
  *  fragment's top-level elements, which css-select would take for it.
@@ -9863,6 +10019,7 @@ const PSEUDOS = {
   },
   // the top of a shadow tree, where `:host > .x`'s `.x` is (`readHost`)
   '-rx-top': (el: Element) => el.parent instanceof ShadowRoot,
+  ...NAMESPACE_PSEUDOS,
   // the host, which nothing in its tree is: a `:host` this reads in a
   // compound of its own is the host's (`readHost`), and one inside a
   // function's list, `:not(:host)`, is nothing's
