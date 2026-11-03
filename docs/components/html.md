@@ -55,7 +55,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `onPickFiles`        | `(request) => Promise<HtmlFile[] \| null>`       | Ask the user for files, for an `<input type=file>` — see [File inputs](#file-inputs). `useHtmlFilePicker()` is core's file dialog. Absent, a file input opens nothing.                                                                                                                              |
 | `onViewportOverflow` | `(overflow: ViewportOverflow) => void`           | The `overflow` the root, or the `<body>`, gave the viewport, `{ x, y }` of `'auto' \| 'hidden' \| 'scroll'`, for the host's scroll pane — see [What renders](#what-renders).                                                                                                                        |
 | `onElementScroll`    | `(element: Element) => void`                     | A scroll container in the document scrolled, under the wheel or by `scrollElementTo`, told once it is drawn where it went: what a page hears as the element's `scroll`. See [Scroll containers](#scroll-containers).                                                                                |
-| `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>` or an `<embed>`, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                                                                                  |
+| `renderEmbedded`     | `(rect: EmbeddedRect) => ReactNode \| null`      | What to show in an `<iframe>`, a `<canvas>`, or an `<embed>` or an `<object>` that shows no image, mounted at its content box — see [Embedded content](#embedded-content). Absent, each is an empty box.                                                                                            |
 | `canvasImage`        | `(element: Element) => unknown \| null`          | What a `<canvas>` shows, drawn in its content box as an `<img>` is, in its place in the paint order: an image the context's `drawImage` takes, an ntk `Image` of the canvas's pixels, or null for nothing. The handle's `canvasChanged` says it changed. See [Embedded content](#embedded-content). |
 | `fontSize`           | `number`                                         | Base text size. Default: theme `fontSize`, or 14. Form controls stay at the theme's.                                                                                                                                                                                                                |
 | `fontFamily`         | `string`                                         | Default `'sans-serif'`. Form controls stay in the theme's.                                                                                                                                                                                                                                          |
@@ -154,8 +154,9 @@ been decoded. Bytes nothing decodes are drawn as a declined image is.
 Return `{ kind: 'image', image, width, height }` instead to hand over an
 image the host decoded itself, and `{ kind: 'document' }` where what an
 `<object>`'s `data` holds is a page or some other document rather than an
-image: the object shows it as a frame does, an empty box here, and not its
-fallback content. A declined or absent resource is an ordinary state:
+image: the object shows it as a frame does, a box `renderEmbedded` mounts
+over, and not its fallback content. A declined or absent resource is an
+ordinary state:
 images draw as a frame at their attribute size, an `<object>` shows its
 fallback content, linked stylesheets are skipped and text is set in the
 fonts the system has.
@@ -3285,9 +3286,12 @@ hold as they do for any image. `handle.canvasChanged(element)` repaints it
 where it is. A canvas with no picture is the empty box it was, and is still
 reported to `renderEmbedded`.
 
-**An `<iframe>`, a `<canvas>` or an `<embed>` shows what the host mounts
-over it.** The document lays each out as a box of its size and draws
-nothing in it, since nothing is loaded or run here. `renderEmbedded` is
+**An `<iframe>`, a `<canvas>`, or an `<embed>` or an `<object>` that shows
+no image, shows what the host mounts over it.** The document lays each out
+as a box of its size and draws nothing in it, since nothing is loaded or
+run here, and an `<object>` is one only where the host answered its `data`
+with `{ kind: 'document' }`. One that shows an image draws it, and is not
+reported. `renderEmbedded` is
 called with where the element's content box is, in this component's space,
 and what it returns is mounted there, filling it, beside the document, as a
 [video](#video)'s player is. The rect carries the `element`, its `kind`, the
@@ -3382,6 +3386,29 @@ HTML's "process the iframe attributes" has it; a `src` set while it has a
 `srcdoc` goes nowhere. A server-rendered `<iframe>` a React page hands its
 `srcdoc` after hydrating had its first `about:blank` by then, and stayed
 blank.
+
+**An `<object>` and an `<embed>` hold a document as an `<iframe>` does**,
+where `scripts` draws frames: one of HTML or XML is mounted over the box, at
+300 by 150 where nothing sizes it, with a realm of its own where it has a
+script. An `<embed>`'s is reached by `getSVGDocument()`, for a drawing alone,
+as it has no `contentDocument`. One that could not be had is no document: an
+`<object>` answered with an error status shows its fallback content and hears
+`error`, and an `<embed>` of an image or of something only a plugin reads
+holds none, and hears `load`. An `<embed>` loads only while it is rendered, so
+not under `display: none`, and not in a `<video>`, an `<audio>` or an
+`<object>` that shows something else, and one a script comes to show loads from
+then on. What `content-visibility: hidden` holds is rendered. A `javascript:`
+address does nothing, and tells nothing.
+
+**A drawing in either is a picture until something can change it.** It keeps
+the image's natural size and `object-fit` reaches it, and it is drawn in its
+place in the paint order, as an `<img>` is. A drawing with a script in it, or
+one a page's script has written into, is mounted over its box as a frame is,
+at that same size, from then on: a picture cannot show what either did. The
+difference shows in a drawing with no script that animates or has links,
+which stays still and takes no press, and `object-fit` does not reach one
+that is mounted. And no view lays a picture's document out, so what a page
+reads of its layout, a `getBoundingClientRect` in it, comes to nothing.
 
 **A frame's document has a viewport of its own: its frame's content box.**
 Its window's `innerWidth` and `innerHeight`, `matchMedia`, `visualViewport`
@@ -4713,7 +4740,9 @@ something to play — see [Video](#video). `<iframe>`, and a `<video>` or an
 `<embed>` with no image, are boxes of their `width` and `height` — 300×150
 without them, as HTML sizes them — with nothing in them, because nothing is
 loaded, and what a host mounts over them where it gives one — see [Embedded
-content](#embedded-content).
+content](#embedded-content). Where `scripts` runs, that is the document a
+frame holds, and a drawing in an `<object>` or an `<embed>` comes to be one
+where something can change it.
 
 **`calc-size()`** (CSS Values 5): `width`, `height`, their `min-` and `max-`
 limits, their logical names and `flex-basis` take a size worked out from the
@@ -7446,9 +7475,19 @@ decides what it is, and that may be its last byte. So `partial` defaults to
 false for one, and a host that streams sees nothing until it says the stream
 has ended, where HTML is drawn as it comes.
 
-Not here: XSLT, which a `text/xsl` instruction asks for and nothing does; and
-drawing a frame whose document is XML, whose scripts run and whose box stays
-empty.
+**A frame's document is XML by what it was served as**, in an `<iframe>`, an
+`<object>` or an `<embed>`, and all of the above holds in it: a drawing's root
+fills the frame where it says no size, a square `viewBox` centred in the
+default 300 by 150, and is cut to a size it says. One with a script in it runs
+in a realm of its own, as HTML's does, where `<Html scripts>` draws frames: a
+drawing's `<script>` and a `src` run there, and what it declares is its
+window's. With `frames: false` it stays as it was, the inline scripts of
+XHTML's in the page's realm, each its own function, and none of a drawing's.
+A frame's document is parsed whole before its scripts run, as an HTML frame's
+is, so a script in one sees all of it, where one at the top sees what came
+before it.
+
+Not here: XSLT, which a `text/xsl` instruction asks for and nothing does.
 
 ### Namespaces in selectors
 

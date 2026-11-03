@@ -634,6 +634,9 @@ export interface HtmlViewProps {
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
   canvasImage?: (element: Element) => unknown | null;
   canvasOpaque?: (element: Element) => boolean;
+  /** Whether an `<object>` or an `<embed>` shows its document as it stands,
+   *  over its box, where an image of it could otherwise be drawn. */
+  framed?: (element: Element) => boolean;
   /** The parsed document, once per parse — the DOM handle. */
   onDocument?: (document: Document) => void;
   /** Bumped by the component to force a re-read of a mutated DOM. */
@@ -4601,6 +4604,7 @@ export class HtmlViewNode extends Node {
           imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
           holdsDocument: (el) =>
             this._resources.holdsDocument(imageUrlOf(el) ?? ''),
+          framed: (el) => this._props().framed?.(el) ?? false,
           sizePending: (el) => this._sizePending(el),
           urlSize: (url) => this._resources.imageSize(url),
           faceAscent: (style) => {
@@ -7559,6 +7563,29 @@ export class HtmlViewNode extends Node {
       if (this._styleOf(at)?.display === 'none') return true;
     }
     return false;
+  }
+
+  /**
+   * Whether an `<embed>` is being rendered and is no fallback of anything
+   * showing something else, which is when it may hold a document (HTML
+   * 4.8.6): by its style and not by a box, as what `content-visibility:
+   * hidden` holds is rendered in a browser and has none here. Null until
+   * there are styles to say.
+   */
+  embedRendered(element: Element): boolean | null {
+    // what the parser made since the last build has no style of its own
+    // yet, as a `getComputedStyle` that may wait has none (`computedStyle`)
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    if (!tree) return null;
+    const style = this._styleOf(element);
+    if (!style || this._unrendered(element, style)) return false;
+    for (let at = flatParentOf(element); at; at = flatParentOf(at)) {
+      const tag = tagOf(at);
+      if (tag === 'video' || tag === 'audio') return false;
+      if (tag === 'object' && this._boxOf(tree, at)?.replaced) return false;
+    }
+    return true;
   }
 
   /** The style of the position option a box was placed by

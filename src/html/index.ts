@@ -706,10 +706,11 @@ export interface HtmlProps {
    */
   canvasOpaque?: (element: Element) => boolean;
   /**
-   * What to show in an `<iframe>`, a `<canvas>` or an `<embed>`: called with
-   * where the element's content box is, in this component's space, and what
-   * it returns is mounted there, filling it, beside the document as a
-   * `<video>`'s player is — cut by what clips the element, faded as it is
+   * What to show in an `<iframe>`, a `<canvas>`, or an `<embed>` or an
+   * `<object>` that shows no image: called with where the element's content
+   * box is, in this component's space, and what it returns is mounted
+   * there, filling it, beside the document as a `<video>`'s player is —
+   * cut by what clips the element, faded as it is
    * faded, and kept mounted, the same node, while the element moves.
    * Nothing is loaded or drawn for one by this component: absent, or
    * answering null, the box is the empty one the document lays out. A
@@ -1398,6 +1399,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
     canvasOpaque: props.canvasOpaque,
+    framed: props._framed,
     domRevision,
     animate,
     reducedMotion,
@@ -1612,6 +1614,7 @@ export function makeHtmlHandle(
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
+    embedRendered: (element) => nodeRef.current?.embedRendered(element) ?? null,
     selectionKey: () => nodeRef.current?.selectionKey() ?? '',
     hoverAgain: () => nodeRef.current?.hoverAgain(),
     hoverOn: (element) => nodeRef.current?.hoverOn(element),
