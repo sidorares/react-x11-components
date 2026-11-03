@@ -302,12 +302,45 @@ test('a sandbox with no allow-scripts runs nothing, and its noscript is what it 
 const around = (code: string): string =>
   `<p>no script</p><iframe srcdoc="<script>${code}<\/script>"></iframe>`;
 
-test('a frame in a document with no script of its own loads and runs, as one in the page does', async () => {
-  const s = await scene(`<iframe src="${APP}a"></iframe>`, {
-    [`${APP}a`]: around(`console.log('nested ran', self.origin)`),
-  });
+test('a frame in a document with no script of its own loads, runs and is drawn, as one in the page is', async () => {
+  const s = await scene(
+    `<iframe src="${APP}a" style="border:0;width:300px;height:200px"></iframe>`,
+    {
+      [`${APP}a`]: `<p>no script</p><iframe style="border:0;width:200px;height:100px" srcdoc="<p id=deep>deep</p><script>console.log('nested ran', self.origin)<\/script>"></iframe>`,
+    },
+  );
   assert.equal(await until(s, 'nested ran'), APP.slice(0, -1));
+  await settle(300);
+  if (!FONTS) return;
+  const { screen } = await import('react-x11/test');
+  type View = {
+    kind: string;
+    document?: Document;
+    abs: { width: number; height: number };
+  };
+  const drawn = screen
+    .all((n) => n.kind === 'htmlview')
+    .map((n) => n as unknown as View)
+    .find((v) => !!v.document && findDeep(v.document));
+  assert.ok(drawn, 'no view draws the inner frame');
+  assert.ok(
+    drawn.abs.width > 0 && drawn.abs.height > 0,
+    JSON.stringify(drawn.abs),
+  );
 });
+
+/** Whether a document holds the inner frame's `#deep`. */
+function findDeep(doc: Document): boolean {
+  const walk = (nodes: unknown[]): boolean =>
+    nodes.some((n) => {
+      const el = n as Element;
+      return (
+        el.attribs?.id === 'deep' ||
+        (Array.isArray(el.children) && walk(el.children))
+      );
+    });
+  return walk(doc.children);
+}
 
 test("a frame in a sandbox with no script of its own is the sandbox's, and runs only as it lets it", async () => {
   const s = await scene(
@@ -906,30 +939,35 @@ test("a sandbox that talks its facade round still starts no worker from an addre
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
     {
       [FRAME]: script(`
-        // the facade compares origins through \`URL\`, which is the page's
-        const Real = URL;
-        window.URL = class extends Real {
-          get origin() { return location.origin; }
-        };
+        // what the facade checks is its own address's; what it hands the host
+        // is written by the page's own \`JSON\`
+        const stringify = JSON.stringify;
+        JSON.stringify = (v, ...rest) =>
+          v && typeof v === 'object' && typeof v.url === 'string' && v.url.endsWith('w.js')
+            ? stringify({ ...v, url: window.forged }, ...rest)
+            : stringify(v, ...rest);
         for (const to of ['file:///etc/hosts', 'https://elsewhere.test/w.js']) {
+          window.forged = to;
           try {
-            new Worker(to);
+            new Worker('w.js');
             console.log('started', to);
           } catch (e) {
             console.log('refused', to, e.name);
           }
         }
-        window.URL = Real;
+        JSON.stringify = stringify;
         const url = URL.createObjectURL(new Blob(['postMessage(self.origin)']));
         new Worker(url).onmessage = (e) => console.log('blob said', e.data);
       `),
     },
   );
   assert.equal(await until(s, 'blob said', 8000), 'null');
-  assert.ok(
-    s.logs.some((l) => l.endsWith('refused file:///etc/hosts SecurityError')),
-    s.logs.join('\n'),
-  );
+  for (const to of ['file:///etc/hosts', 'https://elsewhere.test/w.js']) {
+    assert.ok(
+      s.logs.some((l) => l.endsWith(`refused ${to} SecurityError`)),
+      s.logs.join('\n'),
+    );
+  }
   assert.ok(!s.logs.some((l) => l.includes('started')), s.logs.join('\n'));
   assert.ok(!s.asked.some((r) => /^file:|elsewhere/.test(r.url)));
 });
@@ -1210,6 +1248,29 @@ pressing(
     assert.ok(!(await field('allow-same-origin')).focused);
     cleanup();
     assert.ok((await field('allow-same-origin allow-scripts')).focused);
+  },
+);
+
+pressing(
+  'a sandbox with no allow-forms asks a form nothing, and a press on its button tells no submit',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox="allow-scripts" style="border:0;display:block;width:300px;height:100px" srcdoc='<body style="margin:0"><form action="${APP}posted"><button style="display:block;width:280px;height:80px;margin:0;border:0">go</button></form><script>
+      const form = document.querySelector("form");
+      form.addEventListener("submit", () => console.log("heard submit"));
+      form.requestSubmit();
+      console.log("asked");
+    <\/script>'></iframe>`,
+      { [`${APP}posted`]: 'posted' },
+    );
+    await until(s, 'asked');
+    await s.click(40, 30);
+    await settle(300);
+    assert.ok(
+      !s.logs.some((l) => l.includes('heard submit')),
+      s.logs.join('\n'),
+    );
+    assert.ok(!s.asked.some((r) => r.url.includes('posted')));
   },
 );
 

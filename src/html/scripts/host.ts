@@ -210,6 +210,7 @@ import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
   SB_DOWNLOADS,
+  SB_FORMS,
   SB_ORIGIN,
   SB_POPUPS,
   SB_PROPAGATES,
@@ -5415,6 +5416,9 @@ export class DomHost {
         );
         return null;
       case 'validate':
+        // a sandbox's form is no form to send, before its `submit` is asked
+        // about (HTML 4.10.21.3, step 3)
+        if (c === true && this.sandbox & SB_FORMS) return false;
         return this._seams.handle.reportValidity(
           this._element(a),
           b ? this._element(b) : null,
