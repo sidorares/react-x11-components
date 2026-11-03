@@ -533,7 +533,7 @@ test('a player in a sticky box, and what is painted over it, stay with the box i
   }
 });
 
-test('a player stays the player it was as a page makes its box sticky or not', async () => {
+test('a player stays the player it was as a page makes its box sticky, fixed or neither', async () => {
   // A new player is a video from its start, so the boxes it is kept in do
   // not come and go with the position of the box it is in
   const asked: ResourceRequest[] = [];
@@ -568,15 +568,171 @@ test('a player stays the player it was as a page makes its box sticky or not', a
   const side = findById(el.document!, 'side')!;
   for (const [style, top, name] of [
     ['', -60, 'in the flow'],
+    ['position:fixed;top:30px', 30, 'fixed'],
     ['position:sticky;top:10px', 10, 'sticky again'],
   ] as const) {
     side.attribs.style = style;
     await act(() => el.touchDocument(null));
     await act();
-    assert.strictEqual(videos()[0], player, `the same player, ${name}`);
+    assert.ok(videos()[0] === player, `the same player, ${name}`);
     assert.strictEqual(onScreen(), top, `where the box is, ${name}`);
   }
   assert.strictEqual(asked.length, 1, 'and its source was asked for once');
+});
+
+/** What `onMedia` was last told, as these read it. */
+const toldOf = (el: unknown) =>
+  (
+    el as {
+      _media: (MediaRectLike & {
+        atViewport?: true;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      })[];
+    }
+  )._media;
+
+test('a player in a box fixed to the viewport, and what is painted over it, stay where the viewport is in every frame the pane scrolls, at 1x and 2x', async () => {
+  // m.youtube.com keeps its player in a fixed box under its header and lays
+  // its controls over it there. The player was refused for being fixed, and
+  // the page played a video nobody saw; it goes where the viewport is now,
+  // as a frame's mount does (`AT_VIEWPORT`), and what the fixed box paints
+  // over it, and a header fixed over that, are painted over it again
+  const source =
+    '<style>body{margin:0;background:#fff}' +
+    '#player{position:fixed;left:0;top:20px;width:100px;height:60px}' +
+    '#play{position:absolute;left:10px;top:10px;width:20px;height:20px;' +
+    'background:#f00}' +
+    '#bar{position:fixed;left:0;top:0;width:100px;height:30px;' +
+    'background:#00f}</style>' +
+    '<div id="player"><video src="a.mp4" style="display:block;width:100px;' +
+    'height:60px"></video><div id="play"></div></div>' +
+    '<div id="bar"></div><div style="height:2000px"></div>';
+  for (const scale of [1, 2]) {
+    let pane: (DrawnNode & { scrollTo(y: number): void }) | null = null;
+    const { result, el } = await renderVideo(
+      source,
+      (_, app) => ({ kind: 'video', frames: solid(app, 10, 6, [0, 255, 0]) }),
+      {
+        scale,
+        height: 200,
+        wrap: (doc) =>
+          h(
+            'box',
+            {
+              ref: (node: typeof pane) => {
+                pane = node;
+              },
+              style: { width: 300, height: 200, overflow: 'scroll' },
+            },
+            doc,
+          ),
+      },
+    );
+    const player = videos()[0];
+    const over = screen.all((n) => n.kind === 'canvas')[0];
+    assert.ok(player && over, `a player and a canvas over it, ${scale}x`);
+    const told = toldOf(el);
+    assert.deepStrictEqual(
+      [told[0].x, told[0].y, told[0].width, told[0].height],
+      [0, 20, 100, 60],
+      `where layout put it, ${scale}x`,
+    );
+    assert.strictEqual(told[0].atViewport, true, `at the viewport, ${scale}x`);
+    assert.ok(told[0].over, `with what is over it, ${scale}x`);
+    const onScreen = (node: DrawnNode) => (node.abs.y - pane!.abs.y) / scale;
+    // every paint of the scroll, the frame that scrolled the first of them
+    const paint = el.paint;
+    let painted = 0;
+    el.paint = function (this: typeof el, ctx) {
+      painted += 1;
+      assert.deepStrictEqual(
+        [onScreen(player), onScreen(over)],
+        [20, 20],
+        `a paint sees them where the viewport is, ${scale}x`,
+      );
+      return paint.call(this, ctx);
+    };
+    // a context a read of it, so taken once
+    const ctx = result.ctx;
+    const at = (x: number, y: number, want: string, message: string) =>
+      expectPixel(ctx, x * scale, y * scale, want, {
+        message: `${message}, ${scale}x`,
+      });
+    for (const y of [0, 300, 1200, 40]) {
+      await act(async () => pane!.scrollTo(y));
+      assert.deepStrictEqual(
+        [onScreen(player), onScreen(over)],
+        [20, 20],
+        `scrolled to ${y}, where the viewport is`,
+      );
+      await act();
+      await at(50, 60, '#00ff00', `the frame, scrolled to ${y}`);
+      await at(20, 40, '#ff0000', `the button over it, scrolled to ${y}`);
+      await at(50, 25, '#0000ff', `the bar fixed over it, scrolled to ${y}`);
+      await at(50, 90, '#ffffff', `the page under, scrolled to ${y}`);
+    }
+    assert.ok(painted > 0, `the document was painted, ${scale}x`);
+    el.paint = paint;
+    assert.ok(
+      toldOf(el) === told,
+      `a scroll tells the players nothing, ${scale}x`,
+    );
+    assert.ok(videos()[0] === player, `the same player, ${scale}x`);
+    await result.unmount();
+  }
+});
+
+test('controls that fade in over a player in a fixed box are drawn over it as they go, and keep it mounted', async () => {
+  // m.youtube.com's: placed before the video plays, with nothing over it,
+  // and refused once its controls drew
+  let handle: HtmlHandle | null = null;
+  const STYLE =
+    'position:absolute;left:0;top:0;width:100px;height:60px;background:#f00;';
+  const { result, el } = await renderVideo(
+    '<style>body{margin:0;background:#fff}</style>' +
+      '<div style="position:fixed;left:0;top:20px;width:100px">' +
+      '<video src="a.mp4" style="display:block;width:100px;height:60px">' +
+      `</video><div id="o" style="${STYLE}opacity:0"></div></div>` +
+      '<div style="height:600px"></div>',
+    (_, app) => ({ kind: 'video', frames: solid(app, 10, 6, [0, 255, 0]) }),
+    { handleTo: (given) => void (handle = given) },
+  );
+  await waitFor(() => assert.equal(videos().length, 1));
+  const player = videos()[0];
+  await act();
+  await expectPixel(result.ctx, 50, 50, '#00ff00', {
+    message: 'nothing over it to start with',
+  });
+  assert.equal(toldOf(el)[0].over, undefined);
+  const style = async (value: string): Promise<void> => {
+    const box = findById(handle!.document, 'o')!;
+    box.attribs.style = `${STYLE}${value}`;
+    await act(() =>
+      handle!.refresh([
+        { type: 'attributes', target: box, attributeName: 'style' },
+      ]),
+    );
+    await act();
+  };
+  await style('opacity:0.5');
+  assert.ok(videos()[0] === player, 'the same player');
+  assert.ok(toldOf(el)[0].over, 'what is over it is painted again');
+  await expectPixel(result.ctx, 50, 50, '#808000', {
+    message: 'half way, over the video',
+    tolerance: 2,
+  });
+  // the same rect, so nothing tells the canvas over the player to draw again
+  await style('opacity:0.25');
+  await expectPixel(result.ctx, 50, 50, '#40bf00', {
+    message: 'and at each step of the fade',
+    tolerance: 2,
+  });
+  await style('opacity:0');
+  await expectPixel(result.ctx, 50, 50, '#00ff00', { message: 'and gone' });
+  assert.ok(videos()[0] === player, 'the same player still');
 });
 
 test('a box over a video that draws nothing there leaves it mounted', async () => {
@@ -871,15 +1027,13 @@ test('a video under a box it cannot be painted again over keeps its poster', asy
   assert.strictEqual(videos().length, 0);
 });
 
-test('a video turned, cut to a path or fixed to the viewport keeps its poster', async () => {
+test('a video turned or cut to a path keeps its poster', async () => {
   const asked: ResourceRequest[] = [];
   await renderVideo(
     '<div style="transform:rotate(10deg)">' +
       '<video src="a.mp4" style="display:block;width:60px;height:30px"></video></div>' +
       '<video src="b.mp4" style="display:block;width:60px;height:30px;' +
       'clip-path:circle(40%)"></video>' +
-      '<video src="c.mp4" style="position:fixed;bottom:0;width:60px;height:30px">' +
-      '</video>' +
       // a translation is layout's, and moves the box
       '<div style="transform:translate(5px, 5px)">' +
       '<video src="d.mp4" style="display:block;width:60px;height:30px"></video></div>',
@@ -895,6 +1049,97 @@ test('a video turned, cut to a path or fixed to the viewport keeps its poster', 
     'a host is not asked for a video nothing would show',
   );
   assert.strictEqual(videos().length, 1);
+});
+
+test('controls laid over a player as many layers in one box are painted over it, and more layers than that keep the poster', async () => {
+  // m.youtube.com's: one overlay over the video in its fixed box, painted as
+  // thirteen layers — a background, the top row, the middle buttons and a
+  // progress bar a part at a time. Counted each as one of four, they took
+  // the player away whenever they showed
+  const controls = (n: number): string =>
+    '<div style="position:absolute;inset:0">' +
+    '<div style="position:absolute;inset:0;background:rgba(0,0,0,0.5)"></div>' +
+    Array.from(
+      { length: n },
+      (_, k) =>
+        `<div style="position:absolute;left:${4 + (k % 8) * 12}px;top:${4 + Math.floor(k / 8) * 12}px;width:8px;height:8px;background:#f00">` +
+        '<div style="position:absolute;left:2px;top:2px;width:4px;height:4px;background:#00f"></div></div>',
+    ).join('') +
+    '</div>';
+  const fixed = (src: string, n: number): string =>
+    '<div style="position:fixed;left:0;top:0;width:100px">' +
+    `<video src="${src}" style="display:block;width:100px;height:60px">` +
+    `</video>${controls(n)}</div>`;
+  for (const scale of [1, 2]) {
+    const asked: ResourceRequest[] = [];
+    const { result } = await renderVideo(
+      '<style>body{margin:0;background:#fff}</style>' + fixed('a.mp4', 6),
+      (_, app) => ({ kind: 'video', frames: solid(app, 10, 6, [0, 255, 0]) }),
+      { asked, scale },
+    );
+    // the overlay, its background and six buttons with a dot in each: 14
+    // layers, one box
+    assert.strictEqual(videos().length, 1, `a player is mounted, ${scale}x`);
+    await act();
+    const ctx = result.ctx;
+    const at = (
+      x: number,
+      y: number,
+      want: string | [number, number, number],
+      message: string,
+    ) =>
+      expectPixel(ctx, x * scale, y * scale, want, {
+        tolerance: 3,
+        message: `${message}, ${scale}x`,
+      });
+    await at(50, 40, [0, 128, 0], 'the frame under the background');
+    await at(5, 5, '#ff0000', 'a button, over it');
+    await at(8, 8, '#0000ff', 'and the dot in it');
+    await at(40, 8, '#ff0000', 'another button');
+    cleanup();
+  }
+  const asked: ResourceRequest[] = [];
+  await renderVideo(
+    // the overlay, its background and sixteen buttons with a dot in each:
+    // 34 layers, one box
+    fixed('b.mp4', 16),
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+    { asked },
+  );
+  assert.deepStrictEqual(asked, [], 'past the layers painted again');
+  assert.strictEqual(videos().length, 0);
+});
+
+test('a video fixed to the viewport keeps its poster under more than is painted again, and under what the document scrolls', async () => {
+  const asked: ResourceRequest[] = [];
+  const fixed = (over: string, src: string): string =>
+    '<div style="position:fixed;left:0;top:0;width:80px">' +
+    `<video src="${src}" style="display:block;width:80px;height:40px">` +
+    `</video>${over}</div>`;
+  await renderVideo(
+    // more of them than are painted again
+    fixed(
+      [0, 12, 24, 36, 48].map((x) => square(x, 'background:#f00')).join(''),
+      'a.mp4',
+    ) +
+      // painted after the fixed box, and moved under it by every scroll:
+      // in no place a cover laid out once could say
+      '<div style="position:fixed;left:100px;top:0;width:80px;z-index:1">' +
+      '<video src="b.mp4" style="display:block;width:80px;height:40px">' +
+      '</video></div>' +
+      '<div style="position:absolute;left:110px;top:8px;width:24px;' +
+      'height:24px;z-index:2;background:#f00"></div>',
+    (_, app) => ({
+      kind: 'video',
+      frames: createVideoFrames(app, { width: 16, height: 16 }),
+    }),
+    { asked },
+  );
+  assert.deepStrictEqual(asked, [], 'a host is not asked');
+  assert.strictEqual(videos().length, 0);
 });
 
 test('a video in a box scaled the same both ways plays where the box draws it, at 1x and 2x', async () => {
@@ -1315,6 +1560,26 @@ test('a solid band fixed across a side of a video cuts the player, and is not pa
   );
   await waitFor(() => assert.ok((rect() as { clip?: unknown }).clip));
   assert.equal(rect().over, undefined);
+});
+
+test('a box fixed over a video is painted over the player beside controls laid over it as many layers in one box', async () => {
+  // the room left for the fixed boxes counts the controls as the one box
+  // they are in, as the cap does
+  const button = (k: number): string =>
+    `<div style="position:absolute;left:${4 + k * 12}px;top:4px;width:8px;height:8px;background:#f00">` +
+    '<div style="position:absolute;left:2px;top:2px;width:4px;height:4px;background:#00f"></div></div>';
+  const { result, rect } = await fixedOverVideo(
+    '<div style="position:absolute;left:0;top:0;width:100px;height:60px">' +
+      [0, 1, 2, 3, 4, 5].map(button).join('') +
+      '</div>' +
+      `<div style="${FIXED}background:#ff0"></div>`,
+  );
+  assert.equal(rect().hidden, undefined, 'it was hidden for it');
+  await expectPixel(result.ctx, 50, 30, '#ffff00', {
+    message: 'the fixed box, over the player',
+  });
+  await expectPixel(result.ctx, 8, 8, '#0000ff', { message: 'a dot' });
+  await expectPixel(result.ctx, 10, 50, '#00ff00', { message: 'the frame' });
 });
 
 test('a box fixed over a video that cannot be painted over the player hides it, as a box too many does', async () => {

@@ -24,9 +24,10 @@
 //  - **What the document paints after the video is painted over it
 //    again.** A player is above the whole document, so a caption laid
 //    across a video, a play button in its corner or a gradient on top of a
-//    hero would be hidden under it. A few such boxes (`MAX_COVERS`), each
-//    where a rectangle stands for what clips it, are painted a second time,
-//    over the player, by a sibling mounted after it, as the document paints
+//    hero would be hidden under it. A few such boxes (`MAX_COVERS`), with
+//    the layers in them (`MAX_COVER_LAYERS` in all), each where a
+//    rectangle stands for what clips it, are painted a second time, over
+//    the player, by a sibling mounted after it, as the document paints
 //    them — through their own matrix, opacity and filter (`coversOf`,
 //    `HtmlViewNode.paintCovers`, `paintCover`). What is painted after a
 //    video in a box's flow is what is painted after the box
@@ -53,11 +54,19 @@
 //    header is one, and a playground's frame that scrolled up under it was
 //    mounted nowhere. What is mounted for an element in such a box goes
 //    with it, in the pass a scroll runs (`MediaRect.held`).
+//  - **A video in a box fixed to the viewport plays where the viewport
+//    is** (`MediaRect.atViewport`), its player in a box core keeps there,
+//    as a frame's mount is. What the document paints over it is painted
+//    over the player again as for any video, the boxes fixed to the
+//    viewport among them, all of it laid out with the video at the
+//    document's top: m.youtube.com keeps its player in a fixed box and
+//    lays its controls over it there. What the document scrolls under it
+//    cannot be one, and a video with one over it keeps its poster.
 //  - **What a rectangle cannot follow keeps the poster**: a transform that
 //    turns, skews, flips or scales one way more than the other, a
-//    `clip-path` or a mask on the video or around it, a video fixed to the
-//    viewport, and corners of its own, or of a box around it that cuts it,
-//    that are not all one circle. A scale the same both ways and a move is
+//    `clip-path` or a mask on the video or around it, and corners of its
+//    own, or of a box around it that cuts it, that are not all one
+//    circle. A scale the same both ways and a move is
 //    a rectangle still (`zoomBetween`): the box and its clips are placed
 //    where the matrices draw them, and an embedded element's mount is
 //    told the factor (`EmbeddedRect.zoom`) — a slide deck scales its stage
@@ -162,6 +171,14 @@ export interface MediaRect {
    * (`HtmlViewNode.paintCovers`).
    */
   over?: Rect;
+  /**
+   * Set on a video in a box fixed to the viewport: the rect, its `clip`
+   * and its `over` are where layout put it, at the document's top, and the
+   * player goes in a box core keeps where the viewport is (`AT_VIEWPORT`),
+   * as what is mounted for a frame there does (`EmbeddedRect.atViewport`).
+   * m.youtube.com keeps its player in a fixed box under its header.
+   */
+  atViewport?: true;
   /**
    * Set on a video in a sticky box the viewport keeps: the rect, its
    * `clip` and its `over` are where the flow has it, and the player goes
@@ -331,8 +348,9 @@ export function videoSignature(el: Element): string {
  * a box, is visible, has a source the host answered (`sourceOf`), and that
  * a rectangle mounted over the document can show as the document would
  * show it. `scale` is the document's device pixels to a CSS one. The fixed
- * boxes are not asked about here: where they are turns on the scroll
- * (`cutByFixed`).
+ * boxes are not asked about here, where they are turns on the scroll
+ * (`cutByFixed`), but for a video fixed with them (`MediaRect.atViewport`),
+ * which none of them moves against.
  */
 export function mediaRectsOf(
   tree: BoxTree,
@@ -347,7 +365,7 @@ export function mediaRectsOf(
   const out: MediaRect[] = [];
   for (const box of tree.media) {
     const over: Cover[] = [];
-    const placed = placementOf(tree, box, scale, over, false, opaque);
+    const placed = placementOf(tree, box, scale, over, true, opaque);
     if (!placed) continue;
     const el = placed.element;
     // asked last, and only of what can be mounted: a host is not asked for
@@ -549,7 +567,8 @@ function placementOf(
    *  here; where not, they keep it from being mounted. */
   drawnOver: Cover[] | null = null,
   /** Whether one in a box fixed to the viewport is placed, at the viewport
-   *  (`atViewport`), rather than refused. */
+   *  (`atViewport`), rather than refused: a frame's mount and a player,
+   *  each in a box core keeps there. */
   fixed = false,
   /** Whether a canvas's picture lets nothing behind it show. */
   opaque: ((el: Element) => boolean) | null = null,
@@ -617,21 +636,27 @@ function placementOf(
     // (`coversOf`). And not for a box at the viewport, which `_viewportRect`
     // cuts by nothing
     const held = drawnOver || atViewport ? null : heldSet(tree);
-    if (drawnOver && !zoomed && !atViewport) {
+    if (drawnOver && !zoomed) {
       // what the document paints after it, where a sibling after the
       // player can paint it again — from the box it is painted with, where
       // it is in a layer's flow (`coverersOver`); what is painted over it
       // again is painted where it is laid out, which under a scale around
       // it it is not. Where its place in the paint order cannot be told,
       // nothing but its own ink and its ancestors' may be within reach.
-      const found = coverersOver(box, reach);
+      // At the viewport, the boxes fixed there are asked about with it, in
+      // the same terms, since no scroll moves one against the other: the
+      // controls m.youtube.com lays over its player in the fixed box it
+      // keeps it in, and a header fixed over that
+      const found = coverersOver(box, reach, atViewport ? reach : null);
       if (found) {
         // nothing of it shows, so nothing need be painted over it again:
         // at the end of Apple's scrubbed clip a WebGL canvas fills the
         // screen over it, and painted again over the player that was twice
         // the cost of the rest of a frame together
         hidden = !!opaque && found.some((c) => hides(c, shows, opaque));
-        const over = hidden ? [] : coversOf(tree, found, shows, scale);
+        const over = hidden
+          ? []
+          : coversOf(tree, found, shows, scale, atViewport);
         if (!over) return null;
         drawnOver.push(...over);
       } else if (crowded(tree, box, reach)) return null;
@@ -735,19 +760,52 @@ function hides(
 export interface Cover {
   box: Box;
   rect: Rect;
+  /** Set where `rect` is where layout put it, at the document's top, and
+   *  is drawn where the viewport is: a cover of a player at the viewport
+   *  (`MediaRect.atViewport`). The rest are in the document's
+   *  coordinates. */
+  atViewport?: true;
 }
 
 /** As many boxes painted after a video as are painted over its player
- *  again: more is a page laid over the video, which keeps the poster. */
+ *  again: more is a page laid over the video, which keeps the poster. A
+ *  box in another of them counts as part of it (`separateCovers`). */
 export const MAX_COVERS = 4;
+
+/**
+ * As many layers as are painted over a player again in all, the boxes in
+ * the others among them: m.youtube.com's controls are one box over the
+ * video, and the document paints them as thirteen layers — the top row,
+ * the buttons in the middle, the progress bar a part at a time — which
+ * counted each as one of four took the player away whenever they showed.
+ */
+export const MAX_COVER_LAYERS = 32;
+
+/** How many of `boxes` are no box in another of them: the separate things
+ *  the document paints over a player, each with the layers it holds. */
+export function separateCovers(boxes: readonly Box[]): number {
+  if (boxes.length < 2) return boxes.length;
+  const all = new Set(boxes);
+  let count = 0;
+  for (const box of boxes) {
+    let inside = false;
+    for (let at = box.parent; at && !inside; at = at.parent) {
+      inside = all.has(at);
+    }
+    if (!inside) count += 1;
+  }
+  return count;
+}
 
 /**
  * Of the boxes the document paints after a video whose ink reaches its
  * picture (`coverersOver`), each with the part of what the video `shows`
  * it reaches, where a sibling over the player can paint them as the
- * document does (`paintCover`): no more than `MAX_COVERS`, none held back
- * or fixed to the viewport (`fixedCoversOf`'s, at each paint), and each
- * cut, where the boxes around it cut it, to a rectangle. Null where any is
+ * document does (`paintCover`): no more than `MAX_COVERS` that are no box
+ * in another (`separateCovers`), and `MAX_COVER_LAYERS` in all, none held back,
+ * none fixed to the viewport (`fixedCoversOf`'s, at each paint) but over a
+ * video fixed there with it and all of them so, and each cut, where the
+ * boxes around it cut it, to a rectangle. Null where any is
  * not, and the video keeps its poster. GitHub's hero has a play button in
  * the corner of its video, and
  * diabrowser.com's a dock whose arc a scroll scales, under a halo it blurs
@@ -771,13 +829,19 @@ function coversOf(
   found: readonly Box[],
   shows: Rect,
   scale: number,
+  /** Whether the video is at the viewport (`drawnAtViewport`), and its
+   *  covers have to be with it: a box the document scrolls under a fixed
+   *  player is in no place a cover laid out once could say. */
+  atViewport = false,
 ): Cover[] | null {
-  if (found.length > MAX_COVERS) return null;
+  if (found.length > MAX_COVER_LAYERS || separateCovers(found) > MAX_COVERS) {
+    return null;
+  }
   const out: Cover[] = [];
   for (const cover of found) {
     if (
       heldBack(tree, cover) ||
-      drawnAtViewport(cover) ||
+      drawnAtViewport(cover) !== atViewport ||
       groupedAround(cover)
     ) {
       return null;
@@ -794,7 +858,11 @@ function coversOf(
     if (cut === null || (cut && cut.radius > 0)) return null;
     const over = within(within(ink, shows), cut?.rect ?? ink);
     if (!(over.width > 0 && over.height > 0)) continue;
-    out.push({ box: cover, rect: pixelsAround(over) });
+    out.push({
+      box: cover,
+      rect: pixelsAround(over),
+      ...(atViewport && { atViewport: true as const }),
+    });
   }
   return out;
 }
@@ -1088,9 +1156,8 @@ function inset(rect: Rect, by: number): Rect {
  * across as down — its translation is layout's and moves the box — no
  * `clip-path` or mask, which cut it to
  * what a rectangle is not, no filter, which is run over the pixels the
- * document draws. (Not fixed to the viewport either, which a sibling the
- * document scrolls does not follow, but for what `placementOf` mounts
- * where the viewport is.)
+ * document draws. (Fixed to the viewport, it is mounted where the viewport
+ * is, `placementOf`'s `fixed`.)
  */
 function mountable(box: Box): boolean {
   for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {

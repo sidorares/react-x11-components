@@ -2981,7 +2981,8 @@ export function paintLiftedBox(
  * not as a box on a layer of its own is, `paintLiftedBox` — through its
  * matrix, at its opacity, through its filter, its mask and its clip path
  * (`paintPositioned`), on a context in the window's coordinates, as the
- * document's are, and where the viewport is, where it is fixed to it.
+ * document's are, and where the viewport is, where it is fixed to it or in
+ * a box that is — the controls over a player in a fixed box.
  * Nothing culls it, and nothing around it clips it but what the caller has.
  */
 export function paintCover(
@@ -3007,7 +3008,18 @@ export function paintCover(
     drawingUnits: tree.drawingUnits,
     foreign: tree.foreign ?? null,
   };
-  const placed = atViewport(box, inner);
+  // as `paintLiftedBox` places it: a box in a fixed one is no box `atViewport`
+  // moves, and would be drawn at the document's top
+  const viewport = options.viewport;
+  const placed =
+    viewport && !options.atViewport && drawnAtViewport(box)
+      ? {
+          ...inner,
+          originX: viewport.x,
+          originY: viewport.y,
+          atViewport: true,
+        }
+      : inner;
   if (turns(box)) paintTransformed(ctx, box, placed);
   else paintBox(ctx, box, placed);
 }
@@ -9352,16 +9364,22 @@ export function layersOver(
  * (`flowMeets`). Null where something there does, where the box it is
  * painted with is in the top layer, where a context on the way up is
  * painted from no list of layers, and where the outline of a context
- * around it reaches the extent.
+ * around it reaches the extent. The boxes fixed to the viewport are left
+ * out, as `paintedAfter` leaves them, but where `fixedExtent` is given: for
+ * a box at the viewport, which they keep their place against.
  */
-export function coverersOver(box: Box, extent: Rect): Box[] | null {
+export function coverersOver(
+  box: Box,
+  extent: Rect,
+  fixedExtent: Rect | null = null,
+): Box[] | null {
   const layer = flowLayerOf(box);
   if (!layer || flowMeets(layer, box, extent)) return null;
   const found: Box[] = [];
   const stopped = walkPaintedAfter(
     box,
     extent,
-    null,
+    fixedExtent,
     null,
     (later) => {
       found.push(later);

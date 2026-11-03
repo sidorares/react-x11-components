@@ -505,6 +505,7 @@ import {
   MAX_COVERS,
   mediaRectsOf,
   sameSounds,
+  separateCovers,
   videoCandidates,
   videoSignature,
 } from './media.js';
@@ -5619,8 +5620,13 @@ export class HtmlViewNode extends Node {
       this._viewportInDocument(),
       this._scale,
       MAX_COVERS -
-        (this._covers.get(el) ?? this._embeddedCovers.get(el) ?? NO_COVERS)
-          .length,
+        separateCovers(
+          (
+            this._covers.get(el) ??
+            this._embeddedCovers.get(el) ??
+            NO_COVERS
+          ).map((c) => c.box),
+        ),
     );
     if (!covers.length) return null;
     this._fixedCovers.set(el, covers);
@@ -5768,15 +5774,16 @@ export class HtmlViewNode extends Node {
         y: options.viewport.y - at.y,
       };
     }
-    for (const { box, rect } of covers) {
+    for (const { box, rect, atViewport } of covers) {
+      // a player's at the viewport is laid out at the document's top, and
+      // drawn from where the viewport is, as the box over it is
+      const from = (atViewport && options.viewport) || {
+        x: options.originX,
+        y: options.originY,
+      };
       c.save();
       c.beginPath();
-      c.rect(
-        rect.x + options.originX,
-        rect.y + options.originY,
-        rect.width,
-        rect.height,
-      );
+      c.rect(rect.x + from.x, rect.y + from.y, rect.width, rect.height);
       c.clip();
       try {
         paintCover(c, tree, box, options);
@@ -16851,6 +16858,7 @@ function sameMedia(a: MediaRect[], b: MediaRect[]): boolean {
       p.clipRadius !== q.clipRadius ||
       p.opacity !== q.opacity ||
       p.hidden !== q.hidden ||
+      p.atViewport !== q.atViewport ||
       p.held !== q.held ||
       p.autoPlay !== q.autoPlay ||
       p.loop !== q.loop ||
