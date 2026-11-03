@@ -7348,6 +7348,8 @@ out of place in a table is put in front of it, so `<table><div>x</div>` has its
 a `<script>`, a `<style>` and a `<form>` are the table's own. A `<template>`'s
 content goes on in the mode its first tag gives it, a `<frameset>` takes the
 place of a body nothing has been put in, and a carriage return is a line feed.
+Where `scripts` is on, a `<noscript>` holds its content as text, as in a browser
+that runs scripts, and with it off, markup, as in one that does not.
 A `</form>` leaves what the form holds open, a second `<form>` is turned away for
 as long as the parser points at the first, and in a table a `<form>` closes as it
 opens and owns the controls that come after it, which is why a page reads
@@ -7355,8 +7357,7 @@ opens and owns the controls that come after it, which is why a page reads
 
 What is still read otherwise than a browser reads it is the tokenizer's, which is
 htmlparser2's: a `<script>` holding `<!--<script>` ends at its first `</script>`,
-where a browser reads on to the second. A `<noscript>` holds markup, as with
-scripting off, where a document whose scripts run holds its text. SVG's and
+where a browser reads on to the second. SVG's and
 MathML's attributes are lower-cased (`viewbox`), and a `<?…?>` is a comment, as
 Firefox and Safari read it. A frame's scripts run once its document is parsed,
 and a document `document.write` fills is parsed at `close`, running none of its

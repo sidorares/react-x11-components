@@ -5576,7 +5576,12 @@ type=hidden>` in a table, a `<font color>` in a drawing and an
   `<head>` at its start makes it a document: read as a body's content, the root
   standing in for the body, and a `<body>` written in it takes in what came
   before it (`adopt`). A fragment read as an element's content (`readIn`) is
-  none of that.
+  none of that. **A source parses with its own scripting** (`setScripting`,
+  which reaches the parser before it reads anything): where scripts run, a
+  `<noscript>` holds its content as text, which the tokenizer is set to read
+  as it reads a `<noembed>`'s (`NOSCRIPT_END`), and where they do not, markup,
+  of which a head keeps what is head content. Parsed as markup in a page whose
+  scripts run, a `<noscript>` in the head put its tracking pixel in the body.
 - **Every document pays for this, so the cost is kept off the path of a page with
   no mistakes.** A start tag "in body" has no rule of its own for asks one `Set`
   (`BODY_RULES`); a formatting element's end tag that closes the current node,
@@ -5607,9 +5612,7 @@ type=hidden>` in a table, a `<font color>` in a drawing and an
 What is left, each against the engines or html5lib's tests: what htmlparser2's
 tokenizer reads otherwise than HTML's, the script data escape states above all
 (`<script><!--<script></script>`), a doctype's ids written with nothing between
-them, a `</b` at the end of the input; a `<noscript>`'s content, which is markup
-here, as with scripting off, where a document whose scripts run reads it as
-text; processing instructions, which Chrome alone keeps; SVG's and MathML's
+them, a `</b` at the end of the input; processing instructions, which Chrome alone keeps; SVG's and MathML's
 attribute names in their case (`viewBox`), which are lower-cased; what a
 `<selectedcontent>` copies of its option; a fragment's tokenizer state from its
 context, as `innerHTML` on a `<textarea>` reads; and scripts run as the parser

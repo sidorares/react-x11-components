@@ -1970,6 +1970,7 @@ export class HtmlSource {
     const { parser, handler } = xml
       ? createXmlParser()
       : createParser(this._declarative, this._asDocument);
+    if (parser instanceof DocumentParser) parser.setScripting(this.scripting);
     handler.marksSheets = true;
     this._parser = parser;
     this._handler = handler;
@@ -2032,6 +2033,16 @@ export class HtmlSource {
   setScripting(on: boolean): boolean {
     if (on === this.scripting) return false;
     this.scripting = on;
+    // and the parse, where it has yet to read anything: a `<noscript>`
+    // holds text where scripts run
+    if (
+      this._parser instanceof DocumentParser &&
+      !this._written &&
+      !this._input &&
+      !this._adopted
+    ) {
+      this._parser.setScripting(on);
+    }
     this.revision += 1;
     this._facts = freshFacts();
     // a scan that walks into other elements than the one before
@@ -3009,6 +3020,12 @@ const NOT_SPACES = /[^\t\n\f\r ]/g;
  *  a tag that would have started raw text. */
 const NO_SEQUENCE = new Uint8Array(0);
 
+/** What ends a `<noscript>` read as raw text, `</noscript`, as htmlparser2's
+ *  tokenizer spells the end of the elements it reads so. */
+const NOSCRIPT_END = new Uint8Array(
+  [...'</noscript'].map((c) => c.charCodeAt(0)),
+);
+
 /** The end tags of the current node that "in body" has more to do for than
  *  closing it. */
 const SPECIAL_END = new Set([
@@ -3300,6 +3317,7 @@ const BODY_RULES = new Set([
   'math',
   'nobr',
   'noembed',
+  'noscript',
   'object',
   'optgroup',
   'option',
@@ -3793,6 +3811,9 @@ class DocumentParser extends Parser {
   /** Whether a carriage return ended the last chunk, whose line feed a next
    *  one may start with. */
   private _carriage = false;
+  /** Whether the document runs scripts, which reads a `<noscript>`'s
+   *  content as text (13.2.6.4.4). */
+  private _scripting = false;
   /** Whether a `<plaintext>` has started, after which the tokenizer reads
    *  everything as text, a NULL as U+FFFD among it. */
   private _plaintext = false;
@@ -3801,6 +3822,12 @@ class DocumentParser extends Parser {
     return (
       (this as unknown as ParserInternals).foreignContext[0] !== NOT_FOREIGN
     );
+  }
+
+  /** Parse as a document whose scripts run, where a `<noscript>` holds its
+   *  content as text, or as one with scripting off, where it holds markup. */
+  setScripting(on: boolean): void {
+    this._scripting = on;
   }
 
   /** A document from its first token, as `HtmlSource` asks for one. */
@@ -3911,7 +3938,28 @@ class DocumentParser extends Parser {
     ) {
       tokenizer.isSpecial = false;
       tokenizer.currentSequence = NO_SEQUENCE;
+    } else if (
+      name === 'noscript' &&
+      this._scripting &&
+      this._made === name &&
+      self.stack[0] === name &&
+      self.foreignContext[0] === NOT_FOREIGN
+    ) {
+      // where scripts run, what it holds is text, which the tokenizer reads
+      // to its end tag as it reads a `<noembed>`'s
+      tokenizer.isSpecial = true;
+      tokenizer.currentSequence = NOSCRIPT_END;
     }
+  }
+
+  /** Whether the current node is one whose text the tokenizer reads raw. */
+  private _inRawText(): boolean {
+    const { stack, foreignContext } = this as unknown as ParserInternals;
+    const top = stack[0];
+    return (
+      (RAW_ELEMENTS.has(top) || (top === 'noscript' && this._scripting)) &&
+      (foreignContext.length === 1 || this._isHtml(0))
+    );
   }
 
   override onclosetag(start: number, endIndex: number): void {
@@ -3936,8 +3984,8 @@ class DocumentParser extends Parser {
       self.popElement(false);
     } else if (
       self.stack[0] === name &&
-      (RAW_ELEMENTS.has(name)
-        ? self.foreignContext.length === 1 || this._isHtml(0)
+      (RAW_ELEMENTS.has(name) || (name === 'noscript' && this._scripting)
+        ? this._inRawText()
         : this._mode === IN_BODY &&
           !FORMATTING.has(name) &&
           !SPECIAL_END.has(name) &&
@@ -4026,13 +4074,7 @@ class DocumentParser extends Parser {
   override onend(): void {
     if (this._mode === IN_TABLE_TEXT) this._flushTableText();
     // raw text ends with the input, and its element with it (13.2.6.4.8)
-    const { stack, foreignContext } = this as unknown as ParserInternals;
-    if (
-      RAW_ELEMENTS.has(stack[0]) &&
-      (foreignContext.length === 1 || this._isHtml(0))
-    ) {
-      this._pop();
-    }
+    if (this._inRawText()) this._pop();
     for (let guard = 0; guard < 16; guard++) {
       const mode = this._mode;
       if (mode === INITIAL) this._initialElse();
@@ -4056,10 +4098,7 @@ class DocumentParser extends Parser {
     const self = this as unknown as ParserInternals;
     const { stack, cbs } = self;
     // raw text is the element's whatever the mode, as HTML's "text" has it
-    if (
-      RAW_ELEMENTS.has(stack[0]) &&
-      (self.foreignContext.length === 1 || this._isHtml(0))
-    ) {
+    if (this._inRawText()) {
       cbs.ontext(data.includes('\0') ? data.replace(/\0/g, '\ufffd') : data);
       return;
     }
@@ -4464,10 +4503,11 @@ class DocumentParser extends Parser {
         this._insert(name, attribs);
         return true;
       case 'noscript':
-        // nothing here runs a script as the parse goes, so a `<noscript>`'s
-        // content is markup, as with scripting off (13.2.6.4.5)
+        // where scripts run its content is text (`_tag`), and where they do
+        // not, markup, of which the head keeps what is head content
+        // (13.2.6.4.5)
         this._insert(name, attribs);
-        this._mode = IN_HEAD_NOSCRIPT;
+        if (!this._scripting) this._mode = IN_HEAD_NOSCRIPT;
         return true;
       case 'template':
         this._insert(name, attribs);
@@ -4668,6 +4708,11 @@ class DocumentParser extends Parser {
         this._insert(name, attribs);
         return;
       case 'noembed':
+        this._insert(name, attribs);
+        return;
+      case 'noscript':
+        // raw text where scripts run, and an element like any where not
+        if (!this._scripting) this._reconstruct();
         this._insert(name, attribs);
         return;
       case 'select':

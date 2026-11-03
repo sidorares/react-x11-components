@@ -7385,6 +7385,9 @@ export class DomHost {
     declarative = true,
   ): ChildNode[] {
     const source = new HtmlSource();
+    // a document scripts run in reads a `<noscript>`'s content as text, and
+    // `DOMParser`'s, the one that attaches no shadow root, runs none
+    source.setScripting(declarative);
     source.setDocument(true, declarative);
     source.setSource(markup, true);
     const kids = source.document.children.slice();

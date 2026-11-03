@@ -806,8 +806,9 @@ test('an <svg> in a <math> is MathML’s and what it holds with it, and the othe
  * tree is what Chrome, Firefox and Safari make of the markup, copied from
  * them.
  */
-function documentShape(markup: string): string {
+function documentShape(markup: string, scripting = false): string {
   const source = new HtmlSource();
+  source.setScripting(scripting);
   source.setDocument(true);
   source.setSource(markup, true);
   return documentShapeOf(source.document.children);
@@ -1045,6 +1046,38 @@ test('the formatting elements open in a cell, a select or a drawing’s title ar
       'html(head() body(table(tbody(tr(td(b("x"))))) "y"))',
     ],
   ]);
+});
+
+test('a <noscript> holds text where scripts run, and markup where they do not', () => {
+  // each as the engines load it as a page, with scripting on
+  for (const [markup, shape] of [
+    [
+      '<!doctype html><head><noscript><img src=x><p>a</p></noscript></head><body>b',
+      'html(head(noscript("<img src=x><p>a</p>")) body("b"))',
+    ],
+    [
+      '<!doctype html><noscript><iframe></noscript>X',
+      'html(head(noscript("<iframe>")) body("X"))',
+    ],
+    [
+      '<!doctype html><p id=s><noscript><strong>A</strong></noscript><span>B</span></p>',
+      'html(head() body(p[id=s](noscript("<strong>A</strong>") span("B"))))',
+    ],
+    [
+      '<!doctype html><b><noscript>x</b>y</noscript>z',
+      'html(head() body(b(noscript("x</b>y") "z")))',
+    ],
+  ] as const) {
+    assert.strictEqual(documentShape(markup, true), shape, markup);
+  }
+  // and with it off, as `DOMParser` reads one, the head keeps what is head
+  // content of it and the body takes the rest
+  assert.strictEqual(
+    documentShape(
+      '<!doctype html><head><noscript><link><img src=x></noscript></head><body>b',
+    ),
+    'html(head(noscript(link())) body(img[src=x]() "b"))',
+  );
 });
 
 test('a carriage return is a line feed, alone or before one, across chunks as within one', () => {
