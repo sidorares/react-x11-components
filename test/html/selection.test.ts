@@ -413,10 +413,13 @@ metric(
 metric(
   'generated text a hidden element shows is under the pointer',
   async () => {
-    // Zen Garden 220 hides its headings and shows each one's `::after`
+    // Zen Garden 220 hides its headings and shows each one's `::after`,
+    // which takes a selection here so that its text shows the I-beam: no
+    // selection starts in generated content, and Blink shows the arrow
+    // over what none starts in (`cursorAt`)
     const { node } = await render(
       '<style>body{margin:0}h3{visibility:hidden;margin:0}' +
-        'h3::after{content:" Shown";visibility:visible}</style>' +
+        'h3::after{content:" Shown";visibility:visible;user-select:text}</style>' +
         '<h3 id="h">Hidden</h3>',
     );
     const el = view(node);

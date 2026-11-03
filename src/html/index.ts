@@ -883,12 +883,18 @@ export interface HtmlHandle {
    * `grammar-error` or `highlight(name)`, the name unescaped — as though
    * that highlight were the one active (CSS Pseudo 4, 7.3); or, for the
    * root element, for one of a view transition's pseudo-elements, written
-   * without its colons — `view-transition-group(name)`.
+   * without its colons — `view-transition-group(name)`. A file input's
+   * `file-selector-button` is its button's, and any other element's its own.
    */
   computedStyle(
     element: Element,
     pseudo?:
-      'before' | 'after' | HighlightPseudo | `view-transition${string}` | null,
+      | 'before'
+      | 'after'
+      | 'file-selector-button'
+      | HighlightPseudo
+      | `view-transition${string}`
+      | null,
   ): Record<string, string> | null;
   /**
    * A custom property's computed value, as `getComputedStyle` reads it by

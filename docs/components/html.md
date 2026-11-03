@@ -2788,6 +2788,51 @@ and a checkbox's `indeterminate` shows in a selector and not on its widget,
 which has no dash to draw. A keystroke restyles only where it turned one of
 these answers, so typing in a document with no such rule costs nothing.
 
+**`:disabled` and `:enabled` are HTML's**, in a rule and in `matches()`. A
+control in a disabled `<fieldset>` is disabled outside the fieldset's first
+`<legend>`, and so is a fieldset in one. An `<option>` or an `<optgroup>` is
+disabled by its own `disabled`, by its optgroup's, past a `<div>` it is
+wrapped in but not past another optgroup, an `<hr>`, a `<datalist>` or an
+option, and by a disabled `<select>` around it, or a fieldset that disables
+the select. Chromium and WebKit have that last one, and Firefox does not. A
+legend put first in a disabled fieldset, or taken out, turns the answer for
+what each legend holds.
+
+**What a control shows under the pointer is what it computes to.** The
+user-agent sheet gives a control its cursor as csswg-drafts#14251 settled it
+for `appearance: auto`, with what Chromium adds:
+
+| Under the pointer                                                                                                          | Cursor    |
+| -------------------------------------------------------------------------------------------------------------------------- | --------- |
+| A `<select>`, an `<option>`, a `<button>`, a `<label>`, a checkbox, a radio, a range, a color, a file input and its button | `default` |
+| A date, a time, a month, a week and a `datetime-local` input, and an input button                                          | `default` |
+| A text field of any other type, and a `<textarea>`, read-only ones included                                                | `text`    |
+| A disabled text field or `<textarea>`                                                                                      | `default` |
+| An enabled image button, and an `<area>` with an `href`                                                                    | `pointer` |
+
+`cursor` inherits, so these keep a control from taking the page's.
+`<button>` and `<label>` had `pointer` here, as `<summary>` did, which no
+engine gives a cursor. A summary's text shows the I-beam. The resolution's
+rules for `appearance: base` wait for it: `pointer` over a control clicked
+as a whole, `grab` over a range, `not-allowed` over a disabled control and
+the arrow over a read-only one. No engine ships `appearance: base`, and this
+reads it as `auto`. Chromium's answers are the ones held to
+(`test/html/cursors.ts`). Firefox leaves a disabled button, select, checkbox
+or radio the page's cursor, and WebKit computes `auto` for most controls and
+turns it into much the same arrow and I-beam as it hit-tests.
+
+A widget is a node of core's that names its own cursor, so each widget is
+handed its element's. A page's `cursor: not-allowed` on a field shows over
+it, and a class or an attribute that changes the cursor changes what shows.
+A file input's button shows its `::file-selector-button`'s (or
+`::-webkit-file-upload-button`'s) cursor, and the rest of the input shows
+the input's. Three widgets keep their own cursor until core takes one from
+them: a radio, since core's `<Radio>` takes no style, and on macOS a native
+`<Button>` and `<Select>`, which name `pointer` on a node inside the one
+their style reaches. And a `:hover` on a control does not yet change it
+over its widget, since the pointer over a widget hovers nothing in the
+document.
+
 ### Notifications and permissions
 
 ```tsx
@@ -7208,7 +7253,9 @@ nobody sees, and once every tenth of a second of a scroll is the scroll.
 **The cursor is the document's.** Over a link it is the `pointer` the
 user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is
 what the page wrote, and where nothing says, it is the text I-beam over
-text and the arrow elsewhere, as a browser shows them. Core asks the
+text a selection can start in and the arrow elsewhere, as Blink's
+`ShouldShowIBeamForNode` has them: over `user-select: none` text and
+generated content, the arrow. Core asks the
 element for the point as the pointer moves (`cursorAt`, react-x11#757): a
 document is one node with a cursor for each part of it. A `url()` cursor
 is not loaded, and falls back on the keyword its list ends with, which CSS

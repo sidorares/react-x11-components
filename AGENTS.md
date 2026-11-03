@@ -1882,6 +1882,16 @@ widget draws in reads its colours from the theme in force, or from
 `fieldChrome`'s scheme**, never from `look` directly, and the UA sheet's
 control rules name system colours rather than the look's values, so a
 control the page styles builds on its scheme's colours as well.
+**A widget shows the cursor its element computes to** (`ControlRect.cursor`).
+Core shows the deepest node's cursor, and every widget names its own, the
+pointer or the I-beam, so what a control computed and what it showed came
+apart: a page's `cursor: not-allowed` on a field showed its I-beam. The
+element's is handed to each widget and to the box around it, which is what
+shows over a disabled one, whose widget names none, and a file input's
+button is handed its `::file-selector-button`'s. **Anything new mounted for
+a control is handed it.** Where a core component takes no style for it,
+`<Radio>`, and on macOS the box inside a native `<Button>` and `<Select>`,
+what core needs is written down rather than covered over.
 
 **A field's selection is its widget's, and `FormState` holds it only
 between widgets.** A script's `setSelectionRange()` selects in the
@@ -1943,15 +1953,17 @@ does not in Safari: the page's `mousedown` is the way in.
 `:user-valid`, `:user-invalid`, `:in-range`, `:out-of-range`,
 `:placeholder-shown`, `:indeterminate`, `:default`, `:read-write`,
 `:read-only`, `:dir()` and `:state()` were refused by css-select, which
-dropped the rule with no error: Tailwind's `invalid:` was nothing. What they
-read is by element at `form.ts`'s module scope, typed text included: a cascade
-has no `FormState`. `test/html/control-states.ts` is Chromium's own answers
-over a document of 225 elements, which the cascade and a page's `matches()`
-are each held to; regenerate it, do not write it by hand, and settle what a
+dropped the rule with no error: Tailwind's `invalid:` was nothing. Its own
+`:disabled` and `:enabled` read a control's attribute and no fieldset around
+it. What they read is by element at `form.ts`'s module scope, typed text
+included: a cascade has no `FormState`. `test/html/control-states.ts` is
+Chromium's own answers over a document of 272 elements, which the cascade and
+a page's `matches()` are each held to; `scripts/conformance/control-states.ts`
+regenerates it, so do not write it by hand, and settle what a
 new case answers in Chromium, since Gecko and WebKit differ in several, and
 those are decisions (`docs/components/html.md`). `:blank` and `:local-link`
 stay out: all three browsers refuse them, so a rule naming one is dropped
-there too. Six things are load-bearing.
+there too. Seven things are load-bearing.
 
 - **css-select takes its alias before a function of the same name**, so a
   pseudo-class it has one for is taken over by a string naming a function of
@@ -1983,7 +1995,19 @@ there too. Six things are load-bearing.
   attribute, a field in one typed in, come to different answers no sharing
   key says. A field does not show it, since the UA sheet's rules keep an
   `<input>` to its own style. Anything new that reads what is in no attribute
-  joins it.
+  joins it. **But for `:disabled` and `:enabled`, which the UA sheet reads**:
+  what they read that no ancestor's attribute says is in the key
+  (`_styleToShare`), whether a legend is its fieldset's first and whether a
+  custom element takes part in forms. Named in `UNSHAREABLE`, every `<input>`
+  and `<textarea>` was matched for itself, 2.5 ms more of a whole restyle of
+  a page of 600 controls. Anything new they read joins the key.
+- **A fieldset's first legend is told apart** (`legendMovedIn`, in
+  `derivedChanges`): a legend put in or taken out of a disabled fieldset is
+  told as a change of its `disabled`, which reaches all it holds
+  (`PSEUDO_INHERITED`). Not through `controlsReached`, which only a document
+  whose rules read `-rx-form` pays for: the UA sheet's `:disabled` would put
+  every document among them, and `readsControls` has to stay off for one with
+  no rule on a control's state.
 - **A page's script is ahead of `treeGeneration`**, which moves at the flush,
   and `matches()` runs before it. So what is worked out of a tree's controls
   once (`controlIndex`) is kept by `controlsMoved` as well, which `_tell`
