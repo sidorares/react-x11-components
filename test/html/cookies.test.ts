@@ -339,6 +339,38 @@ test('the prefixes: __Secure- needs Secure, __Host- Secure, no Domain and the ro
   );
 });
 
+test("the prefixes: __Http- and __Host-Http- are HttpOnly and Secure, HTTP's alone, and __Host- says Path=/ itself", () => {
+  const j = jar();
+  // the root's own default path is `/`, which a __Host- cookie still names
+  j.store(
+    'https://www.example.com/',
+    [
+      '__Http-a=1; Secure; Path=/',
+      '__Http-b=1; HttpOnly; Path=/',
+      '__Http-c=1; Secure; HttpOnly',
+      '__Host-Http-d=1; Secure; HttpOnly; Path=/',
+      '__host-http-e=1; Secure; Path=/',
+      '__Host-f=1; Secure',
+      '__Host-g=1; Secure; Path=',
+      '__Host-h=1; Secure; Path',
+      '=__Http-i',
+    ],
+    HTTP,
+  );
+  assert.deepEqual(
+    j
+      .all()
+      .map((c) => c.name)
+      .sort(),
+    ['__Host-Http-d', '__Http-c'],
+  );
+  // and no script sets one, which may say neither
+  const page = 'https://www.example.com/';
+  const script = { http: false, sameSite: true };
+  j.store(page, ['__Http-j=1; Secure; Path=/'], script);
+  assert.ok(!j.all().some((c) => c.name === '__Http-j'));
+});
+
 test('the caps: 180 a domain, the least recently used going first', () => {
   const j = jar();
   for (let i = 0; i < 185; i += 1) {

@@ -25527,6 +25527,9 @@ export function installDom(
    * No `change` is told: nothing tells this realm of a cookie a response or
    * another tab set.
    */
+  /** What a `CookieInit` a deletion makes says of itself, which no page's
+   *  can. */
+  const DELETING = Symbol('deleting');
   class CookieStore extends EventTarget {
     get(options?: Any): Promise<Any> {
       return this.getAll(options).then((list: Any[]) => list[0] ?? null);
@@ -25562,8 +25565,12 @@ export function installDom(
           typeof nameOrInit === 'object' && nameOrInit !== null
             ? nameOrInit
             : { name: nameOrInit, value };
-        const name = str(init.name ?? '');
-        const v = str(init.value ?? '');
+        // each without the tabs and spaces around it (Cookie Store API,
+        // "normalize")
+        const trim = (text: string): string =>
+          text.replace(/^[\t ]+|[\t ]+$/g, '');
+        const name = trim(str(init.name ?? ''));
+        const v = trim(str(init.value ?? ''));
         const host = new URL(str(document.URL)).hostname;
         const domain =
           init.domain === undefined || init.domain === null
@@ -25578,10 +25585,12 @@ export function installDom(
               ? "A cookie's name takes no '='."
               : !name && v.includes('=')
                 ? "A cookie with no name takes no '=' in its value."
-                : !name && /^__(secure|host)-/i.test(v)
+                : !name && /^__(secure|host|http)-/i.test(v)
                   ? 'A cookie with no name cannot look like a prefixed one.'
-                  : !name && !v
-                    ? 'A cookie needs a name or a value.'
+                  : /^__(host-)?http-/i.test(name)
+                    ? "An __Http- cookie is HTTP's to set, and no script's."
+                    : !name && !v && !init[DELETING]
+                      ? 'A cookie needs a name or a value.'
                     : name.length + v.length > 4096
                       ? 'The cookie is too large.'
                       : domain !== null &&
@@ -25591,9 +25600,11 @@ export function installDom(
                         ? "The domain is not the document's."
                         : domain !== null && /^__host-/i.test(name)
                           ? 'A __Host- cookie takes no domain.'
-                          : !path.startsWith('/') || path.length > 1024
-                            ? "A cookie's path starts with '/'."
-                            : null;
+                          : path !== '/' && /^__host-/i.test(name)
+                            ? "A __Host- cookie's path is '/'."
+                            : !path.startsWith('/') || path.length > 1024
+                              ? "A cookie's path starts with '/'."
+                              : null;
         if (why) {
           fail(new TypeError(why));
           return;
@@ -25631,6 +25642,8 @@ export function installDom(
         domain: init.domain ?? null,
         path: init.path ?? '/',
         sameSite: 'strict',
+        // a cookie of no name is one to delete as any is
+        [DELETING]: true,
       });
     }
   }
