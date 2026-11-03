@@ -5600,6 +5600,14 @@ export class DomHost {
       }
       case 'documentOrigin':
         return this._origin();
+      case 'opaqueSrcdoc': {
+        const frame = this._frameOf.get(this.document);
+        return (
+          !!frame &&
+          this._frameAt.get(frame) === 'about:srcdoc' &&
+          !!(this.sandbox & SB_ORIGIN)
+        );
+      }
       case 'referrer':
         return this.referrer;
       case 'frameNamed': {
@@ -7153,6 +7161,13 @@ export class DomHost {
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        // no content is no navigation (HTML 7.4.2.3.3): the frame goes on
+        // showing what it was, and hears no `load`
+        if (response.status === 204 || response.status === 205) {
+          release(response);
+          this._frameDone(frame);
+          return;
+        }
         const sandbox =
           this._frameSandbox(frame) | sandboxOfPolicy(response.headers);
         const refused = this._refusedFraming(
@@ -7617,6 +7632,7 @@ export class DomHost {
         null,
         this._xml.has(doc),
       );
+      cascade.frameElement = this._frameOf.get(doc) ?? null;
       kept = { key, cascade };
       this._frameStyles.set(doc, kept);
     }

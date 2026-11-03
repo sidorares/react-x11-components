@@ -428,6 +428,8 @@ export interface InternalHtmlProps extends HtmlProps {
   _onPaint?: () => void;
   /** The colour scheme of the `<iframe>` a frame's document is drawn in. */
   _embedderScheme?: 'light' | 'dark';
+  /** The `<iframe>` a frame's document is drawn in (`Cascade.frameElement`). */
+  _frameElement?: Element;
   /** The CSS transition events the document owes (`HtmlViewProps`). */
   _onCssEvents?: (events: CssEventInfo[]) => void;
   /** What an `<img>` came to (`HtmlViewProps`). */

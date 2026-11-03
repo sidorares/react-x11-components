@@ -212,6 +212,7 @@ export function installDom(
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'opaqueSrcdoc',
     'eventPath',
     'pointerChain',
     'pointerOver',
@@ -18982,9 +18983,17 @@ export function installDom(
       return this.href;
     },
   };
+  /** Whether this is a `srcdoc` a sandbox took its origin from, which a
+   *  realm is for as long as it lives. */
+  let opaqueSrcdoc: boolean | null = null;
   for (const part of URL_PARTS) {
     Object.defineProperty(location, part, {
       get(): string {
+        // a sandbox's `srcdoc` goes by its page's address here, and an
+        // `about:srcdoc` has no origin to read from one
+        if (part === 'origin' && (opaqueSrcdoc ??= !!call('opaqueSrcdoc'))) {
+          return 'null';
+        }
         return urlParts(this.href)?.[part] ?? '';
       },
       set(v: Any) {
