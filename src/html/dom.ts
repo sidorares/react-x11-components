@@ -3272,6 +3272,59 @@ const HEAD_TAGS = new Set([
   'title',
 ]);
 
+/** The start tags "in body" has a rule of its own for, other than a block's
+ *  and a formatting element's (13.2.6.4.7). */
+const BODY_RULES = new Set([
+  ...HEAD_TAGS,
+  ...HEADINGS,
+  ...TABLE_END_TAGS,
+  'a',
+  'applet',
+  'area',
+  'body',
+  'br',
+  'button',
+  'col',
+  'colgroup',
+  'dd',
+  'dt',
+  'embed',
+  'form',
+  'frame',
+  'frameset',
+  'head',
+  'hr',
+  'html',
+  'iframe',
+  'image',
+  'img',
+  'input',
+  'keygen',
+  'li',
+  'listing',
+  'marquee',
+  'math',
+  'nobr',
+  'noembed',
+  'object',
+  'optgroup',
+  'option',
+  'param',
+  'plaintext',
+  'pre',
+  'rb',
+  'rp',
+  'rt',
+  'rtc',
+  'select',
+  'source',
+  'svg',
+  'textarea',
+  'track',
+  'wbr',
+  'xmp',
+]);
+
 /** HTML's scopes (13.2.4.2), but for `html`: there is one, under everything. */
 const SCOPE = new Set([
   'applet',
@@ -3420,6 +3473,12 @@ type Formatting = {
   name: string;
   attribs: Record<string, string>;
 } | null;
+
+/** The attributes of a formatting element's token that had none, shared. */
+const NO_ATTRIBUTES: Record<string, string> = Object.freeze({}) as Record<
+  string,
+  string
+>;
 
 /** The public identifiers that put a document in quirks mode, by what each
  *  starts with (13.2.6.4.1), lower-cased. */
@@ -3862,8 +3921,20 @@ class DocumentParser extends Parser {
     if (this._mode === IN_TABLE_TEXT) this._flushTableText();
     // what nearly every end tag is: the current node's, in a mode with
     // nothing to say of it, or the end of raw text, which HTML's "text"
-    // mode closes whatever the mode it came from (13.2.6.4.8)
+    // mode closes whatever the mode it came from (13.2.6.4.8); and a
+    // formatting element's, where it is the current node and the last on
+    // the list, which is all the adoption agency would do for it
+    const list = this._formatting;
     if (
+      list.length &&
+      self.stack[0] === name &&
+      this._mode === IN_BODY &&
+      self.foreignContext[0] === NOT_FOREIGN &&
+      list[list.length - 1]?.el === this._current()
+    ) {
+      list.pop();
+      self.popElement(false);
+    } else if (
       self.stack[0] === name &&
       (RAW_ELEMENTS.has(name)
         ? self.foreignContext.length === 1 || this._isHtml(0)
@@ -4432,6 +4503,18 @@ class DocumentParser extends Parser {
   ): void {
     const self = this as unknown as ParserInternals;
     const { stack, cbs } = self;
+    // the tags with no rule of their own, which nearly all are, ask no more
+    if (!BODY_RULES.has(name)) {
+      if (BLOCKS.has(name)) {
+        this._closeParagraph();
+        this._insert(name, attribs);
+        return;
+      }
+      this._reconstruct();
+      this._insert(name, attribs);
+      if (FORMATTING.has(name)) this._remember(name, attribs);
+      return;
+    }
     switch (name) {
       case 'html':
         this._mergeIntoHtml(attribs);
@@ -4642,15 +4725,6 @@ class DocumentParser extends Parser {
       case 'thead':
       case 'tr':
         return;
-      default:
-        if (BLOCKS.has(name)) {
-          this._closeParagraph();
-          this._insert(name, attribs);
-          return;
-        }
-        this._reconstruct();
-        this._insert(name, attribs);
-        if (FORMATTING.has(name)) this._remember(name, attribs);
     }
   }
 
@@ -4893,7 +4967,7 @@ class DocumentParser extends Parser {
    */
   private _endTag(name: string): void {
     const self = this as unknown as ParserInternals;
-    const { stack, foreignContext } = self;
+    const { stack } = self;
     if (stack.length && !this._isHtml(0)) {
       if (name === 'p' || name === 'br') this._breakOut();
       else {
@@ -5383,7 +5457,13 @@ class DocumentParser extends Parser {
       }
     }
     if (alike >= 3) list.splice(earliest, 1);
-    list.push({ el, name, attribs: { ...attribs } });
+    // the token's, which a script may change on the element
+    let copy = NO_ATTRIBUTES;
+    for (const _ in attribs) {
+      copy = { ...attribs };
+      break;
+    }
+    list.push({ el, name, attribs: copy });
     (this as unknown as ParserInternals).cbs.openFormatting.add(el);
   }
 
@@ -5668,7 +5748,10 @@ class DocumentParser extends Parser {
   private _dropLeadingSpace(): void {
     const { cbs } = this as unknown as ParserInternals;
     for (const kid of cbs.root.children.slice()) {
-      if (kid instanceof Text && !NOT_SPACE.test(kid.data)) takeNode(kid);
+      if (kid instanceof Text && !NOT_SPACE.test(kid.data)) {
+        takeNode(kid);
+        cbs.moved();
+      }
     }
     cbs.breakText();
   }

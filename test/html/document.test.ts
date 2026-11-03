@@ -9,6 +9,7 @@ import type { ChildNode, Element } from 'domhandler';
 import {
   HtmlSource,
   appendChild,
+  namespaceOf,
   blocksParser,
   createElement,
   parseFragment,
@@ -798,6 +799,265 @@ test('an <svg> in a <math> is MathML’s and what it holds with it, and the othe
  * an end tag left the parser, and in a table a `<style>`, which HTML puts
  * where it stands.
  */
+/**
+ * A source parsed as a document (`setDocument`), written as the engines'
+ * `DOMParser` writes theirs here: a namespace's prefix, the attributes,
+ * each text and comment, with adjacent texts as one. Each row's expected
+ * tree is what Chrome, Firefox and Safari make of the markup, copied from
+ * them.
+ */
+function documentShape(markup: string): string {
+  const source = new HtmlSource();
+  source.setDocument(true);
+  source.setSource(markup, true);
+  return documentShapeOf(source.document.children);
+}
+
+function documentShapeOf(nodes: readonly ChildNode[]): string {
+  type N = {
+    type: string;
+    name?: string;
+    data?: string;
+    attribs?: Record<string, string>;
+    children?: N[];
+  };
+  const kids = (list: readonly N[]): N[] => {
+    const out: N[] = [];
+    for (const kid of list) {
+      if (kid.type === 'text') {
+        if (!kid.data) continue;
+        const last = out[out.length - 1];
+        if (last?.type === 'text') {
+          out[out.length - 1] = { type: 'text', data: last.data + kid.data! };
+        } else out.push({ type: 'text', data: kid.data });
+      } else out.push(kid);
+    }
+    return out;
+  };
+  const write = (n: N): string => {
+    if (n.type === 'text') return JSON.stringify(n.data);
+    if (n.type === 'comment') return '#' + JSON.stringify(n.data);
+    if (n.name === undefined || n.name.startsWith('!')) return '';
+    const ns = namespaceOf(n as unknown as Element);
+    const prefix = ns.endsWith('/svg')
+      ? 's:'
+      : ns.endsWith('MathML')
+        ? 'm:'
+        : '';
+    const attrs = Object.keys(n.attribs ?? {})
+      .map((key) => `${key}=${n.attribs![key]}`)
+      .sort()
+      .join(',');
+    return `${prefix}${n.name}${attrs ? `[${attrs}]` : ''}(${kids(
+      n.children ?? [],
+    )
+      .map(write)
+      .filter(Boolean)
+      .join(' ')})`;
+  };
+  return kids(nodes as unknown as N[])
+    .map(write)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function documentHolds(rows: readonly (readonly [string, string])[]): void {
+  for (const [markup, shape] of rows) {
+    assert.strictEqual(documentShape(markup), shape, JSON.stringify(markup));
+  }
+}
+
+test('a source asked to be a document is one, its head there for what comes after it, whatever it starts with', () => {
+  assert.strictEqual(
+    documentShape('<title>t</title><p>a'),
+    'html(head(title("t")) body(p("a")))',
+  );
+  assert.strictEqual(documentShape(''), 'html(head() body())');
+  // a stream has its head from the start, before the body is in
+  const source = new HtmlSource();
+  source.setDocument(true);
+  source.setSource('<title>t</title><script>', false);
+  assert.strictEqual(
+    documentShapeOf(source.document.children),
+    'html(head(title("t") script()))',
+  );
+  source.setSource('<title>t</title><script></script><p>a', true);
+  assert.strictEqual(
+    documentShapeOf(source.document.children),
+    'html(head(title("t") script()) body(p("a")))',
+  );
+  // and a fragment is left one where nothing asks
+  assert.strictEqual(shapeOf('<title>t</title><p>a'), 'title(t) p(a)');
+});
+
+test('a frameset takes the body’s place while nothing has been put in the body, and holds frames alone', () => {
+  documentHolds([
+    // text in a drawing keeps the frameset out, where a NULL in it does not
+    [
+      '<!doctype html><svg>x</svg><frameset><frame></frameset>',
+      'html(head() body(s:svg("x")))',
+    ],
+    [
+      '<!doctype html><svg>\u0000</svg><frameset><frame></frameset>',
+      'html(head() frameset(frame()))',
+    ],
+    // a tag a frameset ignores reads none of what follows as raw text
+    [
+      '<!doctype html><frameset><frame><textarea>x<frame></frameset>z',
+      'html(head() frameset(frame() frame()))',
+    ],
+    [
+      '<!doctype html><body><frameset><frame></frameset>',
+      'html(head() body())',
+    ],
+    [
+      '<!doctype html><p>x</p><frameset><frame></frameset>',
+      'html(head() body(p("x")))',
+    ],
+    // white space and comments stay, and nothing else
+    [
+      '<!doctype html><frameset><frame> x <!--c--></frameset> <noframes>n</noframes>',
+      'html(head() frameset(frame() "  " #"c") " " noframes("n"))',
+    ],
+  ]);
+});
+
+test('a template’s content goes on in the mode its first tag gives it', () => {
+  documentHolds([
+    // what is not white space a column group ignores, and the space it keeps
+    [
+      '<!doctype html><template><col>x z</template>',
+      'html(head(template(col() " ")) body())',
+    ],
+    [
+      '<!doctype html><template><tr><td>a</td></tr><tr><td>b</template>z',
+      'html(head(template(tr(td("a")) tr(td("b")))) body("z"))',
+    ],
+    [
+      '<!doctype html><template><col><col></template>z',
+      'html(head(template(col() col())) body("z"))',
+    ],
+    [
+      '<!doctype html><template><td>a</td><caption>c</template>z',
+      'html(head(template(td("a") "c")) body("z"))',
+    ],
+    [
+      '<!doctype html><template><div>a<td>b</template>z',
+      'html(head(template(div("ab"))) body("z"))',
+    ],
+  ]);
+});
+
+test('a document with no doctype, or an old one, is in quirks mode, where a <table> ends no <p>', () => {
+  documentHolds([
+    [
+      '<p><table><tr><td>x</table>y',
+      'html(head() body(p(table(tbody(tr(td("x")))) "y")))',
+    ],
+    [
+      '<!doctype html><p><table><tr><td>x</table>y',
+      'html(head() body(p() table(tbody(tr(td("x")))) "y"))',
+    ],
+    [
+      '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"><p><table>x',
+      'html(head() body(p("x" table())))',
+    ],
+    // limited quirks is no quirks for this
+    [
+      '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "x"><p><table>x',
+      'html(head() body(p() "x" table()))',
+    ],
+  ]);
+});
+
+test('a head ends at what is no head content, written or not, and head content after it goes back in', () => {
+  documentHolds([
+    [
+      '<!doctype html><head>x<title>t</title>',
+      'html(head() body("x" title("t")))',
+    ],
+    [
+      '<!doctype html><head></head> x<title>t</title>',
+      'html(head() " " body("x" title("t")))',
+    ],
+    [
+      '<!doctype html><head><title>t</title></head><meta>z',
+      'html(head(title("t") meta()) body("z"))',
+    ],
+  ]);
+});
+
+test('raw text ends with the input, and the document goes on to its body', () => {
+  documentHolds([
+    ['<!doctype html><script>a', 'html(head(script("a")) body())'],
+    ['<!doctype html><title>a', 'html(head(title("a")) body())'],
+    ['<!doctype html><body><textarea>a', 'html(head() body(textarea("a")))'],
+  ]);
+});
+
+test('the formatting elements open in a cell, a select or a drawing’s title are theirs', () => {
+  documentHolds([
+    // the list keeps three alike after its last marker, and lets the
+    // earliest go for a fourth
+    [
+      '<!doctype html><p><b><b><b><b><p>x',
+      'html(head() body(p(b(b(b(b())))) p(b(b(b("x"))))))',
+    ],
+    [
+      '<!doctype html><p><b class=a><b class=b><b class=a><b class=a><b class=a><p>x',
+      'html(head() body(p(b[class=a](b[class=b](b[class=a](b[class=a](b[class=a]()))))) p(b[class=b](b[class=a](b[class=a](b[class=a]("x")))))))',
+    ],
+    [
+      '<!doctype html><select><option>a<option>b</select>z',
+      'html(head() body(select(option("a") option("b")) "z"))',
+    ],
+    [
+      '<!doctype html><table><td><select><td>x</table>',
+      'html(head() body(table(tbody(tr(td(select()) td("x"))))))',
+    ],
+    [
+      '<!doctype html><svg><title><b>x</b></title><g>y</g></svg>',
+      'html(head() body(s:svg(s:title(b("x")) s:g("y"))))',
+    ],
+    // an <a> in a table ends the one outside it, which a </a> in it would not reach
+    [
+      '<!doctype html><a href=1>x<table><a href=2>y</table>z',
+      'html(head() body(a[href=1]("x" a[href=2]("y") table()) a[href=2]("z")))',
+    ],
+    [
+      '<!doctype html><nobr>a<nobr>b<nobr>c',
+      'html(head() body(nobr("a") nobr("b") nobr("c")))',
+    ],
+    [
+      '<!doctype html><b>1<p>2</b>3</p>',
+      'html(head() body(b("1") p(b("2") "3")))',
+    ],
+    [
+      '<!doctype html><div><b><div>x</b>y',
+      'html(head() body(div(b() div(b("x") "y"))))',
+    ],
+    [
+      '<!doctype html><table><tr><td><b>x</td></tr></table>y',
+      'html(head() body(table(tbody(tr(td(b("x"))))) "y"))',
+    ],
+  ]);
+});
+
+test('a carriage return is a line feed, alone or before one, across chunks as within one', () => {
+  documentHolds([
+    ['<!doctype html>a\r\nb\rc\r', 'html(head() body("a\\nb\\nc\\n"))'],
+    ['<!doctype html><pre>\r\nx</pre>', 'html(head() body(pre("x")))'],
+  ]);
+  const source = new HtmlSource();
+  source.setDocument(true);
+  source.setSource('<!doctype html>a\r', false);
+  source.setSource('<!doctype html>a\r\nb', true);
+  assert.strictEqual(
+    documentShapeOf(source.document.children),
+    'html(head() body("a\\nb"))',
+  );
+});
+
 function holds(rows: readonly (readonly [string, string])[]): void {
   for (const [markup, shape] of rows) {
     assert.strictEqual(shapeOf(markup), shape, markup);
