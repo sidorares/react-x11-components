@@ -323,7 +323,7 @@ metric(
         'height:6px;background:#a0a}</style>' +
         '<p>before</p><div class="wrap"><div id="a"><div class="r"></div>' +
         '<div class="t"></div><p>some words that wrap</p>' +
-        '<div class="in"></div></div></div><p>after</p>',
+        '<div class="in"></div></div></div><p style="height:400px">after</p>',
       300,
     );
     const el = view(node);
@@ -333,8 +333,8 @@ metric(
       'left:30px;width:90px',
       'left:12px;width:40px;top:20px',
       'width:120px;padding:9px',
-      // past the foot of a document 120px tall
-      'top:200px;height:300px',
+      // past the foot of the document, whatever the fonts
+      'top:900px;height:300px',
       'top:20px;height:auto',
     ];
     let apart = 0;
