@@ -88,6 +88,12 @@ async function serve(
         typeof page === 'string'
           ? [TYPES[path.split('.').pop() ?? 'html'] ?? 'text/html', page]
           : page;
+      // a redirect, to where its body says
+      if (type === 'redirect') {
+        response.writeHead(302, { location: String(body) });
+        response.end();
+        return;
+      }
       response.writeHead(200, { 'content-type': type });
       response.end(body);
     },
@@ -548,6 +554,74 @@ test("a frame the scope of a worker holds is that worker's client", async (t) =>
   await installed(site, keeper, network);
   const page = await show(site.url('/framed'), network, keeper);
   assert.equal(await page.text('out'), site.url('/sw.js'));
+});
+
+test('a frame a worker answers with a redirect its own fetch saw goes where that redirect said, from where it was, kept by a cache and a clone', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/framed': `<!doctype html><p id="out"></p><script>
+        var out = [], hows = ['plain', 'clone', 'cache'];
+        hows.forEach(function (how) {
+          var f = document.createElement('iframe');
+          f.src = '/sub/frame?how=' + how;
+          f.onload = function () {
+            out.push(how + ':' + f.contentWindow.location.pathname);
+            done();
+          };
+          document.body.appendChild(f);
+        });
+        // and a page's own fetch sees it only where it asked to see one
+        ['follow', 'manual'].forEach(function (mode) {
+          fetch('/sub/frame?how=plain', { redirect: mode }).then(function (r) {
+            out.push(mode + ':' + r.type + ':' + r.url.replace(location.origin, ''));
+          }, function (e) {
+            out.push(mode + ':' + e.name);
+          }).then(done);
+        });
+        function done() {
+          if (out.length === 5) {
+            document.getElementById('out').textContent = out.sort().join(' ');
+          }
+        }
+        </script>`,
+      '/dir/away': ['redirect', 'landed'],
+      '/dir/landed': '<!doctype html><title>where the redirect said</title>',
+      '/sub/landed': '<!doctype html><title>where the frame was</title>',
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        var u = new URL(e.request.url);
+        if (u.pathname !== '/sub/frame') return;
+        var how = u.searchParams.get('how');
+        e.respondWith(fetch('/dir/away', { redirect: 'manual' }).then(function (r) {
+          if (r.type !== 'opaqueredirect' || r.headers.has('location')) {
+            return new Response('told ' + r.type);
+          }
+          if (how === 'clone') return r.clone();
+          if (how === 'cache') {
+            return caches.open('c').then(function (c) {
+              return c.put('/kept-' + how, r).then(function () {
+                return c.match('/kept-' + how);
+              });
+            });
+          }
+          return r;
+        }));
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/framed'), network, keeper);
+  assert.equal(
+    await page.text('out'),
+    'cache:/dir/landed clone:/dir/landed follow:TypeError manual:opaqueredirect:/dir/away plain:/dir/landed',
+  );
+  // and a tab's document the same
+  const doc = await network.html(site.url('/sub/frame?how=plain'));
+  assert.equal(doc.url, site.url('/dir/landed'));
+  assert.ok(!site.asked.includes('/sub/landed'));
 });
 
 test("another origin's image goes through a worker, into its cache and out again, with no script reading a byte of it", async (t) => {

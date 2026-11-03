@@ -595,6 +595,7 @@ function Tab(props: {
     const blank = {
       source: '',
       url,
+      status: 200,
       type: 'text/html',
       charset: 'utf-8',
       headers: [],

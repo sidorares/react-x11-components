@@ -455,11 +455,16 @@ test("a request that passed through another origin asks the next in nobody's nam
 test('fetch keeps to the redirect mode it was asked for', async () => {
   const { logs, asked } = await scene(
     `
-    const go = (mode, name) => fetch('${APP}r', { redirect: mode }).then(
-      (r) => console.log(name, r.type, r.status, r.url === '', r.body === null, r.headers.has('location')),
+    const go = (mode, name, at = 'r') => fetch('${APP}' + at, { redirect: mode }).then(
+      (r) => console.log(name, r.type, r.status, r.url, r.body === null, r.headers.has('location')),
       (e) => console.log(name, 'failed', e.message),
     );
     go('manual', 'manual').then(() => go('error', 'error')).then(() => go('follow', 'follow'))
+      // one that says nowhere is a redirect all the same to one that asked to
+      // see it, or to be refused it
+      .then(() => go('manual', 'nowhere manual', 'nowhere'))
+      .then(() => go('error', 'nowhere error', 'nowhere'))
+      .then(() => go('follow', 'nowhere follow', 'nowhere'))
       .then(() => fetch('${OTHER}r', { mode: 'no-cors', redirect: 'manual' }))
       .then(() => console.log('no-cors answered'), (e) => console.log('no-cors', e.name));
     `,
@@ -467,12 +472,29 @@ test('fetch keeps to the redirect mode it was asked for', async () => {
       pages: {
         [`${APP}r`]: redirect(`${APP}target`),
         [`${APP}target`]: { body: 'there' },
+        [`${APP}nowhere`]: { status: 302 },
       },
     },
   );
-  assert.equal(await seen(logs, 'manual'), 'opaqueredirect 0 true true false');
+  // what it asked for, which is no more than it knew
+  assert.equal(
+    await seen(logs, 'manual'),
+    `opaqueredirect 0 ${APP}r true false`,
+  );
   assert.equal(await seen(logs, 'error'), 'failed Failed to fetch');
-  assert.equal(await seen(logs, 'follow'), 'basic 200 false false false');
+  assert.equal(
+    await seen(logs, 'nowhere manual'),
+    `opaqueredirect 0 ${APP}nowhere true false`,
+  );
+  assert.equal(await seen(logs, 'nowhere error'), 'failed Failed to fetch');
+  assert.equal(
+    await seen(logs, 'nowhere follow'),
+    `basic 302 ${APP}nowhere false false`,
+  );
+  assert.equal(
+    await seen(logs, 'follow'),
+    `basic 200 ${APP}target false false`,
+  );
   assert.equal(await seen(logs, 'no-cors'), 'TypeError');
   assert.ok(asked.every((r) => r.redirect === 'manual'));
 });

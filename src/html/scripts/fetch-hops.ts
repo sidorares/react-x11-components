@@ -139,6 +139,11 @@ export function redirectTainted(urls: string[], origin: string): boolean {
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const MAX_HOPS = 20;
 
+/** Whether a status is a redirect's (Fetch 2.2.6, "redirect status"). */
+export function isRedirectStatus(status: number): boolean {
+  return REDIRECTS.has(status);
+}
+
 /** The address a response sends a request on to, as it says it: null where it
  *  sends it nowhere. */
 export function redirectOf(

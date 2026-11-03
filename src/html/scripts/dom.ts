@@ -10154,6 +10154,9 @@ export function installDom(
    *  facade defined as a value, before any page code ran, but what is the
    *  window's own (`OWN_PER_WINDOW`). Taken at the end of `installDom`. */
   let realmGlobals: [string, Any][] = [];
+  /** The globals a frame's window shares that are getters on this one. */
+  const SHARED_GETTERS = new Set(['localStorage', 'sessionStorage']);
+  let realmGetters: [string, () => Any][] = [];
   /** The page's `CSS` namespace, which a frame's window copies with its
    *  own `highlights` (`frameWindowOf`). Made where `CSS` is defined. */
   let cssNamespace: Any = null;
@@ -10318,6 +10321,13 @@ export function installDom(
         writable: true,
         configurable: true,
         enumerable: false,
+      });
+    }
+    for (const [name, get] of realmGetters) {
+      Object.defineProperty(win, name, {
+        get,
+        configurable: true,
+        enumerable: true,
       });
     }
     const size = (): number[] =>
@@ -33713,6 +33723,12 @@ export function installDom(
     const found = Object.getOwnPropertyDescriptor(G, name);
     return found && 'value' in found ? [[name, found.value]] : [];
   }) as [string, Any][];
+  // and its storage, a getter so that a sandbox's throws: a frame the page
+  // can reach is of its origin, and so of its store
+  realmGetters = [...SHARED_GETTERS].flatMap((name) => {
+    const found = Object.getOwnPropertyDescriptor(G, name);
+    return found?.get ? [[name, found.get]] : [];
+  }) as [string, () => Any][];
 
   // --- the entries -------------------------------------------------------------------
   //

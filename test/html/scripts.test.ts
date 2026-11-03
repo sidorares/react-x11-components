@@ -15762,6 +15762,31 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
  *  out none, its scripts its own runner's, linked to the page's. */
+test("a frame's window has its page's storage, as a frame of its origin has", async () => {
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'localStorage.setItem("k", "local"); sessionStorage.setItem("k", "session");' +
+      'f.onload = function () {' +
+      '  var w = f.contentWindow;' +
+      '  document.getElementById("out").textContent = [' +
+      '    w.localStorage && w.localStorage.getItem("k"),' +
+      '    w.sessionStorage && w.sessionStorage.getItem("k"),' +
+      '    Object.getPrototypeOf(w.localStorage) === Storage.prototype,' +
+      '  ].join("|");' +
+      '};' +
+      '</script>',
+    { 'frame.html': '<!doctype html><p>no script here</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'local|session|true',
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,

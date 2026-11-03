@@ -1877,6 +1877,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
           headers: head.headers,
           body: '',
           type: head.type as FetchResponse['type'],
+          // where an opaque redirect goes, which only the host says
+          // (`DomHost._heldHead`)
+          ...(head.location !== undefined
+            ? { location: head.location, redirectStatus: head.redirectStatus }
+            : {}),
         };
         if (m.streaming) {
           const body = new BodyQueue(() => {
@@ -1981,6 +1986,8 @@ type FetchSaid =
         redirected: boolean;
         headers: [string, string][];
         type: string;
+        location?: string | null;
+        redirectStatus?: number;
       };
       base64?: string;
       streaming?: boolean;

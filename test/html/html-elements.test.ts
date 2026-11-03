@@ -15,6 +15,7 @@ import {
   FONTS,
   boxOf,
   clipsAround,
+  edgesOf,
   fillsOf,
   findById,
   h,
@@ -28,7 +29,7 @@ afterEach(cleanup);
 test("a body's margin attributes are two sides each, and rightmargin and bottommargin nothing", async () => {
   const margins = async (attrs: string) => {
     const { node } = await render(`<body id="b" ${attrs}>x</body>`);
-    const box = boxOf(view(node), 'b');
+    const box = boxOf(view(node), 'b') as unknown as Record<string, number>;
     return [box.marginTop, box.marginRight, box.marginBottom, box.marginLeft];
   };
   assert.deepStrictEqual(await margins('marginwidth=30'), [8, 30, 8, 30]);
@@ -54,7 +55,7 @@ test("a body's margin attributes are two sides each, and rightmargin and bottomm
   const { node } = await render(
     '<style>body { margin: 2px }</style><body id="b" marginwidth=30>x</body>',
   );
-  assert.strictEqual(boxOf(view(node), 'b').marginLeft, 2);
+  assert.strictEqual(edgesOf(boxOf(view(node), 'b')).marginLeft, 2);
 });
 
 test('an anchor with no href is drawn as the text around it', async () => {

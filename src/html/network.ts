@@ -1575,11 +1575,16 @@ export class HtmlNetwork {
   ): Promise<DocumentResponse> {
     const header = (name: string): string | null =>
       response.headers.find(([k]) => k.toLowerCase() === name)?.[1] ?? null;
-    if (response.status >= 300 && response.status < 400) {
-      const location = header('location');
+    // a redirect it answered with, an opaque one its own `fetch` saw among
+    // them, is followed from where it was (Fetch 4.4, a navigation's manual
+    // redirect)
+    const opaque = response.type === 'opaqueredirect';
+    const status = opaque ? (response.redirectStatus ?? 0) : response.status;
+    if (status >= 300 && status < 400) {
+      const location = opaque ? response.location : header('location');
       if (location) {
         const moved = await this.document(
-          new URL(location, url).href,
+          new URL(location, response.url || url).href,
           signal,
           null,
           options,
