@@ -9,6 +9,8 @@ import {
   cleanup,
   expectPixel,
   fireEvent,
+  isNear,
+  pixelAt,
   renderX11,
   screen,
   userEvent,
@@ -24,8 +26,20 @@ import type {
   EmbeddedRect,
   FormSubmission,
   HtmlDomEvent,
+  ResourceRequest,
 } from '../../src/html/index.js';
-import { FONTS, boxOf, findById, h, metric, view } from './harness.js';
+import { resourceResult } from '../../src/html/network.js';
+import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
+import {
+  FONTS,
+  PAGE,
+  RED_PNG,
+  boxOf,
+  findById,
+  h,
+  metric,
+  view,
+} from './harness.js';
 
 afterEach(cleanup);
 
@@ -1403,4 +1417,866 @@ test("a press in an iframe's document is that document's: its summary opens once
     'submit https://frame.test/sent?',
   ]);
   assert.deepStrictEqual(page, [], 'the page is told of none of it');
+});
+
+const scripted = SCRIPTS_CONTAINED ? test : test.skip;
+
+const SVG_TYPE = 'image/svg+xml';
+const XHTML_TYPE = 'application/xhtml+xml';
+const SVG = 'xmlns="http://www.w3.org/2000/svg"';
+const XHTML = 'xmlns="http://www.w3.org/1999/xhtml"';
+
+/** What a frame's address is answered with. */
+interface Served {
+  type: string;
+  body?: string;
+  bytes?: Uint8Array;
+  status?: number;
+  /** Asked for, and never answered. */
+  hangs?: boolean;
+  /** Answered once this has settled. */
+  held?: Promise<unknown>;
+}
+
+/**
+ * A page with its scripts on, framing what `files` holds as a host with a
+ * network loads it: a frame's document through `scripts.fetch`, and what an
+ * `<object>` or an `<embed>` asks for as an image through the answer such a
+ * host gives (`resourceResult`), so a drawing is an image, and a page a
+ * document, as they are in a browser.
+ */
+async function framing(
+  markup: string,
+  files: Record<string, Served>,
+  {
+    scale,
+    width = 400,
+    height = 400,
+    frames,
+    serviceWorkers,
+  }: {
+    scale?: number;
+    width?: number;
+    height?: number;
+    frames?: boolean;
+    serviceWorkers?: boolean;
+  } = {},
+) {
+  const logs: string[] = [];
+  const fetched: string[] = [];
+  const named = (url: string): Served | undefined =>
+    files[url.slice(url.lastIndexOf('/') + 1)];
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width, height, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<!doctype html><style>body{margin:0}' +
+          'iframe,object,embed{display:block;border:0}</style>' +
+          markup,
+        partial: false,
+        baseUrl: PAGE,
+        onResource: async ({ url, kind }: ResourceRequest) => {
+          const file = named(url);
+          if (file?.hangs) return new Promise<null>(() => {});
+          await file?.held;
+          if (!file || (file.status ?? 200) >= 400) return null;
+          const bytes = file.bytes ?? new TextEncoder().encode(file.body ?? '');
+          return resourceResult(
+            { url, status: 200, type: file.type, charset: null, bytes },
+            kind as Parameters<typeof resourceResult>[1],
+          );
+        },
+        scripts: {
+          ...(frames !== undefined && { frames }),
+          ...(serviceWorkers !== undefined && { serviceWorkers }),
+          log: (_level: string, text: string) => void logs.push(text),
+          fetch: async (request: { url: string }) => {
+            const file = named(request.url);
+            if (!file) throw new Error(`no ${request.url}`);
+            fetched.push(request.url.slice(request.url.lastIndexOf('/') + 1));
+            return {
+              url: request.url,
+              status: file.status ?? 200,
+              statusText: '',
+              redirected: false,
+              headers: [['content-type', file.type]] as [string, string][],
+              body: file.body ?? '',
+            };
+          },
+        },
+      }),
+    ),
+    {
+      width: width + 40,
+      height: height + 40,
+      ...(FONTS && { fonts: FONTS }),
+      ...(scale && { scale }),
+    },
+  );
+  // a realm nothing draws runs in a view of no size (`FrameHolder`)
+  const views = (node: unknown): number => {
+    const { kind, abs, children } = node as {
+      kind?: string;
+      abs?: { width: number; height: number };
+      children?: unknown[];
+    };
+    const shown = kind === 'htmlview' && !!abs?.width && !!abs.height;
+    return (
+      (shown ? 1 : 0) +
+      (children ?? []).reduce<number>((n, c) => n + views(c), 0)
+    );
+  };
+  return {
+    result,
+    logs,
+    fetched,
+    /** How many frames' documents are drawn: every view but the page's. */
+    drawn: () => views(result.windowNode) - 1,
+    /** Wait for a line of what the page's scripts logged. */
+    async until(line: string): Promise<void> {
+      const end = Date.now() + 5000;
+      while (!logs.includes(line) && Date.now() < end) {
+        await act(() => new Promise((go) => setTimeout(go, 10)));
+      }
+      assert.ok(logs.includes(line), `no "${line}" in ${logs.join(' | ')}`);
+    },
+    /** Wait for a colour at a device pixel, and hold the test to it. */
+    async paints(x: number, y: number, want: string, message: string) {
+      const end = Date.now() + 5000;
+      while (
+        !isNear(await pixelAt(result.ctx, x, y), want, 8) &&
+        Date.now() < end
+      ) {
+        await act(() => new Promise((go) => setTimeout(go, 10)));
+      }
+      await expectPixel(result.ctx, x, y, want, { message });
+    },
+  };
+}
+
+/** A page logs what it hears of its frames, and how each came out. */
+const HEARS = `<script>
+  addEventListener('message', (e) => console.log(e.data));
+  addEventListener('load', () => {
+    console.log('loaded');
+    for (const f of document.querySelectorAll('[id]')) {
+      const r = f.getBoundingClientRect();
+      console.log(f.id + ' ' + r.width + 'x' + r.height);
+    }
+  });
+</script>`;
+
+for (const scale of [1, 2]) {
+  scripted(
+    `an iframe's drawing fills it where it says no size, and is cut to a size it says, at ${scale}x`,
+    async () => {
+      const { paints, until } = await framing(
+        `<iframe id="a" src="fills.svg"></iframe>
+       <iframe id="b" src="sized.svg"></iframe>${HEARS}`,
+        {
+          'fills.svg': {
+            type: SVG_TYPE,
+            body: `<svg ${SVG} viewBox="0 0 10 10"><rect width="10" height="10" fill="#00ff00"/></svg>`,
+          },
+          'sized.svg': {
+            type: SVG_TYPE,
+            body: `<svg ${SVG} width="50" height="50"><rect width="200" height="200" fill="#0000ff"/></svg>`,
+          },
+        },
+        { scale },
+      );
+      await until('a 300x150');
+      // HTML's default frame, and a square as tall as it, in its middle
+      await paints(150 * scale, 75 * scale, '#00ff00', 'the middle');
+      await paints(80 * scale, 5 * scale, '#00ff00', 'its top, 75 in');
+      await paints(70 * scale, 75 * scale, '#ffffff', 'beside the square');
+      await paints(25 * scale, 175 * scale, '#0000ff', 'the sized drawing');
+      await paints(60 * scale, 175 * scale, '#ffffff', 'past what it says');
+    },
+  );
+}
+
+scripted("an iframe's XHTML is read by XML's rules", async () => {
+  const { paints, until } = await framing(
+    `<iframe id="f" src="page.xhtml"></iframe>${HEARS}`,
+    {
+      'page.xhtml': {
+        type: XHTML_TYPE,
+        body: `<html ${XHTML}><head>
+          <style><!-- body { background: #ff0000 } --></style>
+          <style>div { height: 40px; background: #00ff00 } DIV { background: #ff0000 }</style>
+        </head><body style="margin:0"><div/></body></html>`,
+      },
+    },
+  );
+  await until('loaded');
+  await paints(10, 10, '#00ff00', 'its div, no rule of another case');
+  await paints(10, 100, '#ffffff', 'no sheet in a comment');
+});
+
+scripted(
+  'an XML frame runs its scripts in a realm of its own, its source and all, before its load',
+  async () => {
+    const { paints, until } = await framing(
+      `<iframe id="f" src="run.svg"></iframe>${HEARS}<script>
+      addEventListener('load', () =>
+        console.log('reads ' + document.getElementById('f').contentWindow.mine));
+    </script>`,
+      {
+        'run.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="50">
+          <rect id="r" width="100" height="50" fill="#ff0000"/>
+          <script href="set.js"/>
+          <script>
+            var mine = document.getElementById('r').getAttribute('fill');
+            parent.postMessage('ran ' + window.mine + ' ' + document.contentType, '*');
+          </script>
+        </svg>`,
+        },
+        'set.js': {
+          type: 'text/javascript',
+          body: "document.getElementById('r').setAttribute('fill', '#00ff00');",
+        },
+      },
+    );
+    // read in the page's `load`, which waited for the frame's scripts; what
+    // it posted is a task of its own, which may come after
+    await until('reads #00ff00');
+    await until('ran #00ff00 image/svg+xml');
+    await paints(10, 10, '#00ff00', 'what its script drew');
+  },
+);
+
+scripted(
+  'what is no script in an XML document runs nothing, and a frame of one is drawn in the page realm',
+  async () => {
+    const { drawn, logs, until } = await framing(
+      `<iframe id="f" src="plain.xml"></iframe>${HEARS}<script>
+      addEventListener('load', () => console.log(
+        'same ' + (document.getElementById('f').contentWindow.top === window)));
+    </script>`,
+      {
+        'plain.xml': {
+          type: 'application/xml',
+          body: `<root><script>parent.postMessage('ran', '*')</script></root>`,
+        },
+      },
+    );
+    await until('same true');
+    assert.strictEqual(drawn(), 1, 'it is drawn');
+    assert.ok(!logs.includes('ran'), logs.join(' | '));
+  },
+);
+
+scripted(
+  'a frame of another origin that is XML runs at its own origin and is drawn',
+  async () => {
+    const { logs, paints, until } = await framing(
+      `<iframe id="f" src="https://other.test/run.svg"></iframe>${HEARS}<script>
+      addEventListener('load', () => console.log(
+        'reads ' + document.getElementById('f').contentDocument));
+    </script>`,
+      {
+        'run.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="50">
+          <rect id="r" width="100" height="50" fill="#ff0000"/>
+          <script>
+            document.getElementById('r').setAttribute('fill', '#00ff00');
+            parent.postMessage('at ' + location.origin + ' ' + origin, '*');
+          </script>
+        </svg>`,
+        },
+      },
+    );
+    await until('reads null');
+    assert.ok(
+      logs.includes('at https://other.test https://other.test'),
+      logs.join(' | '),
+    );
+    await paints(10, 10, '#00ff00', 'what its script drew');
+  },
+);
+
+scripted(
+  "a frame's XML that is not well-formed is drawn as the error, and runs nothing",
+  async () => {
+    const { drawn, logs, until } = await framing(
+      `<iframe id="f" src="bad.svg"></iframe>${HEARS}<script>
+      addEventListener('load', () => console.log(
+        'root ' + document.getElementById('f').contentDocument.documentElement.localName));
+    </script>`,
+      {
+        'bad.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG}><script>parent.postMessage('ran', '*')</script><rect></svg>`,
+        },
+      },
+    );
+    await until('root parsererror');
+    assert.strictEqual(drawn(), 1, 'the error is drawn');
+    assert.ok(!logs.includes('ran'), logs.join(' | '));
+  },
+);
+
+for (const [name, type, body] of [
+  [
+    'page.xhtml',
+    XHTML_TYPE,
+    `<html ${XHTML}><body style="margin:0;background:#00ff00"/></html>`,
+  ],
+  [
+    'other.html',
+    'text/html',
+    '<!doctype html><body style="margin:0;background:#00ff00">',
+  ],
+] as const) {
+  scripted(
+    `an object and an embed of ${name} show it as an iframe does, at a frame's size`,
+    async () => {
+      const { paints, until } = await framing(
+        `<object id="o" data="${name}"></object>
+       <embed id="e" src="${name}">${HEARS}`,
+        { [name]: { type, body } },
+      );
+      await until('o 300x150');
+      await until('e 300x150');
+      await paints(5, 5, '#00ff00', 'the object');
+      await paints(295, 145, '#00ff00', 'the corner of the object');
+      await paints(5, 155, '#00ff00', 'the embed');
+      await paints(305, 5, '#ffffff', 'past them');
+    },
+  );
+}
+
+scripted(
+  "a drawing that is a service worker's client stays a picture, though it has a realm of its own",
+  async () => {
+    const { drawn, paints, until } = await framing(
+      `<object id="o" data="still.svg"
+         style="width:200px;height:100px;object-fit:contain"></object>${HEARS}`,
+      {
+        'still.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="100"><rect width="100" height="100" fill="#00ff00"/></svg>`,
+        },
+      },
+      { serviceWorkers: true },
+    );
+    await until('loaded');
+    await paints(100, 50, '#00ff00', 'in the middle');
+    await paints(25, 50, '#ffffff', 'beside what is fitted');
+    assert.strictEqual(drawn(), 0, 'no frame is mounted');
+  },
+);
+
+scripted(
+  'a drawing nothing can change stays the picture of it, which object-fit reaches',
+  async () => {
+    const { drawn, paints, until } = await framing(
+      `<object id="o" data="still.svg"
+       style="width:200px;height:100px;object-fit:contain"></object>
+     <embed id="e" src="still.svg"
+       style="width:200px;height:100px;object-fit:contain">${HEARS}<script>
+       // their boxes built again once their documents are in, as a restyle
+       // or a breakpoint builds them
+       addEventListener('load', () => setTimeout(() => {
+         for (const el of document.querySelectorAll('object, embed')) {
+           el.setAttribute('title', 'built again');
+         }
+         setTimeout(() => console.log('built again'), 20);
+       }, 20));
+     </script>`,
+      {
+        'still.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="100"><rect width="100" height="100" fill="#00ff00"/></svg>`,
+        },
+      },
+    );
+    await until('built again');
+    await paints(100, 50, '#00ff00', 'in the middle of the object');
+    await paints(25, 50, '#ffffff', 'beside what is fitted in the object');
+    await paints(100, 150, '#00ff00', 'in the middle of the embed');
+    await paints(25, 150, '#ffffff', 'beside what is fitted in the embed');
+    assert.strictEqual(drawn(), 0, 'no frame is mounted');
+  },
+);
+
+for (const scale of [1, 2]) {
+  for (const [tag, attribute] of [
+    ['object', 'data'],
+    ['embed', 'src'],
+  ] as const) {
+    scripted(
+      `a drawing with a script in an ${tag} is drawn as it stands, at the size of its picture, at ${scale}x`,
+      async () => {
+        const { drawn, paints, until } = await framing(
+          `<${tag} id="f" ${attribute}="run.svg"></${tag}>${HEARS}`,
+          {
+            'run.svg': {
+              type: SVG_TYPE,
+              body: `<svg ${SVG} width="100" height="50">
+              <rect id="r" width="100" height="50" fill="#ff0000"/>
+              <script>
+                document.getElementById('r').remove();
+                parent.postMessage('ran', '*');
+              </script>
+            </svg>`,
+            },
+          },
+          { scale },
+        );
+        await until('f 100x50');
+        await until('ran');
+        assert.strictEqual(drawn(), 1, 'it is mounted');
+        // taken out by its script: the picture that shows it would still
+        // show under a mount, as it would in place of one
+        await paints(
+          10 * scale,
+          10 * scale,
+          '#ffffff',
+          'what its script took out',
+        );
+      },
+    );
+  }
+}
+
+scripted(
+  'an object and an embed a script gives an address once they are in load it',
+  async () => {
+    const { drawn, paints, until } = await framing(
+      `${HEARS}<script>
+        addEventListener('DOMContentLoaded', () => {
+          const o = document.createElement('object');
+          const e = document.createElement('embed');
+          document.body.append(o, e);
+          o.onload = () => console.log('object');
+          e.onload = () => console.log('embed');
+          o.data = 'feed.atom';
+          e.src = 'page.xhtml';
+          console.log(e.getAttribute('src'));
+        });
+      </script>`,
+      {
+        // an XML type nothing names, which is a document all the same
+        'feed.atom': {
+          type: 'application/atom+xml',
+          body: `<feed xmlns="http://www.w3.org/2005/Atom"><title>x</title></feed>`,
+        },
+        'page.xhtml': {
+          type: XHTML_TYPE,
+          body: `<html ${XHTML}><body style="margin:0;background:#00ff00"/></html>`,
+        },
+      },
+    );
+    await until('page.xhtml');
+    await until('object');
+    await until('embed');
+    await paints(5, 155, '#00ff00', 'the embed');
+    assert.strictEqual(drawn(), 2, 'each is mounted');
+  },
+);
+
+scripted(
+  'an embed loads only while it is rendered, and nothing shows something else in its place',
+  async () => {
+    const still = `<svg ${SVG} width="20" height="20"><rect width="20" height="20" fill="#00ff00"/></svg>`;
+    const { fetched, until } = await framing(
+      `<div hidden><embed id="a" src="hidden.svg"></div>
+       <video><embed id="b" src="video.svg"></video>
+       <audio><embed id="c" src="audio.svg"></audio>
+       <object id="o" data="still.svg"><embed id="d" src="object.svg"></object>
+       <div style="content-visibility:hidden"><embed id="e" src="skipped.svg"></div>
+       ${HEARS}<script>
+         addEventListener('load', () =>
+           setTimeout(() => console.log('waited'), 50));
+       </script>`,
+      Object.fromEntries(
+        [
+          'hidden.svg',
+          'video.svg',
+          'audio.svg',
+          'object.svg',
+          'skipped.svg',
+          'still.svg',
+        ].map((name) => [name, { type: SVG_TYPE, body: still }]),
+      ),
+    );
+    await until('waited');
+    assert.deepStrictEqual(
+      fetched.filter((name) => name !== 'still.svg').sort(),
+      ['skipped.svg'],
+      'what content-visibility skips is rendered, and none of the rest is',
+    );
+  },
+);
+
+scripted(
+  'an embed the parser reaches after a script has the style it was given by then',
+  async () => {
+    const { fetched, until } = await framing(
+      `<script src="first.js"></script>
+       <style>#target { display: none }</style>
+       <body>
+         <script>var waited = 1;</script>
+         <embed id="target" src="hidden.svg">
+         ${HEARS}<script>
+           addEventListener('load', () =>
+             setTimeout(() => console.log('waited'), 50));
+         </script>
+       </body>`,
+      {
+        'first.js': { type: 'text/javascript', body: 'var first = 1;' },
+        'hidden.svg': { type: SVG_TYPE, body: `<svg ${SVG}/>` },
+      },
+    );
+    await until('waited');
+    assert.deepStrictEqual(fetched, []);
+  },
+);
+
+scripted(
+  "an embed waits for the sheets that say whether it is rendered, as the page's first rendering does",
+  async () => {
+    let arrive = (): void => {};
+    const held = new Promise<void>((go) => (arrive = go));
+    const { fetched, result } = await framing(
+      `<link rel="stylesheet" href="sheet.css">
+       <embed id="target" src="shown.svg">`,
+      {
+        'sheet.css': { type: 'text/css', body: 'body { margin: 0 }', held },
+        'shown.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="10" height="10"/>`,
+        },
+      },
+    );
+    // nothing says yet what it is: laid out by no sheet, it might be hidden
+    for (let turn = 0; turn < 20; turn += 1) {
+      await act(() => new Promise((go) => setTimeout(go, 5)));
+    }
+    assert.deepStrictEqual(fetched, [], 'held while the sheet is');
+    assert.ok(result.ctx);
+    arrive();
+    const end = Date.now() + 5000;
+    while (!fetched.length && Date.now() < end) {
+      await act(() => new Promise((go) => setTimeout(go, 10)));
+    }
+    assert.deepStrictEqual(fetched, ['shown.svg'], 'and it is rendered');
+  },
+);
+
+scripted(
+  'an object given its address as the page is parsed loads with the frames the markup has, after its scripts',
+  async () => {
+    const { until } = await framing(
+      `<object id="o" type="image/svg+xml"></object>
+       <script>document.getElementById('o').data = 'still.svg';</script>
+       <script src="later.js"></script>
+       ${HEARS}`,
+      {
+        'later.js': {
+          type: 'text/javascript',
+          body: `document.getElementById('o').onload = () => console.log('heard');`,
+        },
+        'still.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="50"/>`,
+        },
+      },
+    );
+    // a script after it hears its load, as one after an object in the
+    // markup does
+    await until('heard');
+  },
+);
+
+scripted('an embed a script comes to show loads from then on', async () => {
+  const { logs, until } = await framing(
+    `<div id="later" style="display:none">
+       <embed id="s" src="shown.svg" onload="console.log('embed loaded')">
+     </div>${HEARS}<script>
+       addEventListener('load', () => setTimeout(() => {
+         console.log('showing');
+         document.getElementById('later').style.display = 'block';
+       }, 20));
+     </script>`,
+    {
+      'shown.svg': {
+        type: SVG_TYPE,
+        body: `<svg ${SVG} width="20" height="20"/>`,
+      },
+    },
+  );
+  await until('embed loaded');
+  assert.ok(
+    logs.indexOf('showing') >= 0 &&
+      logs.indexOf('showing') < logs.indexOf('embed loaded'),
+    logs.join(' | '),
+  );
+});
+
+scripted('a javascript: embed does nothing, and hears no load', async () => {
+  const { logs, until } = await framing(
+    `<embed id="j" src="javascript:'x'" onload="console.log('heard')">${HEARS}<script>
+       addEventListener('load', () =>
+         setTimeout(() => console.log('waited'), 50));
+     </script>`,
+    {},
+  );
+  await until('waited');
+  assert.ok(!logs.includes('heard'), logs.join(' | '));
+});
+
+for (const [tag, attribute] of [
+  ['object', 'data'],
+  ['embed', 'src'],
+] as const) {
+  for (const file of ['still.svg', 'run.svg']) {
+    scripted(`an ${tag} of ${file} hears one load`, async () => {
+      const { logs, until } = await framing(
+        `<${tag} id="f" ${attribute}="${file}"
+           onload="console.log('heard')"></${tag}>${HEARS}<script>
+           addEventListener('load', () =>
+             setTimeout(() => console.log('waited'), 100));
+         </script>`,
+        {
+          'still.svg': {
+            type: SVG_TYPE,
+            body: `<svg ${SVG} width="10" height="10"/>`,
+          },
+          'run.svg': {
+            type: SVG_TYPE,
+            body: `<svg ${SVG} width="10" height="10"><script>var x = 1;</script></svg>`,
+          },
+        },
+      );
+      await until('waited');
+      assert.strictEqual(
+        logs.filter((line) => line === 'heard').length,
+        1,
+        logs.join(' | '),
+      );
+    });
+  }
+}
+
+scripted(
+  "an object's document with a realm of its own is the one its window has",
+  async () => {
+    const { logs, until } = await framing(
+      `<object id="o" data="run.svg"></object>${HEARS}<script>
+        addEventListener('load', () => {
+          const o = document.getElementById('o');
+          console.log('same ' + (o.contentDocument === o.contentWindow.document));
+        });
+      </script>`,
+      {
+        'run.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG}><script>var mine = 1;</script></svg>`,
+        },
+      },
+    );
+    await until('loaded');
+    await until('same true');
+    assert.ok(!logs.includes('same false'), logs.join(' | '));
+  },
+);
+
+scripted(
+  'a drawing goes live as it comes, whatever is still holding its load',
+  async () => {
+    const { drawn, logs, paints, until } = await framing(
+      `<object id="f" data="slow.svg"></object>${HEARS}`,
+      {
+        'slow.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="50">
+            <rect id="r" width="100" height="50" fill="#ff0000"/>
+            <script>document.getElementById('r').remove();</script>
+            <script href="never.js"/>
+          </svg>`,
+        },
+        'never.js': { type: 'text/javascript', hangs: true },
+      },
+    );
+    // nothing it does reaches the page, so nothing the page does flushes:
+    // it posts no message, and its `load` is held
+    await until('f 100x50').catch(() => {});
+    await paints(10, 10, '#ffffff', 'what its script took out');
+    assert.strictEqual(drawn(), 1, 'it is mounted');
+    assert.ok(!logs.includes('loaded'), 'its load is still held');
+  },
+);
+
+scripted(
+  "what a page writes into a drawing with no script shows, and an object's document is its window's",
+  async () => {
+    const { drawn, logs, paints, until } = await framing(
+      `<object id="o" data="still.svg"></object>
+     <embed id="e" src="still.svg">
+     <embed id="x" src="page.xhtml">${HEARS}<script>
+       addEventListener('load', () => {
+         const o = document.getElementById('o');
+         console.log('same ' + (o.contentDocument === o.contentWindow.document));
+         o.contentDocument.getElementById('r').setAttribute('fill', '#00ff00');
+         const e = document.getElementById('e');
+         e.getSVGDocument().getElementById('r').setAttribute('fill', '#0000ff');
+         console.log('page ' + document.getElementById('x').getSVGDocument());
+         console.log('wrote');
+       });
+     </script>`,
+      {
+        'still.svg': {
+          type: SVG_TYPE,
+          body: `<svg ${SVG} width="100" height="50"><rect id="r" width="100" height="50" fill="#ff0000"/></svg>`,
+        },
+        'page.xhtml': { type: XHTML_TYPE, body: `<html ${XHTML}/>` },
+      },
+    );
+    await until('wrote');
+    assert.ok(logs.includes('same true'), logs.join(' | '));
+    assert.ok(logs.includes('page null'), 'getSVGDocument is for a drawing');
+    await paints(10, 10, '#00ff00', 'what it wrote in the object');
+    await paints(10, 60, '#0000ff', 'what it wrote in the embed');
+    assert.strictEqual(drawn(), 3, 'each is mounted');
+  },
+);
+
+scripted('an XML frame in an XML frame is drawn in it', async () => {
+  const { paints, until } = await framing(
+    `<iframe id="f" src="outer.xhtml"></iframe>${HEARS}`,
+    {
+      'outer.xhtml': {
+        type: XHTML_TYPE,
+        body: `<html ${XHTML}><head><script>var outer = 1;</script></head>
+          <body style="margin:0"><object data="inner.svg" style="display:block"/>
+        </body></html>`,
+      },
+      'inner.svg': {
+        type: SVG_TYPE,
+        body: `<svg ${SVG} width="100" height="50">
+          <rect id="r" width="100" height="50" fill="#ff0000"/>
+          <script>document.getElementById('r').setAttribute('fill', '#00ff00');</script>
+        </svg>`,
+      },
+    },
+  );
+  await until('loaded');
+  await paints(10, 10, '#00ff00', "what the inner drawing's script drew");
+});
+
+scripted(
+  'an object that could not be had shows its fallback and hears an error',
+  async () => {
+    const { drawn, logs, paints, until } = await framing(
+      `<object id="o" data="gone.xhtml"
+       onerror="console.log('error')" onload="console.log('load')">
+       <p style="margin:0;height:40px;background:#00ff00"></p>
+     </object>${HEARS}`,
+      {
+        'gone.xhtml': {
+          type: XHTML_TYPE,
+          status: 404,
+          body: `<html ${XHTML}><head><script>parent.postMessage('ran', '*')</script></head>
+          <body style="background:#ff0000"/></html>`,
+        },
+      },
+    );
+    await until('error');
+    await until('loaded');
+    assert.ok(!logs.includes('load'), logs.join(' | '));
+    assert.ok(!logs.includes('ran'), 'nothing of the error page runs');
+    await paints(10, 10, '#00ff00', 'the fallback');
+    assert.strictEqual(drawn(), 0, 'nothing is mounted');
+  },
+);
+
+scripted(
+  'an embed of what is no document holds none, and hears its load',
+  async () => {
+    const { drawn, logs, paints, until } = await framing(
+      `<embed id="i" src="pic.png" onload="console.log('image')"
+       style="width:20px;height:20px">
+     <embed id="p" src="film.swf" onload="console.log('plugin')">${HEARS}`,
+      {
+        'pic.png': { type: 'image/png', bytes: RED_PNG },
+        'film.swf': { type: 'application/x-shockwave-flash', body: 'FWS' },
+      },
+    );
+    await until('image');
+    await until('plugin');
+    await paints(10, 10, '#ff0000', 'the picture');
+    assert.strictEqual(drawn(), 0, `nothing is mounted: ${logs.join(' | ')}`);
+  },
+);
+
+scripted(
+  "where frames are off, a frame's XHTML runs in the page's realm, and nothing is loaded for an embed",
+  async () => {
+    const { drawn, fetched, logs, until } = await framing(
+      `<iframe id="f" src="run.xhtml"></iframe>
+     <embed id="e" src="run.xhtml">${HEARS}<script>
+       addEventListener('load', () => {
+         document.getElementById('f').contentDocument;
+         // put in by a script, it would load as it goes in
+         document.body.append(document.getElementById('e'));
+         setTimeout(() => console.log('waited'), 50);
+       });
+     </script>`,
+      {
+        'run.xhtml': {
+          type: XHTML_TYPE,
+          body: `<html ${XHTML}><body><script>parent.postMessage('ran', '*')</script></body></html>`,
+        },
+      },
+      { frames: false },
+    );
+    await until('ran');
+    await until('waited');
+    assert.deepStrictEqual(fetched, ['run.xhtml'], 'one, the iframe');
+    assert.strictEqual(drawn(), 0, logs.join(' | '));
+  },
+);
+
+test('a host is given an object of a document, and no object or embed that shows an image', async () => {
+  const asked: EmbeddedRect[] = [];
+  const svg = `<svg ${SVG} width="10" height="10"/>`;
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 300, height: 400, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<object id="doc" data="page.xhtml"></object>' +
+          '<object id="pic" data="still.svg"></object>' +
+          '<embed id="shown" src="still.svg">' +
+          '<embed id="none" src="unknown.bin">',
+        partial: false,
+        baseUrl: PAGE,
+        onResource: ({ url }: ResourceRequest) =>
+          url.endsWith('.xhtml')
+            ? { kind: 'document' as const }
+            : url.endsWith('.svg')
+              ? { kind: 'image' as const, bytes: new TextEncoder().encode(svg) }
+              : null,
+        renderEmbedded: (rect: EmbeddedRect) => {
+          asked.push(rect);
+          return null;
+        },
+      }),
+    ),
+    { width: 340, height: 440, ...(FONTS && { fonts: FONTS }) },
+  );
+  await act();
+  assert.deepStrictEqual(
+    [...new Set(asked.map((r) => `${r.kind} ${r.element.attribs.id}`))],
+    ['object doc', 'embed none'],
+  );
 });

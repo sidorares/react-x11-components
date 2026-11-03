@@ -22,6 +22,7 @@ import { Element as DomElement, isTag } from 'domhandler';
 import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
+import { isFirstLegend, isFormAssociated } from '../form.js';
 import {
   NON_RENDERED,
   ShadowRoot,
@@ -584,15 +585,20 @@ interface IndexedRule {
  * these, so an element such a rule could reach does not share its style
  * (`Cascade.sharedStyleFor`). css-select spells some of them under other
  * names, and those count too: `:checked` and `:selected` read which option
- * comes first, `:disabled` and `:enabled` which legend does, and `:parent`
- * and `:contains()` the element's contents; `:has-slotted` reads what the
+ * comes first, and `:parent` and `:contains()` the element's contents; `:has-slotted` reads what the
  * host it is in has; and a control's state is in no attribute, so two forms
  * alike but for what was typed in them take different rules. Over-broad on
  * purpose: a `+` or `~` inside an attribute value, or the `~=` operator,
  * costs sharing and nothing else.
+ *
+ * `:disabled` and `:enabled` are not here, though they read which legend of
+ * a fieldset comes first: the sharing key says which is (`_styleToShare`).
+ * The UA sheet reads both, and every `<input>` and `<textarea>` would be
+ * matched for itself: some 2.5 ms more of a whole restyle of a page of 600
+ * controls.
  */
 const UNSHAREABLE =
-  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|disabled|enabled|parent|defined|modal|(?:user-)?(?:in)?valid|in-range|out-of-range|placeholder-shown|indeterminate|default|read-only|read-write)\b|:(?:state|dir)\(|:i?contains\(/i;
+  /[+~]|:(?:first|last|only)-(?:child|of-type)|:nth-|:empty|:blank|:has\(|:has-slotted|:focus-within|:target|:scope|:(?:checked|selected|parent|defined|modal|(?:user-)?(?:in)?valid|in-range|out-of-range|placeholder-shown|indeterminate|default|read-only|read-write)\b|:(?:state|dir)\(|:i?contains\(/i;
 
 /**
  * Rules bucketed by the key of their rightmost compound selector. An element
@@ -776,8 +782,14 @@ type PseudoElement =
   | 'scrollbar'
   | 'slider-thumb'
   | 'slider-track'
+  | 'file-selector-button'
   | 'backdrop'
   | 'details-content';
+
+/** The pseudo-elements a widget is told of, and not a box of the document's
+ *  (`Cascade.partStyle`). */
+export type WidgetPart =
+  'placeholder' | 'slider-thumb' | 'slider-track' | 'file-selector-button';
 
 /** A widget's part's style (`Cascade._widgetPart`), and what it was worked
  *  out from. */
@@ -789,19 +801,21 @@ interface KeptPart {
 
 /** A selector's trailing `::before`, `::after`, `::first-letter`,
  *  `::first-line`, `::marker`, `::selection`, `::placeholder`,
- *  `::backdrop`, `::target-text` or a `::highlight()`, or CSS 2's
- *  single-colon spelling of any of its first four. `::-webkit-input-
- *  placeholder` is `::placeholder` under the name WebKit gave it, which
- *  Chrome and Safari still take, and pages written before the standard
- *  name still use. `::-webkit-slider-thumb` and
+ *  `::backdrop`, `::file-selector-button`, `::target-text` or a
+ *  `::highlight()`, or CSS 2's single-colon spelling of any of its first
+ *  four. `::-webkit-input-placeholder` is `::placeholder` under the name
+ *  WebKit gave it, which Chrome and Safari still take, and pages written
+ *  before the standard name still use, as `::-webkit-file-upload-button` is
+ *  `::file-selector-button`. `::-webkit-slider-thumb` and
  *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
  *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
 
 /** The pseudo-elements WebKit named, under what their rules are kept by. */
 const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
   '-webkit-input-placeholder': 'placeholder',
+  '-webkit-file-upload-button': 'file-selector-button',
   '-webkit-scrollbar': 'scrollbar',
   '-webkit-slider-thumb': 'slider-thumb',
   '-webkit-slider-runnable-track': 'slider-track',
@@ -3036,6 +3050,8 @@ const PSEUDO_READS: Record<string, readonly string[]> = {
   invalid: VALIDITY_READS,
   'user-valid': VALIDITY_READS,
   'user-invalid': VALIDITY_READS,
+  // a fieldset's `disabled` too, which reads inside it (`PSEUDO_INHERITED`),
+  // and its first legend, told as a change of it (`legendMovedIn`)
   disabled: ['a:disabled', 'a:type'],
   enabled: ['a:disabled', 'a:type'],
   required: ['a:required'],
@@ -4158,6 +4174,7 @@ export class Cascade {
     scrollbar: new RuleIndex(true),
     'slider-thumb': new RuleIndex(true),
     'slider-track': new RuleIndex(true),
+    'file-selector-button': new RuleIndex(true),
     backdrop: new RuleIndex(true),
     'details-content': new RuleIndex(true),
   };
@@ -7435,6 +7452,14 @@ export class Cascade {
     key += `\u0001${called.length}:${called}`;
     // an XML document's `<html:p>` and `<svg:p>` have one tag
     if (el.namespace) key += `\u0001n${el.namespace}`;
+    // what `:disabled` and `:enabled` read that no attribute says: whether
+    // a legend is its fieldset's first, which a disabled one leaves live, and
+    // whether a custom element takes part in forms (`UNSHAREABLE`)
+    if (tag === 'legend') {
+      if (isFirstLegend(el)) key += '\u0001first';
+    } else if (tag.includes('-') && isFormAssociated(el)) {
+      key += '\u0001form';
+    }
     if (this._index.hoverSensitive) {
       if (this._pointer.hovered.has(el)) key += '\u0001:hover';
       if (this._pointer.active.has(el)) key += '\u0001:active';
@@ -8111,7 +8136,8 @@ export class Cascade {
     return (
       this._pseudo.placeholder[state] ||
       this._pseudo['slider-thumb'][state] ||
-      this._pseudo['slider-track'][state]
+      this._pseudo['slider-track'][state] ||
+      this._pseudo['file-selector-button'][state]
     );
   }
 
@@ -8132,15 +8158,16 @@ export class Cascade {
 
   /**
    * A range's `::-webkit-slider-thumb` or `::-webkit-slider-runnable-track`
-   * style, as `placeholderStyle` is a field's hint's, or null where no rule
-   * reaches it. Its parent here is the range, where Blink has the track and
-   * a box between them: neither takes anything a page sets on them that the
-   * range would not have handed on.
+   * style, or a file input's `::file-selector-button`, as `placeholderStyle`
+   * is a field's hint's, or null where no rule reaches it. Its parent here
+   * is the control, where Blink has the track and a box between them:
+   * neither takes anything a page sets on them that the range would not
+   * have handed on.
    */
-  sliderStyle(
+  partStyle(
     el: Element,
     style: ComputedStyle,
-    part: 'slider-thumb' | 'slider-track',
+    part: Exclude<WidgetPart, 'placeholder'>,
   ): ComputedStyle | null {
     return this._widgetPart(el, style, part);
   }
@@ -8148,7 +8175,7 @@ export class Cascade {
   private _widgetPart(
     el: Element,
     style: ComputedStyle,
-    which: 'placeholder' | 'slider-thumb' | 'slider-track',
+    which: WidgetPart,
   ): ComputedStyle | null {
     const index = this._pseudo[which];
     const indexed = index.size > 0 && index.reaches(el);
@@ -8207,6 +8234,7 @@ export class Cascade {
     placeholder: new WeakMap<Element, KeptPart>(),
     'slider-thumb': new WeakMap<Element, KeptPart>(),
     'slider-track': new WeakMap<Element, KeptPart>(),
+    'file-selector-button': new WeakMap<Element, KeptPart>(),
   };
 
   /**

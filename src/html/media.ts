@@ -380,9 +380,10 @@ export function mediaRectsOf(
 
 /**
  * Where what a host mounts over an embedded element goes (`renderEmbedded`):
- * an `<iframe>`, a `<canvas>` or an `<embed>`, each a box of its size that
- * the document draws nothing in. Held to what a player is (`placementOf`),
- * since it is a sibling over the document the same way.
+ * an `<iframe>`, a `<canvas>`, or an `<embed>` or an `<object>` showing no
+ * image, each a box of its size that the document draws nothing in. Held to
+ * what a player is (`placementOf`), since it is a sibling over the document
+ * the same way.
  */
 export interface EmbeddedRect {
   element: Element;
@@ -430,7 +431,7 @@ export interface EmbeddedRect {
   zoom?: number;
 }
 
-export type EmbeddedKind = 'iframe' | 'canvas' | 'embed';
+export type EmbeddedKind = 'iframe' | 'canvas' | 'embed' | 'object';
 
 /** The embedded elements a laid-out document mounts what a host gives
  *  over, as `mediaRectsOf` mounts players. */

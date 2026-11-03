@@ -10627,6 +10627,14 @@ export function installDom(
   /** The frames whose realms are another origin's (`__linkFrame`): what is
    *  reached of their windows is what crosses origins, and no more. */
   const crossLinked = new Set<number>();
+  /** The document a frame element holds, for this realm to read: null for
+   *  another origin's, and a realm's own document where it has a realm, so
+   *  it is the one `contentWindow.document` answers. */
+  const heldDocumentOf = (frame: Any): Any => {
+    if (crossLinked.has(frame._id)) return null;
+    const linked = linkedFrames.get(frame._id);
+    return linked ? linked.document : frameDocumentOf(frame);
+  };
   const frameProxyOf = (frame: Any): Any => {
     let proxy = frameProxies.get(frame);
     if (proxy) return proxy;
@@ -10842,11 +10850,7 @@ export function installDom(
   };
   class HTMLIFrameElement extends HTMLElement {
     get contentDocument(): Any {
-      if (!this.isConnected) return null;
-      // another origin's document is none of this one's to read
-      if (crossLinked.has(this._id)) return null;
-      const linked = linkedFrames.get(this._id);
-      return linked ? linked.document : frameDocumentOf(this);
+      return this.isConnected ? heldDocumentOf(this) : null;
     }
     get contentWindow(): Any {
       return this.isConnected ? frameProxyOf(this) : null;
@@ -14232,6 +14236,17 @@ export function installDom(
   class HTMLTableColElement extends HTMLElement {}
   class HTMLLegendElement extends HTMLElement {}
   class HTMLOptGroupElement extends HTMLElement {}
+  // its `disabled` disables the options it holds, which `:disabled` reads
+  Object.defineProperty(
+    HTMLOptGroupElement.prototype,
+    'disabled',
+    flag('disabled'),
+  );
+  Object.defineProperty(
+    HTMLOptGroupElement.prototype,
+    'label',
+    reflect('label'),
+  );
   class HTMLDataListElement extends HTMLElement {}
   class HTMLProgressElement extends HTMLElement {
     get value(): number {
@@ -14257,7 +14272,7 @@ export function installDom(
   class HTMLObjectElement extends HTMLElement {
     get contentDocument(): Any {
       return this.hasAttribute('data') && this.isConnected
-        ? frameDocumentOf(this)
+        ? heldDocumentOf(this)
         : null;
     }
     getSVGDocument(): Any {
@@ -14277,7 +14292,19 @@ export function installDom(
   for (const name of ['type', 'name', 'width', 'height']) {
     Object.defineProperty(HTMLObjectElement.prototype, name, reflect(name));
   }
-  class HTMLEmbedElement extends HTMLElement {}
+  class HTMLEmbedElement extends HTMLElement {
+    /** The only way in to what an `<embed>` holds, which has no
+     *  `contentDocument`: a drawing, and nothing else (HTML 2.1.10). */
+    getSVGDocument(): Any {
+      if (!this.hasAttribute('src') || !this.isConnected) return null;
+      const held = heldDocumentOf(this);
+      return held?.contentType === 'image/svg+xml' ? held : null;
+    }
+  }
+  Object.defineProperty(HTMLEmbedElement.prototype, 'src', urlProperty('src'));
+  for (const name of ['type', 'name', 'width', 'height']) {
+    Object.defineProperty(HTMLEmbedElement.prototype, name, reflect(name));
+  }
   class HTMLSlotElement extends HTMLElement {
     /** What the slot is assigned (DOM 4.2.2.3), or with `flatten`, its
      *  fallback where it is assigned nothing and the slots in what it has,

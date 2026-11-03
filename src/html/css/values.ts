@@ -471,6 +471,15 @@ export function fourSides<T>(parts: T[]): [T, T, T, T] {
 
 /** A colour as it is about to be used: `currentColor` resolved against the
  *  element's own ink, everything else passed through. */
+/**
+ * The keyword a computed `cursor` ends on, which is what is shown: none of
+ * the images a list names is loaded here, so it falls back as it does on
+ * images that failed. `auto` where it says nothing.
+ */
+export function cursorKeyword(list: string | null): string {
+  return list ? list.slice(list.lastIndexOf(',') + 1).trim() : 'auto';
+}
+
 export function inkColor(color: string, current: string): string {
   if (color === 'currentColor') return current;
   // a `color-mix()` or a relative colour with `currentColor` in it waits

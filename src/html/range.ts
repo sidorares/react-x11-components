@@ -55,6 +55,8 @@ export interface RangeProps {
   forms: FormState;
   disabled: boolean;
   tabIndex?: -1;
+  /** What the pointer shows over it (`ControlRect.cursor`). */
+  cursor?: string;
   /** The content box the widget fills. */
   size: { width: number; height: number };
   /** How far the element's border box reaches past that, each way: the
@@ -206,7 +208,7 @@ export function RangeWidget(props: RangeProps): ReactElement {
         style: [
           box,
           { width: '100%', height: '100%', alignItems: 'center' },
-          !disabled && { cursor: 'pointer' },
+          { cursor: props.cursor },
         ],
       } as never,
       hx(
@@ -277,6 +279,7 @@ export function RangeWidget(props: RangeProps): ReactElement {
         width: '100%',
         height: '100%',
         direction: flipped ? 'rtl' : 'ltr',
+        cursor: props.cursor,
       },
     ],
     // what an assistive technology sets, the one way left that is core's
