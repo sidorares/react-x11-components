@@ -4195,7 +4195,7 @@ export class DomHost {
         >;
         // the facade asks first, for the error a page should see, and what
         // it hands over is a page's to change
-        if (!this._workerAllowed(String(init.url))) {
+        if (!this._workerAllowed(String(init.url), typeof b === 'string')) {
           throw new DomError(
             'SecurityError',
             "A worker's script is its own origin's.",
@@ -8523,10 +8523,24 @@ export class DomHost {
     return originOf(url) === this._origin();
   }
 
-  /** Whether a worker may run from an address: of this document's origin,
-   *  which a blob this realm made is, and `blob:null` where that is opaque. */
-  private _workerAllowed(url: string): boolean {
-    return originOf(url) === this._origin();
+  /**
+   * Whether a worker may run from an address: of this document's origin,
+   * which a blob this realm made is. An opaque origin is no address's, and
+   * `null` is every such origin's serialization, so where this document's is
+   * one a worker runs only from what it made itself — a blob of no origin,
+   * whose text the realm hands over (`given`), or a `data:` URL — and, for a
+   * `file:` page, from a `file:` address as before: never from one a sandbox
+   * names, whose `null` a `file:` address's matched.
+   */
+  private _workerAllowed(url: string, given: boolean): boolean {
+    const origin = this._origin();
+    if (origin !== 'null') return originOf(url) === origin;
+    // a blob it made is `blob:null`, whatever a page's own `String` wrote
+    if (/^blob:/i.test(url)) return given && originOf(url) === 'null';
+    if (/^data:/i.test(url)) return true;
+    return (
+      !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url)
+    );
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it

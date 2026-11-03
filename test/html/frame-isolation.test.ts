@@ -863,6 +863,39 @@ test('a worker a sandbox starts is of no origin either, from a blob or its own a
   assert.equal(asked.credentials, 'omit');
 });
 
+test("a sandbox that talks its facade round still starts no worker from an address of no origin's", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
+    {
+      [FRAME]: script(`
+        // the facade compares origins through \`URL\`, which is the page's
+        const Real = URL;
+        window.URL = class extends Real {
+          get origin() { return location.origin; }
+        };
+        for (const to of ['file:///etc/hosts', 'https://elsewhere.test/w.js']) {
+          try {
+            new Worker(to);
+            console.log('started', to);
+          } catch (e) {
+            console.log('refused', to, e.name);
+          }
+        }
+        window.URL = Real;
+        const url = URL.createObjectURL(new Blob(['postMessage(self.origin)']));
+        new Worker(url).onmessage = (e) => console.log('blob said', e.data);
+      `),
+    },
+  );
+  assert.equal(await until(s, 'blob said', 8000), 'null');
+  assert.ok(
+    s.logs.some((l) => l.endsWith('refused file:///etc/hosts SecurityError')),
+    s.logs.join('\n'),
+  );
+  assert.ok(!s.logs.some((l) => l.includes('started')), s.logs.join('\n'));
+  assert.ok(!s.asked.some((r) => /^file:|elsewhere/.test(r.url)));
+});
+
 test('document.domain and the storage getters answer for an origin of none', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
