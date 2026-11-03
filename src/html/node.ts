@@ -473,6 +473,7 @@ import { ResourceStore } from './resources.js';
 import type { AnimatedImage } from './animated.js';
 import type {
   AudioSource,
+  ImageResponse,
   PlayerKind,
   ResourceRequest,
   ResourceResult,
@@ -518,7 +519,7 @@ import type { IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
-import { resolveUrl, UrlResolver } from './url.js';
+import { corsOfKey, resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -2495,7 +2496,7 @@ export class HtmlViewNode extends Node {
     }
     // what the store has is there as it is asked for, and no src is no image
     if (!chooses) {
-      const url = attr(el, 'src');
+      const url = imageUrlOf(el);
       const state = url ? this._resources.state(url) : 'failed';
       if (state === 'ready' || state === 'failed') {
         this._watchImage(el, true);
@@ -2528,7 +2529,7 @@ export class HtmlViewNode extends Node {
           ),
         );
       } else {
-        const url = attr(el, 'src');
+        const url = imageUrlOf(el);
         if (url && !this._waitsLazily(el, url)) {
           this._resources.request(
             { url, kind: 'image', element: el },
@@ -2619,7 +2620,7 @@ export class HtmlViewNode extends Node {
       if (!loadsLazily(el)) return;
       const url = choosesSource(el)
         ? this._images.chosen(el)?.url
-        : attr(el, 'src');
+        : imageUrlOf(el);
       if (!url || this._resources.state(url) !== null) return;
       const box = boxes.get(el);
       const away = box
@@ -2713,7 +2714,7 @@ export class HtmlViewNode extends Node {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
     if (chosen === undefined) return;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const key = url ? this._resources.keyOf(url) : '';
     const was = this._imageKeys.get(el);
     if (was === key && !again) return;
@@ -2797,7 +2798,8 @@ export class HtmlViewNode extends Node {
    * something (`complete`), its size in CSS pixels at the density it was
    * chosen at, 0 until that is known and for one that failed, and the URL
    * it has shown (`_imageShown`). A broken image is complete, and shows
-   * nothing (`available`).
+   * nothing (`available`). And where what it shows came from, which a canvas
+   * it is drawn on is tainted by (`ResourceStore.response`).
    */
   imageState(el: Element): {
     complete: boolean;
@@ -2805,10 +2807,11 @@ export class HtmlViewNode extends Node {
     width: number;
     height: number;
     src: string;
+    response: ImageResponse | null;
   } {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const state = url ? this._resources.state(url) : null;
     const size = this._imageSize(el);
     return {
@@ -2819,7 +2822,9 @@ export class HtmlViewNode extends Node {
       available: !!url && state === 'ready' && !!this._resources.image(url),
       width: Math.floor(size?.width ?? 0),
       height: Math.floor(size?.height ?? 0),
-      src: this._imageShown.get(el) ?? '',
+      // where it is kept, less the CORS mode it was asked in (`corsKeyed`)
+      src: corsOfKey(this._imageShown.get(el) ?? '').url,
+      response: url ? this._resources.response(url) : null,
     };
   }
 

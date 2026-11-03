@@ -31,7 +31,15 @@
 // image is. A lazy image chooses as any does, and what it chose waits to be
 // near the viewport to be asked for (`HtmlViewNode._waitsLazily`).
 import type { AnyNode, Element } from 'domhandler';
-import { attr, childrenOf, isElement, loadsLazily, tagOf } from './dom.js';
+import {
+  attr,
+  childrenOf,
+  imageCors,
+  isElement,
+  loadsLazily,
+  tagOf,
+} from './dom.js';
+import { corsKeyed } from './url.js';
 import { mediaMatches, parseMediaQuery, splitSelectors } from './css/parse.js';
 import type { MediaCondition } from './css/parse.js';
 import { parseLength } from './css/values.js';
@@ -673,6 +681,21 @@ export class ImageSources {
     img: Element,
     env: SourceEnv,
   ): { source: Element | null; set: Candidate[]; sizes: SizeEntry[] } {
+    const chosen = this._choiceOf(img, env);
+    // what an `<img>` asks for by CORS is kept by the mode it asks in
+    const mode = imageCors(img);
+    return mode
+      ? {
+          ...chosen,
+          set: chosen.set.map((c) => ({ ...c, url: corsKeyed(c.url, mode) })),
+        }
+      : chosen;
+  }
+
+  private _choiceOf(
+    img: Element,
+    env: SourceEnv,
+  ): { source: Element | null; set: Candidate[]; sizes: SizeEntry[] } {
     for (const child of sourcesOf(img)) {
       if (child === img) {
         const own = this._srcset(attr(img, 'srcset') ?? '');
@@ -774,7 +797,7 @@ function signatureOf(img: Element): string {
   let out = '';
   for (const el of sourcesOf(img)) {
     if (el === img) {
-      return `${out}\u0000${attr(img, 'srcset')}\u0001${attr(img, 'sizes')}\u0001${attr(img, 'src')}\u0001${attr(img, 'loading')}`;
+      return `${out}\u0000${attr(img, 'srcset')}\u0001${attr(img, 'sizes')}\u0001${attr(img, 'src')}\u0001${attr(img, 'loading')}\u0001${imageCors(img)}`;
     }
     if (!isElement(el) || tagOf(el) !== 'source') continue;
     out += `\u0000${attr(el, 'srcset')}\u0001${attr(el, 'sizes')}\u0001${attr(el, 'media')}\u0001${attr(el, 'type')}`;

@@ -729,6 +729,79 @@ test("the page's own image, and one asked for by CORS, leave a canvas its own", 
   }
 });
 
+test('an image taints a canvas by the response it came in, and one asked for by CORS is had only by the leave of its origin', async () => {
+  const logs: string[] = [];
+  const asked: string[] = [];
+  const bytes = Buffer.from(IMAGE, 'base64');
+  const ALLOW: [string, string][] = [
+    ['access-control-allow-origin', 'https://app.test'],
+  ];
+  /** Each address, with where its answer came from and the headers it had. */
+  const answers: Record<string, { url: string; headers: [string, string][] }> =
+    {
+      [`${OTHER}let.png`]: { url: `${OTHER}let.png`, headers: ALLOW },
+      [`${OTHER}shut.png`]: { url: `${OTHER}shut.png`, headers: [] },
+      [`${APP}moved.png`]: { url: `${OTHER}moved.png`, headers: [] },
+      [`${OTHER}both.png`]: {
+        url: `${OTHER}both.png`,
+        headers: [...ALLOW, ['access-control-allow-credentials', 'true']],
+      },
+    };
+  await renderX11(
+    h(Html, {
+      source: `<!doctype html><body><script>
+        ${READS}
+        const load = (name, src, cors) => {
+          const image = new Image();
+          if (cors) image.crossOrigin = cors;
+          image.onerror = () => console.log(name, 'failed');
+          image.onload = () => {
+            const x = document.createElement('canvas').getContext('2d');
+            x.drawImage(image, 0, 0);
+            read(name, () => x.getImageData(0, 0, 1, 1));
+          };
+          image.src = src;
+          return image;
+        };
+        console.log('reflected', load('let', '${OTHER}let.png', 'anonymous').getAttribute('crossorigin'));
+        load('shut', '${OTHER}shut.png', 'anonymous');
+        load('moved', '${APP}moved.png', '');
+        load('plain', '${OTHER}both.png', '');
+        load('cors', '${OTHER}both.png', 'use-credentials');
+      </script></body>`,
+      partial: false,
+      baseUrl: APP,
+      scripts: { log: (level, text) => void logs.push(`${level}: ${text}`) },
+      onResource: async (r: ResourceRequest) => {
+        asked.push(
+          `${r.url} ${r.cors ? `${r.cors.origin} ${r.cors.mode}` : '-'}`,
+        );
+        const answer = answers[r.url];
+        return answer ? { kind: 'image' as const, bytes, ...answer } : null;
+      },
+      style: { flexGrow: 1 },
+    }),
+    FONTS
+      ? { width: 320, height: 200, fonts: FONTS }
+      : { backend: 'mock' as const },
+  );
+  assert.equal(await seen(logs, 'reflected'), 'anonymous');
+  // another origin's, which said this one may have it
+  assert.equal(await seen(logs, 'let'), 'read');
+  // another origin's, which said nothing of it: no image at all
+  assert.equal(await seen(logs, 'shut'), 'failed');
+  // asked for of this origin, and answered from another
+  assert.equal(await seen(logs, 'moved'), 'SecurityError');
+  // one address, two requests: what an `Origin` is answered is no answer to
+  // a request without one
+  assert.equal(await seen(logs, 'plain'), 'SecurityError');
+  assert.equal(await seen(logs, 'cors'), 'read');
+  assert.deepEqual(asked.filter((a) => a.includes('both')).sort(), [
+    `${OTHER}both.png -`,
+    `${OTHER}both.png https://app.test use-credentials`,
+  ]);
+});
+
 /** A server of its own, which is an origin of its own. */
 async function server(
   handle: (req: IncomingMessage, res: ServerResponse) => void,

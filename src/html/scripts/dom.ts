@@ -8088,6 +8088,8 @@ export function installDom(
   for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
     Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
   }
+  // what decides whether a canvas it is drawn on stays the page's to read
+  Object.defineProperty(HTMLImageElement.prototype, 'crossOrigin', corsSetting);
   // limited to the keywords it has, which a page tests for support with
   Object.defineProperty(HTMLImageElement.prototype, 'loading', {
     get(this: Any) {

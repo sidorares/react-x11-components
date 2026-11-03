@@ -152,7 +152,13 @@ file's header says, as a browser lays out an image whose bytes are in:
 what follows it is where it will be, and the picture is drawn when it has
 been decoded. Bytes nothing decodes are drawn as a declined image is.
 Return `{ kind: 'image', image, width, height }` instead to hand over an
-image the host decoded itself, and `{ kind: 'document' }` where what an
+image the host decoded itself. Either may say where the image came from
+(`ImageOrigin`): `url`, where a redirect took it, `headers`, its response's,
+and `type`, where something made the response — a service worker's answer —
+`'basic'`, `'cors'` or `'opaque'`. That is what a canvas the image is drawn
+on is tainted by (see "A canvas keeps `origin-clean`"), and an `<img>` with a
+`crossorigin` attribute is asked for with `cors` and held to its `headers`.
+`HtmlNetwork` says all of it. Return `{ kind: 'document' }` where what an
 `<object>`'s `data` holds is a page or some other document rather than an
 image: the object shows it as a frame does, a box `renderEmbedded` mounts
 over, and not its fallback content. A declined or absent resource is an
@@ -900,10 +906,12 @@ of its own:
   answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
 charset }` — the `<script>` is the request's `element`, and the root
   element is a module's. A host that knows says where it came from: `url`,
-  where a redirect took it, and `headers`, its response's. A module's request
-  and a `crossorigin` script's carry `cors`, the document's origin and whether
-  it sends credentials, and `HtmlNetwork` answers those with an `Origin` of
-  their own, kept apart in its cache;
+  where a redirect took it, and `headers`, its response's. A module's request,
+  a `crossorigin` script's and a `crossorigin` image's carry `cors`, the
+  document's origin and whether it sends credentials, and `HtmlNetwork`
+  answers those with an `Origin` of their own, kept apart in its cache, as
+  `<Html>` keeps an `<img crossorigin>`'s image apart from an `<img>`'s of the
+  same address;
 - a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
   document, a worker's script — go through `scripts.fetch`, a request of any
   method and the response whatever its status, after the engine has held the
@@ -2583,12 +2591,22 @@ page asks from, since the facade runs where a page can replace what it calls.
 - **A canvas keeps `origin-clean`.** `drawImage`, a pattern and a bitmap of
   another origin's image taint what they reach, and `getImageData`, `toDataURL`,
   `toBlob` and `convertToBlob` are a `SecurityError` until the canvas is sized
-  again. An `<img>` is drawn as nothing on a canvas in any case, so none of its
-  pixels reach a page: this is what a page is told, and an image with a
-  `crossorigin` attribute is taken at its word, with nothing fetched by CORS.
-- **Not held to any of this:** a stylesheet's, a font's and an image's own
-  `crossorigin` (a `<link>`'s sheet has no rules a script can read, of any
-  origin); a CORS script's redirects, which `HtmlNetwork` follows and only the
+  again. What taints is the response the image came in, as HTML has it
+  ("CORS-same-origin"), and not the address it was asked for: one a service
+  worker answered with another origin's response that no CORS let through
+  taints, out of Cache Storage as much as from the network, and one it
+  answered with a response of its own does not, whatever address the image
+  named; one a redirect took to another origin taints. An `<img>` with a
+  `crossorigin` attribute is asked for by CORS, and one whose answer does not
+  let the document have it is an `error`, and no image; where the host says
+  nothing of the headers it had, it is drawn, and taints. An `<img>` is drawn
+  as nothing on a canvas in any case, so none of its pixels reach a page: this
+  is what a page is told.
+- **Not held to any of this:** a stylesheet's and a font's own `crossorigin`
+  (a `<link>`'s sheet has no rules a script can read, of any origin); a
+  `<video>`'s, whose `crossorigin` is taken at its word; the origin a
+  sandboxed document asks for an image by CORS in, which is its address's and
+  not `null`; a CORS script's redirects, which `HtmlNetwork` follows and only the
   last of which is checked; what timing says, and a promise a script of another
   origin leaves rejected.
 

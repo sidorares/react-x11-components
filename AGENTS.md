@@ -4631,6 +4631,20 @@ closes a way out a DOM binding opens by accident:
   of these. A page's request is made a hop at a time in `_fetchFor`, so **anything
   new a request owes at a redirect goes in that loop**, and a preflight in
   `_preflight`, whose cache is by the origin asked in.
+- **An image taints a canvas by the response it came in, never by its
+  address** (`responseOf` in `resources.ts`, `_imageClean`). The store keeps
+  what each image's response was as it lands: the type a service worker's
+  answer had, which is believed wherever it says it is from, and for a CORS
+  request whether its headers let the document have it, where one that does
+  not is a load that failed. The address alone taints only where nothing said
+  more. Two things are load-bearing. **An `<img crossorigin>`'s image is kept
+  by its CORS mode as well as its URL** (`corsKeyed`), since another origin's
+  answer to a request with an `Origin` is no answer to one without: anything
+  new that asks the store for an `<img>`'s image asks by `imageUrlOf` or a
+  source `ImageSources` chose, which carry the mode, and never by its `src`,
+  or it reads another request's answer. And **a key with a mode in it never
+  reaches a host or a page**: the store asks for the URL with `cors`, and
+  `imageState` answers `currentSrc` without it.
 - **A sandbox is flags on the host, by the document** (`sandbox.ts`,
   `DomShared.sandboxes`), and `_origin()` answers from them first, so whatever
   goes by a document's origin holds. Six things are load-bearing. **`'null'` is
