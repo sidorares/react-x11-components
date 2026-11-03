@@ -8835,7 +8835,7 @@ test('location.reload() and history.go(0) fire navigate as a reload, with the cu
   );
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
-    'reload|state|| -1|go reload'.replace('|| -1', '||-1').replace('||-', '||-'),
+    'reload|state||-1|go reload',
   );
 });
 
