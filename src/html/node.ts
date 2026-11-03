@@ -309,6 +309,7 @@ import {
   scrollStateOf,
   setScrollOffsets,
   STUCK,
+  wantedScroll,
   wheelScrolls,
 } from './layout/scroll.js';
 import type {
@@ -2087,15 +2088,22 @@ export class HtmlViewNode extends Node {
    * all of joshwcomeau.com's article in view. Where something else is
    * owed already, or the document comes out another size, the element is
    * measured and repainted whole, as before.
+   *
+   * Where every box that took lengths is out of the flow, or in one that
+   * is, the layout moves nothing outside those (`apartRoots`), and only
+   * what they hold is compared: YouTube writes a length on a bar of its
+   * player at every frame it plays, and each compared all 10,000 boxes of
+   * the page twice.
    */
   private _layoutOwed(resized: readonly Box[]): void {
     const width = this._laidOutWidth;
-    if (this._stale !== Stale.Nothing || !this._tree || width < 0) {
+    const tree = this._tree;
+    if (this._stale !== Stale.Nothing || !tree || width < 0) {
       this._invalidate(Stale.Layout);
       return;
     }
     this._stale = Stale.Layout;
-    const shapes = this._laidShapes();
+    const shapes = this._laidShapes(apartRoots(resized, tree) ?? [tree.root]);
     this._prepare(width);
     if (!this._claimLaidOut(shapes, new Set(resized))) {
       this.invalidateMeasure('content');
@@ -2103,14 +2111,14 @@ export class HtmlViewNode extends Node {
     }
   }
 
-  /** Each box as the last layout left it, for an owed layout's damage to be
-   *  found by (`_claimLaidOut`); null where that layout is not the one
-   *  owed — a build is, or a box is set aside. */
-  private _laidShapes(): LaidShapes | null {
+  /** Each box in `roots` as the last layout left it, for an owed layout's
+   *  damage to be found by (`_claimLaidOut`); null where that layout is not
+   *  the one owed — a build is, or a box is set aside. */
+  private _laidShapes(roots: readonly Box[]): LaidShapes | null {
     const tree = this._tree;
     if (!tree || this._stale !== Stale.Layout || asideIn(tree)) return null;
     const boxes = new Map<Box, LaidShape>();
-    const stack: Box[] = [tree.root];
+    const stack: Box[] = [...roots];
     while (stack.length) {
       const box = stack.pop()!;
       boxes.set(box, {
@@ -2129,6 +2137,7 @@ export class HtmlViewNode extends Node {
       tree,
       width: this._laidOutWidth,
       size: [this._documentWidth, this._documentHeight],
+      roots,
       boxes,
     };
   }
@@ -2140,9 +2149,8 @@ export class HtmlViewNode extends Node {
    * whose own lengths may draw it otherwise where it is — a background
    * from its content box, after a padding — and nothing for the rest.
    * False where that cannot be said, for the whole element to be: another
-   * tree, another width or height of the document, a box drawn through a
-   * matrix around what changed, which its bounds before do not place, or
-   * more changes than a few rects hold.
+   * tree, another width or height of the document, a box out of the plane
+   * around what changed, or more changes than a few rects hold.
    */
   private _claimLaidOut(
     shapes: LaidShapes | null,
@@ -2164,7 +2172,7 @@ export class HtmlViewNode extends Node {
     }
     const inks: Rect[] = [];
     const changed: Box[] = [];
-    const stack: Box[] = [tree.root];
+    const stack: Box[] = [...shapes.roots];
     while (stack.length) {
       const box = stack.pop()!;
       const was = shapes.boxes.get(box);
@@ -2174,13 +2182,21 @@ export class HtmlViewNode extends Node {
         for (const child of box.children) stack.push(child);
         continue;
       }
+      // Its bounds are in the coordinates of the box it is in, which the
+      // matrices around it draw elsewhere, before as after: nothing around
+      // it was laid out other than it was, or it would be the one claimed,
+      // and a matrix of the plane is its box's style and its rect. One out
+      // of the plane is seen in a perspective, which is not said so.
+      // Given up at any matrix, a `left` YouTube writes on a bar of its
+      // player, in a list it scales by `scaleY(.6)`, repainted the window.
       for (let at: Box | null = box; at; at = at.parent) {
-        if (drawnThrough(at.style)) return false;
+        if (drawnThrough(at.style) && outOfPlane(at.style)) return false;
       }
       changed.push(box);
       const shift = drawnAtViewport(box) ? this._fixedShift() : null;
-      for (const ink of [was.ink, boundsOf(box)]) {
-        if (!ink) continue;
+      for (const bounds of [was.ink, boundsOf(box)]) {
+        if (!bounds) continue;
+        const ink = throughTransforms(bounds, box.parent);
         inks.push(
           shift ? { ...ink, x: ink.x + shift.x, y: ink.y + shift.y } : ink,
         );
@@ -3848,7 +3864,8 @@ export class HtmlViewNode extends Node {
     if (!moved) return;
     // what moved, and the boxes around it as far as they have to grow
     // (`boundsAfterMove`); the whole tree where that cannot be said
-    if (!moved.every((box) => boundsAfterMove(box, tree.movedInline))) {
+    const done = new Set<Box>();
+    if (!moved.every((box) => boundsAfterMove(box, tree.movedInline, done))) {
       computePaintBounds(tree.root, tree.movedInline);
     }
     for (const box of moved) this._dropSprites(box, false);
@@ -9736,11 +9753,12 @@ export class HtmlViewNode extends Node {
     // layer changes place. A mail page's spinner turning at the foot of its
     // list walked all 13,000 elements of the page at every frame, and, on
     // its layer, at every turn of the wheel
+    const done = new Set<Box>();
     if (
       reaches ||
       reorders ||
       moved.length > MOST_MOVED_APART ||
-      !moved.every(([box]) => inkAfterMove(box, tree.movedInline))
+      !moved.every(([box]) => inkAfterMove(box, tree.movedInline, done))
     ) {
       computePaintBounds(tree.root, tree.movedInline);
       if (tree.negative) hoistNegative(tree.root);
@@ -11904,7 +11922,7 @@ export class HtmlViewNode extends Node {
    * Explicit rather than observed: see `HtmlHandle.refresh`.
    */
   touchDocument(changes: readonly HtmlChange[] | null = null): void {
-    this._source.touch(!!changes);
+    this._source.touch(!!changes, changes ?? undefined);
     const named = new Set<Element>();
     if (changes) {
       // before what a change was in forgets what it names
@@ -13137,7 +13155,8 @@ export class HtmlViewNode extends Node {
     }
     if (this._stale !== Stale.Nothing) return;
     for (const box of reaching) tree.shapeStyler?.(box);
-    if (!reaching.every((box) => inkAfterMove(box, tree.movedInline))) {
+    const done = new Set<Box>();
+    if (!reaching.every((box) => inkAfterMove(box, tree.movedInline, done))) {
       computePaintBounds(tree.root, tree.movedInline);
     }
     for (const box of reaching) {
@@ -19966,7 +19985,45 @@ interface LaidShapes {
   tree: BoxTree;
   width: number;
   size: [number, number];
+  /** The boxes whose subtrees hold all a layout can change
+   *  (`apartRoots`), or the tree's root. */
+  roots: readonly Box[];
   boxes: Map<Box, LaidShape>;
+}
+
+/**
+ * The boxes out of the flow that `resized` are, or are in, nearest first
+ * and none in another: a box positioned out of the flow is laid out
+ * against its containing block and moves nothing else (CSS 2.1, 9.6), so
+ * what lengths taken in place change in a layout is in these, as far as
+ * the document's size, which `_claimLaidOut` compares, says. Null where
+ * one is in the flow, or the tree has anchors, which may be placed against
+ * one of them wherever they are, or one is in a scroll container scrolled
+ * from its start, whose offset a layout keeps within what its content
+ * reaches, which such a box may change, and so moves all it holds.
+ */
+function apartRoots(resized: readonly Box[], tree: BoxTree): Box[] | null {
+  if (tree.anchors || !resized.length) return null;
+  const roots = new Set<Box>();
+  for (const box of resized) {
+    let at: Box | null = box;
+    while (at && !at.outOfFlow) at = at.parent;
+    if (!at) return null;
+    roots.add(at);
+    for (let up = at.parent; up; up = up.parent) {
+      if (!isScroller(up)) continue;
+      const scrolled = wantedScroll(tree, up);
+      if (scrolled.x || scrolled.y) return null;
+    }
+  }
+  const apart: Box[] = [];
+  outer: for (const root of roots) {
+    for (let at = root.parent; at; at = at.parent) {
+      if (roots.has(at)) continue outer;
+    }
+    apart.push(root);
+  }
+  return apart;
 }
 
 /** How many boxes an owed layout may have reshaped before the whole

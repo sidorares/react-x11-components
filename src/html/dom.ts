@@ -2021,12 +2021,20 @@ export class HtmlSource {
 
   /** The DOM changed under us — an app mutated it, or a stylesheet arrived
    *  and was spliced in. Anything cached on the old revision is stale.
-   *  `told` where a list of what changed goes with it. */
-  touch(told = false): void {
+   *  `told` where a list of what changed goes with it, and `changes` that
+   *  list, which keeps the scan where none of them is a change to what it
+   *  reads (`changesFacts`): a page that writes a `style` at every frame
+   *  scanned YouTube's 10,000 elements at every frame. */
+  touch(told = false, changes?: readonly HtmlChange[]): void {
     this._record = null;
     this._taken = null;
+    const kept =
+      changes && this._facts.scanned === this.revision && !changesFacts(changes)
+        ? this._facts
+        : null;
     this.revision += 1;
-    this._facts = freshFacts();
+    this._facts = kept ?? freshFacts();
+    if (kept) kept.scanned = this.revision;
     treesChanged();
     mutations += 1;
     if (!told) untold += 1;
@@ -2321,6 +2329,51 @@ function inDrawing(el: Element): boolean {
 /** The elements whose text the scan reads (`facts`): a chunk that writes
  *  on to one scans the tree whole. */
 const FACT_TEXT = new Set(['style', 'title']);
+
+/** The elements whose attributes the scan reads (`scanElements`), by the
+ *  name `tagOf` has for them: a change to another's says nothing to it. A
+ *  `<picture>`'s `<img>` is one by where it stands, which no attribute
+ *  changes. */
+const FACT_TAGS = new Set([
+  'style',
+  'link',
+  'script',
+  'img',
+  'image',
+  'object',
+  'embed',
+  'video',
+  'input',
+  'svg',
+  'title',
+  'base',
+]);
+
+/**
+ * Whether a change can change what `HtmlSource.facts` finds: one to the
+ * tree's shape, a shadow tree attached, the text of a sheet or a title,
+ * and an attribute of an element the scan reads one of. Anything new
+ * `scanElements` reads joins `FACT_TAGS`, or what reads it here, or a
+ * script's change to it leaves the document's sheets, scripts or images
+ * as they were.
+ */
+function changesFacts(changes: readonly HtmlChange[]): boolean {
+  for (const change of changes) {
+    if (change.type === 'attributes') {
+      if (FACT_TAGS.has(tagOf(change.target))) return true;
+      continue;
+    }
+    if (change.type === 'characterData') {
+      const parent = change.target.parent;
+      if (!parent || !isElement(parent) || FACT_TEXT.has(tagOf(parent))) {
+        return true;
+      }
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
 
 /** Nothing made (`HtmlSource.takeMade`). */
 const NO_NODES: readonly ChildNode[] = [];
