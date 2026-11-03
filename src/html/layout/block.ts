@@ -88,6 +88,7 @@ import {
   STUCK,
   anchoredWith,
   applyScrollOffsets,
+  applyScrollOffsetsIn,
   clearDefaultAnchors,
   defaultAnchorOf,
   displacementOf,
@@ -207,6 +208,7 @@ import {
 } from './writing.js';
 import type { PhysicalSide } from './writing.js';
 import {
+  boundsAfterMove,
   clipsFor,
   computePaintBounds,
   containingBlockOf,
@@ -1960,6 +1962,128 @@ export function layoutDocument(
     height: bottom,
     readsViewportHeight: ctx.under.read,
     partial: (aside?.size ?? 0) > 0,
+  };
+}
+
+/**
+ * A layout of the boxes out of the flow in `roots` alone, each against its
+ * containing block where the last layout left it, and of nothing else: a
+ * box positioned out of the flow moves nothing outside it (CSS 2.1, 9.6),
+ * so where a restyle in place took lengths only of such boxes, or of what
+ * is in them (`apartRoots` in `node.ts`), the document is as it was around
+ * them. `layoutDocument` keeps the blocks beside the path down to them and
+ * moves each, which grows with the page: YouTube writes a `left` and a
+ * `width` on the bars of its player at every frame it plays, and that was
+ * 1.7 ms a frame on a page of 8,753 elements and 2.7 ms on one of 24,593.
+ *
+ * The passes after the flow are done for what each holds — relative
+ * offsets and its own translation, scroll offsets — and its ink worked out
+ * and carried up (`boundsAfterMove`). The containing block is where those
+ * passes left it, so each box comes out where they would have moved it.
+ * `was` is what the last layout came to, which this one is the same as
+ * but where a box laid out here reached the document's foot.
+ *
+ * Null, with what was laid out to be laid out again by `layoutDocument`,
+ * wherever that cannot be said: anchors, which may be placed against any
+ * box; a vertical flow, a `::first-line`, a foreign object or columns,
+ * whose layouts read more than a box's containing block; boxes set aside;
+ * a containing block that is an inline box or a grid; a box between the
+ * containing block and the root that an offset moves; a sticky box in a
+ * root; and a root that reached the document's foot, which may be shorter
+ * now.
+ */
+export function layoutApart(
+  tree: BoxTree,
+  roots: readonly Box[],
+  fonts: FontsLike | null,
+  viewportWidth: number,
+  viewportHeight: number,
+  scale: number,
+  was: LayoutResult,
+): LayoutResult | null {
+  if (
+    tree.anchors ||
+    tree.vertical ||
+    tree.firstLine ||
+    tree.foreign ||
+    columned.any ||
+    asideIn(tree) ||
+    was.partial
+  ) {
+    return null;
+  }
+  const containing = new Map<Box, Box>();
+  /** How far down each box out of the flow in a root reached, before. */
+  const before = new Map<Box, number>();
+  for (const root of roots) {
+    if (!root.outOfFlow || !root.parent) return null;
+    const cb = containingBlockFor(root) ?? tree.root;
+    if (cb.kind === 'inline' || GRID_TRACKS.has(cb)) return null;
+    for (let at: Box | null = root.parent; at && at !== cb; at = at.parent) {
+      if (at.style.position !== 'static' || transformed(at.style)) return null;
+    }
+    containing.set(root, cb);
+    const stack: Box[] = [root];
+    while (stack.length) {
+      const box = stack.pop()!;
+      if (box.style.position === 'sticky') return null;
+      if (box.outOfFlow) {
+        before.set(box, OUT_OF_FLOW_REACH.get(box) ?? NaN);
+      }
+      for (const child of box.children) stack.push(child);
+    }
+  }
+  const marks = layerMarks.moved;
+  framed.any = false;
+  const ctx: LayoutContext = {
+    fonts,
+    engine: fonts?.engine ?? fonts,
+    scale,
+    viewportWidth,
+    viewportHeight,
+    under: { height: viewportHeight, read: true },
+    positioned: [],
+    layoutSubtree: (box, width, within) =>
+      layoutSubtree(box, ctx, width, within),
+    firstLine: false,
+    firstLineStyler: tree.firstLineStyler,
+    nestedOutOfLine: tree.nestedOutOfLine,
+    clipText: tree.clipText,
+    anchorRoot: null,
+  };
+  for (const root of roots) {
+    ctx.positioned.push({ box: root, containing: containing.get(root)! });
+  }
+  for (let i = 0; i < ctx.positioned.length; i += 1) {
+    const { box, containing: cb } = ctx.positioned[i];
+    layoutPositioned(box, cb, ctx);
+  }
+  const done = new Set<Box>();
+  for (const root of roots) {
+    applyRelativeOffsets(root, viewportWidth, viewportHeight, fonts);
+    applyScrollOffsetsIn(tree, root, translate);
+    if (!boundsAfterMove(root, tree.movedInline, done)) return null;
+  }
+  stackAfterLayout(tree, layerMarks.moved !== marks, false);
+  // the document's foot, which only a box that reaches past what else
+  // does can move, as `layoutDocument` reads it
+  let height = was.height;
+  for (const { box } of ctx.positioned) {
+    if (box.style.position === 'fixed' || clipsFor(box, tree.root).length) {
+      continue;
+    }
+    const old = before.get(box) ?? NaN;
+    const now = OUT_OF_FLOW_REACH.get(box) ?? box.y + box.height;
+    if (old === now) continue;
+    if (!(old < was.height)) return null;
+    height = Math.max(height, now);
+  }
+  const read = ctx.readViewportHeight === true || was.readsViewportHeight;
+  return {
+    width: viewportWidth,
+    height,
+    readsViewportHeight: read,
+    partial: false,
   };
 }
 

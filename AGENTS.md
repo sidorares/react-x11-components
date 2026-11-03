@@ -3321,17 +3321,22 @@ which starved its `<video>` of frames. Five things keep it to the bars, and
   (`reuseLaid`, `readsPercentBase`, as `keptNatural` has it): a stretched
   flex item is laid out before its height is definite and after, and the
   base it hands its blocks differs between the two.
-- **An owed layout of lengths taken by boxes out of the flow compares what
-  they hold** (`apartRoots`), since such a box moves nothing else (CSS 2.1,
-  9.6) — but not where the tree has anchors, or a container around one is
-  scrolled from its start, whose offset a layout keeps within what it holds
-  and so moves all of it.
-
-What is left of a frame with a length in it is the document's layout, which
-keeps every block beside the bars' path and moves it: some 15 boxes laid out
-and 200 walked whatever the page's size, and a step a kept sibling. A box
-out of the flow laid out alone, with the passes after the flow done for what
-it holds, would take that to the bars.
+- **An owed layout of lengths taken by boxes out of the flow lays out those
+  boxes alone** (`apartRoots`, `layoutApart`), since such a box moves
+  nothing else (CSS 2.1, 9.6): each against its containing block where the
+  passes after the last layout left it, with those passes done for what it
+  holds — its translation, the relative offsets and scroll offsets in it —
+  its ink carried up (`boundsAfterMove`), and only what it holds compared.
+  The document's layout kept every block beside the bars' path and moved
+  it, 1.7 ms a frame at 8,753 elements and 2.7 at 24,593; alone it is the
+  bar, 0.15 ms either way. Not where the tree has anchors, or a container
+  around one is scrolled from its start, whose offset a layout keeps within
+  what it holds and so moves all of it; and `layoutApart` answers null, for
+  the document's layout, wherever a box's layout reads more than its
+  containing block or an offset moves something between the two. **Anything
+  new a layout does after the flow is done in `layoutApart` too, for what a
+  root holds**, or a length a page writes on a box out of the flow leaves it
+  undone.
 
 **The order of the layers is worked out once for a tree, and a build brings
 it up to date** (`LAYERS_HELD`, `stackAfterLayout`, `carryLayers`).

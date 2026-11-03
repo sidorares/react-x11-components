@@ -262,6 +262,7 @@ import {
   heldShift,
   laidWhole,
   layoutAsks,
+  layoutApart,
   layoutDocument,
   noteMoving,
   placedMatrix,
@@ -1266,6 +1267,9 @@ export class HtmlViewNode extends Node {
   /** The viewport height the document was last laid out under, and whether
    *  that layout read it (`LayoutResult.readsViewportHeight`). */
   private _laidOutUnder = -1;
+  /** The boxes out of the flow an owed layout lays out alone, for the
+   *  tree it was owed in (`_layoutOwed`, `layoutApart`). */
+  private _apartOwed: { tree: BoxTree; roots: readonly Box[] } | null = null;
   private _layoutReadsViewport = false;
   /** Whether core is asking for this element's size right now — inside
    *  its layout pass, where a node must not ask to be measured again. */
@@ -2090,10 +2094,11 @@ export class HtmlViewNode extends Node {
    * measured and repainted whole, as before.
    *
    * Where every box that took lengths is out of the flow, or in one that
-   * is, the layout moves nothing outside those (`apartRoots`), and only
-   * what they hold is compared: YouTube writes a length on a bar of its
-   * player at every frame it plays, and each compared all 10,000 boxes of
-   * the page twice.
+   * is, the layout moves nothing outside those (`apartRoots`): they are
+   * laid out alone (`layoutApart`), and only what they hold is compared.
+   * YouTube writes a length on a bar of its player at every frame it
+   * plays, and each compared all 10,000 boxes of the page twice, and then
+   * moved every block beside the path down to the bar.
    */
   private _layoutOwed(resized: readonly Box[]): void {
     const width = this._laidOutWidth;
@@ -2103,8 +2108,16 @@ export class HtmlViewNode extends Node {
       return;
     }
     this._stale = Stale.Layout;
-    const shapes = this._laidShapes(apartRoots(resized, tree) ?? [tree.root]);
-    this._prepare(width);
+    const apart = apartRoots(resized, tree);
+    const shapes = this._laidShapes(apart ?? [tree.root]);
+    // and those laid out alone, where nothing else can have moved
+    // (`layoutApart`)
+    this._apartOwed = apart && { tree, roots: apart };
+    try {
+      this._prepare(width);
+    } finally {
+      this._apartOwed = null;
+    }
     if (!this._claimLaidOut(shapes, new Set(resized))) {
       this.invalidateMeasure('content');
       this.invalidate(true, this, 'props');
@@ -4795,16 +4808,46 @@ export class HtmlViewNode extends Node {
           setViewport(this._tree, this._viewportAt());
           layoutAsks(this._tree, question);
         }
-        const result = layoutDocument(
-          this._tree,
-          this._layoutFonts(),
-          target,
-          viewport,
-          this._scale,
-          stop?.until,
-          stop?.above,
-          stop?.reach,
-        );
+        // An owed layout of lengths taken by boxes out of the flow lays
+        // those out alone, against their containing blocks, where the
+        // tree, the width and the viewport are the last layout's
+        // (`_layoutOwed`): the document's layout moved every block beside
+        // the path down to them, which grows with the page.
+        const owed = this._apartOwed;
+        this._apartOwed = null;
+        const result =
+          (owed &&
+            owed.tree === this._tree &&
+            !stop &&
+            !question &&
+            !this._questioned &&
+            !viewportMoved &&
+            laidOutAt === target &&
+            this._laidOutUnder === viewport &&
+            layoutApart(
+              this._tree,
+              owed.roots,
+              this._layoutFonts(),
+              target,
+              viewport,
+              this._scale,
+              {
+                width: this._documentWidth,
+                height: this._documentHeight,
+                readsViewportHeight: this._layoutReadsViewport,
+                partial: this._partial,
+              },
+            )) ||
+          layoutDocument(
+            this._tree,
+            this._layoutFonts(),
+            target,
+            viewport,
+            this._scale,
+            stop?.until,
+            stop?.above,
+            stop?.reach,
+          );
         this._questioned = question;
         this._sizedTree = question ? null : this._tree;
         // the sticky boxes the viewport keeps, where the pane is scrolled to
