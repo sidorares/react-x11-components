@@ -1278,7 +1278,8 @@ export class HtmlViewNode extends Node {
    *  (`_seekTargetText`); null where it has none. */
   private _targetText: TargetText | null = null;
   /** Where the pointer last moved to, in logical window pixels, while it
-   *  is over the element (`defaultMouseMove`). */
+   *  is over the document or what is mounted beside it
+   *  (`defaultMouseMove`, `pointerBeside`). */
   private _pointerAt: { x: number; y: number } | null = null;
   /** A hover held until the content under a still pointer stops moving:
    *  the timer, and when the content last moved (`_holdHover`). */
@@ -8555,9 +8556,11 @@ export class HtmlViewNode extends Node {
    * The pointer moved, to a logical window point. Returns true when the
    * cascade's answer could have changed, so the caller knows whether to
    * invalidate — which it only ever does for a document that actually
-   * contains a `:hover` rule.
+   * contains a `:hover` rule. `over` is the element under it where the
+   * caller knows, as it does for a widget (`pointerBeside`), and otherwise
+   * it is what the document draws at the point.
    */
-  setHover(x: number, y: number): boolean {
+  setHover(x: number, y: number, over: Element | null = null): boolean {
     this._dropHeldHover();
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverSensitive) return false;
@@ -8565,7 +8568,7 @@ export class HtmlViewNode extends Node {
     // flat tree (Selectors 4, 9.2): a host and a slot are hovered over
     // what is drawn in them
     const chain: Element[] = [];
-    let node = this._capturing ?? this._drawnAt(x, y);
+    let node = this._capturing ?? over ?? this._drawnAt(x, y);
     while (node) {
       chain.push(node);
       node = flatParentOf(node);
@@ -14427,8 +14430,35 @@ export class HtmlViewNode extends Node {
     this.setHover(ev.x, ev.y);
   }
 
+  /**
+   * The pointer left what the document draws, which is not the document:
+   * a control's widget and a frame's mount are beside it, and the pointer
+   * over one is over its element (`pointerBeside`), which the `<Html>`
+   * root says, as it says when the pointer leaves all of it
+   * (`pointerLeft`). A leave with no move after it is content that moved
+   * under a still pointer, a scroll bringing a field under it, and what is
+   * there is asked for once it is still, as on the document.
+   */
   override defaultMouseLeave(ev: X11MouseEvent): void {
     super.defaultMouseLeave?.(ev);
+    this._holdHover();
+  }
+
+  /**
+   * The pointer moved over something mounted beside the document, to a
+   * logical window point: `over` is the element whose widget or mount it
+   * is, where the root knows, and otherwise what the document draws
+   * there, which is the element a player or a cover is over. Core hands
+   * none of these moves to `defaultMouseMove`, and a browser hovers an
+   * `<input>`, and the card around it, while the pointer is on it.
+   */
+  pointerBeside(x: number, y: number, over: Element | null): void {
+    this._pointerAt = { x, y };
+    this.setHover(x, y, over);
+  }
+
+  /** The pointer left the `<Html>`, document and widgets and all. */
+  pointerLeft(): void {
     this._pointerAt = null;
     this.clearHover();
   }

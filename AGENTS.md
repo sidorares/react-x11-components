@@ -1893,6 +1893,17 @@ a control is handed it.** Where a core component takes no style for it,
 `<Radio>`, and on macOS the box inside a native `<Button>` and `<Select>`,
 what core needs is written down rather than covered over.
 
+**The pointer over a widget is over its element** (`pointerBeside`). Core
+tells the `<htmlview>` the pointer left it as it goes onto a widget or a
+frame's mount, and hands it none of their moves, so the root's move capture
+hovers the element whose widget or mount it is, and the `<htmlview>`'s own
+leave clears nothing: the root's does (`pointerLeft`). A leave with no move
+after it is content that moved under a still pointer, and holds the hover as
+a scroll does. **Anything new mounted beside the document that takes the
+pointer is found from the root's capture** — `controlOf`, `elementOf`, or
+what the document draws at the point — or `input:hover`, and the card around
+the field, go off over it.
+
 **A field's selection is its widget's, and `FormState` holds it only
 between widgets.** A script's `setSelectionRange()` selects in the
 `<textinput>` mounted for the field, through core's selection API, which is
