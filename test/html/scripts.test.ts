@@ -8792,7 +8792,7 @@ test("a form's submission is planned: navigate fires in a task after it, with th
   assert.strictEqual(doc.submitted.length, 1);
 });
 
-test('location.reload() fires navigate as a reload, with the current entry’s state on the destination', async () => {
+test('location.reload() and history.go(0) fire navigate as a reload, with the current entry’s state on the destination', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
       'var r = [];' +
@@ -8801,33 +8801,9 @@ test('location.reload() fires navigate as a reload, with the current entry’s s
       '  navigation.onnavigate = function (e) {' +
       '    r.push(e.navigationType, e.destination.getState().statevar, e.destination.key === "", e.destination.index, e.sourceElement === null);' +
       '    e.intercept();' +
-      "    document.getElementById('out').textContent = r.join('|');" +
       '  };' +
       '  location.reload();' +
-      '}, 0); };' +
-      '</script>',
-  );
-  assert.strictEqual(
-    await settled(doc, 'out', (t) => t !== ''),
-    'reload|state|true|-1|true',
-  );
-});
-
-test('location.reload() and history.go(0) fire navigate as a reload, with the current entry’s state', async () => {
-  const doc = await hosted(
-    '<p id="out"></p><script>' +
-      'var r = [];' +
-      'window.onload = function () { setTimeout(function () {' +
-      '  navigation.updateCurrentEntry({ state: { statevar: "state" } });' +
-      '  navigation.onnavigate = function (e) {' +
-      '    r.push(e.navigationType, e.destination.getState().statevar, e.destination.key, e.destination.index);' +
-      '    e.intercept();' +
-      '  };' +
-      '  location.reload();' +
-      '  navigation.onnavigate = function (e) {' +
-      '    r.push("go " + e.navigationType);' +
-      '    e.intercept();' +
-      '  };' +
+      '  navigation.onnavigate = function (e) { r.push("go " + e.navigationType); e.intercept(); };' +
       '  history.go(0);' +
       "  document.getElementById('out').textContent = r.join('|');" +
       '}, 0); };' +
@@ -8835,7 +8811,7 @@ test('location.reload() and history.go(0) fire navigate as a reload, with the cu
   );
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
-    'reload|state||-1|go reload',
+    'reload|state|true|-1|true|go reload',
   );
 });
 
