@@ -1,6 +1,7 @@
 // What a host mounts over an embedded element (`renderEmbedded`): an
-// `<iframe>`'s document, a `<canvas>`'s drawing, an `<embed>`'s plugin. The
-// document lays each out as a box of its size and draws nothing in it
+// `<iframe>`'s document, a `<canvas>`'s drawing, what an `<embed>` or an
+// `<object>` holds that is no image. The document lays each out as a box of
+// its size and draws nothing in it
 // (`ReplacedKind` 'frame'); what shows there is the host's, mounted beside
 // the document at the box's content rectangle as a video's player is
 // (`videos.ts`), and held to the same rules (`media.ts`, `placementOf`).
