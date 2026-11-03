@@ -5990,16 +5990,29 @@ orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
 run up the page in `sideways-lr`. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
-parent as any box is, in the page's axes: a block is as wide as its
-containing block, a float, an inline-block, a table cell or an absolute box
-as wide as its lines come to, and its height is its own where it has one,
+parent as any box is, in the page's axes. Its width is its block size,
+which is its content's where it has none of its own (7.3.2): a block, a
+float, an inline-block, a table cell and an absolute box alike are as wide
+as their lines come to, with the margins of the blocks in them and their
+own edges, within their `width`, `min-width` and `max-width`, and a block's
+`auto` margins share out what is left of the line, as Chromium and WebKit
+share it, where Firefox leaves the block at the start. A flex or grid item
+stretched across is as wide as its container makes it. The root element and
+its `<body>` fill the line instead, and their lines start where a browser
+starts them, at the viewport's right in `vertical-rl` (see "Not yet"). Its
+height is its own where it has one,
 and else as tall as its text runs, no taller than its containing block's
 height where that is definite, or the viewport's where it is not, and no
 shorter than its longest word. So `th { writing-mode: vertical-rl }` makes
 a header a line wide and as tall as its label, and with `transform:
 rotate(180deg)` beside it, as tables usually write it, the label reads up
 the page. It has no baseline across the line it is on, and an inline-block
-one sits on its bottom margin edge.
+one sits on its bottom margin edge. On a vertical line an image, or any box
+with no baseline of its own, sits by its middle on the line's central
+baseline, as all three engines set it, so a 50px image is a line 50 across;
+where the line sets its text sideways (`text-orientation: sideways` and the
+`sideways-*` modes) the baseline is the alphabetic one, and it sits on it by
+its edge.
 
 Under `text-orientation: mixed` a vertical line sets Latin and the other
 horizontal scripts on their sides, turned a quarter clockwise, and keeps
@@ -6018,7 +6031,11 @@ sides.
 
 Not yet: a horizontal flow inside a vertical one (`text-combine-upright`
 and its kin), the root element in a vertical writing mode scrolled from its
-block start, a vertical flex box, grid or table, images and form controls
+block start, the principal writing mode handed from the `<body>` or the root
+element to the viewport (8) — so a vertical body is as wide as the line
+where a browser makes it as wide as its lines and puts it at the right, and
+a block in it as tall as its text where a browser makes it the viewport's
+height — a vertical flex box, grid or table, images and form controls
 set in a vertical line (a control is mounted where the flow's turn puts its
 box, and is drawn level), backgrounds and gradients of the boxes inside a
 vertical flow (drawn turned with them, where the root's own are drawn as

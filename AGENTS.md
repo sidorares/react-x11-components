@@ -7516,7 +7516,23 @@ to its content within the room down the page — the containing block's
 height, or the viewport's, which marks the layout as reading it
 (`readsViewportHeight`) — and the root as wide as the frame came to down its
 block axis, which is the root's intrinsic width at its least and its most
-(`intrinsicWidth`). Six things are load-bearing.
+(`intrinsicWidth`). In a block's flow, where `auto` would fill the line,
+`framedWidth` lays the frame out before the root is placed and takes the
+width from it, and `layoutFramed` does not lay it out again
+(`SIZED_FROM`): stretched, a vertical `<div>` with a line in it was the
+line's width, 384 where the three engines make it 24. The frame is a
+formatting context, as its root is, so its blocks' last margin is in its
+height and not hanging out of it. The root element and its `<body>` still
+fill the line (`principal`): their writing mode is the document's principal
+one (8), which a browser hands to the viewport and nothing here does yet,
+and filling the line starts their lines where a browser starts them, but
+where containment on either keeps the body's writing mode to the body, as
+it keeps its `overflow`. And the frame lays its lines out on the alphabetic
+baseline, where a vertical line's is the central one unless its text is set
+sideways, so an atomic with no baseline of its own is raised to sit by its
+middle (`atomicRaise`, `ownBaseline`): on its edge, a 50px image made a
+line the strut's descent wider, which the root's width now shows. Six
+things are load-bearing.
 
 - **A box in a frame has its style turned** (`framedStyle`): its physical
   sides, sizes, corners and shadow offsets handed to the frame's, so the

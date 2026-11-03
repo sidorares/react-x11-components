@@ -226,7 +226,7 @@ test('a document in no vertical writing mode makes no frame', async () => {
 });
 
 metric(
-  'a vertical block fills its container across, and is as tall as the line that runs down it',
+  'a vertical block is as wide as its line, not its container, and as tall as the line that runs down it',
   async () => {
     const { node } = await render(
       PAGE +
@@ -238,14 +238,121 @@ metric(
     const v = rectOf(el, 'v');
     const t = rectOf(el, 't');
     const h = rectOf(el, 'h');
-    assert.strictEqual(v.width, 300, 'stretched across, as a block is');
+    // its width is its block size, which is its content's (CSS Writing
+    // Modes 4, 7.3.2): 18 in all three engines, a line of 16px text
+    assert.ok(Math.abs(v.width - h.height) < 1, `${v.width} vs ${h.height}`);
     assert.ok(Math.abs(v.height - h.width) < 1, `${v.height} vs ${h.width}`);
     // its text is turned: as tall as the horizontal text is wide, as wide
     // as it is tall, and at the right, where vertical-rl's lines start
     assert.ok(Math.abs(t.height - h.width) < 1, `${t.height}`);
     assert.ok(Math.abs(t.width - h.height) < 1, `${t.width}`);
-    assert.ok(Math.abs(t.x + t.width - 300) < 1, `ends at ${t.x + t.width}`);
+    assert.ok(
+      Math.abs(t.x + t.width - (v.x + v.width)) < 1,
+      `ends at ${t.x + t.width}`,
+    );
     assert.strictEqual(hitAtMiddleOf(el, 't'), 't');
+  },
+);
+
+metric(
+  'a vertical block in a horizontal page is as wide as its lines and its edges, with every margin of its blocks, at 1x and 2x',
+  async () => {
+    // what Chromium, Firefox and WebKit make of it at both scales: 26, a
+    // line and two borders; 73, its padding, its lines and its blocks'
+    // margins, the last one's too, where it was 3 short of them; and 20,
+    // the auto margins sharing what is left as Chromium and WebKit share
+    // it, where Firefox leaves the block at the left
+    const source =
+      '<style>body{margin:0;font:16px/20px sans-serif}' +
+      'p{margin:0;margin-block:10px 3px}</style>' +
+      '<div id="a" style="writing-mode:vertical-lr;border:3px solid blue">' +
+      '01 02 03 04 05 06 07 08 09 10</div>' +
+      '<div id="b" style="writing-mode:vertical-rl;padding:0 5px">' +
+      '<p>one</p><p>two</p></div>' +
+      '<div id="c" style="writing-mode:vertical-rl;margin:0 auto">abc</div>';
+    for (const scale of [1, 2]) {
+      const { node } = await (scale === 1
+        ? render(source, 400)
+        : render2x(source, 400));
+      const el = view(node);
+      const a = rectOf(el, 'a');
+      const b = rectOf(el, 'b');
+      const c = rectOf(el, 'c');
+      assert.ok(Math.abs(a.width - 26) < 0.01, `${scale}x: ${a.width}`);
+      assert.ok(Math.abs(b.width - 73) < 0.01, `${scale}x: ${b.width}`);
+      assert.ok(Math.abs(c.width - 20) < 0.01, `${scale}x: ${c.width}`);
+      assert.ok(Math.abs(c.x - 190) < 0.01, `${scale}x: at ${c.x}`);
+      cleanup();
+    }
+  },
+);
+
+metric(
+  'a vertical body or root element starts its lines at the right of the viewport, as the engines do',
+  async () => {
+    // Its writing mode is the document's principal one, which a browser
+    // lays the root element out in (CSS Writing Modes 4, 8): its lines
+    // start at the right, 391 in a viewport 400 wide with an 8px margin
+    // in all three engines, written or implied `<html>` alike
+    const sheet = '<style>html{font:16px/20px sans-serif}</style>';
+    for (const source of [
+      `${sheet}<body style="writing-mode:vertical-rl"><span id="t">aaa bbb</span></body>`,
+      `<html>${sheet}<body style="writing-mode:vertical-rl"><span id="t">aaa bbb</span></body></html>`,
+      `<html style="writing-mode:vertical-rl">${sheet}<body><span id="t">aaa bbb</span></body></html>`,
+    ]) {
+      const { node } = await render(source, 400);
+      const t = rectOf(view(node), 't');
+      assert.ok(Math.abs(t.x + t.width - 391) < 0.01, `${source}: ${t.x}`);
+      cleanup();
+    }
+    // and containment on the root keeps the body's to the body, which is
+    // then a flow like any other, as wide as its line at the left: 20 at 8
+    const { node } = await render(
+      '<style>html{contain:paint;font:16px/20px sans-serif}</style>' +
+        '<body id="b" style="writing-mode:vertical-rl"><span id="t">aaa bbb' +
+        '</span></body>',
+      400,
+    );
+    const b = rectOf(view(node), 'b');
+    assert.ok(Math.abs(b.x - 8) < 0.01 && Math.abs(b.width - 20) < 0.01);
+  },
+);
+
+metric(
+  'an image on a vertical line is set by its middle on the central baseline, and by its edge where the text is set sideways',
+  async () => {
+    // A box with no baseline of its own has its central one made up at its
+    // middle (CSS Inline 3), so an image 50 across is a line 50 across and
+    // the block 150 of borders and 50, where it was the strut's descent
+    // more; and a 10px one beside text sits 5 from the line's edge. Set
+    // sideways, the dominant baseline is the alphabetic one, and it sits
+    // on it by its edge, the line some 55 across: 55, 55.5 and 54.67 in
+    // Chromium, Firefox and WebKit
+    const edges = 'border-left:100px solid;border-right:50px solid';
+    const { node } = await render(
+      '<style>body{margin:0;font:16px/20px sans-serif}</style>' +
+        `<div id="rl" style="writing-mode:vertical-rl;${edges}">` +
+        '<img id="ri" width="50" height="50"></div>' +
+        `<div id="lr" style="writing-mode:vertical-lr;${edges}">` +
+        '<img id="li" width="50" height="50"></div>' +
+        '<div id="s" style="writing-mode:vertical-rl">ab' +
+        '<img id="si" width="10" height="10">cd</div>' +
+        '<div id="w" style="writing-mode:vertical-rl;text-orientation:sideways">' +
+        'ab<img width="50" height="50">cd</div>',
+      400,
+    );
+    const el = view(node);
+    for (const id of ['rl', 'lr']) {
+      const box = rectOf(el, id);
+      const img = rectOf(el, id[0] + 'i');
+      assert.ok(Math.abs(box.width - 200) < 0.01, `${id}: ${box.width}`);
+      assert.ok(Math.abs(img.x - box.x - 100) < 0.01, `${id}: ${img.x}`);
+    }
+    const s = rectOf(el, 's');
+    assert.ok(Math.abs(s.width - 20) < 0.01, `${s.width}`);
+    assert.ok(Math.abs(rectOf(el, 'si').x - s.x - 5) < 0.2);
+    const w = rectOf(el, 'w').width;
+    assert.ok(w > 54 && w < 56, `sideways: ${w}`);
   },
 );
 
@@ -559,14 +666,20 @@ metric(
     assert.ok(linesOf(el, 'v').length > 2, 'its words in columns');
     const t = rectOf(el, 't');
     assert.ok(Math.abs(t.x + t.width - short.width) < 1, 'from the right');
+    // as wide as its columns side by side, which is its content's block
+    // size: 108 in the three engines, with their 18px lines
+    const across = () =>
+      linesOf(el, 'v').reduce((n, line) => n + line.height, 0);
+    assert.ok(Math.abs(short.width - across()) < 0.01, `${short.width}`);
     await resize(240, 250);
     const tall = rectOf(el, 'v');
-    assert.strictEqual(tall.width, 250, 'as wide as its container');
+    assert.ok(Math.abs(tall.width - across()) < 0.01, `${tall.width}`);
+    assert.ok(tall.width < short.width, 'narrower in fewer columns');
     assert.ok(tall.height > short.height, `${tall.height}`);
     assert.ok(linesOf(el, 'v').length < 6, 'in fewer columns');
     const moved = rectOf(el, 't');
     assert.ok(
-      Math.abs(moved.x + moved.width - 250) < 1,
+      Math.abs(moved.x + moved.width - tall.width) < 1,
       'still from the right',
     );
   },
