@@ -1038,6 +1038,49 @@ const IMAGE_ATTRIBUTES = new Set([
   'referrerpolicy',
 ]);
 
+/** Whether an `<img>`'s attribute changing from `was` to `now` is one of
+ *  its relevant mutations: its `src`, `srcset` and `sizes` whatever they
+ *  are set to, and its `crossorigin` and `referrerpolicy` only where the
+ *  state they are in moved, which a value of another case, or another
+ *  invalid one, does not. */
+function imageStateMoved(
+  name: string,
+  was: string | null,
+  now: string | null,
+): boolean {
+  if (name === 'crossorigin') return corsState(was) !== corsState(now);
+  if (name === 'referrerpolicy') {
+    return referrerState(was) !== referrerState(now);
+  }
+  return true;
+}
+/** A CORS settings attribute's state (HTML 2.5.4). */
+function corsState(value: string | null): string {
+  if (value === null) return 'none';
+  return asciiLower(value) === 'use-credentials'
+    ? 'use-credentials'
+    : 'anonymous';
+}
+/** A referrer policy attribute's state (HTML 2.5.5), "" for any value that
+ *  is none of its keywords. */
+function referrerState(value: string | null): string {
+  const policy = value === null ? '' : asciiLower(value);
+  return REFERRER_POLICIES.has(policy) ? policy : '';
+}
+const REFERRER_POLICIES = new Set([
+  'no-referrer',
+  'no-referrer-when-downgrade',
+  'same-origin',
+  'origin',
+  'strict-origin',
+  'origin-when-cross-origin',
+  'strict-origin-when-cross-origin',
+  'unsafe-url',
+]);
+/** ASCII lower case, as an enumerated attribute is matched. */
+const asciiLower = (s: string): string =>
+  s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
 /** Whether a node is an HTML `<img>`. */
 function isImage(node: AnyNode): node is Element {
   return node instanceof Element && node.name === 'img' && !node.namespace;
@@ -6296,7 +6339,11 @@ export class DomHost {
         attributeName: name!,
         oldValue,
       });
-      if (isImage(target) && IMAGE_ATTRIBUTES.has(name!)) {
+      if (
+        isImage(target) &&
+        IMAGE_ATTRIBUTES.has(name!) &&
+        imageStateMoved(name!, oldValue, target.attribs[name!] ?? null)
+      ) {
         this._imageDrawn(target)?.askImage?.(target);
       }
       if (this._custom && this._customCandidate(target)) {
