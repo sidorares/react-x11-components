@@ -70,6 +70,7 @@ import {
 } from './http-cache.js';
 import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
 import type {
+  ResourceAsker,
   ResourceCors,
   ResourceRequest,
   ResourceResult,
@@ -1110,8 +1111,9 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
+    asker: ResourceAsker = {},
   ): Promise<Fetched | null> {
-    return this.load(url, kind, page, signal, cors).then((loaded) =>
+    return this.load(url, kind, page, signal, cors, asker).then((loaded) =>
       'fetched' in loaded ? loaded.fetched : null,
     );
   }
@@ -1123,11 +1125,16 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
+    /** Who asked, where that is a frame's document, or one of no origin:
+     *  what its `Referer` says, and whether it is same-site with anything. */
+    asker: ResourceAsker = {},
   ): Promise<Loaded> {
     const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
-    if (allowed !== url) return this.load(allowed, kind, page, signal, cors);
+    if (allowed !== url) {
+      return this.load(allowed, kind, page, signal, cors, asker);
+    }
     const scheme = schemeOf(url);
     if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
       return refused;
@@ -1136,12 +1143,18 @@ export class HtmlNetwork {
     const http = scheme === 'http' || scheme === 'https';
     // what a CORS request is answered is its own: another origin's answer to
     // a request with an `Origin` is no answer to one with none
+    const opaque = !!asker.opaqueOrigin;
+    // nor is a sandbox's the site's: what it was answered with, cookies and
+    // all, is kept apart, and what the site's own pages were is none of it
     const key =
       this._cacheKey(url, page) +
-      (cors ? ` cors ${cors.origin} ${cors.mode}` : '');
+      (cors ? ` cors ${cors.origin} ${cors.mode}` : '') +
+      (opaque ? ' opaque' : '');
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
-    const headers = http ? this._headers(kind, url, page, cors) : null;
+    const headers = http
+      ? this._headers(kind, url, asker.client ?? page, cors)
+      : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
     if (kept && this._answers(kept, headers)) {
@@ -1181,6 +1194,7 @@ export class HtmlNetwork {
               kept?.response ?? null,
               id,
               cors,
+              opaque,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1318,6 +1332,7 @@ export class HtmlNetwork {
     /** Its observers' id for it (`observe`), 0 for none. */
     id = 0,
     cors?: ResourceCors,
+    opaque = false,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1337,6 +1352,7 @@ export class HtmlNetwork {
         page,
         id,
         cors,
+        opaque,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1817,6 +1833,7 @@ export class HtmlNetwork {
         page,
         options.signal,
         request.cors,
+        request,
       ).then((fetched) => (fetched ? resourceResult(fetched, kind) : null));
     };
   }
@@ -1953,6 +1970,7 @@ export class HtmlNetwork {
       page: string;
       id: number;
       cors?: ResourceCors;
+      opaque?: boolean;
     },
   ): Promise<Answer> {
     try {
@@ -1973,6 +1991,7 @@ export class HtmlNetwork {
       page: string;
       id: number;
       cors?: ResourceCors;
+      opaque?: boolean;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -1994,8 +2013,9 @@ export class HtmlNetwork {
             originOf(url) === cors.origin
               ? 'include'
               : 'omit',
-          origin: originOf(options.page),
-          site: options.page,
+          // a document of no origin is same-site with nothing
+          origin: options.opaque ? 'null' : originOf(options.page),
+          site: options.opaque ? null : options.page,
           topLevel: false,
           initiator: null,
         },

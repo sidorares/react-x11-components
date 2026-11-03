@@ -2007,6 +2007,7 @@ export default function Page(props: PageProps): ReactElement {
                   onPickFiles={pickFiles}
                   onDropFiles={readHtmlFiles}
                   onDownload={onDownload}
+                  headers={view.headers}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>

@@ -251,14 +251,14 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element, cors) => {
+    load: async (src, element, cors, asker) => {
       const answered = await workerResource(
         src,
         'script',
         element?.attribs.crossorigin !== undefined,
       );
       if (answered === undefined) {
-        return latest.current.load(src, element, cors);
+        return latest.current.load(src, element, cors, asker);
       }
       if (answered?.kind !== 'script') return null;
       if ('text' in answered) {

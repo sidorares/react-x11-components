@@ -62,7 +62,19 @@ export interface ResourceRequest {
    *  `crossorigin` attribute, in whose name and with whose credentials. A
    *  host answers with `headers`, which the engine reads the answer by. */
   cors?: ResourceCors;
+  /** The address of the document that asked, where that is a frame's
+   *  rather than the one the host was handed: what its `Referer` says. */
+  client?: string;
+  /** The document that asked has an origin of none, whatever its address
+   *  says: a sandbox's, with no `allow-same-origin`. A host asks for it as
+   *  such a document's: same-site with nothing, so with no cookie that is
+   *  only a site's own, and `Origin: null` where it sends one. */
+  opaqueOrigin?: boolean;
 }
+
+/** Who asked for a resource, where that is not the document the host was
+ *  handed (`ResourceRequest.client`, `opaqueOrigin`). */
+export type ResourceAsker = Pick<ResourceRequest, 'client' | 'opaqueOrigin'>;
 
 /** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):
  *  the requesting document's origin, and `use-credentials` where another

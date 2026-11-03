@@ -39,7 +39,7 @@ import type {
   ResourceResult,
   ScriptRequest,
 } from '../index.js';
-import type { ResourceCors } from '../resources.js';
+import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
@@ -159,6 +159,9 @@ export interface HtmlScripts {
     url: string,
     element: Element | null,
     cors?: ResourceCors,
+    /** Who asked, where that is a frame's document or one of no origin
+     *  (`ResourceRequest.client`, `opaqueOrigin`). */
+    asker?: ResourceAsker,
   ) => Promise<LoadedScript | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
    *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
@@ -455,6 +458,11 @@ export interface InternalHtmlProps extends HtmlProps {
    *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
    *  page's scripts. */
   _onParserBlocked?: (script: Element) => void;
+  /** The document's sandboxing flags (`./sandbox.ts`), which the host holds:
+   *  what `<Html>` does itself that they take away — a form sent, a window a
+   *  link opens, a download, `autofocus` — and that what it loads is asked for
+   *  as of no origin. */
+  _sandbox?: number;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of
@@ -574,7 +582,7 @@ export function useScriptedHtml(
     typeof props.scripts === 'object' && props.scripts ? props.scripts : {};
   // what the document's own response and the window it is in take from it
   const sandbox =
-    sandboxOfPolicy(config.headers ?? []) |
+    sandboxOfPolicy(config.headers ?? props.headers ?? []) |
     ((config.popup as OpenedWindow | undefined)?.sandbox ?? 0);
   const latest = useRef({ props, config, sandbox });
   latest.current = { props, config, sandbox };
@@ -597,7 +605,7 @@ export function useScriptedHtml(
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,
-    headers: config.headers,
+    headers: config.headers ?? props.headers,
     redirects: config.redirects,
     popups: config.popups,
     popup: config.popup ?? null,
@@ -613,7 +621,7 @@ export function useScriptedHtml(
     network: config.fetch !== undefined,
     load:
       config.load ??
-      (async (url, element, cors) => {
+      (async (url, element, cors, asker) => {
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
@@ -623,6 +631,7 @@ export function useScriptedHtml(
             kind: 'script',
             element: owner,
             ...(cors ? { cors } : {}),
+            ...asker,
           }),
           owner.attribs.charset || latest.current.props.charset,
         );
@@ -653,7 +662,7 @@ export function useScriptedHtml(
     url === 'about:blank' && popup?.initialDocument
       ? { document: popup.initialDocument, base: popup.creator }
       : null;
-  const headers = config.headers ?? NO_HEADERS;
+  const headers = config.headers ?? props.headers ?? NO_HEADERS;
   const redirects = config.redirects ?? NO_HOPS;
   // a response the window's flags turn down is a network error, so nothing of
   // it is run or drawn (`refusedAt`)
@@ -925,6 +934,7 @@ export function useScriptedHtml(
   return {
     ...props,
     ...(refused && { source: '' }),
+    _sandbox: sandbox,
     scripting: scripts.scripting,
     onResource,
     onDocument,

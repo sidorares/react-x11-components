@@ -13,7 +13,11 @@ import { Document, Element } from 'domhandler';
 
 import { Html, HtmlNetwork, preloadHtmlScripts } from '../../src/html/index.js';
 import { CookieJar } from '../../src/html/cookies.js';
-import type { HtmlPopup, HtmlScripts } from '../../src/html/index.js';
+import type {
+  HtmlPopup,
+  HtmlScripts,
+  ResourceRequest,
+} from '../../src/html/index.js';
 import type { HtmlPermissionState } from '../../src/html/permissions.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { framingRefused } from '../../src/html/scripts/framing.js';
@@ -57,6 +61,8 @@ interface Scene {
   submitted: string[];
   /** What the host's `onLink` heard. */
   linked: string[];
+  /** What was asked of `onResource`. */
+  resources: ResourceRequest[];
   navigated: string[];
   opened: HtmlPopup[];
   tabs: string[];
@@ -78,6 +84,7 @@ async function scene(
     asked: [],
     submitted: [],
     linked: [],
+    resources: [],
     navigated: [],
     opened: [],
     tabs: [],
@@ -121,6 +128,13 @@ async function scene(
       scripts,
       onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
       onLink: (href: string) => void out.linked.push(href),
+      onResource: (request: ResourceRequest) => {
+        out.resources.push(request);
+        const found = pages[request.url];
+        return request.kind === 'script' && typeof found === 'string'
+          ? { kind: 'script' as const, text: found }
+          : null;
+      },
       style: { flexGrow: 1 },
     });
   }
@@ -524,6 +538,78 @@ test("a sandbox's request says it is of no origin, and carries no cookies of the
   assert.equal(asked.credentials, 'omit');
 });
 
+test("what a sandbox's document loads is asked for as of no origin, and as the frame's", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: `<img src="${APP}a.png"><script src="${APP}a.js"></script>`,
+      [`${APP}a.js`]: `console.log('a ran');`,
+      [`${APP}b`]: `<img src="${APP}b.png"><script src="${APP}b.js"></script>`,
+      [`${APP}b.js`]: `console.log('b ran');`,
+    },
+  );
+  await until(s, 'a ran');
+  await until(s, 'b ran');
+  await settle();
+  const of = (url: string) => {
+    const found = s.resources.find((r) => r.url === url);
+    assert.ok(found, `${url} was not asked for`);
+    return { client: found.client, opaque: !!found.opaqueOrigin };
+  };
+  assert.deepEqual(of(`${APP}a.png`), { client: `${APP}a`, opaque: true });
+  assert.deepEqual(of(`${APP}a.js`), { client: `${APP}a`, opaque: true });
+  assert.deepEqual(of(`${APP}b.png`), { client: `${APP}b`, opaque: false });
+  assert.deepEqual(of(`${APP}b.js`), { client: `${APP}b`, opaque: false });
+});
+
+test("a top-level document its policy sandboxes asks for what it loads as of no origin", async () => {
+  const s = await scene(
+    `<img src="${APP}top.png">${script(`console.log('ran');`)}`,
+    {},
+    { headers: [['content-security-policy', 'sandbox allow-scripts']] },
+  );
+  await until(s, 'ran');
+  await settle();
+  const asked = s.resources.find((r) => r.url === `${APP}top.png`);
+  assert.equal(asked?.opaqueOrigin, true);
+});
+
+test("the network asks for what a document of no origin loads with no cookie of the site's alone, and as the frame's", async (t) => {
+  const heard: { cookie?: string; referer?: string; url: string }[] = [];
+  const site = createServer((req, res) => {
+    heard.push({
+      url: req.url ?? '',
+      cookie: req.headers.cookie,
+      referer: req.headers.referer,
+    });
+    res.setHeader('content-type', 'image/png');
+    res.setHeader('cache-control', 'max-age=600');
+    res.end('x');
+  });
+  await new Promise<void>((go) => site.listen(0, '127.0.0.1', go));
+  t.after(() => site.close());
+  const { port } = site.address() as AddressInfo;
+  const page = `http://127.0.0.1:${port}/`;
+  const jar = new CookieJar();
+  jar.store(page, ['lax=1; SameSite=Lax; Path=/'], {
+    http: true,
+    sameSite: true,
+  });
+  const load = new HtmlNetwork({ cookies: jar }).resources(page);
+  const element = new Element('img', {});
+  const ask = (path: string, extra: Partial<ResourceRequest>) =>
+    load({ url: `${page}${path}`, kind: 'image', element, ...extra });
+  await ask('pic', {});
+  await ask('pic', { opaqueOrigin: true, client: `${page}frame` });
+  await ask('other', { client: `${page}frame` });
+  assert.deepEqual(heard, [
+    { url: '/pic', cookie: 'lax=1', referer: page },
+    { url: '/pic', cookie: undefined, referer: `${page}frame` },
+    { url: '/other', cookie: 'lax=1', referer: `${page}frame` },
+  ]);
+});
+
 test('a page of a sandbox is told by its origin what it may answer to', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
@@ -905,6 +991,127 @@ pressing('a sandbox with no allow-popups opens nothing from a link a user follow
   assert.deepEqual(s.tabs, []);
   assert.deepEqual(s.linked, []);
   assert.deepEqual(s.opened, []);
+});
+
+/** A document with scripts off, its response's headers handed in, and what
+ *  it asked of the host. */
+async function plain(source: string, headers: [string, string][]) {
+  const out = {
+    submitted: [] as string[],
+    linked: [] as string[],
+    downloads: [] as string[],
+    click: async (_x: number, _y: number) => {},
+    focused: (): string | undefined => undefined,
+  };
+  const rendered = await renderX11(
+    h(Html, {
+      source: `<!doctype html><body style="margin:0">${source}`,
+      partial: false,
+      baseUrl: APP,
+      headers,
+      onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
+      onLink: (href: string) => void out.linked.push(href),
+      onDownload: (d: { url: string }) => void out.downloads.push(d.url),
+      style: { flexGrow: 1 },
+    }),
+    { width: 480, height: 320, fonts: FONTS! },
+  );
+  const server = (
+    rendered as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    }
+  ).server;
+  out.click = async (x, y) => {
+    for (const step of [
+      () => server.injectPointerMove(x, y),
+      () => server.injectButton(1, true),
+      () => server.injectButton(1, false),
+    ]) {
+      step();
+      await settle(40);
+    }
+  };
+  type Mounted = { focused?: boolean; children: Mounted[]; props: { placeholder?: string } };
+  out.focused = () => {
+    const find = (node: Mounted): Mounted | null => {
+      if (node.focused) return node;
+      for (const child of node.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return find(rendered.windowNode as unknown as Mounted)?.props.placeholder;
+  };
+  await settle(200);
+  return out;
+}
+
+const ROWS = `<form action="${APP}posted"><button style="display:block;width:300px;height:50px;margin:0;border:0">go</button></form>
+  <a href="${APP}blank" target="_blank" style="display:block;height:50px">blank</a>
+  <a href="${APP}saved" download style="display:block;height:50px">save</a>
+  <a href="${APP}here" style="display:block;height:50px">here</a>`;
+
+pressing("with scripts off, a document's own policy keeps its forms, its new windows and its downloads from it", async () => {
+  const s = await plain(ROWS, [['content-security-policy', 'sandbox']]);
+  for (const y of [25, 75, 125, 175]) await s.click(40, y);
+  assert.deepEqual(s.submitted, []);
+  assert.deepEqual(s.downloads, []);
+  assert.deepEqual(s.linked, [`${APP}here`]);
+});
+
+pressing('with scripts off, what a policy gives back a document has', async () => {
+  const s = await plain(ROWS, [
+    [
+      'content-security-policy',
+      'sandbox allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads',
+    ],
+  ]);
+  for (const y of [25, 75, 125, 175]) await s.click(40, y);
+  assert.deepEqual(s.submitted, [`${APP}posted?`]);
+  assert.deepEqual(s.downloads, [`${APP}saved`]);
+  assert.deepEqual(s.linked, [`${APP}blank`, `${APP}here`]);
+});
+
+pressing('with scripts off and allow-popups, a link to a new window has no tab to carry its flags in, and goes nowhere', async () => {
+  const s = await plain(ROWS, [
+    ['content-security-policy', 'sandbox allow-popups'],
+  ]);
+  await s.click(40, 75);
+  assert.deepEqual(s.linked, []);
+});
+
+pressing('a sandbox with no allow-scripts focuses nothing by autofocus, and one with it does', async () => {
+  const field = '<input placeholder="wants" autofocus>';
+  const held = await plain(field, [['content-security-policy', 'sandbox']]);
+  assert.equal(held.focused(), undefined);
+  cleanup();
+  const given = await plain(field, [
+    ['content-security-policy', 'sandbox allow-scripts'],
+  ]);
+  assert.equal(given.focused(), 'wants');
+});
+
+pressing("a sandboxed frame's autofocus is held back too, and one that may focuses", async () => {
+  type Mounted = { focused?: boolean; props: { placeholder?: string } };
+  const { screen } = await import('react-x11/test');
+  const field = async (tokens: string): Promise<Mounted> => {
+    await scene(
+      `<iframe sandbox="${tokens}" style="border:0;display:block" srcdoc='<input placeholder="framed" autofocus>'></iframe>`,
+    );
+    await settle(400);
+    const found = screen.all(
+      (n) => (n as unknown as Mounted).props?.placeholder === 'framed',
+    )[0] as unknown as Mounted | undefined;
+    assert.ok(found, 'the frame drew no field');
+    return found;
+  };
+  assert.ok(!(await field('allow-same-origin')).focused);
+  cleanup();
+  assert.ok((await field('allow-same-origin allow-scripts')).focused);
 });
 
 test('with no window seam, a sandbox opens no tab either, whatever it tells itself', async () => {

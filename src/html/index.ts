@@ -110,6 +110,14 @@ import type { HtmlDrop } from './drag.js';
 import { syntheticClick, useFocusStops, useFocusableMarkup } from './stops.js';
 import { readyFor } from './encoding.js';
 import { useScriptedHtml } from './scripts/scripted.js';
+import {
+  SB_DOWNLOADS,
+  SB_ORIGIN,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  sandboxOfPolicy,
+} from './scripts/sandbox.js';
+import { linkTarget, navigableFor } from './scripts/target.js';
 import type {
   ConsoleProperty,
   ConsoleResult,
@@ -589,6 +597,16 @@ export interface HtmlProps {
    * document, as a browser reloads a page for its switch.
    */
   scripts?: boolean | HtmlScripts;
+  /**
+   * The headers of the response the document came in, for what it says of
+   * itself whether or not its scripts run: a `Content-Security-Policy`'s
+   * `sandbox`, which takes from it what its tokens do not give back — a form
+   * sent (`allow-forms`), a link that opens a window (`allow-popups`), a
+   * download (`allow-downloads`), `autofocus` (`allow-scripts`) — and makes
+   * what it loads a document of no origin's (`allow-same-origin`). Where its
+   * scripts run, `scripts.headers` says the same, and is read first.
+   */
+  headers?: [string, string][];
   /**
    * Whether the host runs the document's scripts: an application that
    * brings an engine says so, and the document is drawn as a browser draws
@@ -1144,9 +1162,13 @@ function useCodeFamily(source: string, family: string): string | null {
  * ```
  */
 export function Html(props: HtmlProps): ReactElement {
-  return props.scripts
-    ? h(ScriptedHtml, props)
-    : h(HtmlDocument, props as InternalHtmlProps);
+  if (props.scripts) return h(ScriptedHtml, props);
+  // what a document's own policy takes from it, whether or not anything runs
+  const sandbox = props.headers ? sandboxOfPolicy(props.headers) : 0;
+  return h(
+    HtmlDocument,
+    (sandbox ? { ...props, _sandbox: sandbox } : props) as InternalHtmlProps,
+  );
 }
 
 /** `<Html scripts>`: the document with its scripts' seams filled in
@@ -1176,7 +1198,6 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     charset,
     baseUrl,
     onLink,
-    onResource,
     onScript,
     onDocument,
     onControlChange,
@@ -1195,21 +1216,45 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // is drawn while the window has the keyboard
   const { caretBlink, caretBlinkMs } = useDesktopSettings();
   const windowFocused = useWindowState().focused;
+  // what the document's sandbox takes from it, which its host knows
+  const sandbox = props._sandbox ?? 0;
   // a link that says to save what it names, with no script to read it: the
   // realm answers for one where a document's scripts run (`downloadLink`)
-  const onDownload = props.onDownload;
+  const onDownload = sandbox & SB_DOWNLOADS ? undefined : props.onDownload;
+  // and what a sandbox loads is asked for as of no origin
+  const onResource = React.useMemo(
+    () =>
+      sandbox & SB_ORIGIN && props.onResource
+        ? (request: ResourceRequest) =>
+            props.onResource!({ ...request, opaqueOrigin: true })
+        : props.onResource,
+    [props.onResource, sandbox],
+  );
   const followed = React.useMemo(() => {
-    if (!onLink || !onDownload || props.scripts) return onLink;
+    const refuses = sandbox & (SB_POPUPS | SB_PROPAGATES | SB_DOWNLOADS);
+    if (!onLink || props.scripts || (!onDownload && !refuses)) return onLink;
     return (href: string, ev: X11MouseEvent<DrawnNode>) => {
       const anchor = linkAround(viewNode.current?.elementAtPoint(ev.x, ev.y));
+      const document = viewNode.current?.document ?? null;
+      // with no script to open a window for it, a sandbox's link to a new
+      // one goes nowhere: no tab carries its flags
+      if (
+        sandbox & (SB_POPUPS | SB_PROPAGATES) &&
+        navigableFor(document, linkTarget(anchor, document)) === 'tab'
+      ) {
+        return;
+      }
       const name = anchor && attr(anchor, 'download');
       if (name === undefined || name === null || !sameOriginAs(href, baseUrl)) {
         onLink(href, ev);
         return;
       }
-      onDownload({ url: href, filename: name });
+      // nor does what it would save (HTML 4.6.5, "allowed to download")
+      if (sandbox & SB_DOWNLOADS) return;
+      if (onDownload) onDownload({ url: href, filename: name });
+      else onLink(href, ev);
     };
-  }, [onLink, onDownload, props.scripts, baseUrl]);
+  }, [onLink, onDownload, props.scripts, baseUrl, sandbox]);
   const links = useLinkClicks(followed);
   const menu = useSelectionMenu(selectable);
 
@@ -1277,6 +1322,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onSubmit,
     onPickFiles: props.onPickFiles,
     onDomEvent,
+    sandbox,
     touch: (changes) => {
       if (changes) viewNode.current?.touchDocument(changes);
       else setDomRevision((n) => n + 1);
@@ -1290,7 +1336,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     root: rootNode,
     forms,
     selectable,
-    onLink,
+    onLink: followed,
     onDomEvent,
   });
   const mayHaveStops = useFocusableMarkup(source);
@@ -1322,8 +1368,8 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   live.current = {
     forms,
     stops,
-    onLink,
-    onDownload: props.onDownload,
+    onLink: followed,
+    onDownload,
     drag: drag.external,
   };
   // what a script focused before anything could take it takes it from the

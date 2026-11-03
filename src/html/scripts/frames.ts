@@ -329,10 +329,13 @@ function FrameDocument({
       baseUrl: url,
       ref: handle.ref,
       ...look,
+      // what the frame's document asks for is the frame's: its `Referer`,
+      // and for a sandbox no cookie that is the site's alone, where the
+      // page's own had the page's
       onResource: (request: ResourceRequest) =>
         throughWorker(
           scripts,
-          request,
+          { ...request, client: url },
           look.onResource,
         ) as Promise<ResourceResult | null>,
       onLink: (href, ev) => {
@@ -374,6 +377,7 @@ function FrameDocument({
       // query lists' `change`; and its own CSS transitions' events, which
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
+        _sandbox: sandbox,
         _embedderScheme: scheme,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,

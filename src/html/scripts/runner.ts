@@ -44,7 +44,7 @@ import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
-import type { ResourceCors } from '../resources.js';
+import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
@@ -109,6 +109,7 @@ export interface ScriptsOptions extends Omit<
     url: string,
     element: Element | null,
     cors?: ResourceCors,
+    asker?: ResourceAsker,
   ): Promise<LoadedScript | null>;
   /** The headers of the response the document came in
    *  (`HtmlScripts.headers`). */
@@ -1316,8 +1317,14 @@ export class ScriptRunner {
     const origin = this.host.origin;
     const set = corsSetting(element?.attribs.crossorigin);
     const mode = module ? (set ?? 'anonymous') : set;
+    // asked for as this document's, which a sandbox's is of no origin, and
+    // a frame's is the frame's and not the page's
+    const asker = {
+      client: this.host.url,
+      ...(this.host.sandbox & SB_ORIGIN && { opaqueOrigin: true }),
+    };
     const loaded = await this._options
-      .load(url, element, mode ? { origin, mode } : undefined)
+      .load(url, element, mode ? { origin, mode } : undefined, asker)
       .catch(() => null);
     return judgeScript(loaded, url, origin, mode, module);
   }

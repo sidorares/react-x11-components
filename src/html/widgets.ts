@@ -93,6 +93,7 @@ import {
 import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
+import { SB_AUTOMATIC, SB_FORMS } from './scripts/sandbox.js';
 
 const h = React.createElement;
 
@@ -115,6 +116,10 @@ export interface FormsOptions {
   /** Restyle and lay out again: a change a selector can see, told as
    *  what it did to the document where that is known. */
   touch: (changes?: readonly HtmlChange[]) => void;
+  /** The document's sandboxing flags (`./scripts/sandbox.ts`): with no
+   *  `allow-forms` a form is sent nowhere and asked nothing, and with no
+   *  `allow-scripts` nothing is focused by `autofocus`. */
+  sandbox?: number;
 }
 
 export interface Forms {
@@ -226,6 +231,7 @@ export function useForms(options: FormsOptions): Forms {
     onPickFiles,
     onDomEvent,
     touch,
+    sandbox: sandboxed = 0,
   } = options;
   /** Tell the host what happened; whether the default goes on. */
   const fire = (
@@ -469,7 +475,7 @@ export function useForms(options: FormsOptions): Forms {
 
   /** The entry list, built as the form is now, and sent. */
   const send = (form: Element, submitter: Element | null, point?: Point) => {
-    if (!onSubmit) return;
+    if (!onSubmit || sandboxed & SB_FORMS) return;
     // what a form names in `accept-charset` is the first its document asks
     // for, and `<Html>` has loaded nothing for it
     if (formEncoding(form, charset) !== 'UTF-8' && !loadedEncodings()) {
@@ -503,6 +509,9 @@ export function useForms(options: FormsOptions): Forms {
    * sent. Built before, as it was, the field went empty.
    */
   const submit = (form: Element, submitter: Element | null, point?: Point) => {
+    // a sandbox's form is no form to send, before it is anything else (HTML
+    // 4.10.21.3, step 3)
+    if (sandboxed & SB_FORMS) return;
     attempted(form);
     if (!onSubmit && !onDomEvent) return;
     if (!validate(form, submitter)) return;
@@ -760,6 +769,9 @@ export function useForms(options: FormsOptions): Forms {
   const autofocus = (rects: readonly ControlRect[]) => {
     const document = view.current?.document ?? null;
     if (!document || autofocused.current === document) return;
+    // what happens by itself, which a sandbox with no `allow-scripts` has
+    // none of (HTML 6.6.5, "flush autofocus candidates")
+    if (sandboxed & SB_AUTOMATIC) return;
     const wants = rects.find((r) => attr(r.element, 'autofocus') !== undefined);
     if (!wants) return;
     autofocused.current = document;
