@@ -7625,7 +7625,9 @@ export class Cascade {
     style: ComputedStyle,
     parentStyle: ComputedStyle,
   ): ComputedStyle {
-    if (style.styledControl || !CONTROL_TAGS.has(tagOf(el))) return style;
+    if (style.styledControl || !CONTROL_TAGS.has(tagOf(el)) || isListBox(el)) {
+      return style;
+    }
     const kept = READ_STYLES.get(style);
     if (kept) return kept;
     const web = this._cascadeStyle(
@@ -8828,6 +8830,9 @@ export class Cascade {
     if (own && style.appearance !== 'none' && isCheckable(el)) {
       noEdges(style);
     }
+    if (own && el.name.length === 6 && isListBox(el)) {
+      settleListBox(el, style, this._lineHeightOf(style), this.scale * zoom);
+    }
     // a button is laid out as one, whatever `display` it was given, and
     // so is an input button the page draws (`styledControl`)
     if (
@@ -9733,7 +9738,7 @@ function dropPaletteChrome(el: Element, out: Candidate[]): void {
   for (; i < out.length && out[i].origin === Origin.UserAgent; i += 1) {
     if (PALETTE_CHROME.has(out[i].declarations)) chrome = true;
   }
-  if (!chrome || !stylesControl(el, out)) return;
+  if (!chrome || !(isListBox(el) || stylesControl(el, out))) return;
   let kept = 0;
   for (const c of out) {
     if (c.origin === Origin.UserAgent && PALETTE_CHROME.has(c.declarations)) {
@@ -9742,6 +9747,47 @@ function dropPaletteChrome(el: Element, out: Candidate[]): void {
     out[kept++] = c;
   }
   out.length = kept;
+}
+
+/** Whether an element is a `<select>` drawn as a list box (HTML 15.5.17):
+ *  one with `multiple`, or a size over one. */
+function isListBox(el: Element): boolean {
+  return tagOf(el) === 'select' && !isDropDown(el);
+}
+
+/**
+ * A list box: a box the document draws its options in, one a row, which
+ * scrolls across none of them and down what does not fit, as many rows tall
+ * as its size says, four where it says none (HTML 15.5.17), wherever the
+ * page leaves its height alone. A row is Blink's option: a line of its font
+ * and a pixel under it, and no less than `1.2em`. It has no widget, and the
+ * palette has no look for it (`dropPaletteChrome`): an unstyled one is the
+ * web's, as in a browser.
+ */
+function settleListBox(
+  el: Element,
+  style: ComputedStyle,
+  line: number,
+  scale: number,
+): void {
+  style.overflowX = 'hidden';
+  style.overflowY = 'auto';
+  style.verticalAlign = 'text-bottom';
+  style.userSelect = 'none';
+  if (style.height !== 'auto' || style.heightKeyword || style.heightSize) {
+    return;
+  }
+  const size = parseInt(attr(el, 'size') ?? '', 10);
+  const rows = size > 1 ? size : 4;
+  const row = Math.ceil(Math.max(line + scale, style.fontSize * 1.2));
+  const edges =
+    style.boxSizing === 'border-box'
+      ? style.borderTopWidth +
+        style.borderBottomWidth +
+        (typeof style.paddingTop === 'number' ? style.paddingTop : 0) +
+        (typeof style.paddingBottom === 'number' ? style.paddingBottom : 0)
+      : 0;
+  style.height = rows * row + edges;
 }
 
 /** A box with no padding and no border, as a native look resets them. */

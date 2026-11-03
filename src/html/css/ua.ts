@@ -354,6 +354,15 @@ select {
   border-radius: 0;
   background-color: Field;
 }
+/* A list box's options are the document's, a row each, as Blink's sheet
+   draws them (\`settleListBox\`); a drop-down box's are its widget's menu.
+   What is selected is grey, and the selection's colour while it has the
+   focus. */
+option { display: block; padding: 0 2px 1px; min-height: 1.2em; white-space: nowrap; }
+optgroup { display: block; font-weight: bolder; }
+optgroup > option { padding-inline-start: 20px; }
+option:checked { background-color: light-dark(#c8c8c8, #545454); }
+select:focus option:checked { background-color: SelectedItem; color: SelectedItemText; }
 /* A <button> is drawn rather than mounted: its content is the document's —
    an icon, a label in spans, a pill of the page's own design, which is what
    most buttons on the web are — and the page restyles it as it restyles

@@ -83,11 +83,14 @@ import {
   implicitSubmission,
   inputType,
   isDisabled,
+  isMultiple,
   labeledControl,
+  optionDisabled,
   optionElements,
   optionValue,
   radioGroup,
   rangeValue,
+  selectOf,
   setIndeterminate,
   setUserValidity,
 } from './form.js';
@@ -668,6 +671,53 @@ export function useForms(options: FormsOptions): Forms {
     );
   };
 
+  // the option a list box was last pressed on, which a Shift-press runs from
+  const anchors = React.useRef(new WeakMap<Element, Element>()).current;
+  /**
+   * A press on an option of a list box (HTML 4.10.7): it alone is selected,
+   * or, in one that takes many, a Ctrl- or Cmd-press toggles it and a
+   * Shift-press selects the options from the one last pressed to it. What
+   * changed is an `input` and a `change`.
+   */
+  const pickOption = (
+    select: Element,
+    option: Element,
+    ev: X11MouseEvent<DrawnNode>,
+  ) => {
+    const options = optionElements(select);
+    const several = isMultiple(select);
+    const from = several && ev.shiftKey ? anchors.get(select) : undefined;
+    const span =
+      from && options.includes(from)
+        ? [options.indexOf(from), options.indexOf(option)].sort((a, b) => a - b)
+        : null;
+    const toggle = several && !span && (ev.ctrlKey || ev.metaKey);
+    if (!span) anchors.set(select, option);
+    const changes: HtmlChange[] = [];
+    options.forEach((o, i) => {
+      const was = attr(o, 'selected') ?? null;
+      const on = span
+        ? i >= span[0] && i <= span[1]
+        : o === option
+          ? !toggle || was === null
+          : toggle && was !== null;
+      if (on === (was !== null)) return;
+      if (on) o.attribs.selected = '';
+      else delete o.attribs.selected;
+      changes.push({
+        type: 'attributes',
+        target: o,
+        attributeName: 'selected',
+        oldValue: was,
+      });
+    });
+    forms.remember(select);
+    if (!changes.length) return;
+    changed(select, optionValue(option), changes);
+    fire('input', select);
+    fire('change', select);
+  };
+
   /** A summary's activation behaviour (HTML 4.11.2): its details open, or
    *  close. The attribute is the state, as `checked` is a checkbox's, and
    *  `details[open]` a selector a sheet styles by. */
@@ -740,6 +790,7 @@ export function useForms(options: FormsOptions): Forms {
     } else if (at.kind === 'image')
       press(at.element, imagePoint(at.element, ev));
     else if (at.kind === 'check') activateLabel(at.element);
+    else if (at.kind === 'option') pickOption(at.control, at.element, ev);
     else press(at.element);
   };
 
@@ -952,6 +1003,7 @@ type Pressable =
   | { kind: 'button'; element: Element }
   | { kind: 'image'; element: Element }
   | { kind: 'check'; element: Element }
+  | { kind: 'option'; element: Element; control: Element }
   | { kind: 'summary'; element: Element }
   | { kind: 'label'; element: Element; control: Element };
 
@@ -987,6 +1039,14 @@ function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
     // a checkbox or a radio button the document draws (`drawnControl`)
     if (isCheckable(node)) {
       return isDisabled(node) ? null : { kind: 'check', element: node };
+    }
+    // an option of a list box, which the document draws
+    if (tag === 'option') {
+      const select = selectOf(node);
+      if (!select || isDropDown(select)) return null;
+      return isDisabled(select) || optionDisabled(node)
+        ? null
+        : { kind: 'option', element: node, control: select };
     }
     if (tag === 'label') {
       const control = labeledControl(node);

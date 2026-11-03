@@ -746,9 +746,7 @@ test("a checkbox's native look takes none of the page's padding or border", asyn
     [plain.width, plain.height],
     'no larger for them',
   );
-  const read = el.computedStyle(
-    boxOf(el, 'framed').el as unknown as Element,
-  )!;
+  const read = el.computedStyle(boxOf(el, 'framed').el as unknown as Element)!;
   assert.deepStrictEqual(
     [read['border-top-width'], read['padding-top']],
     ['0px', '0px'],

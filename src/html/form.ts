@@ -27,6 +27,7 @@ import {
   attr,
   childrenOf,
   elementsIn,
+  isDropDown,
   isElement,
   isForeign,
   parsedForm,
@@ -327,7 +328,7 @@ export function optionValue(option: Element): string {
   return attr(option, 'value') ?? optionLabel(option);
 }
 
-function optionDisabled(option: Element): boolean {
+export function optionDisabled(option: Element): boolean {
   if (attr(option, 'disabled') !== undefined) return true;
   const parent = option.parent;
   return (
@@ -336,6 +337,14 @@ function optionDisabled(option: Element): boolean {
     tagOf(parent) === 'optgroup' &&
     attr(parent, 'disabled') !== undefined
   );
+}
+
+/** The `<select>` whose list an `<option>` is in, straight or through an
+ *  `<optgroup>`, as `optionElements` finds them. */
+export function selectOf(option: Element): Element | null {
+  let at = option.parent;
+  if (at && isElement(at) && tagOf(at) === 'optgroup') at = at.parent;
+  return at && isElement(at) && tagOf(at) === 'select' ? at : null;
 }
 
 /** Whether a `<select>` is a list box that takes many options. */
@@ -354,6 +363,8 @@ export function selectedOptions(select: Element): Element[] {
   const marked = options.filter((o) => attr(o, 'selected') !== undefined);
   if (isMultiple(select)) return marked;
   if (marked.length) return [marked[marked.length - 1]];
+  // a list box selects none of itself, where a drop-down box shows one
+  if (!isDropDown(select)) return [];
   const first = options.find((o) => !optionDisabled(o));
   return first ? [first] : [];
 }

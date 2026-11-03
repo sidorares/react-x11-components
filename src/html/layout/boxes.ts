@@ -27,6 +27,7 @@ import {
   imageUrlOf,
   isElement,
   isCheckable,
+  isDropDown,
   isInputButton,
   isText,
   inImpliedHead,
@@ -6440,8 +6441,10 @@ function replacedKind(el: Element, tag: string): ReplacedKind {
       return 'frame';
     case 'textarea':
       return 'textarea';
+    // a list box is the document's, its options boxes in a box that
+    // scrolls (`settleListBox`); a drop-down box is a widget
     case 'select':
-      return 'select';
+      return isDropDown(el) ? 'select' : 'none';
     // A `<button>` is not one: its content is the document's, laid out and
     // drawn like any box's (the UA sheet's `button` rule), where an
     // `<input type=submit>` has only a value to show and is a widget.
