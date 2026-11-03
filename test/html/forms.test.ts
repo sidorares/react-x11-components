@@ -33,7 +33,7 @@ import type { Element } from 'domhandler';
 import { elementsIn } from '../../src/html/dom.js';
 import { Html, useHtmlHandle } from '../../src/index.js';
 import type { HtmlViewNode } from '../../src/html/index.js';
-import { controlValue } from '../../src/html/form.js';
+import { controlValue, selectedOptions } from '../../src/html/form.js';
 import { isTransparent, parseColor } from '../../src/html/css/values.js';
 import { lineHeightMultiplier } from '../../src/html/layout/inline.js';
 import type { FontsLike } from '../../src/html/layout/inline.js';
@@ -1560,6 +1560,11 @@ metric(
     const selected = (...ids: string[]) =>
       ids.filter((id) => boxOf(el, id).el!.attribs.selected !== undefined);
     assert.deepStrictEqual(selected('one', 'a'), [], 'none until pressed');
+    assert.deepStrictEqual(
+      selectedOptions(boxOf(el, 'few').el as unknown as Element),
+      [],
+      'and none by default, as a drop-down box has',
+    );
     const target = el as unknown as DrawnNode;
     const press = async (
       id: string,
