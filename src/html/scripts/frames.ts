@@ -268,12 +268,15 @@ function FrameDocument({
       if (drawn.get(document) === handle) drawn.delete(document);
     };
   }, [realm, host, document, handle]);
-  // a frame in this frame is a frame of this frame's realm
+  // a frame in this frame is a frame of this frame's realm, and in a document
+  // with no realm of its own one of the page's, which loads it
+  // (`DomHost._holdsFrames`)
   const inner = (): FrameContext | null => {
     const runner = scripts.runner?.();
-    return runner ? { ...context, parent: runner, seams } : null;
+    if (runner) return { ...context, parent: runner, seams };
+    return realm ? null : { ...context, seams };
   };
-  const holder = inner();
+  const holder = scripts.runner?.() ? inner() : null;
   // Where a link or a form in the frame sends what it asks for: the frame,
   // a frame its target names in the frame's document, a new tab, or the
   // page — `_top`, and `_parent`, which in a frame in a frame is the frame
@@ -307,7 +310,8 @@ function FrameDocument({
         });
       } else outer.navigate(to, 'tab');
     } else if (where === 'here') host.navigateFrame(frame, to, post);
-    else scripts.navigateFrame?.(where, to, post);
+    else if (scripts.navigateFrame) scripts.navigateFrame(where, to, post);
+    else if (!realm) host.navigateFrame(where, to, post);
   };
   const { look } = context;
   return hx(

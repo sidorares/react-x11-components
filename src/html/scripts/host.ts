@@ -966,6 +966,11 @@ const FRAME_LOOK: RootLook = {
 /** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
 const FRAME_SIZE = { width: 300, height: 150 };
 
+/** How deep frames in documents with no realm of their own are followed
+ *  (`_loadsFrame`): a document that frames itself is refused before this, and a
+ *  chain of others' stops here. */
+const MAX_FRAME_DEPTH = 32;
+
 /** The pseudo-elements the host answers a computed style for: a `::before`
  *  or an `::after`, and the highlights (`highlightKey`). */
 type ComputedPseudo = 'before' | 'after' | HighlightPseudo | null;
@@ -2422,7 +2427,7 @@ export class DomHost {
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
-      if (!this._inDocument(frame)) continue;
+      if (!this._loadsFrame(frame)) continue;
       const document = this._frames.get(frame);
       let url = this._frameAt.get(frame) ?? 'about:blank';
       // a `srcdoc` document's base is the page's (HTML 4.8.5)
@@ -2535,7 +2540,7 @@ export class DomHost {
   /** Whether a frame in the document is still loading its document. */
   get framesLoading(): boolean {
     for (const frame of this._framesLoading) {
-      if (!this._inDocument(frame)) this._framesLoading.delete(frame);
+      if (!this._loadsFrame(frame)) this._framesLoading.delete(frame);
     }
     return this._framesLoading.size > 0;
   }
@@ -6952,7 +6957,7 @@ export class DomHost {
    * hidden frame is never sent.
    */
   navigateFrame(frame: Element, url: string, post: FramePost | null): void {
-    if (!this._inDocument(frame)) return;
+    if (!this._loadsFrame(frame)) return;
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);
     this._loadFrame(frame, true, post);
@@ -7053,7 +7058,7 @@ export class DomHost {
    * frame had its first `about:blank`, and the frame stayed blank.
    */
   private _sendsFrame(el: Element, name: string, set: boolean): boolean {
-    if (!this._frames.has(el) || !this._inDocument(el)) return false;
+    if (!this._frames.has(el) || !this._loadsFrame(el)) return false;
     if (el.name === 'object') return set && name === 'data';
     if (name === 'srcdoc') return el.name === 'iframe';
     return name === 'src' && !(el.name === 'iframe' && 'srcdoc' in el.attribs);
@@ -7337,7 +7342,7 @@ export class DomHost {
   private _framesLeft(): void {
     this._framesGone = false;
     for (const frame of [...this._framesShown]) {
-      if (!this._inDocument(frame)) this._unloadFrameDocument(frame);
+      if (!this._loadsFrame(frame)) this._unloadFrameDocument(frame);
     }
   }
 
@@ -7379,9 +7384,14 @@ export class DomHost {
     this._s.frameList.add(frame);
     this._s.framesChanged();
     if (realm) return;
-    if (this._inDocument(frame)) this._framesShown.add(frame);
+    if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
+    }
+    // its own frames, which no realm of its own loads, are loaded here, as
+    // the page's are as they are met
+    if (this._seams.drawsFrames && this._holdsFrames(doc)) {
+      this._framesIn(doc.children);
     }
     loaded();
   }
@@ -7456,7 +7466,7 @@ export class DomHost {
     if (isForeign(frame) || (frame.name === 'object' && !frame.attribs.data)) {
       return;
     }
-    if (!this._frames.has(frame) && this._inDocument(frame)) {
+    if (!this._frames.has(frame) && this._loadsFrame(frame)) {
       this._frameDocument(frame);
     }
   }
@@ -7567,6 +7577,41 @@ export class DomHost {
    *  Contentsquare keeps its frame in a closed one. */
   private _inDocument(node: AnyNode): boolean {
     return shadowIncludingRoot(node) === this.document;
+  }
+
+  /**
+   * Whether a frame is one this realm loads: in this document, or in the
+   * document of one of its frames that has no realm of its own and is shown,
+   * which nothing else would load it from (`_holdsFrames`).
+   */
+  private _loadsFrame(frame: Element): boolean {
+    let at: AnyNode = frame;
+    for (let depth = 0; depth < MAX_FRAME_DEPTH; depth += 1) {
+      const doc = shadowIncludingRoot(at);
+      if (doc === this.document) return true;
+      if (!(doc instanceof Document) || !this._holdsFrames(doc)) return false;
+      const holder = this._frameOf.get(doc);
+      if (!holder || this._frames.get(holder) !== doc) return false;
+      at = holder;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a frame's document of this realm's loads the frames in it here:
+   * one with no realm of its own, of this realm's origin, or a sandbox's,
+   * whose every frame is of an origin of none (`_frameSandbox`). Another
+   * origin's holds frames whose `about:blank` and `srcdoc` would be its own,
+   * which this realm has no way to give them, so it holds none, as before.
+   */
+  private _holdsFrames(doc: Document): boolean {
+    if (this._s.realms.has(doc) || this._xml.has(doc)) return false;
+    const holder = this._frameOf.get(doc);
+    if (!holder) return false;
+    return (
+      ((this._s.sandboxes.get(doc) ?? 0) & SB_ORIGIN) !== 0 ||
+      this._reaches(holder)
+    );
   }
 
   /**

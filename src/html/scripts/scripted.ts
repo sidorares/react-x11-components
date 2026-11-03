@@ -463,6 +463,9 @@ export interface InternalHtmlProps extends HtmlProps {
    *  link opens, a download, `autofocus` — and that what it loads is asked for
    *  as of no origin. */
   _sandbox?: number;
+  /** No engine has the document's links, scripts off: where they would open
+   *  a window or save a file, `<Html>` holds them to `_sandbox` itself. */
+  _linksAlone?: boolean;
 }
 
 /** What the element `<Html>` draws with is, for the defaults: a node of

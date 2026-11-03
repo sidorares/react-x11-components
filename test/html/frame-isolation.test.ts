@@ -297,6 +297,44 @@ test('a sandbox with no allow-scripts runs nothing, and its noscript is what it 
   assert.ok(!s.logs.join('\n').includes('put in ran'), s.logs.join('\n'));
 });
 
+/** A frame's document with no script of its own, around a frame that runs
+ *  `code`. */
+const around = (code: string): string =>
+  `<p>no script</p><iframe srcdoc="<script>${code}<\/script>"></iframe>`;
+
+test('a frame in a document with no script of its own loads and runs, as one in the page does', async () => {
+  const s = await scene(`<iframe src="${APP}a"></iframe>`, {
+    [`${APP}a`]: around(`console.log('nested ran', self.origin)`),
+  });
+  assert.equal(await until(s, 'nested ran'), APP.slice(0, -1));
+});
+
+test("a frame in a sandbox with no script of its own is the sandbox's, and runs only as it lets it", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe sandbox src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: around(`console.log('nested a', self.origin)`),
+      [`${APP}b`]: around(`console.log('nested b', self.origin)`),
+    },
+  );
+  assert.equal(await until(s, 'nested a'), 'null');
+  await settle();
+  assert.ok(!s.logs.some((l) => l.includes('nested b')), s.logs.join('\n'));
+});
+
+test("a frame in another origin's document with no script is not run as the page's", async () => {
+  const s = await scene(`<iframe src="${OTHER}a"></iframe>`, {
+    [`${OTHER}a`]: around(`console.log('nested of other', self.origin)`),
+  });
+  await settle(600);
+  const ran = s.logs.find((l) => l.includes('nested of other'));
+  assert.ok(
+    !ran || !ran.endsWith(APP.slice(0, -1)),
+    `ran as the page's: ${ran}`,
+  );
+});
+
 test('a sandboxed srcdoc is sandboxed, of no origin, whatever the page it came from', async () => {
   const s = await scene(
     `${script(`window.secret = 'page-secret';`)}

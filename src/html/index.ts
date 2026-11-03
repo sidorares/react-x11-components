@@ -1168,7 +1168,9 @@ export function Html(props: HtmlProps): ReactElement {
   const sandbox = props.headers ? sandboxOfPolicy(props.headers) : 0;
   return h(
     HtmlDocument,
-    (sandbox ? { ...props, _sandbox: sandbox } : props) as InternalHtmlProps,
+    (sandbox
+      ? { ...props, _sandbox: sandbox, _linksAlone: true }
+      : props) as InternalHtmlProps,
   );
 }
 
@@ -1247,7 +1249,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     };
   }, [props.onResource, sandbox, baseUrl]);
   const followed = React.useMemo(() => {
-    const refuses = sandbox & (SB_POPUPS | SB_PROPAGATES | SB_DOWNLOADS);
+    const refuses = props._linksAlone
+      ? sandbox & (SB_POPUPS | SB_PROPAGATES | SB_DOWNLOADS)
+      : 0;
     if (!onLink || props.scripts || (!onDownload && !refuses)) return onLink;
     return (href: string, ev: X11MouseEvent<DrawnNode>) => {
       const anchor = linkAround(viewNode.current?.elementAtPoint(ev.x, ev.y));
@@ -1255,7 +1259,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
       // with no script to open a window for it, a sandbox's link to a new
       // one goes nowhere: no tab carries its flags
       if (
-        sandbox & (SB_POPUPS | SB_PROPAGATES) &&
+        refuses & (SB_POPUPS | SB_PROPAGATES) &&
         navigableFor(document, linkTarget(anchor, document)) === 'tab'
       ) {
         return;
@@ -1266,11 +1270,11 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
         return;
       }
       // nor does what it would save (HTML 4.6.5, "allowed to download")
-      if (sandbox & SB_DOWNLOADS) return;
+      if (refuses & SB_DOWNLOADS) return;
       if (onDownload) onDownload({ url: href, filename: name });
       else onLink(href, ev);
     };
-  }, [onLink, onDownload, props.scripts, baseUrl, sandbox]);
+  }, [onLink, onDownload, props.scripts, props._linksAlone, baseUrl, sandbox]);
   const links = useLinkClicks(followed);
   const menu = useSelectionMenu(selectable);
 
