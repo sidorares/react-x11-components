@@ -3740,6 +3740,15 @@ in order, and what one writes goes in after it, parsed as a fragment. And an
 inline script that `document.write` writes runs once the script that wrote
 it has ended, where a browser runs it inside the `write`.
 
+A frame's document a page writes with `open`, `write` and `close` is parsed at
+`close`, as a document is, and the frame hears `load` a task later. `open` ends
+whatever the frame was loading, so a frame written straight after it goes in
+tells `load` once, and one opened and never closed tells none and holds up no
+`load` of the page's. A frame sent to a `blob:` URL shows what the blob holds,
+at its type, read from the realm that made it or one of its origin around it as
+the address is set, so a page may revoke the URL straight after. One no realm
+holds is a load that failed, and no network is asked.
+
 **What a script focuses has the focus from then on, whenever its widget
 comes.** A control has no widget until the render after it is put in, or
 after a page still loading is laid out, so `focus()` tells `focusin` and
