@@ -55,6 +55,7 @@ import type {
   ScriptRequest,
 } from '../node.js';
 import type { MarginLength } from '../paint.js';
+import type { ImageResponse } from '../resources.js';
 import type { MediaEventKind } from '../media.js';
 import { attachShadow, parseFragment, shadowRootOf } from '../index.js';
 import type { AdoptedSheet } from '../dom.js';
@@ -165,7 +166,8 @@ import {
   requestLock,
 } from './page-channels.js';
 import type { ChannelEnd } from './page-channels.js';
-import { drawnWithin, svgAnswer } from './svg-geometry.js';
+import { drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
+import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
@@ -207,6 +209,7 @@ import {
   forbiddenMethod,
   headerOf,
   nextHop,
+  isRedirectStatus,
   redirectOf,
   redirectTainted,
 } from './fetch-hops.js';
@@ -214,6 +217,7 @@ import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
   SB_DOWNLOADS,
+  SB_FORMS,
   SB_ORIGIN,
   SB_POPUPS,
   SB_PROPAGATES,
@@ -227,7 +231,14 @@ import { framingRefused } from './framing.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
-import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import {
+  isPlaylist,
+  MEDIA_ENOUGH,
+  MEDIA_MOST,
+  MediaReader,
+  readPlaylist,
+} from './media.js';
+import type { Playlist } from './media.js';
 import { removeClip, VideoClips, writeClip } from './clips.js';
 import { PageContexts } from './gl.js';
 import { PageSources } from './media-sources.js';
@@ -470,6 +481,12 @@ export interface FetchResponse {
   /** The number an opaque response's body is held by here, which a realm
    *  hands back to keep it or to answer with it. */
   held?: number;
+  /** Where the redirect an `opaqueredirect` stands for goes, as its
+   *  `Location` said, and its status: the host's alone, which no realm is
+   *  told, and what a navigation a worker answers with one follows (Fetch
+   *  4.4, a navigation's manual redirect). */
+  location?: string | null;
+  redirectStatus?: number;
 }
 
 /** A page's request as the facade hands it over, with what decides
@@ -512,6 +529,10 @@ export interface HandleInternals {
   /** Whether an `<embed>` may hold a document, by what the document renders
    *  of it (`HtmlViewNode.embedRendered`). Null until it has styles. */
   embedRendered(element: Element): boolean | null;
+  /** Whether the document has something mounted over an embedded element,
+   *  as it last reported them (`HtmlViewNode.mountsEmbedded`). Null where it
+   *  owes a layout. */
+  mountsEmbedded(element: Element): boolean | null;
   /** What the reader's selection is, to compare. */
   selectionKey(): string;
   /** What is under a pointer that did not move is `:hover` now. */
@@ -579,6 +600,8 @@ export interface HandleInternals {
   scriptFontsChanged(id: number, added: boolean): void;
   /** What `svg-geometry.ts` asks of the document. */
   svgMeasure(): SvgMeasure | null;
+  /** SVG's properties of an element as `getComputedStyle` reads them. */
+  svgComputed(element: Element): Record<string, string> | null;
   /** What a canvas's context asks of the fonts. */
   canvasText(): CanvasText | null;
   /** Where what a `<foreignObject>` holds was laid out in it. */
@@ -656,6 +679,8 @@ export interface HandleInternals {
     width: number;
     height: number;
     src: string;
+    /** Where what it shows came from (`ResourceStore.response`). */
+    response?: ImageResponse | null;
   };
   /** What the document's media queries are answered from, as a key that
    *  moves where an answer may (`HtmlViewNode.mediaEnvironment`). */
@@ -884,6 +909,14 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+  /**
+   * Whether what the page mounts over a frame is the engine's own view of
+   * its document (`FramePage`), which tells when that document has all it
+   * asked for in (`followFrame`). Absent where a host mounts its own over
+   * embedded elements (`renderEmbedded`): a frame's `load` then waits for
+   * nothing its document asked for.
+   */
+  framesFollowed?: boolean;
 }
 
 /** All a page is told of an opaque response. */
@@ -894,18 +927,6 @@ const OPAQUE_HEAD = {
   type: 'opaque',
   url: '',
   redirected: false,
-};
-
-/** All a page is told of a redirect it asked to see (Fetch 2.2.6, "an opaque-
- *  redirect filtered response"): that there was one. */
-const OPAQUE_REDIRECT: FetchResponse = {
-  url: '',
-  status: 0,
-  statusText: '',
-  redirected: false,
-  headers: [],
-  body: '',
-  type: 'opaqueredirect',
 };
 
 /** How many opaque responses a document holds at once (`_opaques`). */
@@ -942,6 +963,9 @@ function hex(bytes: Uint8Array): string {
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
+/** A frame's navigation that came to a download its sandbox may not save. */
+class DownloadRefused extends Error {}
+
 class DomError extends Error {
   constructor(
     readonly kind: string,
@@ -972,6 +996,11 @@ const FRAME_LOOK: RootLook = {
 
 /** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
 const FRAME_SIZE = { width: 300, height: 150 };
+
+/** How deep frames in documents with no realm of their own are followed
+ *  (`_loadsFrame`): a document that frames itself is refused before this, and a
+ *  chain of others' stops here. */
+const MAX_FRAME_DEPTH = 32;
 
 /** The pseudo-elements the host answers a computed style for: a `::before`
  *  or an `::after`, and the highlights (`highlightKey`). */
@@ -1190,101 +1219,19 @@ function hasScripts(doc: Document): boolean {
   );
 }
 
-/** The elements HTML's parser keeps in the head while no body content has
- *  come (HTML 13.2.6.4.4). */
-const HEAD_CONTENT = new Set([
-  'base',
-  'basefont',
-  'bgsound',
-  'link',
-  'meta',
-  'noframes',
-  'noscript',
-  'script',
-  'style',
-  'template',
-  'title',
-]);
+/** How long a user's press or key lets a page do what takes one: the realm's
+ *  window, as Chrome's (`dom.ts`). */
+const TRANSIENT_ACTIVATION_MS = 5000;
 
-/**
- * A document's top as HTML's parser makes it (HTML 13.2.6.4.1–7): its
- * doctype and the comments before it, then an `<html>` holding a head and
- * a body, what goes in each sorted as the parser sorts it — where markup
- * left any of them out, as `document.write`'s and a frame's often do, and
- * as `<Html>`'s parser leaves a fragment. Acid3's test 71 writes a title, a
- * span and a script, and counts what the document came to.
- */
-function documentTree(kids: ChildNode[]): ChildNode[] {
-  const out: ChildNode[] = [];
-  let html: Element | null = null;
-  const content: ChildNode[] = [];
-  for (const kid of kids) {
-    if (kid instanceof Element && kid.name === 'html' && !html) {
-      html = kid;
-      content.push(...kid.children);
-      for (const inner of kid.children.slice()) DomUtils.removeElement(inner);
-    } else if (
-      !html &&
-      !content.length &&
-      (isDoctype(kid) || kid instanceof Comment)
-    ) {
-      out.push(kid);
-    } else if (
-      kid instanceof Text &&
-      !/[^ \t\n\f\r]/.test(kid.data) &&
-      !content.length
-    ) {
-      // white space before the document's content is no part of it
-    } else content.push(kid);
-  }
-  html ??= new Element('html', {}, []);
-  let head: Element | null = null;
-  let body: Element | null = null;
-  const headOf = (): Element => {
-    if (!head) {
-      head = new Element('head', {}, []);
-      DomUtils.appendChild(html!, head);
-    }
-    return head;
-  };
-  for (const node of content) {
-    if (node instanceof Element && node.name === 'head' && !head && !body) {
-      head = node;
-      DomUtils.appendChild(html, node);
-    } else if (
-      node instanceof Element &&
-      (node.name === 'body' || node.name === 'frameset')
-    ) {
-      if (!body) {
-        headOf();
-        body = node;
-        DomUtils.appendChild(html, node);
-      } else {
-        for (const key in node.attribs) body.attribs[key] ??= node.attribs[key];
-        for (const inner of node.children.slice()) {
-          DomUtils.appendChild(body, inner);
-        }
-      }
-    } else if (
-      !body &&
-      ((node instanceof Element && HEAD_CONTENT.has(node.name)) ||
-        node instanceof Comment ||
-        (node instanceof Text && !/[^ \t\n\f\r]/.test(node.data)))
-    ) {
-      DomUtils.appendChild(headOf(), node);
-    } else {
-      if (!body) {
-        headOf();
-        body = new Element('body', {}, []);
-        DomUtils.appendChild(html, body);
-      }
-      DomUtils.appendChild(body, node);
-    }
-  }
-  headOf();
-  if (!body) DomUtils.appendChild(html, new Element('body', {}, []));
-  out.push(html);
-  return out;
+/** A document of nothing, `about:blank`'s, for a window's first: an `<html>`
+ *  holding a head and a body, as HTML's parser makes one of no markup. */
+export function blankDocument(): Document {
+  const html = new Element('html', {}, []);
+  DomUtils.appendChild(html, new Element('head', {}, []));
+  DomUtils.appendChild(html, new Element('body', {}, []));
+  const doc = new Document([]);
+  DomUtils.appendChild(doc, html);
+  return doc;
 }
 
 /** Text as it goes in markup, and an attribute's value. */
@@ -1298,6 +1245,11 @@ const escapeAttribute = (text: string): string =>
 function release(response: FetchResponse): void {
   void response.chunks?.[Symbol.asyncIterator]().return?.();
 }
+
+/** The types an HLS playlist is served as (RFC 8216, 4, and the two older
+ *  names players still meet). */
+const HLS_TYPE =
+  /^\s*(?:application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|audio\/(?:x-)?mpegurl)\b/i;
 
 /** Bytes as base64, which is how they cross to the page. */
 /** Take a notification down, whatever the host's hook makes of it. */
@@ -1601,7 +1553,12 @@ const RAW_TEXT = new Set([
  * comments before it left out; `<!--` and `-->` are not rules, and
  * neither is what a `;` ends that is no at-rule, which CSS drops.
  */
-export function cssRulesOf(css: string): string[] {
+export function cssRulesOf(
+  css: string,
+  /** Told of what was no rule and dropped, which `insertRule`, handed one
+   *  rule and nothing else, refuses (CSSOM 1, "parse a CSS rule"). */
+  dropped?: { any: boolean },
+): string[] {
   const out: string[] = [];
   const n = css.length;
   // the closing bracket of each block open, innermost last
@@ -1613,7 +1570,10 @@ export function cssRulesOf(css: string): string[] {
     const rule = css.slice(start, at).trim();
     start = at;
     if (!rule || rule === '<!--' || rule === '-->') return;
-    if (statement && !rule.startsWith('@')) return;
+    if (statement && !rule.startsWith('@')) {
+      if (dropped) dropped.any = true;
+      return;
+    }
     out.push(rule);
   };
   for (let i = 0; i < n; i++) {
@@ -1663,7 +1623,10 @@ export function cssRulesOf(css: string): string[] {
     let rule = out.pop() as string;
     const atRule = rule[0] === '@';
     // what has no block by then is no rule, but for an at-rule
-    if (!atRule && !open.includes('}')) return out;
+    if (!atRule && !open.includes('}')) {
+      if (dropped) dropped.any = true;
+      return out;
+    }
     if (inside && inside !== '*/' && /(?<!\\)(?:\\\\)*\\$/.test(rule)) {
       rule = rule.slice(0, -1);
     }
@@ -2263,6 +2226,15 @@ export class DomHost {
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
     if (event.type.startsWith('mouse')) this._under = event.target;
+    // a user's press or key has used the page (HTML 6.4.1, "activation
+    // triggering input event"): what the realm notes of it is the page's to
+    // say, so what a gesture lets through asks this
+    if (
+      event.type === 'mousedown' ||
+      (event.type === 'keydown' && event.key !== 'Escape')
+    ) {
+      this._activatedAt = Date.now();
+    }
     const answer = this.entries?.call('__event', {
       type: event.type,
       target: this.idOf(event.target),
@@ -2361,6 +2333,29 @@ export class DomHost {
     return this.sandbox & SB_PROPAGATES ? this.sandbox : 0;
   }
 
+  /** A window with no opener. That is a tab, the host's, unless this document
+   *  may open none, or has flags to hand on, which a tab cannot carry: a host
+   *  is told of no document that keeps them (`openApart`). */
+  private _openTab(url: string, target: string, noreferrer: boolean): void {
+    if (this.sandbox & SB_POPUPS) return;
+    const name = /^_blank$/i.test(target) ? '' : target;
+    if (this.popupSandbox) {
+      const features = { popup: false, noreferrer };
+      this.windows?.apart({ url, name, features, post: null });
+    } else this._seams.navigate(url, 'tab', null, name);
+  }
+
+  /** When a user last pressed or keyed in this document, as the host saw it
+   *  (`dispatch`). */
+  private _activatedAt = -Infinity;
+
+  /** Whether a user's press or key is behind what a page does now (HTML
+   *  6.4.1, "transient activation"), by the host's clock: as long as the
+   *  realm's `TRANSIENT_ACTIVATION_MS`. */
+  private _transientlyActive(): boolean {
+    return Date.now() - this._activatedAt < TRANSIENT_ACTIVATION_MS;
+  }
+
   /** Whether this document may send the window at the top of it somewhere
    *  (HTML 7.4.2.3, "allowed by sandboxing to navigate"), a gesture behind it
    *  or not. */
@@ -2371,11 +2366,6 @@ export class DomHost {
   frameDocumentAt(id: number): Document | null {
     const frame = this._nodes.get(id);
     return (frame && this._frames.get(frame as Element)) ?? null;
-  }
-
-  /** A document of nothing, `about:blank`'s, for a window's first. */
-  blankDocument(): Document {
-    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -2394,7 +2384,7 @@ export class DomHost {
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
-      if (!this._inDocument(frame)) continue;
+      if (!this._loadsFrame(frame)) continue;
       const document = this._frames.get(frame);
       let url = this._frameAt.get(frame) ?? 'about:blank';
       // a `srcdoc` document's base is the page's (HTML 4.8.5)
@@ -2429,7 +2419,7 @@ export class DomHost {
     if (!frame || (frame.name !== 'object' && frame.name !== 'embed')) return;
     if (!this._seams.drawsFrames || this._s.live.has(doc)) return;
     this._s.live.add(doc);
-    if (this._inDocument(frame)) {
+    if (this._loadsFrame(frame)) {
       this._tell(frame, {
         type: 'attributes',
         target: frame,
@@ -2543,13 +2533,92 @@ export class DomHost {
   /** Whether a frame in the document is still loading its document. */
   get framesLoading(): boolean {
     for (const frame of this._framesLoading) {
-      if (!this._inDocument(frame)) this._framesLoading.delete(frame);
+      if (!this._loadsFrame(frame)) this._framesLoading.delete(frame);
     }
     return this._framesLoading.size > 0;
   }
   private _frameDone(frame: Element): void {
     if (!this._framesLoading.delete(frame)) return;
     if (!this.framesLoading) this.onFramesLoaded?.();
+  }
+
+  /** The frames a view of the page follows (`FramePage`), each with how
+   *  many do. */
+  private _frameViews = new Map<Element, number>();
+  /** The `load` each document of this realm's in an `<iframe>` owes the
+   *  frame, until the view that draws it says it is loaded
+   *  (`frameViewLoaded`). */
+  private _loadsOwed = new WeakMap<Document, () => void>();
+  /** The frames whose document owes its `load` and that no view follows
+   *  yet, asked again after a paint whether the page mounts one
+   *  (`_awaitView`). */
+  private _viewsAwaited = new Set<Element>();
+
+  /**
+   * A view of the page follows a frame for as long as the page mounts one
+   * over it, and draws whatever document the frame shows: one of this
+   * realm's has its `load` wait for that view to have all it asked for in,
+   * since only a view asks for its images and its sheets. Answers the way to
+   * stop following.
+   */
+  followFrame(frame: Element): () => void {
+    this._frameViews.set(frame, (this._frameViews.get(frame) ?? 0) + 1);
+    this._viewsAwaited.delete(frame);
+    return () => {
+      const left = (this._frameViews.get(frame) ?? 1) - 1;
+      if (left > 0) {
+        this._frameViews.set(frame, left);
+        return;
+      }
+      this._frameViews.delete(frame);
+      // a view goes as React commits, where no page code runs
+      void Promise.resolve().then(() => this._awaitView(frame));
+    };
+  }
+
+  /** The view of a frame's document of this realm's has it loaded, all it
+   *  asked for in: the frame's `load`, where it waited for it. */
+  frameViewLoaded(doc: Document): void {
+    const owed = this._loadsOwed.get(doc);
+    if (!owed) return;
+    this._loadsOwed.delete(doc);
+    owed();
+  }
+
+  /**
+   * Whether an `<iframe>`'s document of this realm's has its `load` wait
+   * for a view (HTML 13.2.7, "the end"): one follows the frame, or the page
+   * mounts one over it, or may once it has laid out what changed
+   * (`HtmlViewNode.mountsEmbedded`). One the page mounts nothing over — not
+   * rendered, or refused a mount — has nothing on its way, and a host that
+   * mounts its own views over frames (`framesFollowed`) says nothing of
+   * what they asked for.
+   */
+  private _waitsForView(frame: Element): boolean {
+    if (frame.name !== 'iframe' || !this._seams.framesFollowed) return false;
+    if (this._frameViews.has(frame)) return true;
+    const mounts = this._seams.handle.mountsEmbedded?.(frame);
+    if (!mounts && mounts !== null) return false;
+    this._viewsAwaited.add(frame);
+    return true;
+  }
+
+  /** A frame whose document waits for a view no one follows it with yet:
+   *  still awaited where the page mounts one, or may, and loaded now where
+   *  it mounts none. A frame out of the document hears nothing. */
+  private _awaitView(frame: Element): void {
+    this._viewsAwaited.delete(frame);
+    const doc = this._frames.get(frame);
+    if (!doc || !this._loadsOwed.has(doc) || this._frameViews.has(frame)) {
+      return;
+    }
+    if (!this._inDocument(frame)) {
+      this._loadsOwed.delete(doc);
+      return;
+    }
+    const mounts = this._seams.handle.mountsEmbedded?.(frame) ?? false;
+    if (mounts === false) this.frameViewLoaded(doc);
+    else this._viewsAwaited.add(frame);
   }
 
   /**
@@ -3023,7 +3092,7 @@ export class DomHost {
     if (kept) return kept;
     const data = (node as ProcessingInstruction).data ?? '';
     const m =
-      /^!doctype\s+([^\s>]+)(?:\s+public\s+(?:"([^"]*)"|'([^']*)'))?(?:\s+(?:system\s+)?(?:"([^"]*)"|'([^']*)'))?/i.exec(
+      /^!doctype\s+([^\s>]+)(?:\s+public\s*(?:"([^"]*)"|'([^']*)'))?(?:\s*(?:system\s*)?(?:"([^"]*)"|'([^']*)'))?/i.exec(
         data,
       );
     const out: [string, string, string] = m
@@ -4177,7 +4246,9 @@ export class DomHost {
       case 'sheetInsert': {
         const el = this._element(a);
         const state = this._sheetOf(el);
-        const rules = cssRulesOf(text(b));
+        // one rule, and what follows it as much a syntax error as nothing
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(b), dropped);
         const brace = rules.length === 1 ? rules[0].indexOf('{') : -1;
         const prelude =
           brace > 0 && !rules[0].startsWith('@')
@@ -4187,6 +4258,7 @@ export class DomHost {
           prelude === null ? null : highlightSelectorValid(prelude);
         if (
           rules.length !== 1 ||
+          dropped.any ||
           (prelude !== null &&
             (transitionSelectorValid(prelude) === false ||
               highlights === false))
@@ -4245,7 +4317,7 @@ export class DomHost {
         >;
         // the facade asks first, for the error a page should see, and what
         // it hands over is a page's to change
-        if (!this._workerAllowed(String(init.url))) {
+        if (!this._workerAllowed(String(init.url), typeof b === 'string')) {
           throw new DomError(
             'SecurityError',
             "A worker's script is its own origin's.",
@@ -4499,8 +4571,12 @@ export class DomHost {
       }
       // a sheet's text as rules, for a sheet of the page's own and what a
       // grouping rule holds
-      case 'cssRules':
-        return JSON.stringify(cssRulesOf(text(a)));
+      case 'cssRules': {
+        // with `b`, one rule and nothing after it, as `insertRule` takes it
+        const dropped = { any: false };
+        const rules = cssRulesOf(text(a), b === true ? dropped : undefined);
+        return JSON.stringify(dropped.any ? [] : rules);
+      }
       // the document's sheets, in tree order: its `<style>`s and the
       // `<link>`s that are a stylesheet
       case 'sheets': {
@@ -4859,6 +4935,8 @@ export class DomHost {
           ...Object.keys(style),
           ...SHORTHAND_NAMES,
           ...declaredProperties(),
+          ...Object.keys(SVG_PROPERTIES),
+          'marker',
         ].join(',');
       }
       case 'computed': {
@@ -4871,6 +4949,15 @@ export class DomHost {
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
           style ? JSON.stringify(d ? cssomShorthands(style) : style) : '';
+        // SVG's properties, asked for apart as a page reads one
+        // (`svg-properties.ts`)
+        if (d === 'svg') {
+          const el = this._element(a);
+          if (!this._inDocument(el)) return '';
+          const handle = this._drawing(el) as Partial<HandleInternals> | null;
+          const svg = handle?.svgComputed?.(el);
+          return svg ? JSON.stringify(svg) : '';
+        }
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
           return send(
@@ -4898,6 +4985,8 @@ export class DomHost {
       }
       case 'computedShorthands':
         return JSON.stringify(SHORTHAND_NAMES);
+      case 'computedSvg':
+        return JSON.stringify(Object.keys(SVG_PROPERTIES));
       // one custom property's, by its name: a theme's hundreds are no part
       // of what `computed` sends
       case 'customProperty': {
@@ -5139,8 +5228,20 @@ export class DomHost {
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
-        const answer = svgAnswer(text(b), el, measure, Number(c));
+        const answer = svgAnswer(text(b), el, measure, Number(c), Number(d));
         return answer ? answer.join(',') : '';
+      }
+      // what one of a relative unit comes to for an element's length, in
+      // user units, or for no element's (`svg-dom.ts`)
+      case 'svgLength': {
+        this.flush();
+        const el = a ? this._element(a) : null;
+        const handle = (
+          el ? this._drawing(el) : this._seams.handle
+        ) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        return unitSize(el, text(b), text(c), measure) ?? '';
       }
       // the page told once none of the document's faces is on its way
       // (`__fontsSettled`), which `document.fonts.ready` waits for
@@ -5450,6 +5551,9 @@ export class DomHost {
         );
         return null;
       case 'validate':
+        // a sandbox's form is no form to send, before its `submit` is asked
+        // about (HTML 4.10.21.3, step 3)
+        if (c === true && this.sandbox & SB_FORMS) return false;
         return this._seams.handle.reportValidity(
           this._element(a),
           b ? this._element(b) : null,
@@ -5502,7 +5606,8 @@ export class DomHost {
         const state = this._imageDrawn(el)?.imageState?.(el);
         // nothing draws it: as it would be with no image to wait for
         if (!state) return b === 'complete' ? true : b === 'src' ? '' : 0;
-        return state[text(b) as keyof typeof state];
+        const read = state[text(b) as keyof typeof state];
+        return typeof read === 'object' ? null : read;
       }
       case 'canPlayType': {
         // the three answers HTML has, and none other (4.8.11.3)
@@ -5600,13 +5705,7 @@ export class DomHost {
         if (this.sandbox & SB_POPUPS) return 0;
         return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
       case 'windowTab':
-        if (this.sandbox & SB_POPUPS) return null;
-        this._seams.navigate(
-          text(a),
-          'tab',
-          null,
-          /^_blank$/i.test(text(c)) ? '' : text(c),
-        );
+        this._openTab(text(a), text(c), !!b);
         return null;
       case 'windowFind':
         return this.windows?.find(text(a)) ?? 0;
@@ -5664,8 +5763,20 @@ export class DomHost {
       }
       case 'documentOrigin':
         return this._origin();
+      case 'opaqueSrcdoc': {
+        const frame = this._frameOf.get(this.document);
+        return (
+          !!frame &&
+          this._frameAt.get(frame) === 'about:srcdoc' &&
+          !!(this.sandbox & SB_ORIGIN)
+        );
+      }
       case 'referrer':
         return this.referrer;
+      // any sandbox, whatever its tokens: none lifts `document.domain`'s flag
+      // (HTML 7.1.?, "sandboxed document.domain browsing context flag")
+      case 'sandboxed':
+        return this.sandbox !== 0;
       case 'frameNamed': {
         const frame = navigableFor(this.document, text(a));
         return typeof frame === 'string' ? 0 : this.idOf(frame);
@@ -5697,9 +5808,8 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
-        if (to === 'tab' && this.sandbox & SB_POPUPS) return null;
         if (to === 'here') this._seams.navigate(text(a), 'here');
-        else if (to === 'tab') this._seams.navigate(text(a), 'tab');
+        else if (to === 'tab') this._openTab(text(a), text(b), false);
         else this.navigateFrame(to, text(a), null);
         return null;
       }
@@ -5933,8 +6043,20 @@ export class DomHost {
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
-        const answer = svgAnswer(text(b), el, measure, Number(c));
+        const answer = svgAnswer(text(b), el, measure, Number(c), Number(d));
         return answer ? answer.join(',') : '';
+      }
+      // what one of a relative unit comes to for an element's length, in
+      // user units, or for no element's (`svg-dom.ts`)
+      case 'svgLength': {
+        this.flush();
+        const el = a ? this._element(a) : null;
+        const handle = (
+          el ? this._drawing(el) : this._seams.handle
+        ) as Partial<HandleInternals> | null;
+        const measure = handle?.svgMeasure?.();
+        if (!measure) return '';
+        return unitSize(el, text(b), text(c), measure) ?? '';
       }
       case 'uuid':
         return crypto.randomUUID();
@@ -7006,7 +7128,7 @@ export class DomHost {
    * hidden frame is never sent.
    */
   navigateFrame(frame: Element, url: string, post: FramePost | null): void {
-    if (!this._inDocument(frame)) return;
+    if (!this._loadsFrame(frame)) return;
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);
     this._loadFrame(frame, true, post);
@@ -7107,7 +7229,7 @@ export class DomHost {
    * frame had its first `about:blank`, and the frame stayed blank.
    */
   private _sendsFrame(el: Element, name: string, set: boolean): boolean {
-    if (!this._frames.has(el) || !this._inDocument(el)) return false;
+    if (!this._frames.has(el) || !this._loadsFrame(el)) return false;
     if (el.name === 'object') return set && name === 'data';
     if (name === 'srcdoc') return el.name === 'iframe';
     return name === 'src' && !(el.name === 'iframe' && 'srcdoc' in el.attribs);
@@ -7227,6 +7349,13 @@ export class DomHost {
     landed
       .then((response) => {
         if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        // no content is no navigation (HTML 7.4.2.3.3): the frame goes on
+        // showing what it was, and hears no `load`
+        if (response.status === 204 || response.status === 205) {
+          release(response);
+          this._frameDone(frame);
+          return;
+        }
         const sandbox =
           this._frameSandbox(frame) | sandboxOfPolicy(response.headers);
         const refused = this._refusedFraming(
@@ -7312,6 +7441,16 @@ export class DomHost {
         );
       })
       .catch((error: unknown) => {
+        // a download a sandbox may not save goes nowhere: the frame keeps
+        // what it shows, and hears nothing
+        if (error instanceof DownloadRefused) {
+          this._seams.log(
+            'warn',
+            `A sandbox saves no file: ${error.message} was not downloaded.`,
+          );
+          this._frameDone(frame);
+          return;
+        }
         // a frame whose document could not be had still hears `load`, as
         // a browser's showing its error page does
         this._seams.log(
@@ -7445,7 +7584,7 @@ export class DomHost {
   private _framesLeft(): void {
     this._framesGone = false;
     for (const frame of [...this._framesShown]) {
-      if (!this._inDocument(frame)) this._unloadFrameDocument(frame);
+      if (!this._loadsFrame(frame)) this._unloadFrameDocument(frame);
     }
   }
 
@@ -7485,6 +7624,12 @@ export class DomHost {
     // the one it shows unloads first, while it is still the frame's
     this._unloadFrameDocument(frame);
     if (this._disposed) return;
+    // HTML has a frame's `load` wait for its document to be completely
+    // loaded (13.2.7, "the end"), images and all, which only the view the
+    // page mounts over the frame asks for (`_waitsForView`). Owed before
+    // anything hears of the document, so no view can say it is loaded first.
+    const owed = !realm && this._waitsForView(frame);
+    if (owed) this._loadsOwed.set(doc, loaded);
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
     this._frameAt.set(frame, address);
@@ -7495,11 +7640,16 @@ export class DomHost {
       if (scripted) this._goLive(doc);
       return;
     }
-    if (this._inDocument(frame)) this._framesShown.add(frame);
+    if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
     }
-    loaded();
+    // its own frames, which no realm of its own loads, are loaded here, as
+    // the page's are as they are met
+    if (this._seams.drawsFrames && this._holdsFrames(doc)) {
+      this._framesIn(doc.children);
+    }
+    if (!owed) loaded();
   }
 
   /**
@@ -7561,8 +7711,16 @@ export class DomHost {
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
    *  and made a document's tree; its scripts never run where it goes. */
-  private _htmlTree(markup: string, live = false): ChildNode[] {
+  private _htmlTree(
+    markup: string,
+    live = false,
+    declarative = true,
+  ): ChildNode[] {
     const source = new HtmlSource();
+    // a document scripts run in reads a `<noscript>`'s content as text, and
+    // `DOMParser`'s, the one that attaches no shadow root, runs none
+    source.setScripting(declarative);
+    source.setDocument(true, declarative);
     source.setSource(markup, true);
     const kids = source.document.children.slice();
     for (const kid of kids) DomUtils.removeElement(kid);
@@ -7573,7 +7731,7 @@ export class DomHost {
         this.inert.add(el);
       }
     }
-    return documentTree(kids);
+    return kids;
   }
 
   /** The frames in what went into the document, each given its document
@@ -7594,7 +7752,7 @@ export class DomHost {
       return;
     }
     if (frame.name === 'embed' && !this._embedLoads(frame)) return;
-    if (!this._frames.has(frame) && this._inDocument(frame)) {
+    if (!this._frames.has(frame) && this._loadsFrame(frame)) {
       this._frameDocument(frame);
     }
   }
@@ -7624,12 +7782,14 @@ export class DomHost {
   }
 
   /** A paint: an `<embed>` that was not rendered may be now, its sheets in
-   *  or a script having shown it. */
+   *  or a script having shown it; and a frame's view may be mounted, or
+   *  known never to be (`_awaitView`). */
   embedsPainted(): void {
     for (const embed of [...this._embedsWaiting]) {
       this._embedsWaiting.delete(embed);
-      if (this._inDocument(embed)) this._frameIn(embed);
+      if (this._loadsFrame(embed)) this._frameIn(embed);
     }
+    for (const frame of [...this._viewsAwaited]) this._awaitView(frame);
   }
 
   /** What a page's script put into its tree, as HTML's post-connection
@@ -7741,6 +7901,41 @@ export class DomHost {
   }
 
   /**
+   * Whether a frame is one this realm loads: in this document, or in the
+   * document of one of its frames that has no realm of its own and is shown,
+   * which nothing else would load it from (`_holdsFrames`).
+   */
+  private _loadsFrame(frame: Element): boolean {
+    let at: AnyNode = frame;
+    for (let depth = 0; depth < MAX_FRAME_DEPTH; depth += 1) {
+      const doc = shadowIncludingRoot(at);
+      if (doc === this.document) return true;
+      if (!(doc instanceof Document) || !this._holdsFrames(doc)) return false;
+      const holder = this._frameOf.get(doc);
+      if (!holder || this._frames.get(holder) !== doc) return false;
+      at = holder;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a frame's document of this realm's loads the frames in it here:
+   * one with no realm of its own, of this realm's origin, or a sandbox's,
+   * whose every frame is of an origin of none (`_frameSandbox`). Another
+   * origin's holds frames whose `about:blank` and `srcdoc` would be its own,
+   * which this realm has no way to give them, so it holds none, as before.
+   */
+  private _holdsFrames(doc: Document): boolean {
+    if (this._s.realms.has(doc) || this._xml.has(doc)) return false;
+    const holder = this._frameOf.get(doc);
+    if (!holder) return false;
+    return (
+      ((this._s.sandboxes.get(doc) ?? 0) & SB_ORIGIN) !== 0 ||
+      this._reaches(holder)
+    );
+  }
+
+  /**
    * An element's computed style in a frame's document, which nothing here
    * draws: worked out by `<Html>`'s cascade from the user agent's sheet and
    * the document's own `<style>`s, at the frame's size, and read as
@@ -7801,6 +7996,7 @@ export class DomHost {
         null,
         this._xml.has(doc),
       );
+      cascade.frameElement = this._frameOf.get(doc) ?? null;
       kept = { key, cascade };
       this._frameStyles.set(doc, kept);
     }
@@ -7887,11 +8083,9 @@ export class DomHost {
     document = false,
     live = false,
   ): Document {
-    // what a frame loads is a document's markup, and `DOMParser`'s is read
-    // as a fragment is, attaching no shadow root a template declares
-    const tree = document
-      ? this._htmlTree(markup, live)
-      : documentTree(this._parse(markup));
+    // what a frame loads is a document's markup, and so is `DOMParser`'s,
+    // which attaches no shadow root a template declares
+    const tree = this._htmlTree(markup, document && live, document);
     const doc = new Document([]);
     for (const kid of tree) DomUtils.appendChild(doc, kid);
     this._documents.add(doc);
@@ -8347,12 +8541,17 @@ export class DomHost {
       return null;
     }
     // the realm's gate is a gesture's, and a page can talk it round: what the
-    // clipboard holds is a user's, so whether it is read is decided here
+    // clipboard holds is a user's, so whether it is read is decided here, and
+    // whether it is written over, which without a grant takes a press or a
+    // key the host saw
+    const writes =
+      what === 'read' ? null : this._permissionState('clipboard-write');
     const refused =
-      what === 'read'
+      writes === null
         ? !this._clipboardGranted &&
           this._permissionState('clipboard-read') !== 'granted'
-        : this._permissionState('clipboard-write') === 'denied';
+        : writes === 'denied' ||
+          (writes !== 'granted' && !this._transientlyActive());
     if (refused) {
       tell(
         false,
@@ -8705,29 +8904,54 @@ export class DomHost {
     }
   }
 
-  /** Whether a page may read a canvas back once an image or a video was
-   *  drawn on it. It has its pixels in no case (`drawnPixels`), so one that
-   *  says it asked by CORS is taken at its word. */
+  /**
+   * Whether a page may read a canvas back once an image or a video was drawn
+   * on it (HTML's "CORS-same-origin"): by the response an image was drawn
+   * from, whose type is believed where the store knows it — a service
+   * worker's answer, or a CORS request's — and by where it came from in the
+   * end where not. A video has its pixels in no case (`drawnPixels`), so one
+   * that says it asked by CORS is taken at its word.
+   */
   private _imageClean(el: Element): boolean {
-    const url =
-      el.name === 'video'
-        ? this._resolve(el.attribs.src ?? '')
-        : String(this._imageDrawn(el)?.imageState?.(el)?.src ?? '');
-    if (!url || /^(?:data|blob):/i.test(url)) return true;
+    if (el.name !== 'video') {
+      const response = this._imageDrawn(el)?.imageState?.(el)?.response;
+      if (!response) return true;
+      if (response.type) return response.type !== 'opaque';
+      return this._ownImage(response.url);
+    }
     if (el.attribs.crossorigin !== undefined) return true;
+    return this._ownImage(this._resolve(el.attribs.src ?? ''));
+  }
+
+  /** Whether what came from `url` is this document's own to read: its
+   *  origin's, or what no network answered. */
+  private _ownImage(url: string): boolean {
+    if (!url || /^(?:data|blob):/i.test(url)) return true;
     return originOf(url) === this._origin();
   }
 
-  /** Whether a worker may run from an address: of this document's origin,
-   *  which a blob this realm made is, and `blob:null` where that is opaque. */
-  private _workerAllowed(url: string): boolean {
-    return originOf(url) === this._origin();
+  /**
+   * Whether a worker may run from an address: of this document's origin,
+   * which a blob this realm made is. An opaque origin is no address's, and
+   * `null` is every such origin's serialization, so where this document's is
+   * one a worker runs only from what it made itself — a blob of no origin,
+   * whose text the realm hands over (`given`), or a `data:` URL — and, for a
+   * `file:` page, from a `file:` address as before: never from one a sandbox
+   * names, whose `null` a `file:` address's matched.
+   */
+  private _workerAllowed(url: string, given: boolean): boolean {
+    const origin = this._origin();
+    if (origin !== 'null') return originOf(url) === origin;
+    // a blob it made is `blob:null`, whatever a page's own `String` wrote
+    if (/^blob:/i.test(url)) return given && originOf(url) === 'null';
+    if (/^data:/i.test(url)) return true;
+    return !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url);
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
    *  (`_fetchFor`), and its answer handed back through `__fetched`. */
   private _fetch(id: number, json: string): void {
-    const answer = (value: FetchResponse | string) => {
+    const answer = (value: FetchResponse | string, refused = false) => {
       if (!this._fetches.has(id) || this._disposed) {
         if (typeof value !== 'string') release(value);
         return;
@@ -8756,7 +8980,10 @@ export class DomHost {
           ? { ...rest, body: '', base64: base64Of(bytes) }
           : rest;
       }
-      this.entries?.call('__fetched', [id, crossing]);
+      this.entries?.call(
+        '__fetched',
+        refused ? [id, crossing, true] : [id, crossing],
+      );
     };
     let request: PageRequest;
     try {
@@ -8777,6 +9004,7 @@ export class DomHost {
         error instanceof CorsError || !(error instanceof TypeError)
           ? 'Failed to fetch'
           : error.message,
+        error instanceof CorsError,
       );
     });
   }
@@ -9007,15 +9235,45 @@ export class DomHost {
       const chunks = response.chunks ?? [
         response.bytes ?? Buffer.from(response.body ?? '', 'latin1'),
       ];
+      // an HLS playlist, said by its type or its first line, is read whole
+      // and as text (`readPlaylist`), and is no container
+      let playlist: Uint8Array[] | null = HLS_TYPE.test(
+        response.headers.find(
+          ([k]) => k.toLowerCase() === 'content-type',
+        )?.[1] ?? '',
+      )
+        ? []
+        : null;
+      let size = 0;
       try {
         for await (const chunk of chunks) {
           if (controller.signal.aborted) return;
+          if (!playlist && !reader.received && isPlaylist(chunk)) playlist = [];
+          if (playlist) {
+            playlist.push(chunk);
+            size += chunk.length;
+            if (size > MEDIA_MOST) {
+              release(response);
+              tell('failed');
+              return;
+            }
+            continue;
+          }
           reader.add(chunk);
           tell('progress', String(reader.received));
           if (step(false)) return;
         }
       } catch {
         tell('failed');
+        return;
+      }
+      if (playlist) {
+        await this._mediaPlaylist(
+          joinBytes(playlist),
+          response.url || url,
+          controller.signal,
+          tell,
+        );
         return;
       }
       step(true);
@@ -9026,6 +9284,70 @@ export class DomHost {
         this._mediaFetches.delete(el);
       }
     });
+  }
+
+  /**
+   * What an HLS playlist a media element's source is comes to, told as a
+   * container's head is (`_mediaFetch`): a media playlist's length, or a
+   * multivariant one's first variant's size and, read from that variant's
+   * own playlist, its length — the variant a player starts with (RFC 8216,
+   * 6.3.1, the first listed). Nothing past the playlists is read: the
+   * segments are the player's.
+   */
+  private async _mediaPlaylist(
+    bytes: Uint8Array,
+    url: string,
+    signal: AbortSignalLike,
+    tell: (kind: string, ...args: string[]) => void,
+  ): Promise<void> {
+    const read = readPlaylist(new TextDecoder().decode(bytes));
+    if (!read) {
+      tell('failed');
+      return;
+    }
+    let { duration } = read;
+    let width = 0;
+    let height = 0;
+    let received = bytes.length;
+    const first = read.variants[0];
+    if (first) {
+      ({ width, height } = first);
+      let variant: Playlist | null = null;
+      try {
+        const response = await this._seams.fetch(
+          {
+            url: new URL(first.uri, url).href,
+            method: 'GET',
+            headers: [],
+            body: null,
+            credentials: 'include',
+          },
+          signal,
+        );
+        if (signal.aborted) return;
+        if (
+          !response.status ||
+          (response.status >= 200 && response.status <= 299)
+        ) {
+          const text = response.bytes
+            ? new TextDecoder().decode(response.bytes)
+            : (response.body ?? '');
+          received += text.length;
+          variant = readPlaylist(text);
+        }
+      } catch {
+        variant = null;
+      }
+      if (!variant || variant.variants.length) {
+        tell('failed');
+        return;
+      }
+      duration = variant.duration;
+    }
+    tell('progress', String(received));
+    tell('info', String(duration), String(width), String(height));
+    tell('data');
+    tell('enough');
   }
 
   /**
@@ -9156,7 +9478,12 @@ export class DomHost {
         throw new TypeError('Failed to fetch');
       }
       const location = redirectOf(response.status, response.headers);
-      if (location === null) {
+      // one that asks to see a redirect, or to be refused one, is so whether
+      // or not it says where it goes (Fetch 4.4, "HTTP fetch", step 8)
+      const redirect =
+        location !== null ||
+        (request.redirect !== 'follow' && isRedirectStatus(response.status));
+      if (!redirect) {
         const answer = {
           ...response,
           url: response.url || hop.url,
@@ -9190,10 +9517,16 @@ export class DomHost {
       }
       release(response);
       if (request.redirect === 'error') throw new TypeError('Failed to fetch');
-      if (request.redirect === 'manual') return OPAQUE_REDIRECT;
+      if (request.redirect === 'manual') {
+        return this._opaqueRedirect(
+          hop.url,
+          headerOf(response.headers, 'location'),
+          response.status,
+        );
+      }
       const next = nextHop(
         hop,
-        location,
+        location!,
         response.status,
         urls.length,
         tainting === 'opaque'
@@ -9214,6 +9547,8 @@ export class DomHost {
     request: FetchRequest,
     signal: AbortSignalLike,
     sandbox = 0,
+    /** How many redirects a worker answered with brought it here. */
+    hops = 0,
   ): Promise<FetchResponse> {
     const keeper = this._seams.serviceWorkers;
     // no origin of its own to be a client of any scope in
@@ -9230,6 +9565,38 @@ export class DomHost {
         signal,
       );
       if (answered) {
+        // a redirect it answered with, an opaque one its own `fetch` saw
+        // among them, is one the navigation follows from where that redirect
+        // was (Fetch 4.4, a navigation's manual redirect), and asks again
+        const opaque = answered.type === 'opaqueredirect';
+        const status = opaque
+          ? (answered.redirectStatus ?? 0)
+          : answered.status;
+        const location = opaque
+          ? (answered.location ?? null)
+          : redirectOf(answered.status, answered.headers);
+        if (location !== null && isRedirectStatus(status)) {
+          release(answered);
+          const next = nextHop(
+            {
+              url: answered.url || request.url,
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+              ...(request.bytes ? { bytes: request.bytes } : {}),
+            },
+            location,
+            status,
+            hops,
+            null,
+          );
+          return this._navigationFetch(
+            { ...request, ...next },
+            signal,
+            sandbox,
+            hops + 1,
+          );
+        }
         const bytes = await wholeBytes(answered);
         return {
           ...answered,
@@ -9240,7 +9607,31 @@ export class DomHost {
         };
       }
     }
-    const fetched = await this._seams.fetch(request, signal);
+    // a sandbox that saves no file cuts a response that would be one off as
+    // its head arrives (HTML 7.4.2.3, "allowed to download"): read whole, the
+    // server has sent it all, which is what a download is
+    const cuts = !!(sandbox & SB_DOWNLOADS);
+    const stop = new AbortController();
+    let fetched = await this._seams.fetch(
+      cuts ? { ...request, stream: true } : request,
+      cuts ? stop.signal : signal,
+    );
+    if (cuts) {
+      const disposition = headerOf(fetched.headers, 'content-disposition');
+      if (/^\s*attachment/i.test(disposition ?? '')) {
+        stop.abort();
+        throw new DownloadRefused(request.url);
+      }
+      if (fetched.chunks) {
+        const bytes = await wholeBytes(fetched);
+        fetched = {
+          ...fetched,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
     // the document is at the fragment it was asked for, which a response's
     // address drops
     const hash = request.url.indexOf('#');
@@ -9271,6 +9662,8 @@ export class DomHost {
     const type = response.type ?? 'default';
     if (
       (type === 'opaque' && request.mode !== 'no-cors') ||
+      // a redirect is a request's to see only where it asked to see one
+      (type === 'opaqueredirect' && request.redirect !== 'manual') ||
       (type === 'cors' && request.mode === 'same-origin') ||
       (response.redirected && request.redirect && request.redirect !== 'follow')
     ) {
@@ -9278,6 +9671,14 @@ export class DomHost {
       throw new TypeError('Failed to fetch');
     }
     if (type === 'opaque') return this._opaque(response);
+    if (type === 'opaqueredirect') {
+      release(response);
+      return this._opaqueRedirect(
+        response.url || request.url,
+        response.location ?? null,
+        response.redirectStatus ?? 0,
+      );
+    }
     return {
       ...response,
       url: response.url || request.url.split('#')[0],
@@ -9312,6 +9713,37 @@ export class DomHost {
       release(response);
       return hidden;
     }
+    return { ...hidden, held: this._hold(response) };
+  }
+
+  /** What a page is told of a redirect it asked to see (Fetch 2.2.6, "an
+   *  opaque-redirect filtered response"): that there was one, at the address
+   *  it asked for, and a number that holds where it goes, which a worker that
+   *  answers a navigation with it has the navigation follow. */
+  private _opaqueRedirect(
+    url: string,
+    location: string | null,
+    status: number,
+  ): FetchResponse {
+    const told: FetchResponse = {
+      url: url.split('#')[0],
+      status: 0,
+      statusText: '',
+      redirected: false,
+      headers: [],
+      body: '',
+      type: 'opaqueredirect',
+    };
+    if (!this._secureContext()) return told;
+    return {
+      ...told,
+      held: this._hold({ ...told, location, redirectStatus: status }),
+    };
+  }
+
+  /** A response kept here by a number a realm holds, the oldest let go past
+   *  `OPAQUE_HELD`. */
+  private _hold(response: FetchResponse): number {
     const held = ++this._opaqueSeq;
     this._opaques.set(held, response);
     for (const [key, oldest] of this._opaques) {
@@ -9319,7 +9751,24 @@ export class DomHost {
       this._opaques.delete(key);
       release(oldest);
     }
-    return { ...hidden, held };
+    return held;
+  }
+
+  /** The head of what a number holds, as the host made it: `_held` is a
+   *  field a page can write, so nothing that came with it is believed. */
+  private _heldHead(held: number): typeof OPAQUE_HEAD & {
+    location?: string | null;
+    redirectStatus?: number;
+  } {
+    const kept = this._opaques.get(held);
+    if (kept?.type !== 'opaqueredirect') return OPAQUE_HEAD;
+    return {
+      ...OPAQUE_HEAD,
+      type: 'opaqueredirect',
+      url: kept.url,
+      location: kept.location ?? null,
+      redirectStatus: kept.redirectStatus ?? 0,
+    };
   }
 
   /** An opaque response's bytes, read the first time they are asked for and
@@ -9343,15 +9792,26 @@ export class DomHost {
   private _serviceSaid(said: string): void {
     const scope = this.workerScope;
     if (!scope?.service) return;
-    const m = JSON.parse(said) as { op: string; held?: number; f?: number };
+    const m = JSON.parse(said) as {
+      op: string;
+      held?: number;
+      f?: number;
+      head?: { location?: unknown; redirectStatus?: unknown };
+    };
     if (m.op !== 'respond' || m.held === undefined) {
-      scope.service(said);
+      // where a redirect goes is the host's to say, never a realm's
+      if (m.head && ('location' in m.head || 'redirectStatus' in m.head)) {
+        delete m.head.location;
+        delete m.head.redirectStatus;
+        scope.service(JSON.stringify(m));
+      } else scope.service(said);
       return;
     }
     const { held, ...rest } = m;
+    const head = this._heldHead(held);
     void this._opaqueBytes(held).then((bytes) =>
       scope.service!(
-        JSON.stringify({ ...rest, head: OPAQUE_HEAD }),
+        JSON.stringify({ ...rest, head }),
         bytes ?? new Uint8Array(0),
       ),
     );
@@ -9385,13 +9845,13 @@ export class DomHost {
           response?: unknown;
         }[]) {
           if ('held' in step && step.held !== undefined) {
-            step.bytes =
-              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
-            delete step.held;
             // what the number holds stays opaque whatever came with it:
             // `_held` is a field a page can write, and a body it put under
             // its own URL and a type of its own it could read back
-            step.response = OPAQUE_HEAD;
+            step.response = this._heldHead(step.held);
+            step.bytes =
+              (await this._opaqueBytes(step.held)) ?? new Uint8Array(0);
+            delete step.held;
           } else if (typeof step.base64 === 'string') {
             step.bytes = new Uint8Array(Buffer.from(step.base64, 'base64'));
             delete step.base64;
@@ -9405,20 +9865,32 @@ export class DomHost {
       return {
         ...answer,
         responses: answer.responses.map(({ bytes, ...head }) => {
-          if (head.type !== 'opaque') {
+          if (head.type !== 'opaque' && head.type !== 'opaqueredirect') {
             return { ...head, base64: base64Of(bytes) };
           }
-          const held = ++this._opaqueSeq;
-          this._opaques.set(held, {
-            url: '',
+          // and where a redirect goes stays here
+          const { location, redirectStatus, ...told } = head as typeof head & {
+            location?: string | null;
+            redirectStatus?: number;
+          };
+          const redirect = head.type === 'opaqueredirect';
+          const held = this._hold({
+            url: redirect ? head.url : '',
             status: 0,
             statusText: '',
             redirected: false,
             headers: [],
             body: '',
             bytes,
+            ...(redirect
+              ? {
+                  type: 'opaqueredirect' as const,
+                  location: location ?? null,
+                  redirectStatus: redirectStatus ?? 0,
+                }
+              : {}),
           });
-          return { ...head, held };
+          return { ...told, held };
         }),
       };
     };

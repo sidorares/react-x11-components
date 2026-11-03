@@ -92,8 +92,13 @@ export interface PageWorkersSeams {
    *  body it handed on (`sw-registry.ts`). */
   service?(id: number, text: string, bytes?: Uint8Array): void;
   /** A script a worker imports, where it does not come from the network: a
-   *  service worker's, from those it was installed with. */
-  script?(id: number, url: string): Promise<string | null>;
+   *  service worker's, from those it was installed with, and `type` where it
+   *  imports a JSON or a text module. */
+  script?(
+    id: number,
+    url: string,
+    type?: 'json' | 'text',
+  ): Promise<string | null>;
   /** A worker's thread started, or ended, whoever ended it. */
   started?(id: number, init: WorkerInit): void;
   exited?(id: number): void;
@@ -188,7 +193,7 @@ function closeNotification(shown: HtmlShownNotification | null | undefined) {
  *  answered: an `importScripts`, or a synchronous `XMLHttpRequest`, which the
  *  page's network is awake to make. */
 type SyncAsk =
-  | { url: string }
+  | { url: string; type?: 'json' | 'text' }
   | { id: number; request: FetchRequest }
   | { id: number; abort: true };
 
@@ -330,9 +335,9 @@ export class PageWorkers implements PageWorkersLike {
           );
         return;
       }
-      void (this._seams.script?.(id, m.url) ?? this._load(m.url, id)).then(
-        (source) => answer({ source }),
-      );
+      void (
+        this._seams.script?.(id, m.url, m.type) ?? this._load(m.url, id)
+      ).then((source) => answer({ source }));
     });
     if (this._background) port1.unref?.();
     return id;

@@ -114,6 +114,7 @@ export interface VmModule {
   constants?: { DONT_CONTEXTIFY?: unknown };
   /** Bun's, and Node's behind `--experimental-vm-modules`. */
   SourceTextModule?: unknown;
+  SyntheticModule?: unknown;
 }
 
 export interface UtilModule {

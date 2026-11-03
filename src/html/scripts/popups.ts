@@ -34,7 +34,7 @@
 // which has no node of the old one and has yet to be handed anything.
 import type { Document, Element } from 'domhandler';
 
-import type { HtmlPopup, HtmlPopupFeatures } from '../popups.js';
+import type { HtmlPopup, HtmlPopupFeatures, HtmlPopups } from '../popups.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
 import type { ServiceClient } from './sw-registry.js';
 import { makeHtmlHandle } from '../index.js';
@@ -43,9 +43,10 @@ import {
   openerPolicyOf,
   refusedAt,
   type DocumentHop,
+  type OpenerPolicy,
   type PolicyOf,
 } from './coop.js';
-import { DomShared, trustworthy } from './host.js';
+import { DomShared, blankDocument, trustworthy } from './host.js';
 import type { FramePost } from './host.js';
 import type { RunnerSeams, ScriptRunner } from './runner.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
@@ -59,6 +60,9 @@ export interface WindowOps {
   /** A new window with an opener, and its number, or 0 where the host
    *  showed none. */
   open(ask: PopupAsk): number;
+  /** A new window with no opener, for a document with flags to hand on, which
+   *  no tab could carry (`openApart`). */
+  apart(ask: PopupAsk): void;
   /** The window of the group a name finds, or 0. */
   find(name: string): number;
   /** Close a window, or this one for 0. */
@@ -456,11 +460,13 @@ export class Popup implements HtmlPopup {
     ask: PopupAsk,
     creator: string,
     id: number,
-    opener: ScriptRunner,
+    /** What made it, where that has a runner: a document with no script of
+     *  its own has no service workers to hand on. */
+    opener: ScriptRunner | null,
   ) {
     this.id = id;
-    this.serviceKeeper = opener.serviceKeeper;
-    this.creatorClient = opener.host.serviceClient;
+    this.serviceKeeper = opener?.serviceKeeper ?? null;
+    this.creatorClient = opener?.host.serviceClient ?? null;
     this._url = ask.url;
     this.openedAt = ask.url;
     this.name = ask.name;
@@ -596,6 +602,76 @@ export class Popup implements HtmlPopup {
   }
 }
 
+/** The `about:blank` a window opened in a group opens with, whose first
+ *  document `arrives` holds the next to: HTML, "creating a new browsing
+ *  context". */
+function startWindow(
+  popup: Popup,
+  slot: WindowSlot,
+  flags: number,
+  policy: OpenerPolicy,
+  document: Document,
+  seams: RunnerSeams,
+  make: MakeRunner,
+): void {
+  slot.name = popup.name;
+  popup.slot = slot;
+  slot.blank = true;
+  // what the window's every document starts with, unless the page that
+  // opened it lets it out (`allow-popups-to-escape-sandbox`)
+  slot.sandbox = flags;
+  slot.group.shared.documents.add(document);
+  const blank = make(document, 'about:blank', popup.seams(seams));
+  popup.initial = blank;
+  blank.openerPolicy = policy;
+  slot.active = { value: policy, origin: blank.host.origin };
+  slot.initial = true;
+  // nothing to wait for: `window.open` hands it back complete
+  void blank.parsed();
+  blank.loaded();
+}
+
+/**
+ * A window with no opener, from a document with sandboxing flags to hand on. A
+ * tab is the host's and carries no flags, so such a window never is one: it is
+ * a window of this process, shown as any is, in a group of its own, where its
+ * every document keeps them. A host that shows no windows has nothing to keep
+ * them in, so nothing opens, which `document` has no way to tell from a blocked
+ * popup. `from` is what the host was handed for a document that has no runner:
+ * a sandbox with no `allow-scripts`.
+ */
+export function openApart(
+  ask: PopupAsk,
+  from: {
+    url: string;
+    flags: number;
+    seams: RunnerSeams;
+    runner: ScriptRunner | null;
+  },
+  make: MakeRunner,
+): void {
+  const popups = from.seams.popups;
+  if (!popups) {
+    from.seams.log(
+      'warn',
+      `A window of a sandboxed document has nowhere to keep its flags: ${ask.url} was not opened.`,
+    );
+    return;
+  }
+  const popup = new Popup(ask, from.url, nextWindow++, from.runner);
+  if (!popups.open(popup)) return;
+  const group = new WindowGroup(new DomShared());
+  startWindow(
+    popup,
+    new WindowSlot(group, null, popup, popup.id),
+    from.flags,
+    'unsafe-none',
+    blankDocument(),
+    from.seams,
+    make,
+  );
+}
+
 /** Whether a window this document opens has no opener: one of another origin
  *  than the top of its frames, under a `same-origin` policy there (HTML, "the
  *  rules for choosing a navigable"). HTML says the document's own policy, which
@@ -658,53 +734,63 @@ export function windowOps(
     }
     return null;
   };
+  /** Whether a press or a key is behind what opens a window, spending it,
+   *  and `blocked` told where none is. */
+  const allowed = (popups: HtmlPopups, url: string): boolean => {
+    if (
+      popups.unblocked ||
+      runner.engine.call('__windowActivation', null) === true
+    ) {
+      return true;
+    }
+    popups.blocked?.(url);
+    return false;
+  };
+  const apart = (ask: PopupAsk): void => {
+    openApart(
+      ask,
+      {
+        url: runner.host.url,
+        flags: runner.host.popupSandbox,
+        seams: runner.seams,
+        runner,
+      },
+      make,
+    );
+  };
   const open = (ask: PopupAsk): number => {
     const popups = runner.seams.popups;
     if (!popups) return 0;
     const alone = opensNoOpener(runner);
-    const flags = runner.host.popupSandbox;
     // a tab is the host's, and carries no sandboxing flags, so a window that
     // has to keep them stays here, in a group of its own
-    if (alone && !flags) {
-      runner.seams.navigate(ask.url, 'tab', ask.post ?? null, '');
+    if (alone) {
+      if (runner.host.popupSandbox) apart({ ...ask, name: '' });
+      else runner.seams.navigate(ask.url, 'tab', ask.post ?? null, '');
       return 0;
     }
     const from = slotOf(runner);
-    const popup = new Popup(
-      alone ? { ...ask, name: '' } : ask,
-      runner.host.url,
-      from.group.number(),
-      runner,
-    );
+    const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
     popup.creatorOrigin = runner.host.opaqueOrigin;
     if (!popups.open(popup)) return 0;
-    const slot = alone
-      ? new WindowSlot(new WindowGroup(new DomShared()), null, popup, popup.id)
-      : new WindowSlot(from.group, from, popup, popup.id);
-    slot.name = popup.name;
-    popup.slot = slot;
-    slot.blank = true;
-    // what the window's every document starts with, unless the page that
-    // opened it lets it out (`allow-popups-to-escape-sandbox`)
-    slot.sandbox = flags;
-    const document = runner.host.blankDocument();
-    slot.group.shared.documents.add(document);
-    const blank = make(document, 'about:blank', popup.seams(runner.seams));
-    popup.initial = blank;
-    // its first document is what `arrives` holds the next to: HTML, "creating
-    // a new browsing context", and no document of a window with no opener
-    // made it
-    const value = alone ? 'unsafe-none' : policyFrom(runner).value;
-    blank.openerPolicy = value;
-    slot.active = { value, origin: blank.host.origin };
-    slot.initial = true;
-    // nothing to wait for: `window.open` hands it back complete
-    void blank.parsed();
-    blank.loaded();
-    return alone ? 0 : slot.id;
+    const slot = new WindowSlot(from.group, from, popup, popup.id);
+    startWindow(
+      popup,
+      slot,
+      runner.host.popupSandbox,
+      policyFrom(runner).value,
+      blankDocument(),
+      runner.seams,
+      make,
+    );
+    return slot.id;
   };
   return {
     open,
+    apart(ask) {
+      const popups = runner.seams.popups;
+      if (!popups || allowed(popups, ask.url)) apart(ask);
+    },
     find: (name) => find(name)?.id ?? 0,
     close(id) {
       const slot = slotById(id);
@@ -765,7 +851,10 @@ export function windowOps(
     openerOf: (id) => slotById(id)?.opener?.id ?? 0,
     lengthOf: (id) => slotById(id)?.runner?.host.frames().length ?? 0,
     follow(url, target, noopener, noreferrer, post) {
-      if (!runner.seams.popups) return false;
+      // what comes of it may be no window at all, and is never a tab
+      const flags = runner.host.popupSandbox;
+      const popups = runner.seams.popups;
+      if (!popups && !flags) return false;
       const there = find(target);
       if (there) {
         if (maySend(runner, there, url)) {
@@ -774,23 +863,17 @@ export function windowOps(
         }
         return true;
       }
-      if (noopener) return false;
-      if (
-        !runner.seams.popups.unblocked &&
-        runner.engine.call('__windowActivation', null) !== true
-      ) {
-        runner.seams.popups.blocked?.(url);
+      if (noopener && !flags) return false;
+      if (popups && !allowed(popups, url)) return true;
+      const name = target.toLowerCase() === '_blank' ? '' : target;
+      const ask = { url, name, features: { popup: false, noreferrer }, post };
+      if (noopener) {
+        apart(ask);
         return true;
       }
-      const name = target.toLowerCase() === '_blank' ? '' : target;
-      const opened = open({
-        url,
-        name,
-        features: { popup: false, noreferrer },
-        post,
-      });
+      const opened = open(ask);
       // one with no opener has no number, and it has been seen to all the same
-      return !!opened || opensNoOpener(runner);
+      return !!opened || !!flags || opensNoOpener(runner);
     },
   };
 }

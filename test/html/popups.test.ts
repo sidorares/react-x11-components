@@ -2321,6 +2321,213 @@ test('a sandboxed frame in a page of same-origin keeps its flags on the window i
   assert.deepEqual(s.tabs, []);
 });
 
+/** A frame with these tokens that runs `code`. */
+const sandboxed = (tokens: string, code: string): string =>
+  page(`
+    const frame = document.createElement('iframe');
+    frame.sandbox = '${tokens}';
+    frame.srcdoc = \`<script>${code}<\\/script>\`;
+    document.body.append(frame);
+  `);
+
+/** A plain `<a>` and how a script follows it, which has no opener. */
+const clickBlank = (to: string, rel = ''): string => `{
+  const a = document.createElement('a');
+  a.href = '${to}';
+  a.target = '_blank';
+  a.rel = '${rel}';
+  document.body.append(a);
+  a.click();
+}`;
+
+/** Each way a document asks for a window with no opener. */
+const NO_OPENER: [string, (to: string) => string][] = [
+  ['noopener', (to) => `window.open('${to}', '_blank', 'noopener');`],
+  ['noreferrer', (to) => `window.open('${to}', '', 'noreferrer');`],
+  ['named noopener', (to) => `window.open('${to}', 'asked', 'noopener');`],
+  ['plain target=_blank', (to) => clickBlank(to)],
+  ['rel=noopener', (to) => clickBlank(to, 'noopener')],
+];
+
+for (const [how, open] of NO_OPENER) {
+  test(`a sandbox's ${how} window keeps its flags, and is no tab`, async () => {
+    const s = await scene(
+      sandboxed('allow-popups allow-scripts', open(`${APP}plain`)),
+      {
+        [`${APP}plain`]: page(`
+          let read = 'none';
+          try { read = localStorage.length; } catch (e) { read = e.name; }
+          console.log('inside', self.origin, read, opener);
+        `),
+      },
+      { popups: { unblocked: true } },
+    );
+    assert.equal(await s.until('inside'), 'null SecurityError null');
+    assert.deepEqual(s.tabs, []);
+    assert.equal(s.popups.length, 1);
+  });
+}
+
+test("a sandbox's window with no allow-scripts keeps them through two documents", async () => {
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts',
+      clickBlank(`${APP}plain`).replace(`'${APP}plain'`, `'${APP}first'`),
+    ),
+    {
+      [`${APP}first`]: page(`
+        console.log('first', self.origin);
+        location.href = '${APP}second';
+      `),
+      [`${APP}second`]: page(`
+        console.log('second', self.origin, opener);
+        window.open('${APP}third', '_blank', 'noopener');
+      `),
+      [`${APP}third`]: page(`console.log('third', self.origin, opener);`),
+    },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until('first'), 'null');
+  assert.equal(await s.until('second'), 'null null');
+  assert.equal(await s.until('third'), 'null null');
+  assert.deepEqual(s.tabs, []);
+  assert.equal(s.popups.length, 2);
+});
+
+test('a host that shows no windows opens nothing for a sandbox: there is nowhere to keep its flags', async () => {
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts',
+      `
+      window.open('${APP}a');
+      window.open('${APP}b', '_blank', 'noopener');
+      ${clickBlank(`${APP}c`)}
+      ${clickBlank(`${APP}d`, 'opener')}
+      setTimeout(() => console.log('asked'), 20);
+    `,
+    ),
+    {},
+    { popups: null },
+  );
+  await s.when(() => s.logs.some((l) => l.endsWith(' asked')), 'not asked');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  assert.deepEqual(s.tabs, []);
+  assert.deepEqual(s.popups, []);
+});
+
+test('a host that refuses a window hands a sandbox no tab in its place', async () => {
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts',
+      `
+      window.open('${APP}a');
+      ${clickBlank(`${APP}b`, 'opener')}
+      setTimeout(() => console.log('asked'), 20);
+    `,
+    ),
+    {},
+    { refuse: true, popups: { unblocked: true } },
+  );
+  await s.when(() => s.logs.some((l) => l.endsWith(' asked')), 'not asked');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  assert.deepEqual(s.tabs, []);
+});
+
+test('a sandbox that lets its windows out has a tab, as any document does', async () => {
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts allow-popups-to-escape-sandbox',
+      `window.open('${APP}a', '_blank', 'noopener');`,
+    ),
+    {},
+    { popups: { unblocked: true } },
+  );
+  await s.when(() => s.tabs.length > 0, 'no tab');
+  assert.deepEqual(s.tabs, [`${APP}a`]);
+  assert.deepEqual(s.popups, []);
+});
+
+test('no press behind it, a window that keeps its flags is blocked as any is', async () => {
+  const blocked: string[] = [];
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts',
+      `
+      window.open('${APP}a', '_blank', 'noopener');
+      ${clickBlank(`${APP}b`)}
+      setTimeout(() => console.log('asked'), 20);
+    `,
+    ),
+    {},
+    { popups: { blocked: (url) => void blocked.push(url) } },
+  );
+  await s.when(() => s.logs.some((l) => l.endsWith(' asked')), 'not asked');
+  assert.deepEqual(s.tabs, []);
+  assert.deepEqual(s.popups, []);
+  assert.deepEqual(blocked, [`${APP}a`, `${APP}b`]);
+});
+
+test("a page's own replaced builtins talk the host out of none of it", async () => {
+  const s = await scene(
+    sandboxed(
+      'allow-popups allow-scripts',
+      `
+      const real = String;
+      // the facade's own reading of the seam: no host to show a window
+      window.String = (v) => (v === 'any' || v === 'gesture' ? 'none' : real(v));
+      window.open('${APP}a');
+      window.String = real;
+      // and of the features: no opener asked for
+      const parse = JSON.parse;
+      JSON.parse = (t) => {
+        const read = parse(t);
+        return read && typeof read === 'object' && 'popup' in read
+          ? { ...read, noopener: true }
+          : read;
+      };
+      window.open('${APP}b');
+      JSON.parse = parse;
+      setTimeout(() => console.log('asked'), 20);
+    `,
+    ),
+    {},
+    { popups: { unblocked: true } },
+  );
+  await s.when(() => s.logs.some((l) => l.endsWith(' asked')), 'not asked');
+  await act(() => new Promise((r) => setTimeout(r, 60)));
+  assert.deepEqual(s.tabs, []);
+  // what it asked for is a window that keeps its flags, or none
+  for (const popup of s.popups) {
+    assert.ok((popup as unknown as { sandbox: number }).sandbox, popup.url);
+  }
+});
+
+test("a document's own policy keeps a window its flags, and a window that keeps them hands them on", async () => {
+  const s = await scene(
+    page(`
+      window.open('${APP}a', '_blank', 'noopener');
+      console.log('top', self.origin);
+    `),
+    {
+      [`${APP}a`]: page(`
+        console.log('inside', self.origin, opener);
+        window.open('${APP}b', '_blank', 'noopener');
+      `),
+      [`${APP}b`]: page(`console.log('next', self.origin, opener);`),
+    },
+    {
+      headers: [
+        ['content-security-policy', 'sandbox allow-scripts allow-popups'],
+      ],
+      popups: { unblocked: true },
+    },
+  );
+  assert.equal(await s.until('top'), 'null');
+  assert.equal(await s.until('inside'), 'null null');
+  assert.equal(await s.until('next'), 'null null');
+  assert.deepEqual(s.tabs, []);
+});
+
 test('a sandboxed frame in a page of same-origin opens no document with a policy, by a window or by a tab', async () => {
   const s = await scene(
     page(`

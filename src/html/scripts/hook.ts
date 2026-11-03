@@ -30,7 +30,7 @@ import type {
   ViewLink,
 } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
-import type { Popup } from './popups.js';
+import type { Popup, PopupAsk } from './popups.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
@@ -38,6 +38,9 @@ import { readyFor } from '../encoding.js';
 import { decodeText } from '../network.js';
 import type { ResourceKind } from '../network.js';
 import type { ResourceRequest, ResourceResult } from '../resources.js';
+import type { CorsMode } from '../url.js';
+
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 
 /** The engine, as `./runtime.ts` exports it. */
 export type ScriptRuntime = typeof import('./runtime.js');
@@ -89,6 +92,10 @@ interface Early {
  *  page's own and not props. */
 export interface ScriptProps {
   scripting: boolean;
+  /** A document with flags to hand on and no runner of its own opens a window
+   *  that keeps them, the engine loaded for it where nothing else has. Not a
+   *  prop. */
+  openApart: (ask: PopupAsk, flags: number) => void;
   onDocument?: (document: Document) => void;
   onScript?: (request: ScriptRequest) => void;
   onParsed?: () => void;
@@ -138,7 +145,7 @@ export interface ScriptProps {
   workerResource?: (
     url: string,
     kind: ResourceKind,
-    cors: boolean,
+    cors: CorsMode | null,
   ) => Promise<ResourceResult | null | undefined>;
 }
 
@@ -154,10 +161,17 @@ export async function throughWorker(
 ): Promise<unknown> {
   const { kind } = request;
   if (kind === 'image' || kind === 'stylesheet' || kind === 'font') {
+    // the mode an image asks in is the store's, and a sheet's its element's
+    const raw = request.element?.attribs?.crossorigin;
     const answered = await scripts.workerResource?.(
       request.url,
       kind,
-      request.element?.attribs?.crossorigin !== undefined,
+      request.cors?.mode ??
+        (raw === undefined
+          ? null
+          : raw.toLowerCase() === 'use-credentials'
+            ? 'use-credentials'
+            : 'anonymous'),
     );
     if (answered !== undefined) return answered;
   }
@@ -250,14 +264,12 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element, cors) => {
-      const answered = await workerResource(
-        src,
-        'script',
-        element?.attribs.crossorigin !== undefined,
-      );
+    load: async (src, element, cors, type, asker) => {
+      // by CORS where it is asked by CORS: a module, or a script whose
+      // element says so
+      const answered = await workerResource(src, 'script', cors?.mode ?? null);
       if (answered === undefined) {
-        return latest.current.load(src, element, cors);
+        return latest.current.load(src, element, cors, type, asker);
       }
       if (answered?.kind !== 'script') return null;
       if ('text' in answered) {
@@ -267,9 +279,12 @@ export function useScripts(
           headers: answered.headers,
         };
       }
-      await readyFor(answered.charset);
+      // a JSON or a text module is UTF-8, whatever the response names
+      if (!type) await readyFor(answered.charset);
       return {
-        text: decodeText(answered.bytes, answered.charset ?? null),
+        text: type
+          ? new TextDecoder().decode(answered.bytes)
+          : decodeText(answered.bytes, answered.charset ?? null),
         url: answered.url,
         headers: answered.headers,
       };
@@ -336,6 +351,9 @@ export function useScripts(
     },
     get drawsFrames() {
       return latest.current.drawsFrames;
+    },
+    get framesFollowed() {
+      return latest.current.framesFollowed;
     },
     get undrawn() {
       return latest.current.undrawn;
@@ -434,7 +452,7 @@ export function useScripts(
     async (
       url: string,
       kind: ResourceKind,
-      cors: boolean,
+      cors: CorsMode | null,
     ): Promise<ResourceResult | null | undefined> => {
       const workers = keeper();
       if (!workers || !/^https?:/i.test(url)) return undefined;
@@ -586,9 +604,16 @@ export function useScripts(
     );
   }, [refused]);
 
-  if (!enabled || refused) return { scripting: false };
+  const openApart = useCallback((ask: PopupAsk, flags: number) => {
+    void loadScriptRuntime().then((loaded) =>
+      loaded.openWindowApart(ask, address.current, flags, seams.current),
+    );
+  }, []);
+
+  if (!enabled || refused) return { scripting: false, openApart };
   return {
     scripting: true,
+    openApart,
     onDocument,
     onScript,
     onParsed,

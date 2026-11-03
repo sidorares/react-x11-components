@@ -42,6 +42,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` or `<audio>` playing — see [Video](#video) and [Audio](#audio). May return a promise. **Absent, nothing loads.**                                               |
 | `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
+| `headers`            | `[string, string][]`                             | The headers of the response the document came in, read whether or not its scripts run: a `Content-Security-Policy`'s `sandbox` — see [Sandboxes and framing](#sandboxes-and-framing).                                                                                                               |
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
@@ -152,7 +153,13 @@ file's header says, as a browser lays out an image whose bytes are in:
 what follows it is where it will be, and the picture is drawn when it has
 been decoded. Bytes nothing decodes are drawn as a declined image is.
 Return `{ kind: 'image', image, width, height }` instead to hand over an
-image the host decoded itself, and `{ kind: 'document' }` where what an
+image the host decoded itself. Either may say where the image came from
+(`ImageOrigin`): `url`, where a redirect took it, `headers`, its response's,
+and `type`, where something made the response — a service worker's answer —
+`'basic'`, `'cors'` or `'opaque'`. That is what a canvas the image is drawn
+on is tainted by (see "A canvas keeps `origin-clean`"), and an `<img>` with a
+`crossorigin` attribute is asked for with `cors` and held to its `headers`.
+`HtmlNetwork` says all of it. Return `{ kind: 'document' }` where what an
 `<object>`'s `data` holds is a page or some other document rather than an
 image: the object shows it as a frame does, a box `renderEmbedded` mounts
 over, and not its fallback content. A declined or absent resource is an
@@ -270,10 +277,14 @@ HTML's parser builds for one: an `<html>`, a head and a body, each as
 written or implied where the markup leaves it out (HTML 13.2.6.4.1 to
 13.2.6.4.6). An empty document has all three. So a page that starts
 `<!doctype html><title>` has a `document.head` for its scripts and the
-body's UA margin, and its `:root` is the `<html>`. A source with no doctype
-is a fragment and is left as written, with the root box standing in for
-the body it would have had. That is how an application's snippet of HTML
-is drawn. The initial containing block takes the root element's
+body's UA margin, and its `:root` is the `<html>`. So is one that starts with
+an `<html>` or a `<head>`, and so is every source where `scripts` is on,
+whatever it starts with, as a frame's document, a written one and
+`DOMParser`'s are: a page's first script finds `document.head`, and one with no
+doctype, or an old one, is in quirks mode, where a `<table>` ends no `<p>`. Any
+other source with no doctype is a fragment and is left as written, with the
+root box standing in for the body it would have had. That is how an
+application's snippet of HTML is drawn. The initial containing block takes the root element's
 `direction` (CSS 2.1 10.1), so an `<html>` narrower than the viewport in
 `rtl` stands at its right.
 
@@ -900,10 +911,23 @@ of its own:
   answered with `{ kind: 'script', text }` or `{ kind: 'script', bytes,
 charset }` — the `<script>` is the request's `element`, and the root
   element is a module's. A host that knows says where it came from: `url`,
-  where a redirect took it, and `headers`, its response's. A module's request
-  and a `crossorigin` script's carry `cors`, the document's origin and whether
-  it sends credentials, and `HtmlNetwork` answers those with an `Origin` of
-  their own, kept apart in its cache;
+  where a redirect took it, and `headers`, its response's. A module's request,
+  a `crossorigin` script's and a `crossorigin` image's carry `cors`, the
+  document's origin and whether it sends credentials, and `HtmlNetwork`
+  answers those with an `Origin` of their own, kept apart in its cache, as
+  `<Html>` keeps an `<img crossorigin>`'s image apart from an `<img>`'s of the
+  same address. A JSON or a text module — `import data from './a.json' with
+{ type: 'json' }`, and `type: 'text'` (the Import Text proposal),
+  statically or with `import()`, in a window or a worker — is asked for with
+  `type: 'json'` or `'text'` as well, which `HtmlNetwork` asks for with the
+  `Accept` a browser sends for one. It is UTF-8 whatever its response names,
+  a JSON module's response has to say it is JSON (`application/json`,
+  `text/json`, or a type ending `+json`) where a text module's may say
+  anything, and its default export is its value, made in the page's realm.
+  Each is a module of its own beside the script at the same URL. Another
+  type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
+  but `type` a `SyntaxError` in an `import` and a `TypeError` in an
+  `import()`, as in a browser;
 - a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
   document, a worker's script — go through `scripts.fetch`, a request of any
   method and the response whatever its status, after the engine has held the
@@ -1019,7 +1043,7 @@ since this component navigates nowhere by itself:
 | Seam             | Default                   | What it is                                                                                                                                                                       |
 | ---------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                     |
-| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                          |
+| `load`           | through `onResource`      | A script's source by URL, and a JSON or a text module's with its `type`, for a host that keeps scripts apart from its other resources.                                           |
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
 | `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
 | `headers`        | none                      | The headers of the response the document came in, for what it says of itself: its `sandbox`, its `Cross-Origin-Opener-Policy`.                                                   |
@@ -1071,7 +1095,9 @@ nothing.
 
 **`EventSource` is built on the page's own requests**, so a stream is held to
 CORS and to the document's network as a `fetch` is, and it connects again after
-`retry` with `Last-Event-ID`. `CompressionStream` and `DecompressionStream` run
+`retry` with `Last-Event-ID`. What it sends of its own, `Cache-Control: no-cache`
+and `Last-Event-ID`, asks no preflight, and one another origin's CORS turns down
+is over, where a connection lost is made again. `CompressionStream` and `DecompressionStream` run
 on the runtime's zlib, a chunk at a time, for `gzip`, `deflate`, `deflate-raw`
 and `brotli`.
 
@@ -2216,6 +2242,24 @@ are read from `transform`, `viewBox` and each shape's own attributes
 element's font. Each element has its interface, `createSVGMatrix` and
 `createSVGPoint` among what an `<svg>` makes. A CSS transform on a shape does
 not count, since its matrices are read from the attribute.
+`isPointInFill` and `isPointInStroke` go by the same outlines, the fill rule,
+the stroke's width, caps and dashes, and take every join as round.
+
+**An SVG element's attributes are SVG 2's objects.** `rect.x.baseVal`, a
+`transform.baseVal` list with `consolidate()`, `viewBox.baseVal`,
+`preserveAspectRatio`, the enumerations, a filter primitive's numbers and the
+rest of SVG 2's and Filter Effects' `SVGAnimated…` attributes reflect their
+attribute: a write through one sets it, and an attribute set any other way
+shows in one a page holds. `SVGLength` converts between its units against the
+element's font and the nearest `<svg>`'s size; `SVGPoint`, `SVGRect` and
+`SVGMatrix` are interfaces of their own, as in every browser. Nothing animates
+an attribute (SMIL is not run), so an `animVal` reads its `baseVal` and is
+read only. Where the browsers differ this follows two of them, Chromium where
+all three do. `getComputedStyle` answers SVG's properties, `fill`, `stroke`,
+`stop-color`, the markers, `cx` to `ry` and the rest, for every element, and
+`el.style` keeps each in its canonical form. What an SVG property's value is
+while a CSS animation or transition runs on it is not worked out: it reads
+the value at rest.
 
 ### Windows
 
@@ -2345,7 +2389,8 @@ header parsing and redirects among them, so hand in `scripts.redirects` beside
 response on the way counts. A host that hands in neither gets no policies. A frame
 of another origin in a page of `same-origin` opens windows with no opener, which go
 to `navigate(url, 'tab')`, and `window.open` answers it null. One with sandboxing
-flags to hand on goes to `popups.open` instead, since a tab carries none.
+flags to hand on goes to `popups.open` instead, since a tab carries none, as does
+every window with no opener a sandbox opens (see [Sandboxes and framing](#sandboxes-and-framing)).
 
 To the host a window that left is the window it was: `HtmlPopup` goes on, and its
 documents still have `scripts.popup`. It is not isolated, since it stays in this
@@ -2365,15 +2410,19 @@ flag sets"). The flags are read as a document is loaded, so a change to the
 attribute waits for the next load, and they add up: a frame's are its own and
 those of the document it is in, and no token takes back what was inherited. A
 response's own `Content-Security-Policy: sandbox` adds to them, a frame's as it
-arrives and a top-level document's where the host hands the engine its
-`scripts.headers`, which `HtmlNetwork`'s `document` and `html` answer.
+arrives and a top-level document's where the host hands in its headers,
+`headers` or `scripts.headers`, which `HtmlNetwork`'s `document` and `html`
+answer. `headers` is read with scripts off too: such a document submits no form,
+follows no link to a new window, saves no file and focuses nothing by
+`autofocus` where its policy says so, and what it loads is asked for as of no
+origin.
 
 | without                | the document                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `allow-same-origin`    | has an opaque origin, whatever its address, so the page has it by a number, as any other origin's frame, and it has the page so. `self.origin` is `null`, `location.origin` still its address's. `document.cookie`, `localStorage` and `navigator.locks` are a `SecurityError`, every permission is `denied` and no user is asked, a request says `Origin: null` and carries no `same-origin` cookies, and no service worker has it. |
-| `allow-scripts`        | runs nothing, whoever puts a script in, and shows its `<noscript>`.                                                                                                                                                                                                                                                                                                                                                                  |
+| `allow-scripts`        | runs nothing, whoever puts a script in, shows its `<noscript>`, and focuses nothing by `autofocus`.                                                                                                                                                                                                                                                                                                                                  |
 | `allow-forms`          | submits no form.                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out.                                                                                                                                                                                                                                                                                                        |
+| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out, and is never a tab, which cannot carry them: one with no opener is a window of `popups.open` in a group of its own, and with no `popups`, or where it refuses, nothing opens.                                                                                                                          |
 | `allow-top-navigation` | sends the top window nowhere. `allow-top-navigation-by-user-activation` lets a press do it.                                                                                                                                                                                                                                                                                                                                          |
 | `allow-downloads`      | saves no file.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `allow-modals`         | is answered as any document is: `alert` draws nothing here, and `confirm` is no and `prompt` is null.                                                                                                                                                                                                                                                                                                                                |
@@ -2383,11 +2432,24 @@ origin, is handed the page's window as any such frame is, so its flags stop
 what it does for itself and not what it does through the page. HTML warns of
 that pair for the same reason: such a frame can take its own `sandbox` off.
 
+**What a sandbox loads is asked for as of no origin.** An `<img>`, a sheet, a
+font or a `<script src>` of a document with no `allow-same-origin` reaches
+`onResource` with `opaqueOrigin`, and one of a frame with `client`, the frame's
+address: `HtmlNetwork` sends it same-site with nothing, so with no cookie that
+is only a site's own, and with the frame's `Referer`. A host with an
+`onResource` of its own reads the two fields.
+
+**A frame in a document with no script of its own loads**, where the page's
+realm loads it: in a frame of the page's origin, or a sandbox, whose frames are
+all of no origin. One in another origin's document with no script does not, since
+its `about:blank` and its `srcdoc` would be of that origin, which nothing here
+can give them.
+
 Not read: `allow-pointer-lock`, `allow-orientation-lock` and
-`allow-presentation`, which guard nothing here; and the automatic features, so
-`autofocus` works in a sandbox. A subresource of a sandboxed frame, an `<img>` or
-a `<script src>`, goes through `onResource` as the page's does, with the page's
-cookies.
+`allow-presentation`, which guard nothing here; and autoplay, the other
+automatic feature, so a `<video autoplay>` in a sandbox with no `allow-scripts`
+plays. A cross-origin frame's `autofocus` focuses as a same-origin one's does,
+where HTML refuses it.
 
 **A cross-origin frame sends the top window somewhere only behind a press**, as
 Chromium has it, where it could not at all; a sandbox goes by its flags. A
@@ -2439,8 +2501,8 @@ a host is the text alone, and what `text/html` means for the page is a
 listener's to decide.
 
 `navigator.clipboard` has its gates here rather than in the seam. A write needs
-a press or a key behind it that is recent, or `clipboard-write` granted, and
-never one denied. A read needs `clipboard-read` granted, or, where it is
+a press or a key behind it that is recent, which the host saw and not only the
+page's realm, or `clipboard-write` granted, and never one denied. A read needs `clipboard-read` granted, or, where it is
 `prompt`, a press or a key and `scripts.permissions.request` saying so: a page
 that reads the clipboard after any click reads what was copied in every other
 application. With no `permissions` nothing can be granted, so a page cannot
@@ -2538,7 +2600,9 @@ Chrome's format.
 attribute, a cookie for its host or its domain, never for a public suffix,
 paths longest first, `Secure` set and sent over `https:` or a loopback host
 alone, `HttpOnly` never shown to a script nor set by one, `SameSite` held to
-in every context, the `__Secure-` and `__Host-` prefixes, and Chrome's caps.
+in every context, the `__Secure-`, `__Host-`, `__Http-` and `__Host-Http-`
+prefixes — a `__Host-` cookie says `Path=/` itself, and an `__Http-` one is
+`HttpOnly` and `Secure`, so HTTP's alone — and Chrome's caps.
 A cookie that names no `SameSite` is `None`'s, as Firefox and Safari have
 it; `thirdParty: false` sends none on another site's request. The Public
 Suffix List comes from the optional peer `tldts` through
@@ -2574,23 +2638,44 @@ page asks from, since the facade runs where a page can replace what it calls.
   does a `crossorigin` script, which is then told in full. One that is refused
   fires `error` and runs nothing. A host that says nothing of the headers leaves
   a `crossorigin` script running muted, and a module of another origin refused.
-- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`,
-  `'error'` fails. Each hop to another origin is held to CORS, and preflighted
+- **Redirects are Fetch's.** `redirect: 'manual'` answers an `opaqueredirect`
+  at the address asked for, and `'error'` fails, whether or not the redirect says
+  where it goes. Where the redirect goes stays on the host, and a navigation a
+  service worker answers with one, through its cache or a clone, follows it from
+  where that redirect was. Each hop to another origin is held to CORS, and preflighted
   where the request needs one, so a `DELETE` one server lets through does not go
   on to wherever that server sends it. A request that passed through a third
   origin asks the next with `Origin: null`, and one that left the page's origin
-  carries none of its cookies back to it.
+  carries none of its cookies back to it. A CORS script's are held the same:
+  `HtmlNetwork` checks each redirect as an answer and asks the next in nobody's
+  name, and says the way it came in `redirects`, which the engine reads the end
+  by, so a script that came home by another origin is muted.
+- **A font of another origin needs its leave** (CSS Fonts 4, 4.8.2): `<Html>`
+  asks for it with `cors`, and turns down one whose answer's `headers` do not let
+  the document have it. A host that says nothing of the headers lets it through.
+- **A promise a classic script of another origin rejects as it runs is not
+  heard** as `unhandledrejection`. One it rejects later, from a timer or a
+  promise the host settles, is, since nothing says whose a later task is.
 - **A canvas keeps `origin-clean`.** `drawImage`, a pattern and a bitmap of
   another origin's image taint what they reach, and `getImageData`, `toDataURL`,
   `toBlob` and `convertToBlob` are a `SecurityError` until the canvas is sized
-  again. An `<img>` is drawn as nothing on a canvas in any case, so none of its
-  pixels reach a page: this is what a page is told, and an image with a
-  `crossorigin` attribute is taken at its word, with nothing fetched by CORS.
-- **Not held to any of this:** a stylesheet's, a font's and an image's own
-  `crossorigin` (a `<link>`'s sheet has no rules a script can read, of any
-  origin); a CORS script's redirects, which `HtmlNetwork` follows and only the
-  last of which is checked; what timing says, and a promise a script of another
-  origin leaves rejected.
+  again. What taints is the response the image came in, as HTML has it
+  ("CORS-same-origin"), and not the address it was asked for: one a service
+  worker answered with another origin's response that no CORS let through
+  taints, out of Cache Storage as much as from the network, and one it
+  answered with a response of its own does not, whatever address the image
+  named; one a redirect took to another origin taints. An `<img>` with a
+  `crossorigin` attribute is asked for by CORS, and one whose answer does not
+  let the document have it is an `error`, and no image; where the host says
+  nothing of the headers it had, it is drawn, and taints. An `<img>` is drawn
+  as nothing on a canvas in any case, so none of its pixels reach a page: this
+  is what a page is told.
+- **Not held to any of this:** a stylesheet's own `crossorigin` (a `<link>`'s
+  sheet has no rules a script can read, of any origin); a `<video>`'s, whose
+  `crossorigin` is taken at its word; the origin a sandboxed document asks for
+  an image by CORS in, which is its address's and not `null`; what timing says;
+  and a `.catch()` that a script of another origin attaches, which HTML keeps
+  from `rejectionhandled`.
 
 **A document's cookies are the jar's** (`scripts.cookies`):
 `document.cookie` reads the document's cookies but its `HttpOnly` ones and
@@ -3165,7 +3250,14 @@ things about it are decisions:
   plays. The page hears `loadstart`, `progress`, `loadedmetadata`,
   `loadeddata`, `canplay`, `canplaythrough` and `suspend`; `stalled` after
   three seconds with nothing; a source no container is read from is an
-  `error`. Its `readyState`, `duration`, `videoWidth` and `currentTime`
+  `error`. **An HLS playlist is read as one** (`readPlaylist`, by its type
+  or its `#EXTM3U` line): a media playlist's segments summed for the length,
+  `Infinity` where it has no end, and a multivariant playlist's first
+  variant, which a player starts on, for the size and, from its own
+  playlist, the length — and no segment, which is the player's. Read as a
+  container, every playlist was an `error`: YouTube's embed sets its
+  playlist as the `src` wherever `canPlayType` takes HLS, and loaded it
+  again and again, with the player under it mounted each time. Its `readyState`, `duration`, `videoWidth` and `currentTime`
   are this model's, and the clock runs while it plays, `timeupdate` four
   times a second, looping or ending at its duration. The bytes are read
   host-side and never reach the page's realm, since another origin's are
@@ -3425,12 +3517,21 @@ its scripts in a realm of its own (`src/html/scripts/frames.ts`): a host
 that turns scripts on gets them with no `renderEmbedded` of its own, and
 one that has one is asked first. An `<iframe srcdoc>` shows the markup its
 attribute holds, ahead of any `src`, as a document at `about:srcdoc` of the
-page's origin, with the page's base — and goes to it again when a script
+page's origin, with the page's base — `location.origin` reads `null` in one a
+sandbox gives no origin, as its blob URLs say — and goes to it again when a script
 sets the attribute, changes it or takes it away, to its `src` then, as
 HTML's "process the iframe attributes" has it; a `src` set while it has a
 `srcdoc` goes nowhere. A server-rendered `<iframe>` a React page hands its
 `srcdoc` after hydrating had its first `about:blank` by then, and stayed
 blank.
+
+**A response of no content navigates nothing** (HTML 7.4.2.3.3): a frame sent
+to a 204 or a 205 goes on showing what it showed and hears no `load`, and so do
+the example browser's tab and the WPT harness's windows, a popup's initial
+`about:blank` among them. A frame's `marginwidth` and `marginheight` are its
+document's body's margins, under the body's own `marginwidth`, `leftmargin`,
+`marginheight` and `topmargin`, each of which sets two sides; `rightmargin` and
+`bottommargin` set nothing, as in Chrome and Firefox.
 
 **An `<object>` and an `<embed>` hold a document as an `<iframe>` does**,
 where `scripts` draws frames: one of HTML or XML is mounted over the box, at
@@ -3820,6 +3921,13 @@ tells `load` once, and one opened and never closed tells none and holds up no
 at its type, read from the realm that made it or one of its origin around it as
 the address is set, so a page may revoke the URL straight after. One no realm
 holds is a load that failed, and no network is asked.
+
+An `<iframe>` whose document runs no script of its own hears `load` once that
+document is loaded completely, its images and sheets in, as HTML has it, and
+the page's own `load` waits for it. Its images are asked for by the view
+mounted over the frame, so one the page lays out no box for asks for none, and
+hears `load` as its document is in, as it did before: a browser asks for a
+hidden frame's images, and here they are never fetched.
 
 **What a script focuses has the focus from then on, whenever its widget
 comes.** A control has no widget until the render after it is put in, or
@@ -6007,16 +6115,29 @@ orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
 run up the page in `sideways-lr`. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
-parent as any box is, in the page's axes: a block is as wide as its
-containing block, a float, an inline-block, a table cell or an absolute box
-as wide as its lines come to, and its height is its own where it has one,
+parent as any box is, in the page's axes. Its width is its block size,
+which is its content's where it has none of its own (7.3.2): a block, a
+float, an inline-block, a table cell and an absolute box alike are as wide
+as their lines come to, with the margins of the blocks in them and their
+own edges, within their `width`, `min-width` and `max-width`, and a block's
+`auto` margins share out what is left of the line, as Chromium and WebKit
+share it, where Firefox leaves the block at the start. A flex or grid item
+stretched across is as wide as its container makes it. The root element and
+its `<body>` fill the line instead, and their lines start where a browser
+starts them, at the viewport's right in `vertical-rl` (see "Not yet"). Its
+height is its own where it has one,
 and else as tall as its text runs, no taller than its containing block's
 height where that is definite, or the viewport's where it is not, and no
 shorter than its longest word. So `th { writing-mode: vertical-rl }` makes
 a header a line wide and as tall as its label, and with `transform:
 rotate(180deg)` beside it, as tables usually write it, the label reads up
 the page. It has no baseline across the line it is on, and an inline-block
-one sits on its bottom margin edge.
+one sits on its bottom margin edge. On a vertical line an image, or any box
+with no baseline of its own, sits by its middle on the line's central
+baseline, as all three engines set it, so a 50px image is a line 50 across;
+where the line sets its text sideways (`text-orientation: sideways` and the
+`sideways-*` modes) the baseline is the alphabetic one, and it sits on it by
+its edge.
 
 Under `text-orientation: mixed` a vertical line sets Latin and the other
 horizontal scripts on their sides, turned a quarter clockwise, and keeps
@@ -6035,7 +6156,11 @@ sides.
 
 Not yet: a horizontal flow inside a vertical one (`text-combine-upright`
 and its kin), the root element in a vertical writing mode scrolled from its
-block start, a vertical flex box, grid or table, images and form controls
+block start, the principal writing mode handed from the `<body>` or the root
+element to the viewport (8) — so a vertical body is as wide as the line
+where a browser makes it as wide as its lines and puts it at the right, and
+a block in it as tall as its text where a browser makes it the viewport's
+height — a vertical flex box, grid or table, images and form controls
 set in a vertical line (a control is mounted where the flow's turn puts its
 box, and is drawn level), backgrounds and gradients of the boxes inside a
 vertical flow (drawn turned with them, where the root's own are drawn as
@@ -7090,10 +7215,60 @@ An `<input type=image>` is drawn the same way, as its image, and submits
 the point it was pressed at; until its image arrives, or where it is
 declined, it is a button saying its `alt`, so it can be pressed either way.
 
-**A text field the page styled is the page's to draw.** Set any of the
-border or background properties of an `<input>`, a `<textarea>` or a
-`<select>`, a radius among them, `appearance: none`, or an `all` that
-sets them all, and the document paints that box, as a browser drops a field's native look for the author's;
+**What counts as a styled control is CSS UI 4's rule.** The page styles a
+control when an author's declaration is left, once the cascade is done, for
+one of the properties CSS UI 4 lists as appearance-disabling (7.2.1):
+`background-color`, `-image`, `-attachment`, `-position`, `-clip`,
+`-origin` and `-size`, every border side's colour, style and width, physical
+or logical, the five `border-image` longhands, and the eight corners'
+radii, through any shorthand or prefixed name that sets them. Or when
+`appearance` comes to `none`, `all` among the ways it can. `background-repeat`
+is not on the list, and neither are `border-spacing` and `border-collapse`.
+What the page set them to does not count, only that it set them: a page that
+writes back what `getComputedStyle` read of a control takes its native look
+off, as each of WPT's 802 tests of the list does, and as Chrome, Firefox and
+Safari all do. `revert` takes the author's value back, and the control keeps
+its look; `revert-layer` takes back only its own layer's. An animation's
+values are not the page's. `appearance: menulist-button` is a drop-down
+`<select>`'s look without its native one, its arrow on a box the page draws,
+whether or not the page set anything else; to any other control it is
+`auto`, as `textfield` is.
+
+That decides it for a button, an input button, a text field of any type, a
+text area, a drop-down `<select>`, a `<meter>` and a `<progress>`, the
+controls HTML lets devolve. A checkbox, a radio button and a range do not
+(HTML 15.5): at `appearance: auto` a checkbox or a radio button takes none
+of the page's padding or border, as Blink and WebKit reset both, and draws
+none of its background, so it stays as large as its size says. At
+`appearance: none` it has no look of its own at all, in every engine, and is
+the page's box, 0 by 0 unless the page sizes it, its `::before` and
+`::after` with it. It is a border box, as a select and a search field are,
+as in Blink, so a page's `width` holds its edges. That is how Bootstrap's, Tailwind's and Pico's
+checkboxes and switches are drawn. A press or Space ticks it, its click told
+after it has ticked, and a stop takes the focus for it, named to an
+assistive technology as a checkbox or a radio button with its state. A file
+input and a colour well have no native look to give way: a file input's
+edges are the page's and its widget is in its content box, and a colour
+well is drawn by the document either way.
+
+**A page reads a control's border and ground as the web's.** A control the
+palette draws has the palette's border and ground in its style, none and
+transparent, which is how its box comes to the widget's size. Its
+`getComputedStyle` reads the web's UA sheet's instead, for each property on
+CSS UI 4's list: a text field's 2px inset border and its `Field` ground, a
+button's 2px outset border and `ButtonFace`, square corners. A page that
+copies a style writes back what a browser would hand it, which takes the
+palette's look off as it takes a browser's native one, and the control is
+drawn as the web's. Its padding, `width` and `height` read what its box has,
+so a page that writes those back, as WPT's test of what is not on the list
+does, keeps the control the size it is: beside the web's border they come to
+more than its `offsetWidth`, which is the cost. The background's longhands,
+the border image's and the logical corners are read by name as Chrome reads
+them, and, like the shorthands, are not items of the list a page walks.
+
+**A text field the page styled is the page's to draw.** Style an
+`<input>`, a `<textarea>` or a drop-down `<select>`, as above, and the
+document paints that box, as a browser drops a field's native look for the author's;
 the widget is mounted bare inside its content box, with no frame or fill,
 and writes in the element's own colour and font, which the author chose to
 go on that background — its glyphs in its `-webkit-text-fill-color` where
@@ -7107,16 +7282,19 @@ spaces its lines by it. Its size is then its text's, a line as tall as its
 `line-height` makes it — at `normal`, its font's own, as a browser's text
 field is — and the border and padding around it are the author's, or the
 web's where the author set only some of them. It is the page setting them
-that counts, not what it set them to, as CSS UI 4 has it (7.2.1) and
-Chrome, Firefox and Safari do: `border: none; background: transparent` is
-a page taking the frame off to draw the field in a box of its own, as
-joshwcomeau.com's newsletter form does in a white pill, and read as values
-it was a field left alone, the palette's frame mounted inside the pill. The
-answer is the one that takes the palette's look off a button, above. A
+that counts, not what it set them to: `border: none; background:
+transparent` is a page taking the frame off to draw the field in a box of
+its own, as joshwcomeau.com's newsletter form does in a white pill, and read
+as values it was a field left alone, the palette's frame mounted inside the
+pill. The answer is the one that takes the palette's look off a button,
+above. A
 `<select>` keeps its arrow, in that colour, as a browser keeps one on a
 select the page gave a border or a background, and loses it at
 `appearance: none`, where the page draws its own — as a background image,
-most often. Its widget is core's `<Select>` restyled through its
+most often. It is as wide as its widest option set in its font, and its
+arrow's room beside it, Blink's 1.6em or what core's trigger takes for its
+chevron where that is more; read as a count of letters, a drop-down cut its
+own label short. Its widget is core's `<Select>` restyled through its
 `labelStyle` and `chevronStyle` slots, which also make it the drawn trigger
 on every backend: under a native popup bezel the page's box would have
 AppKit's drawn over it. Its list is the platform's own menu wherever the
@@ -7141,6 +7319,46 @@ border rounded. The checkables, a range, a file, an image and an input
 button have none, as in Blink's sheet. A field the page left alone has
 none either: its box is the palette's widget, frame and all, which the
 widget draws.
+
+**A list box is the document's.** A `<select>` with `multiple`, or a `size`
+over 1, is a list box (HTML 15.5.17), drawn as Blink draws one: a box with a
+1px border, its options the document's boxes, a row each, and as many rows
+tall as its `size` says, four where it says none, unless the page sets its
+height. It scrolls down what does not fit. A row is an option's line and a
+pixel under it, and no less than `1.2em`. What is selected is grey, and the
+selection's colour while the list box has the focus, as `option:checked`
+rules in the UA sheet say, so a page restyles them as it restyles anything.
+A press selects an option as the button goes down, and only it. In one that
+takes many, Ctrl or Cmd adds it or takes it away, and Shift selects every
+option from the one last pressed. Each change is told as `input` and
+`change`. A single-select list box selects none of its options until one is
+pressed, where a drop-down box shows its first. It has no widget, and the
+palette has no look for it, so one the page leaves alone is the web's. The
+keyboard does not move its selection, and an `<optgroup>` draws no label.
+
+**A meter and a progress bar are the size HTML gives them.** 5em and 10em
+wide, 1em tall, border-box, as Blink and WebKit size them; they took no room
+at all. One the page leaves alone is core's `<ProgressBar>`, half as thick
+as its box and across its middle, as a browser's native bar is, sliding
+through its track where a `<progress>` has no `value`, and a meter outside
+its optimum is amber or red. One the page styles is drawn by the document
+as Chrome draws one with no native look: a progress bar's bar grey and its
+value green, a meter's in Blink's gradients by its region (HTML 4.10.14),
+from the start of the line. A page's rules for the parts,
+`::-webkit-progress-value`, `::-moz-progress-bar` and the meter's, are not
+read yet, and neither the bar's nor the value's colour follows them.
+
+**A colour input is a well.** Blink's 50px by 27px, border-box, with a 1px
+border round a swatch of its value, inside the content box less 4px above and
+below and 2px beside, styled or not. Its value is a colour in lower case, and
+black where it holds none, as HTML sanitizes it. It opens no picker: a press
+on it is told as a click, and nothing chooses another colour.
+
+**A file input's widget is in its content box.** Its border, its padding and
+its background are the page's in every engine, so the document draws them
+and the widget, its button and what it holds, goes inside them, the text in
+the element's colour. A page's `::file-selector-button` rules are not read:
+the button is the palette's.
 
 **The application scrolls it, and height does not frighten it.** The element
 sizes to its content; put it in a `<box overflow="scroll">`, the same shape
@@ -7305,6 +7523,17 @@ under it now. It is a hold and not a throttle because the expensive case is the 
 that matters: a hover that builds the boxes again once a rest is a pause
 nobody sees, and once every tenth of a second of a scroll is the scroll.
 
+**The pointer over a control's widget is over the control.** A field, a
+select or a checkbox is a widget of core's mounted over its element's
+box, and an `<iframe>` is what the host mounts there, so the
+pointer on one has left what the document draws, and its moves are the
+widget's. It is still over the element, and the document hovers the
+element and everything around it, as a browser hovers an `<input>` and
+the card it is in: `input:hover` restyles the field, and a `.card:hover`
+holds as the pointer goes from the card onto its field. The hover goes
+only when the pointer leaves the `<Html>`. A widget a scroll brings under
+a still pointer is hovered once the scroll stops, as anything else is.
+
 **The cursor is the document's.** Over a link it is the `pointer` the
 user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is
 what the page wrote, and where nothing says, it is the text I-beam over
@@ -7423,23 +7652,34 @@ it: with an HTML element open in a `<foreignObject>` a `</svg>` is ignored, as a
 `</div>` is whose `<div>` is outside the drawing, and a `</td>` is not, since a
 table's scope stops at no integration point.
 
-**Mis-nested HTML is read as a browser reads it, but for formatting.** An end
-tag goes by HTML's scopes: a `</span>` over a `<div>` is ignored, so that the
-`<div>`'s own end tag closes the `<div>` and no outer one, a `</li>` stops at a
-list, and any heading's end tag ends a heading. A start tag closes what HTML has
-it close, from under whatever is open: a `<div>` or an `<li>` ends a `<p>`, an
-`<li>` ends the one before it, and a `<button>` holds an `<input>`, as a
-`<select>` holds a `<button>`. A part of a table outside one is ignored, and in
-one closes what cannot hold it. A `</form>` leaves what the form holds open, a
-second `<form>` is turned away for as long as the parser points at the first,
-and between a table's parts a `<form>` closes as it opens and owns the controls
-that come after it, which is why a page reads `input.form` where `closest('form')`
-finds nothing. What is left differs from a browser: there is no adoption agency,
-so nothing closes a formatting element from under what it holds and nothing brings
-one back, and `<p><a><div>` stays in the `<p>`; a nested `<a>` is not ended; and
-there is no foster parenting, so what is out of place in a table stays in it. A
-`<table>` ends a `<p>` in a source of any kind, as it does in a document with no
-quirks.
+**Mis-nested HTML is read as a browser reads it.** The tree is built as HTML's
+parser builds it (13.2.6), mode by mode, and every chain of up to five tags from
+the formatting elements and blocks, a table's parts and a document's own tags,
+some 2.6 million documents, comes out as all three engines read it where they
+agree. An end tag goes by HTML's scopes, so a `</span>` over a `<div>` is
+ignored and the `<div>`'s own end tag closes the `<div>`. A formatting element
+closed from under what it holds is made again around what comes after it, as
+the adoption agency has it: `<p><b>x<p>y` has a `<b>` in each paragraph, and a
+`</b>` across a block leaves a `<b>` in front of it and one inside it. What is
+out of place in a table is put in front of it, so `<table><div>x</div>` has its
+`<div>` before the table and text in a table its text, while a hidden `<input>`,
+a `<script>`, a `<style>` and a `<form>` are the table's own. A `<template>`'s
+content goes on in the mode its first tag gives it, a `<frameset>` takes the
+place of a body nothing has been put in, and a carriage return is a line feed.
+Where `scripts` is on, a `<noscript>` holds its content as text, as in a browser
+that runs scripts, and with it off, markup, as in one that does not.
+A `</form>` leaves what the form holds open, a second `<form>` is turned away for
+as long as the parser points at the first, and in a table a `<form>` closes as it
+opens and owns the controls that come after it, which is why a page reads
+`input.form` where `closest('form')` finds nothing.
+
+What is still read otherwise than a browser reads it is the tokenizer's, which is
+htmlparser2's: a `<script>` holding `<!--<script>` ends at its first `</script>`,
+where a browser reads on to the second. SVG's and
+MathML's attributes are lower-cased (`viewbox`), and a `<?…?>` is a comment, as
+Firefox and Safari read it. A frame's scripts run once its document is parsed,
+and a document `document.write` fills is parsed at `close`, running none of its
+scripts.
 
 **An `<html>` or a `<head>` inside the document is no element.** HTML's
 parser ignores an `<html>` once the document has one, and a `<head>` once

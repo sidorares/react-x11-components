@@ -1546,7 +1546,7 @@ export function edgesOf(box: LaidBox) {
     borderLeft: number;
     marginLeft: number;
     marginRight: number;
-    style: { borderRadius: number[] };
+    style: { borderRadius: number[]; styledControl: boolean };
   };
 }
 

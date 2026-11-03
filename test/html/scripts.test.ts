@@ -60,6 +60,7 @@ import { HtmlSource } from '../../src/html/dom.js';
 import { webmStream } from '../webm-fixture.js';
 import type { HtmlGLCommand, HtmlWebGL } from '../../src/html/webgl.js';
 import type { ScriptsOptions } from '../../src/html/scripts/runner.js';
+import type { LoadedScript } from '../../src/html/scripts/script-origin.js';
 import { linkTarget, navigableFor } from '../../src/html/scripts/target.js';
 import { FrameHolder, embeddedMounts } from '../../src/html/scripts/frames.js';
 import type { FrameContext } from '../../src/html/scripts/frames.js';
@@ -114,6 +115,10 @@ interface Hosted {
   submitted: FormSubmission[];
   timeouts: number;
   fetched: FetchRequest[];
+  /** The scripts the page asked the host for, in turn: a module's URL, with
+   *  the type it was imported as before it where it is a JSON or a text
+   *  one's. */
+  loads: string[];
   /** The URLs the page's videos asked the host for, in turn. */
   videos: string[];
   byId(id: string): DocElement;
@@ -146,7 +151,14 @@ interface ScrollPane {
 async function hosted(
   source: string,
   options: {
-    scripts?: Record<string, string | Promise<string>>;
+    /** A script's source by its URL: as text, with the response's headers,
+     *  or as what a function of the type it is imported as answers. */
+    scripts?: Record<
+      string,
+      | LoadedScript
+      | Promise<string>
+      | ((type?: 'json' | 'text') => LoadedScript | null)
+    >;
     answer?: (request: FetchRequest) => FetchResponse | null;
     sheets?: Record<string, string>;
     held?: HeldSheets;
@@ -183,6 +195,7 @@ async function hosted(
     submitted: [] as FormSubmission[],
     timeouts: 0,
     fetched: [] as FetchRequest[],
+    loads: [] as string[],
     videos: [] as string[],
     pane: null,
   } as Hosted;
@@ -212,7 +225,11 @@ async function hosted(
       if (!response) throw new Error('no answer');
       return response;
     },
-    load: async (url) => options.scripts?.[url] ?? null,
+    load: async (url, _element, _cors, type) => {
+      out.loads.push(type ? `${type} ${url}` : url);
+      const answer = options.scripts?.[url];
+      return (typeof answer === 'function' ? answer(type) : answer) ?? null;
+    },
     onTimeout: () => {
       out.timeouts += 1;
     },
@@ -819,6 +836,22 @@ test('document.open starts a document again from nothing, and what a page builds
     '0',
     '<html><head></head><body><b>x</b></body></html>',
   ]);
+});
+
+test('a page with no doctype is a document, its head there for the first script, as a browser parses one', async () => {
+  const doc = await hosted(
+    '<title>t</title><script>' +
+      'window.r = [document.head && document.head.firstChild.nodeName,' +
+      '  String(document.body), document.documentElement.nodeName];' +
+      '</script><p id="out"></p><script>' +
+      'document.getElementById("out").textContent =' +
+      '  r.concat(document.body.nodeName).join("|");' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TITLE|null|HTML|BODY',
+  );
 });
 
 test('a frame sent to a blob: URL shows what the blob holds, whatever it is mounted in, and the network is never asked', async () => {
@@ -1907,6 +1940,35 @@ test('a service worker is registered for a scope, installed and activated in a t
       ' String("serviceWorker" in navigator) + typeof ServiceWorker;</script>',
   );
   assert.equal(off.text('out'), 'falseundefined');
+});
+
+test("a worker has none of a window's interfaces: its input's events, its history's and its location's", async () => {
+  const names = [
+    'UIEvent',
+    'MouseEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'PointerEvent',
+    'PopStateEvent',
+    'Location',
+    'Navigator',
+  ];
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      `var names = ${JSON.stringify(names)};` +
+      'var src = "var names = " + JSON.stringify(names) + ";" +' +
+      '  "postMessage(names.filter(function (n) { return n in self; }).join());";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) {' +
+      '  document.getElementById("out").textContent =' +
+      '    names.filter(function (n) { return n in window; }).length + "|" + (e.data || "none"); };' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    `${names.length}|none`,
+    doc.logs.join('\n'),
+  );
 });
 
 test('navigator.platform is the one the user agent names, in a worker as on the page', async () => {
@@ -3320,6 +3382,241 @@ test('two import()s whose modules share one are both linked, the shared one once
   assert.equal(doc.text('out'), '11 12 1');
 });
 
+/** A response a module is answered with, of a type. */
+const typed = (text: string, type: string): LoadedScript => ({
+  text,
+  headers: [['content-type', type]],
+});
+
+test('a JSON and a text module are what an import’s type names, statically and with import(), their values the page’s own', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script type="module">' +
+      "import data from './lib/data.json' with { type: 'json' };" +
+      "import note from './lib/note.txt' with { type: 'text' };" +
+      "const again = await import('./lib/data.json', { with: { type: 'json' } });" +
+      "const text = await import('./lib/note.txt', { with: { type: 'text' } });" +
+      "const word = await import('./lib/word.json', { with: { type: 'json' } });" +
+      "document.getElementById('out').textContent = [" +
+      "  data.list.join(','), Object.getPrototypeOf(data) === Object.prototype, data.list instanceof Array," +
+      '  again.default === data, Object.keys(again).join(), JSON.stringify(note), text.default === note, word.default' +
+      "].join(' ');" +
+      '</script>',
+    {
+      scripts: {
+        'https://example.test/dir/lib/data.json': typed(
+          '{"list":[1,2]}',
+          'application/json',
+        ),
+        // a text module is text whatever its response says it is
+        'https://example.test/dir/lib/note.txt': typed(
+          'a <b>note</b>\n',
+          'image/png',
+        ),
+        'https://example.test/dir/lib/word.json': typed(
+          '"word"',
+          'application/ld+json; charset=utf-8',
+        ),
+      },
+    },
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  assert.equal(
+    doc.text('out'),
+    // its objects the page's, and a module of each type once
+    '1,2 true true true default "a <b>note</b>\\n" true word',
+    doc.logs.join('\n'),
+  );
+  assert.deepEqual(doc.loads, [
+    'json https://example.test/dir/lib/data.json',
+    'text https://example.test/dir/lib/note.txt',
+    'json https://example.test/dir/lib/word.json',
+  ]);
+});
+
+test('a module is refused what its import’s type, its attributes or its response say it is not, and one that did not come is asked for again', async () => {
+  let asked = 0;
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var log = [];' +
+      'var at = function (why, p) { return p.then(' +
+      "  function (m) { log.push(why + ' ' + JSON.stringify(m.default)); }," +
+      "  function (e) { log.push(why + ' ' + e.constructor.name + ' ' + e.constructor.constructor('return typeof process')()); }); };" +
+      'Promise.all([' +
+      // a text module's URL is no script, and its text/plain no JSON
+      "  at('script', import('./lib/note.txt'))," +
+      "  at('json', import('./lib/note.txt', { with: { type: 'json' } }))," +
+      "  at('css', import('./lib/data.json', { with: { type: 'css' } }))," +
+      "  at('javascript', import('./lib/data.json', { with: { type: 'javascript' } }))," +
+      "  at('key', import('./lib/data.json', { with: { kind: 'json' } }))," +
+      "  at('broken', import('./lib/broken.json', { with: { type: 'json' } }))," +
+      "  at('text', import('./lib/note.txt', { with: { type: 'text' } }))," +
+      ']).then(function () {' +
+      "  return at('first', import('./lib/later.json', { with: { type: 'json' } }));" +
+      '}).then(function () {' +
+      "  return at('second', import('./lib/later.json', { with: { type: 'json' } }));" +
+      "}).then(function () { document.getElementById('out').textContent = log.join(' | '); });" +
+      '</script>',
+    {
+      scripts: {
+        'https://example.test/dir/lib/note.txt': typed('note', 'text/plain'),
+        'https://example.test/dir/lib/data.json': typed('{}', 'text/json'),
+        'https://example.test/dir/lib/broken.json': typed(
+          '{ nope',
+          'application/json',
+        ),
+        // not there the first time, and there the second
+        'https://example.test/dir/lib/later.json': () =>
+          ++asked === 1 ? null : typed('[1]', 'application/json'),
+      },
+    },
+  );
+  await settled(doc, 'out', (text) => text.includes('second'));
+  // what is refused before anything is asked for settles first
+  assert.deepEqual(
+    doc.text('out').split(' | ').sort(),
+    [
+      'broken SyntaxError undefined',
+      'css TypeError undefined',
+      'first TypeError undefined',
+      'javascript TypeError undefined',
+      'json TypeError undefined',
+      'key TypeError undefined',
+      'script TypeError undefined',
+      'second [1]',
+      'text "note"',
+    ],
+    doc.logs.join('\n'),
+  );
+  // and is asked for nothing
+  assert.deepEqual(doc.loads.sort(), [
+    'https://example.test/dir/lib/note.txt',
+    'json https://example.test/dir/lib/broken.json',
+    'json https://example.test/dir/lib/later.json',
+    'json https://example.test/dir/lib/later.json',
+    'json https://example.test/dir/lib/note.txt',
+    'text https://example.test/dir/lib/note.txt',
+  ]);
+});
+
+test('a module whose import names an attribute or a type no module has is reported in the page, and one whose import did not come is its element’s error', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var seen = [];' +
+      "window.addEventListener('error', function (e) {" +
+      // what the page reads of where it failed is the page's, and no frame
+      // of the engine's
+      "  seen.push('reported ' + e.error.constructor.name + (e.filename ? ' at ' + e.filename : '') + (/file:|[.][jt]s:/.test(e.error.stack) ? ' host' : ''));" +
+      '});' +
+      "window.addEventListener('load', function () { setTimeout(function () { document.getElementById('out').textContent = seen.sort().join(' | '); }, 30); });" +
+      '</script>' +
+      '<script type="module">' +
+      "import './lib/broken.json' with { type: 'json' };</script>" +
+      '<script type="module" id="key" onload="seen.push(\'load key\')" onerror="seen.push(\'error key\')">' +
+      "import './lib/data.json' with { kind: 'json' };</script>" +
+      '<script type="module" src="lib/typed.js" id="typed" onload="seen.push(\'load typed\')" onerror="seen.push(\'error typed\')"></script>' +
+      '<script type="module" id="missing" onload="seen.push(\'load missing\')" onerror="seen.push(\'error missing\')">' +
+      "import './lib/missing.json' with { type: 'json' };</script>",
+    {
+      scripts: {
+        'https://example.test/dir/lib/data.json': typed('{}', 'text/json'),
+        'https://example.test/dir/lib/broken.json': typed(
+          '{ nope',
+          'application/json',
+        ),
+        'https://example.test/dir/lib/typed.js': typed(
+          "import d from './data.json' with { type: 'css' };",
+          'text/javascript',
+        ),
+      },
+    },
+  );
+  await settled(doc, 'out', (text) => text !== '');
+  assert.equal(
+    doc.text('out'),
+    [
+      // an external module that ran is its element's `load`, however it
+      // failed; one whose graph did not all come, inline or not, its `error`
+      'error missing',
+      'load typed',
+      // an unknown key, as an `import` declaration has it, JSON that does
+      // not parse, at its module, and a type
+      'reported SyntaxError',
+      'reported SyntaxError at https://example.test/dir/lib/broken.json',
+      'reported TypeError',
+    ].join(' | '),
+    doc.logs.join('\n'),
+  );
+});
+
+test('a worker imports a JSON and a text module, a classic one with import() and a module one statically, and asks for each as what it is', async () => {
+  const body: Record<string, [string, string]> = {
+    'w.json': ['{"n":7}', 'application/json'],
+    'w.txt': ['some text', 'text/csv'],
+  };
+  const doc = await hosted(
+    '<p id="out"></p><p id="module"></p><p id="missing"></p><script>' +
+      'var base = new URL("lib/", location.href).href;' +
+      'var src = "Promise.all([" +' +
+      '  "import(\\"" + base + "w.json\\", { with: { type: \\"json\\" } })," +' +
+      '  "import(\\"" + base + "w.txt\\", { with: { type: \\"text\\" } })," +' +
+      '  "import(\\"" + base + "w.txt\\", { with: { type: \\"json\\" } }).then(function () { return \\"imported\\"; }, function (e) { return e.name; })" +' +
+      '  "]).then(function (m) { postMessage([m[0].default.n, m[0].default instanceof Object, m[1].default, m[2]].join(\\" \\")); });";' +
+      'var w = new Worker(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));' +
+      'w.onmessage = function (e) { document.getElementById("out").textContent = e.data; };' +
+      'var msrc = "import n from \\"" + base + "w.json\\" with { type: \\"json\\" };" +' +
+      '  "import t from \\"" + base + "w.txt\\" with { type: \\"text\\" };" +' +
+      '  "postMessage(n.n + \\" \\" + t);";' +
+      'var m = new Worker(URL.createObjectURL(new Blob([msrc], { type: "text/javascript" })), { type: "module" });' +
+      'm.onmessage = function (e) { document.getElementById("module").textContent = e.data; };' +
+      'var gone = "import \\"" + base + "gone.json\\" with { type: \\"json\\" }; postMessage(\\"ran\\");";' +
+      'var g = new Worker(URL.createObjectURL(new Blob([gone], { type: "text/javascript" })), { type: "module" });' +
+      'g.onmessage = function () { document.getElementById("missing").textContent = "ran"; };' +
+      'g.onerror = function () { document.getElementById("missing").textContent = "error"; };' +
+      '</script>',
+    {
+      answer: (request) => {
+        const found = body[request.url.slice(request.url.lastIndexOf('/') + 1)];
+        if (!found) return null;
+        return {
+          url: request.url,
+          status: 200,
+          statusText: 'OK',
+          redirected: false,
+          headers: [['content-type', found[1]]],
+          body: found[0],
+        };
+      },
+    },
+  );
+  // a worker takes most of `waitFor`'s two seconds to start on Node 20 and 22
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    '7 true some text TypeError',
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'module', (t) => t !== '', 15000),
+    '7 some text',
+    doc.logs.join('\n'),
+  );
+  assert.equal(
+    await settled(doc, 'missing', (t) => t !== '', 15000),
+    'error',
+    doc.logs.join('\n'),
+  );
+  const accepts = doc.fetched.map(
+    (r) =>
+      `${r.url.slice(r.url.lastIndexOf('/') + 1)} ${
+        r.headers.find(([name]) => name === 'accept')?.[1]
+      }`,
+  );
+  assert.ok(
+    accepts.includes('w.json application/json,*/*;q=0.5'),
+    `${accepts}`,
+  );
+  assert.ok(accepts.includes('w.txt text/plain,*/*;q=0.5'), `${accepts}`);
+});
+
 test("an error a classic script throws reaches the page with the stack it was thrown with, and none of the script's source", async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -4010,6 +4307,28 @@ test('document.evaluate reads a path, predicates and functions, over XML and HTM
     errors: ['SyntaxError', 'NamespaceError', 'TypeError'],
     evaluator: 2,
   });
+});
+
+test('a rule inserted with anything after it is a syntax error, in a sheet of a style element and in one a script made', async () => {
+  const doc = await hosted(
+    '<style>p { color: rgb(0, 128, 0) }</style><p id="p">x</p><p id="out"></p><script>' +
+      'var r = [], made = new CSSStyleSheet();' +
+      'for (const sheet of [document.styleSheets[0], made]) {' +
+      '  for (const rule of ["p { color: red; } garbage", "p { color: red; } q;", "p { color: red; } /* end */ "]) {' +
+      '    try { sheet.insertRule(rule, sheet.cssRules.length); r.push("took"); }' +
+      '    catch (e) { r.push(e.name); }' +
+      '  }' +
+      '  r.push(sheet.cssRules.length);' +
+      '}' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  await settle();
+  assert.equal(
+    doc.text('out'),
+    'SyntaxError|SyntaxError|took|2|SyntaxError|SyntaxError|took|1',
+    doc.logs.join('\n'),
+  );
 });
 
 test('a rule inserted with a string or a block left open ends where its text does, and holds none of the rules after it', async () => {
@@ -6847,7 +7166,7 @@ test("what HTML's parser makes in a drawing is SVG's, whatever its name, and wha
     linearGradient: svg('linearGradient', 'SVGLinearGradientElement'),
     marker: svg('marker', 'SVGMarkerElement'),
     filter: svg('filter', 'SVGFilterElement'),
-    feBlend: svg('feBlend', 'SVGElement'),
+    feBlend: svg('feBlend', 'SVGFEBlendElement'),
     a: svg('a', 'SVGAElement'),
     text: svg('text', 'SVGTextElement'),
     foreignObject: svg('foreignObject', 'SVGForeignObjectElement'),
@@ -9298,6 +9617,69 @@ test('a media element loads its source where there is a network: its events, its
   // asked for from its start, as a browser asks for media
   const asked = doc.fetched.find((r) => r.url.endsWith('/clip.mp4'));
   assert.deepEqual(asked?.headers, [['range', 'bytes=0-']]);
+});
+
+test('a media element whose source is an HLS playlist hears its length and size from the playlists, as Safari tells them, where the playlist was a format error', async () => {
+  const text = (url: string, type: string, body: string) => ({
+    url,
+    status: 200,
+    statusText: 'OK',
+    redirected: false,
+    headers: [['content-type', type]] as [string, string][],
+    body,
+  });
+  const master =
+    '#EXTM3U\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.4d4015,mp4a.40.2",RESOLUTION=426x240\n' +
+    'v/240.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360\n' +
+    'v/360.m3u8\n';
+  const media = (end: boolean) =>
+    '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n' +
+    '#EXTINF:5.0,\nseg0.ts\n#EXTINF:5.0,\nseg1.ts\n#EXTINF:2.5,\nseg2.ts\n' +
+    (end ? '#EXT-X-ENDLIST\n' : '');
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function load(src) { return new Promise(function (res) {' +
+      '  var v = document.createElement("video");' +
+      '  v.addEventListener("suspend", function () { res([v.readyState, v.duration, v.videoWidth, v.videoHeight, v.networkState]); });' +
+      '  v.addEventListener("error", function () { res(["error", v.error.code]); });' +
+      '  v.src = src; }); }' +
+      'r.push(document.createElement("video").canPlayType("application/vnd.apple.mpegurl"));' +
+      'load("vod/master.m3u8").then(function (a) { r.push(a);' +
+      // one served as text, said only by its first line
+      '  return load("live.m3u8"); }).then(function (a) { r.push(a);' +
+      '  document.getElementById("out").textContent = JSON.stringify(r); });' +
+      '</script>',
+    {
+      network: true,
+      canPlayType: (type) => (/mpegurl/i.test(type) ? 'maybe' : ''),
+      answer: (request) => {
+        if (request.url.endsWith('/vod/master.m3u8')) {
+          return text(request.url, 'application/vnd.apple.mpegurl', master);
+        }
+        // the first variant is read for the length, relative to the master
+        if (request.url.endsWith('/vod/v/240.m3u8')) {
+          return text(request.url, 'application/x-mpegURL', media(true));
+        }
+        if (request.url.endsWith('/live.m3u8')) {
+          return text(request.url, 'text/plain', media(false));
+        }
+        return null;
+      },
+    },
+  );
+  const out = await settled(doc, 'out', (t) => t !== '');
+  assert.ok(out, doc.logs.join('\n'));
+  // JSON has no Infinity: the live playlist's length reads as null here
+  assert.deepEqual(JSON.parse(out), [
+    'maybe',
+    [4, 12.5, 426, 240, 1],
+    [4, null, 0, 0, 1],
+  ]);
+  assert.ok(!doc.fetched.some((r) => r.url.endsWith('/v/360.m3u8')));
+  assert.ok(!doc.fetched.some((r) => r.url.endsWith('.ts')));
 });
 
 test(':muted matches a muted media element, by its attribute or a script’s say, and :volume-locked none', async () => {
@@ -12826,6 +13208,80 @@ test('a key typed in an editing host the page focused is an edit of it at the se
   );
 });
 
+test('a host the page took every range from edits nothing on a key, and a focus puts the caret back in it', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><p id="out"></p><script>' +
+      'var ed = document.getElementById("ed"), r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'addEventListener("beforeinput", function (e) { log("before:" + e.inputType); });' +
+      '</script>',
+  );
+  doc.run(
+    'ed.focus(); log("focused:" + getSelection().rangeCount);' +
+      'getSelection().removeAllRanges(); log("ranges:" + getSelection().rangeCount);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'ab');
+  doc.run(
+    'ed.blur(); ed.focus(); var s = getSelection();' +
+      'log("again:" + s.rangeCount + ":" + (s.anchorNode === ed) + ":" + s.anchorOffset);',
+  );
+  await settle();
+  await act(async () => fireEvent.char('x'));
+  await settle();
+  assert.equal(doc.text('ed'), 'xab');
+  assert.equal(
+    doc.text('out'),
+    'focused:1|ranges:0|again:1:true:0|before:insertText',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a blur and a focus of the same element in one task are each heard', async () => {
+  const doc = await hosted(
+    '<div id="ed" contenteditable>ab</div><button id="b">b</button>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'function log(x) { r.push(x); document.getElementById("out").textContent = r.join("|"); }' +
+      'for (const id of ["ed", "b"]) {' +
+      '  const el = document.getElementById(id);' +
+      '  el.addEventListener("focus", () => log("focus:" + id));' +
+      '  el.addEventListener("blur", () => log("blur:" + id));' +
+      '}' +
+      '</script>',
+  );
+  for (const id of ['ed', 'b']) {
+    doc.run(`document.getElementById("${id}").focus()`);
+    // the box that takes it is mounted by now
+    await settle();
+    doc.run(
+      `{ const el = document.getElementById("${id}"); el.blur(); el.focus();` +
+        `log("active:" + document.activeElement.id); }`,
+    );
+    await settle();
+    doc.run(`document.getElementById("${id}").blur()`);
+    await settle();
+  }
+  assert.equal(
+    doc.text('out'),
+    [
+      'focus:ed',
+      'blur:ed',
+      'focus:ed',
+      'active:ed',
+      'blur:ed',
+      'focus:b',
+      'blur:b',
+      'focus:b',
+      'active:b',
+      'blur:b',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 metric(
   'a range of the text of an editing host is measured where its letters are drawn, and a press there puts the caret at the letter',
   async () => {
@@ -15758,6 +16214,31 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
  *  out none, its scripts its own runner's, linked to the page's. */
+test("a frame's window has its page's storage, as a frame of its origin has", async () => {
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="frame.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'localStorage.setItem("k", "local"); sessionStorage.setItem("k", "session");' +
+      'f.onload = function () {' +
+      '  var w = f.contentWindow;' +
+      '  document.getElementById("out").textContent = [' +
+      '    w.localStorage && w.localStorage.getItem("k"),' +
+      '    w.sessionStorage && w.sessionStorage.getItem("k"),' +
+      '    Object.getPrototypeOf(w.localStorage) === Storage.prototype,' +
+      '  ].join("|");' +
+      '};' +
+      '</script>',
+    { 'frame.html': '<!doctype html><p>no script here</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'local|session|true',
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,

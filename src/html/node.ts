@@ -76,7 +76,6 @@ import {
   isElement,
   isForeign,
   isStyleOrScript,
-  isInputButton,
   isText,
   loadsLazily,
   madeByParser,
@@ -89,6 +88,7 @@ import {
   isRootElement,
   isXmlDocument,
   isXmlType,
+  namespaceOf,
   scriptUrlOf,
 } from './dom.js';
 import type { Document, HtmlChange, SheetRef } from './dom.js';
@@ -105,7 +105,10 @@ import {
   isTransparent,
 } from './css/values.js';
 import type { Len } from './css/values.js';
-import { cssomStyle, cssomTransform } from './computed.js';
+import { cssomColor, cssomStyle, cssomTransform } from './computed.js';
+import { SVG_PROPERTIES, presentsProperty } from './css/svg-properties.js';
+import type { SvgUnits } from './css/svg-properties.js';
+import { substitute } from './css/vars.js';
 import type { UsedBox } from './computed.js';
 import {
   Cascade,
@@ -208,6 +211,7 @@ import {
   inLightTree,
   tailFrom,
   containerBoxes,
+  drawnControl,
   CONTENT_IMAGES,
   CLEARED_FROM,
   COLUMN_LINES,
@@ -473,6 +477,7 @@ import { ResourceStore } from './resources.js';
 import type { AnimatedImage } from './animated.js';
 import type {
   AudioSource,
+  ImageResponse,
   PlayerKind,
   ResourceRequest,
   ResourceResult,
@@ -518,7 +523,7 @@ import type { IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
 import type { DeclaredFace, DocumentFontFace, FontMatch } from './fonts.js';
-import { resolveUrl, UrlResolver } from './url.js';
+import { corsOfKey, resolveUrl, UrlResolver } from './url.js';
 
 /** The element name — registration key, `node.kind` and JSX tag alike. */
 export const ELEMENT = 'htmlview';
@@ -635,6 +640,8 @@ export interface HtmlViewProps {
   /** The colour scheme of what it is embedded in, for a frame's document,
    *  which a root in another is drawn on an opaque canvas against. */
   embedderScheme?: 'light' | 'dark';
+  /** The frame this document is shown in (`Cascade.frameElement`). */
+  frameElement?: Element;
   /** What a `<canvas>` shows: an image `ctx.drawImage` takes — an ntk
    *  `Image` of the canvas's pixels — or null for nothing, drawn in its
    *  content box as an `<img>` is. `canvasChanged` says it changed. */
@@ -1278,7 +1285,8 @@ export class HtmlViewNode extends Node {
    *  (`_seekTargetText`); null where it has none. */
   private _targetText: TargetText | null = null;
   /** Where the pointer last moved to, in logical window pixels, while it
-   *  is over the element (`defaultMouseMove`). */
+   *  is over the document or what is mounted beside it
+   *  (`defaultMouseMove`, `pointerBeside`). */
   private _pointerAt: { x: number; y: number } | null = null;
   /** A hover held until the content under a still pointer stops moving:
    *  the timer, and when the content last moved (`_holdHover`). */
@@ -1481,6 +1489,9 @@ export class HtmlViewNode extends Node {
     // before the first scan: a document that runs scripts asks for nothing
     // in a `<noscript>`, from its first render on
     this._source.setScripting(this._props().scripting ?? false);
+    // and a page whose scripts run is a document, its head there for the
+    // first of them, whatever its source starts with
+    this._source.setDocument(this._props().scripting ?? false);
     this._read();
   }
 
@@ -2494,7 +2505,7 @@ export class HtmlViewNode extends Node {
     }
     // what the store has is there as it is asked for, and no src is no image
     if (!chooses) {
-      const url = attr(el, 'src');
+      const url = imageUrlOf(el);
       const state = url ? this._resources.state(url) : 'failed';
       if (state === 'ready' || state === 'failed') {
         this._watchImage(el, true);
@@ -2527,7 +2538,7 @@ export class HtmlViewNode extends Node {
           ),
         );
       } else {
-        const url = attr(el, 'src');
+        const url = imageUrlOf(el);
         if (url && !this._waitsLazily(el, url)) {
           this._resources.request(
             { url, kind: 'image', element: el },
@@ -2618,7 +2629,7 @@ export class HtmlViewNode extends Node {
       if (!loadsLazily(el)) return;
       const url = choosesSource(el)
         ? this._images.chosen(el)?.url
-        : attr(el, 'src');
+        : imageUrlOf(el);
       if (!url || this._resources.state(url) !== null) return;
       const box = boxes.get(el);
       const away = box
@@ -2712,7 +2723,7 @@ export class HtmlViewNode extends Node {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
     if (chosen === undefined) return;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const key = url ? this._resources.keyOf(url) : '';
     const was = this._imageKeys.get(el);
     if (was === key && !again) return;
@@ -2796,7 +2807,8 @@ export class HtmlViewNode extends Node {
    * something (`complete`), its size in CSS pixels at the density it was
    * chosen at, 0 until that is known and for one that failed, and the URL
    * it has shown (`_imageShown`). A broken image is complete, and shows
-   * nothing (`available`).
+   * nothing (`available`). And where what it shows came from, which a canvas
+   * it is drawn on is tainted by (`ResourceStore.response`).
    */
   imageState(el: Element): {
     complete: boolean;
@@ -2804,10 +2816,11 @@ export class HtmlViewNode extends Node {
     width: number;
     height: number;
     src: string;
+    response: ImageResponse | null;
   } {
     const chooses = choosesSource(el);
     const chosen = chooses ? this._images.chosen(el) : null;
-    const url = chooses ? chosen?.url : attr(el, 'src');
+    const url = chooses ? chosen?.url : imageUrlOf(el);
     const state = url ? this._resources.state(url) : null;
     const size = this._imageSize(el);
     return {
@@ -2818,7 +2831,9 @@ export class HtmlViewNode extends Node {
       available: !!url && state === 'ready' && !!this._resources.image(url),
       width: Math.floor(size?.width ?? 0),
       height: Math.floor(size?.height ?? 0),
-      src: this._imageShown.get(el) ?? '',
+      // where it is kept, less the CORS mode it was asked in (`corsKeyed`)
+      src: corsOfKey(this._imageShown.get(el) ?? '').url,
+      response: url ? this._resources.response(url) : null,
     };
   }
 
@@ -4417,6 +4432,7 @@ export class HtmlViewNode extends Node {
     cascade.viewportWidth = target;
     cascade.viewportHeight = viewport;
     cascade.dimensionSource = this._dimensionSource;
+    cascade.frameElement = this._props().frameElement ?? null;
     // An image chosen for this viewport (`_choose`) that shows another
     // candidate, or the same one at another density, is another size: its
     // box takes the size in place and the document is laid out again
@@ -4637,10 +4653,21 @@ export class HtmlViewNode extends Node {
         // can differ in, the tree keeps every box they cannot, and only
         // their subtrees are built (`_subtreeBuild`) — the first build of
         // the pass only, whose `restyleOnly` is still theirs.
+        // What animates is among them: a frame waits for a build that is
+        // coming (`_makeFrame`), and a build of subtrees styles nothing
+        // outside them, so an element a script's animation had moved on
+        // since the last frame was drawn where that frame left it. Seeded,
+        // it is styled at its time, and one that comes out as it was is no
+        // seed, as any is not.
         const subtrees =
           kept && seeds && restyleOnly === seededWith
             ? this._seedsThatMoved(
-                seeds,
+                this._animating()
+                  ? new Set([
+                      ...seeds,
+                      ...this._animationReach(this._tree!).reach,
+                    ])
+                  : seeds,
                 always,
                 tails,
                 pseudoRules,
@@ -6239,6 +6266,7 @@ export class HtmlViewNode extends Node {
     // what the scan finds — a `<noscript>`'s images and sheets — before the
     // source is read, so a document that runs scripts never asks for them
     const scripted = this._source.setScripting(next.scripting ?? false);
+    this._source.setDocument(next.scripting ?? false);
     if (scripted) this._invalidate(Stale.Style);
     if (
       next.look !== prev.look ||
@@ -7377,6 +7405,16 @@ export class HtmlViewNode extends Node {
     return {
       fontSize: size,
       box: (svg) => this.elementRect(svg),
+      unit: (el, unit) => {
+        const style = el ? this._styleOf(el) : (this._cascade?.initial ?? null);
+        let root: AnyNode | null = el;
+        while (root?.parent && isElement(root.parent)) root = root.parent;
+        const rootStyle = root && isElement(root) ? this._styleOf(root) : null;
+        const px = style && this._cascade?.unitLength(style, unit, rootStyle);
+        return typeof px === 'number' && style
+          ? px / (this._scale * style.effectiveZoom)
+          : null;
+      },
       hidden: (el) => {
         for (let at: AnyNode | null = el; at; at = at.parent) {
           if (!isElement(at)) break;
@@ -7554,17 +7592,126 @@ export class HtmlViewNode extends Node {
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
+    const own = (box && this._placedStyle(box)) ?? style;
+    const parent = flatParentOf(element);
+    const read = cascade.styleAsRead(
+      element,
+      own,
+      (parent && this._styleOf(parent)) ?? tree.root.style,
+    );
     if (!box) {
       return cssomStyle(
-        style,
+        read,
         this._scale,
         null,
         false,
         !!style.transform && this._unrendered(element, style),
       );
     }
-    const own = this._placedStyle(box) ?? style;
-    return cssomStyle(own, this._scale, this._usedBox(box, own), isItem(box));
+    const used = this._usedBox(box, own);
+    if (read !== own) edgesAsRead(used, read);
+    return cssomStyle(read, this._scale, used, isItem(box));
+  }
+
+  /**
+   * SVG's properties of an element as `getComputedStyle` reads them
+   * (`svg-properties.ts`), which no computed style keeps: from the rules,
+   * its `style` and, on an SVG element, its presentation attributes under
+   * both, each inherited or set back to its initial value as the property
+   * is, up the flat tree. Asked only as a page reads one.
+   */
+  svgComputed(element: Element): Record<string, string> | null {
+    const cascade = this._cascade;
+    if (!cascade) return null;
+    const memo = new Map<Element, Record<string, string>>();
+    const initial: Record<string, string> = {};
+    for (const name in SVG_PROPERTIES)
+      initial[name] = SVG_PROPERTIES[name].initial;
+    const of = (el: Element): Record<string, string> => {
+      const kept = memo.get(el);
+      if (kept) return kept;
+      const up = flatParentOf(el);
+      const parent = up && isElement(up) ? of(up) : initial;
+      const style = this._styleOf(el);
+      const scale = this._scale * (style?.effectiveZoom ?? 1);
+      const color = style?.color ?? '#000000';
+      let root: Element = el;
+      while (root.parent && isElement(root.parent)) root = root.parent;
+      const rootStyle = this._styleOf(root);
+      const units: SvgUnits = {
+        url: (url) => this._urls.resolve(url),
+        em: (style?.fontSize ?? 16 * scale) / scale,
+        rem: (rootStyle?.fontSize ?? 16 * scale) / scale,
+        vw: (cascade.viewportWidth || 0) / this._scale,
+        vh: (cascade.viewportHeight || 0) / this._scale,
+        ex: () =>
+          ((style ? cascade.unitLength(style, 'ex') : null) ?? 8) / scale,
+        ch: () =>
+          ((style ? cascade.unitLength(style, 'ch') : null) ?? 8) / scale,
+        color,
+        colorText: (c) => cssomColor(c, null, color, null),
+      };
+      const won: Record<string, string> = {};
+      const take = (name: string, value: string, attribute: boolean): void => {
+        const property = SVG_PROPERTIES[name];
+        if (!property) return;
+        let v = value.trim();
+        if (/\bvar\(/i.test(v)) {
+          const done = substitute(v, style?.custom ?? null);
+          if (done === null) return;
+          v = done.trim();
+        }
+        const word = v.toLowerCase();
+        if (
+          !attribute &&
+          /^(inherit|initial|unset|revert|revert-layer)$/.test(word)
+        ) {
+          won[name] = `\u0000${word}`;
+          return;
+        }
+        const read = attribute
+          ? (property.attribute ?? property.specified)
+          : property.specified;
+        const specified = read(v);
+        if (specified !== null) won[name] = specified;
+      };
+      if (namespaceOf(el) === 'http://www.w3.org/2000/svg') {
+        const tag = tagOf(el);
+        for (const name in el.attribs) {
+          if (name in SVG_PROPERTIES && presentsProperty(tag, name)) {
+            take(name, el.attribs[name], true);
+          }
+        }
+      }
+      const { normal, important } = cascade.declarationsOf(el);
+      for (const d of [...normal, ...important]) {
+        const name = d.prop.toLowerCase();
+        if (name === 'marker') {
+          for (const side of ['marker-start', 'marker-mid', 'marker-end']) {
+            take(side, d.value, false);
+          }
+        } else take(name, d.value, false);
+      }
+      const out: Record<string, string> = {};
+      for (const name in SVG_PROPERTIES) {
+        const property = SVG_PROPERTIES[name];
+        const w = won[name];
+        const inherit = property.inherited ? parent[name] : property.initial;
+        if (w === undefined) out[name] = inherit;
+        else if (w[0] === '\u0000') {
+          const word = w.slice(1);
+          out[name] =
+            word === 'inherit'
+              ? parent[name]
+              : word === 'initial'
+                ? property.initial
+                : inherit;
+        } else out[name] = property.computed(w, units);
+      }
+      memo.set(el, out);
+      return out;
+    };
+    return of(element);
   }
 
   /**
@@ -7602,6 +7749,19 @@ export class HtmlViewNode extends Node {
       if (tag === 'object' && this._boxOf(tree, at)?.replaced) return false;
     }
     return true;
+  }
+
+  /**
+   * Whether a host is handed a rect to mount over an embedded element, as the
+   * last layout reported them (`onEmbedded`): what a frame's view is mounted
+   * by. Null where the document owes a layout, which may report it, or has
+   * set part of itself aside.
+   */
+  mountsEmbedded(element: Element): boolean | null {
+    if (!this._tree || this._stale !== Stale.Nothing || this._partial) {
+      return null;
+    }
+    return this._embedded.some((rect) => rect.element === element);
   }
 
   /** The style of the position option a box was placed by
@@ -8555,9 +8715,11 @@ export class HtmlViewNode extends Node {
    * The pointer moved, to a logical window point. Returns true when the
    * cascade's answer could have changed, so the caller knows whether to
    * invalidate — which it only ever does for a document that actually
-   * contains a `:hover` rule.
+   * contains a `:hover` rule. `over` is the element under it where the
+   * caller knows, as it does for a widget (`pointerBeside`), and otherwise
+   * it is what the document draws at the point.
    */
-  setHover(x: number, y: number): boolean {
+  setHover(x: number, y: number, over: Element | null = null): boolean {
     this._dropHeldHover();
     const cascade = this._cascade;
     if (!cascade || !cascade.hoverSensitive) return false;
@@ -8565,7 +8727,7 @@ export class HtmlViewNode extends Node {
     // flat tree (Selectors 4, 9.2): a host and a slot are hovered over
     // what is drawn in them
     const chain: Element[] = [];
-    let node = this._capturing ?? this._drawnAt(x, y);
+    let node = this._capturing ?? over ?? this._drawnAt(x, y);
     while (node) {
       chain.push(node);
       node = flatParentOf(node);
@@ -9330,11 +9492,9 @@ export class HtmlViewNode extends Node {
           if (change & FONT_LENGTHS && tree.firstLine) return false;
           resizedBoxes.push(box);
         }
-        // an input button the page took to styling, or stopped, is drawn
-        // by the document or mounted as the palette's widget: another box
-        if (kept.styledControl !== style.styledControl && isInputButton(el)) {
-          return false;
-        }
+        // a control the page took to drawing, or stopped, is drawn by the
+        // document or mounted as the palette's widget: another box
+        if (drawnControl(el, kept) !== drawnControl(el, style)) return false;
         if (WIDGETS.has(box.replaced)) {
           const kind = box.replaced!;
           if (styledField(kind, kept) !== styledField(kind, style)) {
@@ -14427,8 +14587,35 @@ export class HtmlViewNode extends Node {
     this.setHover(ev.x, ev.y);
   }
 
+  /**
+   * The pointer left what the document draws, which is not the document:
+   * a control's widget and a frame's mount are beside it, and the pointer
+   * over one is over its element (`pointerBeside`), which the `<Html>`
+   * root says, as it says when the pointer leaves all of it
+   * (`pointerLeft`). A leave with no move after it is content that moved
+   * under a still pointer, a scroll bringing a field under it, and what is
+   * there is asked for once it is still, as on the document.
+   */
   override defaultMouseLeave(ev: X11MouseEvent): void {
     super.defaultMouseLeave?.(ev);
+    this._holdHover();
+  }
+
+  /**
+   * The pointer moved over something mounted beside the document, to a
+   * logical window point: `over` is the element whose widget or mount it
+   * is, where the root knows, and otherwise what the document draws
+   * there, which is the element a player or a cover is over. Core hands
+   * none of these moves to `defaultMouseMove`, and a browser hovers an
+   * `<input>`, and the card around it, while the pointer is on it.
+   */
+  pointerBeside(x: number, y: number, over: Element | null): void {
+    this._pointerAt = { x, y };
+    this.setHover(x, y, over);
+  }
+
+  /** The pointer left the `<Html>`, document and widgets and all. */
+  pointerLeft(): void {
     this._pointerAt = null;
     this.clearHover();
   }
@@ -15965,6 +16152,22 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
     at = at.parent ?? (at instanceof ShadowRoot ? at.host : null);
   }
   return true;
+}
+
+/**
+ * The border a page reads of a control the palette draws (`styleAsRead`),
+ * where its box has none. Its `width` and `height` read what its box holds,
+ * its padding as laid out, so a page that writes them back keeps the box
+ * the size it is, as it would in a browser; beside the web's border they
+ * come to more than its `offsetWidth`, which nothing writes back.
+ */
+function edgesAsRead(used: UsedBox, read: ComputedStyle): void {
+  used.borderRead = [
+    read.borderTopWidth,
+    read.borderRightWidth,
+    read.borderBottomWidth,
+    read.borderLeftWidth,
+  ];
 }
 
 /**
@@ -18996,6 +19199,7 @@ const WIDGETS = new Set<ReplacedKind>([
   'checkbox',
   'radio',
   'range',
+  'gauge',
 ]);
 
 /** What only moves how far a box's ink reaches: a shadow, and an outline's

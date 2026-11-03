@@ -2007,6 +2007,7 @@ export default function Page(props: PageProps): ReactElement {
                   onPickFiles={pickFiles}
                   onDropFiles={readHtmlFiles}
                   onDownload={onDownload}
+                  headers={view.headers}
                   scripts={scriptsOf(view)}
                   onDocument={onDocumentOf(view, source)}
                   onViewportOverflow={(overflow) =>
@@ -2240,6 +2241,9 @@ async function loadDocument(
     return own(errorPage(target, ...failure(error)), null);
   }
   if (signal.aborted) return;
+  // no content is no navigation (HTML 7.4.2.3.3): the tab goes on showing
+  // what it showed
+  if (response.status === 204 || response.status === 205) return;
 
   const posted = !!nav.post && !response.redirected;
   const kind = viewSource ? 'text' : kindOf(response.type, response.url);

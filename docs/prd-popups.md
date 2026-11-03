@@ -190,6 +190,16 @@ after the window has gone.
   that `window.open(url, name, 'noopener')` sends the existing window there, and
   hands nothing back.
 - **`noreferrer`** implies `noopener`, and `document.referrer` is empty.
+- **A sandbox's window with no opener is no tab.** A document with flags to hand
+  on, a sandbox with `allow-popups` and no `allow-popups-to-escape-sandbox`,
+  opens a window that keeps them, and `navigate(url, 'tab')` carries nothing of
+  who asked, so such a window goes to `popups.open` in a group of its own, its
+  flags in its slot (`openApart`): `noopener`, `noreferrer`, a plain
+  `target=_blank` and a form's, whether the user or a script followed it, and
+  whether the document has a realm or not. With no `popups`, or where it says
+  no, nothing opens. Handed to the tab, such a window was the page at its own
+  origin with none of the sandbox's flags, which was COOP's first escape and was
+  on master after it.
 - **A link or a form** has an opener where its `target` is a name, and for
   `_blank` only with `rel=opener` (`linkOpener`). A plain `target=_blank` has
   none, and goes to the host's `onLink` as it did. A form's `target` carries its
@@ -430,8 +440,9 @@ the prototype, frames nested in frames, `document.domain`, and a window's
 
 ## Left out
 
-- **A window opened from a realm-less frame** opens as its page: such a frame
-  has no script of its own to call it, only the page reaching in.
+- **A window opened from a realm-less frame** opens as its page, where the page
+  reaches in: such a frame has no script of its own to call it. A link a user
+  follows in it is its own, and a sandbox's keeps its flags (`openFor`).
 - **`resizeTo` and `moveTo`** on a popup, and `screenX` and `screenY`: a popup
   takes its size and place from its features, and neither moves after.
 - **`document.write` into a popup after its first document.** It is the

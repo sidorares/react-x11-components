@@ -44,11 +44,11 @@ import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
-import type { ResourceCors } from '../resources.js';
+import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
-import type { LoadedScript } from './script-origin.js';
+import type { LoadedScript, ModuleType } from './script-origin.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
@@ -61,9 +61,9 @@ import type {
   HostSeams,
   WorkerInit,
 } from './host.js';
-import type { Popup } from './popups.js';
+import type { Popup, PopupAsk } from './popups.js';
 import { forgetKept, liveSession } from './session.js';
-import { slotFor, windowOps } from './popups.js';
+import { openApart, slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
 import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
@@ -104,11 +104,14 @@ export interface ScriptsOptions extends Omit<
   serviceWorkers?: boolean | HtmlServiceWorkers | null;
   /** A script's source, by its URL — through the host's network — or null
    *  where there is none: a `<script src>`'s, with its element, or a
-   *  module's an import names, with none. */
+   *  module's an import names, with none, and `type` where it is imported
+   *  as a JSON or a text module (`HtmlScripts.load`). */
   load(
     url: string,
     element: Element | null,
     cors?: ResourceCors,
+    type?: 'json' | 'text',
+    asker?: ResourceAsker,
   ): Promise<LoadedScript | null>;
   /** The headers of the response the document came in
    *  (`HtmlScripts.headers`). */
@@ -203,6 +206,24 @@ interface FrameSeat {
 }
 
 /** One document's scripts: its engine, its host, and where it has got to. */
+/** `openApart` with what makes a runner, for a document that may have none:
+ *  a top-level document's sandbox with no `allow-scripts` has no chunk of this
+ *  to reach but through `loadScriptRuntime`. */
+export function openWindowApart(
+  ask: PopupAsk,
+  url: string,
+  flags: number,
+  seams: RunnerSeams,
+  runner: ScriptRunner | null = null,
+): void {
+  openApart(
+    ask,
+    { url, flags, seams, runner },
+    (blank, address, windowSeams) =>
+      new ScriptRunner(blank, address, windowSeams),
+  );
+}
+
 export class ScriptRunner {
   readonly host: DomHost;
   readonly engine: ScriptEngine;
@@ -301,7 +322,8 @@ export class ScriptRunner {
       log: _options.log,
       settled: () => this.host.settled(),
       // what a module imports is another origin's only by its leave
-      load: (url) => this._scriptFrom(url, null, true).then((s) => s && s.text),
+      load: (url, type) =>
+        this._scriptFrom(url, null, true, type).then((s) => s && s.text),
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
@@ -454,6 +476,13 @@ export class ScriptRunner {
   ): boolean {
     if (this._disposed) return false;
     return this._windows.follow(url, target, noopener, noreferrer, post);
+  }
+
+  /** A document with flags to hand on and no runner of its own opens a window
+   *  that keeps them (`openApart`): a frame of this one, which `flags` and
+   *  `url` are of, a sandbox with no `allow-scripts`. */
+  openFor(url: string, flags: number, ask: PopupAsk): void {
+    openWindowApart(ask, url, flags, this._options, this);
   }
 
   /** A page closed the window it is in, which is the host's: one created by
@@ -1248,9 +1277,11 @@ export class ScriptRunner {
         !!request.src,
       );
       if (this._disposed) return;
-      if (request.src) {
-        this.engine.call('__fire', [element, ran ? 'load' : 'error']);
-      }
+      // a graph that did not all come is its element's `error`, inline or
+      // not; one that ran, or whose error was reported, an external one's
+      // `load`
+      if (ran === 'unfetched') this.engine.call('__fire', [element, 'error']);
+      else if (request.src) this.engine.call('__fire', [element, 'load']);
       return;
     }
     // an inline script's file is its document, as a browser names it in a
@@ -1283,19 +1314,28 @@ export class ScriptRunner {
   }
 
   /** A script's source from the host, and what this document may have of
-   *  it: by CORS where it is a module's, or its element says so. */
+   *  it: by CORS where it is a module's, or its element says so, and as what
+   *  a module was imported as. */
   private async _scriptFrom(
     url: string,
     element: Element | null,
     module: boolean,
+    type: ModuleType = 'javascript',
   ): Promise<{ text: string; muted: boolean } | null> {
     const origin = this.host.origin;
     const set = corsSetting(element?.attribs.crossorigin);
     const mode = module ? (set ?? 'anonymous') : set;
+    const cors = mode ? { origin, mode } : undefined;
+    // asked for as this document's, which a sandbox's is of no origin, and
+    // a frame's is the frame's and not the page's
+    const asker = {
+      client: this.host.url,
+      ...(this.host.sandbox & SB_ORIGIN && { opaqueOrigin: true }),
+    };
     const loaded = await this._options
-      .load(url, element, mode ? { origin, mode } : undefined)
+      .load(url, element, cors, type === 'javascript' ? undefined : type, asker)
       .catch(() => null);
-    return judgeScript(loaded, url, origin, mode, module);
+    return judgeScript(loaded, url, origin, mode, module, type);
   }
 
   private _advance(state: 'interactive' | 'complete'): void {

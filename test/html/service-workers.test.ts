@@ -88,6 +88,12 @@ async function serve(
         typeof page === 'string'
           ? [TYPES[path.split('.').pop() ?? 'html'] ?? 'text/html', page]
           : page;
+      // a redirect, to where its body says
+      if (type === 'redirect') {
+        response.writeHead(302, { location: String(body) });
+        response.end();
+        return;
+      }
       response.writeHead(200, { 'content-type': type });
       response.end(body);
     },
@@ -270,6 +276,42 @@ test("a worker's answer takes the network's place, and one it leaves alone goes 
   const page = await show(site.url('/page'), network, keeper);
   assert.equal(await page.text('out'), 'the worker: cors  a client');
   assert.ok(!site.asked.includes('/made'), 'the network never heard');
+});
+
+test('a module worker imports a JSON and a text module statically, and nothing with import()', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER.replace("'/sw.js'", "'/sw.js', { type: 'module' }"),
+      '/page': ANSWERED,
+      '/data.json': ['application/json', '{"word":"hi"}'],
+      // a text module is text whatever its response says it is
+      '/note.txt': ['image/png', 'there'],
+      '/sw.js': `import data from '/data.json' with { type: 'json' };
+        import note from '/note.txt' with { type: 'text' };
+        self.addEventListener('fetch', function (e) {
+          if (new URL(e.request.url).pathname !== '/made') return;
+          e.respondWith(import('/data.json', { with: { type: 'json' } }).then(
+            function () { return 'imported'; },
+            function (error) { return error.name; },
+          ).then(function (got) { return new Response(data.word + ' ' + note + ' ' + got); }));
+        });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  assert.equal(
+    await page.text('out'),
+    'hi there TypeError',
+    page.logs.join('\n'),
+  );
+  assert.equal(
+    site.headers.get('/data.json')?.accept,
+    'application/json,*/*;q=0.5',
+  );
+  assert.equal(site.headers.get('/note.txt')?.accept, 'text/plain,*/*;q=0.5');
 });
 
 test('what a frame left behind as it was taken out asks the registry nothing, and posts nothing', async (t) => {
@@ -550,6 +592,74 @@ test("a frame the scope of a worker holds is that worker's client", async (t) =>
   assert.equal(await page.text('out'), site.url('/sw.js'));
 });
 
+test('a frame a worker answers with a redirect its own fetch saw goes where that redirect said, from where it was, kept by a cache and a clone', async (t) => {
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/framed': `<!doctype html><p id="out"></p><script>
+        var out = [], hows = ['plain', 'clone', 'cache'];
+        hows.forEach(function (how) {
+          var f = document.createElement('iframe');
+          f.src = '/sub/frame?how=' + how;
+          f.onload = function () {
+            out.push(how + ':' + f.contentWindow.location.pathname);
+            done();
+          };
+          document.body.appendChild(f);
+        });
+        // and a page's own fetch sees it only where it asked to see one
+        ['follow', 'manual'].forEach(function (mode) {
+          fetch('/sub/frame?how=plain', { redirect: mode }).then(function (r) {
+            out.push(mode + ':' + r.type + ':' + r.url.replace(location.origin, ''));
+          }, function (e) {
+            out.push(mode + ':' + e.name);
+          }).then(done);
+        });
+        function done() {
+          if (out.length === 5) {
+            document.getElementById('out').textContent = out.sort().join(' ');
+          }
+        }
+        </script>`,
+      '/dir/away': ['redirect', 'landed'],
+      '/dir/landed': '<!doctype html><title>where the redirect said</title>',
+      '/sub/landed': '<!doctype html><title>where the frame was</title>',
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        var u = new URL(e.request.url);
+        if (u.pathname !== '/sub/frame') return;
+        var how = u.searchParams.get('how');
+        e.respondWith(fetch('/dir/away', { redirect: 'manual' }).then(function (r) {
+          if (r.type !== 'opaqueredirect' || r.headers.has('location')) {
+            return new Response('told ' + r.type);
+          }
+          if (how === 'clone') return r.clone();
+          if (how === 'cache') {
+            return caches.open('c').then(function (c) {
+              return c.put('/kept-' + how, r).then(function () {
+                return c.match('/kept-' + how);
+              });
+            });
+          }
+          return r;
+        }));
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/framed'), network, keeper);
+  assert.equal(
+    await page.text('out'),
+    'cache:/dir/landed clone:/dir/landed follow:TypeError manual:opaqueredirect:/dir/away plain:/dir/landed',
+  );
+  // and a tab's document the same
+  const doc = await network.html(site.url('/sub/frame?how=plain'));
+  assert.equal(doc.url, site.url('/dir/landed'));
+  assert.ok(!site.asked.includes('/sub/landed'));
+});
+
 test("another origin's image goes through a worker, into its cache and out again, with no script reading a byte of it", async (t) => {
   const pixel = Uint8Array.from(
     Buffer.from(
@@ -592,6 +702,77 @@ test("another origin's image goes through a worker, into its cache and out again
   await images.down();
   const again = await show(site.url('/page'), network, keeper);
   assert.equal(await again.text('out'), 'drawn 1');
+});
+
+test('what a worker answers an image with taints a canvas by its type, whatever the image was asked for, and through its cache', async (t) => {
+  const pixel = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  const images = await serve({ '/pixel.png': ['image/png', pixel] }, t);
+  const other = images.url('/pixel.png').replace('localhost', '127.0.0.1');
+  const site = await serve(
+    {
+      '/register': REGISTER,
+      '/pixel.png': ['image/png', pixel],
+      '/page': `<!doctype html><p id="out"></p><script>
+        var heard = [];
+        function said(line) {
+          heard.push(line);
+          if (heard.length === 5) {
+            document.getElementById('out').textContent = heard.sort().join(', ');
+          }
+        }
+        function read(name, src, cors) {
+          var i = new Image();
+          if (cors) i.crossOrigin = cors;
+          i.onerror = function () { said(name + ' failed'); };
+          i.onload = function () {
+            var x = document.createElement('canvas').getContext('2d');
+            x.drawImage(i, 0, 0);
+            try { x.getImageData(0, 0, 1, 1); said(name + ' read'); }
+            catch (e) { said(name + ' ' + e.name); }
+          };
+          i.src = src;
+        }
+        read('basic', ${JSON.stringify(other + '?own')});
+        read('opaque', '/opaque.png');
+        read('refused', '/opaque.png?cors', 'anonymous');
+        read('cached', '/cached.png');
+        read('own', '/pixel.png');
+        </script>`,
+      '/sw.js': `self.addEventListener('fetch', function (e) {
+        var url = new URL(e.request.url);
+        var theirs = ${JSON.stringify(other)};
+        if (url.search === '?own') e.respondWith(fetch('/pixel.png'));
+        else if (url.pathname === '/opaque.png') {
+          e.respondWith(fetch(theirs, { mode: 'no-cors' }));
+        } else if (url.pathname === '/cached.png') {
+          e.respondWith(fetch(theirs, { mode: 'no-cors' }).then(function (r) {
+            return caches.open('c').then(function (c) {
+              return c.put('/cached.png', r).then(function () {
+                return c.match('/cached.png');
+              });
+            });
+          }));
+        }
+      });`,
+    },
+    t,
+  );
+  const keeper = new HtmlServiceWorkers();
+  const network = new HtmlNetwork({ serviceWorkers: keeper });
+  await installed(site, keeper, network);
+  const page = await show(site.url('/page'), network, keeper);
+  // another origin's address, answered with this origin's response; this
+  // origin's, answered with another's that no CORS let through, which is no
+  // answer to a CORS request at all, and is the same out of a cache
+  assert.equal(
+    await page.text('out'),
+    'basic read, cached SecurityError, opaque SecurityError, own read, refused failed',
+  );
 });
 
 test("a page cannot read another origin's opaque body by writing the number it is held by", async (t) => {

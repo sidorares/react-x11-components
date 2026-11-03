@@ -33,7 +33,12 @@ import { hx } from '../hx.js';
 import { throughWorker, useScripts } from './hook.js';
 import type { FramePost } from './host.js';
 import type { ScriptRunner, ScriptsOptions } from './runner.js';
-import { SB_FORMS, SB_POPUPS, SB_TOP_GESTURE } from './sandbox.js';
+import {
+  SB_FORMS,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_TOP_GESTURE,
+} from './sandbox.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
@@ -168,6 +173,9 @@ function FramePage({
     return host.onFrames(update);
     // the frame and its host are the view's for its life
   }, [host, frame]);
+  // a document of the page realm's the frame shows has its `load` wait for
+  // this view to have all it asked for (`followFrame`)
+  useEffect(() => host.followFrame(frame), [host, frame]);
   if (!shown) return null;
   return h(FrameDocument, {
     key: keyOf(shown.document),
@@ -248,6 +256,9 @@ function FrameDocument({
     title: () => {},
     log: (level, text) => outer.log(level, `[frame ${url}] ${text}`),
     drawsFrames: true,
+    // what this view mounts over its frames is `FramePage`, whatever the
+    // page's host mounts over the page's
+    framesFollowed: true,
     undrawn,
   };
   const scripts = useScripts(realm, handle, url, seams, {
@@ -264,12 +275,15 @@ function FrameDocument({
       if (drawn.get(document) === handle) drawn.delete(document);
     };
   }, [realm, host, document, handle]);
-  // a frame in this frame is a frame of this frame's realm
+  // a frame in this frame is a frame of this frame's realm, and in a document
+  // with no realm of its own one of the page's, which loads it
+  // (`DomHost._holdsFrames`)
   const inner = (): FrameContext | null => {
     const runner = scripts.runner?.();
-    return runner ? { ...context, parent: runner, seams } : null;
+    if (runner) return { ...context, parent: runner, seams };
+    return realm ? null : { ...context, seams };
   };
-  const holder = inner();
+  const holder = scripts.runner?.() ? inner() : null;
   // Where a link or a form in the frame sends what it asks for: the frame,
   // a frame its target names in the frame's document, a new tab, or the
   // page — `_top`, and `_parent`, which in a frame in a frame is the frame
@@ -291,11 +305,20 @@ function FrameDocument({
       if (sandbox & SB_POPUPS) return;
       const { noopener, noreferrer } = linkOpener(target, rel);
       const runner = scripts.runner?.();
-      if (!runner?.followTarget(to, target, noopener, noreferrer, post)) {
-        outer.navigate(to, 'tab');
-      }
+      if (runner?.followTarget(to, target, noopener, noreferrer, post)) return;
+      // a tab carries no flags, and a document with none of its own to run
+      // has its window opened by the page's runner
+      if (sandbox & SB_PROPAGATES) {
+        context.parent.openFor(url, sandbox, {
+          url: to,
+          name: target.toLowerCase() === '_blank' ? '' : target,
+          features: { popup: false, noreferrer },
+          post,
+        });
+      } else outer.navigate(to, 'tab');
     } else if (where === 'here') host.navigateFrame(frame, to, post);
-    else scripts.navigateFrame?.(where, to, post);
+    else if (scripts.navigateFrame) scripts.navigateFrame(where, to, post);
+    else if (!realm) host.navigateFrame(where, to, post);
   };
   const { look } = context;
   return hx(
@@ -317,10 +340,13 @@ function FrameDocument({
       baseUrl: url,
       ref: handle.ref,
       ...look,
+      // what the frame's document asks for is the frame's: its `Referer`,
+      // and for a sandbox no cookie that is the site's alone, where the
+      // page's own had the page's
       onResource: (request: ResourceRequest) =>
         throughWorker(
           scripts,
-          request,
+          { ...request, client: url },
           look.onResource,
         ) as Promise<ResourceResult | null>,
       onLink: (href, ev) => {
@@ -346,7 +372,9 @@ function FrameDocument({
       scripting: scripts.scripting,
       onScript: scripts.onScript,
       onParsed: scripts.onParsed,
-      onLoaded: scripts.onLoaded,
+      // a document of the page realm's has the frame hear `load` once all
+      // it asked for is in (`followFrame`)
+      onLoaded: realm ? scripts.onLoaded : () => host.frameViewLoaded(document),
       // a document of the page realm's has its events heard there
       onDomEvent: realm
         ? scripts.onDomEvent
@@ -363,7 +391,9 @@ function FrameDocument({
       // query lists' `change`; and its own CSS transitions' events, which
       // its realm hears and the page's does not (`InternalHtmlProps`)
       ...({
+        _sandbox: sandbox,
         _embedderScheme: scheme,
+        _frameElement: frame,
         _onPaint: scripts.painted,
         _onCssEvents: scripts.cssEvents,
         _onImage: scripts.imageSettled,

@@ -3053,6 +3053,35 @@ function foreignOf(node: DrawnNode): Map<unknown, unknown> | undefined {
 }
 
 metric(
+  'a shape a pattern fills is filled with its tile, as a diagram editor draws its grid',
+  async () => {
+    // SVG 2, 14.3: a `<pattern>`'s tile repeated across the plane from its
+    // corner. draw.io's grid is a pattern of two lines filling the pane, and
+    // drew nothing, as `SvgView` drew no pattern before ntk 8.27.0
+    const { result } = await render(
+      ALONE +
+        '<svg width="80" height="40"><defs>' +
+        '<pattern id="dots" width="10" height="10" patternUnits="userSpaceOnUse">' +
+        '<rect width="5" height="5" fill="#ff0000"/></pattern>' +
+        '<pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse">' +
+        '<path d="M 10 0 L 0 0 0 10" fill="none" stroke="#0000ff" stroke-width="2"/>' +
+        '</pattern></defs>' +
+        '<rect width="40" height="40" fill="url(#dots)"/>' +
+        '<rect x="40" width="40" height="40" fill="url(#grid)"/></svg>',
+      100,
+    );
+    const ctx = result.ctx;
+    await expectPixel(ctx, 2, 2, '#ff0000', { message: 'the first tile' });
+    await expectPixel(ctx, 32, 22, '#ff0000', { message: 'a tile across' });
+    await expectPixel(ctx, 7, 7, '#ffffff', { message: 'between the dots' });
+    await expectPixel(ctx, 37, 37, '#ffffff', { message: 'the last gap' });
+    await expectPixel(ctx, 60, 5, '#0000ff', { message: "a grid's line down" });
+    await expectPixel(ctx, 55, 20, '#0000ff', { message: 'and across' });
+    await expectPixel(ctx, 65, 15, '#ffffff', { message: 'inside a cell' });
+  },
+);
+
+metric(
   "a foreignObject's HTML is laid out in the object's box and drawn there",
   async (t) => {
     withForeignObjects(t);

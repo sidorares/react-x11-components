@@ -21,6 +21,7 @@ import type { ReactElement, ReactNode } from 'react';
 import {
   Button,
   Checkbox,
+  ProgressBar,
   Radio,
   RadioGroup,
   Select,
@@ -43,6 +44,7 @@ import {
   attr,
   isDropDown,
   isElement,
+  isCheckable,
   isInputButton,
   setPickerOpen,
   tagOf,
@@ -82,17 +84,21 @@ import {
   implicitSubmission,
   inputType,
   isDisabled,
+  isMultiple,
   labeledControl,
+  optionDisabled,
   optionElements,
   optionValue,
   radioGroup,
   rangeValue,
+  selectOf,
   setIndeterminate,
   setUserValidity,
 } from './form.js';
 import type { FieldSelection, FormSubmission } from './form.js';
 import { isSummaryOf, tabIndexOf } from './focus.js';
 import { RangeWidget } from './range.js';
+import { SB_AUTOMATIC, SB_FORMS } from './scripts/sandbox.js';
 
 const h = React.createElement;
 
@@ -115,6 +121,10 @@ export interface FormsOptions {
   /** Restyle and lay out again: a change a selector can see, told as
    *  what it did to the document where that is known. */
   touch: (changes?: readonly HtmlChange[]) => void;
+  /** The document's sandboxing flags (`./scripts/sandbox.ts`): with no
+   *  `allow-forms` a form is sent nowhere and asked nothing, and with no
+   *  `allow-scripts` nothing is focused by `autofocus`. */
+  sandbox?: number;
 }
 
 export interface Forms {
@@ -226,6 +236,7 @@ export function useForms(options: FormsOptions): Forms {
     onPickFiles,
     onDomEvent,
     touch,
+    sandbox: sandboxed = 0,
   } = options;
   /** Tell the host what happened; whether the default goes on. */
   const fire = (
@@ -469,7 +480,7 @@ export function useForms(options: FormsOptions): Forms {
 
   /** The entry list, built as the form is now, and sent. */
   const send = (form: Element, submitter: Element | null, point?: Point) => {
-    if (!onSubmit) return;
+    if (!onSubmit || sandboxed & SB_FORMS) return;
     // what a form names in `accept-charset` is the first its document asks
     // for, and `<Html>` has loaded nothing for it
     if (formEncoding(form, charset) !== 'UTF-8' && !loadedEncodings()) {
@@ -503,6 +514,9 @@ export function useForms(options: FormsOptions): Forms {
    * sent. Built before, as it was, the field went empty.
    */
   const submit = (form: Element, submitter: Element | null, point?: Point) => {
+    // a sandbox's form is no form to send, before it is anything else (HTML
+    // 4.10.21.3, step 3)
+    if (sandboxed & SB_FORMS) return;
     attempted(form);
     if (!onSubmit && !onDomEvent) return;
     if (!validate(form, submitter)) return;
@@ -667,6 +681,54 @@ export function useForms(options: FormsOptions): Forms {
     );
   };
 
+  // the option a list box was last pressed on, which a Shift-press runs from
+  const anchors = React.useRef(new WeakMap<Element, Element>()).current;
+  /**
+   * A press on an option of a list box (HTML 4.10.7): it alone is selected,
+   * or, in one that takes many, a Ctrl- or Cmd-press toggles it and a
+   * Shift-press selects the options from the one last pressed to it. What
+   * changed is an `input` and a `change`.
+   */
+  const pickOption = (
+    select: Element,
+    option: Element,
+    ev: X11MouseEvent<DrawnNode>,
+  ) => {
+    // what a reset puts back, before anything changes it
+    forms.remember(select);
+    const options = optionElements(select);
+    const several = isMultiple(select);
+    const from = several && ev.shiftKey ? anchors.get(select) : undefined;
+    const span =
+      from && options.includes(from)
+        ? [options.indexOf(from), options.indexOf(option)].sort((a, b) => a - b)
+        : null;
+    const toggle = several && !span && (ev.ctrlKey || ev.metaKey);
+    if (!span) anchors.set(select, option);
+    const changes: HtmlChange[] = [];
+    options.forEach((o, i) => {
+      const was = attr(o, 'selected') ?? null;
+      const on = span
+        ? i >= span[0] && i <= span[1]
+        : o === option
+          ? !toggle || was === null
+          : toggle && was !== null;
+      if (on === (was !== null)) return;
+      if (on) o.attribs.selected = '';
+      else delete o.attribs.selected;
+      changes.push({
+        type: 'attributes',
+        target: o,
+        attributeName: 'selected',
+        oldValue: was,
+      });
+    });
+    if (!changes.length) return;
+    changed(select, optionValue(option), changes);
+    fire('input', select);
+    fire('change', select);
+  };
+
   /** A summary's activation behaviour (HTML 4.11.2): its details open, or
    *  close. The attribute is the state, as `checked` is a checkbox's, and
    *  `details[open]` a selector a sheet styles by. */
@@ -713,7 +775,11 @@ export function useForms(options: FormsOptions): Forms {
     pressed.current = null;
     if (ev.button !== 1) return;
     const at = pressableAt(ev);
-    if (at) pressed.current = { at, x: ev.x, y: ev.y };
+    // a list box takes its option as the button goes down, as Blink's
+    // does, where the page let the press go
+    if (at?.kind === 'option') {
+      if (!ev.defaultPrevented) pickOption(at.control, at.element, ev);
+    } else if (at) pressed.current = { at, x: ev.x, y: ev.y };
   };
   const onMouseUp = (ev: X11MouseEvent<DrawnNode>) => {
     const start = pressed.current;
@@ -738,7 +804,8 @@ export function useForms(options: FormsOptions): Forms {
       toggleDetails(at.element);
     } else if (at.kind === 'image')
       press(at.element, imagePoint(at.element, ev));
-    else press(at.element);
+    else if (at.kind === 'check') activateLabel(at.element);
+    else if (at.kind !== 'option') press(at.element);
   };
 
   /** Where in an image button a press landed, in its own CSS pixels. */
@@ -760,6 +827,9 @@ export function useForms(options: FormsOptions): Forms {
   const autofocus = (rects: readonly ControlRect[]) => {
     const document = view.current?.document ?? null;
     if (!document || autofocused.current === document) return;
+    // what happens by itself, which a sandbox with no `allow-scripts` has
+    // none of (HTML 6.6.5, "flush autofocus candidates")
+    if (sandboxed & SB_AUTOMATIC) return;
     const wants = rects.find((r) => attr(r.element, 'autofocus') !== undefined);
     if (!wants) return;
     autofocused.current = document;
@@ -912,6 +982,12 @@ export function useForms(options: FormsOptions): Forms {
         press(el);
         return true;
       }
+      // ticked before its click is told, which this tells (HTML's legacy
+      // pre-activation behaviour)
+      if (isCheckable(el)) {
+        activateLabel(el);
+        return true;
+      }
       if (tag === 'input' && inputType(el) === 'image') {
         // from the keyboard, as a browser's: at the image's corner
         press(el, { x: 0, y: 0 });
@@ -943,6 +1019,8 @@ export function useForms(options: FormsOptions): Forms {
 type Pressable =
   | { kind: 'button'; element: Element }
   | { kind: 'image'; element: Element }
+  | { kind: 'check'; element: Element }
+  | { kind: 'option'; element: Element; control: Element }
   | { kind: 'summary'; element: Element }
   | { kind: 'label'; element: Element; control: Element };
 
@@ -974,6 +1052,18 @@ function pressableAt(ev: X11MouseEvent<DrawnNode>): Pressable | null {
     }
     if (tag === 'input' && inputType(node) === 'image') {
       return isDisabled(node) ? null : { kind: 'image', element: node };
+    }
+    // a checkbox or a radio button the document draws (`drawnControl`)
+    if (isCheckable(node)) {
+      return isDisabled(node) ? null : { kind: 'check', element: node };
+    }
+    // an option of a list box, which the document draws
+    if (tag === 'option') {
+      const select = selectOf(node);
+      if (!select || isDropDown(select)) return null;
+      return isDisabled(select) || optionDisabled(node)
+        ? null
+        : { kind: 'option', element: node, control: select };
     }
     if (tag === 'label') {
       const control = labeledControl(node);
@@ -1331,6 +1421,7 @@ function renderControl(
           {
             key: 'chosen',
             style: {
+              ...(rect.bare && { color: rect.bare.fill ?? rect.bare.color }),
               flexGrow: 1,
               flexShrink: 1,
               flexBasis: 0,
@@ -1364,6 +1455,23 @@ function renderControl(
         settled: () => ctx.settled(el),
         focused: (on) => ctx.focused(el, on),
         redraws: ctx.ranges,
+      });
+      break;
+    }
+    // a gauge the page styled is drawn by the document (`paintGauge`)
+    case 'gauge': {
+      const gauge = rect.gauge!;
+      if (rect.bare) return null;
+      // half as thick as its box and across the middle of it, as a
+      // browser's native bar is
+      const bar = Math.max(1, Math.round(height / 2));
+      widget = h(ProgressBar, {
+        value: gauge.share ?? 0,
+        indeterminate: gauge.share === null,
+        height: bar,
+        ...(gauge.region &&
+          gauge.region !== 'optimum' && { color: METER_INK[gauge.region] }),
+        style: { width: '100%', marginTop: Math.floor((height - bar) / 2) },
       });
       break;
     }
@@ -1895,6 +2003,9 @@ const BARE_TRIGGER: Style = {
   ':hover': { backgroundColor: 'transparent' },
   ':active': { backgroundColor: 'transparent' },
 };
+
+/** A meter's bar outside its optimum: Chrome's amber and red. */
+const METER_INK = { suboptimum: '#e3a21a', 'even-less-good': '#d93025' };
 
 /** Select the option of a drop-down `<select>` whose value is `value`, and
  *  no other: what that did to them. */

@@ -42,6 +42,7 @@ import type { installWebRTC } from './webrtc.js';
 import type { installRtcTransports } from './rtc-transports.js';
 import type { installWebGL } from './webgl.js';
 import type { installGeometry } from './geometry.js';
+import type { installSvgDom } from './svg-dom.js';
 import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installUIEvents } from './ui-events.js';
@@ -86,6 +87,7 @@ export function installDom(
   webaudio: typeof installWebAudio,
   mse: typeof installMse,
   geometry: typeof installGeometry,
+  svgDom: typeof installSvgDom,
   webcrypto: typeof installWebCrypto,
   transfers: typeof installDataTransfer,
   clipboards: typeof installClipboard,
@@ -140,6 +142,7 @@ export function installDom(
     if (
       op !== 'computed' &&
       op !== 'computedShorthands' &&
+      op !== 'computedSvg' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
       op !== 'parsedForm' &&
@@ -152,11 +155,13 @@ export function installDom(
       op !== 'random' &&
       op !== 'uuid' &&
       op !== 'eventPath' &&
+      op !== 'svgLength' &&
       !op.startsWith('block')
     ) {
       opEpoch += 1;
     }
     if (!mutatesHas.call(KEEPS_LISTS, op)) {
+      svgEpoch += 1;
       if (op !== 'setAttr' && op !== 'delAttr') {
         treeEpoch += 1;
         attrEpoch += 1;
@@ -206,12 +211,18 @@ export function installDom(
    *  through an op or between two tasks. */
   let treeEpoch = 0;
   let attrEpoch = 0;
+  /** What an SVG object reflecting an attribute checks before it answers
+   *  from what it read last (`svg-dom.ts`): it moves with `attrEpoch` and
+   *  at every attribute set besides, which no list's count does, since d3
+   *  sets an `x` or a `transform` on every element it draws. */
+  let svgEpoch = 0;
   /** The ops that change nothing a list holds. Anything else, an op added
    *  later among them, reads the lists again, which costs a read and is
    *  never wrong. Setting a style is here because a page's loop over a list
    *  sets one on each element, and no list reads that attribute. */
   const KEEPS_LISTS = new Set([
     'info',
+    'opaqueSrcdoc',
     'eventPath',
     'pointerChain',
     'pointerOver',
@@ -268,12 +279,15 @@ export function installDom(
     'color',
     'supports',
     'rect',
+    'svg',
+    'svgLength',
     'atViewport',
     'scrollMoves',
     'geometry',
     'offset',
     'computed',
     'computedShorthands',
+    'computedSvg',
     'customProperty',
     'at',
     'viewport',
@@ -6450,8 +6464,6 @@ export function installDom(
   const GEOMETRY = geometry({ DOMException });
   const DOMRect: Any = GEOMETRY.classes.DOMRect;
   const DOMRectReadOnly: Any = GEOMETRY.classes.DOMRectReadOnly;
-  const DOMMatrix: Any = GEOMETRY.classes.DOMMatrix;
-  const DOMPoint: Any = GEOMETRY.classes.DOMPoint;
 
   /** Where an element is in the document, in CSS pixels; null where it has
    *  no box. */
@@ -7559,61 +7571,19 @@ export function installDom(
       return this._name;
     }
   }
-  /** An SVG length an element's attribute is (SVG 2, 4.6.10), read from
-   *  the attribute each time: nothing animates one here, so its animated
-   *  value is its base one. */
-  const animatedLength = (el: Any, name: string): Any => {
-    const length = (): Any => {
-      const raw = el.getAttribute(name) ?? '0';
-      const value = parseFloat(raw) || 0;
-      return {
-        value,
-        valueInSpecifiedUnits: value,
-        valueAsString: raw,
-        unitType: /^\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?\s*$/i.test(raw)
-          ? 1
-          : 0,
-      };
-    };
-    return {
-      get baseVal(): Any {
-        return length();
-      },
-      get animVal(): Any {
-        return length();
-      },
-    };
-  };
-  const lengths = (Kind: Any, names: string[]): void => {
-    for (const name of names) {
-      Object.defineProperty(Kind.prototype, name, {
-        get(this: Any) {
-          return animatedLength(this, name);
-        },
-        configurable: true,
-      });
-    }
-  };
   /** What the host works out of a drawing (`svg-geometry.ts`), as numbers,
    *  or null where the element is in none that is laid out. */
-  const svgNumbers = (el: Any, question: string, at = 0): number[] | null => {
-    const raw = call('svg', el._id, question, at);
+  const svgNumbers = (
+    el: Any,
+    question: string,
+    at = 0,
+    second = 0,
+  ): number[] | null => {
+    const raw = call('svg', el._id, question, at, second);
     return typeof raw === 'string' && raw ? raw.split(',').map(Number) : null;
   };
-  const matrixFrom = (n: number[] | null): Any =>
-    n ? new DOMMatrix([n[0], n[1], n[2], n[3], n[4], n[5]]) : null;
-  /** An attribute read as a reflected string (SVG 2, 4.6.8). */
-  const animatedString = (el: Any, name: string): Any => ({
-    get baseVal(): string {
-      return el.getAttribute(name) ?? '';
-    },
-    set baseVal(v: Any) {
-      el.setAttribute(name, str(v));
-    },
-    get animVal(): string {
-      return el.getAttribute(name) ?? '';
-    },
-  });
+  /** An `SVGMatrix` of what the host answered (`svg-dom.ts`). */
+  const matrixFrom = (n: number[] | null): Any => (n ? SVG.matrix(n) : null);
   class SVGGraphicsElement extends SVGElement {
     get farthestViewportElement(): Any {
       let last: Any = null;
@@ -7629,7 +7599,7 @@ export function installDom(
     }
     getBBox(): Any {
       const n = svgNumbers(this, 'bbox');
-      return n ? new DOMRect(n[0], n[1], n[2], n[3]) : new DOMRect();
+      return n ? SVG.rect(n[0], n[1], n[2], n[3]) : SVG.rect(0, 0, 0, 0);
     }
     getCTM(): Any {
       return matrixFrom(svgNumbers(this, 'ctm'));
@@ -7665,37 +7635,32 @@ export function installDom(
   }
   /** A shape, whose outline is a length a page can walk (SVG 2, 8.3). */
   class SVGGeometryElement extends SVGGraphicsElement {
+    /** Whether a point in the element's user units is in its fill or its
+     *  stroke (SVG 2, 4.6.4): a `DOMPointInit`, the origin where none. */
+    isPointInFill(point: Any = undefined): boolean {
+      const p = point ?? {};
+      return !!svgNumbers(this, 'inFill', +(p.x ?? 0), +(p.y ?? 0))?.[0];
+    }
+    isPointInStroke(point: Any = undefined): boolean {
+      const p = point ?? {};
+      return !!svgNumbers(this, 'inStroke', +(p.x ?? 0), +(p.y ?? 0))?.[0];
+    }
     getTotalLength(): number {
       return svgNumbers(this, 'length')?.[0] ?? 0;
     }
     getPointAtLength(distance: Any): Any {
       const n = svgNumbers(this, 'point', Number(distance));
-      return n ? new DOMPoint(n[0], n[1]) : new DOMPoint();
+      if (n && Number.isNaN(n[0])) {
+        throw new DOMException(
+          "Failed to execute 'getPointAtLength' on 'SVGGeometryElement': The element's path is empty.",
+          'InvalidStateError',
+        );
+      }
+      return n ? SVG.point(n[0], n[1]) : SVG.point(0, 0);
     }
   }
   class SVGSVGElement extends SVGGraphicsElement {
-    /** A viewBox as a rectangle, read from the attribute each time. */
-    get viewBox(): Any {
-      const rect = (): Any => {
-        const n = (this.getAttribute('viewBox') ?? '')
-          .split(/[\s,]+/)
-          .filter(Boolean)
-          .map(Number);
-        return n.length === 4 && n.every(Number.isFinite)
-          ? new DOMRect(n[0], n[1], n[2], n[3])
-          : null;
-      };
-      return {
-        get baseVal(): Any {
-          return rect();
-        },
-        get animVal(): Any {
-          return rect();
-        },
-      };
-    }
     declare _scale: number | undefined;
-    declare _translate: Any;
     get currentScale(): number {
       return this._scale ?? 1;
     }
@@ -7707,35 +7672,6 @@ export function installDom(
         );
       }
       if (!this.parentElement?.closest('svg')) this._scale = scale;
-    }
-    get currentTranslate(): Any {
-      return (this._translate ??= new DOMPoint());
-    }
-    createSVGMatrix(): Any {
-      return new DOMMatrix();
-    }
-    createSVGPoint(): Any {
-      return new DOMPoint();
-    }
-    createSVGRect(): Any {
-      return new DOMRect();
-    }
-    createSVGNumber(): Any {
-      return { value: 0 };
-    }
-    createSVGLength(): Any {
-      return {
-        value: 0,
-        valueInSpecifiedUnits: 0,
-        valueAsString: '0',
-        unitType: 1,
-      };
-    }
-    createSVGTransform(): Any {
-      return this.createSVGTransformFromMatrix(new DOMMatrix());
-    }
-    createSVGTransformFromMatrix(matrix: Any): Any {
-      return { type: 1, matrix: DOMMatrix.fromMatrix(matrix), angle: 0 };
     }
     getElementById(id: Any): Any {
       return wrap(
@@ -7758,43 +7694,20 @@ export function installDom(
     }
     setCurrentTime(_t: Any): void {}
   }
-  lengths(SVGSVGElement, ['x', 'y', 'width', 'height']);
   class SVGRectElement extends SVGGeometryElement {}
-  lengths(SVGRectElement, ['x', 'y', 'width', 'height', 'rx', 'ry']);
   class SVGCircleElement extends SVGGeometryElement {}
-  lengths(SVGCircleElement, ['cx', 'cy', 'r']);
   class SVGEllipseElement extends SVGGeometryElement {}
-  lengths(SVGEllipseElement, ['cx', 'cy', 'rx', 'ry']);
   class SVGLineElement extends SVGGeometryElement {}
-  lengths(SVGLineElement, ['x1', 'y1', 'x2', 'y2']);
   class SVGPathElement extends SVGGeometryElement {}
   class SVGPolylineElement extends SVGGeometryElement {}
   class SVGPolygonElement extends SVGGeometryElement {}
   class SVGGElement extends SVGGraphicsElement {}
   class SVGDefsElement extends SVGGraphicsElement {}
   class SVGSwitchElement extends SVGGraphicsElement {}
-  class SVGImageElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-  }
-  lengths(SVGImageElement, ['x', 'y', 'width', 'height']);
-  class SVGUseElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-  }
-  lengths(SVGUseElement, ['x', 'y', 'width', 'height']);
+  class SVGImageElement extends SVGGraphicsElement {}
+  class SVGUseElement extends SVGGraphicsElement {}
   class SVGForeignObjectElement extends SVGGraphicsElement {}
-  lengths(SVGForeignObjectElement, ['x', 'y', 'width', 'height']);
-  class SVGAElement extends SVGGraphicsElement {
-    get href(): Any {
-      return animatedString(this, 'href');
-    }
-    get target(): Any {
-      return animatedString(this, 'target');
-    }
-  }
+  class SVGAElement extends SVGGraphicsElement {}
   /** Text's: its length is its font's, in a run as it is written. */
   class SVGTextContentElement extends SVGGraphicsElement {
     getNumberOfChars(): number {
@@ -8088,6 +8001,8 @@ export function installDom(
   for (const name of ['alt', 'srcset', 'sizes', 'decoding']) {
     Object.defineProperty(HTMLImageElement.prototype, name, reflect(name));
   }
+  // what decides whether a canvas it is drawn on stays the page's to read
+  Object.defineProperty(HTMLImageElement.prototype, 'crossOrigin', corsSetting);
   // limited to the keywords it has, which a page tests for support with
   Object.defineProperty(HTMLImageElement.prototype, 'loading', {
     get(this: Any) {
@@ -10153,6 +10068,9 @@ export function installDom(
    *  facade defined as a value, before any page code ran, but what is the
    *  window's own (`OWN_PER_WINDOW`). Taken at the end of `installDom`. */
   let realmGlobals: [string, Any][] = [];
+  /** The globals a frame's window shares that are getters on this one. */
+  const SHARED_GETTERS = new Set(['localStorage', 'sessionStorage']);
+  let realmGetters: [string, () => Any][] = [];
   /** The page's `CSS` namespace, which a frame's window copies with its
    *  own `highlights` (`frameWindowOf`). Made where `CSS` is defined. */
   let cssNamespace: Any = null;
@@ -10317,6 +10235,13 @@ export function installDom(
         writable: true,
         configurable: true,
         enumerable: false,
+      });
+    }
+    for (const [name, get] of realmGetters) {
+      Object.defineProperty(win, name, {
+        get,
+        configurable: true,
+        enumerable: true,
       });
     }
     const size = (): number[] =>
@@ -12302,6 +12227,7 @@ export function installDom(
           'SyntaxError',
         );
       }
+      if (!patternSource(source, this)) return null;
       const from = drawnPixels(source, this, 'createPattern');
       // an image is drawn as nothing, and a pattern of one is a pattern of
       // nothing, which still says what it is of
@@ -12488,6 +12414,45 @@ export function installDom(
    *  null for one whose pixels are the host's — an image, a video — which
    *  is drawn as nothing. One with nothing to draw is an `InvalidStateError`
    *  (HTML 4.12.5.1.14, "check the usability of the image argument"). */
+  /**
+   * Whether a source has a picture to make a pattern of (HTML 4.12.5.1.16,
+   * "check the usability of the image argument"): an image still on its way,
+   * with no address, or of no size has none yet, and a video with no frame.
+   * An image whose address came to nothing throws, as does what is no image
+   * source at all.
+   */
+  const patternSource = (source: Any, context: Any): boolean => {
+    const where = `Failed to execute 'createPattern' on '${
+      context instanceof OffscreenCanvasRenderingContext2D
+        ? 'OffscreenCanvasRenderingContext2D'
+        : 'CanvasRenderingContext2D'
+    }'`;
+    if (source instanceof HTMLImageElement) {
+      if (call('image', source._id, 'complete') !== true) return false;
+      if (call('image', source._id, 'available') === true) {
+        return !!source.naturalWidth && !!source.naturalHeight;
+      }
+      if (!str(source.getAttribute('src') ?? '').trim()) return false;
+      throw new DOMException(
+        `${where}: The HTMLImageElement provided is in the 'broken' state.`,
+        'InvalidStateError',
+      );
+    }
+    // an SVG `<image>`'s picture is nothing this realm is told of
+    if (source instanceof SVGImageElement) return false;
+    if (source instanceof HTMLVideoElement) return source.readyState >= 2;
+    if (
+      source instanceof HTMLCanvasElement ||
+      source instanceof OffscreenCanvas ||
+      source instanceof ImageBitmap
+    ) {
+      return true;
+    }
+    throw new TypeError(
+      `${where}: The provided value is not of type '(CSSImageValue or HTMLCanvasElement or HTMLImageElement or HTMLVideoElement or ImageBitmap or OffscreenCanvas or SVGImageElement or VideoFrame)'.`,
+    );
+  };
+
   const drawnPixels = (
     source: Any,
     context: Any,
@@ -15399,7 +15364,7 @@ export function installDom(
   };
   /** The one rule a text is, for `insertRule`. */
   const oneRule = (text: string): string => {
-    const rules = JSON.parse(String(call('cssRules', text))) as string[];
+    const rules = JSON.parse(String(call('cssRules', text, true))) as string[];
     if (rules.length !== 1 || droppedRule(rules[0])) {
       throw new DOMException(
         `Failed to parse the rule '${text}'.`,
@@ -16693,9 +16658,13 @@ export function installDom(
       return documentOrigin() === 'null' ? '' : location.hostname;
     }
     // what a tag manager sets to share a document with its frames, which
-    // here are all the page's origin's or nothing of the page's
+    // here are all the page's origin's or nothing of the page's; a sandbox
+    // may not, whatever it allows (HTML 7.5.2, the domain setter)
     set domain(_v: Any) {
-      if (documentOrigin() === 'null') {
+      if (
+        documentOrigin() === 'null' ||
+        (this === document && call('sandboxed') === true)
+      ) {
         throw new DOMException(
           "Failed to set the 'domain' property on 'Document': Assignment is forbidden for sandboxed iframes.",
           'SecurityError',
@@ -19011,9 +18980,17 @@ export function installDom(
       return this.href;
     },
   };
+  /** Whether this is a `srcdoc` a sandbox took its origin from, which a
+   *  realm is for as long as it lives. */
+  let opaqueSrcdoc: boolean | null = null;
   for (const part of URL_PARTS) {
     Object.defineProperty(location, part, {
       get(): string {
+        // a sandbox's `srcdoc` goes by its page's address here, and an
+        // `about:srcdoc` has no origin to read from one
+        if (part === 'origin' && (opaqueSrcdoc ??= !!call('opaqueSrcdoc'))) {
+          return 'null';
+        }
         return urlParts(this.href)?.[part] ?? '';
       },
       set(v: Any) {
@@ -20082,6 +20059,9 @@ export function installDom(
    *  has no say in, so CORS asks nothing of them (`EventSource`). No page
    *  has the key. */
   const UA_HEADERS = Symbol('uaHeaders');
+  /** The errors of requests CORS turned down, which say so to no page but
+   *  tell an `EventSource` that asking again would come to the same. */
+  const CORS_REFUSED = new WeakSet<object>();
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
       const id = ++fetchSeq;
@@ -22818,6 +22798,25 @@ export function installDom(
   /** What a page's window has that a worker's global does not
    *  (`__becomeWorker`). */
   const WINDOW_ONLY = new Set([
+    // a window's alone (`[Exposed=Window]`): a worker has no input of its
+    // own, no history, no address bar and no document to make
+    'UIEvent',
+    'FocusEvent',
+    'MouseEvent',
+    'PointerEvent',
+    'WheelEvent',
+    'InputEvent',
+    'KeyboardEvent',
+    'CompositionEvent',
+    'TextEvent',
+    'BeforeUnloadEvent',
+    'PopStateEvent',
+    'HashChangeEvent',
+    'PageTransitionEvent',
+    'Location',
+    'Navigator',
+    'Audio',
+    'DOMImplementation',
     // a window's alone: a worker has no clipboard and nothing dragged to it
     'DataTransfer',
     'DataTransferItem',
@@ -25485,6 +25484,9 @@ export function installDom(
    * No `change` is told: nothing tells this realm of a cookie a response or
    * another tab set.
    */
+  /** What a `CookieInit` a deletion makes says of itself, which no page's
+   *  can. */
+  const DELETING = Symbol('deleting');
   class CookieStore extends EventTarget {
     get(options?: Any): Promise<Any> {
       return this.getAll(options).then((list: Any[]) => list[0] ?? null);
@@ -25520,8 +25522,12 @@ export function installDom(
           typeof nameOrInit === 'object' && nameOrInit !== null
             ? nameOrInit
             : { name: nameOrInit, value };
-        const name = str(init.name ?? '');
-        const v = str(init.value ?? '');
+        // each without the tabs and spaces around it (Cookie Store API,
+        // "normalize")
+        const trim = (text: string): string =>
+          text.replace(/^[\t ]+|[\t ]+$/g, '');
+        const name = trim(str(init.name ?? ''));
+        const v = trim(str(init.value ?? ''));
         const host = new URL(str(document.URL)).hostname;
         const domain =
           init.domain === undefined || init.domain === null
@@ -25536,22 +25542,27 @@ export function installDom(
               ? "A cookie's name takes no '='."
               : !name && v.includes('=')
                 ? "A cookie with no name takes no '=' in its value."
-                : !name && /^__(secure|host)-/i.test(v)
+                : !name && /^__(secure|host|http)-/i.test(v)
                   ? 'A cookie with no name cannot look like a prefixed one.'
-                  : !name && !v
-                    ? 'A cookie needs a name or a value.'
-                    : name.length + v.length > 4096
-                      ? 'The cookie is too large.'
-                      : domain !== null &&
-                          (domain.startsWith('.') ||
-                            (host !== domain && !host.endsWith(`.${domain}`)) ||
-                            domain.length > 1024)
-                        ? "The domain is not the document's."
-                        : domain !== null && /^__host-/i.test(name)
-                          ? 'A __Host- cookie takes no domain.'
-                          : !path.startsWith('/') || path.length > 1024
-                            ? "A cookie's path starts with '/'."
-                            : null;
+                  : /^__(host-)?http-/i.test(name)
+                    ? "An __Http- cookie is HTTP's to set, and no script's."
+                    : !name && !v && !init[DELETING]
+                      ? 'A cookie needs a name or a value.'
+                      : name.length + v.length > 4096
+                        ? 'The cookie is too large.'
+                        : domain !== null &&
+                            (domain.startsWith('.') ||
+                              (host !== domain &&
+                                !host.endsWith(`.${domain}`)) ||
+                              domain.length > 1024)
+                          ? "The domain is not the document's."
+                          : domain !== null && /^__host-/i.test(name)
+                            ? 'A __Host- cookie takes no domain.'
+                            : path !== '/' && /^__host-/i.test(name)
+                              ? "A __Host- cookie's path is '/'."
+                              : !path.startsWith('/') || path.length > 1024
+                                ? "A cookie's path starts with '/'."
+                                : null;
         if (why) {
           fail(new TypeError(why));
           return;
@@ -25589,6 +25600,8 @@ export function installDom(
         domain: init.domain ?? null,
         path: init.path ?? '/',
         sameSite: 'strict',
+        // a cookie of no name is one to delete as any is
+        [DELETING]: true,
       });
     }
   }
@@ -26330,6 +26343,20 @@ export function installDom(
     return shorthandNames;
   };
 
+  /** SVG's properties, which a computed style answers as a page reads one
+   *  (`svg-properties.ts`): asked for once, in either spelling. */
+  let svgNames: Set<string> | null = null;
+  const computedSvgNames = (): Set<string> => {
+    if (!svgNames) {
+      svgNames = new Set();
+      for (const name of JSON.parse(call('computedSvg'))) {
+        svgNames.add(name);
+        svgNames.add(camel(name));
+      }
+    }
+    return svgNames;
+  };
+
   /** The empty declaration `getComputedStyle` answers where its argument
    *  names no pseudo-element: no properties, and each one the element's
    *  style has reads as '' rather than as nothing. */
@@ -26353,7 +26380,11 @@ export function installDom(
         () => [],
       ),
       (key) =>
-        names().has(key) || computedShorthandNames().has(key) ? '' : undefined,
+        names().has(key) ||
+        computedShorthandNames().has(key) ||
+        computedSvgNames().has(key)
+          ? ''
+          : undefined,
       () => {},
       () => [],
     );
@@ -26369,6 +26400,7 @@ export function installDom(
     let json = '';
     let values: Record<string, string> = {};
     let shorthands: Map<string, string> | null = null;
+    let svg: Map<string, string> | null = null;
     let names: string[] | null = null;
     let readAt = -1;
     let readIn = -1;
@@ -26386,6 +26418,7 @@ export function installDom(
       values = json ? JSON.parse(json) : {};
       names = null;
       shorthands = null;
+      svg = null;
     };
     /** Its items, made where a page asks for them: what it reads by a name
      *  it reads of `values`, on a path a page takes tens of thousands of
@@ -26420,7 +26453,7 @@ export function installDom(
      *  at once, since one that reads one may well read them all, and a walk
      *  of the style's keys does. Undefined for a name that is none. */
     const shorthand = (name: string): string | undefined => {
-      if (!computedShorthandNames().has(name)) return undefined;
+      if (!computedShorthandNames().has(name)) return svgProperty(name);
       if (!shorthands) {
         shorthands = new Map();
         const r = call('computed', id, which, undefined, true);
@@ -26431,6 +26464,21 @@ export function installDom(
         }
       }
       return shorthands.get(name);
+    };
+    /** One of SVG's properties, all of them asked for at once, as a page
+     *  reads the first: what no read of anything else pays for. */
+    const svgProperty = (name: string): string | undefined => {
+      if (!computedSvgNames().has(name)) return undefined;
+      if (!svg) {
+        svg = new Map();
+        const r = json ? call('computed', id, which, undefined, 'svg') : '';
+        const all = typeof r === 'string' && r ? JSON.parse(r) : {};
+        for (const key in all) {
+          svg.set(key, all[key]);
+          svg.set(camel(key), all[key]);
+        }
+      }
+      return svg.get(name) ?? '';
     };
     read();
     const block = computedBlock(
@@ -27442,11 +27490,13 @@ export function installDom(
         [UA_HEADERS]: ['cache-control', 'last-event-id'],
       }).then(
         (response: Any) => this._opened(response, controller),
-        () => {
+        (error: Any) => {
           if (this._controller !== controller) return;
-          // a request nothing here can make is never made again
-          if (/^https?:/i.test(this._url)) this._reconnect();
-          else this._fail();
+          // a request nothing here can make is never made again, nor one
+          // another origin has turned down (HTML 9.2.3, "futile")
+          if (/^https?:/i.test(this._url) && !CORS_REFUSED.has(error)) {
+            this._reconnect();
+          } else this._fail();
         },
       );
     }
@@ -28777,7 +28827,7 @@ export function installDom(
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
-        ? new URL(anchor.href.baseVal, str(document.baseURI)).href
+        ? new URL((anchor as Any).href.baseVal, str(document.baseURI)).href
         : anchor.href;
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
@@ -31310,10 +31360,13 @@ export function installDom(
   };
 
   /** The selection's range where it is in `host`, put at the host's start
-   *  where it is anywhere else, as focusing a host puts it. */
+   *  where it is anywhere else, as focusing a host puts it, and null where
+   *  there is none: a page that took every range away has no edit made, in
+   *  any browser. */
   const editRange = (host: Any): Any => {
     const r = selection._range;
-    if (r && host.contains(r.startContainer) && host.contains(r.endContainer)) {
+    if (!r) return null;
+    if (host.contains(r.startContainer) && host.contains(r.endContainer)) {
       return r;
     }
     selection.collapse(host, 0);
@@ -31906,7 +31959,9 @@ export function installDom(
     const field = editableField(at);
     if (field && field.selectionStart === field.selectionEnd) return false;
     const host = field ? null : editingHostOf(at);
-    if (!field && (!host || editRange(host).collapsed)) return false;
+    if (!field && (!host || (editRange(host)?.collapsed ?? true))) {
+      return false;
+    }
     CLIP.write([{ t: 'text/plain', s: selectedTextIn(at) }]);
     if (field) editField(field, 'deleteByCut', null);
     else edit(host, 'deleteByCut', null);
@@ -32360,9 +32415,124 @@ export function installDom(
     });
   };
 
+  // --- SVG's types -------------------------------------------------------------
+  //
+  // `svg-dom.ts`: what an SVG element's attributes are as objects, the lists
+  // of them, and the element interfaces the facade did not have.
+  const setAttrOwn = Element.prototype._setAttr;
+  const attrNameOwn = Element.prototype._attrName;
+  const SVG = svgDom({
+    DOMException,
+    // by the name the tree keeps it under, which HTML's parser leaves in
+    // lower case in a drawing, where SVG's own spelling is camel case
+    getAttr: (el: Any, name: string) => {
+      const kept = reflectApply(attrNameOwn, el, [name]);
+      let v = call('attr', el._id, kept);
+      if (typeof v !== 'string' && kept !== kept.toLowerCase()) {
+        v = call('attr', el._id, kept.toLowerCase());
+      }
+      return typeof v === 'string' ? v : null;
+    },
+    setAttr: (el: Any, name: string, value: string) => {
+      let kept = reflectApply(attrNameOwn, el, [name]);
+      const lower = kept.toLowerCase();
+      if (
+        kept !== lower &&
+        typeof call('attr', el._id, kept) !== 'string' &&
+        typeof call('attr', el._id, lower) === 'string'
+      ) {
+        kept = lower;
+      }
+      reflectApply(setAttrOwn, el, [kept, value]);
+    },
+    epoch: () => svgEpoch,
+    unitSize: (el: Any, unit: string, axis: string) => {
+      const v = call('svgLength', el ? el._id : 0, unit, axis);
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    },
+    listOf: (Proto: Any, read: () => Any[]) => {
+      const list = listMade(Proto, [], read, false, null);
+      listState(list).unkept = true;
+      return list;
+    },
+    listState,
+    values2D: GEOMETRY.values2D,
+    idlAttributes,
+    elements: {
+      SVGElement,
+      SVGGraphicsElement,
+      SVGGeometryElement,
+      SVGSVGElement,
+      SVGRectElement,
+      SVGCircleElement,
+      SVGEllipseElement,
+      SVGLineElement,
+      SVGPolylineElement,
+      SVGPolygonElement,
+      SVGImageElement,
+      SVGUseElement,
+      SVGForeignObjectElement,
+      SVGAElement,
+      SVGTextContentElement,
+      SVGTextPositioningElement,
+      SVGTextPathElement,
+      SVGSymbolElement,
+      SVGViewElement,
+      SVGClipPathElement,
+      SVGMaskElement,
+      SVGMarkerElement,
+      SVGPatternElement,
+      SVGFilterElement,
+      SVGStopElement,
+      SVGGradientElement,
+      SVGLinearGradientElement,
+      SVGRadialGradientElement,
+      SVGScriptElement,
+    },
+    Document,
+  });
+  Object.assign(SVG_CLASSES, SVG.tags);
+  // an SVG link's `HyperlinkElementUtils` (SVG 2, 16.3.1): the parts of the
+  // address its `href` resolves to, each but the origin settable, where its
+  // `href` is the animated string an `href` is in a drawing
+  const svgLinkAddress = (a: Any): string | null => {
+    try {
+      return new URL(a.href.baseVal, str(document.baseURI)).href;
+    } catch {
+      return null;
+    }
+  };
+  for (const part of URL_PARTS) {
+    Object.defineProperty(SVGAElement.prototype, part, {
+      get(this: Any): string {
+        const address = svgLinkAddress(this);
+        return (address !== null && urlParts(address)?.[part]) || '';
+      },
+      ...(part !== 'origin' && {
+        set(this: Any, v: Any) {
+          const address = svgLinkAddress(this);
+          if (address === null) return;
+          const json = call('setUrl', address, part, str(v));
+          if (typeof json === 'string' && json) {
+            this.href.baseVal = JSON.parse(json).href;
+          }
+        },
+      }),
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  for (const name of ['rel', 'download', 'ping', 'hreflang', 'type']) {
+    Object.defineProperty(SVGAElement.prototype, name, {
+      ...reflect(name),
+      enumerable: true,
+    });
+  }
+
   const classes: Record<string, Any> = {
     DOMException,
     QuotaExceededError,
+    ...SVG.interfaces,
     Event,
     UIEvent,
     FocusEvent,
@@ -33651,6 +33821,12 @@ export function installDom(
     const found = Object.getOwnPropertyDescriptor(G, name);
     return found && 'value' in found ? [[name, found.value]] : [];
   }) as [string, Any][];
+  // and its storage, a getter so that a sandbox's throws: a frame the page
+  // can reach is of its origin, and so of its store
+  realmGetters = [...SHARED_GETTERS].flatMap((name) => {
+    const found = Object.getOwnPropertyDescriptor(G, name);
+    return found?.get ? [[name, found.get]] : [];
+  }) as [string, () => Any][];
 
   // --- the entries -------------------------------------------------------------------
   //
@@ -33674,6 +33850,7 @@ export function installDom(
         taskEpoch += 1;
         treeEpoch += 1;
         attrEpoch += 1;
+        svgEpoch += 1;
         try {
           // what the host changed on its own since the page last did
           if (takesNotes) takeReactions();
@@ -34195,12 +34372,12 @@ export function installDom(
           target,
           trusted(new Event('reset', { bubbles: true, cancelable: true })),
         );
-      case 'focusin':
+      case 'focusin': {
         dispatch(
           target,
           trusted(new FocusEvent('focus', { relatedTarget: related })),
         );
-        return dispatch(
+        const go = dispatch(
           target,
           trusted(
             new FocusEvent('focusin', {
@@ -34209,6 +34386,18 @@ export function installDom(
             }),
           ),
         );
+        // an editing host the focus came to has the caret, at its start
+        // where the selection is anywhere else or nowhere, as Chrome and
+        // Safari put it once its `focus` is told: a page may take it away
+        // after, and a key then edits nothing (`editRange`)
+        if (editingHostOf(target) === target) {
+          const r = selection._range;
+          if (!r || !target.contains(r.startContainer)) {
+            selection.collapse(target, 0);
+          }
+        }
+        return go;
+      }
       case 'focusout':
         dispatch(
           target,
@@ -34596,12 +34785,15 @@ export function installDom(
   });
   // what came of a `fetch`
   entry('__fetched', () => {
-    const [id, answer] = input();
+    const [id, answer, refused] = input();
     const pending = fetches.get(id);
     if (!pending) return false;
     fetches.delete(id);
-    if (typeof answer === 'string') pending.reject(new TypeError(answer));
-    else if (pending.streamed && answer.status === 401) {
+    if (typeof answer === 'string') {
+      const error = new TypeError(answer);
+      if (refused) CORS_REFUSED.add(error);
+      pending.reject(error);
+    } else if (pending.streamed && answer.status === 401) {
       // and a body on its way is let go
       if (answer.streaming) call('abortFetch', id);
       pending.reject(new TypeError('Failed to fetch'));

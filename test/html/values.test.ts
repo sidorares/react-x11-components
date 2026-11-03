@@ -4276,6 +4276,100 @@ test('a computed style reads each shorthand as Chrome does, from its longhands a
   assert.deepStrictEqual(wrong, []);
 });
 
+/**
+ * The longhands of a background, of a border image and of the logical
+ * corners, as Chrome 156 reads them, as `SHORTHAND_ROWS` are: a page that
+ * copies a control's style writes back what it reads of each, and one that
+ * read nothing set nothing. Written by asking Chrome, so change a row by
+ * asking it again.
+ */
+const LONGHAND_ROWS: readonly (readonly [string, string, string])[] = [
+  ['background-attachment', '', 'scroll'],
+  [
+    'background-attachment',
+    'background: url(https://example.test/a.png) fixed, url(https://example.test/b.png)',
+    'fixed, scroll',
+  ],
+  ['background-clip', '', 'border-box'],
+  ['background-clip', 'background-clip: content-box', 'content-box'],
+  ['background-clip', 'background-clip: text', 'text'],
+  ['background-origin', '', 'padding-box'],
+  ['background-origin', 'background-origin: border-box', 'border-box'],
+  ['background-repeat', '', 'repeat'],
+  ['background-repeat', 'background-repeat: no-repeat repeat', 'repeat-y'],
+  [
+    'background-repeat',
+    'background-image: url(https://example.test/a.png), url(https://example.test/b.png); background-repeat: no-repeat',
+    'no-repeat, no-repeat',
+  ],
+  ['background-size', '', 'auto'],
+  ['background-size', 'background-size: 10px', '10px'],
+  ['background-size', 'background-size: auto 10px', 'auto 10px'],
+  ['background-size', 'background-size: cover', 'cover'],
+  ['background-position', '', '0% 0%'],
+  [
+    'background-position',
+    'background-position: right 10px top 5px',
+    'calc(100% - 10px) 5px',
+  ],
+  ['background-position', 'background-position: 20px 50%', '20px 50%'],
+  ['background-position-x', 'background-position: 20px 50%', '20px'],
+  ['background-position-y', 'background-position: 20px 50%', '50%'],
+  ['border-image-source', '', 'none'],
+  [
+    'border-image-source',
+    'border-image-source: url(https://example.test/a.png)',
+    'url("https://example.test/a.png")',
+  ],
+  ['border-image-slice', '', '100%'],
+  ['border-image-slice', 'border-image-slice: 10 20% fill', '10 20% fill'],
+  ['border-image-slice', 'border-image-slice: 1 2 3 4', '1 2 3 4'],
+  ['border-image-width', '', '1'],
+  ['border-image-width', 'border-image-width: 2 10px', '2 10px'],
+  ['border-image-outset', '', '0'],
+  ['border-image-outset', 'border-image-outset: 1 2px', '1 2px'],
+  ['border-image-repeat', '', 'stretch'],
+  ['border-image-repeat', 'border-image-repeat: round space', 'round space'],
+  ['border-image-repeat', 'border-image-repeat: repeat', 'repeat'],
+  ['border-start-start-radius', 'border-radius: 1px 2px 3px 4px', '1px'],
+  ['border-start-end-radius', 'border-radius: 1px 2px 3px 4px', '2px'],
+  ['border-end-start-radius', 'border-radius: 1px 2px 3px 4px', '4px'],
+  ['border-end-end-radius', 'border-radius: 1px 2px 3px 4px', '3px'],
+  [
+    'border-start-end-radius',
+    'border-radius: 1px 2px 3px 4px; direction: rtl',
+    '1px',
+  ],
+  [
+    'border-start-end-radius',
+    'border-radius: 1px 2px 3px 4px; writing-mode: vertical-rl',
+    '3px',
+  ],
+  [
+    'border-end-start-radius',
+    'border-radius: 1px 2px 3px 4px; writing-mode: vertical-lr',
+    '2px',
+  ],
+  ['border-start-start-radius', 'border-top-left-radius: 5px 10px', '5px 10px'],
+];
+
+test('a computed style reads the longhands of backgrounds, border images and logical corners as Chrome does', async () => {
+  const { node } = await render(
+    '<div style="position: relative; width: 400px; height: 300px; color: #000; font: 16px Times">' +
+      LONGHAND_ROWS.map(
+        ([, style], i) => `<div id="r${i}" style='${style}'>x</div>`,
+      ).join('') +
+      '</div>',
+    1280,
+  );
+  const el = view(node);
+  const wrong = LONGHAND_ROWS.flatMap(([name, style, want], i) => {
+    const got = el.computedStyle(findById(el.document, `r${i}`)!)?.[name];
+    return got === want ? [] : [`${name} of ${style}: ${got}, not ${want}`];
+  });
+  assert.deepStrictEqual(wrong, []);
+});
+
 /** Every kind of box, for what a `min-width: auto` reads on it. */
 const MIN_SIZE_PAGE =
   '<style>' +
@@ -4878,7 +4972,10 @@ test('a value el.style keeps is checked where its grammar is read, and kept as w
     undefined,
   );
   assert.strictEqual(specifiedValue('clip-path', 'circle(10px)'), undefined);
-  assert.strictEqual(specifiedValue('mask-type', 'luminance'), undefined);
+  assert.strictEqual(specifiedValue('mix-blend-mode', 'multiply'), undefined);
+  // SVG's properties have theirs (`svg-properties.ts`)
+  assert.strictEqual(specifiedValue('mask-type', 'Alpha'), 'alpha');
+  assert.strictEqual(specifiedValue('mask-type', 'normal'), null);
   // `user-select` is one keyword (CSS UI 4, 6.1)
   assert.strictEqual(specifiedValue('user-select', ' NONE '), 'none');
   assert.strictEqual(specifiedValue('user-select', 'visible'), null);

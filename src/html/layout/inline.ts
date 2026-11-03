@@ -1248,7 +1248,12 @@ function linesOf(
         y: 0,
         before: 0,
       };
-      const raise = atomicRaise(fonts, box, (box.parent ?? block).style);
+      const raise = atomicRaise(
+        fonts,
+        box,
+        (box.parent ?? block).style,
+        vertical,
+      );
       if (raise) placed.raise = raise;
       open.atomics.push(placed);
       open.order.push({
@@ -3542,15 +3547,27 @@ function alignAtomic(placed: AtomicPlacement, line: LineBox): number {
  * set `middle` beside text in a line an image before it made tall sat
  * where that image left room, and drew the text beside it a pixel off.
  * Read before the line moves the atomic, as `atomicBaseline` is.
+ *
+ * On a line of a `vertical` flow, whose baseline is the central one but
+ * where its text is set sideways (CSS Inline 3, `dominant-baseline: auto`),
+ * an atomic with no baseline of its own is set by its middle on the
+ * parent's central baseline, which is made up halfway between the face's
+ * ascent and its descent, as Blink makes it up: it sits by its edge on the
+ * alphabetic baseline the frame lays its line out on, and an image 50 wide
+ * in a line came to the strut's descent more than 50 across it.
  */
 function atomicRaise(
   fonts: FontsLike,
   box: Box,
   parent: ComputedStyle,
+  vertical: boolean,
 ): number {
   const va = box.style.verticalAlign;
   switch (va) {
     case 'baseline':
+      return vertical && centralBaseline(parent) && ownBaseline(box) === null
+        ? centred(fonts, box, parent)
+        : 0;
     case 'top':
     case 'bottom':
       return 0;
@@ -3575,6 +3592,26 @@ function atomicRaise(
   }
 }
 
+/** Whether a vertical line in `style` has the central baseline for its
+ *  dominant one: not where its text is set sideways, by its orientation or
+ *  its writing mode, which keeps the alphabetic one. */
+function centralBaseline(style: ComputedStyle): boolean {
+  const mode = style.writingMode;
+  return (
+    style.textOrientation !== 'sideways' &&
+    mode !== 'sideways-rl' &&
+    mode !== 'sideways-lr'
+  );
+}
+
+/** How far an atomic set by its middle on its parent's central baseline is
+ *  raised above the parent's alphabetic one (`atomicRaise`). */
+function centred(fonts: FontsLike, box: Box, parent: ComputedStyle): number {
+  const h = box.height + box.marginTop + box.marginBottom;
+  const face = faceExtent(fonts, parent);
+  return (face.ascent - face.descent) / 2 + h / 2 - atomicBaseline(box);
+}
+
 /**
  * Where an atomic's baseline is, from the top of its margin box (CSS 2.1
  * 10.8.1, 17.5.3): an inline-block's is its last line box's, an
@@ -3588,7 +3625,30 @@ function atomicRaise(
  * be after.
  */
 function atomicBaseline(box: Box): number {
+  return ownBaseline(box) ?? madeUpBaseline(box);
+}
+
+/** The baseline an atomic with none of its own sits on: the bottom of its
+ *  margin box, or of a `<button>`'s content box (`atomicBaseline`).
+ *
+ *  A `<button>` with no line in it sits on the bottom of its content box,
+ *  not of its margin box: where its label would have sat. No specification
+ *  says so and every browser does — Blink gives the element the content box
+ *  as the edge its baseline is synthesized from
+ *  (`HTMLButtonElement::AdjustStyle`). An icon button drawn of blocks, the
+ *  three bars of a menu toggle, stood its padding under the baseline, and
+ *  the line it was on was as much taller: GitHub's header, by four pixels.
+ *  And so one whose layout containment keeps its label's baseline in. */
+function madeUpBaseline(box: Box): number {
   const margin = box.height + box.marginTop + box.marginBottom;
+  return isButton(box)
+    ? margin - box.marginBottom - box.borderBottom - box.padBottom
+    : margin;
+}
+
+/** Where an atomic's own baseline is, from the top of its margin box, or
+ *  null where it has none and one is made up (`atomicBaseline`). */
+function ownBaseline(box: Box): number | null {
   // a control on its text's baseline, or on its border box's bottom,
   // where layout containment does not keep its baseline in
   const control =
@@ -3606,17 +3666,6 @@ function atomicBaseline(box: Box): number {
     );
   }
   const button = isButton(box);
-  // A `<button>` with no line in it sits on the bottom of its content box,
-  // not of its margin box: where its label would have sat. No specification
-  // says so and every browser does — Blink gives the element the content
-  // box as the edge its baseline is synthesized from
-  // (`HTMLButtonElement::AdjustStyle`). An icon button drawn of blocks, the
-  // three bars of a menu toggle, stood its padding under the baseline, and
-  // the line it was on was as much taller: GitHub's header, by four pixels.
-  // And so one whose layout containment keeps its label's baseline in.
-  const bottom = button
-    ? margin - box.marginBottom - box.borderBottom - box.padBottom
-    : margin;
   if (
     box.kind === 'replaced' ||
     // a box that clips sits on its bottom margin edge, for legacy reasons
@@ -3630,7 +3679,7 @@ function atomicBaseline(box: Box): number {
     // layout containment keeps its baseline in (CSS Containment 2, 3.3)
     box.style.contain & CONTAIN_LAYOUT
   ) {
-    return bottom;
+    return null;
   }
   const baseline =
     box.kind === 'table'
@@ -3640,7 +3689,7 @@ function atomicBaseline(box: Box): number {
         box.kind === 'flex'
         ? firstBaselineIn(box)
         : lastBaselineIn(box);
-  return baseline === null ? bottom : box.marginTop + (baseline - box.y);
+  return baseline === null ? null : box.marginTop + (baseline - box.y);
 }
 
 /** Whether a box is a `<button>` element's, or an input button's the page
