@@ -800,7 +800,8 @@ test('a pattern and a bitmap carry where they came from, and creating one taints
 
 test('a pattern is of a picture there is: none of an image on its way, of no size or with no address, and a broken one or no image at all throws', async () => {
   const logs: string[] = [];
-  const flat = '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="10"></svg>';
+  const flat =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="10"></svg>';
   await renderX11(
     h(Html, {
       source: `<!doctype html><body><img id=ok src="${APP}p.png"><img id=gone src="${APP}gone.png"><img id=flat src="${APP}flat.svg"><script>

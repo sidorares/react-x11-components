@@ -5713,7 +5713,11 @@ export class Cascade {
           sheet && rule.at !== undefined ? ruleSource(sheet, rule.at) : null,
       });
     }
-    const hints = presentationHints(el, this.dimensionSource, this.frameElement);
+    const hints = presentationHints(
+      el,
+      this.dimensionSource,
+      this.frameElement,
+    );
     if (hints.length) {
       // above the user agent's rules, as the cascade has them
       const ua = out.findIndex((r) => r.origin === 'user-agent');
@@ -9777,7 +9781,11 @@ export class Cascade {
     const tree = this._scoped ? this._treeInfo(el) : this._docInfo;
     if (this._scoped) this._scopedInto(el, '', out, matched);
 
-    const hints = presentationHints(el, this.dimensionSource, this.frameElement);
+    const hints = presentationHints(
+      el,
+      this.dimensionSource,
+      this.frameElement,
+    );
     // the page's colour schemes are its root's where no rule sets them —
     // the scheme it is drawn in, and not its computed `color-scheme`, which
     // stays `normal` (CSS Color Adjust 1, 3), as `getComputedStyle` reads it

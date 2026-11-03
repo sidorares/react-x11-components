@@ -410,38 +410,41 @@ scripted(
   },
 );
 
-scripted("cookieStore refuses a name that says it is HTTP's or a prefix it cannot keep, trimmed as the API has it, and deletes a nameless cookie", async () => {
-  const jar = new CookieJar();
-  const url = `${ORIGIN}/app/`;
-  const [page] = await pages({
-    url,
-    scripts: { cookies: jar },
-    source:
-      '<p id="out"></p><script>' +
-      'var tries = [' +
-      '  { name: "__Http-a", value: "1" },' +
-      '  { name: "\\t__Host-Http-b", value: "1" },' +
-      '  { name: "  __http-c", value: "1" },' +
-      '  { name: "", value: " __Http-d" },' +
-      '  { name: "__Host-e", value: "1", path: "/app" },' +
-      '  { name: "__Host-f", value: "1" },' +
-      '];' +
-      'Promise.all(tries.map(function (init) {' +
-      // refused before it is asked of the host, which refuses each too, and
-      // says only that it was not set
-      '  return cookieStore.set(init).then(function () { return "set"; },' +
-      '    function (e) { return /not set/.test(e.message) ? "host" : e.name; });' +
-      '})).then(function (r) {' +
-      '  return cookieStore.delete("").then(function () { r.push("deleted"); }, function (e) { r.push(e.name); })' +
-      '    .then(function () { document.getElementById("out").textContent = r.join(" "); });' +
-      '});' +
-      '</script>',
-  });
-  assert.equal(
-    await until(page, 'out', (t) => t.length > 0),
-    'TypeError TypeError TypeError TypeError TypeError set deleted',
-  );
-});
+scripted(
+  "cookieStore refuses a name that says it is HTTP's or a prefix it cannot keep, trimmed as the API has it, and deletes a nameless cookie",
+  async () => {
+    const jar = new CookieJar();
+    const url = `${ORIGIN}/app/`;
+    const [page] = await pages({
+      url,
+      scripts: { cookies: jar },
+      source:
+        '<p id="out"></p><script>' +
+        'var tries = [' +
+        '  { name: "__Http-a", value: "1" },' +
+        '  { name: "\\t__Host-Http-b", value: "1" },' +
+        '  { name: "  __http-c", value: "1" },' +
+        '  { name: "", value: " __Http-d" },' +
+        '  { name: "__Host-e", value: "1", path: "/app" },' +
+        '  { name: "__Host-f", value: "1" },' +
+        '];' +
+        'Promise.all(tries.map(function (init) {' +
+        // refused before it is asked of the host, which refuses each too, and
+        // says only that it was not set
+        '  return cookieStore.set(init).then(function () { return "set"; },' +
+        '    function (e) { return /not set/.test(e.message) ? "host" : e.name; });' +
+        '})).then(function (r) {' +
+        '  return cookieStore.delete("").then(function () { r.push("deleted"); }, function (e) { r.push(e.name); })' +
+        '    .then(function () { document.getElementById("out").textContent = r.join(" "); });' +
+        '});' +
+        '</script>',
+    });
+    assert.equal(
+      await until(page, 'out', (t) => t.length > 0),
+      'TypeError TypeError TypeError TypeError TypeError set deleted',
+    );
+  },
+);
 
 scripted('with no jar a document has no cookies, as before', async () => {
   const [page] = await pages({

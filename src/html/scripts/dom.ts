@@ -25601,20 +25601,21 @@ export function installDom(
                     ? "An __Http- cookie is HTTP's to set, and no script's."
                     : !name && !v && !init[DELETING]
                       ? 'A cookie needs a name or a value.'
-                    : name.length + v.length > 4096
-                      ? 'The cookie is too large.'
-                      : domain !== null &&
-                          (domain.startsWith('.') ||
-                            (host !== domain && !host.endsWith(`.${domain}`)) ||
-                            domain.length > 1024)
-                        ? "The domain is not the document's."
-                        : domain !== null && /^__host-/i.test(name)
-                          ? 'A __Host- cookie takes no domain.'
-                          : path !== '/' && /^__host-/i.test(name)
-                            ? "A __Host- cookie's path is '/'."
-                            : !path.startsWith('/') || path.length > 1024
-                              ? "A cookie's path starts with '/'."
-                              : null;
+                      : name.length + v.length > 4096
+                        ? 'The cookie is too large.'
+                        : domain !== null &&
+                            (domain.startsWith('.') ||
+                              (host !== domain &&
+                                !host.endsWith(`.${domain}`)) ||
+                              domain.length > 1024)
+                          ? "The domain is not the document's."
+                          : domain !== null && /^__host-/i.test(name)
+                            ? 'A __Host- cookie takes no domain.'
+                            : path !== '/' && /^__host-/i.test(name)
+                              ? "A __Host- cookie's path is '/'."
+                              : !path.startsWith('/') || path.length > 1024
+                                ? "A cookie's path starts with '/'."
+                                : null;
         if (why) {
           fail(new TypeError(why));
           return;

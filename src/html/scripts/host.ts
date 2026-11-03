@@ -9096,7 +9096,9 @@ export class DomHost {
         // among them, is one the navigation follows from where that redirect
         // was (Fetch 4.4, a navigation's manual redirect), and asks again
         const opaque = answered.type === 'opaqueredirect';
-        const status = opaque ? (answered.redirectStatus ?? 0) : answered.status;
+        const status = opaque
+          ? (answered.redirectStatus ?? 0)
+          : answered.status;
         const location = opaque
           ? (answered.location ?? null)
           : redirectOf(answered.status, answered.headers);
