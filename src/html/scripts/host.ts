@@ -1187,7 +1187,6 @@ function hasScripts(doc: Document): boolean {
   );
 }
 
-
 /** Text as it goes in markup, and an attribute's value. */
 const escapeText = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
