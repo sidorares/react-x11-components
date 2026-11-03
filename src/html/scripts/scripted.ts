@@ -176,7 +176,8 @@ export interface HtmlScripts {
   /**
    * What a page's windows reach: `window.open`, `opener`, and a link or a form
    * whose `target` is a name (`HtmlPopups`). Default: none, and `window.open`
-   * answers null and hands its address to `navigate` as a tab.
+   * answers null and hands its address to `navigate` as a tab — but from a
+   * sandbox whose windows keep its flags, which open here or not at all.
    */
   popups?: HtmlPopups;
   /**
