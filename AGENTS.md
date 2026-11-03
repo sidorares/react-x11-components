@@ -4270,7 +4270,13 @@ closes a way out a DOM binding opens by accident:
   as `undefined` every binding to `undefined` came out "zClosurez". And a
   reflected attribute the facade leaves out is an expando that changes
   nothing: github.blog's menus open by `ariaHidden`, and Google's sign-in
-  page sandboxes a frame through `sandbox.supports()`. How a callback is
+  page sandboxes a frame through `sandbox.supports()`. **Anything new that
+  reflects a content attribute joins `REFLECTED`**, as the kind HTML 2.6.1
+  gives it, read and written by `attrValue` and `_setAttr`, past a page's
+  own `getAttribute`: read with `parseInt`, a `long` took a vertical tab for
+  white space and `-0` for itself, and an enumerated attribute answered
+  whatever it was set to, which WPT's `html/dom/reflection-*.html` found
+  for some 27,000 of its subtests. How a callback is
   called is the IDL's too: a global's `onerror` is handed an error's
   message, file, line, column and error rather than the event
   (`globalError`), and Closure's handler read the event as the message's
