@@ -4,11 +4,13 @@
 // the rules are the host's (`fetch-hops.ts`, `script-origin.ts`) and a page
 // can change anything the facade does.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, test as nodeTest } from 'node:test';
 import { act, cleanup, renderX11 } from 'react-x11/test';
+import { Element } from 'domhandler';
 
 import { Html, HtmlNetwork, preloadHtmlScripts } from '../../src/html/index.js';
 import type { HtmlScripts, ResourceRequest } from '../../src/html/index.js';
@@ -17,7 +19,10 @@ import type {
   FetchRequest,
   FetchResponse,
 } from '../../src/html/scripts/host.js';
-import { judgeScript } from '../../src/html/scripts/script-origin.js';
+import {
+  fontAllowed,
+  judgeScript,
+} from '../../src/html/scripts/script-origin.js';
 import {
   agentHeaders,
   nextHop,
@@ -167,6 +172,40 @@ test("what another origin's script fails to parse with says nothing of it either
   );
   assert.equal(await seen(logs, 'error'), 'Script error.');
   assert.ok(!logs.join('\n').includes('alice'), logs.join('\n'));
+});
+
+test("a promise another origin's script leaves rejected is none of the page's to hear", async () => {
+  const body = `(function () { new Promise(function (_, reject) { reject('alice_secret'); }); })();`;
+  const { logs } = await scene(
+    `
+    addEventListener('unhandledrejection', (e) => console.log('heard', e.reason));
+    const add = (src, cors) => {
+      const s = document.createElement('script');
+      if (cors) s.crossOrigin = 'anonymous';
+      s.src = src;
+      document.body.append(s);
+      return new Promise((go) => (s.onload = go));
+    };
+    add('${OTHER}muted.js', false)
+      .then(() => new Promise((go) => setTimeout(go, 50)))
+      .then(() => Promise.reject('page own'))
+      .then(() => {}, () => {})
+      .then(() => { Promise.reject('page own'); return add('${OTHER}open.js', true); })
+      .then(() => setTimeout(() => console.log('done'), 50));
+    `,
+    {
+      sources: {
+        [`${OTHER}muted.js`]: body,
+        [`${OTHER}open.js`]: {
+          text: body.replace('alice_secret', 'shared'),
+          headers: [...JS, ...ANY],
+        },
+      },
+    },
+  );
+  await seen(logs, 'done');
+  const heard = logs.filter((l) => l.startsWith('log: heard'));
+  assert.deepEqual(heard, ['log: heard page own', 'log: heard shared']);
 });
 
 test('a script a redirect took to another origin is held to where it landed', async () => {
@@ -815,5 +854,201 @@ nodeTest(
       ),
       true,
     );
+  },
+);
+
+nodeTest(
+  "a CORS request's every redirect is held to CORS, and one that left the origin through another asks in nobody's name",
+  async (t) => {
+    const heard: { at: string; origin?: string; cookie?: string }[] = [];
+    let third = '';
+    const middle = await server((req, res) => {
+      heard.push({
+        at: 'middle',
+        origin: req.headers.origin as string,
+        cookie: req.headers.cookie,
+      });
+      res.statusCode = 302;
+      if (req.url === '/allowed') {
+        res.setHeader('access-control-allow-origin', '*');
+      }
+      res.setHeader('location', `${third}x.js`);
+      res.end();
+    });
+    t.after(() => middle.close());
+    const end = await server((req, res) => {
+      heard.push({
+        at: 'end',
+        origin: req.headers.origin as string,
+        cookie: req.headers.cookie,
+      });
+      res.setHeader('content-type', 'text/javascript');
+      res.setHeader('access-control-allow-origin', '*');
+      res.end('export const x = 1;');
+    });
+    t.after(() => end.close());
+    // another port is another origin, on the same host
+    third = end.url.replace('127.0.0.1', 'localhost');
+    const page = 'http://page.test/';
+    const load = new HtmlNetwork().resources(page);
+    const element = new Element('script', {});
+    const ask = (path: string) =>
+      Promise.resolve(
+        load({
+          url: `${middle.url}${path}`,
+          kind: 'script',
+          element,
+          cors: { origin: 'http://page.test', mode: 'anonymous' },
+        }),
+      ).catch(() => null);
+    // a redirect that says nothing of CORS is a refusal, whatever the end says
+    assert.equal(await ask('refused'), null);
+    assert.ok(!heard.some((h) => h.at === 'end'), JSON.stringify(heard));
+    const got = await ask('allowed');
+    assert.equal(got?.kind, 'script');
+    assert.deepEqual(
+      heard.map((h) => [h.at, h.origin]),
+      [
+        ['middle', 'http://page.test'],
+        ['middle', 'http://page.test'],
+        ['end', 'null'],
+      ],
+    );
+    // and the engine reads the end in that name, by the way it came
+    const way = (got as { redirects?: string[] }).redirects;
+    assert.deepEqual(way, [`${middle.url}allowed`]);
+  },
+);
+
+test('a script that came by another origin is held to the way it came, wherever it landed', () => {
+  const only: [string, string][] = [
+    ...JS,
+    ['access-control-allow-origin', APP.slice(0, -1)],
+  ];
+  // through another origin, the end is asked in nobody's name
+  assert.equal(
+    judgeScript(
+      {
+        text: 'x',
+        url: `${THIRD}x.js`,
+        headers: only,
+        redirects: [`${OTHER}r`],
+      },
+      `${OTHER}r`,
+      APP.slice(0, -1),
+      'anonymous',
+      true,
+    ),
+    null,
+  );
+  // and a way that went out and came home is not the page's own
+  assert.deepEqual(
+    judgeScript(
+      { text: 'x', url: `${APP}x.js`, redirects: [`${APP}a`, `${OTHER}b`] },
+      `${APP}a`,
+      APP.slice(0, -1),
+      null,
+      false,
+    ),
+    { text: 'x', muted: true },
+  );
+  assert.deepEqual(
+    judgeScript(
+      { text: 'x', url: `${APP}x.js`, redirects: [`${APP}a`] },
+      `${APP}a`,
+      APP.slice(0, -1),
+      null,
+      false,
+    ),
+    { text: 'x', muted: false },
+  );
+});
+
+test("a font of another origin is the page's only by its leave, and the page's own needs none", () => {
+  const app = APP.slice(0, -1);
+  assert.equal(
+    fontAllowed(
+      { url: `${OTHER}f.woff2`, headers: [] },
+      `${OTHER}f.woff2`,
+      app,
+    ),
+    false,
+  );
+  assert.equal(
+    fontAllowed(
+      {
+        url: `${OTHER}f.woff2`,
+        headers: [['access-control-allow-origin', '*']],
+      },
+      `${OTHER}f.woff2`,
+      app,
+    ),
+    true,
+  );
+  assert.equal(
+    fontAllowed({ url: `${APP}f.woff2`, headers: [] }, `${APP}f.woff2`, app),
+    true,
+  );
+  // a sandbox's own address is no origin of its
+  assert.equal(
+    fontAllowed({ url: `${APP}f.woff2`, headers: [] }, `${APP}f.woff2`, 'null'),
+    false,
+  );
+  // a host that says nothing of the headers says nothing of CORS
+  assert.equal(fontAllowed({}, `${OTHER}f.woff2`, app), true);
+});
+
+const metric = FONTS && SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
+
+metric(
+  "a document asks for another origin's font by CORS, and draws in none its answer did not let through",
+  async () => {
+    const sans = new Uint8Array(readFileSync(FONTS!['sans-serif']));
+    const asked: ResourceRequest[] = [];
+    const logs: string[] = [];
+    await renderX11(
+      h(Html, {
+        source:
+          '<!doctype html><style>' +
+          `@font-face { font-family: Own; src: url(${APP}own.ttf); }` +
+          `@font-face { font-family: Shut; src: url(${OTHER}shut.ttf); }` +
+          `@font-face { font-family: Open; src: url(${OTHER}open.ttf); }` +
+          '</style><p>x</p><script>' +
+          'const say = (n) => document.fonts.load("16px " + n).then(' +
+          '  (got) => console.log(n, got.length && got[0].status),' +
+          '  (e) => console.log(n, e.name));' +
+          'say("Own").then(() => say("Shut")).then(() => say("Open"));' +
+          '</script>',
+        partial: false,
+        baseUrl: APP,
+        scripts: {
+          log: (_: string, text: string) => void logs.push(`log: ${text}`),
+        },
+        onResource: async (r: ResourceRequest) => {
+          asked.push(r);
+          if (r.kind !== 'font') return null;
+          return {
+            kind: 'font' as const,
+            bytes: sans,
+            url: r.url,
+            headers: r.url.includes('open')
+              ? [['access-control-allow-origin', '*'] as [string, string]]
+              : [],
+          };
+        },
+        style: { flexGrow: 1 },
+      }),
+      { width: 320, height: 200, fonts: FONTS! },
+    );
+    assert.equal(await seen(logs, 'Own'), 'loaded');
+    assert.equal(await seen(logs, 'Shut'), 'NetworkError');
+    assert.equal(await seen(logs, 'Open'), 'loaded');
+    const cors = (name: string) =>
+      asked.find((r) => r.url.includes(name))?.cors;
+    assert.equal(cors('own'), undefined);
+    assert.deepEqual(cors('shut'), {
+      origin: APP.slice(0, -1),
+      mode: 'anonymous',
+    });
   },
 );

@@ -118,6 +118,7 @@ import {
   sandboxOfPolicy,
 } from './scripts/sandbox.js';
 import { linkTarget, navigableFor } from './scripts/target.js';
+import { fontAllowed } from './scripts/script-origin.js';
 import type {
   ConsoleProperty,
   ConsoleResult,
@@ -1221,15 +1222,30 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   // a link that says to save what it names, with no script to read it: the
   // realm answers for one where a document's scripts run (`downloadLink`)
   const onDownload = sandbox & SB_DOWNLOADS ? undefined : props.onDownload;
-  // and what a sandbox loads is asked for as of no origin
-  const onResource = React.useMemo(
-    () =>
-      sandbox & SB_ORIGIN && props.onResource
-        ? (request: ResourceRequest) =>
-            props.onResource!({ ...request, opaqueOrigin: true })
-        : props.onResource,
-    [props.onResource, sandbox],
-  );
+  // what a sandbox loads is asked for as of no origin, and another origin's
+  // font by CORS, which its answer is held to (`fontAllowed`)
+  const onResource = React.useMemo(() => {
+    const given = props.onResource;
+    if (!given) return given;
+    const opaque = !!(sandbox & SB_ORIGIN);
+    const origin = opaque ? 'null' : baseUrl ? originOfUrl(baseUrl) : null;
+    return (request: ResourceRequest) => {
+      const asked = opaque ? { ...request, opaqueOrigin: true } : request;
+      if (
+        request.kind !== 'font' ||
+        origin === null ||
+        ownFont(request.url, origin, baseUrl)
+      ) {
+        return given(asked);
+      }
+      const cors = { origin, mode: 'anonymous' as const };
+      return Promise.resolve(given({ ...asked, cors })).then((result) =>
+        result?.kind === 'font' && !fontAllowed(result, request.url, origin)
+          ? null
+          : result,
+      );
+    };
+  }, [props.onResource, sandbox, baseUrl]);
   const followed = React.useMemo(() => {
     const refuses = sandbox & (SB_POPUPS | SB_PROPAGATES | SB_DOWNLOADS);
     if (!onLink || props.scripts || (!onDownload && !refuses)) return onLink;
@@ -2328,6 +2344,23 @@ function useDocumentEvents(
 }
 
 /** The link an element is in, or null. */
+/** An address's origin, `null` for one that has none. */
+function originOfUrl(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return 'null';
+  }
+}
+
+/** Whether a font is the document's own to have with no CORS: what no network
+ *  answers, one of its own origin, and a `file:` page's own files, as before. */
+function ownFont(url: string, origin: string, base?: string | null): boolean {
+  if (/^(?:data|blob):/i.test(url)) return true;
+  if (origin !== 'null') return originOfUrl(url) === origin;
+  return /^file:/i.test(url) && /^file:/i.test(base ?? '');
+}
+
 function linkAround(el: Element | null | undefined): Element | null {
   for (let at = el ?? null; at; at = flatParentOf(at)) {
     if (tagOf(at) === 'a' || tagOf(at) === 'area') return at;

@@ -58,9 +58,11 @@ export interface ResourceRequest {
    *  for a font, the `<style>` or `<link>` whose sheet declared it; for a
    *  module a script imports, the document's root element. */
   element: Element;
-  /** Where a script is asked for by CORS, a module's or one with a
-   *  `crossorigin` attribute, in whose name and with whose credentials. A
-   *  host answers with `headers`, which the engine reads the answer by. */
+  /** Where it is asked for by CORS — a module's script, or one with a
+   *  `crossorigin` attribute, and a font of another origin's (CSS Fonts 4,
+   *  4.8.2) — in whose name and with whose credentials. A host answers with
+   *  `headers`, and where redirects took it with `url` and `redirects`, which
+   *  the answer is read by. */
   cors?: ResourceCors;
   /** The address of the document that asked, where that is a frame's
    *  rather than the one the host was handed: what its `Referer` says. */
@@ -123,7 +125,7 @@ export type ResourceResult =
   | { kind: 'stylesheet'; bytes: Uint8Array; charset?: string; url?: string }
   | { kind: 'image'; bytes: Uint8Array }
   | { kind: 'image'; image: unknown; width: number; height: number }
-  | { kind: 'font'; bytes: Uint8Array }
+  | ({ kind: 'font'; bytes: Uint8Array } & ScriptOrigin)
   | ({ kind: 'script'; text: string } & ScriptOrigin)
   | ({ kind: 'script'; bytes: Uint8Array; charset?: string } & ScriptOrigin)
   | { kind: 'document' }
@@ -140,6 +142,9 @@ export type ResourceResult =
 export interface ScriptOrigin {
   url?: string;
   headers?: [string, string][];
+  /** The addresses it was asked for at before `url`, where redirects took
+   *  it on: a way through another origin is asked for in nobody's name. */
+  redirects?: string[];
 }
 
 /** What a `<video>` plays: a host's answer to `kind: 'video'`. */

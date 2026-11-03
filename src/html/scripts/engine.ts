@@ -460,9 +460,13 @@ const LISTENED_BEFORE: RejectionListener[] = [];
  * this had not listened.
  */
 const onRejection: RejectionListener = (reason, promise) => {
+  if (typeof reason === 'object' && reason !== null && QUIET.has(reason)) {
+    muting = Math.max(0, muting + (QUIET.get(reason) ? 1 : -1));
+    return;
+  }
   const engine = ENGINES.get(Object.getPrototypeOf(promise) as object);
   if (engine) {
-    engine.rejected(reason, promise);
+    if (!muting) engine.rejected(reason, promise);
     return;
   }
   if (!LISTENED_BEFORE.length) throw reason;
@@ -470,6 +474,27 @@ const onRejection: RejectionListener = (reason, promise) => {
     listener.call(runtimeProcess(), reason, promise);
   }
 };
+
+/**
+ * A promise a muted script rejects is none of the page's to hear (HTML
+ * 8.1.6.3, "HostPromiseRejectionTracker": a running script whose errors are
+ * muted reports nothing). The runtime tells every rejection after the task it
+ * happened in, in the order they happened — Node's and Bun's alike — so a
+ * muted script runs between two rejections of the host's own (`quiet`), and
+ * whatever is told between them is dropped. What the script left to a later
+ * task, a timer or a promise the host settles, is told as the page's, since
+ * nothing says whose a later task is.
+ */
+const QUIET = new WeakMap<object, boolean>();
+let muting = 0;
+
+/** A rejection of the host's, which opens a muted script's quiet (`true`) or
+ *  closes it. */
+function quiet(from: boolean): void {
+  const mark = {};
+  QUIET.set(mark, from);
+  void Promise.reject(mark);
+}
 
 /**
  * Listen, and alone: the listeners already there are taken off and hear
@@ -1057,6 +1082,7 @@ export class ScriptEngine {
     let ran = false;
     if (compiled) {
       const mark = this._enter();
+      if (muted) quiet(true);
       try {
         // what it completes with is the page's, and never read
         compiled.runInContext(this._context, {
@@ -1071,6 +1097,7 @@ export class ScriptEngine {
         else this._fault(error);
       } finally {
         this._leave(mark);
+        if (muted) quiet(false);
       }
     }
     this.call('__ran', null);
@@ -1113,6 +1140,7 @@ export class ScriptEngine {
       );
       return 'threw';
     }
+    if (muted) quiet(true);
     try {
       compiled.runInContext(this._context, UNDECORATED);
       return 'ran';
@@ -1122,6 +1150,8 @@ export class ScriptEngine {
         isHostError(error) ? this._pageError(messageOf(error)) : error,
       );
       return 'threw';
+    } finally {
+      if (muted) quiet(false);
     }
   }
 
