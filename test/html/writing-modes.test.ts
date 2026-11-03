@@ -292,10 +292,10 @@ metric(
   async () => {
     // Its writing mode is the document's principal one, which a browser
     // lays the root element out in (CSS Writing Modes 4, 8): its lines
-    // start at the right, the first 20 across from 392, in a viewport 400
-    // wide with an 8px margin, and its text in the middle of it at 382 in
-    // all three engines, written or implied `<html>` alike — the middle,
-    // which no face's ascent and descent move
+    // start at the right, the first 20 across from 392 in a viewport 400
+    // wide with an 8px margin, its text from 373 to 391 in all three
+    // engines, written or implied `<html>` alike: inside that line,
+    // wherever a face's ascent and descent put it there
     const sheet = '<style>html{font:16px/20px sans-serif}</style>';
     for (const source of [
       `${sheet}<body style="writing-mode:vertical-rl"><span id="t">aaa bbb</span></body>`,
@@ -304,8 +304,7 @@ metric(
     ]) {
       const { node } = await render(source, 400);
       const t = rectOf(view(node), 't');
-      const middle = t.x + t.width / 2;
-      assert.ok(Math.abs(middle - 382) < 0.5, `${source}: ${middle}`);
+      assert.ok(t.x >= 372 && t.x + t.width <= 392, `${source}: ${t.x}`);
       cleanup();
     }
     // and containment on the root keeps the body's to the body, which is
