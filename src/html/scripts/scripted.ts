@@ -39,7 +39,7 @@ import type {
   ResourceResult,
   ScriptRequest,
 } from '../index.js';
-import type { ResourceCors } from '../resources.js';
+import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { decodeInEncoding, readyFor } from '../encoding.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HTML_USER_AGENT } from '../network.js';
@@ -51,7 +51,13 @@ import { NO_WEBRTC } from '../rtc.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import { NO_WEBTRANSPORT } from '../transport.js';
 import type { LoadedScript } from './script-origin.js';
-import { SB_FORMS, SB_SCRIPTS, sandboxOfPolicy } from './sandbox.js';
+import {
+  SB_FORMS,
+  SB_POPUPS,
+  SB_PROPAGATES,
+  SB_SCRIPTS,
+  sandboxOfPolicy,
+} from './sandbox.js';
 import type { HtmlWebTransport } from '../transport.js';
 import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
@@ -159,6 +165,9 @@ export interface HtmlScripts {
     element: Element | null,
     cors?: ResourceCors,
     type?: 'json' | 'text',
+    /** Who asked, where that is a frame's document or one of no origin
+     *  (`ResourceRequest.client`, `opaqueOrigin`). */
+    asker?: ResourceAsker,
   ) => Promise<LoadedScript | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
    *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
@@ -173,7 +182,8 @@ export interface HtmlScripts {
   /**
    * What a page's windows reach: `window.open`, `opener`, and a link or a form
    * whose `target` is a name (`HtmlPopups`). Default: none, and `window.open`
-   * answers null and hands its address to `navigate` as a tab.
+   * answers null and hands its address to `navigate` as a tab — but from a
+   * sandbox whose windows keep its flags, which open here or not at all.
    */
   popups?: HtmlPopups;
   /**
@@ -457,6 +467,14 @@ export interface InternalHtmlProps extends HtmlProps {
    *  (`HtmlViewProps.onParserBlocked`): given, the parse yields to the
    *  page's scripts. */
   _onParserBlocked?: (script: Element) => void;
+  /** The document's sandboxing flags (`./sandbox.ts`), which the host holds:
+   *  what `<Html>` does itself that they take away — a form sent, a window a
+   *  link opens, a download, `autofocus` — and that what it loads is asked for
+   *  as of no origin. */
+  _sandbox?: number;
+  /** No engine has the document's links, scripts off: where they would open
+   *  a window or save a file, `<Html>` holds them to `_sandbox` itself. */
+  _linksAlone?: boolean;
   /** Whether an `<object>` or an `<embed>` shows its document as it stands,
    *  over its box (`HtmlViewProps.framed`). */
   _framed?: (element: Element) => boolean;
@@ -583,7 +601,7 @@ export function useScriptedHtml(
     typeof props.scripts === 'object' && props.scripts ? props.scripts : {};
   // what the document's own response and the window it is in take from it
   const sandbox =
-    sandboxOfPolicy(config.headers ?? []) |
+    sandboxOfPolicy(config.headers ?? props.headers ?? []) |
     ((config.popup as OpenedWindow | undefined)?.sandbox ?? 0);
   const latest = useRef({ props, config, sandbox });
   latest.current = { props, config, sandbox };
@@ -606,7 +624,7 @@ export function useScriptedHtml(
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,
-    headers: config.headers,
+    headers: config.headers ?? props.headers,
     redirects: config.redirects,
     popups: config.popups,
     popup: config.popup ?? null,
@@ -622,7 +640,7 @@ export function useScriptedHtml(
     network: config.fetch !== undefined,
     load:
       config.load ??
-      (async (url, element, cors, type) => {
+      (async (url, element, cors, type, asker) => {
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
@@ -633,6 +651,7 @@ export function useScriptedHtml(
             element: owner,
             ...(cors ? { cors } : {}),
             ...(type ? { type } : {}),
+            ...asker,
           }),
           owner.attribs.charset || latest.current.props.charset,
           // a JSON or a text module is UTF-8, whatever the response names
@@ -670,7 +689,7 @@ export function useScriptedHtml(
     url === 'about:blank' && popup?.initialDocument
       ? { document: popup.initialDocument, base: popup.creator }
       : null;
-  const headers = config.headers ?? NO_HEADERS;
+  const headers = config.headers ?? props.headers ?? NO_HEADERS;
   const redirects = config.redirects ?? NO_HOPS;
   // a response the window's flags turn down is a network error, so nothing of
   // it is run or drawn (`refusedAt`)
@@ -760,6 +779,33 @@ export function useScriptedHtml(
       ?.followTarget(href, target, noopener, noreferrer, post);
   };
 
+  // What only a new window could be, from a document with flags: nothing, or
+  // one that keeps them, which is never the host's to open as a tab. Answers
+  // whether that has been seen to.
+  const heldByFlags = (
+    href: string,
+    target: string,
+    rel: string | undefined,
+    post: FramePost | null,
+  ): boolean => {
+    const { sandbox } = latest.current;
+    if (sandbox & SB_POPUPS) return true;
+    if (!(sandbox & SB_PROPAGATES)) return false;
+    if (follow(href, target, rel, post)) return true;
+    // no runner has this document: a sandbox with no `allow-scripts`
+    const { noreferrer } = linkOpener(target, rel);
+    scripts.openApart(
+      {
+        url: href,
+        name: target.toLowerCase() === '_blank' ? '' : target,
+        features: { popup: false, noreferrer },
+        post,
+      },
+      sandbox,
+    );
+    return true;
+  };
+
   // a link or a form whose target names one of the page's frames loads it
   // there; anything else is the application's, as it is with scripts off
   const onLink = useCallback(
@@ -769,9 +815,13 @@ export function useScriptedHtml(
       while (link && link.name !== 'a' && link.name !== 'area') {
         link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
       }
-      const to = navigableFor(document, linkTarget(link, document));
+      const target = linkTarget(link, document);
+      const to = navigableFor(document, target);
       if (typeof to !== 'string' && scripts.navigateFrame) {
         scripts.navigateFrame(to, href, null);
+        return;
+      }
+      if (to === 'tab' && heldByFlags(href, target, link?.attribs.rel, null)) {
         return;
       }
       latest.current.props.onLink?.(href, ev);
@@ -793,14 +843,11 @@ export function useScriptedHtml(
         scripts.navigateFrame(to, submission.url, post);
         return;
       }
+      const rel = submission.form.attribs.rel;
       if (
         to === 'tab' &&
-        follow(
-          submission.url,
-          submission.target,
-          submission.form.attribs.rel,
-          post,
-        )
+        (heldByFlags(submission.url, submission.target, rel, post) ||
+          follow(submission.url, submission.target, rel, post))
       ) {
         return;
       }
@@ -914,6 +961,7 @@ export function useScriptedHtml(
   return {
     ...props,
     ...(refused && { source: '' }),
+    _sandbox: sandbox,
     scripting: scripts.scripting,
     onResource,
     onDocument,

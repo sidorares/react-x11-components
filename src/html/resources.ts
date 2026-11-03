@@ -62,12 +62,25 @@ export interface ResourceRequest {
    *  for a font, the `<style>` or `<link>` whose sheet declared it; for a
    *  module a script imports, the document's root element. */
   element: Element;
-  /** Where a script or an image is asked for by CORS — a module's, or one
-   *  whose element has a `crossorigin` attribute — in whose name and with
-   *  whose credentials. A host answers with `headers`, which the answer is
-   *  read by. */
+  /** Where it is asked for by CORS — a module's script, a script or an
+   *  image whose element has a `crossorigin` attribute, and a font of another
+   *  origin's (CSS Fonts 4, 4.8.2) — in whose name and with whose
+   *  credentials. A host answers with `headers`, and where redirects took it
+   *  with `url` and `redirects`, which the answer is read by. */
   cors?: ResourceCors;
+  /** The address of the document that asked, where that is a frame's
+   *  rather than the one the host was handed: what its `Referer` says. */
+  client?: string;
+  /** The document that asked has an origin of none, whatever its address
+   *  says: a sandbox's, with no `allow-same-origin`. A host asks for it as
+   *  such a document's: same-site with nothing, so with no cookie that is
+   *  only a site's own, and `Origin: null` where it sends one. */
+  opaqueOrigin?: boolean;
 }
+
+/** Who asked for a resource, where that is not the document the host was
+ *  handed (`ResourceRequest.client`, `opaqueOrigin`). */
+export type ResourceAsker = Pick<ResourceRequest, 'client' | 'opaqueOrigin'>;
 
 /** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):
  *  the requesting document's origin, and `use-credentials` where another
@@ -121,7 +134,7 @@ export type ResourceResult =
       width: number;
       height: number;
     } & ImageOrigin)
-  | { kind: 'font'; bytes: Uint8Array }
+  | ({ kind: 'font'; bytes: Uint8Array } & ScriptOrigin)
   | ({ kind: 'script'; text: string } & ScriptOrigin)
   | ({ kind: 'script'; bytes: Uint8Array; charset?: string } & ScriptOrigin)
   | { kind: 'document' }
@@ -138,6 +151,9 @@ export type ResourceResult =
 export interface ScriptOrigin {
   url?: string;
   headers?: [string, string][];
+  /** The addresses it was asked for at before `url`, where redirects took
+   *  it on: a way through another origin is asked for in nobody's name. */
+  redirects?: string[];
 }
 
 /**

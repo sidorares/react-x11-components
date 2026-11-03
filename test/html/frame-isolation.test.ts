@@ -13,7 +13,11 @@ import { Document, Element } from 'domhandler';
 
 import { Html, HtmlNetwork, preloadHtmlScripts } from '../../src/html/index.js';
 import { CookieJar } from '../../src/html/cookies.js';
-import type { HtmlPopup, HtmlScripts } from '../../src/html/index.js';
+import type {
+  HtmlPopup,
+  HtmlScripts,
+  ResourceRequest,
+} from '../../src/html/index.js';
 import type { HtmlPermissionState } from '../../src/html/permissions.js';
 import { SCRIPTS_CONTAINED } from '../../src/html/scripts/engine.js';
 import { framingRefused } from '../../src/html/scripts/framing.js';
@@ -40,6 +44,8 @@ afterEach(cleanup);
 await preloadHtmlScripts();
 
 const test = SCRIPTS_CONTAINED ? nodeTest : nodeTest.skip;
+/** A test that presses at a point, which only a real server can. */
+const pressing = SCRIPTS_CONTAINED && FONTS ? nodeTest : nodeTest.skip;
 
 const APP = 'https://app.test/';
 const OTHER = 'https://other.test/';
@@ -53,9 +59,15 @@ interface Scene {
   logs: string[];
   asked: FetchRequest[];
   submitted: string[];
+  /** What the host's `onLink` heard. */
+  linked: string[];
+  /** What was asked of `onResource`. */
+  resources: ResourceRequest[];
   navigated: string[];
   opened: HtmlPopup[];
   tabs: string[];
+  /** A press and a release at a point of the window, as a user's. */
+  click(x: number, y: number): Promise<void>;
 }
 
 const HTML: [string, string][] = [['content-type', 'text/html']];
@@ -71,9 +83,12 @@ async function scene(
     logs: [],
     asked: [],
     submitted: [],
+    linked: [],
+    resources: [],
     navigated: [],
     opened: [],
     tabs: [],
+    click: async () => {},
   };
   const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
     out.asked.push(request);
@@ -112,15 +127,41 @@ async function scene(
       baseUrl: base,
       scripts,
       onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
+      onLink: (href: string) => void out.linked.push(href),
+      onResource: (request: ResourceRequest) => {
+        out.resources.push(request);
+        const found = pages[request.url];
+        return request.kind === 'script' && typeof found === 'string'
+          ? { kind: 'script' as const, text: found }
+          : null;
+      },
       style: { flexGrow: 1 },
     });
   }
-  await renderX11(
+  const rendered = await renderX11(
     h(Host),
     FONTS
       ? { width: 480, height: 320, fonts: FONTS }
       : { backend: 'mock' as const },
   );
+  const server = (
+    rendered as unknown as {
+      server?: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    }
+  ).server;
+  out.click = async (x, y) => {
+    for (const step of [
+      () => server!.injectPointerMove(x, y),
+      () => server!.injectButton(1, true),
+      () => server!.injectButton(1, false),
+    ]) {
+      step();
+      await settle(40);
+    }
+  };
   return out;
 }
 
@@ -255,6 +296,77 @@ test('a sandbox with no allow-scripts runs nothing, and its noscript is what it 
   await settle();
   assert.ok(!s.logs.join('\n').includes('frame ran'), s.logs.join('\n'));
   assert.ok(!s.logs.join('\n').includes('put in ran'), s.logs.join('\n'));
+});
+
+/** A frame's document with no script of its own, around a frame that runs
+ *  `code`. */
+const around = (code: string): string =>
+  `<p>no script</p><iframe srcdoc="<script>${code}<\/script>"></iframe>`;
+
+test('a frame in a document with no script of its own loads, runs and is drawn, as one in the page is', async () => {
+  const s = await scene(
+    `<iframe src="${APP}a" style="border:0;width:300px;height:200px"></iframe>`,
+    {
+      [`${APP}a`]: `<p>no script</p><iframe style="border:0;width:200px;height:100px" srcdoc="<p id=deep>deep</p><script>console.log('nested ran', self.origin)<\/script>"></iframe>`,
+    },
+  );
+  assert.equal(await until(s, 'nested ran'), APP.slice(0, -1));
+  await settle(300);
+  if (!FONTS) return;
+  const { screen } = await import('react-x11/test');
+  type View = {
+    kind: string;
+    document?: Document;
+    abs: { width: number; height: number };
+  };
+  const drawn = screen
+    .all((n) => n.kind === 'htmlview')
+    .map((n) => n as unknown as View)
+    .find((v) => !!v.document && findDeep(v.document));
+  assert.ok(drawn, 'no view draws the inner frame');
+  assert.ok(
+    drawn.abs.width > 0 && drawn.abs.height > 0,
+    JSON.stringify(drawn.abs),
+  );
+});
+
+/** Whether a document holds the inner frame's `#deep`. */
+function findDeep(doc: Document): boolean {
+  const walk = (nodes: unknown[]): boolean =>
+    nodes.some((n) => {
+      const el = n as Element;
+      return (
+        el.attribs?.id === 'deep' ||
+        (Array.isArray(el.children) && walk(el.children))
+      );
+    });
+  return walk(doc.children);
+}
+
+test("a frame in a sandbox with no script of its own is the sandbox's, and runs only as it lets it", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe sandbox src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: around(`console.log('nested a', self.origin)`),
+      [`${APP}b`]: around(`console.log('nested b', self.origin)`),
+    },
+  );
+  assert.equal(await until(s, 'nested a'), 'null');
+  await settle();
+  assert.ok(!s.logs.some((l) => l.includes('nested b')), s.logs.join('\n'));
+});
+
+test("a frame in another origin's document with no script is not run as the page's", async () => {
+  const s = await scene(`<iframe src="${OTHER}a"></iframe>`, {
+    [`${OTHER}a`]: around(`console.log('nested of other', self.origin)`),
+  });
+  await settle(600);
+  const ran = s.logs.find((l) => l.includes('nested of other'));
+  assert.ok(
+    !ran || !ran.endsWith(APP.slice(0, -1)),
+    `ran as the page's: ${ran}`,
+  );
 });
 
 test('a sandboxed srcdoc is sandboxed, of no origin, whatever the page it came from', async () => {
@@ -572,6 +684,109 @@ test("a sandbox's request says it is of no origin, and carries no cookies of the
   assert.equal(asked.credentials, 'omit');
 });
 
+test("what a sandbox's document loads is asked for as of no origin, and as the frame's", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: `<img src="${APP}a.png"><script src="${APP}a.js"></script>`,
+      [`${APP}a.js`]: `console.log('a ran');`,
+      [`${APP}b`]: `<img src="${APP}b.png"><script src="${APP}b.js"></script>`,
+      [`${APP}b.js`]: `console.log('b ran');`,
+    },
+  );
+  await until(s, 'a ran');
+  await until(s, 'b ran');
+  await settle();
+  const of = (url: string) => {
+    const found = s.resources.find((r) => r.url === url);
+    assert.ok(found, `${url} was not asked for`);
+    return { client: found.client, opaque: !!found.opaqueOrigin };
+  };
+  assert.deepEqual(of(`${APP}a.png`), { client: `${APP}a`, opaque: true });
+  assert.deepEqual(of(`${APP}a.js`), { client: `${APP}a`, opaque: true });
+  assert.deepEqual(of(`${APP}b.png`), { client: `${APP}b`, opaque: false });
+  assert.deepEqual(of(`${APP}b.js`), { client: `${APP}b`, opaque: false });
+});
+
+test('a top-level document its policy sandboxes asks for what it loads as of no origin', async () => {
+  const s = await scene(
+    `<img src="${APP}top.png">${script(`console.log('ran');`)}`,
+    {},
+    { headers: [['content-security-policy', 'sandbox allow-scripts']] },
+  );
+  await until(s, 'ran');
+  await settle();
+  const asked = s.resources.find((r) => r.url === `${APP}top.png`);
+  assert.equal(asked?.opaqueOrigin, true);
+});
+
+test("the network asks for what a document of no origin loads with no cookie of the site's alone, and as the frame's", async (t) => {
+  const heard: { cookie?: string; referer?: string; url: string }[] = [];
+  const site = createServer((req, res) => {
+    heard.push({
+      url: req.url ?? '',
+      cookie: req.headers.cookie,
+      referer: req.headers.referer,
+    });
+    res.setHeader('content-type', 'image/png');
+    res.setHeader('cache-control', 'max-age=600');
+    res.end('x');
+  });
+  await new Promise<void>((go) => site.listen(0, '127.0.0.1', go));
+  t.after(() => site.close());
+  const { port } = site.address() as AddressInfo;
+  const page = `http://127.0.0.1:${port}/`;
+  const jar = new CookieJar();
+  jar.store(page, ['lax=1; SameSite=Lax; Path=/'], {
+    http: true,
+    sameSite: true,
+  });
+  const load = new HtmlNetwork({ cookies: jar }).resources(page);
+  const element = new Element('img', {});
+  const ask = (path: string, extra: Partial<ResourceRequest>) =>
+    load({ url: `${page}${path}`, kind: 'image', element, ...extra });
+  await ask('pic', {});
+  await ask('pic', { opaqueOrigin: true, client: `${page}frame` });
+  await ask('other', { client: `${page}frame` });
+  assert.deepEqual(heard, [
+    { url: '/pic', cookie: 'lax=1', referer: page },
+    { url: '/pic', cookie: undefined, referer: `${page}frame` },
+    { url: '/other', cookie: 'lax=1', referer: `${page}frame` },
+  ]);
+});
+
+/** A page its server says is a file to save. */
+const DOWNLOAD: Answer = {
+  body: script(`console.log('shown', location.pathname);`),
+  headers: [['content-disposition', 'attachment']],
+};
+
+test('a sandbox that saves no file goes nowhere where it is sent to a download, and one that may shows it as before', async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe sandbox="allow-scripts allow-downloads" src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: script(`location.href = '${APP}dl-a';`),
+      [`${APP}b`]: script(`location.href = '${APP}dl-b';`),
+      [`${APP}dl-a`]: DOWNLOAD,
+      [`${APP}dl-b`]: DOWNLOAD,
+    },
+  );
+  assert.equal(await until(s, 'shown'), '/dl-b');
+  await settle();
+  assert.ok(!s.logs.some((l) => l.endsWith('shown /dl-a')), s.logs.join('\n'));
+  assert.ok(
+    s.logs.some((l) => l.includes(`${APP}dl-a was not downloaded`)),
+    s.logs.join('\n'),
+  );
+  assert.equal(
+    s.asked.find((r) => r.url === `${APP}dl-a`)?.stream,
+    true,
+    'not asked for a piece at a time, so not to be cut off',
+  );
+});
+
 test('a page of a sandbox is told by its origin what it may answer to', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
@@ -825,6 +1040,66 @@ test('a worker a sandbox starts is of no origin either, from a blob or its own a
   assert.equal(asked.credentials, 'omit');
 });
 
+test("a sandbox that talks its facade round still starts no worker from an address of no origin's", async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
+    {
+      [FRAME]: script(`
+        // what the facade checks is its own address's; what it hands the host
+        // is written by the page's own \`JSON\`
+        const stringify = JSON.stringify;
+        JSON.stringify = (v, ...rest) =>
+          v && typeof v === 'object' && typeof v.url === 'string' && v.url.endsWith('w.js')
+            ? stringify({ ...v, url: window.forged }, ...rest)
+            : stringify(v, ...rest);
+        for (const to of ['file:///etc/hosts', 'https://elsewhere.test/w.js']) {
+          window.forged = to;
+          try {
+            new Worker('w.js');
+            console.log('started', to);
+          } catch (e) {
+            console.log('refused', to, e.name);
+          }
+        }
+        JSON.stringify = stringify;
+        const url = URL.createObjectURL(new Blob(['postMessage(self.origin)']));
+        new Worker(url).onmessage = (e) => console.log('blob said', e.data);
+      `),
+    },
+  );
+  assert.equal(await until(s, 'blob said', 8000), 'null');
+  for (const to of ['file:///etc/hosts', 'https://elsewhere.test/w.js']) {
+    assert.ok(
+      s.logs.some((l) => l.endsWith(`refused ${to} SecurityError`)),
+      s.logs.join('\n'),
+    );
+  }
+  assert.ok(!s.logs.some((l) => l.includes('started')), s.logs.join('\n'));
+  assert.ok(!s.asked.some((r) => /^file:|elsewhere/.test(r.url)));
+});
+
+test('a sandbox may not set document.domain, whatever its tokens let it keep', async () => {
+  const set = script(`
+    try { document.domain = document.domain; console.log('domain', location.pathname, 'set'); }
+    catch (e) { console.log('domain', location.pathname, e.name); }
+  `);
+  const s = await scene(
+    `<iframe sandbox="allow-scripts allow-same-origin" src="${APP}kept"></iframe>
+     <iframe src="${APP}plain"></iframe>`,
+    { [`${APP}kept`]: set, [`${APP}plain`]: set },
+  );
+  await until(s, 'domain /kept');
+  await until(s, 'domain /plain');
+  assert.ok(
+    s.logs.some((l) => l.endsWith('domain /kept SecurityError')),
+    s.logs.join('\n'),
+  );
+  assert.ok(
+    s.logs.some((l) => l.endsWith('domain /plain set')),
+    s.logs.join('\n'),
+  );
+});
+
 test('document.domain and the storage getters answer for an origin of none', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
@@ -906,6 +1181,226 @@ test('a page replacing what the facade reads an origin through gets no store, no
   assert.equal(await until(s, 'forged store'), 'SecurityError');
   assert.equal(await until(s, 'forged worker'), 'SecurityError');
 });
+
+/** A link the size of its frame, to a new window. */
+const BLANK_LINK = `<body style="margin:0"><a href="${APP}x" target="_blank" style="display:block;height:90px">go</a></body>`;
+
+pressing(
+  'a sandbox with no script of its own opens a window that keeps its flags from a link a user follows, and no tab',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox="allow-popups" style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+      { [`${APP}x`]: 'x' },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.equal(s.opened.length, 1);
+    const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+    assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+  },
+);
+
+pressing(
+  'a top-level document whose policy sandboxes it, with no scripts to run, opens a window that keeps its flags and no tab',
+  async () => {
+    const s = await scene(
+      `<a href="${APP}x" target="_blank" style="display:block;height:90px">go</a>`,
+      { [`${APP}x`]: 'x' },
+      { headers: [['content-security-policy', 'sandbox allow-popups']] },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.equal(s.opened.length, 1);
+    const flags = (s.opened[0] as unknown as { sandbox: number }).sandbox;
+    assert.ok(flags & SB_ORIGIN && flags & SB_SCRIPTS, String(flags));
+  },
+);
+
+pressing(
+  'a sandbox with no allow-popups opens nothing from a link a user follows',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox style="border:0;display:block;width:300px;height:100px" srcdoc='${BLANK_LINK}'></iframe>`,
+      { [`${APP}x`]: 'x' },
+      { headers: [] },
+    );
+    await settle(300);
+    await s.click(40, 30);
+    await settle(300);
+    assert.deepEqual(s.tabs, []);
+    assert.deepEqual(s.linked, []);
+    assert.deepEqual(s.opened, []);
+  },
+);
+
+/** A document with scripts off, its response's headers handed in, and what
+ *  it asked of the host. */
+async function plain(source: string, headers: [string, string][]) {
+  const out = {
+    submitted: [] as string[],
+    linked: [] as string[],
+    downloads: [] as string[],
+    click: async (_x: number, _y: number) => {},
+    focused: (): string | undefined => undefined,
+  };
+  const rendered = await renderX11(
+    h(Html, {
+      source: `<!doctype html><body style="margin:0">${source}`,
+      partial: false,
+      baseUrl: APP,
+      headers,
+      onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
+      onLink: (href: string) => void out.linked.push(href),
+      onDownload: (d: { url: string }) => void out.downloads.push(d.url),
+      style: { flexGrow: 1 },
+    }),
+    { width: 480, height: 320, fonts: FONTS! },
+  );
+  const server = (
+    rendered as unknown as {
+      server: {
+        injectPointerMove(x: number, y: number): void;
+        injectButton(button: number, down: boolean): void;
+      };
+    }
+  ).server;
+  out.click = async (x, y) => {
+    for (const step of [
+      () => server.injectPointerMove(x, y),
+      () => server.injectButton(1, true),
+      () => server.injectButton(1, false),
+    ]) {
+      step();
+      await settle(40);
+    }
+  };
+  type Mounted = {
+    focused?: boolean;
+    children: Mounted[];
+    props: { placeholder?: string };
+  };
+  out.focused = () => {
+    const find = (node: Mounted): Mounted | null => {
+      if (node.focused) return node;
+      for (const child of node.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return find(rendered.windowNode as unknown as Mounted)?.props.placeholder;
+  };
+  await settle(200);
+  return out;
+}
+
+const ROWS = `<form action="${APP}posted"><button style="display:block;width:300px;height:50px;margin:0;border:0">go</button></form>
+  <a href="${APP}blank" target="_blank" style="display:block;height:50px">blank</a>
+  <a href="${APP}saved" download style="display:block;height:50px">save</a>
+  <a href="${APP}here" style="display:block;height:50px">here</a>`;
+
+pressing(
+  "with scripts off, a document's own policy keeps its forms, its new windows and its downloads from it",
+  async () => {
+    const s = await plain(ROWS, [['content-security-policy', 'sandbox']]);
+    for (const y of [25, 75, 125, 175]) await s.click(40, y);
+    assert.deepEqual(s.submitted, []);
+    assert.deepEqual(s.downloads, []);
+    assert.deepEqual(s.linked, [`${APP}here`]);
+  },
+);
+
+pressing(
+  'with scripts off, what a policy gives back a document has',
+  async () => {
+    const s = await plain(ROWS, [
+      [
+        'content-security-policy',
+        'sandbox allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads',
+      ],
+    ]);
+    for (const y of [25, 75, 125, 175]) await s.click(40, y);
+    assert.deepEqual(s.submitted, [`${APP}posted?`]);
+    assert.deepEqual(s.downloads, [`${APP}saved`]);
+    assert.deepEqual(s.linked, [`${APP}blank`, `${APP}here`]);
+  },
+);
+
+pressing(
+  'with scripts off and allow-popups, a link to a new window has no tab to carry its flags in, and goes nowhere',
+  async () => {
+    const s = await plain(ROWS, [
+      ['content-security-policy', 'sandbox allow-popups'],
+    ]);
+    await s.click(40, 75);
+    assert.deepEqual(s.linked, []);
+  },
+);
+
+pressing(
+  'a sandbox with no allow-scripts focuses nothing by autofocus, and one with it does',
+  async () => {
+    const field = '<input placeholder="wants" autofocus>';
+    const held = await plain(field, [['content-security-policy', 'sandbox']]);
+    assert.equal(held.focused(), undefined);
+    cleanup();
+    const given = await plain(field, [
+      ['content-security-policy', 'sandbox allow-scripts'],
+    ]);
+    assert.equal(given.focused(), 'wants');
+  },
+);
+
+pressing(
+  "a sandboxed frame's autofocus is held back too, and one that may focuses",
+  async () => {
+    type Mounted = { focused?: boolean; props: { placeholder?: string } };
+    const { screen } = await import('react-x11/test');
+    const field = async (tokens: string): Promise<Mounted> => {
+      await scene(
+        `<iframe sandbox="${tokens}" style="border:0;display:block" srcdoc='<input placeholder="framed" autofocus>'></iframe>`,
+      );
+      await settle(400);
+      const found = screen.all(
+        (n) => (n as unknown as Mounted).props?.placeholder === 'framed',
+      )[0] as unknown as Mounted | undefined;
+      assert.ok(found, 'the frame drew no field');
+      return found;
+    };
+    assert.ok(!(await field('allow-same-origin')).focused);
+    cleanup();
+    assert.ok((await field('allow-same-origin allow-scripts')).focused);
+  },
+);
+
+pressing(
+  'a sandbox with no allow-forms asks a form nothing, and a press on its button tells no submit',
+  async () => {
+    const s = await scene(
+      `<iframe sandbox="allow-scripts" style="border:0;display:block;width:300px;height:100px" srcdoc='<body style="margin:0"><form action="${APP}posted"><button style="display:block;width:280px;height:80px;margin:0;border:0">go</button></form><script>
+      const form = document.querySelector("form");
+      form.addEventListener("submit", () => console.log("heard submit"));
+      form.requestSubmit();
+      console.log("asked");
+    <\/script>'></iframe>`,
+      { [`${APP}posted`]: 'posted' },
+    );
+    await until(s, 'asked');
+    await s.click(40, 30);
+    await settle(300);
+    assert.ok(
+      !s.logs.some((l) => l.includes('heard submit')),
+      s.logs.join('\n'),
+    );
+    assert.ok(!s.asked.some((r) => r.url.includes('posted')));
+  },
+);
 
 test('with no window seam, a sandbox opens no tab either, whatever it tells itself', async () => {
   const s = await scene(
@@ -1251,6 +1746,51 @@ test('what the realm gates, the host asks again: a page that talks it round read
   assert.equal(read, 1);
   assert.equal(wrote, 1);
   assert.deepEqual(shown, ['hello']);
+});
+
+test('a clipboard write with no grant takes a press the host saw, whatever the realm says it saw', async () => {
+  let wrote = 0;
+  const host = hostOf(FRAME, {
+    secureContext: true,
+    clipboard: {
+      read: async () => ({ text: '' }),
+      write: async () => {
+        wrote += 1;
+      },
+    },
+  } as unknown as Partial<HostSeams>);
+  const settled = () => act(() => new Promise((r) => setTimeout(r, 20)));
+  const write = JSON.stringify([{ t: 'text/plain', s: 'pasted over' }]);
+  // the realm's gate passed it, as a page that set its own clock can have it
+  host.bridge('clipboard', 'write', 1, write);
+  await settled();
+  assert.equal(wrote, 0);
+  const body = new Element('body', {});
+  host.document.children.push(body);
+  body.parent = host.document;
+  host.dispatch({ type: 'mousedown', target: body } as never);
+  host.bridge('clipboard', 'write', 2, write);
+  await settled();
+  assert.equal(wrote, 1);
+  // a key is one, and Escape is none
+  const later = hostOf(FRAME, {
+    secureContext: true,
+    clipboard: {
+      read: async () => ({ text: '' }),
+      write: async () => {
+        wrote += 1;
+      },
+    },
+  } as unknown as Partial<HostSeams>);
+  later.document.children.push(body);
+  later.dispatch({ type: 'keydown', key: 'Escape', target: body } as never);
+  later.bridge('clipboard', 'write', 3, write);
+  await settled();
+  assert.equal(wrote, 1);
+  later.dispatch({ type: 'keydown', key: 'c', target: body } as never);
+  later.bridge('clipboard', 'write', 4, write);
+  await settled();
+  assert.equal(wrote, 2);
 });
 
 test('a read a user just said yes to goes through, where the host answers no state of it', async () => {

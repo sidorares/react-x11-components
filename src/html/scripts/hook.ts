@@ -30,7 +30,7 @@ import type {
   ViewLink,
 } from './runner.js';
 import type { ScriptsOptions } from './runner.js';
-import type { Popup } from './popups.js';
+import type { Popup, PopupAsk } from './popups.js';
 import { arriveAt } from './session.js';
 import { fireDomEvent } from '../dom-events.js';
 import { HtmlServiceWorkers } from '../service-workers.js';
@@ -92,6 +92,10 @@ interface Early {
  *  page's own and not props. */
 export interface ScriptProps {
   scripting: boolean;
+  /** A document with flags to hand on and no runner of its own opens a window
+   *  that keeps them, the engine loaded for it where nothing else has. Not a
+   *  prop. */
+  openApart: (ask: PopupAsk, flags: number) => void;
   onDocument?: (document: Document) => void;
   onScript?: (request: ScriptRequest) => void;
   onParsed?: () => void;
@@ -260,14 +264,12 @@ export function useScripts(
     get network() {
       return latest.current.network;
     },
-    load: async (src, element, cors, type) => {
+    load: async (src, element, cors, type, asker) => {
       // by CORS where it is asked by CORS: a module, or a script whose
       // element says so
       const answered = await workerResource(src, 'script', cors?.mode ?? null);
       if (answered === undefined) {
-        return type
-          ? latest.current.load(src, element, cors, type)
-          : latest.current.load(src, element, cors);
+        return latest.current.load(src, element, cors, type, asker);
       }
       if (answered?.kind !== 'script') return null;
       if ('text' in answered) {
@@ -602,9 +604,16 @@ export function useScripts(
     );
   }, [refused]);
 
-  if (!enabled || refused) return { scripting: false };
+  const openApart = useCallback((ask: PopupAsk, flags: number) => {
+    void loadScriptRuntime().then((loaded) =>
+      loaded.openWindowApart(ask, address.current, flags, seams.current),
+    );
+  }, []);
+
+  if (!enabled || refused) return { scripting: false, openApart };
   return {
     scripting: true,
+    openApart,
     onDocument,
     onScript,
     onParsed,

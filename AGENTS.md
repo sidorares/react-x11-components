@@ -4650,7 +4650,8 @@ closes a way out a DOM binding opens by accident:
   first. **A tab carries no sandboxing flags**, so a window that has flags to keep
   is never handed to `navigate(url, 'tab')` by anything here: a frame of another
   origin under `same-origin` opens one in a group of its own instead
-  (`opensNoOpener`), which is a window with no opener.
+  (`opensNoOpener`), which is a window with no opener, and so does every window
+  with no opener a sandbox opens (`openApart`, below).
 - **What a resource of another origin hands a page is judged on the host, by
   where it landed.** `script-origin.ts` says whether a script runs and whether
   its errors are muted, and `fetch-hops.ts` what each hop of a page's request
@@ -4706,10 +4707,63 @@ closes a way out a DOM binding opens by accident:
   takes `Origin` and `same-origin` cookies from. And **anything new a sandbox
   flag takes away is refused on the host**: a window has four ops and each asks,
   and what the realm's gate holds, a clipboard's read and a notification, is asked
-  again here, since a page can talk the realm round. What a frame refuses is
+  again here, since a page can talk the realm round, and a clipboard's write,
+  whose gesture is the press or key the host saw (`dispatch`,
+  `_transientlyActive`), never the realm's say. What a frame refuses is
   read from the response before it is parsed, in `_refusedFraming`, of each
   document around it (`_ancestorOrigins`): **anything new that shows a response
   in a frame goes through it.**
+- **A window with flags is never a tab** (`openApart`, `_openTab`). A tab is
+  the host's, and `navigate(url, 'tab')` carries nothing of the document that
+  asked, so a sandbox whose windows were tabs had left its sandbox: a
+  `noopener` or a plain `target=_blank` opened the page at its own origin. A
+  document with flags to hand on (`popupSandbox`) opens a window of this
+  process in a group of its own, with its flags, through `popups.open`, and
+  where there is no `popups`, or it says no, nothing opens. Four things are
+  load-bearing. **Anything new that opens a window with no opener goes
+  through `_openTab` or `windowOps.follow`**, never `navigate(…, 'tab')`, and
+  `follow` answers true wherever the document has flags, so no caller takes
+  its false for leave to open a tab. **A document with no runner has its
+  window opened for it**: a frame's by the page's runner (`openFor`, from
+  `send` in `frames.ts`), and a top-level one's through `openWindowApart`, the
+  engine loaded for it (`heldByFlags`, `ScriptProps.openApart`). **With scripts
+  off, a document's own `<Html>` holds its links** (`_linksAlone`, from
+  `<Html headers>`), and nothing else, since a frame's view has no `scripts`
+  prop and would hold the links its `send` opens a window for. And **a
+  window opened so keeps its flags in its slot** (`startWindow`), which every
+  document it shows is given, the second as much as the first.
+- **What a document loads is asked for as that document's** (`ResourceAsker`:
+  `client`, `opaqueOrigin`). A frame's `<Html>` marks its `client`, and every
+  `<Html>` with `_sandbox` its `opaqueOrigin`, which `HtmlNetwork` sends
+  same-site with nothing, its cache kept apart. A script's comes by the
+  runner's `asker`, through `load`'s fifth argument, after a module's `type`, since the default `load`
+  asks the page's `onResource` and not the frame's. **Anything new that asks
+  for a resource for a document goes through that document's `<Html>`, or
+  hands on the `asker`**, or a sandbox's `<img>` carries the site's cookies.
+- **A CORS resource is judged by the way it came** (`wayOf`, `cameOwn`,
+  `fontAllowed`, `judgeScript`). `HtmlNetwork` holds each redirect of a CORS
+  request to CORS and asks the next in nobody's name (`_exchange`'s `cors`),
+  and says the addresses before the last (`Fetched.through`, the result's
+  `redirects`), so a script that came home through another origin is muted and
+  a tainted way is read as `null`'s. **Anything new a host says of where a
+  resource came from is read through `wayOf`**, not its `url` alone. A font of
+  another origin is asked for by CORS in `<Html>`'s `onResource`, and a host
+  that hands back no `headers` says nothing of CORS, as for a script.
+- **A muted script's rejections are dropped by order** (`quiet` in
+  `engine.ts`). The runtime tells unhandled rejections after the task, in the
+  order they happened, on Node and on Bun alike, so a muted script runs between
+  two rejections of the host's own and what comes between them is no page's.
+  `quiet` takes over the listeners added since the last engine before it marks,
+  or an application's that ends the process on a rejection hears the marks.
+  **Anything new that runs a muted script's code calls `quiet` around it.** What
+  such a script leaves to a later task is told as the page's: nothing says whose
+  a later task is, and a `.catch()` it attaches still tells `rejectionhandled`.
+- **A frame in a document with no realm is the page realm's to load**
+  (`_loadsFrame`, `_holdsFrames`), where that document is the realm's origin or
+  a sandbox, whose frames all inherit an origin of none. Another origin's is
+  not: an `about:blank` or a `srcdoc` there would be of its origin, and the host
+  knows only this realm's to give, so its frame would run as the page's.
+  **Anything new that loads a frame asks `_loadsFrame`**, not `_inDocument`.
 - **A document that goes is unloaded first, whatever replaces it.** The
   page's runner unloads its document as it is disposed (`__unload`), after
   its frames' realms; a frame's document in the page's realm unloads as

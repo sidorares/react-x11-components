@@ -70,6 +70,7 @@ import {
 } from './http-cache.js';
 import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
 import type {
+  ResourceAsker,
   ResourceCors,
   ResourceRequest,
   ResourceResult,
@@ -87,6 +88,7 @@ import type {
   WebSocketEvents,
 } from './socket.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
+import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
 import { MODULE_ACCEPT } from './scripts/script-origin.js';
 import { isXmlType } from './xml-prolog.js';
@@ -377,6 +379,10 @@ export interface Fetched {
   bytes: Uint8Array;
   /** Its response's headers, where it came over HTTP. */
   headers?: [string, string][];
+  /** The addresses it was asked for at before the last, where redirects
+   *  took it on: whose origins say whether the last was asked for in the
+   *  page's name. */
+  through?: string[];
 }
 
 /**
@@ -799,10 +805,15 @@ export class HtmlNetwork {
      *  hop to take it (`FetchRequest.redirect`). */
     manual = false,
     hops: HtmlDocumentHop[] | null = null,
+    /** A CORS request's, in whose name and with what credentials: each
+     *  redirect is an answer to it too, and is held to CORS as one is (Fetch
+     *  4.3, "HTTP fetch"), and a way that left the origin through another
+     *  asks the next in nobody's name. */
+    cors: { origin: string; credentials: string } | null = null,
   ): Promise<ResponseLike> {
     const jar = cookies?.credentials === 'omit' ? null : this._cookies;
     const carrying = jar && cookies ? { jar, cookies } : null;
-    if (!carrying && !hops) {
+    if (!carrying && !hops && !cors) {
       return this._send(url, {
         ...init,
         redirect: manual ? 'manual' : 'follow',
@@ -856,7 +867,13 @@ export class HtmlNetwork {
           hop > 0 || response.redirected,
         );
       }
-      hops?.push({ url: at, headers: [...response.headers.entries()] });
+      const entries = [...response.headers.entries()];
+      hops?.push({ url: at, headers: entries });
+      // throws why it may not go on: a `CorsError`, which fails the load
+      if (cors) {
+        const asked = redirectTainted([...before, at], cors.origin);
+        corsCheck(entries, cors.credentials, asked ? 'null' : cors.origin);
+      }
       response.body
         ?.getReader()
         .cancel()
@@ -873,6 +890,18 @@ export class HtmlNetwork {
       const scheme = schemeOf(next);
       if (scheme !== 'http' && scheme !== 'https') {
         throw new TypeError(`Failed to fetch: a redirect to ${scheme}:.`);
+      }
+      if (cors) {
+        const tainted = redirectTainted([...before, at, next], cors.origin);
+        // a name in a URL is sent only where the page could have sent it
+        const named = new URL(next);
+        if (
+          (named.username || named.password) &&
+          (tainted || named.origin !== cors.origin)
+        ) {
+          throw new TypeError('Failed to fetch: a redirect to a named URL.');
+        }
+        headers.origin = tainted ? 'null' : cors.origin;
       }
       // a page's stream is sent once, and a redirect but a 303's sends it
       // again (Fetch 4.4, step 11)
@@ -1114,9 +1143,10 @@ export class HtmlNetwork {
     signal?: AbortSignalLike,
     cors?: ResourceCors,
     module?: 'json' | 'text',
+    asker: ResourceAsker = {},
   ): Promise<Fetched | null> {
-    return this.load(url, kind, page, signal, cors, module).then((loaded) =>
-      'fetched' in loaded ? loaded.fetched : null,
+    return this.load(url, kind, page, signal, cors, module, asker).then(
+      (loaded) => ('fetched' in loaded ? loaded.fetched : null),
     );
   }
 
@@ -1128,12 +1158,15 @@ export class HtmlNetwork {
     signal?: AbortSignalLike,
     cors?: ResourceCors,
     module?: 'json' | 'text',
+    /** Who asked, where that is a frame's document, or one of no origin:
+     *  what its `Referer` says, and whether it is same-site with anything. */
+    asker: ResourceAsker = {},
   ): Promise<Loaded> {
     const refused = Promise.resolve<Loaded>({ refused: true });
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
     if (allowed !== url) {
-      return this.load(allowed, kind, page, signal, cors, module);
+      return this.load(allowed, kind, page, signal, cors, module, asker);
     }
     const scheme = schemeOf(url);
     if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
@@ -1143,12 +1176,18 @@ export class HtmlNetwork {
     const http = scheme === 'http' || scheme === 'https';
     // what a CORS request is answered is its own: another origin's answer to
     // a request with an `Origin` is no answer to one with none
+    const opaque = !!asker.opaqueOrigin;
+    // nor is a sandbox's the site's: what it was answered with, cookies and
+    // all, is kept apart, and what the site's own pages were is none of it
     const key =
       this._cacheKey(url, page) +
-      (cors ? ` cors ${cors.origin} ${cors.mode}` : '');
+      (cors ? ` cors ${cors.origin} ${cors.mode}` : '') +
+      (opaque ? ' opaque' : '');
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
-    const headers = http ? this._headers(kind, url, page, cors, module) : null;
+    const headers = http
+      ? this._headers(kind, url, asker.client ?? page, cors, module)
+      : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
     if (kept && this._answers(kept, headers)) {
@@ -1188,6 +1227,7 @@ export class HtmlNetwork {
               kept?.response ?? null,
               id,
               cors,
+              opaque,
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1326,6 +1366,7 @@ export class HtmlNetwork {
     /** Its observers' id for it (`observe`), 0 for none. */
     id = 0,
     cors?: ResourceCors,
+    opaque = false,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1345,6 +1386,7 @@ export class HtmlNetwork {
         page,
         id,
         cors,
+        opaque,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1836,6 +1878,7 @@ export class HtmlNetwork {
         options.signal,
         request.cors,
         module,
+        request,
       ).then((fetched) => (fetched ? resourceResult(fetched, kind) : null));
     };
   }
@@ -1972,6 +2015,7 @@ export class HtmlNetwork {
       page: string;
       id: number;
       cors?: ResourceCors;
+      opaque?: boolean;
     },
   ): Promise<Answer> {
     try {
@@ -1992,6 +2036,7 @@ export class HtmlNetwork {
       page: string;
       id: number;
       cors?: ResourceCors;
+      opaque?: boolean;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -2001,23 +2046,27 @@ export class HtmlNetwork {
       this._sent(id);
       // a page's subresource carries its cookies, as a browser's `no-cors`
       // request does (credentials mode `include`); one asked for by CORS, as
-      // a module is, only as far as it says
+      // a module is, only as far as it says, at every hop of its way
       const { cors } = options;
+      const credentials =
+        cors?.mode === 'anonymous' ? 'same-origin' : 'include';
+      const hops: HtmlDocumentHop[] = [];
       const response = await this._exchange(
         url,
         { method: 'GET', headers: options.headers, signal: stall.signal },
         {
-          credentials:
-            !cors ||
-            cors.mode === 'use-credentials' ||
-            originOf(url) === cors.origin
-              ? 'include'
-              : 'omit',
-          origin: originOf(options.page),
-          site: options.page,
+          credentials,
+          // a document of no origin is same-site with nothing
+          origin: options.opaque
+            ? 'null'
+            : (cors?.origin ?? originOf(options.page)),
+          site: options.opaque ? null : options.page,
           topLevel: false,
           initiator: null,
         },
+        false,
+        cors ? hops : null,
+        cors ? { origin: cors.origin, credentials } : null,
       );
       const responseTime = Date.now();
       this._responded(id, response, url);
@@ -2040,6 +2089,7 @@ export class HtmlNetwork {
           charset,
           bytes: concat(chunks),
           headers: [...response.headers.entries()],
+          ...(hops.length && { through: hops.map((hop) => hop.url) }),
         },
         redirected: response.redirected,
         headers: [...response.headers.entries()],
@@ -2365,14 +2415,20 @@ export function resourceResult(
       url: fetched.url,
     };
   }
-  if (kind === 'font') return { kind: 'font', bytes: fetched.bytes };
+  // what says where a font or a script came from, for what CORS lets
+  // a page have of it
+  const origin = {
+    url: fetched.url,
+    headers: fetched.headers,
+    ...(fetched.through && { redirects: fetched.through }),
+  };
+  if (kind === 'font') return { kind: 'font', bytes: fetched.bytes, ...origin };
   if (kind === 'script') {
     return {
       kind: 'script',
       bytes: fetched.bytes,
       charset: fetched.charset ?? undefined,
-      url: fetched.url,
-      headers: fetched.headers,
+      ...origin,
     };
   }
   // a page or text where an image was asked for is a document, which an

@@ -217,6 +217,7 @@ import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
   SB_DOWNLOADS,
+  SB_FORMS,
   SB_ORIGIN,
   SB_POPUPS,
   SB_PROPAGATES,
@@ -962,6 +963,9 @@ function hex(bytes: Uint8Array): string {
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
+/** A frame's navigation that came to a download its sandbox may not save. */
+class DownloadRefused extends Error {}
+
 class DomError extends Error {
   constructor(
     readonly kind: string,
@@ -992,6 +996,11 @@ const FRAME_LOOK: RootLook = {
 
 /** A frame's viewport where it says nothing of its own: HTML's 300 by 150. */
 const FRAME_SIZE = { width: 300, height: 150 };
+
+/** How deep frames in documents with no realm of their own are followed
+ *  (`_loadsFrame`): a document that frames itself is refused before this, and a
+ *  chain of others' stops here. */
+const MAX_FRAME_DEPTH = 32;
 
 /** The pseudo-elements the host answers a computed style for: a `::before`
  *  or an `::after`, and the highlights (`highlightKey`). */
@@ -1208,6 +1217,21 @@ function hasScripts(doc: Document): boolean {
         (el.attribs.type ?? '').trim().toLowerCase() === 'module'),
     doc.children,
   );
+}
+
+/** How long a user's press or key lets a page do what takes one: the realm's
+ *  window, as Chrome's (`dom.ts`). */
+const TRANSIENT_ACTIVATION_MS = 5000;
+
+/** A document of nothing, `about:blank`'s, for a window's first: an `<html>`
+ *  holding a head and a body, as HTML's parser makes one of no markup. */
+export function blankDocument(): Document {
+  const html = new Element('html', {}, []);
+  DomUtils.appendChild(html, new Element('head', {}, []));
+  DomUtils.appendChild(html, new Element('body', {}, []));
+  const doc = new Document([]);
+  DomUtils.appendChild(doc, html);
+  return doc;
 }
 
 /** Text as it goes in markup, and an attribute's value. */
@@ -2202,6 +2226,15 @@ export class DomHost {
    *  goes on. */
   dispatch(event: HtmlDomEvent): boolean {
     if (event.type.startsWith('mouse')) this._under = event.target;
+    // a user's press or key has used the page (HTML 6.4.1, "activation
+    // triggering input event"): what the realm notes of it is the page's to
+    // say, so what a gesture lets through asks this
+    if (
+      event.type === 'mousedown' ||
+      (event.type === 'keydown' && event.key !== 'Escape')
+    ) {
+      this._activatedAt = Date.now();
+    }
     const answer = this.entries?.call('__event', {
       type: event.type,
       target: this.idOf(event.target),
@@ -2300,6 +2333,29 @@ export class DomHost {
     return this.sandbox & SB_PROPAGATES ? this.sandbox : 0;
   }
 
+  /** A window with no opener. That is a tab, the host's, unless this document
+   *  may open none, or has flags to hand on, which a tab cannot carry: a host
+   *  is told of no document that keeps them (`openApart`). */
+  private _openTab(url: string, target: string, noreferrer: boolean): void {
+    if (this.sandbox & SB_POPUPS) return;
+    const name = /^_blank$/i.test(target) ? '' : target;
+    if (this.popupSandbox) {
+      const features = { popup: false, noreferrer };
+      this.windows?.apart({ url, name, features, post: null });
+    } else this._seams.navigate(url, 'tab', null, name);
+  }
+
+  /** When a user last pressed or keyed in this document, as the host saw it
+   *  (`dispatch`). */
+  private _activatedAt = -Infinity;
+
+  /** Whether a user's press or key is behind what a page does now (HTML
+   *  6.4.1, "transient activation"), by the host's clock: as long as the
+   *  realm's `TRANSIENT_ACTIVATION_MS`. */
+  private _transientlyActive(): boolean {
+    return Date.now() - this._activatedAt < TRANSIENT_ACTIVATION_MS;
+  }
+
   /** Whether this document may send the window at the top of it somewhere
    *  (HTML 7.4.2.3, "allowed by sandboxing to navigate"), a gesture behind it
    *  or not. */
@@ -2310,11 +2366,6 @@ export class DomHost {
   frameDocumentAt(id: number): Document | null {
     const frame = this._nodes.get(id);
     return (frame && this._frames.get(frame as Element)) ?? null;
-  }
-
-  /** A document of nothing, `about:blank`'s, for a window's first. */
-  blankDocument(): Document {
-    return this._documentOf('');
   }
 
   /** What the realms of this page share, for a frame's host to be made
@@ -2333,7 +2384,7 @@ export class DomHost {
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
-      if (!this._inDocument(frame)) continue;
+      if (!this._loadsFrame(frame)) continue;
       const document = this._frames.get(frame);
       let url = this._frameAt.get(frame) ?? 'about:blank';
       // a `srcdoc` document's base is the page's (HTML 4.8.5)
@@ -2368,7 +2419,7 @@ export class DomHost {
     if (!frame || (frame.name !== 'object' && frame.name !== 'embed')) return;
     if (!this._seams.drawsFrames || this._s.live.has(doc)) return;
     this._s.live.add(doc);
-    if (this._inDocument(frame)) {
+    if (this._loadsFrame(frame)) {
       this._tell(frame, {
         type: 'attributes',
         target: frame,
@@ -2482,7 +2533,7 @@ export class DomHost {
   /** Whether a frame in the document is still loading its document. */
   get framesLoading(): boolean {
     for (const frame of this._framesLoading) {
-      if (!this._inDocument(frame)) this._framesLoading.delete(frame);
+      if (!this._loadsFrame(frame)) this._framesLoading.delete(frame);
     }
     return this._framesLoading.size > 0;
   }
@@ -4266,7 +4317,7 @@ export class DomHost {
         >;
         // the facade asks first, for the error a page should see, and what
         // it hands over is a page's to change
-        if (!this._workerAllowed(String(init.url))) {
+        if (!this._workerAllowed(String(init.url), typeof b === 'string')) {
           throw new DomError(
             'SecurityError',
             "A worker's script is its own origin's.",
@@ -5500,6 +5551,9 @@ export class DomHost {
         );
         return null;
       case 'validate':
+        // a sandbox's form is no form to send, before its `submit` is asked
+        // about (HTML 4.10.21.3, step 3)
+        if (c === true && this.sandbox & SB_FORMS) return false;
         return this._seams.handle.reportValidity(
           this._element(a),
           b ? this._element(b) : null,
@@ -5651,13 +5705,7 @@ export class DomHost {
         if (this.sandbox & SB_POPUPS) return 0;
         return this.windows?.open(JSON.parse(text(a)) as PopupAsk) ?? 0;
       case 'windowTab':
-        if (this.sandbox & SB_POPUPS) return null;
-        this._seams.navigate(
-          text(a),
-          'tab',
-          null,
-          /^_blank$/i.test(text(c)) ? '' : text(c),
-        );
+        this._openTab(text(a), text(c), !!b);
         return null;
       case 'windowFind':
         return this.windows?.find(text(a)) ?? 0;
@@ -5725,6 +5773,10 @@ export class DomHost {
       }
       case 'referrer':
         return this.referrer;
+      // any sandbox, whatever its tokens: none lifts `document.domain`'s flag
+      // (HTML 7.1.?, "sandboxed document.domain browsing context flag")
+      case 'sandboxed':
+        return this.sandbox !== 0;
       case 'frameNamed': {
         const frame = navigableFor(this.document, text(a));
         return typeof frame === 'string' ? 0 : this.idOf(frame);
@@ -5756,9 +5808,8 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
-        if (to === 'tab' && this.sandbox & SB_POPUPS) return null;
         if (to === 'here') this._seams.navigate(text(a), 'here');
-        else if (to === 'tab') this._seams.navigate(text(a), 'tab');
+        else if (to === 'tab') this._openTab(text(a), text(b), false);
         else this.navigateFrame(to, text(a), null);
         return null;
       }
@@ -7077,7 +7128,7 @@ export class DomHost {
    * hidden frame is never sent.
    */
   navigateFrame(frame: Element, url: string, post: FramePost | null): void {
-    if (!this._inDocument(frame)) return;
+    if (!this._loadsFrame(frame)) return;
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);
     this._loadFrame(frame, true, post);
@@ -7178,7 +7229,7 @@ export class DomHost {
    * frame had its first `about:blank`, and the frame stayed blank.
    */
   private _sendsFrame(el: Element, name: string, set: boolean): boolean {
-    if (!this._frames.has(el) || !this._inDocument(el)) return false;
+    if (!this._frames.has(el) || !this._loadsFrame(el)) return false;
     if (el.name === 'object') return set && name === 'data';
     if (name === 'srcdoc') return el.name === 'iframe';
     return name === 'src' && !(el.name === 'iframe' && 'srcdoc' in el.attribs);
@@ -7390,6 +7441,16 @@ export class DomHost {
         );
       })
       .catch((error: unknown) => {
+        // a download a sandbox may not save goes nowhere: the frame keeps
+        // what it shows, and hears nothing
+        if (error instanceof DownloadRefused) {
+          this._seams.log(
+            'warn',
+            `A sandbox saves no file: ${error.message} was not downloaded.`,
+          );
+          this._frameDone(frame);
+          return;
+        }
         // a frame whose document could not be had still hears `load`, as
         // a browser's showing its error page does
         this._seams.log(
@@ -7523,7 +7584,7 @@ export class DomHost {
   private _framesLeft(): void {
     this._framesGone = false;
     for (const frame of [...this._framesShown]) {
-      if (!this._inDocument(frame)) this._unloadFrameDocument(frame);
+      if (!this._loadsFrame(frame)) this._unloadFrameDocument(frame);
     }
   }
 
@@ -7579,9 +7640,14 @@ export class DomHost {
       if (scripted) this._goLive(doc);
       return;
     }
-    if (this._inDocument(frame)) this._framesShown.add(frame);
+    if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
+    }
+    // its own frames, which no realm of its own loads, are loaded here, as
+    // the page's are as they are met
+    if (this._seams.drawsFrames && this._holdsFrames(doc)) {
+      this._framesIn(doc.children);
     }
     if (!owed) loaded();
   }
@@ -7686,7 +7752,7 @@ export class DomHost {
       return;
     }
     if (frame.name === 'embed' && !this._embedLoads(frame)) return;
-    if (!this._frames.has(frame) && this._inDocument(frame)) {
+    if (!this._frames.has(frame) && this._loadsFrame(frame)) {
       this._frameDocument(frame);
     }
   }
@@ -7721,7 +7787,7 @@ export class DomHost {
   embedsPainted(): void {
     for (const embed of [...this._embedsWaiting]) {
       this._embedsWaiting.delete(embed);
-      if (this._inDocument(embed)) this._frameIn(embed);
+      if (this._loadsFrame(embed)) this._frameIn(embed);
     }
     for (const frame of [...this._viewsAwaited]) this._awaitView(frame);
   }
@@ -7832,6 +7898,41 @@ export class DomHost {
    *  Contentsquare keeps its frame in a closed one. */
   private _inDocument(node: AnyNode): boolean {
     return shadowIncludingRoot(node) === this.document;
+  }
+
+  /**
+   * Whether a frame is one this realm loads: in this document, or in the
+   * document of one of its frames that has no realm of its own and is shown,
+   * which nothing else would load it from (`_holdsFrames`).
+   */
+  private _loadsFrame(frame: Element): boolean {
+    let at: AnyNode = frame;
+    for (let depth = 0; depth < MAX_FRAME_DEPTH; depth += 1) {
+      const doc = shadowIncludingRoot(at);
+      if (doc === this.document) return true;
+      if (!(doc instanceof Document) || !this._holdsFrames(doc)) return false;
+      const holder = this._frameOf.get(doc);
+      if (!holder || this._frames.get(holder) !== doc) return false;
+      at = holder;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a frame's document of this realm's loads the frames in it here:
+   * one with no realm of its own, of this realm's origin, or a sandbox's,
+   * whose every frame is of an origin of none (`_frameSandbox`). Another
+   * origin's holds frames whose `about:blank` and `srcdoc` would be its own,
+   * which this realm has no way to give them, so it holds none, as before.
+   */
+  private _holdsFrames(doc: Document): boolean {
+    if (this._s.realms.has(doc) || this._xml.has(doc)) return false;
+    const holder = this._frameOf.get(doc);
+    if (!holder) return false;
+    return (
+      ((this._s.sandboxes.get(doc) ?? 0) & SB_ORIGIN) !== 0 ||
+      this._reaches(holder)
+    );
   }
 
   /**
@@ -8440,12 +8541,17 @@ export class DomHost {
       return null;
     }
     // the realm's gate is a gesture's, and a page can talk it round: what the
-    // clipboard holds is a user's, so whether it is read is decided here
+    // clipboard holds is a user's, so whether it is read is decided here, and
+    // whether it is written over, which without a grant takes a press or a
+    // key the host saw
+    const writes =
+      what === 'read' ? null : this._permissionState('clipboard-write');
     const refused =
-      what === 'read'
+      writes === null
         ? !this._clipboardGranted &&
           this._permissionState('clipboard-read') !== 'granted'
-        : this._permissionState('clipboard-write') === 'denied';
+        : writes === 'denied' ||
+          (writes !== 'granted' && !this._transientlyActive());
     if (refused) {
       tell(
         false,
@@ -8824,10 +8930,22 @@ export class DomHost {
     return originOf(url) === this._origin();
   }
 
-  /** Whether a worker may run from an address: of this document's origin,
-   *  which a blob this realm made is, and `blob:null` where that is opaque. */
-  private _workerAllowed(url: string): boolean {
-    return originOf(url) === this._origin();
+  /**
+   * Whether a worker may run from an address: of this document's origin,
+   * which a blob this realm made is. An opaque origin is no address's, and
+   * `null` is every such origin's serialization, so where this document's is
+   * one a worker runs only from what it made itself — a blob of no origin,
+   * whose text the realm hands over (`given`), or a `data:` URL — and, for a
+   * `file:` page, from a `file:` address as before: never from one a sandbox
+   * names, whose `null` a `file:` address's matched.
+   */
+  private _workerAllowed(url: string, given: boolean): boolean {
+    const origin = this._origin();
+    if (origin !== 'null') return originOf(url) === origin;
+    // a blob it made is `blob:null`, whatever a page's own `String` wrote
+    if (/^blob:/i.test(url)) return given && originOf(url) === 'null';
+    if (/^data:/i.test(url)) return true;
+    return !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url);
   }
 
   /** A page's `fetch`: its own origin's, or another's where CORS lets it
@@ -9489,7 +9607,31 @@ export class DomHost {
         };
       }
     }
-    const fetched = await this._seams.fetch(request, signal);
+    // a sandbox that saves no file cuts a response that would be one off as
+    // its head arrives (HTML 7.4.2.3, "allowed to download"): read whole, the
+    // server has sent it all, which is what a download is
+    const cuts = !!(sandbox & SB_DOWNLOADS);
+    const stop = new AbortController();
+    let fetched = await this._seams.fetch(
+      cuts ? { ...request, stream: true } : request,
+      cuts ? stop.signal : signal,
+    );
+    if (cuts) {
+      const disposition = headerOf(fetched.headers, 'content-disposition');
+      if (/^\s*attachment/i.test(disposition ?? '')) {
+        stop.abort();
+        throw new DownloadRefused(request.url);
+      }
+      if (fetched.chunks) {
+        const bytes = await wholeBytes(fetched);
+        fetched = {
+          ...fetched,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
     // the document is at the fragment it was asked for, which a response's
     // address drops
     const hash = request.url.indexOf('#');

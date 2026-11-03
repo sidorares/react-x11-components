@@ -63,7 +63,9 @@ export interface HtmlPopup {
 /**
  * What a page's windows reach (`HtmlScripts.popups`). Default: none, and
  * `window.open` answers null, as a browser whose user blocks every popup
- * does, and hands the address to `navigate` as `'tab'`.
+ * does, and hands the address to `navigate` as `'tab'` — but from a sandbox
+ * whose windows keep its flags, which a tab cannot carry: such a document's
+ * windows are all `open`'s, and with none nothing opens.
  */
 export interface HtmlPopups {
   /**

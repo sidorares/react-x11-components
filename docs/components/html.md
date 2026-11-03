@@ -42,6 +42,7 @@ a document's scripts on. See [The seams](#the-seams) and
 | `baseUrl`            | `string \| null`                                 | The URL the document came from. With it, every URL reaches `onResource` and `onLink` absolute — see [Base URLs](#base-urls). Absent, URLs are handed over as written.                                                                                                                               |
 | `onResource`         | `(r: ResourceRequest) => ResourceResult \| null` | An `<img>`, a `<link rel=stylesheet>` or a sheet's `rel=preload`, an `@import` or an `@font-face` font wants loading, or a `<video>` or `<audio>` playing — see [Video](#video) and [Audio](#audio). May return a promise. **Absent, nothing loads.**                                               |
 | `scripts`            | `boolean \| HtmlScripts`                         | Run the document's scripts in this package's engine, loaded only then. Default off. `true` takes a default for every seam; an object overrides any — see [Scripts](#scripts).                                                                                                                       |
+| `headers`            | `[string, string][]`                             | The headers of the response the document came in, read whether or not its scripts run: a `Content-Security-Policy`'s `sandbox` — see [Sandboxes and framing](#sandboxes-and-framing).                                                                                                               |
 | `onScript`           | `(s: ScriptRequest) => void`                     | A `<script>` was found, handed over unparsed and unevaluated.                                                                                                                                                                                                                                       |
 | `scripting`          | `boolean`                                        | Whether the host runs the document's scripts — this runs none either way. True draws a `<noscript>` as nothing, asks for nothing in it and makes `@media (scripting: enabled)` hold — see [The seams](#the-seams). Default false.                                                                   |
 | `onDomEvent`         | `(event: HtmlDomEvent) => boolean \| void`       | Something happened to the document, told before this does anything about it; `false` cancels it — see [Events before their defaults](#events-before-their-defaults).                                                                                                                                |
@@ -2388,7 +2389,8 @@ header parsing and redirects among them, so hand in `scripts.redirects` beside
 response on the way counts. A host that hands in neither gets no policies. A frame
 of another origin in a page of `same-origin` opens windows with no opener, which go
 to `navigate(url, 'tab')`, and `window.open` answers it null. One with sandboxing
-flags to hand on goes to `popups.open` instead, since a tab carries none.
+flags to hand on goes to `popups.open` instead, since a tab carries none, as does
+every window with no opener a sandbox opens (see [Sandboxes and framing](#sandboxes-and-framing)).
 
 To the host a window that left is the window it was: `HtmlPopup` goes on, and its
 documents still have `scripts.popup`. It is not isolated, since it stays in this
@@ -2408,15 +2410,19 @@ flag sets"). The flags are read as a document is loaded, so a change to the
 attribute waits for the next load, and they add up: a frame's are its own and
 those of the document it is in, and no token takes back what was inherited. A
 response's own `Content-Security-Policy: sandbox` adds to them, a frame's as it
-arrives and a top-level document's where the host hands the engine its
-`scripts.headers`, which `HtmlNetwork`'s `document` and `html` answer.
+arrives and a top-level document's where the host hands in its headers,
+`headers` or `scripts.headers`, which `HtmlNetwork`'s `document` and `html`
+answer. `headers` is read with scripts off too: such a document submits no form,
+follows no link to a new window, saves no file and focuses nothing by
+`autofocus` where its policy says so, and what it loads is asked for as of no
+origin.
 
 | without                | the document                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `allow-same-origin`    | has an opaque origin, whatever its address, so the page has it by a number, as any other origin's frame, and it has the page so. `self.origin` is `null`, `location.origin` still its address's. `document.cookie`, `localStorage` and `navigator.locks` are a `SecurityError`, every permission is `denied` and no user is asked, a request says `Origin: null` and carries no `same-origin` cookies, and no service worker has it. |
-| `allow-scripts`        | runs nothing, whoever puts a script in, and shows its `<noscript>`.                                                                                                                                                                                                                                                                                                                                                                  |
+| `allow-scripts`        | runs nothing, whoever puts a script in, shows its `<noscript>`, and focuses nothing by `autofocus`.                                                                                                                                                                                                                                                                                                                                  |
 | `allow-forms`          | submits no form.                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out.                                                                                                                                                                                                                                                                                                        |
+| `allow-popups`         | opens no window or tab. With it a window it opens has its flags, unless `allow-popups-to-escape-sandbox` lets the window out, and is never a tab, which cannot carry them: one with no opener is a window of `popups.open` in a group of its own, and with no `popups`, or where it refuses, nothing opens.                                                                                                                          |
 | `allow-top-navigation` | sends the top window nowhere. `allow-top-navigation-by-user-activation` lets a press do it.                                                                                                                                                                                                                                                                                                                                          |
 | `allow-downloads`      | saves no file.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `allow-modals`         | is answered as any document is: `alert` draws nothing here, and `confirm` is no and `prompt` is null.                                                                                                                                                                                                                                                                                                                                |
@@ -2426,11 +2432,24 @@ origin, is handed the page's window as any such frame is, so its flags stop
 what it does for itself and not what it does through the page. HTML warns of
 that pair for the same reason: such a frame can take its own `sandbox` off.
 
+**What a sandbox loads is asked for as of no origin.** An `<img>`, a sheet, a
+font or a `<script src>` of a document with no `allow-same-origin` reaches
+`onResource` with `opaqueOrigin`, and one of a frame with `client`, the frame's
+address: `HtmlNetwork` sends it same-site with nothing, so with no cookie that
+is only a site's own, and with the frame's `Referer`. A host with an
+`onResource` of its own reads the two fields.
+
+**A frame in a document with no script of its own loads**, where the page's
+realm loads it: in a frame of the page's origin, or a sandbox, whose frames are
+all of no origin. One in another origin's document with no script does not, since
+its `about:blank` and its `srcdoc` would be of that origin, which nothing here
+can give them.
+
 Not read: `allow-pointer-lock`, `allow-orientation-lock` and
-`allow-presentation`, which guard nothing here; and the automatic features, so
-`autofocus` works in a sandbox. A subresource of a sandboxed frame, an `<img>` or
-a `<script src>`, goes through `onResource` as the page's does, with the page's
-cookies.
+`allow-presentation`, which guard nothing here; and autoplay, the other
+automatic feature, so a `<video autoplay>` in a sandbox with no `allow-scripts`
+plays. A cross-origin frame's `autofocus` focuses as a same-origin one's does,
+where HTML refuses it.
 
 **A cross-origin frame sends the top window somewhere only behind a press**, as
 Chromium has it, where it could not at all; a sandbox goes by its flags. A
@@ -2482,8 +2501,8 @@ a host is the text alone, and what `text/html` means for the page is a
 listener's to decide.
 
 `navigator.clipboard` has its gates here rather than in the seam. A write needs
-a press or a key behind it that is recent, or `clipboard-write` granted, and
-never one denied. A read needs `clipboard-read` granted, or, where it is
+a press or a key behind it that is recent, which the host saw and not only the
+page's realm, or `clipboard-write` granted, and never one denied. A read needs `clipboard-read` granted, or, where it is
 `prompt`, a press or a key and `scripts.permissions.request` saying so: a page
 that reads the clipboard after any click reads what was copied in every other
 application. With no `permissions` nothing can be granted, so a page cannot
@@ -2627,7 +2646,16 @@ page asks from, since the facade runs where a page can replace what it calls.
   where the request needs one, so a `DELETE` one server lets through does not go
   on to wherever that server sends it. A request that passed through a third
   origin asks the next with `Origin: null`, and one that left the page's origin
-  carries none of its cookies back to it.
+  carries none of its cookies back to it. A CORS script's are held the same:
+  `HtmlNetwork` checks each redirect as an answer and asks the next in nobody's
+  name, and says the way it came in `redirects`, which the engine reads the end
+  by, so a script that came home by another origin is muted.
+- **A font of another origin needs its leave** (CSS Fonts 4, 4.8.2): `<Html>`
+  asks for it with `cors`, and turns down one whose answer's `headers` do not let
+  the document have it. A host that says nothing of the headers lets it through.
+- **A promise a classic script of another origin rejects as it runs is not
+  heard** as `unhandledrejection`. One it rejects later, from a timer or a
+  promise the host settles, is, since nothing says whose a later task is.
 - **A canvas keeps `origin-clean`.** `drawImage`, a pattern and a bitmap of
   another origin's image taint what they reach, and `getImageData`, `toDataURL`,
   `toBlob` and `convertToBlob` are a `SecurityError` until the canvas is sized
@@ -2642,13 +2670,12 @@ page asks from, since the facade runs where a page can replace what it calls.
   nothing of the headers it had, it is drawn, and taints. An `<img>` is drawn
   as nothing on a canvas in any case, so none of its pixels reach a page: this
   is what a page is told.
-- **Not held to any of this:** a stylesheet's and a font's own `crossorigin`
-  (a `<link>`'s sheet has no rules a script can read, of any origin); a
-  `<video>`'s, whose `crossorigin` is taken at its word; the origin a
-  sandboxed document asks for an image by CORS in, which is its address's and
-  not `null`; a CORS script's redirects, which `HtmlNetwork` follows and only the
-  last of which is checked; what timing says, and a promise a script of another
-  origin leaves rejected.
+- **Not held to any of this:** a stylesheet's own `crossorigin` (a `<link>`'s
+  sheet has no rules a script can read, of any origin); a `<video>`'s, whose
+  `crossorigin` is taken at its word; the origin a sandboxed document asks for
+  an image by CORS in, which is its address's and not `null`; what timing says;
+  and a `.catch()` that a script of another origin attaches, which HTML keeps
+  from `rejectionhandled`.
 
 **A document's cookies are the jar's** (`scripts.cookies`):
 `document.cookie` reads the document's cookies but its `HttpOnly` ones and

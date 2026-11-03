@@ -44,7 +44,7 @@ import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
 import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
-import type { ResourceCors } from '../resources.js';
+import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
 import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
@@ -61,9 +61,9 @@ import type {
   HostSeams,
   WorkerInit,
 } from './host.js';
-import type { Popup } from './popups.js';
+import type { Popup, PopupAsk } from './popups.js';
 import { forgetKept, liveSession } from './session.js';
-import { slotFor, windowOps } from './popups.js';
+import { openApart, slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
 import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
 import type { HtmlSessionHistory, SessionArrival } from './session.js';
@@ -111,6 +111,7 @@ export interface ScriptsOptions extends Omit<
     element: Element | null,
     cors?: ResourceCors,
     type?: 'json' | 'text',
+    asker?: ResourceAsker,
   ): Promise<LoadedScript | null>;
   /** The headers of the response the document came in
    *  (`HtmlScripts.headers`). */
@@ -205,6 +206,24 @@ interface FrameSeat {
 }
 
 /** One document's scripts: its engine, its host, and where it has got to. */
+/** `openApart` with what makes a runner, for a document that may have none:
+ *  a top-level document's sandbox with no `allow-scripts` has no chunk of this
+ *  to reach but through `loadScriptRuntime`. */
+export function openWindowApart(
+  ask: PopupAsk,
+  url: string,
+  flags: number,
+  seams: RunnerSeams,
+  runner: ScriptRunner | null = null,
+): void {
+  openApart(
+    ask,
+    { url, flags, seams, runner },
+    (blank, address, windowSeams) =>
+      new ScriptRunner(blank, address, windowSeams),
+  );
+}
+
 export class ScriptRunner {
   readonly host: DomHost;
   readonly engine: ScriptEngine;
@@ -457,6 +476,13 @@ export class ScriptRunner {
   ): boolean {
     if (this._disposed) return false;
     return this._windows.follow(url, target, noopener, noreferrer, post);
+  }
+
+  /** A document with flags to hand on and no runner of its own opens a window
+   *  that keeps them (`openApart`): a frame of this one, which `flags` and
+   *  `url` are of, a sandbox with no `allow-scripts`. */
+  openFor(url: string, flags: number, ask: PopupAsk): void {
+    openWindowApart(ask, url, flags, this._options, this);
   }
 
   /** A page closed the window it is in, which is the host's: one created by
@@ -1300,11 +1326,15 @@ export class ScriptRunner {
     const set = corsSetting(element?.attribs.crossorigin);
     const mode = module ? (set ?? 'anonymous') : set;
     const cors = mode ? { origin, mode } : undefined;
-    const loaded = await (
-      type === 'javascript'
-        ? this._options.load(url, element, cors)
-        : this._options.load(url, element, cors, type)
-    ).catch(() => null);
+    // asked for as this document's, which a sandbox's is of no origin, and
+    // a frame's is the frame's and not the page's
+    const asker = {
+      client: this.host.url,
+      ...(this.host.sandbox & SB_ORIGIN && { opaqueOrigin: true }),
+    };
+    const loaded = await this._options
+      .load(url, element, cors, type === 'javascript' ? undefined : type, asker)
+      .catch(() => null);
     return judgeScript(loaded, url, origin, mode, module, type);
   }
 
