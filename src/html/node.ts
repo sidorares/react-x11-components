@@ -5803,13 +5803,15 @@ export class HtmlViewNode extends Node {
   ): {
     source: K extends 'video' ? VideoSource : AudioSource;
     url: string;
+    reports?: boolean;
   } | null {
-    const clip = kind === 'video' ? this._clips.get(el) : undefined;
-    if (clip) {
-      const source = { kind: 'video', src: clip } as const;
+    const clip = this._clips.get(el);
+    if (clip && (kind === 'audio' || clip.video)) {
+      const source = { kind, src: clip.src } as VideoSource | AudioSource;
       return {
         source: source as K extends 'video' ? VideoSource : AudioSource,
-        url: clip,
+        url: clip.src,
+        reports: clip.reports,
       };
     }
     for (const { url, type } of this._videoChoice(el)) {
@@ -5843,20 +5845,48 @@ export class HtmlViewNode extends Node {
     return candidates;
   }
 
-  /** The files a page's `MediaSource`s came to, by their `<video>`s
+  /** What a page's `MediaSource`s came to, by their elements
    *  (`showClip`). */
-  private readonly _clips = new WeakMap<Element, string>();
+  private readonly _clips = new WeakMap<
+    Element,
+    { src: string; reports: boolean; video: boolean }
+  >();
 
   /**
-   * What a page's `MediaSource` came to, as a file (`scripts/clips.ts`): what
-   * the element's player plays from now on, whatever it was asked for
-   * before, or with null nothing any more. A `<video>` whose `src` is a
-   * `MediaSource` has no URL a host could answer for.
+   * What a page's `MediaSource` came to: a file of a clip
+   * (`scripts/clips.ts`), or the URL of the stream the host makes of what
+   * is appended (`scripts/feeds.ts`), whose player says what it does
+   * (`reports`). It is what the element's player plays from now on,
+   * whatever it was asked for before, or with null nothing any more. A
+   * media element whose `src` is a `MediaSource` has no URL a host could
+   * answer for.
    */
-  showClip(element: Element, file: string | null): void {
-    if (file) this._clips.set(element, file);
-    else this._clips.delete(element);
+  showClip(element: Element, file: string | null, reports = false): void {
+    if (file) {
+      this._clips.set(element, {
+        src: file,
+        reports,
+        video: tagOf(element) === 'video',
+      });
+    } else {
+      this._clips.delete(element);
+    }
     this._reportMedia();
+    this._publishSounds();
+  }
+
+  /**
+   * What the player of a `<video>` whose stream is a `MediaSource`'s said
+   * (`videos.ts`, `MediaRect.reports`), told to the page, whose clock
+   * follows it, as a sound's is (`soundEvent`).
+   */
+  videoEvent(
+    element: Element,
+    url: string,
+    kind: MediaEventKind,
+    value = '',
+  ): void {
+    this._props().onMediaEvent?.(element, url, kind, value);
   }
 
   /**

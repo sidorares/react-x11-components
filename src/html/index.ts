@@ -1684,8 +1684,8 @@ export function makeHtmlHandle(
       nodeRef.current?.atViewport(element) ?? false,
     scrollMoves: (scroller: Element, element: Element) =>
       nodeRef.current?.scrollMoves(scroller, element) ?? false,
-    showClip: (element: Element, file: string | null) =>
-      nodeRef.current?.showClip(element, file),
+    showClip: (element: Element, file: string | null, reports?: boolean) =>
+      nodeRef.current?.showClip(element, file, reports),
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,

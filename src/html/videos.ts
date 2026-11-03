@@ -33,6 +33,10 @@
 // nothing, and the document's root, a selectable surface, would have it
 // show the I-beam.
 //
+// A video whose stream is a page's `MediaSource` (`MediaRect.reports`) says
+// what its player does — its time, its end, a failure — as a sound does, and
+// the page's clock follows it.
+//
 // What a page's script asks of a video — `play()`, `pause()`, `muted`,
 // `volume`, `playbackRate` — is in its rect (`HtmlViewNode.setMediaState`),
 // and goes to the player as core's props, which tell the player that is
@@ -123,19 +127,42 @@ export function renderCovers(
   const height =
     Math.min(rect.over.y + rect.over.height, port.y + port.height) - y;
   if (!(width > 0 && height > 0)) return null;
-  return hx('canvas', {
+  // in a port as round as the player's, where a rounded box cuts both: a
+  // cover is let through only where it is that box that rounds it
+  const round = 'clipRadius' in rect ? rect.clipRadius : undefined;
+  const from = round ? port : { x: 0, y: 0 };
+  const canvas = hx('canvas', {
     key: `over:${id}`,
     ref: takesPresses ? (node: Cover | null) => coverOf(node, view) : undefined,
     style: {
       position: 'absolute',
-      left: x,
-      top: y,
+      left: x - from.x,
+      top: y - from.y,
       width,
       height,
       ...(!takesPresses && { pointerEvents: 'none' as const }),
     },
     onDraw: (ctx, info) => view.current?.paintCovers(el, ctx, info.node.abs),
   });
+  if (!round) return canvas;
+  return hx(
+    'box',
+    {
+      key: `over:${id}`,
+      selectable: false,
+      style: {
+        position: 'absolute',
+        left: port.x,
+        top: port.y,
+        width: port.width,
+        height: port.height,
+        borderRadius: round,
+        overflow: 'hidden',
+        pointerEvents: 'box-none',
+      },
+    },
+    canvas,
+  );
 }
 
 /** What core asks of a node for the node under a point, which `DrawnNode`
@@ -236,7 +263,22 @@ function renderVideo(
         ...(rect.label && { 'aria-label': rect.label }),
         onLoadedMetadata: (ev) =>
           view.current?.mediaLoaded(el, ev.width, ev.height),
-        onError: () => view.current?.mediaFailed(el, rect.url),
+        // a `MediaSource`'s stream: what its player says is the page's
+        // clock, and a failure is the host's to start again
+        ...(rect.reports
+          ? {
+              onTimeUpdate: ({ currentTime }: { currentTime: number }) =>
+                view.current?.videoEvent(
+                  el,
+                  rect.url,
+                  'time',
+                  `${currentTime}`,
+                ),
+              onEnded: () => view.current?.videoEvent(el, rect.url, 'ended'),
+              onError: (err: Error | null) =>
+                view.current?.videoEvent(el, rect.url, 'error', err?.message),
+            }
+          : { onError: () => view.current?.mediaFailed(el, rect.url) }),
         ...(rect.controls && {
           onClick: (ev: { currentTarget: VideoNode | null }) => {
             const node = ev.currentTarget;

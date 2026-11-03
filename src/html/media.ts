@@ -134,6 +134,10 @@ export interface MediaRect {
   source: VideoSource;
   /** That source, as the document wrote it: what a failure is told by. */
   url: string;
+  /** Set where the page hears what the player says — its time, its end, a
+   *  failure — as it does of a sound's (`HtmlViewNode.videoEvent`): a
+   *  `MediaSource` whose stream it plays as it is appended. */
+  reports?: true;
   /** The video's content box, which the picture is fitted into. */
   x: number;
   y: number;
@@ -355,7 +359,9 @@ export function videoSignature(el: Element): string {
 export function mediaRectsOf(
   tree: BoxTree,
   scale: number,
-  sourceOf: (el: Element) => { source: VideoSource; url: string } | null,
+  sourceOf: (
+    el: Element,
+  ) => { source: VideoSource; url: string; reports?: boolean } | null,
   /** Filled with what the document paints over each player (`coversOf`),
    *  by its element. */
   covers: Map<Element, Cover[]>,
@@ -382,6 +388,7 @@ export function mediaRectsOf(
       ...(over.length && { over: around(over.map((c) => c.rect)) }),
       source: chosen.source,
       url: chosen.url,
+      ...(chosen.reports && { reports: true as const }),
       fit: box.style.objectFit,
       autoPlay: attr(el, 'autoplay') !== undefined,
       loop: attr(el, 'loop') !== undefined,
@@ -656,7 +663,7 @@ function placementOf(
         hidden = !!opaque && found.some((c) => hides(c, shows, opaque));
         const over = hidden
           ? []
-          : coversOf(tree, found, shows, scale, atViewport);
+          : coversOf(tree, found, shows, scale, atViewport, cut);
         if (!over) return null;
         drawnOver.push(...over);
       } else if (crowded(tree, box, reach)) return null;
@@ -819,8 +826,9 @@ export function separateCovers(boxes: readonly Box[]): number {
  * context itself — so a box around a cover that does any of those holds the
  * video too, and the document fades or filters the two as one group, which
  * a player and a paint over it are two of. Nor does the canvas cut a cover
- * to a rounded box around it: it clips to a rectangle, and paints the
- * cover with none of the boxes around it. Until the player has a frame it
+ * to a rounded box around it, but the one that cuts the player too, whose
+ * corners the canvas is cut with: it clips to that, and paints the cover
+ * with none of the boxes around it. Until the player has a frame it
  * shows the document under it, so what of a cover is translucent is drawn
  * twice there for that long.
  */
@@ -833,6 +841,12 @@ function coversOf(
    *  covers have to be with it: a box the document scrolls under a fixed
    *  player is in no place a cover laid out once could say. */
   atViewport = false,
+  /** What cuts the player, whose corners the canvas of what is painted over
+   *  it is cut with too (`renderCovers`): a cover rounded by the same box
+   *  is cut as the document cuts it. YouTube rounds its player, and its
+   *  controls, spinner and gradients are in the same rounded box as its
+   *  video. */
+  own?: { rect: Rect; radius: number },
 ): Cover[] | null {
   if (found.length > MAX_COVER_LAYERS || separateCovers(found) > MAX_COVERS) {
     return null;
@@ -855,7 +869,9 @@ function coversOf(
       height: cover.boundsHeight,
     };
     const cut = clipFor(cover, ink, scale);
-    if (cut === null || (cut && cut.radius > 0)) return null;
+    if (cut === null || (cut && cut.radius > 0 && !sameClip(cut, own))) {
+      return null;
+    }
     const over = within(within(ink, shows), cut?.rect ?? ink);
     if (!(over.width > 0 && over.height > 0)) continue;
     out.push({
@@ -865,6 +881,22 @@ function coversOf(
     });
   }
   return out;
+}
+
+/** Whether two clips are one box's: a cover rounded by it is cut by the
+ *  port its player's covers are drawn in. */
+function sameClip(
+  a: { rect: Rect; radius: number },
+  b: { rect: Rect; radius: number } | undefined,
+): boolean {
+  return (
+    !!b &&
+    a.radius === b.radius &&
+    a.rect.x === b.rect.x &&
+    a.rect.y === b.rect.y &&
+    a.rect.width === b.rect.width &&
+    a.rect.height === b.rect.height
+  );
 }
 
 /** Whether a box around a cover fades, turns, filters, masks or cuts to a

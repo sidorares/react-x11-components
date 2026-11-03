@@ -1394,18 +1394,22 @@ as WPT's tests make them, and to another peer the host can reach.
   GLSL 4.10, which most of it is; uniform blocks, samplers and transform
   feedback are not forwarded, and a texture takes an `ImageData` or a canvas
   but not yet an `<img>`.
-- **`MediaSource` holds a clip of VP9, and says it supports nothing**
-  (`src/html/scripts/mse.ts`, `clips.ts`): a media element opens one through
-  its object URL, and `isTypeSupported` answers false for every type, since
-  nothing can hand the player bytes as they arrive. So a stream player that
-  asks, as hls.js does, sets its playlist as the `src` where `canPlayType`
-  says the host's player reads it. `addSourceBuffer` takes one thing, VP9 in
-  WebM, where the host's player plays VP9 (`canPlayType` of
-  `video/mp4; codecs="vp09…"`): a page that does not ask and fetches a clip
-  whole, as Apple's product pages do to scrub one with the scroll. When the
-  stream ends the player is handed a file of it, so nothing shows until then.
-  Every other type throws `NotSupportedError`, the path such a page has for a
-  type it cannot decode. A window's alone: a worker has none, and
+- **`MediaSource` streams fragmented MP4 of H.264 and AAC, and holds a clip
+  of VP9** (`src/html/scripts/mse.ts`, `feeds.ts`, `clips.ts`): a media
+  element opens one through its object URL. Where the host's player reads
+  HLS and MP4 (`canPlayType`), `isTypeSupported` and `addSourceBuffer` take
+  MP4 whose codecs are H.264 and AAC, what YouTube streams, and what is
+  appended is played as it is appended, over a playlist the host serves
+  ([Video](#video)). So YouTube's watch page plays, and hls.js streams
+  through it as it does on Safari, where it set its playlist as the `src`.
+  `addSourceBuffer` takes one thing more, VP9 in WebM, where the host's
+  player plays VP9 (`canPlayType` of `video/mp4; codecs="vp09…"`), and
+  `isTypeSupported` still says no to it: a page that does not ask and
+  fetches a clip whole, as Apple's product pages do to scrub one with the
+  scroll. When that stream ends the player is handed a file of it, so
+  nothing shows until then. Every other type throws `NotSupportedError`, the
+  path such a page has for a type it cannot decode, and on X11 and Wayland,
+  with no player, every type does. A window's alone: a worker has none, and
   `canConstructInDedicatedWorker` is false.
 
 `HtmlNetwork.webRTC` is a real one, over
@@ -3228,13 +3232,15 @@ it gives — and the answer is one of
 | `null`                      | Nothing: the next `<source>` is asked for, and with none left the video is its poster.                                                                                                                                                |
 
 A page that scripts its player asks first, with `canPlayType`, which is
-the host's to answer too (`scripts.canPlayType`): an HLS player whose types
-`MediaSource` turns down sets the
-playlist as the `src` only where the answer for
+the host's to answer too (`scripts.canPlayType`), and which says what
+`MediaSource` takes: an HLS player whose types `MediaSource` turns down sets
+the playlist as the `src` only where the answer for
 `application/vnd.apple.mpegurl` is not `''`, as on Safari, and AVFoundation
-plays a playlist from its URL. `canPlayMedia` answers for the platform's
-player, where `useSupports('mediaPlayback')` says there is one; the example
-browser hands it on.
+plays a playlist from its URL. Where the answer for MP4 is not `''` either,
+`MediaSource` takes H.264 and AAC, and hls.js streams them through it.
+`canPlayMedia` answers for the platform's player, where
+`useSupports('mediaPlayback')` says there is one; the example browser hands
+it on.
 
 A `src` the player then fails on — a container it has no reader for, a URL
 that does not answer — is the next source's turn too, as HTML's `<source>`
@@ -3262,10 +3268,10 @@ things about it are decisions:
   `play`, `playing`, `pause`, `volumechange` and the seek's events in tasks
   after, and `play()`'s promise kept, or turned down by a `pause()` that
   came before its task, as Chrome's is. **Nothing comes back from the
-  player**: where there is no network, `currentTime` is where the page
-  last sought, a video that ends is not paused, and a press on one with
-  `controls` is not told to the page. An `autoplay` video reads as playing
-  from the first.
+  player**, but for a `MediaSource`'s stream's (below): where there is no
+  network, `currentTime` is where the page last sought, a video that ends is
+  not paused, and a press on one with `controls` is not told to the page. An
+  `autoplay` video reads as playing from the first.
 - **Where the page's requests reach a network, the page loads the media
   itself, as far as its metadata** (HTML 4.8.11.5). Setting `src`,
   `load()`, `play()` on an element that has selected no source, and the
@@ -3301,6 +3307,41 @@ things about it are decisions:
   takes the path it has for one it cannot decode. The VP9 decoder is one
   macOS hands out only to a process that asks, which `@windowkit/appkit` does
   from 0.30.2; before that a `vp09` track opens and shows nothing.
+- **A stream a page appends goes to the same player, as a playlist the host
+  writes as it is appended** (`scripts/feeds.ts`, `fmp4.ts`,
+  `loopback.ts`). AVFoundation opens a URL and reads no bytes it is handed,
+  and it reads fragmented MP4 a segment at a time from an HLS playlist that
+  may still be growing (`EXT-X-PLAYLIST-TYPE:EVENT`). So the host keeps what
+  a page appends as MSE's track buffers — `buffered`, `remove()`, the
+  timestamp offset, the append window, `abort()`, `changeType()` and the
+  quota as MSE 3.5 has them — and cuts the frames into segments of two
+  seconds of its own, served on 127.0.0.1 under a token of 128 random bits
+  that only the player is handed. The page's bytes are not passed on as they
+  came: YouTube appends a segment in pieces of ten kilobytes, and the player
+  is handed a segment as its frames are whole, each sample's bytes as
+  appended, from timestamps that start where the playlist does. A new init
+  segment is a new `EXT-X-MAP`, which is how YouTube's 480p becomes 720p.
+  What the player does is the page's: its clock follows the player's time
+  from the first, waits where what is buffered ends, with `waiting`, and
+  goes on, with `playing`, when the page appends more; the stream's end is
+  the player's end. A seek inside what the player has is the player's; one
+  past it, or near the end of what is listed, is a playlist of its own from
+  the key frame before where the page went, handed to a new player that is
+  sought there. What AVFoundation does with such a playlist decided the rest,
+  each found by playing one to it: it will not start, seek or go on within
+  three target durations of the end of a playlist that grows, and refuses a
+  shorter `HOLD-BACK`, so segments are short, cut inside a GOP where one is
+  longer, which it decodes across and seeks into correctly; it starts a few
+  segments from the end of the first playlist it reads, whatever
+  `EXT-X-START` says, so the first lists two; it waits a target duration for
+  the next playlist unless the server can block (`CAN-BLOCK-RELOAD`), when
+  it takes each segment as it is listed; and a blocked reload is held for as
+  long as the page appends nothing, since answered with the playlist it had,
+  a player at its end failed (`-15416`) or said it had ended. Audio that
+  starts after the video's key frame, as YouTube's does after a seek, is
+  `EXT-X-GAP` until it starts. Only the frames of what the player is half a
+  minute past are let go, beyond what the page removes. On X11 and Wayland,
+  with no player, `MediaSource` takes none of it.
 - **A press on a video with `controls` is kept the same way**, so a script
   that pauses a video the press played changes what the player was told,
   and pauses it.
@@ -3330,8 +3371,11 @@ rest keep their posters:
   caption pulled up across it — which no box after the player can paint
   again, so that keeps its poster. So do a video and a box over it that a
   box around both fades, which the document fades as one group, a box over
-  it that a box with round corners clips, more than four of them or more
-  than 32 layers, and both under a scale. On macOS a player with a box over it is drawn into the
+  it that a box with round corners clips — but the box that clips the video
+  too, whose corners the canvas is cut with: YouTube rounds its player, and
+  its controls, spinner and gradients are in it with the video — more than
+  four of them or more than 32 layers, and both under a scale. On macOS a
+  player with a box over it is drawn into the
   window, as core draws one with anything over it, rather than on a layer
   of its own.
 - **A box fixed to the viewport is asked about as the pane scrolls**, and
