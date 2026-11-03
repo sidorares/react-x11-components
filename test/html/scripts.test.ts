@@ -8815,6 +8815,25 @@ test('location.reload() and history.go(0) fire navigate as a reload, with the cu
   );
 });
 
+test('navigate() to a file: URL from a non-file page rejects with AbortError and fires no navigate', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = async function () {' +
+      '  navigation.onnavigate = function () { r.push("navigate"); };' +
+      '  var res = navigation.navigate("file://");' +
+      '  try { await res.committed; } catch (e) { r.push("committed " + e.name); }' +
+      '  try { await res.finished; } catch (e) { r.push("finished " + e.name); }' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '};' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'committed AbortError|finished AbortError',
+  );
+});
+
 test('navigation is the page’s entries, and navigate() fires navigate, which a listener intercepts, cancels or lets go', async () => {
   const doc = await hosted(
     '<p id="out"></p><a id="link" href="elsewhere">go</a><script>' +
@@ -8941,6 +8960,51 @@ test('a History method acts on the history it is called on, whichever window it 
       // the frame's own still has its own about:blank's URL
       'SecurityError',
     ].join('|'),
+  );
+});
+
+test('window.stop() aborts an ongoing navigation: its signal, after dispatch and inside navigate, and an intercept’s finished', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  try {' +
+      // after dispatch: signal aborted, committed rejects, defaultPrevented stays false
+      '    var ev; navigation.onnavigate = function (e) { ev = e; e.signal.onabort = function () { r.push("abort"); }; };' +
+      '    var a = navigation.navigate("?1").committed;' +
+      '    r.push(ev.defaultPrevented);' +
+      '    window.stop();' +
+      '    r.push(ev.defaultPrevented, ev.signal.aborted);' +
+      '    try { await a; } catch (e) { r.push(e.name); }' +
+      // inside navigate: the next listener sees defaultPrevented, and committed rejects
+      '    var second; navigation.onnavigate = null;' +
+      '    navigation.addEventListener("navigate", function once(e) {' +
+      '      navigation.removeEventListener("navigate", once);' +
+      '      e.signal.onabort = function () { r.push("abort2"); };' +
+      '      window.stop();' +
+      '    });' +
+      '    navigation.addEventListener("navigate", function twice(e) {' +
+      '      navigation.removeEventListener("navigate", twice);' +
+      '      second = e.defaultPrevented;' +
+      '    });' +
+      '    try { await navigation.navigate("?2").committed; } catch (e) { r.push(e.name, second); }' +
+      // after intercept: committed fulfills, finished rejects with the navigateerror
+      '    var err; navigation.onnavigateerror = function (e) { err = e.error; };' +
+      '    navigation.onnavigate = function (e) {' +
+      '      e.intercept({ handler: function () { return new Promise(function (ok) { setTimeout(ok, 50); }); } });' +
+      '    };' +
+      '    var res = navigation.navigate("#kept");' +
+      '    window.stop();' +
+      '    await res.committed;' +
+      '    try { await res.finished; } catch (e) { r.push(e.name, e === err); }' +
+      '  } catch (e) { r.push("threw " + (e && e.name) + " " + (e && e.message)); }' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false|abort|false|true|AbortError|abort2|AbortError|true|AbortError|true',
   );
 });
 
