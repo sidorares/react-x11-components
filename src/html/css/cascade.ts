@@ -7761,13 +7761,15 @@ export class Cascade {
 
   /**
    * A control as a page reads it. One the palette draws has the palette's
-   * edges in its style, which is how the box comes to the widget's size,
-   * and a page is owed the web's: what a browser's `getComputedStyle`
-   * answers, and what a page that writes a read value back builds on, as a
-   * library that copies an element's style does, and every test of CSS
-   * UI 4's list. The style itself where the page styles the control, and
-   * where it is no control. Kept by the style, as elements share one only
-   * where the same rules match them.
+   * border and ground in its style, none and transparent, which is how the
+   * box comes to the widget's size, and a page is owed the web's: what a
+   * browser's `getComputedStyle` answers, and what a page that writes a
+   * read value back builds on, as a library that copies an element's style
+   * does, and every test of CSS UI 4's list. Written back, any of them takes
+   * the palette's look off, as it takes a browser's; read as the palette's,
+   * the control drew neither the web's look nor its own. The style itself
+   * where the page styles the control, and where it is no control. Kept by
+   * the style, as elements share one only where the same rules match them.
    */
   styleAsRead(
     el: Element,
@@ -9990,13 +9992,12 @@ const CONTROL_TAGS = new Set([
 /** The controls the palette's chrome is for (`chromeText`). */
 const PALETTE_TAGS = new Set(['input', 'textarea', 'select', 'button']);
 
-/** What the palette's chrome sets (`chromeText`), which a page reads the web's
- *  values of (`styleAsRead`). */
+/** What the palette's chrome sets (`chromeText`) and a page's value for
+ *  which takes a control's look off, which a page reads the web's values of
+ *  (`styleAsRead`). Its padding is not one, and reads as laid out: a page
+ *  that writes it back, as one that copies a style does, keeps the control
+ *  as it was drawn. */
 const PALETTE_FIELDS = [
-  'paddingTop',
-  'paddingRight',
-  'paddingBottom',
-  'paddingLeft',
   'borderTopWidth',
   'borderRightWidth',
   'borderBottomWidth',

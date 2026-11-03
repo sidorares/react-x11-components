@@ -74,6 +74,9 @@ export interface UsedBox {
   /** Whether only its margins and padding are to be read, by what otherwise
    *  takes the computed value (`HtmlViewNode._edgesOf`). */
   edgesOnly?: boolean;
+  /** The border widths a page reads where they are not those laid out: a
+   *  control the palette draws, which reads the web's (`edgesAsRead`). */
+  borderRead?: [number, number, number, number];
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -1266,7 +1269,7 @@ function cssomAt(
     out[`border-${side}-width`] =
       styles[i] === 'none' || styles[i] === 'hidden'
         ? '0px'
-        : px(box ? box.border[i] : widths[i], scale);
+        : px(box ? (box.borderRead ?? box.border)[i] : widths[i], scale);
     out[`border-${side}-color`] = cssomColor(
       colors[i],
       sources[i],

@@ -15933,28 +15933,19 @@ function shadowHidden(node: AnyNode, from: AnyNode): boolean {
 }
 
 /**
- * The edges a page reads of a control the palette draws (`styleAsRead`),
- * where its box has none: its border box is the widget's, and its `width`
- * and `height` read what those edges leave of it, so that they add up to
- * its `offsetWidth`. A percentage stays what layout made of it.
+ * The border a page reads of a control the palette draws (`styleAsRead`),
+ * where its box has none. Its `width` and `height` read what its box holds,
+ * its padding as laid out, so a page that writes them back keeps the box
+ * the size it is, as it would in a browser; beside the web's border they
+ * come to more than its `offsetWidth`, which nothing writes back.
  */
 function edgesAsRead(used: UsedBox, read: ComputedStyle): void {
-  used.border = [
+  used.borderRead = [
     read.borderTopWidth,
     read.borderRightWidth,
     read.borderBottomWidth,
     read.borderLeftWidth,
   ];
-  const padding = [
-    read.paddingTop,
-    read.paddingRight,
-    read.paddingBottom,
-    read.paddingLeft,
-  ];
-  used.padding = used.padding.map((laid, i) => {
-    const length = padding[i];
-    return typeof length === 'number' ? length : laid;
-  }) as UsedBox['padding'];
 }
 
 /**

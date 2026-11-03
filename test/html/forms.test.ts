@@ -1501,65 +1501,54 @@ test("what styles a control is an author's value the cascade leaves it, by name,
   assert.strictEqual(menulist?.bare?.chevron, true, 'its arrow on a bare box');
 });
 
-test("a control the palette draws reads the web's edges, and they add up to its box", async () => {
-  // The palette's chrome takes a field's padding and border away, so the box
-  // is the widget's size; a page reads the web's, which it writes back where
-  // it copies a style, and where a test of CSS UI 4's list does: written
-  // back as the palette's, every field and button lost its look.
-  const { node } = await render(
-    '<input id="field" value="x"><textarea id="area"></textarea>' +
-      '<button id="go">Go</button>' +
-      '<input id="own" style="padding: 5px">',
-  );
+test("a control the palette draws reads the web's border and ground, and the size its box has", async () => {
+  // The palette's chrome takes a field's border and ground away, so the box
+  // is the widget's size. A page reads the web's, which it writes back
+  // where it copies a style and where a test of CSS UI 4's list does: read
+  // as the palette's, a control written back drew neither look. Its padding,
+  // width and height are what its box has, so a page that writes those back
+  // keeps the control the size it is, as it would in a browser.
+  const page = (style = (_: string) => '') =>
+    `<input id="field" value="x" style="${style('field')}">` +
+    `<textarea id="area" style="${style('area')}"></textarea>` +
+    `<button id="go" style="${style('go')}">Go</button>`;
+  const { node } = await render(page());
   const el = view(node);
   const read = (id: string) =>
     el.computedStyle(boxOf(el, id).el as unknown as Element)!;
-  const edges = (id: string, ...props: string[]) =>
-    props.map((prop) => read(id)[prop]);
-  const sides = [
-    'border-top-width',
-    'border-top-style',
-    'padding-top',
-    'padding-left',
-    'border-top-left-radius',
-  ];
-  assert.deepStrictEqual(edges('field', ...sides), [
-    '2px',
-    'inset',
-    '1px',
-    '2px',
-    '0px',
-  ]);
-  assert.deepStrictEqual(edges('area', ...sides), [
-    '1px',
-    'solid',
-    '2px',
-    '2px',
-    '0px',
-  ]);
-  assert.deepStrictEqual(edges('go', ...sides), [
-    '2px',
-    'outset',
-    '1px',
-    '6px',
-    '0px',
-  ]);
-  assert.strictEqual(
-    edges('own', 'padding-top')[0],
-    '5px',
-    "the page's own padding",
-  );
+  const edges = (id: string) =>
+    ['border-top-width', 'border-top-style', 'border-top-left-radius'].map(
+      (prop) => read(id)[prop],
+    );
+  assert.deepStrictEqual(edges('field'), ['2px', 'inset', '0px']);
+  assert.deepStrictEqual(edges('area'), ['1px', 'solid', '0px']);
+  assert.deepStrictEqual(edges('go'), ['2px', 'outset', '0px']);
   assert.notStrictEqual(read('field')['background-color'], 'rgba(0, 0, 0, 0)');
-  const box = boxOf(el, 'field');
   assert.strictEqual(
-    edgesOf(box).padTop,
-    0,
-    "the box keeps the palette's edges",
+    edgesOf(boxOf(el, 'field')).style.styledControl,
+    false,
+    'the palette draws it',
   );
-  assert.strictEqual(
-    parseFloat(read('field').width) + 2 * 2 + 2 * 2,
-    box.width,
-    'and its width is what they leave of it',
+  const kept = ['width', 'height', 'padding-top', 'padding-left'];
+  const sizes = (of: typeof el) =>
+    ['field', 'area', 'go'].map((id) => {
+      // to a hundredth: a length reads to three places, as Chrome's does
+      const box = boxOf(of, id);
+      return [id, Math.round(box.width * 100), Math.round(box.height * 100)];
+    });
+  const before = sizes(el);
+  const written = Object.fromEntries(
+    ['field', 'area', 'go'].map((id) => [
+      id,
+      kept.map((prop) => `${prop}:${read(id)[prop]}`).join(';'),
+    ]),
+  );
+  cleanup();
+  const again = await render(page((id) => written[id]));
+  assert.deepStrictEqual(
+    sizes(view(again.node)),
+    before,
+    'its size and padding, written back, keep its box',
   );
 });
 
