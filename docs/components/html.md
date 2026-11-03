@@ -2219,14 +2219,40 @@ preloadHtmlScripts()` answers which, and loads the engine before the
 Turning `scripts` on or off makes a new document, as a browser reloads a
 page for its switch.
 
-**`execCommand` makes the edits a key makes, and no others**: `insertText`,
-`delete`, `forwardDelete`, `insertLineBreak`, `insertParagraph` and
-`selectAll`, in an editing host or a focused text field, each told as a
-`beforeinput` and an `input`. `queryCommandSupported` says which, so a
-formatting command and `undo` answer false rather than pretending, and
-`queryCommandState` and `queryCommandValue` have nothing to report. `copy` and
-`cut` are there where the host handed a clipboard, under a user's press or
-key, and `paste` is not for a page to ask for.
+**`execCommand` is the W3C editing specification's**
+([execCommand](https://w3c.github.io/editing/docs/execCommand/)): every
+command it defines, `bold` to `insertHTML`, links, lists, `formatBlock`,
+alignment, indentation and `styleWithCSS`, by the algorithms of its reference
+implementation (`src/html/scripts/editing.ts`), whose outcomes are what WPT's
+`editing/run` expects. `queryCommandState`, `queryCommandValue`,
+`queryCommandIndeterm` and `queryCommandEnabled` answer as it says, a bold
+the caret holds is carried to what is typed next, and each edit is told as an
+`input` with Chromium's `inputType` and `data`, with no `beforeinput`, as
+Input Events 2 has it. Where the engines differ the specification is kept,
+and it is Firefox's: a new style goes outside what is there
+(`<i><b>x</b></i>`, where Chromium nests it inside), and Enter at the end of
+a host's first line wraps that line too (`<div>ab</div><div><br></div>`).
+`selectAll` selects what the editing host holds, as Chromium does, and a
+`plaintext-only` host takes text and its deletes and no formatting. Where the
+specification predates what the browsers agree on, they are followed: a host
+that cannot hold a paragraph, a `<span>` or a `<p>`, breaks its line at Enter;
+`insertLineBreak` where white space keeps line feeds puts in a line feed and
+no `<br>`; what a `<select>` holds is taken or left whole, and text typed at
+one goes after it; a `contenteditable=false` element inside a selection goes
+with it; a letter typed at the start or the end of a link goes before or after
+it, where a deletion, a key or a script left the caret there, and into it where
+it takes the place of what the link held or follows a letter typed there,
+while `execCommand('insertText')` there stays in the link as the specification
+has it; and a delete never removes the `<body>`. `document.designMode` makes
+the document's root element the editing host. In a focused
+text field the commands are the field's own edits. `undo` and `redo` put back
+and make again the edits the commands and the keys made, a step each (typing
+one step until something else is done), keeping every node the page holds the
+node it was; Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y do the same, Cmd on a Mac, told
+as `historyUndo` and `historyRedo`. `copy` and `cut` are there where the
+host handed a clipboard, under a user's press or key, and `paste` is not for a
+page to ask for. A document other than the window's, `createHTMLDocument`'s
+or a frame's with no realm of its own, edits nothing.
 
 **`navigator.permissions` answers what asking would come to**: see
 [Notifications and permissions](#notifications-and-permissions). A name it does

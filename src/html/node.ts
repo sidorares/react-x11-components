@@ -7392,6 +7392,14 @@ export class HtmlViewNode extends Node {
    *  where a page reads between them. */
   private _onlyFaces = false;
 
+  /** The document's `medium` font size, in CSS pixels: the palette's,
+   *  which its keyword sizes are worked out from. */
+  fontMedium(): number {
+    this._prepare(this.abs.width || 1);
+    const initial = this._cascade?.initial;
+    return initial ? initial.fontSize / this._scale : 16;
+  }
+
   /** What `svg-geometry.ts` asks of the document: an element's text and
    *  where a drawing was laid out, in CSS pixels. */
   svgMeasure(): SvgMeasure {

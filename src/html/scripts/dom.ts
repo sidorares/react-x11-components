@@ -47,6 +47,7 @@ import type { installWebCrypto } from './webcrypto.js';
 import type { installDataTransfer } from './datatransfer.js';
 import type { installUIEvents } from './ui-events.js';
 import type { installPointers } from './pointers.js';
+import type { installEditing } from './editing.js';
 import type { installClipboard } from './clipboard.js';
 import type { installNotifications } from './notifications.js';
 import type { installWindows, WindowInternals } from './windows.js';
@@ -97,6 +98,7 @@ export function installDom(
   cachesApi: typeof installCaches,
   uiEventsApi: typeof installUIEvents,
   pointersApi: typeof installPointers,
+  editingApi: typeof installEditing,
   namedAccess: boolean,
 ): void {
   // strict, so that no page reads `caller` or `arguments` off a function of
@@ -143,6 +145,9 @@ export function installDom(
       op !== 'computed' &&
       op !== 'computedShorthands' &&
       op !== 'computedSvg' &&
+      op !== 'editingStyle' &&
+      op !== 'colorText' &&
+      op !== 'fontMedium' &&
       op !== 'customProperty' &&
       op !== 'frameDocument' &&
       op !== 'parsedForm' &&
@@ -223,6 +228,9 @@ export function installDom(
   const KEEPS_LISTS = new Set([
     'info',
     'opaqueSrcdoc',
+    'editingStyle',
+    'colorText',
+    'fontMedium',
     'eventPath',
     'pointerChain',
     'pointerOver',
@@ -7478,7 +7486,21 @@ export function installDom(
       return r ? wrap(r[0]) : null;
     }
     focus(options?: Any): void {
+      const had = document.activeElement === this;
       call('focus', this._id);
+      // an editing host focused takes the caret, at its start, where the
+      // selection was anywhere else: what a command then edits, as Chromium
+      // and Firefox have it. One focused already keeps what it has, none
+      // among it, as a driver's keys focus what they are sent to (WPT's
+      // no-beforeinput-when-no-selection)
+      if (
+        !had &&
+        document.activeElement === this &&
+        editingHostOf(this) === this
+      ) {
+        const r = selection._range;
+        if (!r || !this.contains(r.startContainer)) selection.collapse(this, 0);
+      }
       // the focusing steps bring it into view, through the scroll
       // containers around it, where something else had it before (HTML
       // 6.6.3, unless `preventScroll`): as little as shows it, and where a
@@ -16643,6 +16665,19 @@ export function installDom(
     hasFocus(): boolean {
       return true;
     }
+    /** HTML 6.8.2: the whole document an editing host, its root element
+     *  the host. Turned on, the selection goes to the document's start. */
+    _designMode = false;
+    get designMode(): string {
+      return this._designMode ? 'on' : 'off';
+    }
+    set designMode(v: Any) {
+      const value = str(v).toLowerCase();
+      if (value === 'on' && !this._designMode) {
+        this._designMode = true;
+        if (this === document) selection.collapse(this, 0);
+      } else if (value === 'off') this._designMode = false;
+    }
     getElementById(id: Any): Any {
       return wrap(Number(call('byId', str(id), this._id)));
     }
@@ -16655,25 +16690,36 @@ export function installDom(
       }
       const name = commandName(id);
       if (CLIPBOARD_COMMANDS.has(name)) return clipboardCommand(name);
-      if (!commandEnabled(name)) return false;
-      if (name === 'selectall') selectAllCommand();
-      else COMMANDS[name](commandTarget(), str(value));
-      return true;
+      const field = commandField();
+      if (field) return fieldCommand(field, name, str(value));
+      return editingCommand(this, name, str(value));
     }
     queryCommandEnabled(id: Any): boolean {
-      return commandEnabled(commandName(id));
+      const name = commandName(id);
+      if (CLIPBOARD_COMMANDS.has(name)) return commandEnabled(name);
+      if (commandField()) return fieldCommandEnabled(name);
+      return askEditing(this, 'queryCommandEnabled', name, false);
     }
-    queryCommandIndeterminate(_id: Any): boolean {
-      return false;
+    queryCommandIndeterm(id: Any): boolean {
+      const name = commandName(id);
+      if (commandField()) return false;
+      return askEditing(this, 'queryCommandIndeterm', name, false);
     }
-    queryCommandState(_id: Any): boolean {
-      return false;
+    queryCommandState(id: Any): boolean {
+      const name = commandName(id);
+      if (commandField()) return false;
+      return askEditing(this, 'queryCommandState', name, false);
     }
     queryCommandSupported(id: Any): boolean {
-      return commandSupported(commandName(id));
+      const name = commandName(id);
+      if (CLIPBOARD_COMMANDS.has(name)) return commandSupported(name);
+      if (name === 'undo' || name === 'redo') return true;
+      return EDITING().queryCommandSupported(name);
     }
-    queryCommandValue(_id: Any): string {
-      return '';
+    queryCommandValue(id: Any): string {
+      const name = commandName(id);
+      if (commandField()) return '';
+      return askEditing(this, 'queryCommandValue', name, '');
     }
     getElementsByName(name: Any): Any {
       const selector = `[name="${cssEscape(str(name))}"]`;
@@ -31895,12 +31941,23 @@ export function installDom(
         const u = up.getAttribute('contenteditable');
         if (u === null) continue;
         const w = u.trim().toLowerCase();
-        if (w === 'false') break;
+        if (w === 'false') return host;
         if (w === '' || w === 'true' || w === 'plaintext-only') host = up;
       }
-      return host;
+      return designHostOf(host) ?? host;
     }
-    return null;
+    return node && node.nodeType !== 9 ? designHostOf(node) : null;
+  };
+
+  /** The root element of a document in design mode that `node` is in, or
+   *  null: such a document is an editing host whole (HTML 6.8.2). */
+  const designHostOf = (node: Any): Any => {
+    const doc = node.ownerDocument;
+    if (!doc?._designMode) return null;
+    const root = doc.documentElement;
+    return root && root.namespaceURI === HTML_NS && root.contains(node)
+      ? root
+      : null;
   };
 
   /** The selection's range where it is in `host`, put at the host's start
@@ -32185,8 +32242,9 @@ export function installDom(
     inputType: string,
     data: string | null,
     pasted: { text: string; transfer: Any } | null = null,
+    asked = true,
   ): void => {
-    let range = editRange(host);
+    const range = editRange(host);
     if (!range) return;
     const init = {
       bubbles: true,
@@ -32197,12 +32255,44 @@ export function installDom(
       data,
       dataTransfer: pasted?.transfer ?? null,
     };
-    const before = trusted(new InputEvent('beforeinput', init));
-    before._ranges = targetRanges(host, range, inputType);
-    if (!dispatch(host, before)) return;
-    if (!textInput(host, inputType, data)) return;
+    // a command's is told as an `input` alone, as a field's is
+    if (asked) {
+      const before = trusted(new InputEvent('beforeinput', init));
+      before._ranges = targetRanges(host, range, inputType);
+      if (!dispatch(host, before)) return;
+      if (!textInput(host, inputType, data)) return;
+    }
     // a listener may have moved the selection, which is where the edit is
-    range = editRange(host) ?? range;
+    const at = editRange(host) ?? range;
+    const typing = inputType === 'insertText' && !pasted;
+    if (
+      !recorded(host, typing, () => editAt(host, inputType, data, pasted, at))
+    ) {
+      return;
+    }
+    dispatch(
+      host,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+  };
+
+  /** What `edit` changes, once the page let it: whether it changed
+   *  anything. */
+  const editAt = (
+    host: Any,
+    inputType: string,
+    data: string | null,
+    pasted: { text: string; transfer: Any } | null,
+    range: Any,
+  ): boolean => {
+    // a key's edit is the command's in a rich host, which carries what
+    // a bold or a colour the caret holds over to what is typed, puts a
+    // paragraph in for Enter and joins two at a Backspace (the editing
+    // specification's "insertText", "delete" and their kin)
+    if (!pasted && editedByCommand(host, inputType)) {
+      keyCommand(inputType, data);
+      return true;
+    }
     const back =
       inputType === 'deleteContentBackward' ||
       inputType === 'deleteWordBackward';
@@ -32214,13 +32304,13 @@ export function installDom(
         // the letter or the element beside the caret, a line break among
         // them, across the blocks of the host
         const unit = unitBeside(host, keeps, node, offset, back, false);
-        if (!unit) return;
+        if (!unit) return false;
         // on from a last line a placeholder holds there is nothing to take
         if (!back) {
           const held = placeholderAfter(host, keeps, node, offset);
           if (held) {
             const [n, o] = pointBy(held, true);
-            if (!unitBeside(host, keeps, n, o, false, false)) return;
+            if (!unitBeside(host, keeps, n, o, false, false)) return false;
           }
         }
         const [at, to] = pointBy(unit, false);
@@ -32273,33 +32363,17 @@ export function installDom(
         selection.collapse(n, o);
       }
     }
-    dispatch(
-      host,
-      trusted(new InputEvent('input', { ...init, cancelable: false })),
-    );
+    return true;
   };
 
-  /** What a command edits: the focused text field, or the editing host the
-   *  selection is in. */
-  const commandTarget = (): Any => {
-    const active = document.activeElement;
-    if (
-      (active?.localName === 'textarea' ||
-        (active?.localName === 'input' && selects(active))) &&
-      !active.readOnly &&
-      !active.disabled
-    ) {
-      return active;
-    }
-    const node = selection.anchorNode;
-    return node ? editingHostOf(node) : null;
-  };
   /** A field's edit, as `edit` is a host's, by what it holds and where its
-   *  selection is. */
+   *  selection is. One a command makes is told as an `input` alone (Input
+   *  Events 2, 4.1, which no `beforeinput` is for). */
   const editField = (
     field: Any,
     inputType: string,
     data: string | null,
+    asked = true,
   ): void => {
     const init = {
       bubbles: true,
@@ -32309,7 +32383,12 @@ export function installDom(
       inputType,
       data,
     };
-    if (!dispatch(field, trusted(new InputEvent('beforeinput', init)))) return;
+    if (
+      asked &&
+      !dispatch(field, trusted(new InputEvent('beforeinput', init)))
+    ) {
+      return;
+    }
     let from = field.selectionStart;
     let to = field.selectionEnd;
     if (from === to) {
@@ -32322,55 +32401,480 @@ export function installDom(
       trusted(new InputEvent('input', { ...init, cancelable: false })),
     );
   };
-  /** An edit a command makes, with a line of text a paragraph or a break as
-   *  a key would make it. */
-  const commandEdit = (
-    target: Any,
-    inputType: string,
-    data: string | null,
-  ): void => {
-    if (target instanceof HTMLElement && 'selectionStart' in target) {
-      editField(target, inputType, data);
-    } else edit(target, inputType, data);
+  /** The text field a command edits, where one has the focus: its commands
+   *  are the edits of its own text, and no formatting. */
+  const commandField = (): Any => {
+    const active = document.activeElement;
+    return (active?.localName === 'textarea' ||
+      (active?.localName === 'input' && selects(active))) &&
+      !active.readOnly &&
+      !active.disabled
+      ? active
+      : null;
   };
-  /**
-   * What `execCommand` does (W3C execCommand, not a standard yet): the
-   * commands that are edits this page already makes for a key, and no
-   * other. `queryCommandSupported` says which, so a page that can do
-   * without `bold` is not told it has it: formatting commands, `undo` and
-   * `copy` answer false until something here can do them.
-   */
-  const COMMANDS: Record<string, (target: Any, value: string) => void> = {
-    delete: (target) => commandEdit(target, 'deleteContentBackward', null),
-    forwarddelete: (target) =>
-      commandEdit(target, 'deleteContentForward', null),
-    insertlinebreak: (target) => commandEdit(target, 'insertLineBreak', null),
-    insertparagraph: (target) => commandEdit(target, 'insertParagraph', null),
-    inserttext(target, value) {
-      const field = target instanceof HTMLElement && 'selectionStart' in target;
-      const lines = field ? [value] : value.split('\n');
-      lines.forEach((line, i) => {
-        if (i) commandEdit(target, 'insertParagraph', null);
-        if (line) commandEdit(target, 'insertText', line);
-      });
-    },
+  const FIELD_COMMANDS: Record<string, (field: Any, value: string) => void> = {
+    delete: (field) => editField(field, 'deleteContentBackward', null, false),
+    forwarddelete: (field) =>
+      editField(field, 'deleteContentForward', null, false),
+    insertlinebreak: (field) =>
+      editField(field, 'insertLineBreak', '\n', false),
+    insertparagraph: (field) =>
+      editField(field, 'insertParagraph', '\n', false),
+    inserttext: (field, value) => editField(field, 'insertText', value, false),
+    selectall: (field) => field.select(),
   };
+  const fieldCommandEnabled = (name: string): boolean =>
+    Object.prototype.hasOwnProperty.call(FIELD_COMMANDS, name);
+  const fieldCommand = (field: Any, name: string, value: string): boolean => {
+    if (!fieldCommandEnabled(name)) return false;
+    FIELD_COMMANDS[name](field, value);
+    return true;
+  };
+
+  /** `selectAll` where no field has the focus: what the editing host the
+   *  selection is in holds, as Chromium has it, where the editing
+   *  specification would select the body. */
   const selectAllCommand = (): void => {
-    const target = commandTarget();
-    if (target && 'selectionStart' in target) target.select();
-    else selection.selectAllChildren(target ?? document.body);
+    const node = selection.anchorNode;
+    const host = node ? editingHostOf(node) : null;
+    selection.selectAllChildren(
+      host ?? document.body ?? document.documentElement,
+    );
   };
   /** The name a page gave a command, as it is compared (ASCII caseless). */
   const commandName = (id: Any): string => str(id).toLowerCase();
-  const commandSupported = (name: string): boolean =>
-    name === 'selectall' ||
-    (CLIPBOARD_COMMANDS.has(name) && hasClipboard()) ||
-    Object.prototype.hasOwnProperty.call(COMMANDS, name);
-  const commandEnabled = (name: string): boolean =>
-    name === 'selectall' ||
-    (CLIPBOARD_COMMANDS.has(name)
-      ? hasClipboard() && hasTransientActivation()
-      : commandSupported(name) && commandTarget() !== null);
+  /** A clipboard command, which only a host with a clipboard does. */
+  const commandSupported = (_name: string): boolean => hasClipboard();
+  const commandEnabled = (_name: string): boolean =>
+    hasClipboard() && hasTransientActivation();
+
+  // --- the editing commands -------------------------------------------------------
+  //
+  // `editing.ts`, the W3C editing specification's algorithms, made the
+  // first time a page asks about a command. What they edit is this realm's
+  // document at its selection; another document a page holds, which no
+  // window shows, is edited by none of them.
+
+  let editingCommands: Any = null;
+  const EDITING = (): Any =>
+    (editingCommands ??= editingApi({
+      document,
+      getSelection: () => selection,
+      computedStyle: editingStyle,
+      colorText: (color: string) => str(call('colorText', color) ?? ''),
+      fontMedium: () => (fontMediumPx ??= Number(call('fontMedium')) || 16),
+    }));
+  let fontMediumPx: number | null = null;
+  /** The resolved values the commands read of an element, by element:
+   *  kept while no op changes the tree or a style (`opEdits`), since a
+   *  command asks of one element over and over between its edits, and
+   *  forgotten at each command, since a rule or the viewport may have moved
+   *  between two. */
+  let editStyles = new Map<number, Record<string, string>>();
+  let editStylesAt = -1;
+  const editingStyle = (el: Any, property: string): string => {
+    if (el?.nodeType !== 1) return '';
+    if (opEdits !== editStylesAt) {
+      editStyles = new Map();
+      editStylesAt = opEdits;
+    }
+    let style = editStyles.get(el._id);
+    if (!style) {
+      const r = call('editingStyle', el._id);
+      style = typeof r === 'string' && r ? JSON.parse(r) : {};
+      editStyles.set(el._id, style!);
+    }
+    return style![property] ?? '';
+  };
+  /** The editing host the selection is in, where it is `plaintext-only`:
+   *  one that edits text alone, which the editing specification knows
+   *  nothing of. Its deletes are the specification's, which join blocks as
+   *  a rich host's do; its inserts are the text and the line feeds a key
+   *  puts in; and it has no formatting, as Chromium has it. */
+  const plainHost = (): Any => {
+    const node = selection.anchorNode;
+    const host = node ? editingHostOf(node) : null;
+    return host &&
+      /^plaintext-only$/i.test(
+        host.getAttribute('contenteditable')?.trim() ?? '',
+      )
+      ? host
+      : null;
+  };
+  const PLAIN_COMMANDS: Record<string, (host: Any, value: string) => void> = {
+    delete: (host, value) => void richCommand('delete', value),
+    forwarddelete: (host, value) => void richCommand('forwarddelete', value),
+    insertlinebreak: (host) => edit(host, 'insertLineBreak', null, null, false),
+    insertparagraph: (host) => edit(host, 'insertParagraph', null, null, false),
+    inserttext(host, value) {
+      value.split('\n').forEach((line, i) => {
+        if (i) edit(host, 'insertParagraph', null, null, false);
+        if (line) edit(host, 'insertText', line, null, false);
+      });
+    },
+  };
+  const plainCommand = (host: Any, name: string, value: string): boolean => {
+    if (name === 'selectall') {
+      selectAllCommand();
+      return true;
+    }
+    if (!Object.prototype.hasOwnProperty.call(PLAIN_COMMANDS, name)) {
+      return false;
+    }
+    PLAIN_COMMANDS[name](host, value);
+    return true;
+  };
+  /** The command a key's edit is: each a rich host has, and a
+   *  `plaintext-only` host's deletes, as its commands are. */
+  const KEY_COMMANDS: Record<string, string> = {
+    insertText: 'inserttext',
+    deleteContentBackward: 'delete',
+    deleteContentForward: 'forwarddelete',
+    deleteWordBackward: 'delete',
+    deleteWordForward: 'forwarddelete',
+    deleteByCut: 'delete',
+    insertParagraph: 'insertparagraph',
+    insertLineBreak: 'insertlinebreak',
+  };
+  const editedByCommand = (host: Any, inputType: string): boolean => {
+    const name = KEY_COMMANDS[inputType];
+    if (!name) return false;
+    return !plainHost() || name === 'delete' || name === 'forwarddelete';
+  };
+  const keyCommand = (inputType: string, data: string | null): void => {
+    // a word from a caret, which the commands delete as they would what is
+    // selected
+    if (
+      inputType === 'deleteWordBackward' ||
+      inputType === 'deleteWordForward'
+    ) {
+      if (selection.isCollapsed) {
+        selection.modify(
+          'extend',
+          inputType === 'deleteWordBackward' ? 'backward' : 'forward',
+          'word',
+        );
+      }
+    }
+    editStylesAt = -1;
+    EDITING().execCommand(KEY_COMMANDS[inputType], data ?? '', true);
+    if (selection._kept) selection._set(selection._kept, selection._backward);
+  };
+  /** A query, answered for this realm's document. */
+  const askEditing = (
+    doc: Any,
+    method: string,
+    name: string,
+    none: Any,
+  ): Any => {
+    if (doc !== document) return none;
+    if (name === 'undo' || name === 'redo') {
+      return method === 'queryCommandEnabled'
+        ? !!(name === 'undo' ? undoSteps : redoSteps).length
+        : none;
+    }
+    if (plainHost()) {
+      return method === 'queryCommandEnabled'
+        ? name === 'selectall' ||
+            Object.prototype.hasOwnProperty.call(PLAIN_COMMANDS, name)
+        : none;
+    }
+    editStylesAt = -1;
+    return EDITING()[method](name);
+  };
+  /** What each command's edit is, as an `input` tells it (Input Events 2,
+   *  5.1), Chromium's where no specification names one. */
+  const COMMAND_INPUT_TYPES: Record<string, string> = {
+    inserttext: 'insertText',
+    delete: 'deleteContentBackward',
+    forwarddelete: 'deleteContentForward',
+    insertparagraph: 'insertParagraph',
+    insertlinebreak: 'insertLineBreak',
+    insertorderedlist: 'insertOrderedList',
+    insertunorderedlist: 'insertUnorderedList',
+    inserthorizontalrule: 'insertHorizontalRule',
+    inserthtml: 'insertHTML',
+    bold: 'formatBold',
+    italic: 'formatItalic',
+    underline: 'formatUnderline',
+    strikethrough: 'formatStrikeThrough',
+    superscript: 'formatSuperscript',
+    subscript: 'formatSubscript',
+    backcolor: 'formatBackColor',
+    hilitecolor: 'formatBackColor',
+    forecolor: 'formatFontColor',
+    fontname: 'formatFontName',
+    justifycenter: 'formatJustifyCenter',
+    justifyfull: 'formatJustifyFull',
+    justifyleft: 'formatJustifyLeft',
+    justifyright: 'formatJustifyRight',
+    indent: 'formatIndent',
+    outdent: 'formatOutdent',
+    removeformat: 'formatRemove',
+    createlink: 'insertLink',
+  };
+  /** The commands that change the style of what is selected, whose `input`
+   *  is told where something was, changed or not. */
+  const STYLING = new Set([
+    'bold',
+    'italic',
+    'underline',
+    'strikethrough',
+    'superscript',
+    'subscript',
+    'backcolor',
+    'hilitecolor',
+    'forecolor',
+    'fontname',
+    'fontsize',
+    'removeformat',
+    'createlink',
+    'unlink',
+  ]);
+  /** An `input`'s `data` for a command: the text it inserts, the link it
+   *  makes, the font, and a colour as it computes, or the keyword it is. */
+  const inputData = (name: string, value: string): string | null => {
+    if (name === 'inserttext' || name === 'createlink' || name === 'fontname') {
+      return value;
+    }
+    if (
+      name === 'forecolor' ||
+      name === 'backcolor' ||
+      name === 'hilitecolor'
+    ) {
+      const color = str(call('colorText', value.trim()) ?? '');
+      if (color) return color;
+      return /^(inherit|initial|unset|revert|reset|currentcolor)$/i.test(value)
+        ? value.toLowerCase()
+        : value;
+    }
+    return null;
+  };
+  /** A command where no field has the focus: made by the specification's
+   *  algorithms at the selection, and told as an `input` at the editing
+   *  host it changed. */
+  const editingCommand = (doc: Any, name: string, value: string): boolean => {
+    if (doc !== document) return false;
+    const E = EDITING();
+    if (name === 'selectall') {
+      if (!E.queryCommandEnabled(name)) return false;
+      selectAllCommand();
+      return true;
+    }
+    if (name === 'undo' || name === 'redo') return undoOrRedo(name, false);
+    const plain = plainHost();
+    if (plain) return plainCommand(plain, name, value);
+    return richCommand(name, value);
+  };
+
+  // --- undo and redo ---------------------------------------------------------------
+  //
+  // What no specification has yet and every browser does: the edits the
+  // commands and the keys made in this document, each undone as a step and
+  // made again. A step is the mutation records of what it changed in its
+  // editing host, as an observer of the host's subtree has them with their
+  // old values, and undoing it is putting each back in turn, newest first,
+  // which keeps every node the page holds the node it was. What that puts
+  // back is recorded the same way, and is the step that makes it again.
+  // Typing goes on one step until something else is done, as Chromium's
+  // typing command does.
+
+  interface EditStep {
+    host: Any;
+    records: Any[];
+    /** The selection before and after, as boundary points. */
+    before: Any[] | null;
+    after: Any[] | null;
+    typing: boolean;
+  }
+  const UNDO_LIMIT = 200;
+  const undoSteps: EditStep[] = [];
+  const redoSteps: EditStep[] = [];
+  const pointsOf = (): Any[] | null => {
+    const r = selection._kept;
+    return r
+      ? [r.startContainer, r.startOffset, r.endContainer, r.endOffset]
+      : null;
+  };
+  const selectPoints = (points: Any[] | null, host: Any): void => {
+    if (!points || !host.contains(points[0]) || !host.contains(points[2])) {
+      return;
+    }
+    try {
+      selection.setBaseAndExtent(points[0], points[1], points[2], points[3]);
+    } catch {
+      // a point an edit since took away
+    }
+  };
+  /** What `change` does to `host`'s subtree, as raw mutation records with
+   *  their old values: an observer of the facade's own, through the ops,
+   *  which no page's observer of its own hears of. */
+  const observed = (host: Any, change: () => void): Any[] => {
+    const id = ++observerSeq;
+    call(
+      'observe',
+      id,
+      host._id,
+      JSON.stringify({
+        childList: true,
+        attributes: true,
+        characterData: true,
+        subtree: true,
+        attributeOldValue: true,
+        characterDataOldValue: true,
+        attributeFilter: null,
+      }),
+    );
+    try {
+      change();
+      return JSON.parse(String(call('takeRecords', id)));
+    } finally {
+      call('disconnect', id);
+    }
+  };
+  /** An edit of `host`, kept as a step to undo where it changed anything:
+   *  what `change` answers. */
+  const recorded = (host: Any, typing: boolean, change: () => Any): Any => {
+    const before = pointsOf();
+    let answer: Any;
+    const records = observed(host, () => (answer = change()));
+    if (!records.length) return answer;
+    const last = undoSteps[undoSteps.length - 1];
+    // typing on from where the last typing left the caret
+    const goesOn =
+      typing &&
+      last?.typing &&
+      last.host === host &&
+      !!before &&
+      !!last.after &&
+      before.every((x, i) => x === last.after![i]);
+    if (goesOn) {
+      last.records.push(...records);
+      last.after = pointsOf();
+    } else {
+      undoSteps.push({ host, records, before, after: pointsOf(), typing });
+      if (undoSteps.length > UNDO_LIMIT) undoSteps.shift();
+    }
+    redoSteps.length = 0;
+    return answer;
+  };
+  /** Each record put back, newest first: what was added taken out, what
+   *  was taken out put back between the siblings it was taken from, an
+   *  attribute and a text as they were. A record the page has since made
+   *  untrue is passed over. */
+  const putBack = (records: Any[]): void => {
+    for (let i = records.length - 1; i >= 0; i -= 1) {
+      const [type, targetId, added, removed, prev, next, name, old] =
+        records[i];
+      const target = wrap(targetId);
+      try {
+        if (type === 'childList') {
+          for (const id of added) {
+            const node = wrap(id);
+            if (node.parentNode === target) target.removeChild(node);
+          }
+          const after = wrap(next);
+          const before = wrap(prev);
+          const at =
+            after?.parentNode === target
+              ? after
+              : before?.parentNode === target
+                ? before.nextSibling
+                : null;
+          for (const id of removed) target.insertBefore(wrap(id), at);
+        } else if (type === 'attributes') {
+          if (old === null) target.removeAttribute(name);
+          else target.setAttribute(name, old);
+        } else if (type === 'characterData') {
+          target.data = old ?? '';
+        }
+      } catch {
+        // the page changed what the record stands on
+      }
+    }
+  };
+  /** `undo` or `redo`: the newest step on its stack put back, and what that
+   *  put back kept on the other. Told as an `input` at the step's host, and,
+   *  for a key, asked of the page first. Whether there was a step. */
+  const undoOrRedo = (name: 'undo' | 'redo', asked: boolean): boolean => {
+    const from = name === 'undo' ? undoSteps : redoSteps;
+    const to = name === 'undo' ? redoSteps : undoSteps;
+    const step = from[from.length - 1];
+    if (!step) return false;
+    const inputType = name === 'undo' ? 'historyUndo' : 'historyRedo';
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: G,
+      inputType,
+      data: null,
+    };
+    if (
+      asked &&
+      !dispatch(step.host, trusted(new InputEvent('beforeinput', init)))
+    ) {
+      return true;
+    }
+    from.pop();
+    const records = observed(step.host, () => putBack(step.records));
+    selectPoints(name === 'undo' ? step.before : step.after, step.host);
+    if (records.length) {
+      to.push({
+        host: step.host,
+        records,
+        before: step.before,
+        after: step.after,
+        typing: false,
+      });
+    }
+    dispatch(
+      step.host,
+      trusted(new InputEvent('input', { ...init, cancelable: false })),
+    );
+    return true;
+  };
+  /** A chord that undoes or redoes, on either modifier a platform makes
+   *  the primary one: Z, Shift+Z and Y. */
+  const historyChord = (e: Any): 'undo' | 'redo' | null => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return null;
+    const key = String(e.key ?? '').toLowerCase();
+    if (key === 'z') return e.shiftKey ? 'redo' : 'undo';
+    if (key === 'y' && !e.shiftKey) return 'redo';
+    return null;
+  };
+  const richCommand = (name: string, value: string): boolean => {
+    const E = EDITING();
+    const range = selection._range;
+    const host = range ? editingHostOf(range.startContainer) : null;
+    const collapsed = !range || range.collapsed;
+    const edits = opEdits;
+    editStylesAt = -1;
+    let done = false;
+    const change = () => (done = E.execCommand(name, value));
+    if (host) recorded(host, false, change);
+    else change();
+    if (!done) return false;
+    // the selection they left, which they move as a range: drawn as the
+    // reader's, and the caret's
+    if (selection._kept) selection._set(selection._kept, selection._backward);
+    if (host && (opEdits !== edits || (STYLING.has(name) && !collapsed))) {
+      dispatch(
+        host,
+        trusted(
+          new InputEvent('input', {
+            bubbles: true,
+            cancelable: false,
+            composed: true,
+            view: G,
+            inputType: COMMAND_INPUT_TYPES[name] ?? '',
+            data: inputData(name, value),
+          }),
+        ),
+      );
+    }
+    return true;
+  };
 
   // --- copy, cut and paste ---------------------------------------------------------
   //
@@ -32830,11 +33334,13 @@ export function installDom(
   const editForKey = (target: Any, e: Any): boolean => {
     const key = String(e.key ?? '');
     const chord = e.ctrlKey || e.metaKey;
+    const host = editingHostOf(target);
+    if (!host) return false;
+    const undoing = historyChord(e);
+    if (undoing) return undoOrRedo(undoing, true) || true;
     // a chord deletes a word from a caret, and what is selected as a key
     // does
     if (chord && key !== 'Backspace' && key !== 'Delete') return false;
-    const host = editingHostOf(target);
-    if (!host) return false;
     const word = chord && !!editRange(host)?.collapsed;
     if (key === 'Backspace') {
       edit(host, word ? 'deleteWordBackward' : 'deleteContentBackward', null);

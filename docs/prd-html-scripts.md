@@ -860,13 +860,12 @@ standards moved from what Acid3 expected):
   or deleted at the selection, the caret moved after it, and an `input`;
   a press focuses the host and puts the caret at the letter under it,
   where it is drawn while the host has the focus (`HtmlViewNode.setCaret`,
-  told the selection's live range at each flush). Line breaks are edited
-  as Chrome edits them: a break that ends its block lays out no line
-  after it (CSS Text 3, 4.1.2), so Enter there puts in a second one, a
-  placeholder, for the caret's line, which what is typed there takes out;
-  Backspace and Delete beside a break take the break, a delete that
-  empties a line puts a placeholder in to hold it, and Delete on a last
-  line a placeholder holds takes nothing. A
+  told the selection's live range at each flush). A key's edit in a rich
+  host is the editing command's (`insertText`, `delete`, `forwardDelete`,
+  `insertParagraph`, `insertLineBreak`), so Enter puts in a paragraph,
+  Backspace at a paragraph's start joins it to the one before, a space
+  that would collapse is typed as a no-break one, and a bold the caret
+  holds is carried to what is typed. A
   `Range`'s `getClientRects` is where its letters are drawn, a rectangle a
   line, found through the text node each piece of the document's text came
   from (`BoxTree.textNodes`, `dom-text.ts`), and `caretPositionFromPoint`

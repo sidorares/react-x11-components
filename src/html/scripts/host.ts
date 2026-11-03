@@ -583,6 +583,9 @@ export interface HandleInternals {
     pseudo: string | null,
   ): Record<string, string> | null;
   layoutOwed(): boolean;
+  /** The document's `medium` font size, in CSS pixels
+   *  (`HtmlViewNode.fontMedium`). */
+  fontMedium?(): number;
   /** The document's `@font-face` faces, as `document.fonts` lists them
    *  (`HtmlViewNode.fontFaces`). */
   fontFaces(): DocumentFontFace[];
@@ -1681,7 +1684,11 @@ export function cssRulesOf(
 
 /** How a fragment is serialized (HTML 8.5.2): an empty attribute's value
  *  written, `disabled=""`, as a browser writes it. */
-const SERIALIZE = { emptyAttrs: true } as const;
+/** HTML's fragment serialization (8.5.2): every attribute with its `=""`,
+ *  and of the characters only `&`, U+00A0, and `<` and `>` in text or `"`
+ *  in an attribute escaped, the rest written as they are, where the default
+ *  wrote every letter past ASCII as a numeric reference. */
+const SERIALIZE = { emptyAttrs: true, encodeEntities: 'utf8' } as const;
 
 /**
  * A copy of what a node holds, each shadow tree in it that `getHTML()`
@@ -4484,6 +4491,17 @@ export class DomHost {
         const rgba = cssColorStraight?.(text(a).trim());
         return rgba ? rgba.map((v) => Math.round(v * 255)).join(',') : '';
       }
+      // and as a computed style serializes it (`cssomColor`), for the
+      // editing commands, which compare colours by it
+      case 'colorText': {
+        const rgba = cssColorStraight?.(text(a).trim());
+        if (!rgba) return '';
+        const [r, g, b] = rgba.slice(0, 3).map((v) => Math.round(v * 255));
+        const alpha = Math.round(rgba[3] * 1000) / 1000;
+        return alpha >= 1
+          ? `rgb(${r}, ${g}, ${b})`
+          : `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
 
       case 'supports': {
         const condition = text(a);
@@ -5030,6 +5048,37 @@ export class DomHost {
         return JSON.stringify(SHORTHAND_NAMES);
       case 'computedSvg':
         return JSON.stringify(Object.keys(SVG_PROPERTIES));
+      // the document's `medium` in CSS pixels, which its keyword sizes are
+      // worked out from
+      case 'fontMedium':
+        return this._seams.handle.fontMedium?.() ?? 16;
+      // the few values of an element's computed style the editing commands
+      // read (`editing.ts`), by camel-case name: a command asks them of
+      // every node it walks, and a whole style is most of a read
+      case 'editingStyle': {
+        this.flush();
+        const el = this._element(a);
+        const { handle } = this._seams;
+        const style = !this._inDocument(el)
+          ? this._frameStyle(el, null)
+          : handle.styleWhileOwed
+            ? handle.styleWhileOwed(el, null)
+            : handle.computedStyle(el, null);
+        if (!style) return '';
+        return JSON.stringify({
+          display: style.display,
+          whiteSpace: style['white-space'],
+          backgroundColor: style['background-color'],
+          color: style.color,
+          fontFamily: style['font-family'],
+          fontSize: style['font-size'],
+          fontStyle: style['font-style'],
+          fontWeight: style['font-weight'],
+          textAlign: style['text-align'],
+          textDecoration: style['text-decoration-line'],
+          verticalAlign: style['vertical-align'],
+        });
+      }
       // one custom property's, by its name: a theme's hundreds are no part
       // of what `computed` sends
       case 'customProperty': {
