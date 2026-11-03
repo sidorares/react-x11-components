@@ -418,6 +418,19 @@ test('what says it is no script is none, and a module has to say it is one', () 
   assert.ok(judged(type('application/javascript; charset=utf-8')));
   assert.equal(judged(type('text/plain'), true), null);
   assert.ok(judged(type('text/javascript'), true));
+  // a JSON module has to say it is JSON, and a text module may say anything
+  const as = (headers: [string, string][], kind: 'json' | 'text') =>
+    judgeScript(loaded(headers), `${own}/x`, own, 'anonymous', true, kind);
+  assert.ok(as(type('application/json'), 'json'));
+  assert.ok(as(type('text/json;foo=bar'), 'json'));
+  assert.ok(as(type('application/vnd.api+json'), 'json'));
+  assert.equal(as(type('text/html;+json'), 'json'), null);
+  assert.equal(as(type('text/x-json'), 'json'), null);
+  assert.equal(as(type('applic ation/vnd.api+json'), 'json'), null);
+  assert.equal(as(type('text/javascript'), 'json'), null);
+  assert.ok(as(type('image/png'), 'text'));
+  assert.ok(as(type(''), 'text'));
+  assert.equal(as(type('application/json'), 'json')?.muted, false);
 });
 
 test('a request a preflight let through asks wherever a redirect sends it, and goes no further', async () => {

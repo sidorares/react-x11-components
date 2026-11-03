@@ -78,6 +78,8 @@ import type { FrameContext } from './frames.js';
 import type { HtmlSessionHistory } from './session.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
+
 const h = React.createElement;
 
 const NO_HEADERS: [string, string][] = [];
@@ -152,13 +154,17 @@ export interface HtmlScripts {
   redirects?: DocumentHop[];
   /**
    * A script's source by its URL: a `<script src>`'s, with its element, and
-   * a module's an import names. Default: asked of `onResource` as `kind:
-   * 'script'`, the text or the bytes it answers decoded.
+   * a module's an import names, with `type` where the import's attributes
+   * name it a JSON or a text module (`with { type: 'json' }`). Default: asked
+   * of `onResource` as `kind: 'script'`, with the `type`, the text or the
+   * bytes it answers decoded — a JSON or a text module's as UTF-8, whatever
+   * the response says, as HTML decodes one.
    */
   load?: (
     url: string,
     element: Element | null,
     cors?: ResourceCors,
+    type?: 'json' | 'text',
     /** Who asked, where that is a frame's document or one of no origin
      *  (`ResourceRequest.client`, `opaqueOrigin`). */
     asker?: ResourceAsker,
@@ -538,10 +544,11 @@ function runtimeLanguage(): string {
 async function loadedScript(
   result: unknown,
   fallback: string | undefined,
+  utf8: boolean,
 ): Promise<LoadedScript | null> {
   const r = result as ScriptAnswer | null | undefined;
   if (!r || r.kind !== 'script') return null;
-  const text = await scriptText(r, fallback);
+  const text = await scriptText(r, fallback, utf8);
   return text === null ? null : { text, url: r.url, headers: r.headers };
 }
 
@@ -556,13 +563,16 @@ type ScriptAnswer = {
 
 /** A script's text from what `onResource` answered: bytes in what the
  *  response names, then in what its element or its document does (HTML's
- *  "fetch a classic script"). */
+ *  "fetch a classic script"), or as UTF-8, its byte order mark taken off
+ *  and no other heard (HTML's "UTF-8 decode"). */
 async function scriptText(
   r: ScriptAnswer,
   fallback: string | undefined,
+  utf8: boolean,
 ): Promise<string | null> {
   if (typeof r.text === 'string') return r.text;
   if (!r.bytes) return null;
+  if (utf8) return new TextDecoder().decode(r.bytes);
   const charset = r.charset ?? fallback;
   await readyFor(charset);
   return decodeInEncoding(r.bytes, charset);
@@ -630,7 +640,7 @@ export function useScriptedHtml(
     network: config.fetch !== undefined,
     load:
       config.load ??
-      (async (url, element, cors, asker) => {
+      (async (url, element, cors, type, asker) => {
         const ask = latest.current.props.onResource;
         const owner = element ?? rootElement(handle.document);
         if (!ask || !owner) return null;
@@ -640,9 +650,12 @@ export function useScriptedHtml(
             kind: 'script',
             element: owner,
             ...(cors ? { cors } : {}),
+            ...(type ? { type } : {}),
             ...asker,
           }),
           owner.attribs.charset || latest.current.props.charset,
+          // a JSON or a text module is UTF-8, whatever the response names
+          !!type,
         );
       }),
     onTimeout: config.onTimeout ?? nothing,

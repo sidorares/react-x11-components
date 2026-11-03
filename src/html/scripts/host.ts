@@ -230,7 +230,14 @@ import { framingRefused } from './framing.js';
 import { planSession, sessionView, writeSession } from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
-import { MEDIA_ENOUGH, MediaReader } from './media.js';
+import {
+  isPlaylist,
+  MEDIA_ENOUGH,
+  MEDIA_MOST,
+  MediaReader,
+  readPlaylist,
+} from './media.js';
+import type { Playlist } from './media.js';
 import { removeClip, VideoClips, writeClip } from './clips.js';
 import { PageContexts } from './gl.js';
 import { PageSources } from './media-sources.js';
@@ -1235,6 +1242,11 @@ const escapeAttribute = (text: string): string =>
 function release(response: FetchResponse): void {
   void response.chunks?.[Symbol.asyncIterator]().return?.();
 }
+
+/** The types an HLS playlist is served as (RFC 8216, 4, and the two older
+ *  names players still meet). */
+const HLS_TYPE =
+  /^\s*(?:application\/(?:vnd\.apple\.mpegurl|x-mpegurl)|audio\/(?:x-)?mpegurl)\b/i;
 
 /** Bytes as base64, which is how they cross to the page. */
 /** Take a notification down, whatever the host's hook makes of it. */
@@ -9183,15 +9195,45 @@ export class DomHost {
       const chunks = response.chunks ?? [
         response.bytes ?? Buffer.from(response.body ?? '', 'latin1'),
       ];
+      // an HLS playlist, said by its type or its first line, is read whole
+      // and as text (`readPlaylist`), and is no container
+      let playlist: Uint8Array[] | null = HLS_TYPE.test(
+        response.headers.find(
+          ([k]) => k.toLowerCase() === 'content-type',
+        )?.[1] ?? '',
+      )
+        ? []
+        : null;
+      let size = 0;
       try {
         for await (const chunk of chunks) {
           if (controller.signal.aborted) return;
+          if (!playlist && !reader.received && isPlaylist(chunk)) playlist = [];
+          if (playlist) {
+            playlist.push(chunk);
+            size += chunk.length;
+            if (size > MEDIA_MOST) {
+              release(response);
+              tell('failed');
+              return;
+            }
+            continue;
+          }
           reader.add(chunk);
           tell('progress', String(reader.received));
           if (step(false)) return;
         }
       } catch {
         tell('failed');
+        return;
+      }
+      if (playlist) {
+        await this._mediaPlaylist(
+          joinBytes(playlist),
+          response.url || url,
+          controller.signal,
+          tell,
+        );
         return;
       }
       step(true);
@@ -9202,6 +9244,70 @@ export class DomHost {
         this._mediaFetches.delete(el);
       }
     });
+  }
+
+  /**
+   * What an HLS playlist a media element's source is comes to, told as a
+   * container's head is (`_mediaFetch`): a media playlist's length, or a
+   * multivariant one's first variant's size and, read from that variant's
+   * own playlist, its length — the variant a player starts with (RFC 8216,
+   * 6.3.1, the first listed). Nothing past the playlists is read: the
+   * segments are the player's.
+   */
+  private async _mediaPlaylist(
+    bytes: Uint8Array,
+    url: string,
+    signal: AbortSignalLike,
+    tell: (kind: string, ...args: string[]) => void,
+  ): Promise<void> {
+    const read = readPlaylist(new TextDecoder().decode(bytes));
+    if (!read) {
+      tell('failed');
+      return;
+    }
+    let { duration } = read;
+    let width = 0;
+    let height = 0;
+    let received = bytes.length;
+    const first = read.variants[0];
+    if (first) {
+      ({ width, height } = first);
+      let variant: Playlist | null = null;
+      try {
+        const response = await this._seams.fetch(
+          {
+            url: new URL(first.uri, url).href,
+            method: 'GET',
+            headers: [],
+            body: null,
+            credentials: 'include',
+          },
+          signal,
+        );
+        if (signal.aborted) return;
+        if (
+          !response.status ||
+          (response.status >= 200 && response.status <= 299)
+        ) {
+          const text = response.bytes
+            ? new TextDecoder().decode(response.bytes)
+            : (response.body ?? '');
+          received += text.length;
+          variant = readPlaylist(text);
+        }
+      } catch {
+        variant = null;
+      }
+      if (!variant || variant.variants.length) {
+        tell('failed');
+        return;
+      }
+      duration = variant.duration;
+    }
+    tell('progress', String(received));
+    tell('info', String(duration), String(width), String(height));
+    tell('data');
+    tell('enough');
   }
 
   /**

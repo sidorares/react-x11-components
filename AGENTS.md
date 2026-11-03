@@ -4223,6 +4223,20 @@ closes a way out a DOM binding opens by accident:
   an `import()` drains the context once it settles (`_drainLater`). And
   **the host never reads what a page threw**: a module's error goes to the
   page through `__thrown` to be reported there, under the timeout.
+  **A module is its URL and its type** (`_fetch`'s key): a JSON or a text
+  module, which an import's `type` attribute names, is a `SyntheticModule`
+  beside the script at the same URL, its value made in the page's realm (the
+  page's `JSON.parse`, taken before page code runs), and judged by its own
+  MIME rule (`judgeScript`'s `type`). The attributes are read from both of
+  the runtime's hooks, the linker's `extra` and `import()`'s third argument,
+  so **anything new that names a module goes through `_typeAsked` and
+  `_moduleType`**, or an import with a `type` is fetched as a script. A
+  script's key is its URL alone, as before, so a page with no attributes
+  pays a loop over none. **A fetch that failed leaves no entry**, and is
+  asked for again at the next import; and it is `UNFETCHED`, which makes its
+  graph's script the element's `error` and is reported to nothing else, where
+  a module that did not parse or link is reported and is an external
+  script's `load` (HTML's "execute the script element").
 - **What a page feature-detects or assigns is the IDL's, not the facade's
   reading of it.** A property a style has answers `in`
   (`isStyleProperty`, from `declaredProperties`): Vue 2 writes a name only

@@ -76,6 +76,7 @@ import { installWebGL } from './webgl.js';
 import { installGeometry } from './geometry.js';
 import { FACADE, lockStacks } from './stacks.js';
 import type { Bridge, Primitive } from './dom.js';
+import type { ModuleType } from './script-origin.js';
 
 declare const setTimeout: SetTimeout;
 declare const URL: UrlClass;
@@ -141,12 +142,16 @@ export interface EngineOptions {
    *  keeps a script's `var`s in it (`createPageContext`) — the default.
    *  Named, so a test holds both to the same escapes on any runtime. */
   global?: 'auto' | 'own' | 'object';
-  /** A module's source, by its URL, through the browser's network, or null
-   *  where there is none. Without it a module imports nothing. */
-  load?(url: string): Promise<string | null>;
+  /** A module's source, by its URL and what it is imported as, through the
+   *  browser's network, or null where there is none or it is not what it was
+   *  imported as (`judgeScript`). Without it a module imports nothing. */
+  load?(url: string, type: ModuleType): Promise<string | null>;
   /** What a classic script's `import()` resolves against: the document's
    *  address, which `history.pushState` moves. */
   base?(): string;
+  /** Whether `import()` imports anything: false in a service worker, where
+   *  each is a `TypeError`. Default: true. */
+  dynamicImport?: boolean;
   /** The outermost entry begins, and ends: a page's task, which the
    *  animations' clock stands still for. */
   entered?(): void;
@@ -166,7 +171,11 @@ interface PageModule {
   /** What `import()` hands a page: its exports. */
   readonly namespace: object;
   link(
-    linker: (specifier: string, referencing: PageModule) => Promise<PageModule>,
+    linker: (
+      specifier: string,
+      referencing: PageModule,
+      extra?: LinkExtra,
+    ) => Promise<PageModule>,
   ): Promise<void>;
   evaluate(options?: { timeout?: number }): Promise<void>;
 }
@@ -181,11 +190,35 @@ type ModuleClass = new (
     ): void;
     importModuleDynamically(
       specifier: string,
-      referrer: { identifier?: string },
+      referrer: { identifier?: string } | undefined,
+      attributes?: ImportAttributes,
     ): Promise<object>;
   },
 ) => PageModule;
 const SourceTextModule = vm.SourceTextModule as ModuleClass | undefined;
+
+/** `vm.SyntheticModule`, behind the same flag: a module whose exports the
+ *  host sets, which a JSON or a text module is, its one export its value. */
+type SyntheticModuleClass = new (
+  exports: string[],
+  evaluate: (this: { setExport(name: string, value: unknown): void }) => void,
+  options: { context: VmContext; identifier: string },
+) => PageModule;
+const SyntheticModule = vm.SyntheticModule as SyntheticModuleClass | undefined;
+
+/** An import's attributes as the runtime hands them over: the `with` clause,
+ *  its values strings, in an object of the host's or with no prototype —
+ *  never the page's, whose `Object.prototype` a page may add to. */
+type ImportAttributes = Record<string, unknown>;
+
+/** What the runtime hands the linker beside a static import's specifier:
+ *  its attributes, as `attributes` and as `assert` on Node 20.20, 22 and
+ *  later and Bun 1.4, and as `assert` alone on a Node 20 that had only
+ *  import assertions. */
+interface LinkExtra {
+  attributes?: ImportAttributes;
+  assert?: ImportAttributes;
+}
 
 /**
  * Whether an `import()` in a context hands the page a promise of its own
@@ -439,6 +472,11 @@ function resolveSpecifier(
     `Failed to resolve module specifier "${specifier}". Relative references must start with either "/", "./", or "../".`,
   );
 }
+/** The errors a module that did not come is refused with, which a module
+ *  script whose graph holds it hands its element as `error` and reports to
+ *  nothing else (`module`). */
+const UNFETCHED = new WeakSet<object>();
+
 /** The engines alive in this process, by their context's
  *  `Promise.prototype`: what tells a page's unhandled rejection from the
  *  host's (`watchRejections`). */
@@ -620,10 +658,11 @@ export class ScriptEngine {
   private _held: (() => void)[] | null = null;
   private readonly _heldKeys = new Set<string>();
 
-  /** This document's module map (HTML 8.1.4.6): one module a URL, however
-   *  many import it — and each linked once and evaluated once, which the
-   *  runtime allows a module only once, however many `import()`s are
-   *  waiting on it at the same time. */
+  /** This document's module map (HTML 8.1.4.6): one module a URL and type,
+   *  however many import it — a script's by its URL, and a JSON or a text
+   *  module's by its type before it (`_fetch`) — and each linked once and
+   *  evaluated once, which the runtime allows a module only once, however
+   *  many `import()`s are waiting on it at the same time. */
   private readonly _modules = new Map<string, Promise<PageModule>>();
   private readonly _linked = new WeakMap<PageModule, Promise<void>>();
   /** The proxies on the global's chain as the facade left it. */
@@ -638,13 +677,20 @@ export class ScriptEngine {
   private readonly _entries = new Map<string, VmScript>();
   /** The callback every script compiled into the context has, and the
    *  context itself: a page's `import()`, resolved against the document. */
-  private readonly _importer: (specifier: string) => Promise<object>;
+  private readonly _importer: (
+    specifier: string,
+    referrer?: unknown,
+    attributes?: ImportAttributes,
+  ) => Promise<object>;
   /** The context's own `TypeError`, taken before any page code runs: what a
    *  failed `import()` rejects with is the page's, never a host error, whose
    *  `constructor.constructor` is the host's `Function`. */
   private readonly _TypeError: new (message: string) => object;
   /** And its `SyntaxError`, for a classic script that does not parse. */
   private readonly _SyntaxError: new (message: string) => object;
+  /** And its `JSON.parse`, which a JSON module is parsed with: its objects
+   *  are the page's, and what fails to parse is the page's `SyntaxError`. */
+  private readonly _parseJson: (text: string) => unknown;
   /** The context's global, the page's window (`global`). */
   private readonly _global: object;
 
@@ -661,8 +707,10 @@ export class ScriptEngine {
       this._options.timeout,
       this._options.ceiling ?? this._options.timeout * CEILING,
     );
-    this._importer = (specifier) =>
-      this._imported(this._dynamic(specifier, this._options.base?.() ?? ''));
+    this._importer = (specifier, _referrer, attributes) =>
+      this._imported(
+        this._dynamic(specifier, this._options.base?.() ?? '', attributes),
+      );
     this._context = createPageContext(
       this._options.global ?? 'auto',
       this._importer,
@@ -695,6 +743,7 @@ export class ScriptEngine {
     }
     this._TypeError = run('TypeError') as new (message: string) => object;
     this._SyntaxError = run('SyntaxError') as new (message: string) => object;
+    this._parseJson = run('JSON.parse') as (text: string) => unknown;
     ENGINES.set(this._promises, this);
     watchRejections();
   }
@@ -716,14 +765,22 @@ export class ScriptEngine {
    * A page's module script (HTML 8.1.4.4): compiled, its imports fetched and
    * linked, and evaluated with the timeout every entry has. Resolves once it
    * has run to its first `await` — a top-level `await` goes on in the
-   * page's own time — to whether it ran; what failed is reported in the
-   * page, as a classic script's is.
+   * page's own time — to what became of it (HTML's "execute the script
+   * element"): it ran, or it `failed` with what it failed with
+   * reported in the page, as a classic script's error is — a module that
+   * did not parse, an import that names nothing, an attribute or a type no
+   * module has — or a module of its graph did not come (`unfetched`), which
+   * is reported to nothing but its element, as its `error`.
    */
-  async module(code: string, url: string, external: boolean): Promise<boolean> {
-    if (this._broken || this._disposed) return false;
+  async module(
+    code: string,
+    url: string,
+    external: boolean,
+  ): Promise<'ran' | 'failed' | 'unfetched'> {
+    if (this._broken || this._disposed) return 'failed';
     if (this._held) {
       await new Promise<void>((go) => this._held?.push(go));
-      if (this._broken || this._disposed) return false;
+      if (this._broken || this._disposed) return 'failed';
     }
     let root: PageModule;
     try {
@@ -735,13 +792,17 @@ export class ScriptEngine {
       }
       await this._link(root);
     } catch (error) {
-      // a fetch that failed, or a module that did not parse or link: the
-      // host's error or the runtime's, reported in the page as its own
+      if (UNFETCHED.has(error as object)) {
+        this._options.log('error', messageOf(error as Error));
+        return 'unfetched';
+      }
+      // a module that did not parse or link: the runtime's error, reported
+      // in the page as its own
       this._fault(error);
-      return false;
+      return 'failed';
     }
-    if (this._disposed) return false;
-    return this._evaluate(root);
+    if (this._disposed) return 'failed';
+    return this._evaluate(root) ? 'ran' : 'failed';
   }
 
   /** A module, compiled in this context: `import.meta.url` its address,
@@ -753,8 +814,11 @@ export class ScriptEngine {
       initializeImportMeta: (meta, module) => {
         meta.url = module.identifier;
       },
-      importModuleDynamically: (specifier, referrer) =>
-        this._imported(this._dynamic(specifier, referrer.identifier ?? url)),
+      importModuleDynamically: (specifier, referrer, attributes) =>
+        this._imported(
+          // Bun 1.4 hands an `import()` with some attributes no referrer
+          this._dynamic(specifier, referrer?.identifier ?? url, attributes),
+        ),
     });
   }
 
@@ -771,18 +835,125 @@ export class ScriptEngine {
     return done;
   }
 
-  /** The module at a URL, fetched and compiled once (`_modules`). */
-  private _fetch(url: string): Promise<PageModule> {
-    let module = this._modules.get(url);
+  /**
+   * The module at a URL, of a type, fetched and compiled once (`_modules`).
+   * One that did not come, or was not what it was imported as, leaves no
+   * entry, and is asked for again the next time it is imported, as WPT's
+   * `repeated-imports` holds browsers to: a text module's URL imported as a
+   * script fails, and imported as text after it, is text.
+   */
+  private _fetch(
+    url: string,
+    type: ModuleType = 'javascript',
+  ): Promise<PageModule> {
+    const key = type === 'javascript' ? url : `${type} ${url}`;
+    let module = this._modules.get(key);
     if (!module) {
       const load = this._options.load;
-      module = (load ? load(url) : Promise.resolve(null)).then((code) => {
-        if (code === null) throw new TypeError(`Failed to fetch module ${url}`);
-        return this._compile(code, url);
-      });
-      this._modules.set(url, module);
+      const fetched = (load ? load(url, type) : Promise.resolve(null)).then(
+        (code) => {
+          if (code === null) {
+            if (this._modules.get(key) === fetched) this._modules.delete(key);
+            const failed = new TypeError(`Failed to fetch module ${url}`);
+            UNFETCHED.add(failed);
+            throw failed;
+          }
+          return type === 'javascript'
+            ? this._compile(code, url)
+            : this._synthetic(code, url, type);
+        },
+      );
+      module = fetched;
+      this._modules.set(key, module);
     }
     return module;
+  }
+
+  /**
+   * A JSON or a text module (HTML's "create a JSON module script"; the
+   * Import Text proposal): a module whose one export, `default`, is the
+   * value — what the page's `JSON.parse` makes of the text, or the text. A
+   * JSON module that does not parse is the page's `SyntaxError`, thrown as
+   * it is made, as a script's is.
+   */
+  private _synthetic(
+    code: string,
+    url: string,
+    type: 'json' | 'text',
+  ): PageModule {
+    if (!SyntheticModule) {
+      throw new TypeError(`A ${type} module cannot be made here: ${url}`);
+    }
+    const value = type === 'json' ? this._json(code, url) : code;
+    return new SyntheticModule(
+      ['default'],
+      function () {
+        this.setExport('default', value);
+      },
+      { context: this._context, identifier: url },
+    );
+  }
+
+  /**
+   * A JSON module's value, or the `SyntaxError` it fails with made again:
+   * the page's `JSON.parse` makes its error with the engine's frames under
+   * it, which its stack would name, and an error event's `filename` is read
+   * from there. Made again, it is at the module, at the line and column the
+   * runtime says where it says them, as Chrome reports one.
+   */
+  private _json(code: string, url: string): unknown {
+    try {
+      return this._parseJson(code);
+    } catch (error) {
+      const message = ownData(error, 'message');
+      const text = typeof message === 'string' ? message : 'Invalid JSON';
+      const place = /\(line (\d+) column (\d+)\)/.exec(text);
+      const failed = this._pageError(text, 'SyntaxError');
+      Object.defineProperty(failed, 'stack', {
+        value: `SyntaxError: ${text}\n    at ${url}:${place?.[1] ?? 1}:${place?.[2] ?? 1}`,
+        writable: true,
+        configurable: true,
+      });
+      throw failed;
+    }
+  }
+
+  /**
+   * The type an import's attributes name, where they name one, in the order
+   * of HTML's HostLoadImportedModule: a key other than `type` first,
+   * which is a `SyntaxError` in an `import` and a `TypeError` in an
+   * `import()`, as WPT's `import-attributes` holds them. An import with none,
+   * which is nearly every import, reads no further than that there are
+   * none.
+   */
+  private _typeAsked(
+    attributes: ImportAttributes | undefined,
+    unknownKey: 'SyntaxError' | 'TypeError',
+  ): unknown {
+    let type: unknown;
+    for (const key in attributes) {
+      if (key === 'type') type = attributes[key];
+      // Bun's own, for the text modules it makes itself
+      else if (key !== 'hostDefinedImportType') {
+        throw this._pageError(
+          `Import attribute "${key}" is not supported.`,
+          unknownKey,
+        );
+      }
+    }
+    return type;
+  }
+
+  /** What a module type attribute's value makes a module, after its URL is
+   *  resolved: none, a script; `json` or `text`; and anything else — `css`,
+   *  `javascript`, the empty string — a `TypeError`. */
+  private _moduleType(type: unknown): ModuleType {
+    if (type === undefined) return 'javascript';
+    if (type === 'json' || type === 'text') return type;
+    throw this._pageError(
+      `"${String(type)}" is not a valid module type.`,
+      'TypeError',
+    );
   }
 
   /** What a static `import` names, linked: the same module wherever it is
@@ -790,10 +961,18 @@ export class ScriptEngine {
   private readonly _linker = async (
     specifier: string,
     referencing: PageModule,
+    extra?: LinkExtra,
   ): Promise<PageModule> => {
-    return this._fetch(
-      resolveSpecifier(specifier, referencing.identifier, this._importMap),
+    const type = this._typeAsked(
+      extra?.attributes ?? extra?.assert,
+      'SyntaxError',
     );
+    const url = resolveSpecifier(
+      specifier,
+      referencing.identifier,
+      this._importMap,
+    );
+    return this._fetch(url, this._moduleType(type));
   };
 
   /**
@@ -805,12 +984,21 @@ export class ScriptEngine {
    * context's own `TypeError`, with the message read here from an error of
    * ours.
    */
-  private async _dynamic(specifier: string, base: string): Promise<object> {
+  private async _dynamic(
+    specifier: string,
+    base: string,
+    attributes?: ImportAttributes,
+  ): Promise<object> {
     let module: PageModule;
     try {
-      module = await this._fetch(
-        resolveSpecifier(specifier, base, this._importMap),
-      );
+      if (this._options.dynamicImport === false) {
+        throw this._pageError(
+          'import() is disallowed on ServiceWorkerGlobalScope by the HTML specification.',
+        );
+      }
+      const type = this._typeAsked(attributes, 'TypeError');
+      const url = resolveSpecifier(specifier, base, this._importMap);
+      module = await this._fetch(url, this._moduleType(type));
       await this._link(module);
     } catch (error) {
       // the runtime's parse or link error is the context's already

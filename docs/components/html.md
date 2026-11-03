@@ -916,7 +916,18 @@ charset }` — the `<script>` is the request's `element`, and the root
   document's origin and whether it sends credentials, and `HtmlNetwork`
   answers those with an `Origin` of their own, kept apart in its cache, as
   `<Html>` keeps an `<img crossorigin>`'s image apart from an `<img>`'s of the
-  same address;
+  same address. A JSON or a text module — `import data from './a.json' with
+{ type: 'json' }`, and `type: 'text'` (the Import Text proposal),
+  statically or with `import()`, in a window or a worker — is asked for with
+  `type: 'json'` or `'text'` as well, which `HtmlNetwork` asks for with the
+  `Accept` a browser sends for one. It is UTF-8 whatever its response names,
+  a JSON module's response has to say it is JSON (`application/json`,
+  `text/json`, or a type ending `+json`) where a text module's may say
+  anything, and its default export is its value, made in the page's realm.
+  Each is a module of its own beside the script at the same URL. Another
+  type, `type: 'javascript'` among them, is a `TypeError`, and an attribute
+  but `type` a `SyntaxError` in an `import` and a `TypeError` in an
+  `import()`, as in a browser;
 - a page's own requests — `fetch`, an asynchronous `XMLHttpRequest`, a frame's
   document, a worker's script — go through `scripts.fetch`, a request of any
   method and the response whatever its status, after the engine has held the
@@ -1032,7 +1043,7 @@ since this component navigates nowhere by itself:
 | Seam             | Default                   | What it is                                                                                                                                                                       |
 | ---------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `fetch`          | none: every request fails | A page's requests, as above.                                                                                                                                                     |
-| `load`           | through `onResource`      | A script's source by URL, for a host that keeps scripts apart from its other resources.                                                                                          |
+| `load`           | through `onResource`      | A script's source by URL, and a JSON or a text module's with its `type`, for a host that keeps scripts apart from its other resources.                                           |
 | `navigate`       | nothing                   | An address of another document assigned to `location`, `location.replace` (`'replace'`), or a window with no opener (`'tab'`). See [Windows](#windows).                          |
 | `popups`         | none                      | What a page's `window.open` reaches. See [Windows](#windows).                                                                                                                    |
 | `headers`        | none                      | The headers of the response the document came in, for what it says of itself: its `sandbox`, its `Cross-Origin-Opener-Policy`.                                                   |
@@ -3221,7 +3232,14 @@ things about it are decisions:
   plays. The page hears `loadstart`, `progress`, `loadedmetadata`,
   `loadeddata`, `canplay`, `canplaythrough` and `suspend`; `stalled` after
   three seconds with nothing; a source no container is read from is an
-  `error`. Its `readyState`, `duration`, `videoWidth` and `currentTime`
+  `error`. **An HLS playlist is read as one** (`readPlaylist`, by its type
+  or its `#EXTM3U` line): a media playlist's segments summed for the length,
+  `Infinity` where it has no end, and a multivariant playlist's first
+  variant, which a player starts on, for the size and, from its own
+  playlist, the length — and no segment, which is the player's. Read as a
+  container, every playlist was an `error`: YouTube's embed sets its
+  playlist as the `src` wherever `canPlayType` takes HLS, and loaded it
+  again and again, with the player under it mounted each time. Its `readyState`, `duration`, `videoWidth` and `currentTime`
   are this model's, and the clock runs while it plays, `timeupdate` four
   times a second, looping or ending at its duration. The bytes are read
   host-side and never reach the page's realm, since another origin's are

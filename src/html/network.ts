@@ -90,6 +90,7 @@ import type {
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
+import { MODULE_ACCEPT } from './scripts/script-origin.js';
 import { isXmlType } from './xml-prolog.js';
 import type {
   AbortControllerClass,
@@ -308,6 +309,7 @@ const ACCEPT = {
   stylesheet: 'text/css,*/*;q=0.1',
   font: 'font/woff2,font/woff,font/ttf,font/otf,*/*;q=0.5',
   script: '*/*',
+  ...MODULE_ACCEPT,
 } as const;
 
 /** What a page asks for. A script is asked for only where the page's
@@ -1131,7 +1133,8 @@ export class HtmlNetwork {
   /**
    * A page's image, stylesheet or font. Cached by URL, so every page asking
    * for it shares one request; null for anything that did not come back as
-   * a 200 with a body, or that the page may not have.
+   * a 200 with a body, or that the page may not have. `module` is what a
+   * script was imported as, where it is a JSON or a text module.
    */
   resource(
     url: string,
@@ -1139,10 +1142,11 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
+    module?: 'json' | 'text',
     asker: ResourceAsker = {},
   ): Promise<Fetched | null> {
-    return this.load(url, kind, page, signal, cors, asker).then((loaded) =>
-      'fetched' in loaded ? loaded.fetched : null,
+    return this.load(url, kind, page, signal, cors, module, asker).then(
+      (loaded) => ('fetched' in loaded ? loaded.fetched : null),
     );
   }
 
@@ -1153,6 +1157,7 @@ export class HtmlNetwork {
     page: string,
     signal?: AbortSignalLike,
     cors?: ResourceCors,
+    module?: 'json' | 'text',
     /** Who asked, where that is a frame's document, or one of no origin:
      *  what its `Referer` says, and whether it is same-site with anything. */
     asker: ResourceAsker = {},
@@ -1161,7 +1166,7 @@ export class HtmlNetwork {
     const allowed = mixedContent(url, kind, page);
     if (allowed === null) return refused;
     if (allowed !== url) {
-      return this.load(allowed, kind, page, signal, cors, asker);
+      return this.load(allowed, kind, page, signal, cors, module, asker);
     }
     const scheme = schemeOf(url);
     if (scheme === 'file' && (!this._files || schemeOf(page) !== 'file')) {
@@ -1181,7 +1186,7 @@ export class HtmlNetwork {
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
     const headers = http
-      ? this._headers(kind, url, asker.client ?? page, cors)
+      ? this._headers(kind, url, asker.client ?? page, cors, module)
       : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
@@ -1305,10 +1310,11 @@ export class HtmlNetwork {
     url: string,
     page: string,
     cors?: ResourceCors,
+    module?: 'json' | 'text',
   ): Record<string, string> {
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
-      accept: ACCEPT[kind],
+      accept: ACCEPT[module ?? kind],
       'accept-language': this._language,
     };
     const referrer = referrerFor(page, url);
@@ -1860,12 +1866,18 @@ export class HtmlNetwork {
         );
       }
       const kind = request.kind;
+      const module =
+        kind === 'script' &&
+        (request.type === 'json' || request.type === 'text')
+          ? request.type
+          : undefined;
       return this.resource(
         request.url,
         kind,
         page,
         options.signal,
         request.cors,
+        module,
         request,
       ).then((fetched) => (fetched ? resourceResult(fetched, kind) : null));
     };

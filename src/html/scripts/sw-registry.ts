@@ -22,6 +22,7 @@ import type {
   UrlClass,
 } from './platform.js';
 import { PageWorkers } from './workers.js';
+import { MODULE_ACCEPT, moduleTypeAllows } from './script-origin.js';
 import type { PageWorkersSeams } from './workers.js';
 import type { FetchRequest, FetchResponse } from './host.js';
 import { inScope, keepRegistry, registryKept } from '../service-workers.js';
@@ -718,7 +719,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
           );
         }
       },
-      script: (id, url) => this._importScript(id, url),
+      script: (id, url, type) => this._importScript(id, url, type),
       exited: (id) => this._threadGone(id),
       caches: (origin, ask) => Promise.resolve(this.caches(origin, ask)),
     };
@@ -906,10 +907,12 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
 
   /** Each script a worker imports: the one the store has, or, while it
    *  installs, the network's, kept for the next time it runs (Service Workers
-   *  1, "importScripts"). Past that, one it did not import is no script. */
+   *  1, "importScripts"). Past that, one it did not import is no script. A
+   *  JSON or a text module it imports is held to what that is (`type`). */
   private async _importScript(
     thread: number,
     url: string,
+    type?: 'json' | 'text',
   ): Promise<string | null> {
     const version = this._byThread.get(thread);
     if (!version) return null;
@@ -919,7 +922,12 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       return null;
     }
     try {
-      const script = await this._fetchScript(url, version.registration, false);
+      const script = await this._fetchScript(
+        url,
+        version.registration,
+        false,
+        type,
+      );
       version.scripts.set(url, script);
       return textOf(script.body);
     } catch {
@@ -1117,6 +1125,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     url: string,
     registration: Registration,
     main: boolean,
+    module?: 'json' | 'text',
   ): Promise<HtmlServiceWorkerScript> {
     let response: FetchResponse;
     try {
@@ -1125,8 +1134,13 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         {
           url,
           method: 'GET',
-          // the main script's alone: an import is any other script
-          headers: main ? [['service-worker', 'script']] : [],
+          // the main script's alone: an import is any other script, or the
+          // JSON or text module it names
+          headers: main
+            ? [['service-worker', 'script']]
+            : module
+              ? [['accept', MODULE_ACCEPT[module]]]
+              : [],
           body: null,
           credentials: 'same-origin',
         },
@@ -1151,7 +1165,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       );
     }
     const type = headerIn(response.headers, 'content-type') ?? '';
-    if (!JS_MIME.test(type.split(';')[0].trim().toLowerCase())) {
+    if (
+      module
+        ? !moduleTypeAllows(type, module)
+        : !JS_MIME.test(type.split(';')[0].trim().toLowerCase())
+    ) {
       throw new JobError(
         'SecurityError',
         `Failed to register a ServiceWorker for scope ('${registration.scope}') with script ('${url}'): The script has an unsupported MIME type ('${type}').`,

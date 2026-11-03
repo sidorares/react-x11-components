@@ -198,6 +198,39 @@ test('what a page loads goes through the application: a script through onResourc
   );
 });
 
+test('a JSON and a text module are asked of onResource with their type, and are UTF-8 whatever their response names', async (t) => {
+  if (!(await preloadHtmlScripts())) return t.skip();
+  const asked: ResourceRequest[] = [];
+  const utf8 = (text: string) => new TextEncoder().encode(text);
+  const page = await shown(
+    '<p id="out"></p><script type="module">' +
+      "import data from './a.json' with { type: 'json' };" +
+      "const text = await import('./a.txt', { with: { type: 'text' } });" +
+      "document.getElementById('out').textContent = data.word + '|' + text.default;" +
+      '</script>',
+    {
+      onResource: (request) => {
+        asked.push(request);
+        if (request.kind !== 'script') return null;
+        const json = request.url.endsWith('.json');
+        return {
+          kind: 'script',
+          // a byte order mark, and a charset each would be read in otherwise
+          bytes: utf8(json ? '{"word":"śćążź"}' : '\ufeffśćążź'),
+          charset: json ? 'iso-8859-2' : 'windows-1252',
+          headers: [['content-type', json ? 'application/json' : 'text/plain']],
+        };
+      },
+      scripts: true,
+    },
+  );
+  assert.equal(await until(page, 'out', (s) => s !== ''), 'śćążź|śćążź');
+  assert.deepEqual(
+    asked.filter((r) => r.kind === 'script').map((r) => `${r.type} ${r.url}`),
+    ['json https://example.test/a.json', 'text https://example.test/a.txt'],
+  );
+});
+
 test('a page with no scripts.fetch has no network: its requests fail, and nothing else is asked', async (t) => {
   if (!(await preloadHtmlScripts())) return t.skip();
   const page = await shown(
@@ -997,6 +1030,59 @@ test("an HtmlNetwork answers a document's scripts and its page's requests", asyn
   assert.deepEqual(sent, [
     'GET https://example.test/a.js https://example.test/page.html',
     'GET https://example.test/api https://example.test/page.html',
+  ]);
+});
+
+test('an HtmlNetwork asks for a JSON and a text module with the Accept a browser sends', async () => {
+  const accepts: string[] = [];
+  const network = new HtmlNetwork({
+    connectTimeout: null,
+    fetch: async (url, init) => {
+      accepts.push(
+        `${url.slice(url.lastIndexOf('/') + 1)} ${init.headers.accept}`,
+      );
+      return {
+        url,
+        status: 200,
+        statusText: 'OK',
+        redirected: false,
+        headers: new Map([
+          ['content-type', 'text/plain'],
+        ]) as unknown as FetchResponseHeaders,
+        body: {
+          getReader() {
+            let done = false;
+            return {
+              read: async () =>
+                done
+                  ? { done: true }
+                  : ((done = true),
+                    { done: false, value: new TextEncoder().encode('x') }),
+              cancel: async () => {},
+            };
+          },
+        },
+      };
+    },
+  });
+  const onResource = network.resources(PAGE);
+  const element = { attribs: {} } as unknown as ResourceRequest['element'];
+  for (const [name, type] of [
+    ['a.js', undefined],
+    ['b.json', 'json'],
+    ['c.txt', 'text'],
+  ] as const) {
+    await onResource({
+      url: `https://example.test/${name}`,
+      kind: 'script',
+      element,
+      ...(type && { type }),
+    });
+  }
+  assert.deepEqual(accepts, [
+    'a.js */*',
+    'b.json application/json,*/*;q=0.5',
+    'c.txt text/plain,*/*;q=0.5',
   ]);
 });
 

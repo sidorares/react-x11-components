@@ -71,25 +71,62 @@ export function corsSetting(
     : 'anonymous';
 }
 
+/** What a module is (HTML's module type of a module script): a
+ *  script, or what an import's `type` attribute names, a JSON document or
+ *  text (the Import Text proposal), whose value is its default export. */
+export type ModuleType = 'javascript' | 'json' | 'text';
+
+/** What a JSON and a text module are asked for with (HTML's "fetch a
+ *  single module script"; the Import Text proposal): `Accept`. */
+export const MODULE_ACCEPT = {
+  json: 'application/json,*/*;q=0.5',
+  text: 'text/plain,*/*;q=0.5',
+} as const;
+
 const JAVASCRIPT =
   /^(?:application\/(?:x-)?(?:java|ecma)script|text\/(?:x-)?(?:java|ecma)script|text\/javascript1\.[0-5]|text\/jscript|text\/livescript)$/;
+
+/** A JSON MIME type's essence (MIME Sniffing 4.6): `application/json`,
+ *  `text/json`, or any type and subtype of HTTP token code points whose
+ *  subtype ends in `+json`. */
+const JSON_TYPE =
+  /^(?:application\/json|text\/json|[!#$%&'*+\-.^_`|~0-9a-z]+\/[!#$%&'*+\-.^_`|~0-9a-z]*\+json)$/;
+
+/** A `Content-Type`'s essence: its type and subtype, lower-cased. */
+function essenceOf(contentType: string): string {
+  return contentType
+    .split(';')[0]
+    .replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '')
+    .toLowerCase();
+}
+
+/** Whether a response is what a JSON or a text module is imported as, by its
+ *  `Content-Type`: a JSON module's has to be JSON, and a text module's may
+ *  be anything at all. */
+export function moduleTypeAllows(
+  contentType: string,
+  type: 'json' | 'text',
+): boolean {
+  return type === 'text' || JSON_TYPE.test(essenceOf(contentType));
+}
 
 /** Whether a response may not be a script, by what it says it is (Fetch
  *  4.?, "should response to request be blocked due to its MIME type", and
  *  `nosniff`): a CSV or an image is never one, and a module has to say it is
- *  one. A response whose head is not known says nothing. */
+ *  one, or what it was imported as (`moduleTypeAllows`). A response whose
+ *  head is not known says nothing. */
 function blockedByType(
   headers: [string, string][] | undefined,
   module: boolean,
+  type: ModuleType,
 ): boolean {
   if (!headers) return false;
-  const type = (headerOf(headers, 'content-type') ?? '')
-    .split(';')[0]
-    .trim()
-    .toLowerCase();
-  if (JAVASCRIPT.test(type)) return false;
+  const contentType = headerOf(headers, 'content-type') ?? '';
+  if (type !== 'javascript') return !moduleTypeAllows(contentType, type);
+  const essence = essenceOf(contentType);
+  if (JAVASCRIPT.test(essence)) return false;
   if (module) return true;
-  if (/^(?:audio|image|video)\/|^text\/csv$/.test(type)) return true;
+  if (/^(?:audio|image|video)\/|^text\/csv$/.test(essence)) return true;
   const sniff = headerOf(headers, 'x-content-type-options') ?? '';
   return sniff.split(',')[0].trim().toLowerCase() === 'nosniff';
 }
@@ -97,9 +134,10 @@ function blockedByType(
 /**
  * What a document of `origin` may have of a script it asked for at `asked`:
  * null where it may not run, and otherwise its text and whether its errors
- * are muted. `cors` is how it was asked for by CORS, a module's always. A host
- * that does not say what headers it had says nothing of CORS, so a classic
- * script runs muted, and a module of another origin not at all.
+ * are muted. `cors` is how it was asked for by CORS, a module's always, and
+ * `type` what a module was imported as. A host that does not say what
+ * headers it had says nothing of CORS, so a classic script runs muted, and a
+ * module of another origin not at all.
  */
 export function judgeScript(
   loaded: LoadedScript | null,
@@ -107,12 +145,13 @@ export function judgeScript(
   origin: string,
   cors: 'anonymous' | 'use-credentials' | null,
   module: boolean,
+  type: ModuleType = 'javascript',
 ): { text: string; muted: boolean } | null {
   if (loaded === null) return null;
   const came: { text: string } & CameFrom =
     typeof loaded === 'string' ? { text: loaded } : loaded;
   const { text, headers } = came;
-  if (blockedByType(headers, module)) return null;
+  if (blockedByType(headers, module, type)) return null;
   // what no network answered is the document's own, and what came by
   // another origin's address is no longer, wherever it landed
   const way = wayOf(asked, came);
