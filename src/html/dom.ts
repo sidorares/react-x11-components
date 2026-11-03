@@ -235,8 +235,20 @@ export function localNameOf(el: Element): string {
   return name.slice(name.indexOf(':') + 1);
 }
 
+/** An element's name as a type selector in an HTML document reads it, which
+ *  has lost its case: an element that says its namespace has a prefix that is
+ *  no part of it, and the parser keeps SVG's capitals, all in names of six
+ *  letters or more. */
+export function typeNameOf(el: Element): string {
+  const name = el.namespace === undefined ? el.name : localNameOf(el);
+  return name.length < 6 || !/[A-Z]/.test(name) ? name : name.toLowerCase();
+}
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+const XML_NS = 'http://www.w3.org/XML/1998/namespace';
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
 
 /**
  * Whether an element is the root of an SVG drawing. The HTML parser names
@@ -322,6 +334,79 @@ export function namespaceIn(parent: AnyNode | null): string | undefined {
     if (BREAKS_OUT.has(name)) return undefined;
   }
   return undefined;
+}
+
+/** What a page's `createElement` made, and each copy of it: HTML's, wherever
+ *  it goes, where nothing around it says so (`namespaceOf`). */
+export const MADE_AS_HTML = new WeakSet<Element>();
+
+/**
+ * An element's namespace (DOM 4.9): what it says, or where it stands, as the
+ * HTML parser keeps none for all but what `MARKED` names. '' for none, which
+ * only an element that says so is in.
+ */
+export function namespaceOf(el: Element): string {
+  if (el.namespace !== undefined) return el.namespace;
+  if (MADE_AS_HTML.has(el)) return HTML_NAMESPACE;
+  const name = el.name.toLowerCase();
+  if (name === 'svg' || name === 'math') return rootNamespace(el, name);
+  return namespaceIn(el.parent) ?? HTML_NAMESPACE;
+}
+
+/** The namespace a prefix reaches at a node, by the declarations around it;
+ *  null for none. */
+export function namespaceFor(el: AnyNode, prefix: string): string | null {
+  if (prefix === 'xml') return XML_NS;
+  if (prefix === 'xmlns') return XMLNS_NS;
+  for (let at: AnyNode | null = el; at; at = at.parent) {
+    if (!isElement(at)) continue;
+    const value = at.attribs[prefix ? `xmlns:${prefix}` : 'xmlns'];
+    if (value !== undefined) return value;
+    if (prefix && at.name.startsWith(`${prefix}:`)) {
+      return at.namespace ?? null;
+    }
+  }
+  return null;
+}
+
+/** The prefixes of the attributes HTML's parser adjusts on what is not HTML. */
+const ADJUSTED_PREFIXES = new Map([
+  ['xlink', XLINK_NS],
+  ['xml', XML_NS],
+  ['xmlns', XMLNS_NS],
+]);
+
+/** The namespaces `setAttributeNS` gave attributes, by the name each is kept
+ *  under: no prefix around such an attribute need say. */
+export const ATTRIBUTE_SPACES = new WeakMap<Element, Map<string, string>>();
+
+/**
+ * The local name and the namespace of the attribute an element keeps under
+ * `key`, as a selector reads them (Selectors 4, 6.1): the tree keeps a name
+ * as it was written. HTML's parser reads a colon as any character of a name on
+ * an HTML element, and on another as a prefix only in the names it adjusts
+ * (13.2.6.5), which no declaration need bind; anywhere else a prefix means
+ * what is declared around the attribute.
+ */
+export function attributeName(
+  el: Element,
+  key: string,
+): { local: string; namespace: string } {
+  const colon = key.indexOf(':');
+  const local = key.slice(colon + 1);
+  const said = ATTRIBUTE_SPACES.get(el)?.get(key);
+  if (said !== undefined) return { local, namespace: said };
+  if (colon < 0) return { local, namespace: '' };
+  if (el.namespace === undefined && namespaceOf(el) === HTML_NAMESPACE) {
+    return { local: key, namespace: '' };
+  }
+  const prefix = key.slice(0, colon);
+  const namespace =
+    (el.namespace === undefined ? null : namespaceFor(el, prefix)) ??
+    ADJUSTED_PREFIXES.get(prefix);
+  return namespace === undefined
+    ? { local: key, namespace: '' }
+    : { local, namespace };
 }
 
 /**
@@ -1162,7 +1247,7 @@ export function isDefinedElement(el: Element): boolean {
   if (isForeign(el)) return true;
   return !(isCustomElementName(el.name) || el.attribs.is !== undefined);
 }
-const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+export const HTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
 /** Each custom element's states, as its `ElementInternals.states` has them
  *  in the page's realm: what `:state()` reads. */

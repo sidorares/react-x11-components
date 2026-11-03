@@ -96,8 +96,12 @@ import {
   treeGeneration,
   treesChanged,
   isClassicScriptType,
+  namespaceFor,
   namespaceIn,
+  namespaceOf,
+  ATTRIBUTE_SPACES,
   CDATA_SECTIONS,
+  MADE_AS_HTML,
   XML_DOCUMENTS,
   anyXmlDocuments,
   instructionSheets,
@@ -106,6 +110,7 @@ import {
   markXmlDocument,
   parserError,
   tagOf,
+  typeNameOf,
   xmlTree,
 } from '../dom.js';
 import {
@@ -119,7 +124,12 @@ import {
 } from '../css/specified.js';
 import { eventPath, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
-import { Cascade, compileHoisted, highlightKey } from '../css/cascade.js';
+import {
+  Cascade,
+  NAMESPACE_PSEUDOS,
+  compileHoisted,
+  highlightKey,
+} from '../css/cascade.js';
 import type { HighlightPseudoStyle } from '../css/cascade.js';
 import { uaStylesheet } from '../css/ua.js';
 import {
@@ -138,6 +148,7 @@ import {
   parseDeclarations,
   parseMediaQuery,
   parseStylesheet,
+  qualifiedSelector,
   scriptFontFace,
   selectorList,
   supportsCondition,
@@ -160,14 +171,7 @@ import { matchesSyntax, validSyntax } from '../css/syntax.js';
 import { focusableElement } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { serializeXml } from './xml.js';
-import {
-  XAttr,
-  compileXPath,
-  evaluateXPath,
-  namespaceFor,
-  namespaceOf,
-  prefixesIn,
-} from './xpath.js';
+import { XAttr, compileXPath, evaluateXPath, prefixesIn } from './xpath.js';
 import type { CompiledXPath, XNode } from './xpath.js';
 import {
   checkedDefault,
@@ -1098,10 +1102,7 @@ let edits = 0;
 const QUERY_ADAPTER = {
   ...DomUtils,
   isTag,
-  getName: (el: Element): string =>
-    el.name.length < 6 || !/[A-Z]/.test(el.name)
-      ? el.name
-      : el.name.toLowerCase(),
+  getName: typeNameOf,
 };
 
 /** What a query in an XML document differs by: names have their case, and
@@ -1121,14 +1122,17 @@ const inDrawing = (el: Element): boolean =>
   !MADE_AS_HTML.has(el) &&
   namespaceIn(el.parent) === SVG_NS;
 
-/** What a page's `createElement` made, and each copy of it: HTML's, wherever
- *  it goes, and in a drawing nothing else says so, as a copy first heard of
- *  there is no wrapper that already knows. */
-const MADE_AS_HTML = new WeakSet<Element>();
-/** The same of a copy, which is a tree alike to what it copies. */
+/** What a copy keeps of what was made of what it copies, which is a tree
+ *  alike to it: that it was made as HTML, which in a drawing nothing else
+ *  says, as a copy first heard of there is no wrapper that already knows, and
+ *  the namespaces `setAttributeNS` gave its attributes. */
 const copyMadeAsHtml = (from: AnyNode, to: AnyNode): void => {
   if (from instanceof Element && MADE_AS_HTML.has(from)) {
     MADE_AS_HTML.add(to as Element);
+  }
+  if (from instanceof Element) {
+    const spaces = ATTRIBUTE_SPACES.get(from);
+    if (spaces) ATTRIBUTE_SPACES.set(to as Element, new Map(spaces));
   }
   const kids = (from as ParentNode).children;
   const copies = (to as ParentNode).children;
@@ -3547,6 +3551,15 @@ export class DomHost {
         }
         return null;
       }
+      // the namespace `setAttributeNS` gives an attribute, which no prefix
+      // around it need say, for what a selector reads of it
+      case 'attrSpace': {
+        const el = this._element(a);
+        let spaces = ATTRIBUTE_SPACES.get(el);
+        if (!spaces) ATTRIBUTE_SPACES.set(el, (spaces = new Map()));
+        spaces.set(text(b), text(c));
+        return null;
+      }
       case 'delAttr': {
         const el = this._element(a);
         const name = text(b);
@@ -3557,6 +3570,7 @@ export class DomHost {
         if (name in el.attribs) {
           const oldValue = el.attribs[name];
           delete el.attribs[name];
+          ATTRIBUTE_SPACES.get(el)?.delete(name);
           this._changed(el, 'attributes', name, oldValue);
           // a frame that loses its `srcdoc` goes to its `src`, and one that
           // loses its `src` to `about:blank`
@@ -6414,6 +6428,7 @@ export class DomHost {
     const nothing = (_el: Element): boolean => false;
     const pseudos: Pseudos = {
       ...CONTROL_PSEUDOS,
+      ...NAMESPACE_PSEUDOS,
       defined: (el) => isDefinedElement(el),
       target: (el) => {
         let fragment = '';
@@ -6509,13 +6524,16 @@ export class DomHost {
     if (TAKES_AN_IDENT.test(selector) && !selectorList(selector)) {
       throw new Error('a pseudo-class given what it does not take');
     }
+    // no namespace is declared for a query, so a prefix makes it none
+    const qualified = qualifiedSelector(selector);
+    if (qualified === null) throw new Error('an undeclared namespace prefix');
     const options = {
       ...this._queryOptions(),
       ...(xml && XML_QUERY),
       cacheResults: !keeps,
     };
     const query = compileHoisted(
-      selector,
+      qualified,
       options.pseudos,
       (one, pseudos) =>
         compile(
