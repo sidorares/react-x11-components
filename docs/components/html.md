@@ -3821,6 +3821,13 @@ at its type, read from the realm that made it or one of its origin around it as
 the address is set, so a page may revoke the URL straight after. One no realm
 holds is a load that failed, and no network is asked.
 
+An `<iframe>` whose document runs no script of its own hears `load` once that
+document is loaded completely, its images and sheets in, as HTML has it, and
+the page's own `load` waits for it. Its images are asked for by the view
+mounted over the frame, so one the page lays out no box for asks for none, and
+hears `load` as its document is in, as it did before: a browser asks for a
+hidden frame's images, and here they are never fetched.
+
 **What a script focuses has the focus from then on, whenever its widget
 comes.** A control has no widget until the render after it is put in, or
 after a page still loading is laid out, so `focus()` tells `focusin` and

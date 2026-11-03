@@ -337,6 +337,9 @@ export function useScripts(
     get drawsFrames() {
       return latest.current.drawsFrames;
     },
+    get framesFollowed() {
+      return latest.current.framesFollowed;
+    },
     get undrawn() {
       return latest.current.undrawn;
     },

@@ -512,6 +512,10 @@ export interface HandleInternals {
   /** Whether an `<embed>` may hold a document, by what the document renders
    *  of it (`HtmlViewNode.embedRendered`). Null until it has styles. */
   embedRendered(element: Element): boolean | null;
+  /** Whether the document has something mounted over an embedded element,
+   *  as it last reported them (`HtmlViewNode.mountsEmbedded`). Null where it
+   *  owes a layout. */
+  mountsEmbedded(element: Element): boolean | null;
   /** What the reader's selection is, to compare. */
   selectionKey(): string;
   /** What is under a pointer that did not move is `:hover` now. */
@@ -884,6 +888,14 @@ export interface HostSeams {
    * draws, its inline scripts run in the page's realm (`__frameScript`).
    */
   drawsFrames?: boolean;
+  /**
+   * Whether what the page mounts over a frame is the engine's own view of
+   * its document (`FramePage`), which tells when that document has all it
+   * asked for in (`followFrame`). Absent where a host mounts its own over
+   * embedded elements (`renderEmbedded`): a frame's `load` then waits for
+   * nothing its document asked for.
+   */
+  framesFollowed?: boolean;
 }
 
 /** All a page is told of an opaque response. */
@@ -2550,6 +2562,85 @@ export class DomHost {
   private _frameDone(frame: Element): void {
     if (!this._framesLoading.delete(frame)) return;
     if (!this.framesLoading) this.onFramesLoaded?.();
+  }
+
+  /** The frames a view of the page follows (`FramePage`), each with how
+   *  many do. */
+  private _frameViews = new Map<Element, number>();
+  /** The `load` each document of this realm's in an `<iframe>` owes the
+   *  frame, until the view that draws it says it is loaded
+   *  (`frameViewLoaded`). */
+  private _loadsOwed = new WeakMap<Document, () => void>();
+  /** The frames whose document owes its `load` and that no view follows
+   *  yet, asked again after a paint whether the page mounts one
+   *  (`_awaitView`). */
+  private _viewsAwaited = new Set<Element>();
+
+  /**
+   * A view of the page follows a frame for as long as the page mounts one
+   * over it, and draws whatever document the frame shows: one of this
+   * realm's has its `load` wait for that view to have all it asked for in,
+   * since only a view asks for its images and its sheets. Answers the way to
+   * stop following.
+   */
+  followFrame(frame: Element): () => void {
+    this._frameViews.set(frame, (this._frameViews.get(frame) ?? 0) + 1);
+    this._viewsAwaited.delete(frame);
+    return () => {
+      const left = (this._frameViews.get(frame) ?? 1) - 1;
+      if (left > 0) {
+        this._frameViews.set(frame, left);
+        return;
+      }
+      this._frameViews.delete(frame);
+      // a view goes as React commits, where no page code runs
+      void Promise.resolve().then(() => this._awaitView(frame));
+    };
+  }
+
+  /** The view of a frame's document of this realm's has it loaded, all it
+   *  asked for in: the frame's `load`, where it waited for it. */
+  frameViewLoaded(doc: Document): void {
+    const owed = this._loadsOwed.get(doc);
+    if (!owed) return;
+    this._loadsOwed.delete(doc);
+    owed();
+  }
+
+  /**
+   * Whether an `<iframe>`'s document of this realm's has its `load` wait
+   * for a view (HTML 13.2.7, "the end"): one follows the frame, or the page
+   * mounts one over it, or may once it has laid out what changed
+   * (`HtmlViewNode.mountsEmbedded`). One the page mounts nothing over — not
+   * rendered, or refused a mount — has nothing on its way, and a host that
+   * mounts its own views over frames (`framesFollowed`) says nothing of
+   * what they asked for.
+   */
+  private _waitsForView(frame: Element): boolean {
+    if (frame.name !== 'iframe' || !this._seams.framesFollowed) return false;
+    if (this._frameViews.has(frame)) return true;
+    const mounts = this._seams.handle.mountsEmbedded?.(frame);
+    if (!mounts && mounts !== null) return false;
+    this._viewsAwaited.add(frame);
+    return true;
+  }
+
+  /** A frame whose document waits for a view no one follows it with yet:
+   *  still awaited where the page mounts one, or may, and loaded now where
+   *  it mounts none. A frame out of the document hears nothing. */
+  private _awaitView(frame: Element): void {
+    this._viewsAwaited.delete(frame);
+    const doc = this._frames.get(frame);
+    if (!doc || !this._loadsOwed.has(doc) || this._frameViews.has(frame)) {
+      return;
+    }
+    if (!this._inDocument(frame)) {
+      this._loadsOwed.delete(doc);
+      return;
+    }
+    const mounts = this._seams.handle.mountsEmbedded?.(frame) ?? false;
+    if (mounts === false) this.frameViewLoaded(doc);
+    else this._viewsAwaited.add(frame);
   }
 
   /**
@@ -7485,6 +7576,12 @@ export class DomHost {
     // the one it shows unloads first, while it is still the frame's
     this._unloadFrameDocument(frame);
     if (this._disposed) return;
+    // HTML has a frame's `load` wait for its document to be completely
+    // loaded (13.2.7, "the end"), images and all, which only the view the
+    // page mounts over the frame asks for (`_waitsForView`). Owed before
+    // anything hears of the document, so no view can say it is loaded first.
+    const owed = !realm && this._waitsForView(frame);
+    if (owed) this._loadsOwed.set(doc, loaded);
     this._frames.set(frame, doc);
     this._frameOf.set(doc, frame);
     this._frameAt.set(frame, address);
@@ -7499,7 +7596,7 @@ export class DomHost {
     if (scripts) {
       this._frameScripts(doc, address === 'about:srcdoc' ? this.url : address);
     }
-    loaded();
+    if (!owed) loaded();
   }
 
   /**
@@ -7624,12 +7721,14 @@ export class DomHost {
   }
 
   /** A paint: an `<embed>` that was not rendered may be now, its sheets in
-   *  or a script having shown it. */
+   *  or a script having shown it; and a frame's view may be mounted, or
+   *  known never to be (`_awaitView`). */
   embedsPainted(): void {
     for (const embed of [...this._embedsWaiting]) {
       this._embedsWaiting.delete(embed);
       if (this._inDocument(embed)) this._frameIn(embed);
     }
+    for (const frame of [...this._viewsAwaited]) this._awaitView(frame);
   }
 
   /** What a page's script put into its tree, as HTML's post-connection

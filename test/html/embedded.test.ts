@@ -1464,6 +1464,7 @@ async function framing(
 ) {
   const logs: string[] = [];
   const fetched: string[] = [];
+  const requested: string[] = [];
   const named = (url: string): Served | undefined =>
     files[url.slice(url.lastIndexOf('/') + 1)];
   const result = await renderX11(
@@ -1479,6 +1480,7 @@ async function framing(
         baseUrl: PAGE,
         onResource: async ({ url, kind }: ResourceRequest) => {
           const file = named(url);
+          requested.push(url.slice(url.lastIndexOf('/') + 1));
           if (file?.hangs) return new Promise<null>(() => {});
           await file?.held;
           if (!file || (file.status ?? 200) >= 400) return null;
@@ -1532,6 +1534,8 @@ async function framing(
     result,
     logs,
     fetched,
+    /** What the page and its frames' views asked the host for. */
+    requested,
     /** How many frames' documents are drawn: every view but the page's. */
     drawn: () => views(result.windowNode) - 1,
     /** Wait for a line of what the page's scripts logged. */
@@ -1698,6 +1702,73 @@ scripted(
       logs.join(' | '),
     );
     await paints(10, 10, '#00ff00', 'what its script drew');
+  },
+);
+
+scripted(
+  "a frame whose document runs nothing hears its load once that document's images have come to something, and the page after it",
+  async () => {
+    let answer!: () => void;
+    const held = new Promise<void>((go) => (answer = go));
+    const { logs, requested, until } = await framing(
+      `<iframe id="f" src="pics.html"></iframe><script>
+      const f = document.getElementById('f');
+      const said = (what) => {
+        const [a, b] = f.contentDocument.images;
+        console.log(what + ' ' + [a, b].map((img) =>
+          img.complete + ':' + img.currentSrc.slice(img.currentSrc.lastIndexOf('/') + 1)));
+      };
+      f.addEventListener('load', () => said('frame'));
+      addEventListener('load', () => said('page'));
+    </script>`,
+      {
+        'pics.html': {
+          type: 'text/html',
+          body: '<img id="a" src="pic.png"><img id="b" src="gone.png">',
+        },
+        'pic.png': { type: 'image/png', bytes: RED_PNG, held },
+        'gone.png': { type: 'image/png', status: 404, held },
+      },
+    );
+    const end = Date.now() + 5000;
+    while (!requested.includes('gone.png') && Date.now() < end) {
+      await act(() => new Promise((go) => setTimeout(go, 10)));
+    }
+    assert.ok(requested.includes('pic.png'), requested.join(' | '));
+    // a while with both images on their way: nothing heard of the frame
+    await act(() => new Promise((go) => setTimeout(go, 100)));
+    assert.ok(
+      !logs.some((line) => /^(?:frame|page) /.test(line)),
+      logs.join(' | '),
+    );
+    answer();
+    await until('frame true:pic.png,true:gone.png');
+    await until('page true:pic.png,true:gone.png');
+    assert.ok(
+      logs.indexOf('frame true:pic.png,true:gone.png') <
+        logs.indexOf('page true:pic.png,true:gone.png'),
+      logs.join(' | '),
+    );
+  },
+);
+
+scripted(
+  'a frame the page lays out no box for hears its load, though nothing asks for its images',
+  async () => {
+    const { requested, until } = await framing(
+      `<iframe id="f" src="pics.html" style="display:none"></iframe><script>
+      document.getElementById('f').addEventListener('load', () =>
+        console.log('frame'));
+      addEventListener('load', () => console.log('page'));
+    </script>`,
+      {
+        'pics.html': { type: 'text/html', body: '<img src="pic.png">' },
+        'pic.png': { type: 'image/png', hangs: true },
+      },
+    );
+    await until('frame');
+    await until('page');
+    assert.ok(!requested.includes('pic.png'), requested.join(' | '));
   },
 );
 

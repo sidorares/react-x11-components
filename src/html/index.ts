@@ -1621,6 +1621,8 @@ export function makeHtmlHandle(
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
     embedRendered: (element) => nodeRef.current?.embedRendered(element) ?? null,
+    mountsEmbedded: (element) =>
+      nodeRef.current?.mountsEmbedded(element) ?? null,
     selectionKey: () => nodeRef.current?.selectionKey() ?? '',
     hoverAgain: () => nodeRef.current?.hoverAgain(),
     hoverOn: (element) => nodeRef.current?.hoverOn(element),
