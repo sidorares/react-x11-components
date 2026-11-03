@@ -936,6 +936,9 @@ function hex(bytes: Uint8Array): string {
 }
 
 /** An error the facade throws by name: `DOMException`'s. */
+/** A frame's navigation that came to a download its sandbox may not save. */
+class DownloadRefused extends Error {}
+
 class DomError extends Error {
   constructor(
     readonly kind: string,
@@ -7240,6 +7243,16 @@ export class DomHost {
         );
       })
       .catch((error: unknown) => {
+        // a download a sandbox may not save goes nowhere: the frame keeps
+        // what it shows, and hears nothing
+        if (error instanceof DownloadRefused) {
+          this._seams.log(
+            'warn',
+            `A sandbox saves no file: ${error.message} was not downloaded.`,
+          );
+          this._frameDone(frame);
+          return;
+        }
         // a frame whose document could not be had still hears `load`, as
         // a browser's showing its error page does
         this._seams.log(
@@ -9135,7 +9148,31 @@ export class DomHost {
         };
       }
     }
-    const fetched = await this._seams.fetch(request, signal);
+    // a sandbox that saves no file cuts a response that would be one off as
+    // its head arrives (HTML 7.4.2.3, "allowed to download"): read whole, the
+    // server has sent it all, which is what a download is
+    const cuts = !!(sandbox & SB_DOWNLOADS);
+    const stop = new AbortController();
+    let fetched = await this._seams.fetch(
+      cuts ? { ...request, stream: true } : request,
+      cuts ? stop.signal : signal,
+    );
+    if (cuts) {
+      const disposition = headerOf(fetched.headers, 'content-disposition');
+      if (/^\s*attachment/i.test(disposition ?? '')) {
+        stop.abort();
+        throw new DownloadRefused(request.url);
+      }
+      if (fetched.chunks) {
+        const bytes = await wholeBytes(fetched);
+        fetched = {
+          ...fetched,
+          chunks: undefined,
+          bytes,
+          body: new TextDecoder().decode(bytes),
+        };
+      }
+    }
     // the document is at the fragment it was asked for, which a response's
     // address drops
     const hash = request.url.indexOf('#');

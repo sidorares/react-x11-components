@@ -681,6 +681,37 @@ test("the network asks for what a document of no origin loads with no cookie of 
   ]);
 });
 
+/** A page its server says is a file to save. */
+const DOWNLOAD: Answer = {
+  body: script(`console.log('shown', location.pathname);`),
+  headers: [['content-disposition', 'attachment']],
+};
+
+test('a sandbox that saves no file goes nowhere where it is sent to a download, and one that may shows it as before', async () => {
+  const s = await scene(
+    `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
+     <iframe sandbox="allow-scripts allow-downloads" src="${APP}b"></iframe>`,
+    {
+      [`${APP}a`]: script(`location.href = '${APP}dl-a';`),
+      [`${APP}b`]: script(`location.href = '${APP}dl-b';`),
+      [`${APP}dl-a`]: DOWNLOAD,
+      [`${APP}dl-b`]: DOWNLOAD,
+    },
+  );
+  assert.equal(await until(s, 'shown'), '/dl-b');
+  await settle();
+  assert.ok(!s.logs.some((l) => l.endsWith('shown /dl-a')), s.logs.join('\n'));
+  assert.ok(
+    s.logs.some((l) => l.includes(`${APP}dl-a was not downloaded`)),
+    s.logs.join('\n'),
+  );
+  assert.equal(
+    s.asked.find((r) => r.url === `${APP}dl-a`)?.stream,
+    true,
+    'not asked for a piece at a time, so not to be cut off',
+  );
+});
+
 test('a page of a sandbox is told by its origin what it may answer to', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${FRAME}"></iframe>`,
