@@ -8792,6 +8792,25 @@ test("a form's submission is planned: navigate fires in a task after it, with th
   assert.strictEqual(doc.submitted.length, 1);
 });
 
+test('navigate() to a file: URL from a non-file page rejects with AbortError and fires no navigate', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = async function () {' +
+      '  navigation.onnavigate = function () { r.push("navigate"); };' +
+      '  var res = navigation.navigate("file://");' +
+      '  try { await res.committed; } catch (e) { r.push("committed " + e.name); }' +
+      '  try { await res.finished; } catch (e) { r.push("finished " + e.name); }' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '};' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'committed AbortError|finished AbortError',
+  );
+});
+
 test('navigation is the page’s entries, and navigate() fires navigate, which a listener intercepts, cancels or lets go', async () => {
   const doc = await hosted(
     '<p id="out"></p><a id="link" href="elsewhere">go</a><script>' +
