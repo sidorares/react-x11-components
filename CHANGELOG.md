@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.34.0](https://github.com/sidorares/react-x11-components/compare/v0.33.0...v0.34.0) (2026-11-03)
+
+
+### Features
+
+* **html:** a form control the page styles is drawn as a browser draws it ([#1291](https://github.com/sidorares/react-x11-components/issues/1291)) ([5439b01](https://github.com/sidorares/react-x11-components/commit/5439b01bd79a00d42567673e025f9516823cffb3))
+* **html:** a frame's XML document is drawn, in an iframe, an object or an embed, and one with a script runs in a realm of its own ([#1293](https://github.com/sidorares/react-x11-components/issues/1293)) ([37c3761](https://github.com/sidorares/react-x11-components/commit/37c376177ef0fe99a76f9ff2e9fb5cd622dd3fed))
+* **html:** a JSON or a text module is what an import's type names, in a window and a worker, where each was refused as a script ([#1299](https://github.com/sidorares/react-x11-components/issues/1299)) ([6b5c6a9](https://github.com/sidorares/react-x11-components/commit/6b5c6a918ccd3c4257213b92131c3d49ed8ba353))
+* **html:** a MediaSource of H.264 and AAC plays as the page appends it, over an HLS stream the host serves, where YouTube's watch page played nothing ([#1308](https://github.com/sidorares/react-x11-components/issues/1308)) ([8a44333](https://github.com/sidorares/react-x11-components/commit/8a44333c2bdf2710f2a70dd89ac4fed028a679c1))
+* **html:** a sandbox's windows keep its flags, and what it loads, sends and focuses is held to them ([#1292](https://github.com/sidorares/react-x11-components/issues/1292)) ([511ce18](https://github.com/sidorares/react-x11-components/commit/511ce183d89c20e67030482b18501018c8037376))
+* **html:** a sheet's [@namespace](https://github.com/namespace) says what its selectors' names mean, where a selector with a bar dropped its rule ([#1287](https://github.com/sidorares/react-x11-components/issues/1287)) ([17968d6](https://github.com/sidorares/react-x11-components/commit/17968d6fdbd119ca977d1b761d657b03abeddd28))
+* **html:** an SVG element's attributes are SVG 2's live objects, and getComputedStyle answers SVG's properties ([#1303](https://github.com/sidorares/react-x11-components/issues/1303)) ([baeb814](https://github.com/sidorares/react-x11-components/commit/baeb81428115c0e128cf0d576c59014f7f93515e))
+* **html:** execCommand is the editing specification's, its queries, undo and redo and designMode with it, where a page's bold, list or link did nothing ([#1307](https://github.com/sidorares/react-x11-components/issues/1307)) ([a64119c](https://github.com/sidorares/react-x11-components/commit/a64119cfd6e1fd4e62b3ca885b38aecb3b2994cf))
+* **html:** HTML's tree is built mode by mode, with the adoption agency and foster parenting, as the browsers build it ([#1296](https://github.com/sidorares/react-x11-components/issues/1296)) ([835cee4](https://github.com/sidorares/react-x11-components/commit/835cee49a5c753ab47013f9dcd4ef4a81caebbc9))
+
+
+### Bug Fixes
+
+* **deps:** ntk 8.27.0, so a shape a pattern fills is filled with its tile, as draw.io's grid is, where it drew nothing ([#1304](https://github.com/sidorares/react-x11-components/issues/1304)) ([a69ede4](https://github.com/sidorares/react-x11-components/commit/a69ede4579f1f24ac8e14697d7e3b6302efdf2bb))
+* **html:** a control computes and shows the cursor the CSSWG resolved for it, and :disabled follows a disabled fieldset ([#1290](https://github.com/sidorares/react-x11-components/issues/1290)) ([4c7664d](https://github.com/sidorares/react-x11-components/commit/4c7664dde1d241c29bad793a29399193bbc612b2))
+* **html:** a frame shows what a blob holds and hears load after close, where it was blank and waited ([#1289](https://github.com/sidorares/react-x11-components/issues/1289)) ([1e6efcd](https://github.com/sidorares/react-x11-components/commit/1e6efcdf2693db23ce0ccdb4007c7eddae91d819))
+* **html:** a page reads and sets an element's attributes as HTML reflects them, where numbers took JavaScript's rules, enumerated ones answered whatever they were set to and hundreds were missing ([#1305](https://github.com/sidorares/react-x11-components/issues/1305)) ([0d84e06](https://github.com/sidorares/react-x11-components/commit/0d84e060f41bea49677e48ad168031e0d333bc83))
+* **html:** a vertical block in a horizontal page is as wide as its lines, where it filled the line ([#1301](https://github.com/sidorares/react-x11-components/issues/1301)) ([1ef6bc2](https://github.com/sidorares/react-x11-components/commit/1ef6bc240c7ff502a5a5e82f4778d57374d4ba8b))
+* **html:** a video in a box fixed to the viewport plays there, with what is painted over it, where it kept its poster ([#1306](https://github.com/sidorares/react-x11-components/issues/1306)) ([03aac68](https://github.com/sidorares/react-x11-components/commit/03aac68010f10cec8d5efa1a5140533bb47d6ab9))
+* **html:** a video whose source is an HLS playlist hears its length and size from the playlists, where every playlist was a format error ([#1302](https://github.com/sidorares/react-x11-components/issues/1302)) ([4ab1804](https://github.com/sidorares/react-x11-components/commit/4ab180447c085f914e2dd3e3f2b08f5f745308ae))
+* **html:** an iframe whose document runs no script hears load once that document's images are in, and the page's load after it ([#1298](https://github.com/sidorares/react-x11-components/issues/1298)) ([8a6a8bf](https://github.com/sidorares/react-x11-components/commit/8a6a8bfea124967347929b6f9de56cc9b6cbc4cb))
+* **html:** an image taints a canvas by the response it came in, and one asked for by CORS is had only where its origin lets it ([#1300](https://github.com/sidorares/react-x11-components/issues/1300)) ([618e30c](https://github.com/sidorares/react-x11-components/commit/618e30ccc42f265f9c2d268e2a7509b1c6246655))
+* **html:** an SVG drawing with context-fill or context-stroke is drawn, where the whole of it was given up ([#1297](https://github.com/sidorares/react-x11-components/issues/1297)) ([40f47d8](https://github.com/sidorares/react-x11-components/commit/40f47d8f79230ec8c697ebdec2798c62451f8936))
+* **html:** the pointer over a control's widget or a frame's mount hovers its element and all around it ([#1295](https://github.com/sidorares/react-x11-components/issues/1295)) ([f63d331](https://github.com/sidorares/react-x11-components/commit/f63d331e3e90da03a7d7016b15eacc939c13af92))
+* **html:** what WPT round 15 lost comes back, an EventSource across origins, a body's margins, manual redirects, cookie prefixes and a drag among it ([#1294](https://github.com/sidorares/react-x11-components/issues/1294)) ([92516ac](https://github.com/sidorares/react-x11-components/commit/92516ac06a9ef79b32b887faf7c253ad04bde923))
+
+
+### Performance Improvements
+
+* **html:** a page that writes a few styles at every frame costs what they reach, where each frame scanned, walked, laid out and repainted the whole document ([#1309](https://github.com/sidorares/react-x11-components/issues/1309)) ([689e6bf](https://github.com/sidorares/react-x11-components/commit/689e6bfb2452da877db30a6a6331a9e301a82d10))
+
 ## [0.33.0](https://github.com/sidorares/react-x11-components/compare/v0.32.0...v0.33.0) (2026-11-02)
 
 
