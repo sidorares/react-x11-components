@@ -4665,6 +4665,8 @@ closes a way out a DOM binding opens by accident:
   `engine.ts`). The runtime tells unhandled rejections after the task, in the
   order they happened, on Node and on Bun alike, so a muted script runs between
   two rejections of the host's own and what comes between them is no page's.
+  `quiet` takes over the listeners added since the last engine before it marks,
+  or an application's that ends the process on a rejection hears the marks.
   **Anything new that runs a muted script's code calls `quiet` around it.** What
   such a script leaves to a later task is told as the page's: nothing says whose
   a later task is, and a `.catch()` it attaches still tells `rejectionhandled`.
