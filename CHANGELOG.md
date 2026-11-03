@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.34.1](https://github.com/sidorares/react-x11-components/compare/v0.34.0...v0.34.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **html:** location.reload() fires navigate as a reload ([#1315](https://github.com/sidorares/react-x11-components/issues/1315)) ([fc55dc5](https://github.com/sidorares/react-x11-components/commit/fc55dc55a16446295028b687f4a97e7002b540f4))
+* **html:** refuse navigate() to a file: URL from a non-file page ([#1314](https://github.com/sidorares/react-x11-components/issues/1314)) ([27fcf7e](https://github.com/sidorares/react-x11-components/commit/27fcf7e92ec90016d514a158567c7e1f18abd588))
+* **html:** window.stop() aborts the ongoing navigation ([#1313](https://github.com/sidorares/react-x11-components/issues/1313)) ([a11d458](https://github.com/sidorares/react-x11-components/commit/a11d45872b5f29c8f8d59cc16a33dae4e6347144))
+
+
+### Performance Improvements
+
+* **html:** a :has() that names no element above a subject that does restyles what the subject names, where every change to YouTube's watch page restyled all of it ([#1311](https://github.com/sidorares/react-x11-components/issues/1311)) ([be5f2f3](https://github.com/sidorares/react-x11-components/commit/be5f2f30f12f6bbf956f9ab11aa3f4dd87d8c407))
+* **html:** lengths a page writes on a box out of the flow lay out that box alone, where the document's layout moved every block beside its path ([#1310](https://github.com/sidorares/react-x11-components/issues/1310)) ([332e62a](https://github.com/sidorares/react-x11-components/commit/332e62ab713b64ff56208a7d96aab300fffd4674))
+
 ## [0.34.0](https://github.com/sidorares/react-x11-components/compare/v0.33.0...v0.34.0) (2026-11-03)
 
 
