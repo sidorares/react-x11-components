@@ -2393,6 +2393,126 @@ metric(
   },
 );
 
+/** A window pixel as `[r, g, b]`. */
+async function rgbAt(ctx: unknown, x: number, y: number): Promise<number[]> {
+  return [...(await pixelsIn(ctx, { x, y, width: 1, height: 1 }))].slice(0, 3);
+}
+
+/** Whether two pixels are a level or two apart at most. */
+const alike = (a: number[], b: number[]): boolean =>
+  a.every((v, i) => Math.abs(v - b[i]) <= 2);
+
+metric(
+  'context-fill and context-stroke in a marker paint the shape it is drawn on, a gradient as it lies on the shape',
+  async () => {
+    // SVG 2, 13.3: a marker's `context-fill` is the fill of the shape that
+    // names it, laid against that shape's box in its user space. Handed to
+    // the context as written, the keyword threw, and the drawing was given
+    // up where it was: nothing after the first marker was drawn. A strip
+    // in a gradient, and a marker below it that reaches past it, where its
+    // rect shows what the strip's gradient comes to at each x; and a rule's
+    // `fill: context-stroke`, a diagram's arrowhead in its line's colour.
+    const { result } = await render(
+      '<style>body{margin:0} svg{display:block}' +
+        '.arrow path{fill:context-stroke}</style>' +
+        '<svg width="200" height="140"><defs>' +
+        '<linearGradient id="lg"><stop offset="0" stop-color="#ff0000"/>' +
+        '<stop offset="1" stop-color="#0000ff"/></linearGradient>' +
+        '<marker id="m" markerUnits="userSpaceOnUse" markerWidth="60" ' +
+        'markerHeight="60"><rect width="60" height="60" fill="context-fill"/>' +
+        '</marker>' +
+        '<marker id="a" class="arrow" markerUnits="userSpaceOnUse" ' +
+        'markerWidth="10" markerHeight="10" refY="5">' +
+        '<path d="M0,0H10V10H0Z"/></marker></defs>' +
+        '<path d="M0,0 H200 V20 H0 Z" fill="url(#lg)" marker-start="url(#m)"/>' +
+        '<path d="M100,100 H150" stroke="#0000ff" stroke-width="2" ' +
+        'marker-end="url(#a)"/>' +
+        '<rect x="180" y="120" width="20" height="20" fill="#00aa00"/></svg>',
+      300,
+    );
+    const ctx = result.ctx;
+    for (const x of [5, 30, 55]) {
+      const strip = await rgbAt(ctx, x, 10);
+      const marker = await rgbAt(ctx, x, 40);
+      assert.ok(
+        alike(strip, marker),
+        `the strip's colour at x ${x}, ${strip}, under it: ${marker}`,
+      );
+    }
+    assert.ok(
+      !alike(await rgbAt(ctx, 5, 40), await rgbAt(ctx, 55, 40)),
+      'and it runs across the marker as across the strip',
+    );
+    await expectPixel(ctx, 155, 100, '#0000ff', {
+      message: "the arrowhead in its line's colour",
+    });
+    await expectPixel(ctx, 190, 130, '#00aa00', {
+      message: 'and what comes after the markers is drawn',
+    });
+  },
+);
+
+metric(
+  'a context-fill with no marker or use to be drawn for paints nothing, and the drawing goes on',
+  async () => {
+    // a context's paint is nothing outside a marker and a use (SVG 2, 13.3)
+    const shapes =
+      '<rect width="40" height="40" fill="context-fill"/>' +
+      '<rect x="50" width="40" height="40" fill="#00aa00"' +
+      ' stroke="context-stroke" stroke-width="8"/>';
+    const inline = await render(
+      `<style>body{margin:0} svg{display:block}</style><svg width="100" height="50">${shapes}</svg>`,
+      200,
+    );
+    const own = await render(
+      `<svg ${SVG_NS} width="100" height="50">${shapes}</svg>`,
+      200,
+      { contentType: 'image/svg+xml' },
+    );
+    for (const [{ result }, what] of [
+      [inline, 'inline'],
+      [own, 'its own document'],
+    ] as const) {
+      await expectPixel(result.ctx, 20, 20, '#ffffff', {
+        message: `${what}: no fill`,
+      });
+      await expectPixel(result.ctx, 70, 20, '#00aa00', {
+        message: `${what}: what comes after it`,
+      });
+      await expectPixel(result.ctx, 51, 20, '#00aa00', {
+        message: `${what}: and no stroke over it`,
+      });
+    }
+  },
+);
+
+metric(
+  'a <use> the drawing is drawn from a copy of is still what a context-fill in what it draws paints',
+  async () => {
+    // A symbol with a `viewBox`, and one in a sprite outside the drawing,
+    // are drawn from a copy (`copyTree`), whose group for the `<use>` was
+    // no context: what was in it painted nothing.
+    const { result } = await render(
+      '<style>body{margin:0} svg{display:block}</style>' +
+        '<svg style="display:none"><symbol id="out" viewBox="0 0 10 10">' +
+        '<rect width="10" height="10" fill="context-fill"/></symbol></svg>' +
+        '<svg width="100" height="40"><defs><symbol id="in" ' +
+        'viewBox="0 0 10 10"><rect width="10" height="10" ' +
+        'style="fill:context-stroke"/></symbol></defs>' +
+        '<use href="#in" width="40" height="40" stroke="#0000ff"/>' +
+        '<use href="#out" x="50" width="40" height="40" fill="#00aa00"/>' +
+        '</svg>',
+      200,
+    );
+    await expectPixel(result.ctx, 20, 20, '#0000ff', {
+      message: "a symbol of the drawing's, in its use's stroke",
+    });
+    await expectPixel(result.ctx, 70, 20, '#00aa00', {
+      message: "and a sprite's, in its use's fill",
+    });
+  },
+);
+
 metric(
   'an inline <svg> is cut to its box unless its overflow is visible, and is repainted where it draws past it',
   async () => {

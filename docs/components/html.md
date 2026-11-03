@@ -5470,6 +5470,23 @@ Chrome has it. A `<use>` in a `<clipPath>` cuts as the shape it names,
 from this drawing or another on the page, and is drawn from no copy: a
 clipPath takes nothing from a group, which is what a copy is.
 
+`context-fill` and `context-stroke` are the paint of an element's context
+element (SVG 2, 13.3), as an attribute, in a `style` or from a rule: a
+marker's content paints with the fill and the stroke of the shape that draws
+the marker, and what a `<use>` draws with the `<use>`'s. A diagram's
+arrowhead in its line's colour is `<path fill="context-stroke"/>` in the
+marker, or `marker path { fill: context-stroke }`. A gradient handed on is
+the shape's, laid against its box and in its user space however the marker
+turns and scales, so a marker's rect inside a shape in a gradient is a part
+of that gradient. A `currentColor` handed on is the colour of what paints
+with it, as Chrome and Safari have it and Firefox does not. With no marker or
+`<use>` to be drawn for, they paint nothing, and the rest of the drawing is
+drawn. A `<use>` the drawing is drawn from a copy of, a sprite's or a
+symbol's with a `viewBox`, stays a `<use>` where what it draws paints so,
+since a group is no context. Reading them is `SvgView`'s: an ntk whose
+`SvgView` does not hands the keyword to the context as a colour, which ntk's
+context throws on, and the drawing is left undrawn, as one it cannot read is.
+
 An SVG root's `width` and `height` are CSS lengths, a percentage one too;
 its intrinsic size is what of them is absolute, and its ratio comes from
 them or from its `viewBox`, which is fitted to its box as

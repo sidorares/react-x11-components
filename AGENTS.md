@@ -5887,7 +5887,16 @@ a `<clipPath>` is not copied**: a copy is a group, and a clipPath takes
 nothing from a group (CSS Masking 1, 6.3), so the clip came out empty and
 hid what it cut. It stays a use, and an element it names outside the root
 is copied into a `<defs>` at the end of the tree (`bring`), since `SvgView`
-looks a reference up in the tree it is given.
+looks a reference up in the tree it is given. **Nor is one whose copy paints
+with `context-fill` or `context-stroke`** (`paintsWithContext`): the
+`<use>` is the context element they paint with, and a group is none, so it
+stays a use of a copy put in that `<defs>`, under an id with a space in it,
+which no `url()` of the document's can name (`CONTEXT_COPY`). **Anything new
+that draws a `<use>` as a group asks `paintsWithContext` first.** What the
+keywords come to, a marker's and a use's, gradients in the context's space
+among them, is `SvgView`'s; `<Html>`'s part is to keep them: `svgPaint`
+takes them from a rule, and nothing between the cascade and the copy turns
+one into a colour.
 
 **What a `<foreignObject>` holds is a document of its own, which the
 drawing paints.** Its HTML is a `BoxTree` of its own (`ForeignObject`,
