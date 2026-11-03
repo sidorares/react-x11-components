@@ -7205,6 +7205,17 @@ under it now. It is a hold and not a throttle because the expensive case is the 
 that matters: a hover that builds the boxes again once a rest is a pause
 nobody sees, and once every tenth of a second of a scroll is the scroll.
 
+**The pointer over a control's widget is over the control.** A field, a
+select or a checkbox is a widget of core's mounted over its element's
+box, and an `<iframe>` is what the host mounts there, so the
+pointer on one has left what the document draws, and its moves are the
+widget's. It is still over the element, and the document hovers the
+element and everything around it, as a browser hovers an `<input>` and
+the card it is in: `input:hover` restyles the field, and a `.card:hover`
+holds as the pointer goes from the card onto its field. The hover goes
+only when the pointer leaves the `<Html>`. A widget a scroll brings under
+a still pointer is hovered once the scroll stops, as anything else is.
+
 **The cursor is the document's.** Over a link it is the `pointer` the
 user-agent sheet gives `a[href]`, wherever a page writes `cursor` it is
 what the page wrote, and where nothing says, it is the text I-beam over

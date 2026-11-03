@@ -2205,6 +2205,17 @@ function useDocumentEvents(
     onMouseMoveCapture: (ev: X11MouseEvent<DrawnNode>) => {
       const node = view.current;
       node?.notePointer(ev.x, ev.y);
+      // over a control's widget, or a frame's mount, the pointer is over its
+      // element, which the document hovers with all around it: the node
+      // hears only the moves over what it draws (`pointerBeside`)
+      if (node && ev.target !== (node as unknown)) {
+        const target = ev.target as DrawnNode;
+        node.pointerBeside(
+          ev.x,
+          ev.y,
+          forms.controlOf(target) ?? embedded.elementOf(target),
+        );
+      }
       // a move nothing listens for costs the hit test nothing, and lays
       // nothing out: `elementAtPoint` settles what is owed
       if (!onDomEvent || movesHeard?.() === false) return;
@@ -2221,6 +2232,7 @@ function useDocumentEvents(
     },
     onMouseLeave: (ev: X11MouseEvent<DrawnNode>) => {
       view.current?.notePointer(null);
+      view.current?.pointerLeft();
       if (!onDomEvent || movesHeard?.() === false) return;
       const at = offDocument();
       if (at) fire('mouseleave', at, mouse(ev));

@@ -1883,6 +1883,17 @@ widget draws in reads its colours from the theme in force, or from
 control rules name system colours rather than the look's values, so a
 control the page styles builds on its scheme's colours as well.
 
+**The pointer over a widget is over its element** (`pointerBeside`). Core
+tells the `<htmlview>` the pointer left it as it goes onto a widget or a
+frame's mount, and hands it none of their moves, so the root's move capture
+hovers the element whose widget or mount it is, and the `<htmlview>`'s own
+leave clears nothing: the root's does (`pointerLeft`). A leave with no move
+after it is content that moved under a still pointer, and holds the hover as
+a scroll does. **Anything new mounted beside the document that takes the
+pointer is found from the root's capture** — `controlOf`, `elementOf`, or
+what the document draws at the point — or `input:hover`, and the card around
+the field, go off over it.
+
 **A field's selection is its widget's, and `FormState` holds it only
 between widgets.** A script's `setSelectionRange()` selects in the
 `<textinput>` mounted for the field, through core's selection API, which is
