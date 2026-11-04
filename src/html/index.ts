@@ -94,7 +94,7 @@ import type {
 } from './css/cascade.js';
 import type { SheetSource as HtmlSheetSource } from './css/parse.js';
 import type { ControlRect } from './controls.js';
-import type { ScrollState as ElementScroll } from './layout/scroll.js';
+import type { ElementScroll } from './layout/scroll.js';
 import type { FieldSelection, FormSubmission } from './form.js';
 import type { HtmlFile, HtmlPickFiles } from './files.js';
 import { useForms } from './widgets.js';
@@ -141,7 +141,7 @@ export type {
   OffsetRect,
   ScriptRequest,
 } from './node.js';
-export type { ScrollState as ElementScroll } from './layout/scroll.js';
+export type { ElementScroll } from './layout/scroll.js';
 export type {
   DomEventHandler,
   HtmlDomEvent,
