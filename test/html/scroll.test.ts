@@ -150,6 +150,63 @@ test('the wheel goes on to the pane around the document where the scroll contain
   assert.equal(node.scrollStateOf(list)?.y, 300 - 48);
 });
 
+test('a document wider than its window scrolls the pane around it across, as far as its scrollable overflow reaches, and a fixed box stays', async () => {
+  // CSS Overflow 3, 2.2: the viewport's scrollable overflow is the root's
+  // and what it holds; the element stays its window's width, and a box of
+  // no size where the overflow ends is what core's pane scrolls to
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}#wide{width:1000px;height:10px;margin-left:30px}' +
+      '#fixed{position:fixed;left:1500px;top:0;width:10px;height:10px}' +
+      '#off{position:absolute;left:-500px;width:10px;height:10px}</style>' +
+      '<div id="wide"></div><div id="fixed"></div><div id="off"></div>',
+    300,
+  );
+  await act();
+  type Pane = {
+    contentWidth: number;
+    scrollX: number;
+    scrollTo(to: { x: number }): void;
+  };
+  const pane = paneOf(node) as unknown as Pane;
+  // to the wide block's right edge: the fixed box scrolls with nothing, and
+  // what spills past the left is out of reach
+  assert.equal(node.documentSize().width, 1030);
+  assert.equal(node.abs.width, 400, 'the element stays its window wide');
+  assert.equal(pane.contentWidth, 1030, 'the pane reaches the end');
+  await act(() => pane.scrollTo({ x: 200 }));
+  assert.equal(pane.scrollX, 200);
+  // and a page as narrow as its window reaches nowhere past it
+  const { el: narrow } = await renderScrolled('<p>x</p>', 300);
+  assert.equal(narrow.documentSize().width, 400);
+  assert.equal((paneOf(narrow) as unknown as Pane).contentWidth, 400);
+});
+
+metric(
+  'what a document wider than its window draws past the element is painted once the pane scrolls across to it',
+  async () => {
+    // core culls a node by its box and its `paintOverhang`, and the element
+    // is its window wide however far the document reaches: red 600px in,
+    // past the element's 400, is drawn at 100 once the pane is 500 across
+    const { el: node, result } = await renderScrolled(
+      '<style>body{margin:0}#s{width:3000px;height:10px}' +
+        '#r{position:absolute;left:600px;top:0;width:100px;height:50px;' +
+        'background:#ff0000}</style><div id="s"></div><div id="r"></div>',
+      300,
+    );
+    await act();
+    type Pane = { scrollTo(to: { x: number }): void };
+    const pane = paneOf(node) as unknown as Pane;
+    await act(() => pane.scrollTo({ x: 500 }));
+    await act();
+    await expectPixel(result.ctx, 150, 5, '#ff0000', {
+      message: 'the block past the element, scrolled in',
+    });
+    await expectPixel(result.ctx, 50, 5, '#ffffff', {
+      message: 'and the canvas before it',
+    });
+  },
+);
+
 test('a scroll container keeps where it is scrolled to through a layout at another width and a restyle', async () => {
   const { el: node, resize } = await renderScrolled(LIST, 300);
   const list = el(node, 's');

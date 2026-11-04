@@ -6922,6 +6922,17 @@ what spills grows. The viewport does not do this yet: an `rtl` or a
 `vertical-rl` page is drawn from its left, and what spills past its left
 is out of reach.
 
+**A document wider than its window scrolls the pane around it across**, as
+far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):
+the root's margin box and what it holds, as a scroll container's content is
+measured, but for what is fixed to the viewport. The element stays its
+window's width, which the initial containing block is; it mounts a box of
+no size where the overflow ends, which is what the pane scrolls to, and
+draws the document past its own box (core's `paintOverhang`). The root's
+`scrollWidth` reads it. A page that scrolls across as it loads, before that
+box is mounted, is moved there once it is, a frame later, where a browser
+has it there at once: `scrollX` reads 0 until then.
+
 **A snap container comes to rest where an area lines up** (CSS Scroll
 Snap 1, `layout/snap.ts`). `scroll-snap-type` makes a scroll container, or
 the viewport by the root's, snap on an axis, and `scroll-snap-align` makes a

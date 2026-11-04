@@ -6495,6 +6495,12 @@ export function installDom(
    *  scrollport, in CSS pixels — x, y, width, height, clientWidth,
    *  clientHeight, clientTop, clientLeft — or null for an element that is
    *  none (`HtmlHandle.scrollState`). */
+  /** How far the viewport's scrollable overflow reaches, across and down,
+   *  or null where the host cannot say. */
+  const documentSize = (): number[] | null => {
+    const r = call('documentSize');
+    return typeof r === 'string' && r ? r.split(',').map(Number) : null;
+  };
   const scrollStateOf = (el: Any): number[] | null => {
     const r = call('scrollState', el._id);
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
@@ -7065,7 +7071,12 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[2]);
       if (this._viewport()) {
-        return Math.max(viewport().width, Math.round(docRect(this)?.[2] ?? 0));
+        // the viewport's scrollable overflow, where the host can say it
+        const d = documentSize();
+        return Math.max(
+          viewport().width,
+          Math.round(d ? d[0] : (docRect(this)?.[2] ?? 0)),
+        );
       }
       return this.clientWidth;
     }

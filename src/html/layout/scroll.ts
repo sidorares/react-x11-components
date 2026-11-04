@@ -495,11 +495,37 @@ function frameBounds(frame: Box): {
   return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
-function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
-  let extent = extents.get(box);
-  if (extent) return extent;
-  const left = box.x + box.borderLeft;
-  const top = box.y + box.borderTop;
+/** How far content reaches, raw: the furthest right and down, and the
+ *  least left and up, of what is in the flow and of what is out of it,
+ *  each its own (`reachOf`). */
+interface Reach {
+  right: number;
+  bottom: number;
+  outRight: number;
+  outBottom: number;
+  leftmost: number;
+  topmost: number;
+  outLeftmost: number;
+  outTopmost: number;
+}
+
+/**
+ * How far `children` and `lines` reach, as CSS Overflow 3, 2.2's scrollable
+ * overflow takes them, as Blink measures it: the in-flow children's margin
+ * boxes, the boxes and lines in them, the out-of-flow boxes by their border
+ * boxes, and none of what a box inside clips past that box, or of what
+ * `escaping` says is positioned against something outside. `holder`'s set
+ * aside content, moved by `holderDy`, with it (`ASIDE_REACH`), reaching
+ * from `left`.
+ */
+function reachOf(
+  left: number,
+  lines: readonly LineBox[] | null,
+  children: readonly Box[],
+  escaping: (child: Box) => boolean,
+  holder: Box | null,
+  holderDy: number,
+): Reach {
   let right = -Infinity;
   let bottom = -Infinity;
   let outRight = -Infinity;
@@ -560,7 +586,7 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
     extentWalkedCount += 1;
     if (child.kind === 'text' || child.kind === 'break') return;
     if (child.outOfFlow) {
-      if (escapes(child, box)) return;
+      if (escaping(child)) return;
       outOfFlow = true;
       margins = false;
     }
@@ -621,9 +647,74 @@ function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
         outOfFlow,
       );
   };
-  linesOf(box.lines, false, 0, 0);
-  for (const child of box.children) walk(child, false, true, 0, 0);
-  aside(box, false, -(at?.y ?? 0));
+  linesOf(lines, false, 0, 0);
+  for (const child of children) walk(child, false, true, 0, 0);
+  if (holder) aside(holder, false, holderDy);
+  return {
+    right,
+    bottom,
+    outRight,
+    outBottom,
+    leftmost,
+    topmost,
+    outLeftmost,
+    outTopmost,
+  };
+}
+
+/**
+ * How far the viewport's scrollable overflow reaches across, in the
+ * document's coordinates (CSS Overflow 3, 2.2): the root box's margin box
+ * and what it holds, as a scroll container's content is measured
+ * (`reachOf`) — but for a box fixed to the viewport, which scrolls with
+ * nothing. What the pane around the element scrolls across to; `right`
+ * from the initial containing block's left, `left` how far what is in it
+ * spills past that left.
+ */
+export function viewportReach(root: Box): { right: number; left: number } {
+  const reach = reachOf(
+    0,
+    null,
+    [root],
+    (child) => child.style.position === 'fixed' && !containingBlockOf(child),
+    null,
+    0,
+  );
+  return {
+    right: Math.max(
+      reach.right === -Infinity ? 0 : reach.right,
+      reach.outRight === -Infinity ? 0 : reach.outRight,
+    ),
+    left: Math.max(
+      0,
+      reach.leftmost === Infinity ? 0 : -reach.leftmost,
+      reach.outLeftmost === Infinity ? 0 : -reach.outLeftmost,
+    ),
+  };
+}
+
+function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
+  let extent = extents.get(box);
+  if (extent) return extent;
+  const left = box.x + box.borderLeft;
+  const top = box.y + box.borderTop;
+  const {
+    right,
+    bottom,
+    outRight,
+    outBottom,
+    leftmost,
+    topmost,
+    outLeftmost,
+    outTopmost,
+  } = reachOf(
+    left,
+    box.lines,
+    box.children,
+    (child) => escapes(child, box),
+    box,
+    -(at?.y ?? 0),
+  );
   const shift = { x: at?.x ?? 0, y: at?.y ?? 0 };
   // the end padding is past the in-flow content, and the out-of-flow boxes
   // reach as far as they reach

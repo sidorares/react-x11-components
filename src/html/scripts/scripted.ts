@@ -489,6 +489,7 @@ interface PaneNode {
   scrollY?: number;
   isScroller?: () => boolean;
   scrollTo?: (to: { x?: number; y?: number }) => void;
+  oweScrollReach?: (x: number) => void;
   getClientRects(): { x: number; y: number; width: number; height: number }[];
 }
 
@@ -621,6 +622,9 @@ export function useScriptedHtml(
       config.scrollTo ??
       ((x, y) => {
         const { zoom } = viewportOf(node());
+        // held for the pass that finds how far across the document reaches,
+        // where the pane does not know yet (`oweScrollReach`)
+        node()?.oweScrollReach?.(x * zoom);
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
       }),
     navigate: config.navigate ?? nothing,

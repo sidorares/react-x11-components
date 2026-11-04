@@ -96,6 +96,7 @@ import {
   forgetPaneShift,
   isScroller,
   noteAnchorRead,
+  viewportReach,
   noteAnchorScroll,
   noteDefaultAnchor,
   noteVisibility,
@@ -1960,8 +1961,17 @@ export function layoutDocument(
   // what this layout laid out holds under another height where it read
   // none of this one's
   ctx.under.read = readsViewportHeight || ctx.readViewportHeight === true;
+  // and as wide as the viewport's scrollable overflow reaches, which the
+  // pane scrolls across to (`viewportReach`): measured only where the ink
+  // reaches past the viewport, which all of it is inside, so a page with
+  // nothing wider than its window walks nothing for it
+  const inkRight = root.boundsX + root.boundsWidth;
+  const width =
+    inkRight > viewportWidth + 0.5
+      ? Math.max(viewportWidth, viewportReach(root).right)
+      : viewportWidth;
   return {
-    width: viewportWidth,
+    width,
     height: bottom,
     readsViewportHeight: ctx.under.read,
     partial: (aside?.size ?? 0) > 0,

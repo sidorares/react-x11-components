@@ -619,6 +619,11 @@ export interface HtmlViewProps {
    *  (`BoxTree.viewportOverflow`): reported after the first layout, and
    *  after a build that changed it. */
   onViewportOverflow?: (overflow: ViewportOverflow) => void;
+  /** How far across the viewport's scrollable overflow reaches, in CSS
+   *  pixels, past the element's own width (`LayoutResult.width`): what the
+   *  component mounts a box at, so the pane around it scrolls across to it.
+   *  Told after each layout that moved it, 0 where nothing reaches past. */
+  onScrollReach?: (right: number) => void;
   /** A scroll container in the document scrolled — by the wheel, or by
    *  `scrollElementTo` — told after it is drawn where it went: what a page
    *  hears as the element's `scroll`. */
@@ -3653,6 +3658,7 @@ export class HtmlViewNode extends Node {
    * two are what that pass made of each other (`_scrolledOrigin`).
    */
   private _notePlaced(): void {
+    this._releaseHeldScroll();
     const pane = this._pane();
     if (!pane) {
       this._placedAt = null;
@@ -4912,6 +4918,7 @@ export class HtmlViewNode extends Node {
         this._reportEmbedded();
         this._reportStops();
         this._reportViewport();
+        if (!question) this._reportReach(result.partial);
       }
       if (!laysOut || !this._tree) break;
       const chose = pass === 0 && this._chooseLaidOut(this._tree);
@@ -6211,6 +6218,67 @@ export class HtmlViewNode extends Node {
 
   /** What the document asks of the box that scrolls it, to
    *  `onViewportOverflow` where it changed. */
+  /**
+   * A page scrolls the viewport across to `x`, in the pane's logical
+   * pixels: where the pane around the element does not reach that far
+   * yet — the box that marks how far the document does (`onScrollReach`)
+   * is mounted a render after the layout that found it — the scroll is
+   * kept, and handed to the pane once it reaches (`_releaseHeldScroll`, at
+   * the paint after). A page that scrolls across as it loads, before that
+   * render, was clamped to its left edge.
+   */
+  oweScrollReach(x: number): void {
+    const pane = this._pane() as
+      (ScrollPane & { contentWidth?: number }) | null;
+    this._heldScrollX = null;
+    if (!pane || this._documentWidth <= this._laidOutWidth + 0.5) return;
+    const reaches = (pane.contentWidth ?? 0) - pane.abs.width;
+    if (x * pane.scale <= reaches + 0.5) return;
+    this._heldScrollX = x;
+    this.invalidate(false, this, 'paint');
+  }
+
+  /** The scroll across `oweScrollReach` keeps for the pane, or null. */
+  private _heldScrollX: number | null = null;
+
+  /** Hand the pane the scroll across a page asked for before it reached
+   *  that far, once it does — or as far as it reaches, once it reaches as
+   *  far as the document. */
+  private _releaseHeldScroll(): void {
+    const x = this._heldScrollX;
+    const pane = this._pane() as
+      (ScrollPane & { contentWidth?: number }) | null;
+    if (x === null || !pane) return;
+    const reaches = (pane.contentWidth ?? 0) - pane.abs.width;
+    const marked = (pane.contentWidth ?? 0) + 0.5 >= this._documentWidth;
+    if (x * pane.scale > reaches + 0.5 && !marked) return;
+    this._heldScrollX = null;
+    void Promise.resolve().then(() => {
+      if (!this.destroyed) pane.scrollTo({ x });
+    });
+  }
+
+  /** What `onScrollReach` was last told. */
+  private _scrollReach = 0;
+
+  /** Tell `onScrollReach` how far across the viewport's scrollable
+   *  overflow reaches, where that moved: nothing past the element's width
+   *  is 0. A layout that stopped reaches no less than the last whole one. */
+  private _reportReach(partial: boolean): void {
+    const s = this._scale;
+    const right =
+      this._documentWidth > this._laidOutWidth + 0.5
+        ? this._documentWidth / s
+        : 0;
+    const reach = partial ? Math.max(right, this._scrollReach) : right;
+    if (Math.abs(reach - this._scrollReach) < 0.5) return;
+    this._scrollReach = reach;
+    // how far it draws past its box moved with it (`paintOverhang`), which
+    // core reads only where the element says it changed
+    this.invalidate(false, this, 'paint');
+    this._props().onScrollReach?.(reach);
+  }
+
   private _reportViewport(): void {
     const tree = this._tree;
     const report = this._props().onViewportOverflow;
@@ -13360,6 +13428,21 @@ export class HtmlViewNode extends Node {
   /** Moved by everything `geometryKey` follows. */
   private _geometry = 0;
 
+  /**
+   * How far the viewport's scrollable overflow reaches, across and down, in
+   * CSS pixels, laid out first: the root's `scrollWidth` and `scrollHeight`
+   * (CSSOM View 6), past the element's own width where the document is
+   * wider than its window (`LayoutResult.width`).
+   */
+  documentSize(): { width: number; height: number } {
+    this._settle();
+    const s = this._scale;
+    return {
+      width: this._documentWidth / s,
+      height: this._documentHeight / s,
+    };
+  }
+
   scrollStateOf(element: Element): ElementScroll | null {
     this._prepare(this.abs.width || 1);
     let box = this._scrollerOf(element);
@@ -14916,6 +14999,17 @@ export class HtmlViewNode extends Node {
    * as the paint would, and a paint that throws fills what it promised
    * (`paint`).
    */
+  /**
+   * How far the document draws past the element's box: as far across as the
+   * viewport's scrollable overflow reaches past its width
+   * (`LayoutResult.width`), which the pane around it scrolls to. Core culls
+   * and claims a node by its box and this, and a page wider than its window
+   * scrolled across showed nothing past the element's right edge.
+   */
+  override paintOverhang(): number {
+    return Math.max(0, Math.ceil(this._documentWidth - this.abs.width));
+  }
+
   override opaqueRect(): Rect | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
@@ -15669,8 +15763,12 @@ export class HtmlViewNode extends Node {
       originX: this.abs.x,
       originY: this.abs.y,
       // the root's background covers the whole element, not only the
-      // document: an element grown past its content is canvas too
-      canvas: this.abs,
+      // document: an element grown past its content is canvas too, and so
+      // is what the document reaches past its width (`paintOverhang`)
+      canvas:
+        this._documentWidth > this.abs.width + 0.5
+          ? { ...this.abs, width: this._documentWidth }
+          : this.abs,
       embedderScheme: this._props().embedderScheme,
       viewport: this._viewport() ?? undefined,
       scale: this._scale,

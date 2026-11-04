@@ -525,6 +525,10 @@ interface PreflightEntry {
  * around it.
  */
 export interface HandleInternals {
+  /** How far the viewport's scrollable overflow reaches, across and down,
+   *  in CSS pixels (`HtmlViewNode.documentSize`): the root's
+   *  `scrollWidth` and `scrollHeight`, laid out first. */
+  documentSize(): { width: number; height: number };
   /** What is under the pointer now, where it is over the document. */
   pointerElement(): Element | null;
   /** What was under the pointer as the document was last laid out. */
@@ -5152,6 +5156,13 @@ export class DomHost {
         }
         const v = this._seams.viewport();
         return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr}`;
+      }
+      // how far the viewport's scrollable overflow reaches: the root's
+      // `scrollWidth` and `scrollHeight`, or '' where nothing answers
+      case 'documentSize': {
+        this.flush();
+        const size = this._seams.handle.documentSize?.();
+        return size ? `${size.width},${size.height}` : '';
       }
       // a scroll container in the document: where it is scrolled to, how
       // far it can be and its scrollport, in CSS pixels, or '' for an
