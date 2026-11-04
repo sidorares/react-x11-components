@@ -95,6 +95,7 @@ import {
   escapes as positionedOutside,
   forgetPaneShift,
   isScroller,
+  noteAnchorRead,
   noteAnchorScroll,
   noteDefaultAnchor,
   noteVisibility,
@@ -114,8 +115,10 @@ import type { Placed } from '../css/transform.js';
 import {
   affineOf,
   facesAway,
+  lift,
   multiply4,
   perspective4,
+  project,
   projectionIsAffine,
   projectionOf,
   translate4,
@@ -7985,13 +7988,14 @@ function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
           width: anchor.width,
           height: anchor.height,
         };
-  const [dx, dy] = relativeShift(anchor, box);
+  const moved = movedAnchorRect(rect, anchor, box);
+  if (ctx.anchorRoot) noteAnchorRead(ctx.anchorRoot, anchor);
   // and where the box's anchor references are taken at a displacement of
   // its default anchor, one scrolled with that seen moved back by it
   const shift = ctx.anchorShift;
   const back =
     shift && sameScrollContext(anchor, shift.anchor) ? shift : NO_SHIFT;
-  const at = { ...rect, x: rect.x + dx - back.x, y: rect.y + dy - back.y };
+  const at = { ...moved, x: moved.x - back.x, y: moved.y - back.y };
   return framed.any ? inFrameOf(at, anchor, box) : at;
 }
 
@@ -8132,26 +8136,69 @@ function sameScrollContext(a: Box, b: Box): boolean {
 }
 
 /**
- * How far relative positioning moves an anchor that it does not move the
- * box placed against it, which the box is laid out before
- * (`applyRelativeOffsets`): the offsets of the anchor and the boxes around
- * it below the box's containing block. Those of the containing block and
- * what is around it move the two alike, and a relative box between them
- * is the containing block of what is absolute in it, and moves nothing
- * fixed (`escapes`). An anchor `position: relative; top: 100px` was where
- * the flow had it.
+ * Where what moves an anchor after the flow and does not move the box
+ * placed against it has the anchor (CSS Anchor Positioning 1, 2: its
+ * position "includes transforms", by its bounding rectangle): the
+ * transforms and the relative offsets of the anchor and the boxes around
+ * it below the box's containing block, applied from the anchor out, as
+ * `applyRelativeOffsets` applies them after the box is laid out. Those of
+ * the containing block and what is around it move the two alike, and a
+ * relative or transformed box between them is the containing block of what
+ * is absolute in it, and moves nothing fixed (`escapes`). An anchor
+ * `position: relative; top: 100px` was where the flow had it, and one
+ * `scale(2)` its size before the scale.
  */
-function relativeShift(anchor: Box, box: Box): [number, number] {
+function movedAnchorRect(rect: CbRect, anchor: Box, box: Box): CbRect {
   const containing = containingBlockFor(box);
+  // its corners, carried out through each box with a transform, which
+  // flattens what it holds into its plane (no `preserve-3d` here)
+  let corners: [number, number][] | null = null;
   let dx = 0;
   let dy = 0;
-  for (let at: Box | null = anchor; at && at !== containing; at = at.parent) {
-    if (at.style.position !== 'relative') continue;
-    const [x, y] = relativeOffset(at);
-    dx += x;
-    dy += y;
+  for (let b: Box | null = anchor; b && b !== containing; b = b.parent) {
+    // the frame of a vertical writing mode is turned by `inFrameOf`, and
+    // what is around it is in the page's axes, not the frame's
+    if (framed.any && FRAME_ROOTS.has(b)) break;
+    const style = b.style;
+    if (transformed(style) && b.kind !== 'inline' && b.kind !== 'text') {
+      const origin = style.transformOrigin;
+      const ox = b.x + resolve(origin[0], b.width, 0);
+      const oy = b.y + resolve(origin[1], b.height, 0);
+      const oz = style.transformOriginZ;
+      // the whole of it, its translation too, about its origin where the
+      // flow has the box, seen in the perspective around it
+      const m =
+        matrix4Of(style, b.width, b.height) ??
+        lift(matrixOf(style, b.width, b.height));
+      let placed = multiply4(
+        translate4(ox, oy, oz),
+        multiply4(m, translate4(-ox, -oy, -oz)),
+      );
+      const seen = perspectiveAround(b);
+      if (seen) placed = multiply4(seen, placed);
+      const p = projectionOf(placed);
+      corners = (
+        corners ?? [
+          [rect.x, rect.y],
+          [rect.x + rect.width, rect.y],
+          [rect.x, rect.y + rect.height],
+          [rect.x + rect.width, rect.y + rect.height],
+        ]
+      ).map(([x, y]) => project(p, x + dx, y + dy) ?? [x + dx, y + dy]);
+      dx = dy = 0;
+    }
+    if (style.position === 'relative') {
+      const [x, y] = relativeOffset(b);
+      dx += x;
+      dy += y;
+    }
   }
-  return [dx, dy];
+  if (!corners) return { ...rect, x: rect.x + dx, y: rect.y + dy };
+  const xs = corners.map((c) => c[0] + dx);
+  const ys = corners.map((c) => c[1] + dy);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
 /**

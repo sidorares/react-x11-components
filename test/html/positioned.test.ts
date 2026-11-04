@@ -2211,6 +2211,46 @@ test('anchor() and anchor-size() place a box against its anchor', async () => {
   assert.deepStrictEqual(at('lost'), [0, 7, 20, 10]);
 });
 
+test('an anchor is where its transforms, and those around it, draw it, and a transform changed in place places what is against it again', async () => {
+  // CSS Anchor Positioning 1, 2: the anchor's position includes
+  // transforms, by the bounding rectangle — its own, and those of the
+  // boxes around it up to the anchored box's containing block
+  const { node } = await render(
+    anchored(
+      '#btn{transform:scale(2);transform-origin:0 0}' +
+        '#turned{position:absolute;left:0;top:120px;width:20px;height:40px;' +
+        'transform:rotate(90deg);transform-origin:0 0}' +
+        '#in{width:20px;height:40px;anchor-name:--c}' +
+        '.t{position:absolute}' +
+        '#below{position-anchor:--b;top:anchor(bottom);left:anchor(left);' +
+        'width:anchor-size(width);height:5px}' +
+        '#beside{position-anchor:--c;left:anchor(right);top:anchor(top);' +
+        'width:anchor-size(width);height:anchor-size(height)}',
+      '<div id="turned"><div id="in"></div></div>' +
+        '<div class="t" id="below"></div><div class="t" id="beside"></div>',
+    ),
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height];
+  };
+  // 60 by 30 at 100, 20, twice its size from its corner
+  assert.deepStrictEqual(at('below'), [100, 80, 120, 5]);
+  // a quarter turn about its corner lays 20 by 40 across, 40 by 20, to the
+  // corner's left
+  assert.deepStrictEqual(at('beside'), [0, 120, 40, 20]);
+  const btn = findById(el.document, 'btn')!;
+  // a scale for another, which is a restyle in place: the boxes stay
+  btn.attribs.style = 'transform:scale(1.5)';
+  await act(() =>
+    el.touchDocument([
+      { type: 'attributes', target: btn, attributeName: 'style' },
+    ]),
+  );
+  assert.deepStrictEqual(at('below'), [100, 65, 90, 5], 'at the new scale');
+});
+
 test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
   // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
   // positioned box that is before the target among their containing

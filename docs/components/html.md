@@ -6761,7 +6761,12 @@ absolutely positioned one, that one before the box in the tree; an inline
 one by the rectangle around its fragments, and one in columns by the
 rectangle around its pieces. `anchor-scope` keeps a name to the boxes
 inside the element that scopes it, and a box is placed against where its
-anchor's relative offset moved it.
+anchor's relative offset moved it, and its transforms and those of the boxes
+around it up to the box's containing block: the rectangle around where they
+draw it, seen in a `perspective` around them, and a transform that changes
+in place, an animation's among them, places the box again. A box with
+`transform-style: preserve-3d` is drawn flat here, and so is an anchor in
+one.
 
 A scroll moves a box with its default anchor where it scrolls the anchor
 and not the box (3.3), on each axis the box is placed against the
