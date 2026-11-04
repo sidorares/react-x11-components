@@ -6925,11 +6925,12 @@ the pane starts there, at the origin, and a layout keeps it the same
 distance from it as the spill grows. `scrollX` and `scrollLeft` count from
 the origin, negative into the spill, and `scrollTo` takes them so. The
 pane learns how far the document reaches a render after the layout that
-finds it, and a scroll the document holds for it until then — its start at
-the origin, a page's `scrollTo` as it loads — is where the page reads it
-and where what is anchored across the scroll is placed. Not yet for a page
-whose root is in a vertical writing mode, which the viewport takes no
-writing mode from.
+finds it, so the document holds its start at the origin for it until then:
+a page reads the pane there from its first script, and what is anchored
+across the scroll is placed there. A page's own `scrollTo` past what the
+pane reaches yet is held too, and read where the pane is until the pane
+takes it. Not yet for a page whose root is in a vertical writing mode,
+which the viewport takes no writing mode from.
 
 **A document wider than its window scrolls the pane around it across**, as
 far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):
