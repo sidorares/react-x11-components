@@ -832,7 +832,7 @@ function Tab(props: {
         // so a key a test sends to the document element reaches the page:
         // the document's surface takes it here, where nothing of the
         // page's has it, as a press on the document would give it.
-        if (!handleOf.activeElement) view?.parent?.focus?.();
+        if (!handleOf.activeElement) focusSurface(view?.parent, view);
       },
       // one kept to show again is laid out nowhere
       style: visible ? { flexGrow: 1 } : { display: 'none' },
@@ -1317,6 +1317,48 @@ async function runReftest(test: string, source: string): Promise<Outcome> {
 }
 
 /** `WPT_SHOTS=<dir>`: the test and its reference side by side, as a PNG. */
+/**
+ * Focus the document's surface as a browser's focused document is, which
+ * scrolls nothing. Core scrolls a focused node into view through the pane
+ * around it at its next pass, and has no `preventScroll` (DOM's
+ * `focus({ preventScroll })`), so a surface the window's width at the
+ * document's left took a page scrolled across back to its left edge. The
+ * scroll is put back if that pass moves it, for the frames that pass may
+ * come in, and only while the same document is shown: the harness's window
+ * is the next test's once this one is done.
+ */
+function focusSurface(
+  surface:
+    | { focus?: () => void; parent?: unknown; destroyed?: boolean }
+    | null
+    | undefined,
+  view: object | null | undefined,
+): void {
+  type Pane = {
+    parent?: Pane | null;
+    isScroller?: () => boolean;
+    scrollX: number;
+    scrollY: number;
+    scale: number;
+    scrollTo(to: { x: number; y: number }): void;
+  };
+  let pane = surface?.parent as Pane | null | undefined;
+  while (pane && !pane.isScroller?.()) pane = pane.parent;
+  const at = pane && { x: pane.scrollX, y: pane.scrollY, s: pane.scale || 1 };
+  surface?.focus?.();
+  if (!pane || !at || (at.x === 0 && at.y === 0)) return;
+  let left = 6;
+  const put = () => {
+    if ((view as { destroyed?: boolean } | null)?.destroyed || !pane) return;
+    if (pane.scrollX !== at.x || pane.scrollY !== at.y) {
+      pane.scrollTo({ x: at.x / at.s, y: at.y / at.s });
+      return;
+    }
+    if (--left > 0) setTimeout(put, 16);
+  };
+  setTimeout(put, 16);
+}
+
 function shots(test: string, a: Uint8ClampedArray, b: Uint8ClampedArray) {
   const png = new PNG({ width: WIDTH * 2, height: HEIGHT });
   for (let y = 0; y < HEIGHT; y++) {

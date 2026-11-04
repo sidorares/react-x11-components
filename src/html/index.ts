@@ -1342,6 +1342,9 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const documentRef = React.useRef<Document | null>(null);
   const [controls, setControls] = React.useState<ControlRect[]>([]);
   const [domRevision, setDomRevision] = React.useState(0);
+  // how far across the viewport's scrollable overflow reaches past the
+  // element's width, which a box of no size marks for the pane around it
+  const [scrollReach, setScrollReach] = React.useState(0);
   const forms = useForms({
     view: viewNode,
     baseUrl,
@@ -1465,6 +1468,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onFocusStops: stops.onFocusStops,
     watchStops: stops.watch,
     onViewportOverflow,
+    onScrollReach: setScrollReach,
     onElementScroll: props.onElementScroll,
     onViewportScroll: props._onViewportScroll,
     onPaint: props._onPaint,
@@ -1505,6 +1509,26 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     // no room, and nothing drawn: where they are among the children is
     // nothing anyone sees
     ...sounds.render(),
+    // The viewport's scrollable overflow, past the element's own width,
+    // which the element stays: core's pane scrolls as far as a box under it
+    // reaches, so a box of no size where it ends lets the pane scroll the
+    // document across (CSS Overflow 3, 2.2), where a page wider than its
+    // window was cut at its right edge
+    ...(scrollReach > 0
+      ? [
+          hx('box', {
+            key: 'reach',
+            style: {
+              position: 'absolute',
+              left: scrollReach,
+              top: 0,
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
+            },
+          }),
+        ]
+      : []),
   ];
   // The widgets and the stops in the document's order, which is the order
   // core's Tab goes through a subtree in where the document hands it on:
@@ -1718,6 +1742,8 @@ export function makeHtmlHandle(
     snapViewport: (x, y, target, relative) =>
       nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
     layoutNow: () => nodeRef.current?.layoutNow(),
+    documentSize: () =>
+      nodeRef.current?.documentSize() ?? { width: 0, height: 0 },
     interrupted: () => nodeRef.current?.interrupted(),
     cssAnimations: (element, subtree) =>
       nodeRef.current?.cssAnimationsOf(element, subtree) ?? [],
