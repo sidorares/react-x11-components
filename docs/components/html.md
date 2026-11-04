@@ -6915,12 +6915,21 @@ where the content starts: the left and the top, but the right for an `rtl`
 box and a `vertical-rl` one, and the far end of a reversed flex box's main
 axis — the right for `row-reverse`, the bottom for `column-reverse`. What
 scrolls is what spills past the other side, and what spills past the
-origin is out of reach, as in a browser; `scrollLeft` and `scrollTop` count
-from the origin, so they go negative from one at the right or the bottom,
-and a layout keeps the container at the same distance from its origin as
-what spills grows. The viewport does not do this yet: an `rtl` or a
-`vertical-rl` page is drawn from its left, and what spills past its left
-is out of reach.
+origin is out of reach, as in a browser; `scrollLeft` and `scrollTop`
+count from the origin, so they go negative from one at the right or the
+bottom, and a layout keeps the container at the same distance from its
+origin as what spills grows. The viewport does too, for an `rtl` page: the
+document is laid out where it always was, and then drawn as far in as what
+spills past its left, which the pane around the element scrolls from 0;
+the pane starts there, at the origin, and a layout keeps it the same
+distance from it as the spill grows. `scrollX` and `scrollLeft` count from
+the origin, negative into the spill, and `scrollTo` takes them so. The
+pane learns how far the document reaches a render after the layout that
+finds it, and a scroll the document holds for it until then — its start at
+the origin, a page's `scrollTo` as it loads — is where the page reads it
+and where what is anchored across the scroll is placed. Not yet for a page
+whose root is in a vertical writing mode, which the viewport takes no
+writing mode from.
 
 **A document wider than its window scrolls the pane around it across**, as
 far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):

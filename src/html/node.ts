@@ -263,6 +263,7 @@ import {
   laidWhole,
   layoutAsks,
   layoutApart,
+  viewportShiftOf,
   layoutDocument,
   noteMoving,
   placedMatrix,
@@ -3694,6 +3695,18 @@ export class HtmlViewNode extends Node {
    * unless the pane scrolled after it, which nothing here can see.
    */
   private _scrolledOrigin(): { x: number; y: number } {
+    const at = this._placedOrigin();
+    // and where a scroll is held for the pane, where it is about to be, as a
+    // page reads `scrollX` (`heldScrollX`)
+    const held = this.pageScrollX();
+    const pane = held === null ? null : this._pane();
+    if (!pane || held === null) return at;
+    const by = held - pane.scrollX;
+    return { x: pane.direction === 'rtl' ? at.x + by : at.x - by, y: at.y };
+  }
+
+  /** `_scrolledOrigin` for the offsets the pane has, held scrolls aside. */
+  private _placedOrigin(): { x: number; y: number } {
     const abs = this.abs;
     const at = this._placedAt;
     if (!at || at.x !== abs.x || at.y !== abs.y) return abs;
@@ -3877,7 +3890,7 @@ export class HtmlViewNode extends Node {
     if (!at) return;
     let moved = boxes ? restickToViewport(boxes, at) : null;
     if (anchored?.size) {
-      const followed = followPane(tree.root, at, translate);
+      const followed = followPane(tree.root, this._fromOrigin(at), translate);
       if (followed) moved = moved ? [...moved, ...followed] : followed;
       if (this._refitAnchored(tree, at)) moved ??= [];
     }
@@ -3904,16 +3917,53 @@ export class HtmlViewNode extends Node {
    * its scroll moves what is fixed to the viewport from where it was laid
    * out, and the viewport's size. Null where nothing scrolls the element.
    */
+  /**
+   * The viewport as the anchored boxes it scrolls across follow it
+   * (`followPane`, `refitAnchored`): its scroll from the viewport's scroll
+   * origin, which a layout places them against where the document is laid
+   * out, before it is moved right for what spills past the left of a
+   * viewport whose origin is at its right (`viewportShiftOf`). Measured from
+   * the left of what the pane scrolls, the pane started at the origin read
+   * as a scroll as far as the spill.
+   */
+  private _fromOrigin<V extends Viewport | null>(viewport: V): V {
+    return viewport && this._originX
+      ? { ...viewport, x: viewport.x - this._originX }
+      : viewport;
+  }
+
   private _viewportAt(): Viewport | null {
     const viewport = this._viewport();
     if (!viewport) return null;
     const origin = this._scrolledOrigin();
+    const held = this.heldScrollX();
     return {
-      x: viewport.x - origin.x,
+      x: held ?? viewport.x - origin.x,
       y: viewport.y - origin.y,
       width: viewport.width,
       height: viewport.height,
     };
+  }
+
+  /**
+   * Where the pane is across, in device pixels, where a scroll is held for
+   * it (`_heldScrollX`): where it is about to be, which a browser has it at
+   * already — the scroll origin of a page that starts there, or a page's
+   * own `scrollTo` — so a layout places what is anchored across the pane
+   * against it, rather than against the left edge the pane shows for a
+   * frame, where a box anchored across it took a fallback and kept it; and
+   * a page reads it, and has its rectangles measured against it. Over once
+   * the pane moves by anything else. Null where none is held.
+   */
+  heldScrollX(): number | null {
+    const held = this._heldScrollX;
+    if (held === null) return null;
+    const pane = this._pane();
+    if (!pane || pane.scrollX !== this._heldFrom) {
+      this._heldScrollX = null;
+      return null;
+    }
+    return held * (pane.scale || 1);
   }
 
   /**
@@ -3926,7 +3976,7 @@ export class HtmlViewNode extends Node {
    */
   private _refitAnchored(tree: BoxTree, viewport: Viewport | null): boolean {
     const root = tree.root;
-    if (refitAnchored(root, viewport)) {
+    if (refitAnchored(root, this._fromOrigin(viewport))) {
       // asked as a paint reads where the boxes are: the layout is the
       // next frame's
       void Promise.resolve().then(() => this._invalidate(Stale.Layout));
@@ -4918,7 +4968,10 @@ export class HtmlViewNode extends Node {
         this._reportEmbedded();
         this._reportStops();
         this._reportViewport();
-        if (!question) this._reportReach(result.partial);
+        if (!question) {
+          this._reportReach(result.partial);
+          this._followOrigin();
+        }
       }
       if (!laysOut || !this._tree) break;
       const chose = pass === 0 && this._chooseLaidOut(this._tree);
@@ -6233,19 +6286,42 @@ export class HtmlViewNode extends Node {
     this._heldScrollX = null;
     if (!pane || this._documentWidth <= this._laidOutWidth + 0.5) return;
     const reaches = (pane.contentWidth ?? 0) - pane.abs.width;
-    if (x * pane.scale <= reaches + 0.5) return;
-    this._heldScrollX = x;
+    // no further than the document reaches, as the pane will clamp it
+    const most = Math.max(0, this._documentWidth - pane.abs.width);
+    const want = Math.min(x * pane.scale, most);
+    if (want <= reaches + 0.5) return;
+    this._heldScrollX = want / pane.scale;
+    this._heldFrom = pane.scrollX;
+    this._heldOrigin = false;
     this.invalidate(false, this, 'paint');
   }
 
   /** The scroll across `oweScrollReach` keeps for the pane, or null. */
   private _heldScrollX: number | null = null;
+  /** Where the pane was when the scroll was held: one that moved since was
+   *  scrolled by something else — the wheel, a smooth scroll core runs —
+   *  and the hold is over (`heldScrollX`). */
+  private _heldFrom = 0;
+  /** Whether the scroll held is the viewport's origin, which a page reads
+   *  as where the pane is (`pageScrollX`); a page's own `scrollTo` held is
+   *  read where the pane is until it takes it. */
+  private _heldOrigin = false;
+
+  /**
+   * `heldScrollX` where what is held is the viewport's scroll origin, a page
+   * starting there or kept there as what spills past its left grows: a page
+   * reads the pane there, and has its rectangles measured from there, from
+   * its first script, as a browser starts it there. Null otherwise.
+   */
+  pageScrollX(): number | null {
+    return this._heldOrigin ? this.heldScrollX() : null;
+  }
 
   /** Hand the pane the scroll across a page asked for before it reached
    *  that far, once it does — or as far as it reaches, once it reaches as
    *  far as the document. */
   private _releaseHeldScroll(): void {
-    const x = this._heldScrollX;
+    const x = this.heldScrollX() === null ? null : this._heldScrollX;
     const pane = this._pane() as
       (ScrollPane & { contentWidth?: number }) | null;
     if (x === null || !pane) return;
@@ -6256,6 +6332,45 @@ export class HtmlViewNode extends Node {
     void Promise.resolve().then(() => {
       if (!this.destroyed) pane.scrollTo({ x });
     });
+  }
+
+  /**
+   * Where the viewport's scroll origin is, in device pixels from the left of
+   * what the pane scrolls: how far the document is moved right for what
+   * spills past the left of a viewport whose origin is at its right
+   * (`viewportShiftOf`) — an `rtl` page's, a `vertical-rl` one's. What
+   * `scrollX` and `scrollLeft` count from, which are negative from it.
+   */
+  scrollOriginX(): number {
+    return this._originX;
+  }
+
+  /** The origin the pane was last kept at (`_followOrigin`). */
+  private _originX = 0;
+
+  /**
+   * Keep the pane as far from the viewport's scroll origin as it was, where
+   * a layout moved the origin: what spills past the left of the document
+   * grew or shrank, and the document with it. The first layout of such a
+   * document starts the pane at its origin, where a browser starts it: an
+   * `rtl` page shows its right edge, and what spills scrolls in from the
+   * left. Handed to the pane once it reaches that far (`_releaseHeldScroll`),
+   * since the box that tells it how far is mounted a render after.
+   */
+  private _followOrigin(): void {
+    const tree = this._tree;
+    if (!tree) return;
+    const origin = viewportShiftOf(tree);
+    const was = this._originX;
+    if (origin === was) return;
+    this._originX = origin;
+    const pane = this._pane();
+    if (!pane) return;
+    const from = pane.scrollX - was;
+    this._heldScrollX = (from + origin) / (pane.scale || 1);
+    this._heldFrom = pane.scrollX;
+    this._heldOrigin = true;
+    this.invalidate(false, this, 'paint');
   }
 
   /** What `onScrollReach` was last told. */
@@ -14558,7 +14673,7 @@ export class HtmlViewNode extends Node {
     // position options again (`_refitAnchored`)
     const anchors = !!this._tree?.anchors;
     const viewport = anchors ? this._viewportAt() : null;
-    if (anchors && refitAnchored(root, viewport)) {
+    if (anchors && refitAnchored(root, this._fromOrigin(viewport))) {
       this._invalidate(Stale.Layout);
     }
     if (updatePositionVisibility(root, viewport).length) stackLayers(root);

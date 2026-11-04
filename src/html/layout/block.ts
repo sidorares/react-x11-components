@@ -420,6 +420,51 @@ const SET_ASIDE = new WeakMap<
   { pass: number; boxes: Map<Box, Box[]> }
 >();
 
+/**
+ * How far each tree's document is moved right from where its layout put
+ * it: what spills past the left of a viewport whose scroll origin is at its
+ * right (CSS Overflow 3, 2.3) — an `rtl` page's, a `vertical-rl` one's —
+ * which the pane around the element scrolls from 0, so the document is
+ * drawn that far in and the pane starts there (`viewportShiftOf`). Taken
+ * off before the next layout, which lays it out where it always did, and
+ * put back after it; a box fixed to the viewport is none of it.
+ */
+const VIEWPORT_SHIFT = new WeakMap<BoxTree, number>();
+
+/** How far `tree`'s document is moved right for its scroll origin
+ *  (`VIEWPORT_SHIFT`), in device pixels: 0 for one whose origin is at its
+ *  left, and one that spills nothing past it. */
+export function viewportShiftOf(tree: BoxTree): number {
+  return VIEWPORT_SHIFT.get(tree) ?? 0;
+}
+
+/** A viewport in the document's coordinates as the layout has them: the
+ *  node hands it over where the document is drawn, moved right by `by`. */
+function unshifted<V extends { x: number }>(v: V | null, by: number): V | null {
+  return v && by ? { ...v, x: v.x - by } : v;
+}
+
+/** Whether a document's viewport has its scroll origin at its right: its
+ *  principal writing mode, the root's, starts across at the right — `rtl`
+ *  in a horizontal one, and `vertical-rl` and `sideways-rl`. */
+function viewportStartsRight(root: Box): boolean {
+  const style = root.style;
+  return style.writingMode === 'horizontal-tb'
+    ? style.direction === 'rtl'
+    : style.writingMode.endsWith('-rl');
+}
+
+/** Move the document across by `dx`, all but what is fixed to the viewport,
+ *  and what a layout that stopped set aside with it. */
+function shiftDocument(tree: BoxTree, dx: number): void {
+  translate(tree.root, dx, 0, fixedToViewport);
+  for (const boxes of SET_ASIDE.get(tree)?.boxes.values() ?? []) {
+    for (const box of boxes) {
+      if (!fixedToViewport(box)) translate(box, dx, 0, fixedToViewport);
+    }
+  }
+}
+
 /** The pass that set a box aside, with everything in it. */
 const HELD_BACK = new WeakMap<Box, number>();
 
@@ -1709,6 +1754,12 @@ export function layoutDocument(
 ): LayoutResult {
   // what the last layout set aside is laid out, or set aside again
   putBack(tree);
+  // where the last layout put it, which a layout keeps what it kept of
+  const shifted = VIEWPORT_SHIFT.get(tree) ?? 0;
+  if (shifted) {
+    shiftDocument(tree, -shifted);
+    VIEWPORT_SHIFT.delete(tree);
+  }
   const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
   framed.any = tree.vertical;
@@ -1744,7 +1795,7 @@ export function layoutDocument(
       : null),
     ...(tree.anchors
       ? {
-          viewport: viewportOf(tree),
+          viewport: unshifted(viewportOf(tree), shifted),
           scrollOf: (box: Box) => wantedScroll(tree, box),
           question: QUESTIONS.has(tree),
         }
@@ -1918,6 +1969,17 @@ export function layoutDocument(
   const viewportSticky = tree.relative ? restickAll(root, moved) : null;
   if (viewportSticky) VIEWPORT_STICKY.set(tree, viewportSticky);
   else VIEWPORT_STICKY.delete(tree);
+  // and a viewport whose scroll origin is at its right scrolls what spills
+  // past its left, which the document is moved right by, so the pane
+  // reaches it from 0 (`VIEWPORT_SHIFT`); before the ink, which is where
+  // the boxes are drawn
+  const spill = viewportStartsRight(root)
+    ? Math.round(viewportReach(root).left)
+    : 0;
+  if (spill > 0) {
+    shiftDocument(tree, spill);
+    VIEWPORT_SHIFT.set(tree, spill);
+  }
   // the ink of what nothing laid out or moved, where the layout kept
   // blocks, as the walk after the last layout found it
   const reach = computePaintBounds(
@@ -1966,8 +2028,11 @@ export function layoutDocument(
   // reaches past the viewport, which all of it is inside, so a page with
   // nothing wider than its window walks nothing for it
   const inkRight = root.boundsX + root.boundsWidth;
-  const width =
-    inkRight > viewportWidth + 0.5
+  // from an origin at the right, what spills past the right is out of reach,
+  // and the document is as wide as the window and what spills past its left
+  const width = viewportStartsRight(root)
+    ? viewportWidth + spill
+    : inkRight > viewportWidth + 0.5
       ? Math.max(viewportWidth, viewportReach(root).right)
       : viewportWidth;
   return {
@@ -2021,7 +2086,9 @@ export function layoutApart(
     tree.foreign ||
     columned.any ||
     asideIn(tree) ||
-    was.partial
+    was.partial ||
+    // what the document is moved right by is no containing block's
+    VIEWPORT_SHIFT.has(tree)
   ) {
     return null;
   }
