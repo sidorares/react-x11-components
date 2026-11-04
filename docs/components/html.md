@@ -6910,6 +6910,18 @@ layout and build: a resize lays the content out again and moves it by
 where its container is scrolled to, and a restyle that builds the boxes
 again keeps it. A new document starts at none.
 
+**A scroll starts at its scroll origin** (CSS Overflow 3, 2.3), which is
+where the content starts: the left and the top, but the right for an `rtl`
+box and a `vertical-rl` one, and the far end of a reversed flex box's main
+axis — the right for `row-reverse`, the bottom for `column-reverse`. What
+scrolls is what spills past the other side, and what spills past the
+origin is out of reach, as in a browser; `scrollLeft` and `scrollTop` count
+from the origin, so they go negative from one at the right or the bottom,
+and a layout keeps the container at the same distance from its origin as
+what spills grows. The viewport does not do this yet: an `rtl` or a
+`vertical-rl` page is drawn from its left, and what spills past its left
+is out of reach.
+
 **A snap container comes to rest where an area lines up** (CSS Scroll
 Snap 1, `layout/snap.ts`). `scroll-snap-type` makes a scroll container, or
 the viewport by the root's, snap on an axis, and `scroll-snap-align` makes a

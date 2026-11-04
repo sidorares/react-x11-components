@@ -681,6 +681,55 @@ test("a scroll container reaches as far as Chrome's scrollHeight and scrollWidth
   }
 });
 
+test('a scroll container whose scroll origin is at its right or its bottom scrolls what spills past its left or its top, from offsets that go negative, as Chrome has it', async () => {
+  // CSS Overflow 3, 2.3: an rtl box starts at its right, a vertical-rl one
+  // at its right, a column-reverse flex box at its bottom; what spills the
+  // other way is what scrolls, and what spills past the origin does not.
+  // Each is Chrome 154's scrollWidth, scrollHeight, and where it came to
+  // at -50, -50 and then at 50, 50.
+  const cases: [string, string, number[]][] = [
+    ['rtl', 'dir="rtl"', [300, 300, -50, 0, 0, 50]],
+    [
+      'rev',
+      'style="display:flex;flex-direction:column-reverse"',
+      [300, 300, 0, -50, 50, 0],
+    ],
+    ['vrl', 'style="writing-mode:vertical-rl"', [300, 300, -50, 0, 0, 50]],
+  ];
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}.s{overflow:scroll;width:100px;height:100px}' +
+      '.c{width:300px;height:300px;flex:none}</style>' +
+      cases
+        .map(
+          ([id, attrs]) =>
+            `<div class="s" id="${id}" ${attrs}><div class="c" id="${id}-c"></div></div>`,
+        )
+        .join(''),
+    300,
+  );
+  for (const [id, , want] of cases) {
+    const box = el(node, id);
+    const state = node.scrollStateOf(box)!;
+    assert.deepEqual([state.x, state.y], [0, 0], `#${id} at its origin`);
+    const back = node.scrollElementTo(box, { x: -50, y: -50 })!;
+    const on = node.scrollElementTo(box, { x: 50, y: 50 })!;
+    assert.deepEqual(
+      [state.width, state.height, back.x, back.y, on.x, on.y],
+      want,
+      `#${id}`,
+    );
+  }
+  // and what it holds is drawn where it is scrolled to: the rtl box's
+  // content, 300 wide from its right edge, 50 to the right of where its
+  // layout put it once scrolled to -50
+  const rtl = el(node, 'rtl');
+  node.scrollElementTo(rtl, { x: 0 });
+  const at = node.elementRect(el(node, 'rtl-c'))!.x;
+  node.scrollElementTo(rtl, { x: -50 });
+  assert.strictEqual(node.elementRect(el(node, 'rtl-c'))!.x - at, 50);
+  assert.strictEqual(node.scrollStateOf(rtl)!.x, -50, 'and stays there');
+});
+
 test('the wheel does not scroll an `overflow: hidden` box, and the handle does', async () => {
   const { el: node } = await renderScrolled(
     LIST.replace('overflow-y:auto', 'overflow:hidden'),

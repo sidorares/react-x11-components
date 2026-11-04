@@ -317,7 +317,7 @@ import {
 import type {
   ScrollBar,
   ScrollOffset,
-  ScrollState,
+  ElementScroll,
   Viewport,
 } from './layout/scroll.js';
 import { lineUp, linesUp, resnap, snapTo } from './layout/snap.js';
@@ -13360,7 +13360,7 @@ export class HtmlViewNode extends Node {
   /** Moved by everything `geometryKey` follows. */
   private _geometry = 0;
 
-  scrollStateOf(element: Element): ScrollState | null {
+  scrollStateOf(element: Element): ElementScroll | null {
     this._prepare(this.abs.width || 1);
     let box = this._scrollerOf(element);
     if (!box) return null;
@@ -13373,9 +13373,10 @@ export class HtmlViewNode extends Node {
     }
     const state = scrollStateOf(box);
     const s = this._scale;
+    // from its scroll origin, as `scrollLeft` and `scrollTop` count
     return {
-      x: state.x / s,
-      y: state.y / s,
+      x: (state.x - state.originX) / s,
+      y: (state.y - state.originY) / s,
       width: state.width / s,
       height: state.height / s,
       clientWidth: state.clientWidth / s,
@@ -13483,17 +13484,21 @@ export class HtmlViewNode extends Node {
     if (!box) return null;
     const state = scrollStateOf(box);
     const s = this._scale;
+    // `to` is from its scroll origin, as `scrollLeft` is
     const at = this._snapScroll(
       box,
-      (to.x ?? state.x / s) * s,
-      (to.y ?? state.y / s) * s,
+      to.x === undefined ? state.x : to.x * s + state.originX,
+      to.y === undefined ? state.y : to.y * s + state.originY,
       relative ? { from: { x: state.x, y: state.y } } : {},
       target,
     );
     // a scroll into view of what the container shows as it is moves
     // nothing, and costs nothing
     if (Math.abs(at.x - state.x) < 0.5 && Math.abs(at.y - state.y) < 0.5) {
-      return { x: state.x / s, y: state.y / s };
+      return {
+        x: (state.x - state.originX) / s,
+        y: (state.y - state.originY) / s,
+      };
     }
     return this._scrollBox(box, at.x / s, at.y / s);
   }
@@ -14476,7 +14481,12 @@ export class HtmlViewNode extends Node {
     if (updatePositionVisibility(root, viewport).length) stackLayers(root);
     // its sticky boxes where it is scrolled to now
     if (to.x !== was.x || to.y !== was.y) restickWithin(box);
-    const offset = { x: to.x / s, y: to.y / s };
+    // kept, and answered, from its scroll origin, which its layouts keep it
+    // at as what spills past it grows
+    const offset = {
+      x: (to.x - was.originX) / s,
+      y: (to.y - was.originY) / s,
+    };
     const el = box.el!;
     if (offset.x || offset.y) this._scrollOffsets.set(el, offset);
     else this._scrollOffsets.delete(el);

@@ -20,6 +20,7 @@ import type { Element } from 'domhandler';
 
 import { scrolls } from '../css/style.js';
 import { CLAMPED, clampBox, unclampBox } from './boxes.js';
+import { FRAME_ROOTS, pageRectOf } from './writing.js';
 import type { Box, BoxTree, LineBox } from './boxes.js';
 import { clipsOverflow, containingBlockOf, hasRect, holds } from '../paint.js';
 
@@ -34,9 +35,20 @@ export interface ScrollOffset {
  *  can be, and its scrollport, as `scrollTop`, `scrollHeight` and
  *  `clientHeight` answer — CSS pixels. */
 export interface ScrollState {
-  /** The offset its content is moved by now. */
+  /** Where it is scrolled to, from the left and the top of its scrollable
+   *  overflow: 0 to how far it can be. Its content is moved by this less
+   *  `originX` and `originY`. */
   x: number;
   y: number;
+  /** Where its scroll origin is (CSS Overflow 3, 2.3), on the same scale:
+   *  0 where it is at the left or the top, and how far it can be scrolled
+   *  where it is at the right or the bottom — an `rtl` box's, a
+   *  `vertical-rl` one's, a reversed flex box's — whose scrollable
+   *  overflow is what spills past its left or its top. What it is
+   *  scrolled to before anything scrolls it, and what `scrollLeft` and
+   *  `scrollTop` count from, which are negative from such an origin. */
+  originX: number;
+  originY: number;
   /** The scrollable overflow's size (`scrollWidth`, `scrollHeight`): at
    *  least the scrollport's. */
   width: number;
@@ -50,6 +62,11 @@ export interface ScrollState {
   clientTop: number;
   clientLeft: number;
 }
+
+/** A scroll container's scroll as a page reads it (`scrollLeft`,
+ *  `scrollWidth` and their kin), in CSS pixels: `x` and `y` from its scroll
+ *  origin, negative from one at its right or its bottom. */
+export type ElementScroll = Omit<ScrollState, 'originX' | 'originY'>;
 
 /** How a box and what it holds are moved: `translate` in `block.ts`, with
  *  the boxes `stays` names left where they are, and what they hold. */
@@ -86,7 +103,47 @@ const SCROLLED = new WeakSet<BoxTree>();
 
 /** Each scroll container's scrollable overflow, worked out once a layout
  *  (`extentOf`): what its content comes to doesn't change as it scrolls. */
-let extents = new WeakMap<Box, { width: number; height: number }>();
+let extents = new WeakMap<Box, Extent>();
+
+/** How far a scroll container's content reaches past its scrollport,
+ *  from its padding box's corner, at no scroll: `width` and `height` from
+ *  the corner to the right and down, and `left` and `top` how far it
+ *  spills past the left and the top. */
+interface Extent {
+  width: number;
+  height: number;
+  left: number;
+  top: number;
+}
+
+/**
+ * Whether a scroll container's scroll origin is at its right, and at its
+ * bottom (CSS Overflow 3, 2.3): where its content starts, as its writing
+ * mode, its direction and a flex box's reversed axes have it, which a
+ * scroll stays at as its content grows, and past which what spills is
+ * unreachable — so an `rtl` box scrolls what spills to its left, and a
+ * `column-reverse` flex box what spills past its top.
+ */
+export function endOrigins(box: Box): [boolean, boolean] {
+  const style = box.style;
+  const vertical = style.writingMode !== 'horizontal-tb';
+  const rtl = style.direction === 'rtl';
+  // the block axis starts at the right in `vertical-rl` and
+  // `sideways-rl`, and the inline axis at its end under `rtl`
+  let x = vertical ? style.writingMode.endsWith('-rl') : rtl;
+  let y = vertical ? rtl : false;
+  const display = style.display;
+  if (display === 'flex' || display === 'inline-flex') {
+    const dir = style.flexDirection;
+    const row = dir === 'row' || dir === 'row-reverse';
+    // a reversed main axis starts at the other end of its axis
+    if (dir.endsWith('-reverse')) {
+      if (row !== vertical) x = !x;
+      else y = !y;
+    }
+  }
+  return [x, y];
+}
 
 /** How many boxes measuring scroll containers has walked (`extentOf`), for a
  *  test to count what a paint walks. */
@@ -177,7 +234,7 @@ export function applyScrollOffsets(
     APPLIED.delete(box);
     const want = box.el ? offsets?.get(box.el) : undefined;
     if (want && (want.x || want.y) && isScroller(box)) {
-      scrollContent(box, want.x * s, want.y * s, move);
+      scrollFromOrigin(box, want.x * s, want.y * s, move);
     }
     for (let i = box.children.length - 1; i >= 0; i -= 1) {
       const child = box.children[i];
@@ -212,7 +269,7 @@ export function applyScrollOffsetsIn(
     const want = at.el ? offsets?.get(at.el) : undefined;
     if (want && (want.x || want.y) && isScroller(at)) {
       SCROLLED.add(tree);
-      scrollContent(at, want.x * s, want.y * s, move);
+      scrollFromOrigin(at, want.x * s, want.y * s, move);
     }
     for (let i = at.children.length - 1; i >= 0; i -= 1) {
       stack.push(at.children[i]);
@@ -239,6 +296,8 @@ export function scrollContent(
   };
   const dx = to.x - state.x;
   const dy = to.y - state.y;
+  // how far its content is moved from where its layout put it
+  const moved = { x: to.x - state.originX, y: to.y - state.originY };
   if (dx || dy) {
     const stays = (child: Box) => escapes(child, box);
     moveLines(box.lines, -dx, -dy);
@@ -253,9 +312,17 @@ export function scrollContent(
       }
     }
   }
-  if (to.x || to.y) APPLIED.set(box, to);
+  if (moved.x || moved.y) APPLIED.set(box, moved);
   else APPLIED.delete(box);
   return to;
+}
+
+/** `scrollContent` to an offset from the scroll origin, as the node keeps
+ *  one and `scrollLeft` reads it: negative from an origin at the right or
+ *  the bottom. */
+function scrollFromOrigin(box: Box, x: number, y: number, move: MoveBox): void {
+  const state = scrollStateOf(box);
+  scrollContent(box, x + state.originX, y + state.originY, move);
 }
 
 /**
@@ -358,11 +425,20 @@ export function scrollStateOf(box: Box): ScrollState {
     box.height - box.borderTop - box.borderBottom,
   );
   const extent = extentOf(box, at);
+  // from an origin at the right or the bottom, what spills past the left
+  // or the top is what scrolls, and what spills the other way does not
+  const [endX, endY] = endOrigins(box);
+  const originX = endX ? extent.left : 0;
+  const originY = endY ? extent.top : 0;
   return {
-    x: at?.x ?? 0,
-    y: at?.y ?? 0,
-    width: Math.max(clientWidth, extent.width),
-    height: Math.max(clientHeight, extent.height),
+    x: (at?.x ?? 0) + originX,
+    y: (at?.y ?? 0) + originY,
+    width: endX ? clientWidth + originX : Math.max(clientWidth, extent.width),
+    height: endY
+      ? clientHeight + originY
+      : Math.max(clientHeight, extent.height),
+    originX,
+    originY,
     clientWidth,
     clientHeight,
     clientTop: box.borderTop,
@@ -380,10 +456,46 @@ export function scrollStateOf(box: Box): ScrollState {
  * box. Measured where its content is now, and taken back by the offset it
  * was moved by.
  */
-function extentOf(
-  box: Box,
-  at: ScrollOffset | undefined,
-): { width: number; height: number } {
+/** The rectangle around a frame and all it holds, in the frame's own
+ *  axes: its box, and the boxes and lines in it, but for what a box in it
+ *  clips. */
+function frameBounds(frame: Box): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} {
+  let x1 = frame.x;
+  let y1 = frame.y;
+  let x2 = frame.x + frame.width;
+  let y2 = frame.y + frame.height;
+  const stack: Box[] = [...frame.children];
+  const lines = (box: Box) => {
+    for (const line of box.lines ?? []) {
+      x1 = Math.min(x1, line.x);
+      y1 = Math.min(y1, line.y);
+      x2 = Math.max(x2, line.x + line.width);
+      y2 = Math.max(y2, line.y + line.height);
+    }
+  };
+  lines(frame);
+  while (stack.length) {
+    const box = stack.pop()!;
+    if (box.kind === 'text' || box.kind === 'break') continue;
+    if (hasRect(box)) {
+      x1 = Math.min(x1, box.x);
+      y1 = Math.min(y1, box.y);
+      x2 = Math.max(x2, box.x + box.width);
+      y2 = Math.max(y2, box.y + box.height);
+    }
+    if (clipsOverflow(box)) continue;
+    lines(box);
+    for (const child of box.children) stack.push(child);
+  }
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+}
+
+function extentOf(box: Box, at: ScrollOffset | undefined): Extent {
   let extent = extents.get(box);
   if (extent) return extent;
   const left = box.x + box.borderLeft;
@@ -392,13 +504,29 @@ function extentOf(
   let bottom = -Infinity;
   let outRight = -Infinity;
   let outBottom = -Infinity;
-  const take = (x2: number, y2: number, outOfFlow: boolean) => {
+  // and how far it reaches the other way, past the left and the top, which
+  // scrolls from an origin at the right or the bottom (`endOrigins`)
+  let leftmost = Infinity;
+  let topmost = Infinity;
+  let outLeftmost = Infinity;
+  let outTopmost = Infinity;
+  const take = (
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    outOfFlow: boolean,
+  ) => {
     if (outOfFlow) {
       outRight = Math.max(outRight, x2);
       outBottom = Math.max(outBottom, y2);
+      outLeftmost = Math.min(outLeftmost, x1);
+      outTopmost = Math.min(outTopmost, y1);
     } else {
       right = Math.max(right, x2);
       bottom = Math.max(bottom, y2);
+      leftmost = Math.min(leftmost, x1);
+      topmost = Math.min(topmost, y1);
     }
   };
   // `dx` and `dy` take a sticky box, and what is in it, back to where the
@@ -410,12 +538,16 @@ function extentOf(
     dy: number,
   ) => {
     for (const line of lines ?? []) {
+      let x1 = line.x;
       let x2 = line.x + line.width;
       for (const text of line.texts) {
         const natural = text.layout.lines[text.layoutLine];
-        if (natural) x2 = Math.max(x2, text.drawX + natural.x + natural.width);
+        if (natural) {
+          x1 = Math.min(x1, text.drawX + natural.x);
+          x2 = Math.max(x2, text.drawX + natural.x + natural.width);
+        }
       }
-      take(x2 + dx, line.y + line.height + dy, outOfFlow);
+      take(x1 + dx, line.y + dy, x2 + dx, line.y + line.height + dy, outOfFlow);
     }
   };
   const walk = (
@@ -437,8 +569,27 @@ function extentOf(
       dx -= stuck[0];
       dy -= stuck[1];
     }
+    // a vertical writing mode's frame is laid out turned, and drawn where
+    // its turn has it, with all it holds
+    if (FRAME_ROOTS.has(child)) {
+      const at = pageRectOf(
+        child,
+        frameBounds(child),
+        FRAME_ROOTS.get(child)!.style.writingMode,
+      );
+      take(
+        at.x + dx,
+        at.y + dy,
+        at.x + at.width + dx,
+        at.y + at.height + dy,
+        outOfFlow,
+      );
+      return;
+    }
     if (hasRect(child) && child.width + child.height > 0) {
       take(
+        child.x + dx - (margins ? Math.max(0, child.marginLeft) : 0),
+        child.y + dy - (margins ? Math.max(0, child.marginTop) : 0),
         child.x +
           dx +
           child.width +
@@ -462,7 +613,13 @@ function extentOf(
   const aside = (holder: Box, outOfFlow: boolean, dy: number) => {
     const reach = ASIDE_REACH.get(holder);
     if (reach !== undefined)
-      take(left, holder.contentY + reach + dy, outOfFlow);
+      take(
+        left,
+        holder.contentY + dy,
+        left,
+        holder.contentY + reach + dy,
+        outOfFlow,
+      );
   };
   linesOf(box.lines, false, 0, 0);
   for (const child of box.children) walk(child, false, true, 0, 0);
@@ -478,7 +635,26 @@ function extentOf(
     bottom === -Infinity ? 0 : bottom + shift.y - top + box.padBottom,
     outBottom === -Infinity ? 0 : outBottom + shift.y - top,
   );
-  extent = { width, height };
+  // past the left and the top, with the start padding there: the end
+  // padding of an origin at the right or the bottom
+  const spill = (
+    edge: number,
+    least: number,
+    outLeast: number,
+    pad: number,
+    by: number,
+  ) =>
+    Math.max(
+      0,
+      least === Infinity ? 0 : edge - (least + by - pad),
+      outLeast === Infinity ? 0 : edge - (outLeast + by),
+    );
+  extent = {
+    width,
+    height,
+    left: spill(left, leftmost, outLeftmost, box.padLeft, shift.x),
+    top: spill(top, topmost, outTopmost, box.padTop, shift.y),
+  };
   extents.set(box, extent);
   return extent;
 }
@@ -1025,13 +1201,20 @@ export function scrollContextOf(
   return { scrollers: scrollers ?? [], pane };
 }
 
+/** How far a scroll container is scrolled from its scroll origin, which
+ *  is how far it moves its content from where its layout put it. */
+function scrolledFromOrigin(scroller: Box): ScrollOffset {
+  const state = scrollStateOf(scroller);
+  return { x: state.x - state.originX, y: state.y - state.originY };
+}
+
 /** How far scrolls displace a box's default anchor from it now: the
  *  offsets of the scroll containers between them, as they are scrolled to
  *  (`offsetOf`), and the pane's, where the viewport is. */
 export function displacementOf(
   context: { scrollers: readonly Box[]; pane: number },
   viewport: { x: number; y: number } | null,
-  offsetOf: (scroller: Box) => ScrollOffset = scrollStateOf,
+  offsetOf: (scroller: Box) => ScrollOffset = scrolledFromOrigin,
 ): [number, number] {
   let x = 0;
   let y = 0;
