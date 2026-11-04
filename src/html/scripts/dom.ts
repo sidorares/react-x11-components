@@ -775,7 +775,7 @@ export function installDom(
       typeof (v as Any)?.addEventListener === 'function',
     scrolled: () => {
       const v = viewport();
-      return { x: v.scrollX, y: v.scrollY };
+      return { x: pageScrollX(v), y: v.scrollY };
     },
     offsetIn: (target, x, y) => pointIn('offset', target, x, y),
     layerIn: (target, x, y) => pointIn('layer', target, x, y),
@@ -7096,7 +7096,7 @@ export function installDom(
       this._scrollTo(undefined, Number(v));
     }
     get scrollLeft(): number {
-      if (this._viewport()) return viewport(true).scrollX;
+      if (this._viewport()) return pageScrollX(viewport(true));
       return scrollStateOf(this)?.[0] ?? 0;
     }
     set scrollLeft(v: Any) {
@@ -7121,7 +7121,7 @@ export function installDom(
         const v = viewport();
         call(
           'scrollTo',
-          ok(x) ? x : v.scrollX,
+          ok(x) ? x : pageScrollX(v),
           ok(y) ? y : v.scrollY,
           undefined,
           relative,
@@ -7233,7 +7233,7 @@ export function installDom(
       const byX = place(inline, r[0] - v.scrollX, r[2], v.width);
       const byY = place(block, r[1] - v.scrollY, r[3], v.height);
       if (quiet && !byX && !byY) return;
-      call('scrollTo', v.scrollX + byX, v.scrollY + byY, this._id);
+      call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
     }
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
      *  host's boxes are the tree's, with the host's children in its
@@ -19269,14 +19269,22 @@ export function installDom(
     scrollX: number;
     scrollY: number;
     dpr: number;
+    originX: number;
   } => {
-    const [width, height, scrollX, scrollY, dpr] = String(
+    const [width, height, scrollX, scrollY, dpr, originX] = String(
       call('viewport', scrolled),
     )
       .split(',')
       .map(Number);
-    return { width, height, scrollX, scrollY, dpr };
+    return { width, height, scrollX, scrollY, dpr, originX: originX || 0 };
   };
+  /** `scrollX` as a page reads it: from the viewport's scroll origin, which
+   *  is past the left of what the pane scrolls where the document spills
+   *  past the left of a viewport whose origin is at its right — negative
+   *  there. `scrollX` itself is the pane's, which document rectangles are
+   *  measured against. */
+  const pageScrollX = (v: { scrollX: number; originX: number }): number =>
+    v.scrollX - v.originX;
 
   /** Where this realm's clock starts on the host's, which is the process's:
    *  a worker's, whose time is its own (`__becomeWorker`). */
@@ -34338,9 +34346,9 @@ export function installDom(
   getter('innerHeight', () => viewport().height);
   getter('outerWidth', () => viewport().width);
   getter('outerHeight', () => viewport().height);
-  getter('scrollX', () => viewport(true).scrollX);
+  getter('scrollX', () => pageScrollX(viewport(true)));
   getter('scrollY', () => viewport(true).scrollY);
-  getter('pageXOffset', () => viewport(true).scrollX);
+  getter('pageXOffset', () => pageScrollX(viewport(true)));
   getter('pageYOffset', () => viewport(true).scrollY);
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);

@@ -207,6 +207,38 @@ metric(
   },
 );
 
+metric(
+  'an rtl document that spills past its left starts the pane at its scroll origin, at its right, and scrolls left into the spill',
+  async () => {
+    // CSS Overflow 3, 2.3: the viewport's scroll origin is at its right in
+    // an rtl document, and what spills past its left scrolls; the document
+    // is drawn that far in, and the pane starts there
+    const { el: node, result } = await renderScrolled(
+      '<html dir="rtl"><style>body{margin:0}' +
+        '#wide{width:1000px;height:10px;background:#0000ff}' +
+        '#red{width:50px;height:20px;background:#ff0000}</style>' +
+        '<div id="red"></div><div id="wide"></div></html>',
+      300,
+    );
+    await act();
+    await act();
+    type Pane = { scrollX: number; scrollTo(to: { x: number }): void };
+    const pane = paneOf(node) as unknown as Pane;
+    // 1000px from the right of a 400px window spills 600 past its left
+    assert.equal(node.documentSize().width, 1000);
+    assert.equal(node.scrollOriginX(), 600);
+    assert.equal(pane.scrollX, 600, 'started at the origin');
+    await expectPixel(result.ctx, 390, 5, '#ff0000', {
+      message: 'the right edge in view, where the red block starts',
+    });
+    await act(() => pane.scrollTo({ x: 0 }));
+    await act();
+    await expectPixel(result.ctx, 5, 25, '#0000ff', {
+      message: 'and the spill past the left, scrolled to',
+    });
+  },
+);
+
 test('a scroll container keeps where it is scrolled to through a layout at another width and a restyle', async () => {
   const { el: node, resize } = await renderScrolled(LIST, 300);
   const list = el(node, 's');

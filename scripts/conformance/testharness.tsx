@@ -1340,18 +1340,26 @@ function focusSurface(
     scrollX: number;
     scrollY: number;
     scale: number;
-    scrollTo(to: { x: number; y: number }): void;
+    scrollTo(to: { x: number }): void;
   };
   let pane = surface?.parent as Pane | null | undefined;
   while (pane && !pane.isScroller?.()) pane = pane.parent;
-  const at = pane && { x: pane.scrollX, y: pane.scrollY, s: pane.scale || 1 };
+  // where the page has it, a viewport origin `<Html>` holds for the pane
+  // included
+  const held = (
+    view as { pageScrollX?: () => number | null } | null
+  )?.pageScrollX?.();
+  // across alone: the surface is as tall as the document, which a focus
+  // keeps in view however far down the pane is, and a scroll down core
+  // holds for its next pass reads 0 here
+  const at = pane && { x: held ?? pane.scrollX, s: pane.scale || 1 };
   surface?.focus?.();
-  if (!pane || !at || (at.x === 0 && at.y === 0)) return;
+  if (!pane || !at || at.x === 0) return;
   let left = 6;
   const put = () => {
     if ((view as { destroyed?: boolean } | null)?.destroyed || !pane) return;
-    if (pane.scrollX !== at.x || pane.scrollY !== at.y) {
-      pane.scrollTo({ x: at.x / at.s, y: at.y / at.s });
+    if (pane.scrollX !== at.x) {
+      pane.scrollTo({ x: at.x / at.s });
       return;
     }
     if (--left > 0) setTimeout(put, 16);
