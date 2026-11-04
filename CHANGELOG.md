@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.34.2](https://github.com/sidorares/react-x11-components/compare/v0.34.1...v0.34.2) (2026-11-04)
+
+
+### Bug Fixes
+
+* **html:** a document wider than its window scrolls the pane around it across, as far as the viewport's scrollable overflow reaches, where everything past the window's right edge was out of reach ([#1319](https://github.com/sidorares/react-x11-components/issues/1319)) ([59aa2f5](https://github.com/sidorares/react-x11-components/commit/59aa2f5f7e0d56c7100eaf6c9af62f7c8bf09446))
+* **html:** a scroll container scrolls from its scroll origin, at its right for rtl and vertical-rl and at the end of a reversed flex axis, where what spilled past its left or its top was out of reach ([#1318](https://github.com/sidorares/react-x11-components/issues/1318)) ([fb183b8](https://github.com/sidorares/react-x11-components/commit/fb183b85a0b1ffac922460c98c7805b614f55e7b))
+* **html:** an anchor is where its transforms draw it, and a transform changed in place places what is against it again ([#1316](https://github.com/sidorares/react-x11-components/issues/1316)) ([9e01da7](https://github.com/sidorares/react-x11-components/commit/9e01da7bfcbb5e28df180fb009a57f2d3bbf4771))
+* **html:** an rtl page scrolls from its scroll origin at the right, into what spills past its left, where the spill was out of reach ([#1320](https://github.com/sidorares/react-x11-components/issues/1320)) ([4f80dfd](https://github.com/sidorares/react-x11-components/commit/4f80dfdb47d19fdf9e0188b9e2b1c45b8252bf79))
+
 ## [0.34.1](https://github.com/sidorares/react-x11-components/compare/v0.34.0...v0.34.1) (2026-11-03)
 
 
