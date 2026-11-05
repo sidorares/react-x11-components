@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.36.0](https://github.com/sidorares/react-x11-components/compare/v0.35.0...v0.36.0) (2026-11-05)
+
+
+### Features
+
+* **html:** a page's fetch goes through the HTTP cache, with its cache mode ([#1331](https://github.com/sidorares/react-x11-components/issues/1331)) ([55aac39](https://github.com/sidorares/react-x11-components/commit/55aac396c9f895fa2fd88366fb241f6e513d0527))
+* **html:** a request says how it was made, in Sec-Fetch-Site, -Mode, -Dest and -User ([#1330](https://github.com/sidorares/react-x11-components/issues/1330)) ([140dc4d](https://github.com/sidorares/react-x11-components/commit/140dc4d414f5a1a39defeaa066940eefcf637615))
+* **html:** HtmlNetwork speaks HTTP/2 over https through the optional peer undici ([#1326](https://github.com/sidorares/react-x11-components/issues/1326)) ([f57cf17](https://github.com/sidorares/react-x11-components/commit/f57cf176d6c2b0d1752256dbc8075eeabc4e6426))
+
+
+### Bug Fixes
+
+* **html:** a body is a byte stream, and bodyUsed is whether it has been read ([#1328](https://github.com/sidorares/react-x11-components/issues/1328)) ([16dd2f2](https://github.com/sidorares/react-x11-components/commit/16dd2f257a9010295f85a737a1034e998e624783))
+* **html:** a page's Headers and Request are Fetch's, checked as Fetch checks them ([#1327](https://github.com/sidorares/react-x11-components/issues/1327)) ([0faf29e](https://github.com/sidorares/react-x11-components/commit/0faf29ed0a5e6c51166d8795654272cd7c384d1d))
+
 ## [0.35.0](https://github.com/sidorares/react-x11-components/compare/v0.34.2...v0.35.0) (2026-11-05)
 
 
