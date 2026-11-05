@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.35.0](https://github.com/sidorares/react-x11-components/compare/v0.34.2...v0.35.0) (2026-11-05)
+
+
+### Features
+
+* **html:** precommit handlers run before a navigation commits, and may redirect it or add handlers through a NavigationPrecommitController ([#1324](https://github.com/sidorares/react-x11-components/issues/1324)) ([50382e4](https://github.com/sidorares/react-x11-components/commit/50382e4984069008138ea7a19629ef3752026976))
+
+
+### Bug Fixes
+
+* **html:** a document of an opaque origin, a frame taken out and a frame's initial about:blank have their navigation entries and events disabled, and a frame's own fragment loads nothing ([#1323](https://github.com/sidorares/react-x11-components/issues/1323)) ([a42e849](https://github.com/sidorares/react-x11-components/commit/a42e849c58f95473225c053cacf64c5b3bb9b06c))
+* **html:** a frame taken out of the page aborts its navigation as it goes, and rejects the traversals on their way ([#1325](https://github.com/sidorares/react-x11-components/issues/1325)) ([777f151](https://github.com/sidorares/react-x11-components/commit/777f151c3b834463e8628d82810e8bffa9874d36))
+* **html:** a same-document navigation commits before currententrychange, its transition has promises of its own, and an intercepted reload keeps its entry ([#1321](https://github.com/sidorares/react-x11-components/issues/1321)) ([b79d7b2](https://github.com/sidorares/react-x11-components/commit/b79d7b238deb59e1680e4c8a9a036c62f20761fd))
+
 ## [0.34.2](https://github.com/sidorares/react-x11-components/compare/v0.34.1...v0.34.2) (2026-11-04)
 
 
