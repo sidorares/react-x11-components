@@ -1547,8 +1547,17 @@ form or `window.open()` aimed at a frame by its window's name is the
 frame's navigation, which the frame's `navigation` hears and the page's
 does not. The frame's first document keeps the window of its initial
 `about:blank`, as HTML has it, so what the page set on that window before
-the frame loaded — a handler on its `navigation` — is still there. Not
-yet: a frame of another origin, which runs in a realm of its own, hears
+the frame loaded — a handler on its `navigation` — is still there, and
+the document it came to arrived by a replace. A document whose entries
+and events are disabled (HTML 7.2.6.1) — a frame's initial `about:blank`,
+a document of an opaque origin, a sandbox's or a `data:` one's, and a
+frame's taken out of the page — has no `currentEntry`, `activation` or
+entries, hears no `navigate`, `currententrychange` or `dispose`, and
+refuses `updateCurrentEntry()` with an `InvalidStateError` before it
+serializes the state. A `file:` page's origin reads as opaque here too,
+and keeps its history, as browsers keep it. A fragment a frame with a
+realm of its own goes to loads nothing; the document is at it already.
+Not yet: a frame of another origin, which runs in a realm of its own, hears
 nothing of the page's navigations of it. With no `session`, the host's own
 entries before and after the page's are not in `navigation.entries()`.
 

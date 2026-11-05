@@ -237,10 +237,20 @@ function FrameDocument({
       scroller.current?.scrollTo({ x: x * zoom, y: y * zoom });
     },
     // a frame's `location` goes on in the frame, and its `open` in a tab
-    navigate: (to, how, post, name) =>
-      how === 'tab'
-        ? outer.navigate(to, 'tab', post, name)
-        : host.navigateFrame(frame, to, post ?? null),
+    navigate: (to, how, post, name) => {
+      if (how === 'tab') {
+        outer.navigate(to, 'tab', post, name);
+        return;
+      }
+      // a fragment the document went to in place, which its realm tells as
+      // a page's tells its address bar, is at its address already, and loads
+      // nothing: sent on, the frame loaded its document again, and a script
+      // that set the hash as it loaded did so for good
+      if (!post && to.includes('#') && scripts.runner?.()?.host.url === to) {
+        return;
+      }
+      host.navigateFrame(frame, to, post ?? null);
+    },
     reload: () => host.navigateFrame(frame, url, null),
     // nothing of the window it is in is a frame's
     popup: null,
