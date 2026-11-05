@@ -89,6 +89,10 @@ export interface StreamsInternals {
   writableDesiredSize(stream: unknown): number | null;
   /** The pending read requests a readable stream's reader has. */
   readRequests(stream: unknown): number;
+  /** Whether a readable stream has been read from or cancelled
+   *  (IsReadableStreamDisturbed), which a body that is one says it is
+   *  used by (Fetch 5, "body is unusable"). */
+  disturbed(stream: unknown): boolean;
   /** An interface's members as Web IDL has them: enumerable, and
    *  `length`s of its operations as the IDL counts them. */
   idl(Interface: unknown): void;
@@ -3667,6 +3671,7 @@ export function installStreams(
       const rs = readableOf(x);
       return rs.reader ? rs.reader.requests.length : 0;
     },
+    disturbed: (x) => !!readableOf(x).disturbed,
     idl,
   };
   return { classes, internals };

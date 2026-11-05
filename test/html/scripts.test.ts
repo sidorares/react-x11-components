@@ -9673,6 +9673,65 @@ test('headers keep to their guard, a response is made as Fetch makes one, and a 
   assert.equal(doc.fetched.length, 0);
 });
 
+test("a page's Headers are a list as Fetch keeps one, and a Request is checked as Fetch checks it, before anything is sent", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var t = function (f) { try { r.push(f()); } catch (e) { r.push(e.name); } };' +
+      // each Set-Cookie apart, a name kept as first given, iteration live
+      't(function () { var h = new Headers([["Set-Cookie", "a=1"], ["set-cookie", "b=2"]]); return h.getSetCookie().join(";") + "," + Array.from(h).length; });' +
+      't(function () { var h = new Headers(); h.append("X-A", "1"); h.append("x-a", "2"); return h.get("X-A") + "," + Array.from(h.keys()).join(""); });' +
+      't(function () { var h = new Headers([["a", "1"], ["b", "2"]]); var seen = []; for (var k of h.keys()) { seen.push(k); if (k === "a") h.append("c", "3"); } return seen.join(""); });' +
+      // a value above U+00FF, a symbol key and null are no headers
+      't(function () { return new Headers([["a", "Ā"]]); });' +
+      't(function () { var o = {}; o[Symbol("s")] = "x"; return new Headers(o); });' +
+      't(function () { return new Headers(null); });' +
+      // methods: forbidden, normalized, and not to be named in an override
+      't(function () { return new Request("u", { method: "trace" }); });' +
+      't(function () { return new Request("u", { method: "patch" }).method + new Request("u", { method: "post" }).method; });' +
+      't(function () { return new Request("u", { headers: { "X-HTTP-Method-Override": "GET, track" } }).headers.has("x-http-method-override"); });' +
+      // what the init takes
+      't(function () { return new Request("u", { mode: "fast" }); });' +
+      't(function () { return new Request("u", { window: {} }); });' +
+      't(function () { return new Request("u", { cache: "only-if-cached" }); });' +
+      't(function () { return new Request("u", { referrer: "" }).referrer + "|" + new Request("u", { referrer: "http://other.test/" }).referrer + "|" + new Request("u", { referrer: "/r" }).referrer.endsWith("/r"); });' +
+      // read-only, and a body taken is a body used
+      't(function () { var q = new Request("u"); q.method = "PUT"; return q.method + Object.prototype.hasOwnProperty.call(q, "method"); });' +
+      't(function () { var q = new Request("u", { method: "POST", body: "x" }); new Request(q); return q.bodyUsed; });' +
+      't(function () { var s = new ReadableStream(); s.getReader(); return new Request("u", { method: "POST", body: s, duplex: "half" }); });' +
+      'Promise.all([' +
+      '  fetch("u", { method: "CONNECT" })["catch"](function (e) { return e.name; }),' +
+      '  fetch("u", { priority: "now" })["catch"](function (e) { return e.name; }),' +
+      '  fetch("u", { method: "POST", keepalive: true, body: new Uint8Array(65537) })["catch"](function (e) { return e.name; })' +
+      ']).then(function (all) { r.push(all.join(",")); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  const text = await settled(doc, 'out', (t) => t !== '');
+  assert.equal(
+    text,
+    [
+      'a=1;b=2,2',
+      '1, 2,x-a',
+      'abc',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      'patchPOST',
+      'false',
+      'TypeError',
+      'TypeError',
+      'TypeError',
+      '|about:client|true',
+      'GETfalse',
+      'true',
+      'TypeError',
+      'TypeError,TypeError,TypeError',
+    ].join('|'),
+  );
+  // nothing a Request turns down reaches the network
+  assert.equal(doc.fetched.length, 0);
+});
+
 test('el.style keeps a clip-path shape() in its canonical form, and does not set one the property does not take', async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="t"></div><script>' +

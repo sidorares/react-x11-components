@@ -19856,11 +19856,31 @@ export function installDom(
         (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
       );
 
-  /** `Headers`, a list of names and values, names lowercased. */
+  /** `Headers` (Fetch 5.1), a header list: names and values in the order
+   *  they were added, a name as it was first given. */
   /** A header a page may not set on a request (Fetch 2.2.2, "forbidden
    *  request-header"), which a request's headers drop, as the host does. */
   const FORBIDDEN_REQUEST_HEADER =
-    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|user-agent|via)$|^(proxy-|sec-)/;
+    /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|via)$|^(proxy-|sec-)/;
+  /** The names that name a method to a server that reads them in place of
+   *  the request's (Fetch 2.2.2), which no page may name a forbidden one
+   *  in. */
+  const METHOD_OVERRIDE =
+    /^(x-http-method|x-http-method-override|x-method-override)$/;
+  /** The methods no page may make a request with (Fetch 2.2.1). */
+  const FORBIDDEN_METHOD = /^(connect|trace|track)$/i;
+  /** Whether a header is one a page may not set on a request, its value
+   *  taken into account for the method-override names. */
+  const forbiddenRequestHeader = (key: string, value: string): boolean => {
+    if (FORBIDDEN_REQUEST_HEADER.test(key)) return true;
+    if (!METHOD_OVERRIDE.test(key)) return false;
+    // "getting, decoding, and splitting" the value, each method trimmed
+    return value
+      .split(',')
+      .some((method) =>
+        FORBIDDEN_METHOD.test(method.replace(/^[\t ]+|[\t ]+$/g, '')),
+      );
+  };
   /** A header's name, a token (RFC 9110, 5.1). */
   const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
   /** The bytes no CORS-safelisted header value may hold (Fetch 2.2.2). */
@@ -19889,15 +19909,58 @@ export function installDom(
         return false;
     }
   };
+  /** A value as Web IDL's `ByteString` converts it (3.2.10): a string with
+   *  no code unit above 255. */
+  const byteString = (v: Any, method: string): string => {
+    const s = str(v);
+    if (/[^\u0000-ÿ]/.test(s)) {
+      throw new TypeError(
+        `Failed to execute '${method}' on 'Headers': String contains non ISO-8859-1 code point.`,
+      );
+    }
+    return s;
+  };
+  /** The instances, by what Web IDL knows them by: a slot, and not a
+   *  prototype a page can swap or a proxy can watch being read. */
+  const HEADERS = new WeakSet<object>();
+  const headersOf = (self: Any, method: string): Any => {
+    if (!HEADERS.has(self)) {
+      throw new TypeError(
+        `Failed to execute '${method}' on 'Headers': Illegal invocation`,
+      );
+    }
+    return self;
+  };
+  const needs = (given: number, count: number, method: string): void => {
+    if (given < count) {
+      throw new TypeError(
+        `Failed to execute '${method}' on 'Headers': ${count} argument${count > 1 ? 's' : ''} required, but only ${given} present.`,
+      );
+    }
+  };
 
   class Headers {
-    _map = new Map<string, string>();
+    /** The header list: each name as it was given, and its value. */
+    _list: [string, string][] = [];
     /** What a page may change of the list (Fetch 5.1, its guard): all of
      *  it, a request's own, a `no-cors` request's safelisted few, a
      *  response's, or none of it — a network response's. */
     _guard = 'none';
-    constructor(init: Any = {}) {
-      fillHeaders(this, init);
+    constructor(init?: Any) {
+      HEADERS.add(this);
+      // `optional HeadersInit`: absent is nothing, and null is no record
+      if (init !== undefined) fillHeaders(this, init, 'Headers');
+    }
+    /** The list by lowercased name, each name's values combined: what the
+     *  host is handed, and what a cache and a worker keep. */
+    get _map(): Map<string, string> {
+      const map = new Map<string, string>();
+      for (const [name, value] of this._list) {
+        const key = name.toLowerCase();
+        const had = map.get(key);
+        map.set(key, had === undefined ? value : `${had}, ${value}`);
+      }
+      return map;
     }
     /** A name and a value as Fetch's `append` and `set` take them: the
      *  value's white space trimmed and both checked, or null where the
@@ -19908,8 +19971,11 @@ export function installDom(
       v: Any,
       appending: boolean,
     ): [string, string] | null {
-      const name = str(k);
-      const value = str(v).replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
+      const name = byteString(k, method);
+      const value = byteString(v, method).replace(
+        /^[\t\n\r ]+|[\t\n\r ]+$/g,
+        '',
+      );
       if (!HEADER_NAME.test(name)) {
         throw new TypeError(
           `Failed to execute '${method}' on 'Headers': Invalid name`,
@@ -19926,24 +19992,22 @@ export function installDom(
         );
       }
       const key = name.toLowerCase();
-      if (this._guard === 'request' && FORBIDDEN_REQUEST_HEADER.test(key)) {
+      if (this._guard === 'request' && forbiddenRequestHeader(key, value)) {
         return null;
       }
       if (this._guard === 'response' && /^set-cookie2?$/.test(key)) {
         return null;
       }
       if (this._guard === 'request-no-cors') {
-        const had = appending ? this._map.get(key) : undefined;
-        if (
-          !noCorsSafelisted(key, had === undefined ? value : `${had}, ${value}`)
-        ) {
+        const had = appending ? this._get(key) : null;
+        if (!noCorsSafelisted(key, had === null ? value : `${had}, ${value}`)) {
           return null;
         }
       }
-      return [key, value];
+      return [name, value];
     }
     _name(method: string, k: Any): string {
-      const name = str(k);
+      const name = byteString(k, method);
       if (!HEADER_NAME.test(name)) {
         throw new TypeError(
           `Failed to execute '${method}' on 'Headers': Invalid name`,
@@ -19951,35 +20015,71 @@ export function installDom(
       }
       return name.toLowerCase();
     }
+    /** A name's values combined, by its lowercased name, or null. */
+    _get(key: string): string | null {
+      let out: string | null = null;
+      for (const [name, value] of this._list) {
+        if (name.toLowerCase() !== key) continue;
+        out = out === null ? value : `${out}, ${value}`;
+      }
+      return out;
+    }
     append(k: Any, v: Any): void {
+      headersOf(this, 'append');
+      needs(arguments.length, 2, 'append');
       const admitted = this._admit('append', k, v, true);
       if (!admitted) return;
-      const [key, value] = admitted;
-      const had = this._map.get(key);
-      this._map.set(key, had === undefined ? value : `${had}, ${value}`);
+      let [name, value] = admitted;
+      // a name already there keeps the case it was first given in
+      const key = name.toLowerCase();
+      const first = this._list.find(([n]) => n.toLowerCase() === key);
+      if (first) name = first[0];
+      this._list.push([name, value]);
     }
     set(k: Any, v: Any): void {
+      headersOf(this, 'set');
+      needs(arguments.length, 2, 'set');
       const admitted = this._admit('set', k, v, false);
-      if (admitted) this._map.set(admitted[0], admitted[1]);
+      if (!admitted) return;
+      const [name, value] = admitted;
+      const key = name.toLowerCase();
+      const at = this._list.findIndex(([n]) => n.toLowerCase() === key);
+      if (at < 0) {
+        this._list.push([name, value]);
+        return;
+      }
+      this._list[at] = [this._list[at][0], value];
+      this._list = this._list.filter(
+        ([n], i) => i <= at || n.toLowerCase() !== key,
+      );
     }
     get(k: Any): string | null {
-      return this._map.get(this._name('get', k)) ?? null;
+      headersOf(this, 'get');
+      needs(arguments.length, 1, 'get');
+      return this._get(this._name('get', k));
     }
     getSetCookie(): string[] {
-      const value = this._map.get('set-cookie');
-      return value === undefined ? [] : [value];
+      headersOf(this, 'getSetCookie');
+      return this._list
+        .filter(([n]) => n.toLowerCase() === 'set-cookie')
+        .map(([, v]) => v);
     }
     has(k: Any): boolean {
-      return this._map.has(this._name('has', k));
+      headersOf(this, 'has');
+      needs(arguments.length, 1, 'has');
+      const key = this._name('has', k);
+      return this._list.some(([n]) => n.toLowerCase() === key);
     }
     delete(k: Any): void {
+      headersOf(this, 'delete');
+      needs(arguments.length, 1, 'delete');
       const key = this._name('delete', k);
       if (this._guard === 'immutable') {
         throw new TypeError(
           "Failed to execute 'delete' on 'Headers': Headers are immutable",
         );
       }
-      if (this._guard === 'request' && FORBIDDEN_REQUEST_HEADER.test(key)) {
+      if (this._guard === 'request' && forbiddenRequestHeader(key, '')) {
         return;
       }
       if (
@@ -19991,60 +20091,170 @@ export function installDom(
         return;
       }
       if (this._guard === 'response' && /^set-cookie2?$/.test(key)) return;
-      this._map.delete(key);
+      this._list = this._list.filter(([n]) => n.toLowerCase() !== key);
     }
-    /** The list as a page iterates it: sorted by name (Fetch 2.2, "sort
-     *  and combine"). */
+    /** The list as a page iterates it (Fetch 2.2, "sort and combine"):
+     *  names lowercased and sorted, each name's values combined but
+     *  `Set-Cookie`'s, each of which is a pair of its own. */
     _sorted(): [string, string][] {
-      return [...this._map.entries()].sort((x, y) =>
-        x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0,
+      const names = [...new Set(this._list.map(([n]) => n.toLowerCase()))].sort(
+        (x, y) => (x < y ? -1 : x > y ? 1 : 0),
       );
+      const out: [string, string][] = [];
+      for (const name of names) {
+        if (name === 'set-cookie') {
+          for (const [n, v] of this._list) {
+            if (n.toLowerCase() === name) out.push([name, v]);
+          }
+        } else out.push([name, this._get(name)!]);
+      }
+      return out;
     }
     forEach(fn: Any, self?: Any): void {
-      for (const [k, v] of this._sorted()) fn.call(self, v, k, this);
-    }
-    entries(): Any {
-      return this._sorted()[Symbol.iterator]();
+      headersOf(this, 'forEach');
+      needs(arguments.length, 1, 'forEach');
+      if (typeof fn !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'forEach' on 'Headers': The callback provided as parameter 1 is not a function.",
+        );
+      }
+      // the pairs are asked again at each step, as an iterator asks them
+      for (let i = 0; ; i += 1) {
+        const pairs = this._sorted();
+        if (i >= pairs.length) return;
+        fn.call(self, pairs[i][1], pairs[i][0], this);
+      }
     }
     keys(): Any {
-      return this._sorted()
-        .map(([k]) => k)
-        [Symbol.iterator]();
+      headersOf(this, 'keys');
+      return headersIterator(this, 'key');
     }
     values(): Any {
-      return this._sorted()
-        .map(([, v]) => v)
-        [Symbol.iterator]();
+      headersOf(this, 'values');
+      return headersIterator(this, 'value');
     }
-    [Symbol.iterator](): Any {
-      return this._sorted()[Symbol.iterator]();
+    entries(): Any {
+      headersOf(this, 'entries');
+      return headersIterator(this, 'key+value');
     }
   }
+  /** A pair iterator (Web IDL 3.7.10.1): an index into the list as it
+   *  stands at each step, so a pair added or taken out while iterating
+   *  is met or passed over as the sorted list has it. */
+  const HeadersIterator = Object.create(
+    Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]())),
+  );
+  const ITERATION = new WeakMap<
+    object,
+    { target: Any; kind: string; index: number }
+  >();
+  Object.defineProperty(HeadersIterator, 'next', {
+    value: function next(this: Any): Any {
+      const state = ITERATION.get(this);
+      if (!state) {
+        throw new TypeError(
+          "Failed to execute 'next' on 'Headers Iterator': Illegal invocation",
+        );
+      }
+      const pairs = state.target._sorted();
+      if (state.index >= pairs.length) return { value: undefined, done: true };
+      const [name, value] = pairs[state.index];
+      state.index += 1;
+      return {
+        value:
+          state.kind === 'key'
+            ? name
+            : state.kind === 'value'
+              ? value
+              : [name, value],
+        done: false,
+      };
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(HeadersIterator, Symbol.toStringTag, {
+    value: 'Headers Iterator',
+    configurable: true,
+  });
+  const headersIterator = (target: Any, kind: string): Any => {
+    const it = Object.create(HeadersIterator);
+    ITERATION.set(it, { target, kind, index: 0 });
+    return it;
+  };
+  // an operation is enumerable, and `@@iterator` is `entries` itself
+  for (const key of Object.getOwnPropertyNames(Headers.prototype)) {
+    if (key === 'constructor' || key.startsWith('_')) continue;
+    const d = Object.getOwnPropertyDescriptor(Headers.prototype, key)!;
+    if (typeof d.value === 'function') {
+      Object.defineProperty(Headers.prototype, key, { ...d, enumerable: true });
+    }
+  }
+  Object.defineProperty(Headers.prototype, Symbol.iterator, {
+    value: Headers.prototype.entries,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(Headers.prototype, Symbol.toStringTag, {
+    value: 'Headers',
+    configurable: true,
+  });
 
   /** A headers object filled from what a page hands in (Fetch 5.2,
-   *  "fill"): another, a sequence of pairs, or a record. */
-  function fillHeaders(headers: Any, init: Any): void {
-    if (init === undefined || init === null) return;
-    if (init instanceof Headers) {
-      for (const [k, v] of init._map) headers.append(k, v);
-      return;
-    }
-    if (typeof init !== 'object' && typeof init !== 'function') {
+   *  "fill"), converted as Web IDL converts a `HeadersInit` (3.2.24): an
+   *  object with an `@@iterator` is a sequence of pairs, any other a
+   *  record, whose keys are asked of it once and in order. The whole of it
+   *  is converted before anything is appended. */
+  function fillHeaders(headers: Any, init: Any, on = 'Headers'): void {
+    if (
+      init === null ||
+      (typeof init !== 'object' && typeof init !== 'function')
+    ) {
       throw new TypeError(
-        "Failed to construct 'Headers': The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.",
+        `Failed to construct '${on}': The provided value is not of type '(record<ByteString, ByteString> or sequence<sequence<ByteString>>)'.`,
       );
     }
-    if (typeof init[Symbol.iterator] === 'function') {
-      for (const pair of init) {
+    const pairs: [string, string][] = [];
+    const method = init[Symbol.iterator];
+    if (method !== undefined && method !== null) {
+      if (typeof method !== 'function') {
+        throw new TypeError(
+          `Failed to construct '${on}': The object must have a callable @@iterator property.`,
+        );
+      }
+      for (const pair of { [Symbol.iterator]: () => method.call(init) }) {
+        if (
+          pair === null ||
+          (typeof pair !== 'object' && typeof pair !== 'function')
+        ) {
+          throw new TypeError(
+            `Failed to construct '${on}': The provided value cannot be converted to a sequence.`,
+          );
+        }
         const items = Array.from(pair as Any);
         if (items.length !== 2) {
-          throw new TypeError("Failed to construct 'Headers': Invalid value");
+          throw new TypeError(`Failed to construct '${on}': Invalid value`);
         }
-        headers.append(items[0], items[1]);
+        pairs.push([
+          byteString(items[0], 'append'),
+          byteString(items[1], 'append'),
+        ]);
       }
-      return;
+    } else {
+      for (const key of Reflect.ownKeys(init)) {
+        const d = Reflect.getOwnPropertyDescriptor(init, key);
+        if (d === undefined || !d.enumerable) continue;
+        if (typeof key === 'symbol') {
+          throw new TypeError(
+            `Failed to construct '${on}': Cannot convert a Symbol value to a string`,
+          );
+        }
+        const name = byteString(key, 'append');
+        pairs.push([name, byteString(init[key], 'append')]);
+      }
     }
-    for (const k of Object.keys(init)) headers.append(k, init[k]);
+    for (const [name, value] of pairs) headers.append(name, value);
   }
 
   /** A headers object with a guard, filled under it: a request's drops
@@ -20055,15 +20265,11 @@ export function installDom(
     if (guard === 'immutable') {
       const pairs: Any =
         init instanceof Headers
-          ? init._map
+          ? init._list
           : Array.isArray(init)
             ? init
             : Object.entries(init ?? {});
-      for (const [k, v] of pairs) {
-        const key = str(k).toLowerCase();
-        const had = headers._map.get(key);
-        headers._map.set(key, had === undefined ? str(v) : `${had}, ${str(v)}`);
-      }
+      for (const [k, v] of pairs) headers._list.push([str(k), str(v)]);
     } else {
       headers._guard = guard;
       fillHeaders(headers, init);
@@ -20170,8 +20376,20 @@ export function installDom(
    */
   const extractBody = (
     init: Any,
+    on = "Failed to construct 'Response'",
   ): { bytes: Uint8Array | null; stream: Any; type: string | null } => {
     if (init instanceof ReadableStream) {
+      // a stream a reader holds, or one read from, is no body (Fetch 5,
+      // "extract a body")
+      if (
+        init.locked ||
+        (streamInternals.isReadableStream(init) &&
+          streamInternals.disturbed(init))
+      ) {
+        throw new TypeError(
+          `${on}: The ReadableStream is locked or disturbed.`,
+        );
+      }
       return { bytes: null, stream: init, type: null };
     }
     if (init instanceof Blob) {
@@ -20522,6 +20740,10 @@ export function installDom(
   // `fetch`: the request is the host's, which keeps the browser's network
   // policy and CORS (`_fetchFor`)
   let fetchSeq = 0;
+  /** The bytes of keepalive requests' bodies in flight, which may not come
+   *  to more than `KEEPALIVE_QUOTA` (Fetch 4.1). */
+  let keepaliveInFlight = 0;
+  const KEEPALIVE_QUOTA = 65536;
   const fetches = new Map<
     number,
     { resolve: Any; reject: Any; streamed?: boolean }
@@ -20743,6 +20965,22 @@ export function installDom(
   const CORS_REFUSED = new WeakSet<object>();
   const fetch = (input: Any, init: Any = {}): Promise<Any> =>
     new Promise((resolve, reject) => {
+      if (init === null || init === undefined) init = {};
+      // fetch makes its `Request` first (Fetch 5.5), so whatever that turns
+      // down is a rejection before anything is sent: a forbidden method,
+      // an enumeration out of range. The probe takes no body, so it leaves
+      // the request it is made from as it was.
+      let probe: Any;
+      try {
+        const probeInit: Any = { [REQUEST_PROBE]: true };
+        for (const key of REQUEST_MEMBERS) {
+          if (key !== 'body' && key !== 'signal') probeInit[key] = init[key];
+        }
+        probe = new Request(input, probeInit);
+      } catch (e) {
+        reject(e);
+        return;
+      }
       const id = ++fetchSeq;
       const request = requestIn(input);
       const url =
@@ -20772,7 +21010,7 @@ export function installDom(
         else reject(new TypeError('Failed to fetch'));
         return;
       }
-      const method = str(init.method ?? request?.method ?? 'GET').toUpperCase();
+      const method = probe._method;
       let extracted: ReturnType<typeof extractBody> | null = null;
       if (init.body !== undefined && init.body !== null) {
         extracted = extractBody(init.body);
@@ -20789,7 +21027,7 @@ export function installDom(
           reject(new TypeError('Body has already been consumed.'));
           return;
         }
-        request.bodyUsed = true;
+        request._bodyUsed = true;
         extracted = {
           bytes: request._raw,
           stream: request._stream,
@@ -20808,20 +21046,41 @@ export function installDom(
         headers.set('content-type', extracted.type);
       }
       if (signal?.aborted) {
-        // fetch makes its `Request` first (Fetch 5.5), so what one turns down
-        // is that TypeError whatever the signal says; asked only here, since
-        // a request that goes on is the host's to refuse, and to resolve
-        if (!request) {
-          try {
-            new Request(input, { ...init, body: undefined, signal: undefined });
-          } catch (e) {
-            reject(e);
-            return;
-          }
-        }
+        // what the `Request` turns down was turned down above, whatever
+        // the signal says
         if (extracted?.stream) extracted.stream.cancel?.(aborted());
         reject(aborted());
         return;
+      }
+      // a keepalive request's body counts against a quota of 64 KiB in
+      // flight (Fetch 4.1, "fetch", the keepalive step), given back as its
+      // promise settles
+      if (probe._keepalive && extracted?.bytes) {
+        const size = extracted.bytes.length;
+        if (keepaliveInFlight + size > KEEPALIVE_QUOTA) {
+          reject(
+            new TypeError(
+              'Failed to fetch: a keepalive request is over the quota for keepalive requests in flight.',
+            ),
+          );
+          return;
+        }
+        keepaliveInFlight += size;
+        let held = size;
+        const release = (): void => {
+          keepaliveInFlight -= held;
+          held = 0;
+        };
+        const settled = resolve;
+        const failed = reject;
+        resolve = (value: Any) => {
+          release();
+          settled(value);
+        };
+        reject = (error: Any) => {
+          release();
+          failed(error);
+        };
       }
       // a stream body is read through a reader of fetch's own, which is
       // what an abort cancels it through (Fetch 4.1, "abort fetch")
@@ -20912,113 +21171,340 @@ export function installDom(
       } else send(extracted?.bytes ?? null);
     });
 
+  /** What a `RequestInit`'s enumerations take (Fetch 6.3). */
+  const REQUEST_ENUMS: Record<string, string[]> = {
+    referrerPolicy: [
+      '',
+      'no-referrer',
+      'no-referrer-when-downgrade',
+      'same-origin',
+      'origin',
+      'strict-origin',
+      'origin-when-cross-origin',
+      'strict-origin-when-cross-origin',
+      'unsafe-url',
+    ],
+    mode: ['navigate', 'same-origin', 'no-cors', 'cors'],
+    credentials: ['omit', 'same-origin', 'include'],
+    cache: [
+      'default',
+      'no-store',
+      'reload',
+      'no-cache',
+      'force-cache',
+      'only-if-cached',
+    ],
+    redirect: ['follow', 'error', 'manual'],
+    duplex: ['half'],
+    priority: ['high', 'low', 'auto'],
+  };
+  /** The members of a `RequestInit`, whose being there at all makes the
+   *  request another (Fetch 6.3, "if init is not empty"). */
+  const REQUEST_MEMBERS = [
+    'method',
+    'headers',
+    'body',
+    'referrer',
+    'referrerPolicy',
+    'mode',
+    'credentials',
+    'cache',
+    'redirect',
+    'integrity',
+    'keepalive',
+    'signal',
+    'duplex',
+    'priority',
+    'window',
+  ];
+  /** A method as Fetch normalizes it (2.2.1): a token, not one of the
+   *  forbidden three, and the six standard names in upper case, whatever
+   *  case they were given in. Any other keeps its case. */
+  const normalizeMethod = (given: Any, on: string): string => {
+    const method = byteStringOf(given, on);
+    if (!HEADER_NAME.test(method)) {
+      throw new TypeError(`${on}: '${method}' is not a valid HTTP method.`);
+    }
+    if (FORBIDDEN_METHOD.test(method)) {
+      throw new TypeError(`${on}: '${method}' HTTP method is unsupported.`);
+    }
+    const upper = method.toUpperCase();
+    return /^(DELETE|GET|HEAD|OPTIONS|POST|PUT)$/.test(upper) ? upper : method;
+  };
+  const byteStringOf = (v: Any, on: string): string => {
+    const s = str(v);
+    if (/[^\u0000-ÿ]/.test(s)) {
+      throw new TypeError(`${on}: String contains non ISO-8859-1 code point.`);
+    }
+    return s;
+  };
+  /** A request made only to see whether its init is one, which takes
+   *  nothing from the request it is made from (`fetch`'s first step), or a
+   *  clone, which tees what it takes rather than taking it. */
+  const REQUEST_PROBE = Symbol('requestProbe');
+  const REQUEST_CLONE = Symbol('requestClone');
+
   /** `Request` (Fetch 6.3): what a page hands `fetch`, or keeps, or
-   *  compares one with. Its body is text, as a response's is. */
+   *  compares one with. Its attributes are its prototype's, read-only. */
   class Request {
-    readonly url: string;
-    readonly method: string;
-    readonly headers: Any;
-    readonly signal: Any;
-    readonly mode: string;
-    readonly credentials: string;
-    readonly cache: string;
-    readonly redirect: string;
-    readonly referrer: string = 'about:client';
-    readonly referrerPolicy: string = '';
-    readonly integrity: string = '';
-    readonly keepalive: boolean;
-    readonly destination: string = '';
-    readonly isReloadNavigation: boolean = false;
-    readonly isHistoryNavigation: boolean = false;
-    readonly duplex = 'half';
+    _url = '';
+    _method = 'GET';
+    _headers: Any;
+    _signal: Any;
+    _mode = 'cors';
+    _credentials = 'same-origin';
+    _cache = 'default';
+    _redirect = 'follow';
+    /** `client`, `no-referrer` or a URL (Fetch 2.2.5, a request's
+     *  referrer). */
+    _referrer = 'client';
+    _referrerPolicy = '';
+    _integrity = '';
+    _keepalive = false;
+    _destination = '';
+    _priority = 'auto';
+    _isReloadNavigation = false;
+    _isHistoryNavigation = false;
     /** The body's bytes, or the stream it is, or neither for none. */
     _raw: Uint8Array | null = null;
     _stream: Any = null;
-    bodyUsed = false;
+    _bodyUsed = false;
     constructor(input: Any, init: Any = {}) {
+      const on = "Failed to construct 'Request'";
+      if (init === null || init === undefined) init = {};
       const from = requestIn(input);
-      // every member of the dictionary is read, as WebIDL converts one —
-      // `duplex` among them, whose being read a page feature-detects a
-      // stream body by
-      const duplex = init.duplex;
-      const parsed = new URL(
-        from ? from.url : str(input),
-        str(workerLocation?.href ?? location.href),
-      );
+      // the API base URL: a worker's, or the document's, which an initial
+      // `about:blank` has of whoever made it (HTML 4.2.3, "fallback base
+      // URL"), as the host resolves a window's URLs (`windowBase`)
+      let base = workerLocation
+        ? str(workerLocation.href)
+        : str(document.baseURI);
+      if (!workerLocation && /^about:/i.test(base)) {
+        base = str(call('windowBase'));
+      }
+      // every member of the dictionary is read once, as Web IDL converts
+      // one — `duplex` among them, whose being read a page feature-detects
+      // a stream body by
+      const given: Record<string, Any> = {};
+      for (const key of REQUEST_MEMBERS) given[key] = init[key];
+      for (const [key, allowed] of Object.entries(REQUEST_ENUMS)) {
+        const v = given[key];
+        if (v !== undefined && !allowed.includes(str(v))) {
+          throw new TypeError(
+            `${on}: The provided value '${str(v)}' is not a valid enum value of type ${key}.`,
+          );
+        }
+      }
+      const parsed = (() => {
+        try {
+          return new URL(from ? from.url : str(input), base);
+        } catch {
+          throw new TypeError(`${on}: Failed to parse URL from ${str(input)}`);
+        }
+      })();
       if (/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(parsed.href)) {
         throw new TypeError(
-          `Failed to construct 'Request': Request cannot be constructed from a URL that includes credentials: ${parsed.href}`,
+          `${on}: Request cannot be constructed from a URL that includes credentials: ${parsed.href}`,
         );
       }
-      this.url = parsed.href;
-      this.method = str(init.method ?? from?.method ?? 'GET').toUpperCase();
-      this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
-      if (init.mode === 'navigate') {
-        throw new TypeError(
-          "Failed to construct 'Request': Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.",
-        );
-      }
-      // a navigation's request, made again by a worker, is the same origin's
-      // (Fetch 6.3, the `Request` constructor's step for a `navigate` mode)
-      this.mode = str(
-        init.mode ??
-          (from?.mode === 'navigate' && Object.keys(init).length
-            ? 'same-origin'
-            : (from?.mode ?? 'cors')),
-      );
-      if (this.mode === 'no-cors' && !/^(GET|HEAD|POST)$/.test(this.method)) {
-        throw new TypeError(
-          `Failed to construct 'Request': '${this.method}' is unsupported in no-cors mode.`,
-        );
-      }
-      this.headers = guardedHeaders(
-        init.headers ?? from?.headers ?? {},
-        this.mode === 'no-cors' ? 'request-no-cors' : 'request',
-      );
-      this.credentials = str(
-        init.credentials ?? from?.credentials ?? 'same-origin',
-      );
-      this.cache = str(init.cache ?? from?.cache ?? 'default');
-      this.redirect = str(init.redirect ?? from?.redirect ?? 'follow');
-      this.keepalive = !!(init.keepalive ?? from?.keepalive);
+      this._url = parsed.href;
       if (from) {
-        this.destination = from.destination;
-        this.referrer = from.referrer;
-        this.referrerPolicy = from.referrerPolicy;
-        this.integrity = from.integrity;
+        this._method = from._method;
+        this._mode = from._mode;
+        this._credentials = from._credentials;
+        this._cache = from._cache;
+        this._redirect = from._redirect;
+        this._referrer = from._referrer;
+        this._referrerPolicy = from._referrerPolicy;
+        this._integrity = from._integrity;
+        this._keepalive = from._keepalive;
+        this._destination = from._destination;
+        this._priority = from._priority;
+        this._isReloadNavigation = from._isReloadNavigation;
+        this._isHistoryNavigation = from._isHistoryNavigation;
       }
-      if (init.referrerPolicy !== undefined) {
-        this.referrerPolicy = str(init.referrerPolicy);
+      if (given.window !== undefined && given.window !== null) {
+        throw new TypeError(`${on}: 'window' must be null.`);
       }
-      if (init.integrity !== undefined) this.integrity = str(init.integrity);
-      const given = init.body !== undefined && init.body !== null;
-      if (!given && from && from.bodyUsed) {
+      const initEmpty = REQUEST_MEMBERS.every((k) => given[k] === undefined);
+      if (!initEmpty) {
+        // another request: a navigation's made again by a worker is the
+        // same origin's, and none of what it was asked as stays
+        if (this._mode === 'navigate') this._mode = 'same-origin';
+        this._isReloadNavigation = false;
+        this._isHistoryNavigation = false;
+        this._referrer = 'client';
+        this._referrerPolicy = '';
+      }
+      if (given.referrer !== undefined) {
+        const referrer = str(given.referrer);
+        if (referrer === '') this._referrer = 'no-referrer';
+        else {
+          let url: URL;
+          try {
+            url = new URL(referrer, base);
+          } catch {
+            throw new TypeError(
+              `${on}: Referrer '${referrer}' is not a valid URL.`,
+            );
+          }
+          // `about:client`, and another origin's, are the client's own
+          this._referrer =
+            (url.protocol === 'about:' && url.pathname === 'client') ||
+            url.origin !== str(workerLocation?.origin ?? location.origin)
+              ? 'client'
+              : url.href;
+        }
+      }
+      if (given.referrerPolicy !== undefined) {
+        this._referrerPolicy = str(given.referrerPolicy);
+      }
+      if (given.mode === 'navigate') {
         throw new TypeError(
-          "Failed to construct 'Request': Cannot construct a Request with a Request object that has already been used.",
+          `${on}: Cannot construct a Request with a RequestInit whose mode member is set as 'navigate'.`,
         );
       }
-      const extracted = given ? extractBody(init.body) : null;
-      const has = given || !!(from && (from._raw || from._stream));
-      if (has && (this.method === 'GET' || this.method === 'HEAD')) {
+      if (given.mode !== undefined) this._mode = str(given.mode);
+      if (given.credentials !== undefined) {
+        this._credentials = str(given.credentials);
+      }
+      if (given.cache !== undefined) this._cache = str(given.cache);
+      if (this._cache === 'only-if-cached' && this._mode !== 'same-origin') {
         throw new TypeError(
-          "Failed to construct 'Request': Request with GET/HEAD method cannot have body.",
+          `${on}: 'only-if-cached' can be set only with 'same-origin' mode`,
         );
       }
+      if (given.redirect !== undefined) this._redirect = str(given.redirect);
+      if (given.integrity !== undefined) {
+        this._integrity = str(given.integrity);
+      }
+      if (given.keepalive !== undefined) this._keepalive = !!given.keepalive;
+      if (given.method !== undefined) {
+        this._method = normalizeMethod(given.method, on);
+      }
+      if (given.priority !== undefined) this._priority = str(given.priority);
+      this._signal =
+        given.signal ?? from?._signal ?? new AbortController().signal;
+      if (this._mode === 'no-cors' && !/^(GET|HEAD|POST)$/.test(this._method)) {
+        throw new TypeError(
+          `${on}: '${this._method}' is unsupported in no-cors mode.`,
+        );
+      }
+      this._headers = guardedHeaders(
+        given.headers ?? from?._headers ?? {},
+        this._mode === 'no-cors' ? 'request-no-cors' : 'request',
+      );
+      const hasInit = given.body !== undefined && given.body !== null;
+      const fromHas = !!(from && (from._raw || from._stream));
+      // a request whose body was read, or is being read, gives none, but
+      // one given a body of its own takes nothing from it
+      const takes = fromHas && !hasInit && !init[REQUEST_CLONE];
+      if (takes && from.bodyUsed) {
+        throw new TypeError(
+          `${on}: Cannot construct a Request with a Request object that has already been used.`,
+        );
+      }
+      if (takes && from._stream?.locked) {
+        throw new TypeError(
+          `${on}: Cannot construct a Request with a Request whose body is locked.`,
+        );
+      }
+      if (
+        (hasInit || fromHas) &&
+        (this._method === 'GET' || this._method === 'HEAD')
+      ) {
+        throw new TypeError(
+          `${on}: Request with GET/HEAD method cannot have body.`,
+        );
+      }
+      const extracted = hasInit ? extractBody(given.body, on) : null;
       if (extracted) {
-        if (extracted.stream && duplex !== 'half') {
+        if (extracted.stream && given.duplex !== 'half') {
           throw new TypeError(
-            "Failed to construct 'Request': The `duplex` member must be specified for a request with a streaming body.",
+            `${on}: The \`duplex\` member must be specified for a request with a streaming body.`,
+          );
+        }
+        if (extracted.stream && this._keepalive) {
+          throw new TypeError(
+            `${on}: keepalive cannot be set for a request with a streaming body.`,
           );
         }
         this._raw = extracted.bytes;
         this._stream = extracted.stream;
-        if (extracted.type !== null && !this.headers.has('content-type')) {
-          this.headers.set('content-type', extracted.type);
+        if (extracted.type !== null && !this._headers.has('content-type')) {
+          this._headers.set('content-type', extracted.type);
         }
-      } else if (from) {
+      } else if (from && fromHas) {
         this._raw = from._raw;
         this._stream = from._stream;
+        // the body moves to the new request, and the one it came from is
+        // used (Fetch 6.3, "creating a proxy" of its body)
+        if (!init[REQUEST_PROBE] && !init[REQUEST_CLONE]) {
+          from._bodyUsed = true;
+        }
       }
+    }
+    get url(): string {
+      return this._url;
+    }
+    get method(): string {
+      return this._method;
+    }
+    get headers(): Any {
+      return this._headers;
+    }
+    get destination(): string {
+      return this._destination;
+    }
+    get referrer(): string {
+      return this._referrer === 'no-referrer'
+        ? ''
+        : this._referrer === 'client'
+          ? 'about:client'
+          : this._referrer;
+    }
+    get referrerPolicy(): string {
+      return this._referrerPolicy;
+    }
+    get mode(): string {
+      return this._mode;
+    }
+    get credentials(): string {
+      return this._credentials;
+    }
+    get cache(): string {
+      return this._cache;
+    }
+    get redirect(): string {
+      return this._redirect;
+    }
+    get integrity(): string {
+      return this._integrity;
+    }
+    get keepalive(): boolean {
+      return this._keepalive;
+    }
+    get isReloadNavigation(): boolean {
+      return this._isReloadNavigation;
+    }
+    get isHistoryNavigation(): boolean {
+      return this._isHistoryNavigation;
+    }
+    get signal(): Any {
+      return this._signal;
+    }
+    get duplex(): string {
+      return 'half';
+    }
+    /** Used where it was read, or its stream was read from or cancelled
+     *  (Fetch 5, "body is unusable" less a lock). */
+    get bodyUsed(): boolean {
+      return (
+        this._bodyUsed ||
+        (!!this._stream &&
+          streamInternals.isReadableStream(this._stream) &&
+          streamInternals.disturbed(this._stream))
+      );
     }
     get body(): Any {
       if (this._stream) return this._stream;
@@ -21039,7 +21525,7 @@ export function installDom(
           "Failed to execute 'clone' on 'Request': Request body is already used",
         );
       }
-      const copy = new Request(this);
+      const copy = new Request(this, { [REQUEST_CLONE]: true });
       if (this._stream) {
         const [mine, theirs] = this._stream.tee();
         this._stream = mine;
@@ -21053,7 +21539,7 @@ export function installDom(
       if (this.bodyUsed) {
         return Promise.reject(new TypeError('Body has already been consumed.'));
       }
-      if (this._stream || this._raw) this.bodyUsed = true;
+      if (this._stream || this._raw) this._bodyUsed = true;
       return Promise.resolve(
         new Response(this._stream ?? this._raw ?? null, {
           type: 'basic',
@@ -21078,6 +21564,17 @@ export function installDom(
     }
     formData(): Promise<Any> {
       return this._consume().then((r) => r.formData());
+    }
+  }
+
+  // its attributes and operations as Web IDL has them: accessors that
+  // check what they are called on, and every member enumerable
+  idlAttributes(Request);
+  for (const key of Object.getOwnPropertyNames(Request.prototype)) {
+    if (key === 'constructor' || key.startsWith('_')) continue;
+    const d = Object.getOwnPropertyDescriptor(Request.prototype, key)!;
+    if (typeof d.value === 'function') {
+      Object.defineProperty(Request.prototype, key, { ...d, enumerable: true });
     }
   }
 
@@ -23867,13 +24364,21 @@ export function installDom(
       redirect: wire.redirect,
       ...(signal ? { signal } : {}),
     });
-    request.mode = wire.mode ?? 'cors';
-    request.referrer = wire.referrer ?? '';
-    request.referrerPolicy = wire.referrerPolicy ?? '';
-    request.integrity = wire.integrity ?? '';
-    request.destination = wire.destination ?? '';
-    request.isReloadNavigation = !!wire.reload;
-    request.headers._guard = 'immutable';
+    request._mode = wire.mode ?? 'cors';
+    // what a request was made with crosses as it reads, and a referrer
+    // that is a URL as the URL
+    const referrer = str(wire.referrer ?? '');
+    request._referrer =
+      referrer === ''
+        ? 'no-referrer'
+        : referrer === 'about:client'
+          ? 'client'
+          : referrer;
+    request._referrerPolicy = wire.referrerPolicy ?? '';
+    request._integrity = wire.integrity ?? '';
+    request._destination = wire.destination ?? '';
+    request._isReloadNavigation = !!wire.reload;
+    request._headers._guard = 'immutable';
     return request;
   };
   /** A `Response` made of what the host holds of one, which nothing changes;

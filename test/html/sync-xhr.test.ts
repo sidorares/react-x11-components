@@ -361,11 +361,10 @@ test('a sandboxed frame’s request is of no origin, and carries none of its add
       body: '<iframe sandbox="allow-scripts" src="/frame"></iframe>',
     },
   );
-  // the same request from the page itself, so that what follows says something
-  assert.equal(
-    await p.until('page|'),
-    `{"origin":"${url}","cookie":"sid=abc"}`,
-  );
+  // the same request from the page itself, so that what follows says
+  // something: a GET of its own origin has no `Origin` (Fetch 3.1), and
+  // carries its cookies
+  assert.equal(await p.until('page|'), '{"origin":"","cookie":"sid=abc"}');
   const none = '{"origin":"null","cookie":""}';
   assert.equal(await p.until('frame|'), `${none}|${none}|null`);
 });

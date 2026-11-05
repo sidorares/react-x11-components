@@ -616,13 +616,13 @@ test("a frame's request carries the frame's Origin and Referer, and its own orig
   await readText((await network.document(`${origin}/set`, signal)).body);
   // the page is another site's, and a frame on the server's origin is in it
   const fetch = network.fetcher('http://page.test/inbox');
-  const ask = (client?: string) =>
+  const ask = (client?: string, method = 'POST') =>
     fetch(
       {
         url: `${origin}/api`,
-        method: 'GET',
+        method,
         headers: [],
-        body: null,
+        body: method === 'POST' ? '' : null,
         credentials: 'same-origin',
         ...(client ? { client } : {}),
       },
@@ -630,9 +630,15 @@ test("a frame's request carries the frame's Origin and Referer, and its own orig
     );
   await ask();
   await ask(`${origin}/frame?x=1#top`);
+  // a GET of the frame's own origin has no `Origin` (Fetch 3.1), and one
+  // of another origin's has the page's
+  await ask(`${origin}/frame?x=1#top`, 'GET');
+  await ask(undefined, 'GET');
   assert.deepEqual(seen, [
     'http://page.test http://page.test/ -',
     `${origin} ${origin}/frame?x=1 id=1`,
+    ` ${origin}/frame?x=1 id=1`,
+    'http://page.test http://page.test/ -',
   ]);
 });
 
