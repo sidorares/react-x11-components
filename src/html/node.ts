@@ -347,6 +347,7 @@ import {
   ViewTransitionRun,
   animationsEnd,
   captureClasses,
+  captureClipRect,
   captureName,
   groupTransform,
 } from './transition.js';
@@ -15515,8 +15516,9 @@ export class HtmlViewNode extends Node {
   /**
    * A picture of a box and all it holds, as laid out, but for `others` —
    * the elements in it captured on their own — on a surface the size of
-   * what it draws, cut to the viewport and as far again on each side; or,
-   * for null, of the document in the viewport, the root's. Where the
+   * what it draws, cut to the viewport and as far again on each side, or
+   * from the near edge where that band misses it entirely (`captureClipRect`);
+   * or, for null, of the document in the viewport, the root's. Where the
    * surface's corner is from the box's border box, and its size. Null where
    * no surface can be had.
    */
@@ -15561,30 +15563,23 @@ export class HtmlViewNode extends Node {
       });
       return { surface, inkX: 0, inkY: 0, inkWidth: w, inkHeight: h };
     }
-    // what it draws, in the document, cut to as far round the viewport
-    // again as the viewport is: where a box fixed to the viewport is laid
-    // out at the document's top, and any other one where it scrolls
+    // what it draws, in the document: where a box fixed to the viewport is
+    // laid out at the document's top, and any other one where it scrolls
     const fixed = drawnAtViewport(box);
     const vx = fixed ? 0 : viewport.x - this.abs.x;
     const vy = fixed ? 0 : viewport.y - this.abs.y;
-    const x0 = Math.floor(
-      Math.max(Math.min(box.boundsX, box.x), vx - viewport.width),
+    const inkX = Math.min(box.boundsX, box.x);
+    const inkY = Math.min(box.boundsY, box.y);
+    const inkW =
+      Math.max(box.boundsX + box.boundsWidth, box.x + box.width) - inkX;
+    const inkH =
+      Math.max(box.boundsY + box.boundsHeight, box.y + box.height) - inkY;
+    const clip = captureClipRect(
+      { x: inkX, y: inkY, width: inkW, height: inkH },
+      { x: vx, y: vy, width: viewport.width, height: viewport.height },
     );
-    const y0 = Math.floor(
-      Math.max(Math.min(box.boundsY, box.y), vy - viewport.height),
-    );
-    const x1 = Math.ceil(
-      Math.min(
-        Math.max(box.boundsX + box.boundsWidth, box.x + box.width),
-        vx + 2 * viewport.width,
-      ),
-    );
-    const y1 = Math.ceil(
-      Math.min(
-        Math.max(box.boundsY + box.boundsHeight, box.y + box.height),
-        vy + 2 * viewport.height,
-      ),
-    );
+    if (!clip) return null;
+    const { x0, y0, x1, y1 } = clip;
     const w = x1 - x0;
     const h = y1 - y0;
     if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;

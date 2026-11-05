@@ -148,6 +148,68 @@ export function animationsEnd(style: ComputedStyle): number {
 }
 
 /**
+ * The rectangle a view transition captures of an element's ink, in the
+ * same coordinates as the ink and the viewport: the intersection of the
+ * ink with the viewport expanded by one viewport on each side, or, where
+ * that is empty (the element is fully offscreen past that band), up to
+ * one viewport of ink from the edge nearest the viewport — so a massive
+ * element below the viewport still yields its top strip, and a far-away
+ * one its whole box when that fits (WPT `massive-element-*-offscreen`,
+ * `far-away-capture`). Null where nothing has size.
+ */
+export function captureClipRect(
+  ink: { x: number; y: number; width: number; height: number },
+  viewport: { x: number; y: number; width: number; height: number },
+): { x0: number; y0: number; x1: number; y1: number } | null {
+  const { x: left, y: top, width: iw, height: ih } = ink;
+  const { x: vx, y: vy, width: vw, height: vh } = viewport;
+  if (!(iw > 0 && ih > 0) || !(vw > 0 && vh > 0)) return null;
+  const right = left + iw;
+  const bottom = top + ih;
+  const bandL = vx - vw;
+  const bandT = vy - vh;
+  const bandR = vx + 2 * vw;
+  const bandB = vy + 2 * vh;
+  let x0 = Math.floor(Math.max(left, bandL));
+  let y0 = Math.floor(Math.max(top, bandT));
+  let x1 = Math.ceil(Math.min(right, bandR));
+  let y1 = Math.ceil(Math.min(bottom, bandB));
+  if (x1 > x0 && y1 > y0) return { x0, y0, x1, y1 };
+
+  // empty: clamp ~one viewport to the ink from the edge nearest the band
+  if (right <= bandL) {
+    x1 = Math.ceil(right);
+    x0 = Math.floor(Math.max(left, right - vw));
+  } else if (left >= bandR) {
+    x0 = Math.floor(left);
+    x1 = Math.ceil(Math.min(right, left + vw));
+  } else {
+    x0 = Math.floor(Math.max(left, bandL));
+    x1 = Math.ceil(Math.min(right, bandR));
+    if (!(x1 > x0)) {
+      x0 = Math.floor(left);
+      x1 = Math.ceil(Math.min(right, left + vw));
+    }
+  }
+  if (bottom <= bandT) {
+    y1 = Math.ceil(bottom);
+    y0 = Math.floor(Math.max(top, bottom - vh));
+  } else if (top >= bandB) {
+    y0 = Math.floor(top);
+    y1 = Math.ceil(Math.min(bottom, top + vh));
+  } else {
+    y0 = Math.floor(Math.max(top, bandT));
+    y1 = Math.ceil(Math.min(bottom, bandB));
+    if (!(y1 > y0)) {
+      y0 = Math.floor(top);
+      y1 = Math.ceil(Math.min(bottom, top + vh));
+    }
+  }
+  if (!(x1 > x0 && y1 > y0)) return null;
+  return { x0, y0, x1, y1 };
+}
+
+/**
  * A group's `transform`, in CSS pixels: the matrix that puts its element's
  * border box where it is from the viewport's corner, taken about the
  * group's centre — the origin the group's transform is applied about — so
