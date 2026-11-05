@@ -8920,6 +8920,39 @@ test('a frame’s initial about:blank has no entries and tells no navigation, an
   );
 });
 
+test('a frame taken out aborts its navigation as it goes, rejects the traversals on their way, and its destination says nothing after', async () => {
+  // HTML, "inform the navigation API about child navigable destruction"
+  const { text } = await hostedFrames(
+    '<iframe id="a" src="plain.html"></iframe><iframe id="b" src="plain.html"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () { try {' +
+      // taken out inside its `navigate`: aborted there, its signal too
+      '  var a = document.getElementById("a"), n = a.contentWindow.navigation, signal = null;' +
+      '  n.onnavigate = function (e) { signal = e.signal; a.remove(); r.push(e.defaultPrevented); };' +
+      '  r.push(await n.navigate("#1").committed.then(function () { return "committed"; }, function (e) { return e.name; }), signal.aborted);' +
+      // a traversal asked for and the frame gone before its step
+      '  var b = document.getElementById("b"), m = b.contentWindow.navigation;' +
+      '  var key = m.currentEntry.key; await m.navigate("#1").finished;' +
+      '  var fired = false; m.onnavigate = function () { fired = true; };' +
+      '  var back = m.traverseTo(key); b.remove();' +
+      '  r.push(await back.finished.then(function () { return "finished"; }, function (e) { return e.name; }));' +
+      '  await new Promise(function (go) { setTimeout(go, 20); }); r.push(fired);' +
+      '} catch (e) { r.push("threw " + e); }' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+    { 'plain.html': '<!doctype html><p>no script here</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'true|AbortError|true|AbortError|false',
+  );
+});
+
 test('a History method acts on the history it is called on, whichever window it was read from', async () => {
   // YouTube binds a hidden about:blank frame's `history.replaceState`, or
   // its prototype's, to `window.history`, for one no extension wrapped
