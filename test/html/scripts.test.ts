@@ -14977,6 +14977,61 @@ test("a view transition's name is read unescaped, and a shadow tree's top elemen
   );
 });
 
+test('window.resizeTo changes innerWidth at once, fires resize, and skips a view transition under way', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' html::view-transition-group(*) { animation-duration: 10s }' +
+      ' html::view-transition-new(*) { animation: unset; opacity: 0 }' +
+      ' html::view-transition-old(*) { animation-duration: 10s; opacity: 1 }' +
+      '</style></head><body><p id="out"></p><script>' +
+      'var r = [], resized = false;' +
+      'addEventListener("resize", function () { resized = true; });' +
+      'var before = [innerWidth, innerHeight];' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  resizeTo(before[0] / 2, before[1] / 2);' +
+      '  r.push(innerWidth === before[0] / 2, innerHeight === before[1] / 2, resized);' +
+      '  return vt.finished;' +
+      '}).then(function () {' +
+      '  r.push("finished");' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      'vt.ready.catch(function (e) { r.push("ready " + e.name); });' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|finished',
+    doc.logs.join('\n'),
+  );
+});
+
+test('window.resizeTo during a view transition update rejects ready with InvalidStateError', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><body><p id="out"></p><script>' +
+      'var r = [];' +
+      'var vt = document.startViewTransition(function () {' +
+      '  var w = innerWidth, h = innerHeight;' +
+      '  resizeTo(w / 2, h / 2);' +
+      '  r.push(innerWidth === w / 2);' +
+      '});' +
+      'vt.ready.then(' +
+      '  function () { r.push("ready ok"); },' +
+      '  function (e) { r.push("ready " + e.name); }' +
+      ').then(function () { return vt.finished; })' +
+      '.then(function () {' +
+      '  r.push("finished");' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|ready InvalidStateError|finished',
+    doc.logs.join('\n'),
+  );
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +
