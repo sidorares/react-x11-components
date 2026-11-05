@@ -1518,8 +1518,13 @@ the Navigation API: `navigate()`, `reload()`, `traverseTo()`, `back()` and
 `forward()` fire `navigate`, which a listener may cancel, or `intercept()`
 to keep the navigation in the document — its URL changes, its entry is
 `currentEntry` and `currententrychange` is told, and the result's
-`committed` and `finished` settle as the handlers do, with `navigatesuccess`
-or `navigateerror`. A link followed and an address assigned to `location`
+`committed` settles as the entry changes and `finished` as the handlers
+do, with `navigatesuccess` or `navigateerror`, so a navigation a
+`currententrychange` listener starts aborts only the `finished`. An
+intercepted reload keeps its entry, the same object with the same key and
+id, and disposes nothing; an entry `pushState` or `replaceState` makes has
+no Navigation API state, and a fragment `location` or a link goes to keeps
+the one the entry it leaves had. A link followed and an address assigned to `location`
 fire it first too, so the host's `navigate` and `onLink` hear only of a
 navigation to another document that nothing kept. A form's submission is
 planned as a task, as a browser plans it, and fires `navigate` there —
@@ -1530,7 +1535,8 @@ a form submitted by a script, while the document is not completely loaded
 — its `load` not yet told — replaces its entry, as HTML's navigate has it
 with no user activation. `navigation.transition` is the
 intercepted navigation's until `navigatesuccess` or `navigateerror` has been
-told, and its `finished` settles after it, as the method's result does.
+told, and its promises are its own, settling after the method's: its
+`finished` fulfils with nothing.
 Each entry keeps where the document was scrolled to as it left it, which a
 traversal back restores where `history.scrollRestoration` is `auto`; an
 intercepted navigation scrolls once its handlers are done — a traversal to

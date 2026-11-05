@@ -9045,6 +9045,62 @@ test('navigateerror says where a handler threw, pushState is no hash change, and
   );
 });
 
+test('a same-document navigation commits before currententrychange, a transition has promises of its own, and an intercepted reload keeps its entry', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      // the Navigation API state: none on what pushState makes, and kept
+      // by a fragment `location` goes to
+      '  await navigation.navigate("#s", { state: { v: 1 } }).finished;' +
+      '  location.hash = "#t"; r.push(navigation.currentEntry.getState().v);' +
+      '  history.pushState(null, "", "#u"); r.push(String(navigation.currentEntry.getState()));' +
+      // a traversal back to a fragment of the same URL is a hash change
+      '  var seen = null; navigation.onnavigate = function (e) { seen = e.hashChange; };' +
+      '  await navigation.back().finished; r.push(seen);' +
+      // a navigation a currententrychange listener starts aborts the
+      // traversal's finish, and not its commit
+      '  navigation.onnavigate = function (e) { e.intercept(); };' +
+      '  navigation.oncurrententrychange = function (e) {' +
+      '    if (e.navigationType === "traverse") navigation.navigate("#v");' +
+      '  };' +
+      '  var back = navigation.back();' +
+      '  var c = await back.committed.then(function () { return "committed"; }, function (e) { return e.name; });' +
+      '  var f = await back.finished.then(function () { return "finished"; }, function (e) { return e.name; });' +
+      '  r.push(c, f); navigation.oncurrententrychange = null;' +
+      // the transition's promises are not the method's, and its finished
+      // fulfils with nothing
+      '  var res = navigation.navigate("#w"); var tr = navigation.transition;' +
+      '  r.push(tr.finished !== res.finished, String(await tr.finished));' +
+      // an intercepted reload: the same entry, nothing disposed
+      '  var entry = navigation.currentEntry, disposed = false;' +
+      '  entry.ondispose = function () { disposed = true; };' +
+      '  await navigation.reload().finished;' +
+      '  r.push(navigation.currentEntry === entry, disposed);' +
+      // a handler that rejects with nothing rejects the finish with it
+      '  navigation.onnavigate = function (e) { e.intercept({ handler: function () { return Promise.reject(); } }); };' +
+      '  r.push(await navigation.navigate("#x").finished.then(function () { return "fulfilled"; }, function (e) { return String(e); }));' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      '1',
+      'undefined',
+      'true',
+      'committed',
+      'AbortError',
+      'true',
+      'undefined',
+      'true',
+      'false',
+      'undefined',
+    ].join('|'),
+  );
+});
+
 test('an intercepted navigation scrolls where it ends, a traversal restores where its entry was scrolled to, and the transition lasts through navigatesuccess', async () => {
   const doc = await hosted(
     '<p id="out"></p><div style="height:3000px"></div><div id="frag">f</div><div style="height:3000px"></div><script>' +
