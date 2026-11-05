@@ -33,6 +33,20 @@ export type Http2Fetch = (url: string, init: object) => Promise<unknown>;
 /** The optional peer's name. */
 export const UNDICI_MODULE = 'undici';
 
+/**
+ * Whether an undici's `fetch` over HTTP/2 ends a request whose body it
+ * knows is empty: from 8.3.0 (nodejs/undici#5169), and no 7.x. Before it
+ * the request is left open, and the server waits for the rest of it for
+ * good, so an older undici, which the peer range warns of and does not
+ * stop, is not used at all.
+ */
+export function fixedVersion(version: unknown): boolean {
+  const m = /^(\d+)\.(\d+)\./.exec(typeof version === 'string' ? version : '');
+  if (!m) return false;
+  const major = Number(m[1]);
+  return major > 8 || (major === 8 && Number(m[2]) >= 3);
+}
+
 /** The global `fetch` as this module found it. undici stands in for the
  *  runtime's own alone: a `fetch` put on the global after — an
  *  application's instrumentation, a test's answers — is asked as it always
@@ -60,35 +74,21 @@ export function loadHttp2Fetch(): Promise<Http2Fetch | null> {
     if ('Bun' in globalThis) loading = Promise.resolve(null);
     else {
       const specifier = UNDICI_MODULE;
-      loading = (import(/* @vite-ignore */ specifier) as Promise<UndiciModule>)
-        .then((m) => {
+      const manifest = `${UNDICI_MODULE}/package.json`;
+      loading = Promise.all([
+        import(/* @vite-ignore */ specifier) as Promise<UndiciModule>,
+        import(/* @vite-ignore */ manifest, { with: { type: 'json' } }).then(
+          (m: { default?: { version?: unknown } }) => m.default?.version,
+        ),
+      ])
+        .then(([m, version]) => {
+          if (!fixedVersion(version)) return null;
           if (typeof m?.fetch !== 'function') return null;
           if (typeof m.Agent !== 'function') return null;
           const dispatcher = new m.Agent({ allowH2: true });
           const fetch = m.fetch;
-          return (url: string, init: object) => {
-            // undici's HTTP/2 never ends a stream whose body it knows is
-            // empty (7.30 and 8.12: `writeBodyH2` hands `writeBuffer`
-            // null for it, which only ends a stream it writes to), so the
-            // server waits for the rest of the request for good. No body
-            // is the same request, `Content-Length: 0` and all, and ends:
-            // an empty string or buffer, and a page's empty stream, which
-            // `_send` hands on with its length.
-            const { body, headers } = init as {
-              body?: unknown;
-              headers?: Record<string, string>;
-            };
-            if (
-              body !== undefined &&
-              (body === '' ||
-                (body instanceof Uint8Array && !body.length) ||
-                headers?.['content-length'] === '0')
-            ) {
-              const { body: _, ...rest } = init as { body?: unknown };
-              init = rest;
-            }
-            return fetch(url, { ...init, dispatcher });
-          };
+          return (url: string, init: object) =>
+            fetch(url, { ...init, dispatcher });
         })
         .catch(() => null);
     }

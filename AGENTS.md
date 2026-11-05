@@ -1049,11 +1049,13 @@ the runtime's own `fetch` alone** (`fetchIsRuntimes`): a `fetch` put on the
 global after `undici.ts` was evaluated is asked, as every test here that
 mocks `globalThis.fetch` for an https URL needs, and an instrumented
 application too. `threadTransport`'s
-worker loads it the same way, by `require`. **One mapping, no issue filed
-yet**: undici's HTTP/2 never ends a stream whose body it knows is empty
-(7.30 and 8.12), so an empty body is sent as no body, in `undici.ts`, in the
-worker and in `_send`'s streamed path. When a release fixes it, delete the
-three and move the peer range.
+worker loads it the same way, by `require`. **The peer range starts at
+8.3.0, and the loaders hold to it** (`fixedVersion`): before it undici's
+`fetch` over HTTP/2 never ended a request whose body it knew was empty
+(fixed by nodejs/undici#5169, on no 7.x), and the server waited for the
+rest of it for good. npm only warns of a peer out of range, so an older
+undici is not used, and the network stays on HTTP/1.1. Node 20 cannot run
+undici 8 (it asks for 22.19), so HTTP/2 is Node 22.19's and later.
 
 ## Running someone else's program
 

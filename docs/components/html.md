@@ -977,9 +977,9 @@ turns it off, a host's own `fetch` transport is never replaced, and nor is a
 `fetch` put on the global after the network was loaded — an application's
 instrumentation, a test's answers — which is asked as it always was.
 `threadTransport({ http2 })` does the same on its thread, where it can load
-undici there. An empty request body goes as no body, since undici's HTTP/2
-never ends a stream whose body it knows is empty: the same request on the
-wire, `Content-Length: 0`.
+undici there. It takes undici 8.3.0 or later, and so Node 22.19 or later:
+before it undici's `fetch` over HTTP/2 left a request with an empty body
+open, so an older undici is not used, and the network stays on HTTP/1.1.
 Nothing about it is required: any `onResource` that answers `'script'` and
 any `fetch` of the same shape will do. See [Cookies and
 storage](#cookies-and-storage).

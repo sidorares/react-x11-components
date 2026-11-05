@@ -21,7 +21,7 @@ import { test as nodeTest } from 'node:test';
 import tls from 'node:tls';
 
 import { HtmlNetwork } from '../../src/html/network.js';
-import { loadHttp2Fetch } from '../../src/html/undici.js';
+import { fixedVersion, loadHttp2Fetch } from '../../src/html/undici.js';
 
 /** A key and a certificate for localhost, good for ten days. */
 function certificate(): { key: string; cert: string } | null {
@@ -72,6 +72,18 @@ const canTrust =
 const http2 = await loadHttp2Fetch();
 const certs = canTrust && http2 ? certificate() : null;
 const test = certs ? nodeTest : nodeTest.skip;
+
+nodeTest(
+  'an undici before 8.3.0, which leaves a request with an empty body open over HTTP/2, is not used',
+  () => {
+    for (const version of ['7.30.1', '8.0.0', '8.2.0', '', undefined, 'x']) {
+      assert.equal(fixedVersion(version), false, String(version));
+    }
+    for (const version of ['8.3.0', '8.12.3', '9.0.0', '10.1.0-rc.1']) {
+      assert.equal(fixedVersion(version), true, version);
+    }
+  },
+);
 
 /** A server that answers each request with the HTTP version it came in,
  *  and echoes its body; and the URL it is at, its certificate trusted for
@@ -136,8 +148,8 @@ test("a page's stream is sent as it is over HTTP/2, and an empty one ends its re
   });
   assert.equal(new TextDecoder().decode(full.bytes), 'Test');
   assert.equal(versionOf(full), '2.0');
-  // undici's HTTP/2 never ended a stream whose body it knew was empty, and
-  // the server waited for the rest of the request for good
+  // undici's fetch over HTTP/2 left a request whose body it knew was empty
+  // open before 8.3.0, and the server waited for the rest of it for good
   for (const streamedBody of [true, false]) {
     const empty = await send(network, `${base}/echo`, {
       method: 'POST',

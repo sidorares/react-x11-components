@@ -66,22 +66,19 @@ let http2 = null;
 if (workerData.http2 && typeof Bun === 'undefined') {
   try {
     const undici = require('undici');
-    if (typeof undici.fetch === 'function' && typeof undici.Agent === 'function') {
+    // from 8.3.0, which ends a request whose body it knows is empty:
+    // \`fixedVersion\` in \`undici.ts\`
+    const [major, minor] = String(require('undici/package.json').version)
+      .split('.')
+      .map(Number);
+    const fixed = major > 8 || (major === 8 && minor >= 3);
+    if (
+      fixed &&
+      typeof undici.fetch === 'function' &&
+      typeof undici.Agent === 'function'
+    ) {
       const dispatcher = new undici.Agent({ allowH2: true });
-      http2 = (url, init) => {
-        // an empty body is no body: undici's HTTP/2 never ends a stream
-        // whose body it knows is empty (\`undici.ts\`)
-        if (
-          init.body !== undefined &&
-          (init.body === '' ||
-            (init.body instanceof Uint8Array && !init.body.length) ||
-            (init.headers && init.headers['content-length'] === '0'))
-        ) {
-          init = { ...init };
-          delete init.body;
-        }
-        return undici.fetch(url, { ...init, dispatcher });
-      };
+      http2 = (url, init) => undici.fetch(url, { ...init, dispatcher });
     }
   } catch {}
 }
