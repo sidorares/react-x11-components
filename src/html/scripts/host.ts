@@ -5695,12 +5695,15 @@ export class DomHost {
         this._focusing = null;
         this._seams.handle.blur();
         return null;
-      case 'active':
-        return this.idOf(
-          this._focusing?.parent
-            ? this._focusing
-            : this._seams.handle.activeElement,
-        );
+      case 'active': {
+        const active = this._focusing?.parent
+          ? this._focusing
+          : this._seams.handle.activeElement;
+        // an element taken out of the document has lost the focus as it went
+        // (HTML, "focus fixup steps"), though `<Html>` hears of it only at
+        // its next render
+        return active && !this._inDocument(active) ? 0 : this.idOf(active);
+      }
       case 'activate': {
         const node = this._node(a);
         return node instanceof Element && this._seams.handle.activate(node);
@@ -5925,6 +5928,10 @@ export class DomHost {
       }
       case 'documentOrigin':
         return this._origin();
+      // whether the document is a top-level traversable's, which only a
+      // traversal there can be canceled in (HTML 7.2.6.10)
+      case 'topLevel':
+        return this.frameParent === null;
       case 'opaqueSrcdoc': {
         const frame = this._frameOf.get(this.document);
         return (

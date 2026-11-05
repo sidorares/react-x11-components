@@ -1536,7 +1536,17 @@ a form submitted by a script, while the document is not completely loaded
 with no user activation. `navigation.transition` is the
 intercepted navigation's until `navigatesuccess` or `navigateerror` has been
 told, and its promises are its own, settling after the method's: its
-`finished` fulfils with nothing.
+`finished` fulfils with nothing, and its `to` is the event's destination.
+A `precommitHandler` given to `intercept()` runs before the navigation
+commits, handed a `NavigationPrecommitController`: `redirect()` sends a
+push or a replace elsewhere in the document — another URL, the other of
+the two, a state, an `info` — and `addHandler()` adds a handler that runs
+after the commit. Only once every precommit handler has fulfilled does the
+URL change and `committed` settle; one that rejects aborts the navigation
+with nothing of it done, and so do `window.stop()` and a new navigation in
+the meantime. Only a cancelable navigate event takes one, and a traversal
+is cancelable only where it stays in the document of a top-level window. A
+traversal's handlers are called before its `popstate`.
 Each entry keeps where the document was scrolled to as it left it, which a
 traversal back restores where `history.scrollRestoration` is `auto`; an
 intercepted navigation scrolls once its handlers are done — a traversal to

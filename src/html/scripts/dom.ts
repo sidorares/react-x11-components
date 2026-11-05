@@ -28612,6 +28612,9 @@ export function installDom(
      *  being fully active (`entriesDisabled`): being its frame's initial
      *  `about:blank`, or of an opaque origin. Absent, false. */
     disabled?(): boolean;
+    /** Whether the session is a top-level traversable's, where a traversal
+     *  in the document can be canceled. Absent, false: a frame's. */
+    topLevel?(): boolean;
     /** The document the session is of, whose unload counter a method
      *  reads, and where it is a frame's, whether it is still fully active
      *  (HTML 7.3.3): in the document, and not left for another. */
@@ -28929,7 +28932,8 @@ export function installDom(
     _scrollBehavior: 'after-transition' | 'manual' = 'after-transition';
     /** Where the navigation is (HTML 7.2.6.9, "interception state"): what
      *  `scroll()` may do, and whether the end scrolls. */
-    _state: 'none' | 'committed' | 'scrolled' | 'finished' = 'none';
+    _state: 'none' | 'intercepted' | 'committed' | 'scrolled' | 'finished' =
+      'none';
     /** What a scroll restores or scrolls to, once committed. */
     _scroller: (() => void) | null = null;
     constructor(type: string, init: Any = {}) {
@@ -29025,6 +29029,96 @@ export function installDom(
     }
   }
 
+  /** HTML 7.2.6.10.2, what a precommit handler is handed: a navigation it
+   *  may send elsewhere before it commits, and handlers it may add. */
+  class NavigationPrecommitController {
+    declare _event: Any;
+    declare _session: Session;
+    declare _params: NavigateParams;
+    constructor(
+      token?: Any,
+      event?: Any,
+      session?: Session,
+      params?: NavigateParams,
+    ) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+      for (const [name, value] of [
+        ['_event', event],
+        ['_session', session],
+        ['_params', params],
+      ] as const) {
+        Object.defineProperty(this, name, { value, writable: true });
+      }
+    }
+    /** The checks both methods make: a document still fully active, an
+     *  event not canceled, and a navigation not committed yet. */
+    _check(method: string): void {
+      const fail = (message: string): never => {
+        throw new DOMException(
+          `Failed to execute '${method}' on 'NavigationPrecommitController': ${message}`,
+          'InvalidStateError',
+        );
+      };
+      if (!this._session.ctx.active()) {
+        fail('The document is not fully active.');
+      }
+      if (this._event._canceled) fail('The navigation was canceled.');
+      if (this._event._state !== 'intercepted') {
+        fail('The navigation has committed already.');
+      }
+    }
+    redirect(url: Any, options: Any = {}): void {
+      this._check('redirect');
+      const params = this._params;
+      const event = this._event;
+      if (params.type !== 'push' && params.type !== 'replace') {
+        throw new DOMException(
+          "Failed to execute 'redirect' on 'NavigationPrecommitController': Only a push or a replace navigation can be redirected.",
+          'InvalidStateError',
+        );
+      }
+      const s = this._session;
+      let to: string;
+      try {
+        to = new URL(str(url), s.ctx.base()).href;
+      } catch {
+        throw new DOMException(
+          `Failed to execute 'redirect' on 'NavigationPrecommitController': Invalid URL '${str(url)}'.`,
+          'SyntaxError',
+        );
+      }
+      if (!rewritable(currentOf(s).url, to)) {
+        throw new DOMException(
+          `Failed to execute 'redirect' on 'NavigationPrecommitController': A navigation to '${to}' cannot be redirected to from '${currentOf(s).url}'.`,
+          'SecurityError',
+        );
+      }
+      const history = options?.history;
+      if (history === 'push' || history === 'replace') {
+        params.type = history;
+        event.navigationType = history;
+      }
+      if (options?.state !== undefined) {
+        const state = serializeClone(options.state);
+        params.navState = state;
+        event.destination._state = state;
+      }
+      params.url = to;
+      event.destination.url = to;
+      // an `info` or a `state` of `undefined` is one not given
+      if (options?.info !== undefined) event.info = options.info;
+    }
+    addHandler(handler: Any): void {
+      this._check('addHandler');
+      if (typeof handler !== 'function') {
+        throw new TypeError(
+          "Failed to execute 'addHandler' on 'NavigationPrecommitController': The handler is not a function.",
+        );
+      }
+      this._event._intercepts.push(handler);
+    }
+  }
+
   class NavigationCurrentEntryChangeEvent extends Event {
     readonly navigationType: string | null;
     readonly from: Any;
@@ -29043,11 +29137,19 @@ export function installDom(
   class NavigationTransition {
     _type: string;
     _from: Any;
+    _to: Any;
     _tracker: Tracker;
-    constructor(token: Any, type: string, from: Any, tracker: Tracker) {
+    constructor(
+      token: Any,
+      type: string,
+      from: Any,
+      tracker: Tracker,
+      to: Any = null,
+    ) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       this._type = type;
       this._from = from;
+      this._to = to;
       this._tracker = tracker;
     }
     get navigationType(): string {
@@ -29055,6 +29157,11 @@ export function installDom(
     }
     get from(): Any {
       return this._from;
+    }
+    /** The navigate event's destination (HTML, `NavigationTransition`'s
+     *  `to`), which a precommit handler's `redirect()` changes in place. */
+    get to(): Any {
+      return this._to;
     }
     get committed(): Any {
       return this._tracker.committed;
@@ -29158,14 +29265,16 @@ export function installDom(
     s: Session,
     params: NavigateParams,
     /** Told whether a handler of the page's has it, which then scrolls
-     *  where it ends, not where it commits. */
-    apply: (intercepted: boolean) => void,
+     *  where it ends, not where it commits; what it hands back is done once
+     *  the handlers have been called. `params` is read as it runs, which a
+     *  precommit handler's `redirect()` may have changed. */
+    apply: (intercepted: boolean) => (() => void) | void,
   ): 'same' | 'canceled' | 'other' => {
     // a document whose navigations go untold: done, with no event, and
     // nothing settled of what a method handed back
     if (s.ctx.disabled?.()) {
       if (!params.sameDocument) return 'other';
-      apply(false);
+      apply(false)?.();
       return 'same';
     }
     abortOngoing(s);
@@ -29190,7 +29299,11 @@ export function installDom(
       (params.type !== 'traverse' || params.sameDocument);
     const event = asTrusted(
       new NavigateEvent('navigate', {
-        cancelable: params.type !== 'traverse' || params.sameDocument,
+        // a traversal only where it stays in the document, in a top-level
+        // traversable (HTML 7.2.6.10, "traverseCanBeCanceled")
+        cancelable:
+          params.type !== 'traverse' ||
+          (params.sameDocument && !!s.ctx.topLevel?.()),
         navigationType: params.type,
         destination,
         canIntercept,
@@ -29238,68 +29351,108 @@ export function installDom(
         params.type,
         fromApi,
         ongoing.transition,
+        destination,
       );
     }
-    // committed as the entry changes, before `currententrychange` is told
-    // (HTML 7.2.6.10, "notify about the committed-to entry"), so that a
-    // navigation a listener of it starts aborts what is left, the finish
-    let entryNow: Any = null;
-    const commitNow = (): void => {
-      if (entryNow) return;
-      entryNow = apiEntryOf(s, currentOf(s));
-      if (event._intercepted) {
-        event._state = 'committed';
-        event._scroller = () => processScroll(s, params.type, params.url);
-      }
-      // the method's, then the transition's
-      tracker?.commit(entryNow);
-      ongoing.transition?.commit(entryNow);
-    };
-    s.committing = commitNow;
-    try {
-      apply(event._intercepted);
-    } finally {
-      if (s.committing === commitNow) s.committing = null;
-    }
-    commitNow();
-    // each handler, then the end of all of them (`navigatesuccess`)
-    const results: Any[] = [];
-    for (const handler of event._intercepts) {
-      try {
-        results.push(handler());
-      } catch (error) {
-        results.push(Promise.reject(error));
-      }
-    }
-    waitForAll(
-      results,
-      () => {
-        if (s.ongoing?.event !== event) return;
-        s.ongoing = null;
-        // what it scrolls to, unless the page scrolled it or said it would
-        // (HTML 7.2.6.9, "potentially process scroll behavior")
-        if (
-          event._state === 'committed' &&
-          event._scrollBehavior === 'after-transition'
-        ) {
-          event._state = 'scrolled';
-          event._scroller?.();
+    // HTML, "commit a navigate event": what the navigation does in the
+    // document, then its handlers, then the end of all of them
+    const commit = (): void => {
+      // what aborted it since — a new navigation, `window.stop()`, the
+      // document gone — took it with it
+      if (s.ongoing?.event !== event || !s.ctx.active()) return;
+      // committed as the entry changes, before `currententrychange` is told
+      // (HTML 7.2.6.10, "notify about the committed-to entry"), so that a
+      // navigation a listener of it starts aborts what is left, the finish
+      let entryNow: Any = null;
+      const commitNow = (): void => {
+        if (entryNow) return;
+        entryNow = apiEntryOf(s, currentOf(s));
+        if (event._intercepted) {
+          event._state = 'committed';
+          event._scroller = () => processScroll(s, params.type, params.url);
         }
-        event._state = 'finished';
-        // `navigatesuccess` while the transition is still the
-        // navigation's, then the method's promise with the entry, then the
-        // transition's with nothing
-        dispatch(s.navigation, asTrusted(new Event('navigatesuccess')));
-        if (ongoing.transition) s.transition = null;
-        tracker?.finish(entryNow);
-        ongoing.transition?.finish(undefined);
-      },
-      (error: Any) => {
-        if (s.ongoing?.event !== event) return;
-        event._state = 'finished';
-        abortOngoing(s, error);
-      },
+        // the method's, then the transition's
+        tracker?.commit(entryNow);
+        ongoing.transition?.commit(entryNow);
+      };
+      s.committing = commitNow;
+      let after: (() => void) | void;
+      try {
+        after = apply(event._intercepted);
+      } finally {
+        if (s.committing === commitNow) s.committing = null;
+      }
+      commitNow();
+      // each handler, then what the navigation does after them — a
+      // traversal's `popstate` (HTML, "update document for history step
+      // application") — then the end of all of them (`navigatesuccess`)
+      const results: Any[] = [];
+      for (const handler of event._intercepts) {
+        try {
+          results.push(handler());
+        } catch (error) {
+          results.push(Promise.reject(error));
+        }
+      }
+      after?.();
+      waitForAll(
+        results,
+        () => {
+          if (s.ongoing?.event !== event) return;
+          s.ongoing = null;
+          // what it scrolls to, unless the page scrolled it or said it would
+          // (HTML 7.2.6.9, "potentially process scroll behavior")
+          if (
+            event._state === 'committed' &&
+            event._scrollBehavior === 'after-transition'
+          ) {
+            event._state = 'scrolled';
+            event._scroller?.();
+          }
+          event._state = 'finished';
+          // `navigatesuccess` while the transition is still the
+          // navigation's, then the method's promise with the entry, then the
+          // transition's with nothing
+          dispatch(s.navigation, asTrusted(new Event('navigatesuccess')));
+          if (ongoing.transition) s.transition = null;
+          tracker?.finish(entryNow);
+          ongoing.transition?.finish(undefined);
+        },
+        (error: Any) => {
+          if (s.ongoing?.event !== event) return;
+          event._state = 'finished';
+          abortOngoing(s, error);
+        },
+      );
+    };
+    if (!event._precommits.length) {
+      commit();
+      return 'same';
+    }
+    // HTML 7.2.6.10, the inner navigate event firing algorithm: the
+    // precommit handlers, each handed the controller, and the commit once
+    // all of them have fulfilled; a rejection aborts it before anything of
+    // it is done
+    event._state = 'intercepted';
+    const precommit = new NavigationPrecommitController(
+      TOKEN,
+      event,
+      s,
+      params,
     );
+    const waiting: Any[] = [];
+    for (const handler of event._precommits) {
+      try {
+        waiting.push(handler(precommit));
+      } catch (error) {
+        waiting.push(Promise.reject(error));
+      }
+    }
+    waitForAll(waiting, commit, (error: Any) => {
+      if (s.ongoing?.event !== event || !s.ctx.active()) return;
+      event._state = 'finished';
+      abortOngoing(s, error);
+    });
     return 'same';
   };
 
@@ -29488,29 +29641,34 @@ export function installDom(
       fragment && !options.tracker && options.navState === undefined
         ? currentOf(s).navState
         : options.navState;
-    const went = navigateWith(
-      s,
-      {
-        url,
-        type,
-        navState,
-        info: options.info,
-        tracker: options.tracker,
-        userInitiated: options.userInitiated,
-        sourceElement: options.sourceElement,
-        sameDocument: fragment,
-        formData: options.form?.formData,
-      },
-      (intercepted) => {
-        commitEntry(s, url, type, null, navState, type);
-        // a page's handler has it, which scrolls where it ends, and an
-        // intercepted navigation is no fragment's to tell `hashchange` of
-        if (fragment && !intercepted) {
-          scrollToFragment(s.ctx.doc(), url);
-          queueHashChange(s, from, url);
-        }
-      },
-    );
+    // what the navigation is, which a precommit handler's `redirect()` may
+    // change before it commits
+    const params: NavigateParams = {
+      url,
+      type,
+      navState,
+      info: options.info,
+      tracker: options.tracker,
+      userInitiated: options.userInitiated,
+      sourceElement: options.sourceElement,
+      sameDocument: fragment,
+      formData: options.form?.formData,
+    };
+    const went = navigateWith(s, params, (intercepted) => {
+      const to = params.url;
+      const how = params.type as 'push' | 'replace';
+      commitEntry(s, to, how, null, params.navState, how);
+      // a page's handler has it, which scrolls where it ends, and an
+      // intercepted navigation is no fragment's to tell `hashchange` of
+      if (fragment && !intercepted) {
+        scrollToFragment(s.ctx.doc(), to);
+        queueHashChange(s, from, to);
+      }
+      // the host hears of a fragment as it did, once it is the document's
+      if (fragment && fragmentOf(from, to) && s.ctx.tellsFragments) {
+        return () => s.ctx.away(to, how === 'replace');
+      }
+    });
     // another document unloads this one, which is asked first, after its
     // `navigate` (HTML 7.4.2.2, "navigate"), and may stay where a prompt
     // says so
@@ -29520,12 +29678,9 @@ export function installDom(
     // the document it goes to is the next of the host's session, where the
     // session is the host's, with the state the page gave it
     if (went === 'other') planAway(s, { type, navState: options.navState });
-    // the host hears of a fragment as it did, and of another document where
-    // nothing kept the navigation in this one
-    if (
-      (went === 'same' && fragment && s.ctx.tellsFragments) ||
-      (went === 'other' && !options.hostFollows)
-    ) {
+    // the host hears of another document where nothing kept the navigation
+    // in this one
+    if (went === 'other' && !options.hostFollows) {
       s.ctx.away(url, type === 'replace');
     }
     return went;
@@ -29771,20 +29926,25 @@ export function installDom(
             s.ctx.setUrl(target.url);
             persist(s);
             entryChanged(s, 'traverse', from);
-            dispatch(
-              s.ctx.target,
-              asTrusted(
-                new PopStateEvent('popstate', {
-                  state: historyStateOf(target),
-                }),
-              ),
-            );
-            // where it was scrolled to, as it is restored (HTML 7.4.6.3,
-            // "restore persisted state"), unless a handler has it
-            if (!intercepted && s.restoration === 'auto' && target.scroll) {
-              s.ctx.scrollTo(target.scroll[0], target.scroll[1]);
-            }
-            queueHashChange(s, fromUrl, target.url);
+            // `popstate` once the handlers have been called, as HTML's
+            // "update document for history step application" tells it after
+            // the navigation API's entries are brought up to date
+            return () => {
+              dispatch(
+                s.ctx.target,
+                asTrusted(
+                  new PopStateEvent('popstate', {
+                    state: historyStateOf(target),
+                  }),
+                ),
+              );
+              // where it was scrolled to, as it is restored (HTML 7.4.6.3,
+              // "restore persisted state"), unless a handler has it
+              if (!intercepted && s.restoration === 'auto' && target.scroll) {
+                s.ctx.scrollTo(target.scroll[0], target.scroll[1]);
+              }
+              queueHashChange(s, fromUrl, target.url);
+            };
           },
         );
       },
@@ -30304,6 +30464,7 @@ export function installDom(
       disabled: () =>
         documentOrigin() === 'null' &&
         !/^file:/i.test(String(call('location'))),
+      topLevel: () => call('topLevel') === true,
       get target() {
         return windowTarget;
       },
@@ -33801,6 +33962,7 @@ export function installDom(
     NavigationCurrentEntryChangeEvent,
     NavigationTransition,
     NavigationActivation,
+    NavigationPrecommitController,
     ToggleEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
