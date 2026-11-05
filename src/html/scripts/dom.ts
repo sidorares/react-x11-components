@@ -185,6 +185,8 @@ export function installDom(
       // a scroll timeline's time is measured again at the next frame
       if (heldTimelines.size) wantFrame();
       if (takesNotes) takeReactions();
+      // a frame that went with the op takes its navigation with it
+      afterMutation?.();
     } else if (
       customElementsDefined &&
       !copying &&
@@ -359,6 +361,9 @@ export function installDom(
    *  (`takeReactions`): what happens to custom elements, once one is
    *  defined, and what is connected, once a node has a scoped registry. */
   let takesNotes = false;
+  /** What an op that changes the tree is followed by, where something waits
+   *  to hear that a frame left the document (`abortDetached`). */
+  let afterMutation: (() => void) | null = null;
   /** The ops that change the tree, which the host records
    *  (`host.ts`, "what changed"), asked through `Set.prototype.has` as it
    *  was before any page code ran: a page that changes the prototype
@@ -28652,6 +28657,9 @@ export function installDom(
     /** The trackers of the traversals asked for and not yet begun, by the
      *  key each goes to (`traverseTo`). */
     upcoming?: Map<string, Tracker>;
+    /** Set while its frame's removal is told (`abortDetached`): the document
+     *  is still its frame's until the navigation API has heard. */
+    detaching?: boolean;
     activation: Any;
     navigation: Any;
     /** `history.scrollRestoration`: whether a traversal restores where the
@@ -28682,7 +28690,10 @@ export function installDom(
    *  not fully active, its frame's initial `about:blank`, or of an opaque
    *  origin (`ctx.disabled`) shows no entries and tells no navigation. */
   const entriesDisabled = (s: Session): boolean =>
-    !s.ctx.active() || !!s.ctx.disabled?.();
+    !fullyActive(s) || !!s.ctx.disabled?.();
+  /** Whether the session's document is fully active (HTML 7.3.3), which it
+   *  still is while its frame's removal is being told. */
+  const fullyActive = (s: Session): boolean => !!s.detaching || s.ctx.active();
 
   /** An entry's origin, as the entries the API shows are told apart by. */
   const entryOrigin = (entry: SessionEntry): string => {
@@ -28845,7 +28856,7 @@ export function installDom(
      *  fully active (HTML, `NavigationHistoryEntry`'s getters), past which it says nothing: an entry a
      *  replace or a push disposed keeps its URL, key and id. */
     get _gone(): boolean {
-      return !this._session.ctx.active();
+      return !fullyActive(this._session);
     }
     get url(): string | null {
       return this._gone ? '' : this._entry.url;
@@ -28878,11 +28889,13 @@ export function installDom(
 
   class NavigationDestination {
     readonly url: string;
-    readonly key: string;
-    readonly id: string;
     readonly sameDocument: boolean;
     _state: string | undefined;
     _index: () => number;
+    _entry: SessionEntry | null;
+    /** Whether the document of the window it was handed out in is still
+     *  fully active, past which its entry says nothing. */
+    _active: () => boolean;
     constructor(
       token: Any,
       url: string,
@@ -28890,20 +28903,27 @@ export function installDom(
       entry: SessionEntry | null,
       sameDocument: boolean,
       state: string | undefined,
+      active: () => boolean = () => true,
     ) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       this.url = url;
-      this.key = entry?.key ?? '';
-      this.id = entry?.id ?? '';
+      this._entry = entry;
       this._index = index;
+      this._active = active;
       this.sameDocument = sameDocument;
       this._state = state;
     }
+    get key(): string {
+      return this._entry && this._active() ? this._entry.key : '';
+    }
+    get id(): string {
+      return this._entry && this._active() ? this._entry.id : '';
+    }
     /** Where its entry is among the entries now: -1 once it is disposed,
-     *  after the navigation as much as during it (HTML,
-     *  `NavigationDestination`'s `index`). */
+     *  after the navigation as much as during it, or once its document is
+     *  gone (HTML, `NavigationDestination`'s `index`). */
     get index(): number {
-      return this._index();
+      return this._active() ? this._index() : -1;
     }
     getState(): Any {
       return this._state === undefined
@@ -29235,6 +29255,45 @@ export function installDom(
     running.transition?.fail(reason);
   };
 
+  /** The sessions with a navigation under way or a traversal on its way,
+   *  which a frame leaving the document ends (`abortDetached`). */
+  const busySessions = new Set<Session>();
+  const noteBusy = (s: Session): void => {
+    busySessions.add(s);
+    afterMutation = abortDetached;
+  };
+  /** HTML, "inform the navigation API about child navigable destruction":
+   *  a session whose frame left the document has its ongoing navigation
+   *  aborted and its upcoming traversals rejected, as the frame goes and
+   *  not at the end of the task, so a `navigate` listener that removes it
+   *  hears it in the same breath. */
+  const abortDetached = (): void => {
+    for (const s of Array.from(busySessions)) {
+      if (!s.ongoing && !s.upcoming?.size) {
+        busySessions.delete(s);
+        continue;
+      }
+      if (s.ctx.active()) continue;
+      busySessions.delete(s);
+      // its document is still the frame's while this is told: a listener
+      // of the `navigateerror` reads its entries as they were
+      s.detaching = true;
+      try {
+        if (s.ongoing) abortOngoing(s);
+        const upcoming = Array.from(s.upcoming?.values() ?? []);
+        s.upcoming?.clear();
+        for (const tracker of upcoming) {
+          tracker.fail(
+            new DOMException('The navigation was aborted.', 'AbortError'),
+          );
+        }
+      } finally {
+        s.detaching = false;
+      }
+    }
+    if (!busySessions.size) afterMutation = null;
+  };
+
   interface NavigateParams {
     url: string;
     type: 'push' | 'replace' | 'reload' | 'traverse';
@@ -29293,6 +29352,7 @@ export function installDom(
       params.target ?? null,
       params.sameDocument,
       params.navState ?? params.target?.navState,
+      () => fullyActive(s),
     );
     const canIntercept =
       rewritable(from.url, params.url) &&
@@ -29327,6 +29387,7 @@ export function installDom(
     );
     const tracker = params.tracker ?? null;
     s.ongoing = { controller, tracker, event, transition: null };
+    noteBusy(s);
     event._dispatching = true;
     const go = dispatch(s.navigation, event);
     event._dispatching = false;
@@ -29895,6 +29956,9 @@ export function installDom(
         for (const [key, upcoming] of s.upcoming ?? []) {
           if (upcoming === tracker) s.upcoming!.delete(key);
         }
+        // a document gone since — its frame taken out — takes no step, and
+        // fires no `navigate`; its promises were rejected as it went
+        if (!s.ctx.active() || tracker?.aborted) return;
         const target = s.entries[index];
         if (!target) {
           tracker?.fail(
@@ -30219,6 +30283,7 @@ export function installDom(
         tracker.finish(entry);
       } else {
         upcoming.set(k, tracker);
+        noteBusy(s);
         traverseTo(s, index, options?.info, tracker);
       }
       return resultOf(tracker);

@@ -1564,7 +1564,15 @@ a document of an opaque origin, a sandbox's or a `data:` one's, and a
 frame's taken out of the page — has no `currentEntry`, `activation` or
 entries, hears no `navigate`, `currententrychange` or `dispose`, and
 refuses `updateCurrentEntry()` with an `InvalidStateError` before it
-serializes the state. A `file:` page's origin reads as opaque here too,
+serializes the state. Taking a frame out of the page aborts the navigation
+it has under way as it goes, in the same breath as the removal — its
+signal, `navigateerror`, both promises with an `AbortError`, the event
+canceled where it is still being told — and rejects the traversals asked
+for and not yet begun, which fire no `navigate`; a listener of that
+`navigateerror` still reads the frame's entries, and after it a
+destination's `key`, `id` and `index` say nothing. Only a frame whose
+document has no realm of its own hears this yet. A `file:` page's origin
+reads as opaque here too,
 and keeps its history, as browsers keep it. A fragment a frame with a
 realm of its own goes to loads nothing; the document is at it already.
 Not yet: a frame of another origin, which runs in a realm of its own, hears
