@@ -3731,11 +3731,86 @@ export function installDom(
       asTrusted(new PageRevealEvent('pagereveal', { viewTransition: null })),
     );
   };
+  /**
+   * Whether this document's rendering opportunities are blocked (HTML,
+   * "render-blocking"): a connected `<link rel=expect blocking=render>`
+   * whose media matches, until the element its href names is in the tree
+   * — or until the parse finishes, where that id never appears or the
+   * href is not this document. Animation frame callbacks wait; the
+   * stylesheet hold in `<Html>` is separate (`_renderBlocked`).
+   */
+  const renderOpportunitiesBlocked = (): boolean => {
+    if (document._unloaded) return false;
+    let links: Any;
+    try {
+      links = document.querySelectorAll('link');
+    } catch {
+      return false;
+    }
+    const loading = document._ready === 'loading';
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
+      if (!link?.isConnected) continue;
+      const rel = str(link.getAttribute?.('rel') ?? '');
+      if (!/(?:^|\s)expect(?:\s|$)/i.test(rel)) continue;
+      const blocking = str(link.getAttribute?.('blocking') ?? '');
+      if (!/(?:^|\s)render(?:\s|$)/i.test(blocking)) continue;
+      const media = str(link.getAttribute?.('media') ?? '').trim();
+      if (media) {
+        try {
+          if (!matchMedia(media).matches) continue;
+        } catch {
+          continue;
+        }
+      }
+      const href = str(link.getAttribute?.('href') ?? '');
+      let url: URL;
+      let docUrl: URL;
+      try {
+        url = new URL(href, location.href);
+        docUrl = new URL(location.href);
+      } catch {
+        if (loading) return true;
+        continue;
+      }
+      const sameDoc =
+        url.origin === docUrl.origin &&
+        url.pathname === docUrl.pathname &&
+        url.search === docUrl.search;
+      const id = sameDoc ? decodeURIComponent(url.hash.slice(1)) : '';
+      if (!id) {
+        // not this document, or no fragment: blocks until the parse ends
+        if (loading) return true;
+        continue;
+      }
+      // the document's indicated part for that fragment: an `id`, or an
+      // `<a name>` (element-render-blocking-041)
+      const byId = document.getElementById(id);
+      const byName =
+        !byId && typeof document.getElementsByName === 'function'
+          ? document.getElementsByName(id)[0]
+          : null;
+      const found = byId ?? byName;
+      if (found?.isConnected) continue;
+      // missing: hold while parsing; once interactive, the expectation
+      // is over (element-render-blocking-024)
+      if (loading) return true;
+    }
+    return false;
+  };
   const runFrame = (): void => {
     // in the frame: a frame its steps ask for is the next one
     // (`nextFrame`), and not one more beside this
     frameTimer = -1;
     renderingOwed = false;
+    // a render-blocking `<link rel=expect>` holds every rendering
+    // opportunity — including animation frame callbacks — until its
+    // element is in, or the parse ends (html/dom/render-blocking/)
+    if (renderOpportunitiesBlocked()) {
+      frameTimer = 0;
+      wantFrame();
+      return;
+    }
     // the documents shown for the first time are revealed before the
     // rest of the rendering steps (HTML's "update the rendering")
     if (revealOwed) reveal();

@@ -1021,6 +1021,35 @@ test('a page sees what the parser puts in the document after its first script, a
   );
 });
 
+test('link rel=expect blocking=render holds animation frames until its element is parsed', async () => {
+  // Rendering opportunities stay blocked while an expect link's id is
+  // missing and the document is still loading (HTML render-blocking).
+  // Forced here after load so the harness need not interleave a parser
+  // delay with the page's timers; WPT's element-render-blocking-*.html
+  // cover the real parse.
+  const doc = await hosted('<p id="out"></p>');
+  doc.run(
+    'document._ready = "loading";' +
+      'var link = document.createElement("link");' +
+      'link.rel = "expect"; link.href = "#never"; link.setAttribute("blocking", "render");' +
+      'document.head.appendChild(link);' +
+      'var fired = false;' +
+      'requestAnimationFrame(function () { fired = true; });' +
+      'setTimeout(function () {' +
+      '  var mid = fired ? "fired" : "held";' +
+      '  document._ready = "complete";' +
+      '  requestAnimationFrame(function () {' +
+      '    document.getElementById("out").textContent = mid + "|" + (fired ? "fired" : "held");' +
+      '  });' +
+      '}, 50);',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t.includes('|')),
+    'held|fired',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a deferred script and a module wait for the parse to end, and find what follows them', async () => {
   const doc = await hosted(
     '<p id="a">a</p><script defer src="d.js"></script>' +
