@@ -41,10 +41,11 @@
 //     POST from a forged one by them.
 //
 // The transport is the runtime's `fetch` — Node's and Bun's — unless the
-// application hands it another, and `file:` is read through `node:fs`,
-// reached as `src/embed/host.ts` reaches it. Nothing happens as this module
-// is imported: an application that does not make an `HtmlNetwork` pays for
-// none of it.
+// application hands it another, or, over https, undici's, which offers
+// HTTP/2, where the optional peer is installed (`undici.ts`). `file:` is
+// read through `node:fs`, reached as `src/embed/host.ts` reaches it.
+// Nothing happens as this module is imported: an application that does not
+// make an `HtmlNetwork` pays for none of it.
 import { useEffect, useMemo } from 'react';
 import { useSupports } from 'react-x11';
 
@@ -90,6 +91,7 @@ import type {
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
+import { fetchIsRuntimes, loadHttp2Fetch } from './undici.js';
 import { MODULE_ACCEPT } from './scripts/script-origin.js';
 import { isXmlType } from './xml-prolog.js';
 import type {
@@ -192,6 +194,14 @@ export interface HtmlNetworkOptions {
   httpCache?: HtmlHttpCacheStore;
   /** What makes the requests. Default the runtime's `fetch`. */
   fetch?: HtmlTransport;
+  /**
+   * Whether a request over https offers HTTP/2, which the server takes or
+   * not as the connection is made. It needs the optional peer `undici`
+   * (`npm install undici`), whose `fetch` makes such requests in place of
+   * the runtime's; without it, or on Bun, or with a `fetch` of the host's,
+   * every request is HTTP/1.1. Default true.
+   */
+  http2?: boolean;
   /** Whether a `file:` page may read its own `file:` resources, and a
    *  `file:` URL be opened as a document. Default true. */
   files?: boolean;
@@ -552,6 +562,7 @@ export class HtmlNetwork {
   private _language: string;
   private _userAgent: string;
   private readonly _transport: HtmlTransport | null;
+  private readonly _http2: boolean;
   private readonly _threadSetup: string | null;
   private readonly _files: boolean;
   private _connectTimeout: number | null;
@@ -579,6 +590,7 @@ export class HtmlNetwork {
     this._language = acceptLanguage();
     this._userAgent = options.userAgent ?? HTML_USER_AGENT;
     this._transport = options.fetch ?? null;
+    this._http2 = options.http2 ?? true;
     this._files = options.files ?? true;
     this._connectTimeout =
       options.connectTimeout === undefined ? 2500 : options.connectTimeout;
@@ -717,6 +729,7 @@ export class HtmlNetwork {
         files: this._files,
         connectTimeout: this._connectTimeout,
         timeout: this._timeout,
+        http2: this._http2,
       },
       cookies: this._cookies,
       publicSuffix: this._cookies?.hasPublicSuffix ?? false,
@@ -755,11 +768,21 @@ export class HtmlNetwork {
         // a runtime with no `node:net` connects as it does
       }
     }
-    const runtimeFetch = (
-      globalThis as unknown as {
-        fetch?: (url: string, init: object) => Promise<ResponseLike>;
-      }
-    ).fetch;
+    // over https, HTTP/2 where the server takes it and undici is here to
+    // offer it (`undici.ts`), else the runtime's, which speaks HTTP/1.1 —
+    // or whatever was put on the global in its place, which is asked
+    const http2 =
+      this._http2 && /^https:/i.test(url) && fetchIsRuntimes()
+        ? await loadHttp2Fetch()
+        : null;
+    const runtimeFetch =
+      (http2 as
+        ((url: string, init: object) => Promise<ResponseLike>) | null) ??
+      (
+        globalThis as unknown as {
+          fetch?: (url: string, init: object) => Promise<ResponseLike>;
+        }
+      ).fetch;
     if (!runtimeFetch) {
       throw new NetworkError('This runtime has no fetch.', 'ERR_FAILED');
     }
