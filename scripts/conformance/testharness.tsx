@@ -81,6 +81,7 @@ import type {
   HtmlNotifications,
   HtmlPermissionState,
   HtmlPopup,
+  HtmlNavigationSource,
   HtmlPopups,
   HtmlProps,
   HtmlScripts,
@@ -590,6 +591,8 @@ function Tab(props: {
     url: string,
     number?: number,
     post?: { body: string | Uint8Array; contentType: string } | null,
+    /** The document that sent the window there (`Sec-Fetch-Site`). */
+    source?: HtmlNavigationSource,
   ) => {
     // a document of no response, as a browser makes one itself
     const blank = {
@@ -606,6 +609,7 @@ function Tab(props: {
         ? Promise.resolve(blank)
         : network.html(url, {
             post: post ? { ...post, from: session.current?.url ?? url } : null,
+            source,
           })
     )
       .then((doc) => {
@@ -651,7 +655,7 @@ function Tab(props: {
     // what a window opened by a page is on its way to may have moved since
     const to = popup ? popup.url : opening.current;
     if (to && to !== 'about:blank') {
-      load(to, undefined, popup?.post);
+      load(to, undefined, popup?.post, popup?.source);
     }
     opening.current = null;
     return popup?.onClose(() => props.close?.());
@@ -688,7 +692,7 @@ function Tab(props: {
       // WPT's `.any.serviceworker.html` variants register their tests' worker
       serviceWorkers: network.serviceWorkers ?? false,
       session,
-      navigate: (url, how, post, name) => {
+      navigate: (url, how, post, name, source) => {
         // a window of its own, beside this one
         if (how === 'tab') {
           props.open(url, name);
@@ -696,7 +700,7 @@ function Tab(props: {
         }
         // a fragment the document went to itself, which its engine wrote
         if (url.includes('#') && session.current?.url === url) return;
-        load(url, undefined, post);
+        load(url, undefined, post, source);
       },
       popups: props.popups,
       ...(popup && { popup }),

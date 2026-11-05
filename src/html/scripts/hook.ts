@@ -253,8 +253,8 @@ export function useScripts(
     canPlayType: (type) => latest.current.canPlayType?.(type) ?? '',
     viewport: () => latest.current.viewport(),
     scrollTo: (x, y) => latest.current.scrollTo(x, y),
-    navigate: (to, how, post, name) =>
-      latest.current.navigate(to, how, post, name),
+    navigate: (to, how, post, name, source) =>
+      latest.current.navigate(to, how, post, name, source),
     reload: () => latest.current.reload(),
     go: (delta) => latest.current.go(delta),
     promptToUnload: () => latest.current.promptToUnload?.() ?? true,

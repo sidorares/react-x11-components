@@ -18,6 +18,8 @@
 // `storage` keeps it — memory, gone with the process, unless the host keeps
 // a profile; a cookie is what the host's jar lets the document's address
 // have; a navigation is a link the browser follows.
+import { trustworthy } from '../fetch-metadata.js';
+import type { FetchMode } from '../fetch-metadata.js';
 import * as encodingCodecs from '../encoding-codecs.js';
 import type { LegacyDecoder } from '../encoding-codecs.js';
 import {
@@ -200,7 +202,7 @@ import {
 import type { CharacterData } from './ranges.js';
 import { linkOpener, navigableFor } from './target.js';
 import { parseWindowFeatures } from '../popups.js';
-import type { HtmlPopup, HtmlPopups } from '../popups.js';
+import type { HtmlNavigationSource, HtmlPopup, HtmlPopups } from '../popups.js';
 import type { PopupAsk, WindowGroup, windowOps } from './popups.js';
 import {
   CorsError,
@@ -391,6 +393,22 @@ export interface FetchRequest {
    *  document's, whose address says nothing of who it is, or one a redirect
    *  through another origin tainted (`redirectTainted`). */
   opaqueOrigin?: boolean;
+  /** Its request mode (Fetch): `navigate` for a frame's document. Absent,
+   *  `cors`, a script's `fetch`'s. What `Sec-Fetch-Mode` says. */
+  mode?: FetchMode;
+  /** Its destination (Fetch): `iframe`, `worker`, `script`… Absent, none,
+   *  a script's `fetch`'s. What `Sec-Fetch-Dest` says. */
+  destination?: string;
+  /** The URLs before this one on its way, where the host follows its
+   *  redirects a hop at a time: what `Sec-Fetch-Site` is reckoned over. */
+  through?: string[];
+  /** A navigation the user's activation made (`Sec-Fetch-User`). */
+  user?: boolean;
+  /** Its origin (Fetch, a request's origin), where `opaqueOrigin` says
+   *  `null` only because a redirect through another origin tainted it:
+   *  `Sec-Fetch-Site` is reckoned from the origin, which a redirect does not
+   *  change. Absent, its client's, or none where `opaqueOrigin`. */
+  origin?: string;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -835,6 +853,8 @@ export interface HostSeams {
     how: 'here' | 'replace' | 'tab',
     post?: FramePost | null,
     name?: string,
+    /** The document that sent it (`HtmlNavigationSource`). */
+    source?: HtmlNavigationSource,
   ): void;
   /** What a page's `window.open` reaches (`HtmlPopups`). */
   popups?: HtmlPopups;
@@ -1558,25 +1578,15 @@ function shadowIncludingRoot(node: AnyNode): AnyNode {
   }
 }
 
-/**
- * Whether a document at this URL is trustworthy (Secure Contexts, 3.1): an
- * origin that is `https:`, `wss:`, `file:` or this machine, and a `blob:`
- * URL's is the origin it names. A top-level `about:blank` and `data:` URL
- * have an opaque origin and are not, as Chromium and Firefox have them, where
- * 3.2 of the specification would have it otherwise.
- */
-export function trustworthy(url: string): boolean {
-  try {
-    const at = new URL(url);
-    if (at.protocol === 'blob:') return trustworthy(at.pathname);
-    if (/^(https|wss|file):$/.test(at.protocol)) return true;
-    if (at.protocol !== 'http:' && at.protocol !== 'ws:') return false;
-    return /^(127(\.\d+){3}|\[::1\]|localhost|.*\.localhost)$/i.test(
-      at.hostname,
-    );
-  } catch {
-    return false;
-  }
+export { trustworthy };
+
+/** What a frame's document is to Fetch (Fetch, "request destination"): the
+ *  element that holds it. */
+function frameDestination(frame: Element): string {
+  const tag = tagOf(frame);
+  return tag === 'frame' || tag === 'object' || tag === 'embed'
+    ? tag
+    : 'iframe';
 }
 
 /** A URL's origin, or '' where it is none. */
@@ -2431,6 +2441,12 @@ export class DomHost {
    *  realm's `TRANSIENT_ACTIVATION_MS`. */
   private _transientlyActive(): boolean {
     return Date.now() - this._activatedAt < TRANSIENT_ACTIVATION_MS;
+  }
+
+  /** This document as what sends a window somewhere: its origin, and
+   *  whether a user's press or key is behind it now. */
+  navigationSource(): HtmlNavigationSource {
+    return { origin: this._origin(), user: this._transientlyActive() };
   }
 
   /** Whether this document may send the window at the top of it somewhere
@@ -5828,7 +5844,13 @@ export class DomHost {
         }
       }
       case 'navigate':
-        this._seams.navigate(text(a), b ? 'replace' : 'here');
+        this._seams.navigate(
+          text(a),
+          b ? 'replace' : 'here',
+          null,
+          undefined,
+          this.navigationSource(),
+        );
         return null;
       // this frame sends the window it is in somewhere, which it has no
       // address of and may not read: a frame of another origin only behind a
@@ -5848,7 +5870,10 @@ export class DomHost {
           );
         }
         this.windows?.initiates(0);
-        parent._seams.navigate(to, 'here');
+        parent._seams.navigate(to, 'here', null, undefined, {
+          origin: this._origin(),
+          user: gesture,
+        });
         return null;
       }
       // `window.open` and what it reads (`./windows.ts`, `./popups.ts`)
@@ -5977,8 +6002,15 @@ export class DomHost {
       // the page's, the page's own tab, or a new one
       case 'open': {
         const to = navigableFor(this.document, text(b));
-        if (to === 'here') this._seams.navigate(text(a), 'here');
-        else if (to === 'tab') this._openTab(text(a), text(b), false);
+        if (to === 'here') {
+          this._seams.navigate(
+            text(a),
+            'here',
+            null,
+            undefined,
+            this.navigationSource(),
+          );
+        } else if (to === 'tab') this._openTab(text(a), text(b), false);
         else this.navigateFrame(to, text(a), null);
         return null;
       }
@@ -7567,16 +7599,21 @@ export class DomHost {
       : /^data:/i.test(src)
         ? Promise.resolve(this._dataResponse(src))
         : this._navigationFetch(
-            post
-              ? {
-                  url: src,
-                  method: 'POST',
-                  headers: [['content-type', post.contentType]],
-                  ...(typeof post.body === 'string'
-                    ? { body: post.body }
-                    : { body: null, bytes: post.body }),
-                }
-              : { url: src, method: 'GET', headers: [], body: null },
+            {
+              ...(post
+                ? {
+                    url: src,
+                    method: 'POST',
+                    headers: [['content-type', post.contentType]],
+                    ...(typeof post.body === 'string'
+                      ? { body: post.body }
+                      : { body: null, bytes: post.body }),
+                  }
+                : { url: src, method: 'GET', headers: [], body: null }),
+              // a nested navigation, which says what holds it
+              mode: 'navigate',
+              destination: frameDestination(frame),
+            },
             new AbortController().signal,
             this._frameSandbox(frame),
           );
@@ -9415,6 +9452,8 @@ export class DomHost {
             stream: true,
             // a media element's request is `no-cors`, with its cookies
             credentials: 'include',
+            mode: 'no-cors',
+            destination: tagOf(el) === 'audio' ? 'audio' : 'video',
           },
           controller.signal,
         );
@@ -9706,6 +9745,11 @@ export class DomHost {
             : 'omit',
         redirect: 'manual',
         ...(opaqueOrigin ? { opaqueOrigin: true } : {}),
+        // what `Sec-Fetch-*` says, the site over every URL on its way
+        mode: request.mode,
+        ...(request.destination ? { destination: request.destination } : {}),
+        ...(urls.length ? { through: [...urls] } : {}),
+        ...(opaqueOrigin && page !== 'null' ? { origin: page } : {}),
       };
       if (response.redirected && request.redirect === 'error') {
         release(response);
@@ -9791,7 +9835,7 @@ export class DomHost {
         {
           ...request,
           mode: 'navigate',
-          destination: 'iframe',
+          destination: request.destination ?? 'iframe',
           credentials: 'include',
           referrer: this.url,
           clientId: this.serviceClient?.id,
@@ -10210,6 +10254,9 @@ export class DomHost {
       credentials: 'omit',
       redirect: 'manual',
       ...(origin === 'null' ? { opaqueOrigin: true } : {}),
+      // a request of its own, which says what it is for (Fetch 4.9)
+      mode: 'cors',
+      ...(request.destination ? { destination: request.destination } : {}),
     };
     const failed = (why: string) =>
       new CorsError(

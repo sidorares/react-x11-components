@@ -993,6 +993,29 @@ as it arrives. A body is read without the page's globals, so a page that
 puts `then` on `Object.prototype`, or a getter for `type` or `start`,
 changes nothing a body does.
 
+**A request says how it was made** (Fetch Metadata): `HtmlNetwork` sends
+`Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest` and, for a navigation a
+user's press or key is behind, `Sec-Fetch-User`, as a browser does, so a
+server that refuses what its own pages would not have asked for answers this
+as it answers one. They are worked out again at each hop of a redirect: a
+request that left the site is `cross-site` from there on, and one redirected
+to a URL that is not potentially trustworthy (an `http:` one, not this
+machine) carries none. The site is a public suffix list's where the network's
+jar has one, and the host's last two labels where not. A navigation says
+who sent it through `navigate`'s `source` and `HtmlPopup.source`
+(`HtmlNavigationSource`), and `HtmlNetwork.html(url, { source })` and
+`document(url, …, { initiator, user })` take it: with none, it is the
+browser's own, an address typed, `Sec-Fetch-Site: none`. A host whose own
+`fetch` makes the requests is handed each one's `mode`, `destination` and
+the URLs it came `through`, to send them itself. Through the runtime's
+`fetch` under Node, `Sec-Fetch-Mode` is `cors` whatever the request is:
+undici sets it from its own request's mode over the one it is handed
+(nodejs/undici#1305), and a request handed `navigate` or `no-cors` as its
+mode would change what undici does with it, not only what it says. A
+transport handed in (`fetch`) sends what it is given. What is not sent: a
+worklet's, a `<link rel=prefetch>`'s, a `<link rel=icon>`'s and a report's,
+which are requests nothing here makes.
+
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
 HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no

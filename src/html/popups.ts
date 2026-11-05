@@ -27,6 +27,20 @@ export interface HtmlPopupFeatures {
 
 /** A window a page opened, as its host is handed it: what it asked for, and
  *  what the host tells it of what the user did. */
+/**
+ * Who sent a window somewhere (HTML, a navigation's source document and its
+ * user involvement): the origin of the document that did, which the request
+ * for the next document is reckoned from (`Sec-Fetch-Site`, a cookie's
+ * `SameSite`), and whether a user's press or key is behind it
+ * (`Sec-Fetch-User`). A navigation with none is the browser's own: an
+ * address typed, a bookmark.
+ */
+export interface HtmlNavigationSource {
+  /** Serialized: `null` for an opaque origin. */
+  readonly origin: string;
+  readonly user: boolean;
+}
+
 export interface HtmlPopup {
   /** A number no other window of this process has: a key to mount it by. */
   readonly id: number;
@@ -41,6 +55,9 @@ export interface HtmlPopup {
   /** The address of the document that opened it, which its first document
    *  is asked for from, or null where the page said `noreferrer`. */
   readonly referrer: string | null;
+  /** The document that opened it, which its first document is asked for
+   *  from: absent from a host's own windows. */
+  readonly source?: HtmlNavigationSource;
   /** The form the first document is to be posted from, where a form's
    *  `target` opened it. */
   readonly post: {

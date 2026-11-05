@@ -63,7 +63,7 @@ import { NO_WEBSOCKET } from '../socket.js';
 import type { HtmlWebSocket } from '../socket.js';
 import type { HtmlClipboard, HtmlClipboardData } from '../clipboard.js';
 import type { HtmlNotifications } from '../notifications.js';
-import type { HtmlPopup, HtmlPopups } from '../popups.js';
+import type { HtmlNavigationSource, HtmlPopup, HtmlPopups } from '../popups.js';
 import type { HtmlPermissions } from '../permissions.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
@@ -176,13 +176,16 @@ export interface HtmlScripts {
   ) => Promise<LoadedScript | null>;
   /** The page asked to go somewhere: an address assigned to `location`,
    *  `location.replace`, or `window.open` with no opener (`'tab'`). `post` is
-   *  the form it goes with, where a form's `target` named this window, and
-   *  `name` what a tab was asked for under. Default: nowhere. */
+   *  the form it goes with, where a form's `target` named this window,
+   *  `name` what a tab was asked for under, and `source` the document that
+   *  sent it, whose origin the request is reckoned from (`Sec-Fetch-Site`).
+   *  Default: nowhere. */
   navigate?: (
     url: string,
     how: 'here' | 'replace' | 'tab',
     post?: FramePost | null,
     name?: string,
+    source?: HtmlNavigationSource,
   ) => void;
   /**
    * What a page's windows reach: `window.open`, `opener`, and a link or a form

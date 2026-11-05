@@ -87,6 +87,13 @@ import type {
   WebSocketConnectionLike,
   WebSocketEvents,
 } from './socket.js';
+import {
+  isMetadataHeader,
+  metadataHeaders,
+  plainSite,
+} from './fetch-metadata.js';
+import type { FetchMetadata, FetchMode } from './fetch-metadata.js';
+import type { HtmlNavigationSource } from './popups.js';
 import type { FetchRequest, FetchResponse } from './scripts/host.js';
 import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
@@ -155,9 +162,11 @@ export type HtmlTransport = (
     streamedBody?: boolean;
     signal: AbortSignalLike;
     /** `manual` where the network follows redirects itself, as it does
-     *  with a cookie jar: a redirect is answered as it came, its
-     *  `Location` and `Set-Cookie` read. A transport that follows it
-     *  anyway loses only the cookies set on the way. */
+     *  with a cookie jar and for what a request says of itself at each hop
+     *  (`Sec-Fetch-*`): a redirect is answered as it came, its `Location`
+     *  and `Set-Cookie` read. A transport that follows it anyway loses the
+     *  cookies set on the way, and sends the first hop's `Sec-Fetch-*` to
+     *  the rest. */
     redirect: 'follow' | 'manual';
   },
 ) => Promise<ResponseLike>;
@@ -281,6 +290,21 @@ interface CookieRequest {
   /** The document that started a navigation, or null for the browser —
    *  an address typed, a bookmark — which is same-site with anything. */
   initiator: string | null;
+}
+
+/** What each kind of resource is to Fetch (Fetch, "request destination"). */
+const RESOURCE_DESTINATIONS: Record<ResourceKind, string> = {
+  image: 'image',
+  stylesheet: 'style',
+  font: 'font',
+  script: 'script',
+};
+
+/** A resource's request mode: a font's is `cors` whoever serves it (CSS
+ *  Fonts 4, 4.8.2), and anything else's where its element asks for CORS,
+ *  `no-cors` where not. */
+function resourceMode(kind: ResourceKind, cors?: ResourceCors): FetchMode {
+  return cors || kind === 'font' ? 'cors' : 'no-cors';
 }
 
 /** A redirect's statuses (Fetch, "redirect status"). */
@@ -763,6 +787,10 @@ export class HtmlNetwork {
     if (!runtimeFetch) {
       throw new NetworkError('This runtime has no fetch.', 'ERR_FAILED');
     }
+    // the runtime's `fetch` writes its own `Sec-Fetch-Mode` over this one,
+    // `cors` whatever the request is (nodejs/undici#1305): handed undici as a
+    // mode, `navigate` throws and `no-cors` drops the headers it does not
+    // safelist, so the field says less than it should here and no more
     const { streamedBody, ...rest } = init;
     if (!streamedBody || rest.body === undefined) {
       return runtimeFetch(url, rest);
@@ -793,9 +821,11 @@ export class HtmlNetwork {
    * A request sent with its cookies, where this network has a jar and the
    * request's credentials mode lets it carry them: each redirect followed
    * here, the `Set-Cookie` of every response on the way stored and the
-   * cookies of every URL on the way sent (Fetch 4.4, 4.5). Without a jar,
-   * the transport follows redirects, as it always did, but where the caller
-   * asks for the responses on the way in `hops`, which it cannot see.
+   * cookies of every URL on the way sent (Fetch 4.4, 4.5), and what the
+   * request says of itself (`metadata`) worked out again for each URL. With
+   * none of that to do, the transport follows redirects, as it always did,
+   * but where the caller asks for the responses on the way in `hops`, which
+   * it cannot see.
    */
   private async _exchange(
     url: string,
@@ -810,10 +840,13 @@ export class HtmlNetwork {
      *  4.3, "HTTP fetch"), and a way that left the origin through another
      *  asks the next in nobody's name. */
     cors: { origin: string; credentials: string } | null = null,
+    /** What it says of how it was made (`Sec-Fetch-*`), worked out again at
+     *  each hop, since a redirect may leave the site or a secure URL. */
+    metadata: FetchMetadata | null = null,
   ): Promise<ResponseLike> {
     const jar = cookies?.credentials === 'omit' ? null : this._cookies;
     const carrying = jar && cookies ? { jar, cookies } : null;
-    if (!carrying && !hops && !cors) {
+    if (!carrying && !hops && !cors && !metadata) {
       return this._send(url, {
         ...init,
         redirect: manual ? 'manual' : 'follow',
@@ -842,6 +875,15 @@ export class HtmlNetwork {
             }
           : null;
       delete headers.cookie;
+      if (metadata) {
+        for (const name of Object.keys(headers)) {
+          if (isMetadataHeader(name)) delete headers[name];
+        }
+        Object.assign(
+          headers,
+          metadataHeaders(at, metadata, before, this._siteOf),
+        );
+      }
       if (sending) {
         const header = sending.jar.header(at, sending.context);
         if (header) headers.cookie = header;
@@ -927,6 +969,11 @@ export class HtmlNetwork {
       at = next;
     }
   }
+
+  /** The site of a URL, by the jar's public suffix list where there is one
+   *  (`Sec-Fetch-Site`). */
+  private readonly _siteOf = (url: string): string | null =>
+    this._cookies ? this._cookies.site(url) : plainSite(url);
 
   /** Whether a request to `url` is same-site for its cookies (6265bis
    *  5.2): with its top-level document, or for a navigation with the
@@ -1228,6 +1275,11 @@ export class HtmlNetwork {
               id,
               cors,
               opaque,
+              {
+                mode: resourceMode(kind, cors),
+                destination: module ?? RESOURCE_DESTINATIONS[kind],
+                origin: opaque ? 'null' : originOf(asker.client ?? page),
+              },
             );
     // what the memory holds of it until it is here, and after if it is
     // kept: what a later answer is checked against, so that one made after
@@ -1367,6 +1419,7 @@ export class HtmlNetwork {
     id = 0,
     cors?: ResourceCors,
     opaque = false,
+    metadata?: FetchMetadata,
   ): Promise<Obtained> {
     const had = candidate ?? (await this._stored(key));
     // asked for before a hard reload: neither used nor asked about, and
@@ -1387,6 +1440,7 @@ export class HtmlNetwork {
         id,
         cors,
         opaque,
+        metadata,
       }),
     );
     if (answer.fetched.status === 304 && stored && validators) {
@@ -1484,6 +1538,10 @@ export class HtmlNetwork {
       serviceWorkers?: boolean | 'bypass';
       /** Whether a reload asked for it, which a worker reads. */
       reload?: boolean;
+      /** Whether the user's activation made it — a link clicked, a form
+       *  sent, an address typed — which a server hears as
+       *  `Sec-Fetch-User`. */
+      user?: boolean;
     } = {},
   ): Promise<DocumentResponse> {
     const scheme = schemeOf(url);
@@ -1562,6 +1620,12 @@ export class HtmlNetwork {
     this._sent(id);
     let response: ResponseLike;
     const redirects: HtmlDocumentHop[] = [];
+    const initiator =
+      options.initiator !== undefined
+        ? options.initiator
+        : posting
+          ? post.from
+          : null;
     try {
       response = await this._exchange(
         url,
@@ -1576,15 +1640,18 @@ export class HtmlNetwork {
           origin: originOf(url),
           site: url,
           topLevel: true,
-          initiator:
-            options.initiator !== undefined
-              ? options.initiator
-              : posting
-                ? post.from
-                : null,
+          initiator,
         },
         false,
         redirects,
+        null,
+        {
+          mode: 'navigate',
+          destination: 'document',
+          // the browser's own navigation is no site's
+          origin: initiator === null ? null : originOf(initiator),
+          user: options.user ?? initiator === null,
+        },
       );
     } catch (error) {
       stall.stop();
@@ -1711,6 +1778,12 @@ export class HtmlNetwork {
       redirect?: 'follow' | 'error' | 'manual';
       /** An `Origin` of `null` (`FetchRequest.opaqueOrigin`). */
       opaqueOrigin?: boolean;
+      /** What `Sec-Fetch-*` says of it (`FetchRequest.mode` and the rest). */
+      mode?: FetchMode;
+      destination?: string;
+      through?: string[];
+      user?: boolean;
+      origin?: string;
     },
     page: string,
     signal: AbortSignalLike,
@@ -1818,6 +1891,17 @@ export class HtmlNetwork {
             initiator: null,
           },
           request.redirect === 'manual',
+          null,
+          null,
+          {
+            mode: request.mode ?? 'cors',
+            destination: request.destination ?? '',
+            origin:
+              request.origin ??
+              (request.opaqueOrigin ? 'null' : originOf(client)),
+            ...(request.through?.length ? { through: request.through } : {}),
+            ...(request.user ? { user: true } : {}),
+          },
         );
       });
     } catch (error) {
@@ -1931,7 +2015,14 @@ export class HtmlNetwork {
    */
   async html(
     url: string,
-    options: { signal?: AbortSignalLike; post?: PostData | null } = {},
+    options: {
+      signal?: AbortSignalLike;
+      post?: PostData | null;
+      /** The document that sent the window there, and whether a user's
+       *  activation is behind it (`HtmlNavigationSource`): absent, the
+       *  browser's own navigation. */
+      source?: HtmlNavigationSource | null;
+    } = {},
   ): Promise<{
     url: string;
     status: number;
@@ -1942,7 +2033,13 @@ export class HtmlNetwork {
     redirects: HtmlDocumentHop[];
   }> {
     const signal = options.signal ?? new AbortController().signal;
-    const response = await this.document(url, signal, options.post ?? null);
+    const from = options.source;
+    const response = await this.document(
+      url,
+      signal,
+      options.post ?? null,
+      from ? { initiator: from.origin, user: from.user } : {},
+    );
     const chunks: Uint8Array[] = [];
     for await (const chunk of response.body) chunks.push(chunk);
     const bytes = concat(chunks);
@@ -2029,6 +2126,7 @@ export class HtmlNetwork {
       id: number;
       cors?: ResourceCors;
       opaque?: boolean;
+      metadata?: FetchMetadata;
     },
   ): Promise<Answer> {
     try {
@@ -2050,6 +2148,7 @@ export class HtmlNetwork {
       id: number;
       cors?: ResourceCors;
       opaque?: boolean;
+      metadata?: FetchMetadata;
     },
   ): Promise<Answer> {
     const stall = stallTimer(this._timeout);
@@ -2080,6 +2179,7 @@ export class HtmlNetwork {
         false,
         cors ? hops : null,
         cors ? { origin: cors.origin, credentials } : null,
+        options.metadata ?? null,
       );
       const responseTime = Date.now();
       this._responded(id, response, url);

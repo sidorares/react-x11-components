@@ -2240,8 +2240,22 @@ response answers a request it was not chosen for. **A network with a jar follows
 the redirect it answers with and the runtime's `fetch` follows it out of
 sight: anything new that sends a request goes through `_exchange` with what
 the request is to the jar — its credentials mode, its site for cookies,
-whether it navigates — or its cookies are neither sent nor kept. Without a
-jar `_exchange` hands the transport `redirect: 'follow'`, as before.
+whether it navigates — or its cookies are neither sent nor kept. **And so
+does a request that says how it was made** (`Sec-Fetch-*`,
+`fetch-metadata.ts`), jar or none, since what it says is worked out again
+at each hop: `_exchange` takes its `FetchMetadata` and sets the headers per
+URL, and a hop that is not potentially trustworthy carries none. So
+**anything new that sends a request hands `_exchange` its mode, its
+destination and its origin**, the browser's own navigation with no origin
+at all (`Sec-Fetch-Site: none`), and anything new that makes a request the
+host sends (`FetchRequest`) says its `mode` and `destination`, or it is a
+script's `fetch` to a server. Where the host follows the redirects a hop at
+a time (`_hops`), each hop carries the URLs before it (`through`), or a
+request that came home through another site reads `same-origin`. Only
+where nothing of that is there does `_exchange` hand the transport
+`redirect: 'follow'`, as before. A navigation's source is the host's to
+hand on (`navigate`'s `source`, `HtmlPopup.source`): anything new that
+sends a window somewhere passes `navigationSource()`.
 
 `scripts` is the one switch that executes anything, and it keeps the same
 rule: it is off unless an application turns it on, and what a page loads

@@ -34,7 +34,12 @@
 // which has no node of the old one and has yet to be handed anything.
 import type { Document, Element } from 'domhandler';
 
-import type { HtmlPopup, HtmlPopupFeatures, HtmlPopups } from '../popups.js';
+import type {
+  HtmlNavigationSource,
+  HtmlPopup,
+  HtmlPopupFeatures,
+  HtmlPopups,
+} from '../popups.js';
 import type { HtmlServiceWorkers } from '../service-workers.js';
 import type { ServiceClient } from './sw-registry.js';
 import { makeHtmlHandle } from '../index.js';
@@ -354,10 +359,15 @@ export class WindowSlot {
 
   /** It goes somewhere: its document's own navigation, which that document
    *  hears of first. */
-  navigate(url: string, how: 'here' | 'replace', post: FramePost | null): void {
+  navigate(
+    url: string,
+    how: 'here' | 'replace',
+    post: FramePost | null,
+    source?: HtmlNavigationSource,
+  ): void {
     const seams = this.runner?.seams;
     if (!seams) return;
-    seams.navigate(url, how, post);
+    seams.navigate(url, how, post, undefined, source);
   }
 }
 
@@ -455,6 +465,7 @@ export class Popup implements HtmlPopup {
   private _sheets: string[] = [];
   private _idle = idleHandle();
   private _referred = false;
+  private _source: HtmlNavigationSource | undefined;
 
   constructor(
     ask: PopupAsk,
@@ -465,6 +476,7 @@ export class Popup implements HtmlPopup {
     opener: ScriptRunner | null,
   ) {
     this.id = id;
+    this._source = opener?.host.navigationSource();
     this.serviceKeeper = opener?.serviceKeeper ?? null;
     this.creatorClient = opener?.host.serviceClient ?? null;
     this._url = ask.url;
@@ -474,6 +486,11 @@ export class Popup implements HtmlPopup {
     this.creator = creator;
     this.referrer = ask.features.noreferrer ? null : creator;
     this.post = ask.post ?? null;
+  }
+
+  /** The document that sent it to where it goes first. */
+  get source(): HtmlNavigationSource | undefined {
+    return this._source;
   }
 
   get url(): string {
@@ -565,10 +582,13 @@ export class Popup implements HtmlPopup {
     };
     // what the document asks before a view is mounted waits for the host,
     // which reads where to go from `url` as it mounts one
-    const navigate: RunnerSeams['navigate'] = (to, how, post, name) => {
+    const navigate: RunnerSeams['navigate'] = (to, how, post, name, source) => {
       if (this._views.length || how === 'tab') {
-        current().navigate(to, how, post, name);
-      } else this._url = to;
+        current().navigate(to, how, post, name, source);
+      } else {
+        this._url = to;
+        if (source) this._source = source;
+      }
     };
     return new Proxy({} as RunnerSeams, {
       get: (_, key) => {
@@ -804,7 +824,12 @@ export function windowOps(
       const slot = slotById(id);
       if (slot && maySend(runner, slot, url)) {
         slot.initiator = policyFrom(runner);
-        slot.navigate(url, replace ? 'replace' : 'here', null);
+        slot.navigate(
+          url,
+          replace ? 'replace' : 'here',
+          null,
+          runner.host.navigationSource(),
+        );
       }
     },
     named(name) {
@@ -859,7 +884,7 @@ export function windowOps(
       if (there) {
         if (maySend(runner, there, url)) {
           there.initiator = policyFrom(runner);
-          there.navigate(url, 'here', post);
+          there.navigate(url, 'here', post, runner.host.navigationSource());
         }
         return true;
       }

@@ -1143,6 +1143,9 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
               : [],
           body: null,
           credentials: 'same-origin',
+          // a worker's script, and what it imports a script's
+          mode: main ? 'same-origin' : 'no-cors',
+          destination: main ? 'serviceworker' : (module ?? 'script'),
         },
         new AbortController().signal,
       );
