@@ -18602,6 +18602,9 @@ export function installDom(
     /** The document it is of. */
     _doc: Any = null;
     _callback: Any;
+    /** Whether `callUpdate` has already run (7.5), or a cross-document
+     *  transition that has no update callback to call. */
+    _called = false;
     _types = new ViewTransitionTypeSet();
     _done: Any;
     _ready: Any;
