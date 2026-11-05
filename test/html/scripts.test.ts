@@ -9732,6 +9732,46 @@ test("a page's Headers are a list as Fetch keeps one, and a Request is checked a
   assert.equal(doc.fetched.length, 0);
 });
 
+test("a body is a byte stream: bodyUsed says it was read, a clone's chunks are its own, and a page's then reaches none of it", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = []; var steps = [];' +
+      // a body read from its stream is used, and a method then rejects
+      'var a = new Response("abc"); var reader = a.body.getReader(); steps.push(reader.read().then(function () { r.push("read:" + a.bodyUsed); return a.text()["catch"](function (e) { r.push(e.name); }); }));' +
+      // a BYOB reader can be had of any body
+      'var b = new Response("xyz"); var byob = b.body.getReader({ mode: "byob" }); steps.push(byob.read(new Uint8Array(8)).then(function (x) { r.push("byob:" + x.value.length); }));' +
+      // a method's read leaves a stream no reader can be had of
+      'var c = new Response("q"); steps.push(c.text().then(function (t) { r.push(t + c.bodyUsed); try { c.body.getReader(); r.push("reader"); } catch (e) { r.push(e.name); } }));' +
+      // a clone's chunks are copies
+      'var src = new Uint8Array([1, 2]); var d = new Response(new ReadableStream({ start: function (k) { k.enqueue(src); k.close(); } })); var e = d.clone();' +
+      'steps.push(Promise.all([d.body.getReader().read(), e.body.getReader().read()]).then(function (x) { r.push("clone:" + (x[0].value.buffer !== x[1].value.buffer)); }));' +
+      // no body: null, and unused after textStream()
+      'var f = new Response(null, { status: 204 }); r.push("null:" + (f.body === null)); f.textStream(); r.push("unused:" + f.bodyUsed);' +
+      // a page that hijacks then reaches nothing a body does
+      'Promise.all(steps).then(function () {' +
+      '  var g = new Response(new ReadableStream({ start: function (k) { k.enqueue(new TextEncoder().encode("hello")); k.close(); } }));' +
+      '  Object.prototype.then = function (ok) { delete Object.prototype.then; ok({ done: false, value: new TextEncoder().encode("bye") }); };' +
+      '  return g.text();' +
+      '}).then(function (t) { delete Object.prototype.then; r.push(t); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'null:true',
+      'unused:false',
+      'read:true',
+      'byob:3',
+      'qtrue',
+      // the method after a read of the stream, then a reader after a method
+      'TypeError',
+      'TypeError',
+      'clone:true',
+      'hello',
+    ].join('|'),
+  );
+});
+
 test('el.style keeps a clip-path shape() in its canonical form, and does not set one the property does not take', async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="t"></div><script>' +

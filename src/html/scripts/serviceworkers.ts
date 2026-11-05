@@ -17,6 +17,7 @@
 // names its other end (`acrossTo`).
 
 declare const queueMicrotask: (fn: () => void) => void;
+declare const TextEncoder: new () => { encode(text: string): Uint8Array };
 
 /** What `installDom` hands this. */
 export interface ServiceWorkerDeps {
@@ -778,8 +779,10 @@ export function installServiceWorkers(
       send({ op: 'respond', f, head, held: response._held });
       return;
     }
-    if (response._given()) {
-      response.bodyUsed = true;
+    // a body that is a stream is read as it comes; one that is only a source
+    // goes whole
+    if (response._stream !== null && response._stream !== undefined) {
+      response._bodyUsed = true;
       const reader = response._stream.getReader();
       bodies.set(f, reader);
       send({ op: 'respond', f, head, streaming: true });
@@ -809,7 +812,10 @@ export function installServiceWorkers(
       pump();
       return;
     }
-    const bytes = response.bodyUsed ? new Uint8Array(0) : response._bytes();
+    const bytes = response.bodyUsed
+      ? new Uint8Array(0)
+      : ((response._bodyUsed = true),
+        response._raw ?? new TextEncoder().encode(response._text ?? ''));
     send({ op: 'respond', f, head, base64: base64OfBytes(bytes) });
   };
 

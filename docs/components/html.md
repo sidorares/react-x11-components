@@ -979,6 +979,20 @@ or held by a reader is no body. A keepalive request's body counts against
 `User-Agent` is its own, a GET or a HEAD of its own origin carries no
 `Origin`, and a body of bytes goes with no `Content-Type` it did not set.
 
+**A body is a byte stream, and `bodyUsed` is whether it has been read.**
+A `Request`'s and a `Response`'s body is Fetch's: a stream, and the source
+it was made of, where it was made of one. The stream is a readable byte
+stream, so a BYOB reader can be had of any body, the network's included,
+and it is made only when something asks for it, so `text()` of a response
+pays for none. `bodyUsed` is true once the stream has been read from, piped
+or cancelled, by a page or by a method, and a method rejects a body that
+has been, or that a reader holds. A clone tees the stream, and the clone's
+chunks are copies. A response to a `HEAD`, and one whose status has no body
+(204, 205, 304), has a `body` of null. `textStream()` is the body decoded
+as it arrives. A body is read without the page's globals, so a page that
+puts `then` on `Object.prototype`, or a getter for `type` or `start`,
+changes nothing a body does.
+
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
 HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no
