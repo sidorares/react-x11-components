@@ -4254,3 +4254,80 @@ test('a trigger whose subject the pane scrolls into view plays its animation', a
   await act();
   assert.strictEqual(opacity(), 0.5);
 });
+
+/** The colour at a point of the element's pixels, from its corner. */
+async function pixelAt(
+  doc: Awaited<ReturnType<typeof running>>,
+  x: number,
+  y: number,
+): Promise<[number, number, number]> {
+  const data = await snapshot(doc.result, doc.el);
+  const { width } = (doc.el as unknown as { abs: { width: number } }).abs;
+  const i = (y * width + x) * 4;
+  return [data[i], data[i + 1], data[i + 2]];
+}
+
+const DRAWING_FADE =
+  '<style>body { margin: 0; background: #fff }' +
+  '.fx { opacity: 0 } .play .fx { animation: rise 160ms linear forwards }' +
+  '@keyframes rise { from { opacity: 0; transform: translateY(20px) }' +
+  ' to { opacity: 1; transform: none } }</style>' +
+  '<svg width="100" height="50" viewBox="0 0 100 50"><g class="play">' +
+  '<g class="fx"><rect width="100" height="20" fill="#ff0000"/></g>' +
+  '</g></svg>';
+
+metric(
+  "a drawing's elements run their animations, and keep where they end",
+  async (t) => {
+    // sshhole.com builds its diagrams up a group at a time, each `.fx` at
+    // `opacity: 0` until an animation that fills forwards ends at 1: not
+    // run, every group stayed where it started and nothing was drawn
+    const doc = await running(t, DRAWING_FADE, 100);
+    assert.deepStrictEqual(await pixelAt(doc, 50, 5), [255, 255, 255]);
+    await doc.at(80);
+    const [, g] = await pixelAt(doc, 50, 15);
+    assert.ok(g > 60 && g < 200, `half way in, half faded: ${g}`);
+    // and moved down by half the way it rises
+    assert.deepStrictEqual(
+      await pixelAt(doc, 50, 25),
+      await pixelAt(doc, 50, 15),
+    );
+    assert.deepStrictEqual(await pixelAt(doc, 50, 5), [255, 255, 255]);
+    await doc.at(400);
+    assert.deepStrictEqual(await pixelAt(doc, 50, 5), [255, 0, 0]);
+    assert.deepStrictEqual(await pixelAt(doc, 50, 25), [255, 255, 255]);
+  },
+);
+
+metric(
+  'a drawn at rest drawing is drawn at the start of its animations',
+  async () => {
+    const { result, node } = await render(DRAWING_FADE, 100, {
+      animate: false,
+    });
+    await act();
+    const data = await snapshot(result, view(node));
+    assert.deepStrictEqual([...data.slice(0, 3)], [255, 255, 255]);
+  },
+);
+
+metric(
+  "an element of a drawing turns about its own box's centre where its transform-box says so",
+  async (t) => {
+    const doc = await running(
+      t,
+      '<style>body { margin: 0; background: #fff }' +
+        'rect { transform-box: fill-box; transform-origin: center;' +
+        ' animation: s 1s linear paused }' +
+        '@keyframes s { from { transform: scale(.5) } }</style>' +
+        '<svg width="100" height="50" viewBox="0 0 100 50">' +
+        '<rect x="20" y="10" width="20" height="20" fill="#ff0000"/></svg>',
+      100,
+    );
+    // held at its start: half its size, about (30, 20)
+    assert.deepStrictEqual(await pixelAt(doc, 30, 20), [255, 0, 0]);
+    assert.deepStrictEqual(await pixelAt(doc, 22, 12), [255, 255, 255]);
+    assert.deepStrictEqual(await pixelAt(doc, 38, 28), [255, 255, 255]);
+    assert.deepStrictEqual(await pixelAt(doc, 26, 16), [255, 0, 0]);
+  },
+);

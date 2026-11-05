@@ -207,6 +207,12 @@ const INITIAL: Record<string, string> = {
   'font-weight': '400',
 };
 
+/** A shape's property at its initial value, as `SvgView` reads it; null
+ *  for one with none here. */
+export function shapeInitial(prop: string): string | null {
+  return INITIAL[prop] ?? null;
+}
+
 /** The elements a rule's subject can be, where it names one by its type,
  *  for the rule to reach into a drawing: the ones `SvgView` draws, or
  *  reads a paint from. `a` is both languages'. */

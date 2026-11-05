@@ -2479,7 +2479,12 @@ function restyle(attribs: Record<string, string>, own: ShapeStyle): void {
           .join(';');
       }
     } else if (prop === 'opacity') attribs.opacity = value;
-    else added += `${prop}:${value};`;
+    else if (prop === 'transform') {
+      // a CSS transform takes the attribute's place (CSS Transforms 1, 7),
+      // and `SvgView` reads the attribute alone
+      if (value === 'none') delete attribs.transform;
+      else attribs.transform = value;
+    } else added += `${prop}:${value};`;
   }
   style = style && added ? `${style};${added}` : style || added;
   if (style) attribs.style = style;

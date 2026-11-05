@@ -5742,8 +5742,19 @@ and in a `<math>` neither is. An `<svg>` in a `<math>` is MathML's and all it
 holds with it, unless an `<annotation-xml>` holds it, and a `<math>` in an
 `<svg>` is SVG's. A tag of HTML's own in a drawing, a `<div>` or a `<p>`, ends the
 drawing there, and it and what comes after it stand after the drawing. Those
-properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`), and
-no others: a rule's `transform` is not. A length in the drawing's
+properties are the ones read, on the `<svg>` itself too (`.icon { stroke-width: 1.5 }`),
+with a rule's `transform`, `transform-origin` and `transform-box` on an
+element inside it, and its CSS animations. An animation in a drawing runs
+on a clock of the drawing's elements, from the paint that first asks for it,
+and sets the shape properties above and the transform: `.play .fx {
+animation: rise .5s forwards }` fades a group in and holds it there, as a
+scroll-driven explainer builds a diagram up a group at a time. A number
+and a colour go between their frames, anything else from one to the other
+half way, and a transform is interpolated as a list and drawn as one matrix
+about its origin, `fill-box`'s from the element's own box. `animate={false}`
+draws each at its start, as it does the document's. Not yet: transitions
+on a drawing's elements, which change at once, and an animation of a
+`<use>`'s copy, which is drawn as it starts. A length in the drawing's
 geometry is worked out as CSS has it, where ntk's `SvgView` would read it
 as the number before its unit: `x2="2.5em"` is of the element's font
 size, `5rem` of the root element's, `1vw` of the viewport and `1in` 96

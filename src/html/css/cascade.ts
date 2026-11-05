@@ -112,6 +112,8 @@ import {
   visibleSpan,
 } from './interpolate.js';
 import type { AnimationTimeline, Sample } from './timeline.js';
+import { addMotion, isShapeMotion } from './shape-animations.js';
+import type { ShapeAnimations, ShapeMotion } from './shape-animations.js';
 import {
   animatedWillChange,
   fieldsAnimatedBy,
@@ -4322,6 +4324,10 @@ export class Cascade {
    *  it the styles are computed at; null where none runs, and a document
    *  is drawn as it stands once each has run (`restingFrames`). */
   timeline: AnimationTimeline | null = null;
+  /** The clock the animations of a drawing's elements run on, which the
+   *  document's timeline does not reach (`shapeStyles`); none, and they
+   *  are not run. */
+  shapeAnimations: ShapeAnimations | null = null;
   /** The animations the page's scripts made (`Element.animate()`), which
    *  run on `timeline`'s clock where it is given and are drawn at rest
    *  where it is not, as a CSS animation is. */
@@ -9299,6 +9305,7 @@ export class Cascade {
     style: ComputedStyle,
     copies: ShapeCopies | null = null,
   ): ShapeStyles | null {
+    this.shapeAnimations?.begin(root);
     const index = this._shapes;
     // the drawing's tree, whose rules and attributes are of one context,
     // and whose ids are its own: the build's index is of the document's
@@ -9434,6 +9441,10 @@ export class Cascade {
       candidates: Candidate[],
       isRoot: boolean,
       custom: CustomProps | null = style.custom,
+      /** The element, where it is the drawing's own and its animations
+       *  and transform are run (`ShapeAnimations`): what a `<use>` copies
+       *  is styled once a build for all its copies. */
+      el: Element | null = null,
     ): Record<string, string> | null => {
       // at the drawing's zoom, as its box's lengths are (`_computeStyle`):
       // what they come to is user units, CSS pixels the zoom then scales
@@ -9457,8 +9468,18 @@ export class Cascade {
         },
       };
       let own: Record<string, string> | null = null;
+      let motion: ShapeMotion | null = null;
       for (const c of candidates) {
         for (const d of pick(c)) {
+          if (isShapeMotion(d.prop)) {
+            // the root's are its box's, which the document animates
+            if (isRoot || !el) continue;
+            const raw = d.vars
+              ? substituteIn(d.value, custom, this._ifEnv)
+              : d.value;
+            if (raw !== null) motion = addMotion(motion, d.prop, raw);
+            continue;
+          }
           if (!isShapeProp(d.prop)) continue;
           if (isRoot && ROOT_BOX_PROPS.has(d.prop)) {
             // the box has it, from the same attribute (`presentationHints`),
@@ -9492,6 +9513,18 @@ export class Cascade {
           } else value = shapeValue(d.prop, d.value, ctx);
           if (value !== null) (own ??= {})[d.prop] = value;
         }
+      }
+      const clock = this.shapeAnimations;
+      if (motion && el && clock) {
+        const moved = clock.sample(
+          el,
+          root,
+          motion,
+          own,
+          (name) => this.keyframes(name, tree.root),
+          ctx,
+        );
+        if (moved) own = { ...own, ...moved };
       }
       return own;
     };
@@ -9543,7 +9576,8 @@ export class Cascade {
         }
       }
       urlIds(el.name, el.attribs, refer);
-      const own = candidates && resolve(candidates, el === root, customOf(el));
+      const own =
+        candidates && resolve(candidates, el === root, customOf(el), el);
       if (!own) return;
       urlIds('', own, refer);
       (of ??= new Map()).set(el, own);
@@ -10888,7 +10922,9 @@ function ownCustoms(el: Element): Map<string, string> | null {
 
 /** Whether declarations set a property a shape in a drawing has. */
 function declaresShape(declarations: readonly Declaration[]): boolean {
-  for (const d of declarations) if (isShapeProp(d.prop)) return true;
+  for (const d of declarations) {
+    if (isShapeProp(d.prop) || isShapeMotion(d.prop)) return true;
+  }
   return false;
 }
 
@@ -10910,8 +10946,8 @@ function pushInlineShapes(
   context: number,
   tree: ShadowRoot | null,
 ): void {
-  const declarations = parseDeclarations(inline).filter((d) =>
-    isShapeProp(d.prop),
+  const declarations = parseDeclarations(inline).filter(
+    (d) => isShapeProp(d.prop) || isShapeMotion(d.prop),
   );
   pushInline(out, declarations, context, tree);
 }

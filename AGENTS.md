@@ -6190,6 +6190,24 @@ tells it the image's `<svg>` is `:root` (the cascade's own `:root` is
 the cascade, and the cascade must not import `svg.ts` back — which is why
 `svgSizeHint` lives in `cascade.ts`.
 
+**A drawing's elements run their CSS animations on a clock of their own**
+(`css/shape-animations.ts`, `ShapeAnimations`). The document's timeline
+restyles boxes, and an element in a drawing has none, so an `.fx {
+opacity: 0 }` that an animation filling forwards takes to 1 stayed at 0:
+sshhole.com's diagrams, built up a group at a time, were empty. So
+`shapeStyles` reads the animation lists, `transform`, `transform-origin`
+and `transform-box` with the shape properties (`isShapeMotion`, which files
+a rule in `_shapes`), samples them where it resolves an element, and writes
+a transform into the copy's `transform`, where `SvgView` reads one. Three
+things are load-bearing. **The clock outlives a cascade**: it is the
+element's (`HtmlViewNode._shapeMotion`), handed to each cascade it makes or
+keeps, or every build would start each animation again. **A drawing with
+one under way says when it next changes**, and is asked again then
+(`_shapeFrame`, through `_askShapes`), which is what repaints it: no frame
+of the document's reaches it. And **the root's animations are its box's**,
+which the document runs, so the root is never sampled here. Anything new a
+drawing's animation sets joins `mix`, or goes from frame to frame half way.
+
 **A colour no context reads is worked out in the drawing's copy**
 (`coloursToWorkOut`, `workOutColours`). `SvgView` hands a paint to the context as
 it is written, and a context reads what `rgb()`, `hsl()` and a hex say, so
