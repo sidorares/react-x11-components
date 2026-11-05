@@ -1028,6 +1028,22 @@ Nothing about it is required: any `onResource` that answers `'script'` and
 any `fetch` of the same shape will do. See [Cookies and
 storage](#cookies-and-storage).
 
+**HTTP/2 needs the optional peer `undici`** (`npm install undici`), before
+Node 26, whose own `fetch` offers it. Node 24's and Bun's speak HTTP/1.1, so
+a server that speaks HTTP/2 alone — WPT's `.h2.` tests, a gRPC-web endpoint
+— answers nothing they can read, and a page cannot stream a request body to
+one. With undici installed, `HtmlNetwork` sends each request over https
+through undici's own `fetch` and an agent that offers `h2` as the connection
+is made, which the server takes or not; plain http, and every request on
+Bun, stay with the runtime's. `http2: false` turns it off, a host's own
+`fetch` transport is never replaced, and nor is a `fetch` put on the global
+after the network was loaded — an application's instrumentation, a test's
+answers — which is asked as it always was. `threadTransport({ http2 })` does
+the same on its thread, where it can load undici there. It takes undici
+8.3.0 or later, and so Node 22.19 or later: before it undici's `fetch` over
+HTTP/2 left a request with an empty body open, so an older undici is not
+used, and the network stays on HTTP/1.1.
+
 **`HtmlNetwork`'s cache is HTTP's** (RFC 9111, a private cache). A page's
 images, stylesheets, fonts and scripts are used again while their server
 says they are fresh — `max-age`, else `Expires`, else a tenth of the time

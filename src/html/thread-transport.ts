@@ -30,6 +30,12 @@ export interface ThreadTransportOptions {
    * given a transport leaves to it. Default 2500; null leaves Node's alone.
    */
   connectTimeout?: number | null;
+  /**
+   * Whether a request over https offers HTTP/2, through the optional peer
+   * `undici` where the thread can load it, as `HtmlNetworkOptions.http2`
+   * has it. Default true.
+   */
+  http2?: boolean;
 }
 
 /** How far the thread reads a body ahead of what has been read of it, in
@@ -51,6 +57,29 @@ if (workerData.connectTimeout !== null) {
     require('node:net').setDefaultAutoSelectFamilyAttemptTimeout?.(
       workerData.connectTimeout,
     );
+  } catch {}
+}
+// HTTP/2 over https, through undici's own \`fetch\` and an \`Agent\` that
+// offers it, where the package is to be had (\`undici.ts\` says why not the
+// runtime's); Bun answers \`undici\` with a module of its own
+let http2 = null;
+if (workerData.http2 && typeof Bun === 'undefined') {
+  try {
+    const undici = require('undici');
+    // from 8.3.0, which ends a request whose body it knows is empty:
+    // \`fixedVersion\` in \`undici.ts\`
+    const [major, minor] = String(require('undici/package.json').version)
+      .split('.')
+      .map(Number);
+    const fixed = major > 8 || (major === 8 && minor >= 3);
+    if (
+      fixed &&
+      typeof undici.fetch === 'function' &&
+      typeof undici.Agent === 'function'
+    ) {
+      const dispatcher = new undici.Agent({ allowH2: true });
+      http2 = (url, init) => undici.fetch(url, { ...init, dispatcher });
+    }
   } catch {}
 }
 const AHEAD = ${AHEAD};
@@ -100,7 +129,8 @@ async function run(m) {
       });
       init.duplex = 'half';
     } else if (m.body !== undefined) init.body = m.body;
-    const response = await fetch(m.url, init);
+    const send = http2 && /^https:/i.test(m.url) ? http2 : fetch;
+    const response = await send(m.url, init);
     parentPort.postMessage({
       kind: 'head',
       id: m.id,
@@ -203,6 +233,7 @@ export function threadTransport(
 ): HtmlTransport {
   const connectTimeout =
     options.connectTimeout === undefined ? 2500 : options.connectTimeout;
+  const http2 = options.http2 ?? true;
   const calls = new Map<number, Call>();
   let next = 0;
   let thread: Promise<WorkerLike> | null = null;
@@ -267,7 +298,7 @@ export function threadTransport(
       ({ Worker }) => {
         const worker = new Worker(SOURCE, {
           eval: true,
-          workerData: { connectTimeout },
+          workerData: { connectTimeout, http2 },
         });
         worker.on('message', (m: never) => told(m as FromThread));
         worker.on('error', lost);
