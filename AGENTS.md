@@ -2255,7 +2255,16 @@ every response for the process's life, `no-store` and all, and never asked.
 So **anything new that hands a page a body it may use again goes through
 `load`**, and anything new a response's use depends on — a request header a
 `Vary` can name — is in `_headers`, which the cache compares, or a kept
-response answers a request it was not chosen for. **A network with a jar follows redirects itself**
+response answers a request it was not chosen for. **A page's own GET goes
+through the same rules in `request()`**, with its cache mode (Fetch 4.6),
+in the network's store or, with none, a memory of its own (`_pageCache`),
+since `load`'s memory keeps a resource's promise and a page's request is
+none: so **what decides whether a kept response answers is in
+`http-cache.ts`** (`freshFor`, which reads the request's own
+`Cache-Control` as well), the same for both, and anything new a request
+asks of the cache — a mode, a directive — goes there and not in either
+caller. An unsafe method's answer makes its URLs stale in both
+(`_invalidate`). **A network with a jar follows redirects itself**
 (`_exchange`, `redirect: 'manual'`), because a login's session is set on
 the redirect it answers with and the runtime's `fetch` follows it out of
 sight: anything new that sends a request goes through `_exchange` with what

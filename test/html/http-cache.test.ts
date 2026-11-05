@@ -116,8 +116,18 @@ test('a response is fresh for its max-age, else its Expires less its Date, else 
         ['cache-control', 'max-age=60'],
       ]),
     ),
+    0,
+    'a Pragma holds beside a Cache-Control',
+  );
+  assert.equal(
+    freshnessLifetime(
+      head([
+        ['pragma', 'no-cache'],
+        ['cache-control', 'max-age=60, immutable'],
+      ]),
+    ),
     60e3,
-    'a Pragma is read only where there is no Cache-Control',
+    'but an immutable one',
   );
 });
 
@@ -184,9 +194,31 @@ test('what is kept of a response: not one that says no-store, varies by everythi
   ] as [string, string][][]) {
     assert.equal(cachedResponse(answer(fields), request), null);
   }
+  // any final status a server says is fresh, and none that is partial
+  assert.ok(
+    cachedResponse(answer([['cache-control', 'max-age=60']], 404), request),
+  );
+  assert.ok(
+    cachedResponse(answer([['cache-control', 'max-age=60']], 599), request),
+  );
   assert.equal(
-    cachedResponse(answer([['cache-control', 'max-age=60']], 204), request),
+    cachedResponse(answer([['cache-control', 'max-age=60']], 206), request),
     null,
+  );
+  // a status heuristics do not reach is kept by a validator only where it
+  // says it is `public`
+  assert.equal(cachedResponse(answer([['etag', '"a"']], 599), request), null);
+  assert.ok(
+    cachedResponse(
+      answer(
+        [
+          ['etag', '"a"'],
+          ['cache-control', 'public'],
+        ],
+        599,
+      ),
+      request,
+    ),
   );
 });
 

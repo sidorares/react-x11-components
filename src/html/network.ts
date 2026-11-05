@@ -62,11 +62,14 @@ import type { HtmlServiceWorkers } from './service-workers.js';
 import { downloadName } from './download.js';
 import type { HtmlDownloadRequest, HtmlDownloadSource } from './download.js';
 import {
+  cacheControl,
   cachedResponse,
   conditionalHeaders,
+  freshFor,
   freshened,
   headerOf,
   isFresh,
+  memoryHttpCache,
   varyMatches,
 } from './http-cache.js';
 import type { HtmlCachedResponse, HtmlHttpCacheStore } from './http-cache.js';
@@ -300,6 +303,50 @@ interface CookieRequest {
   /** The document that started a navigation, or null for the browser —
    *  an address typed, a bookmark — which is same-site with anything. */
   initiator: string | null;
+}
+
+/** The header fields that make a request conditional: a page that sends
+ *  one asks the server itself, and the cache keeps out of it (Fetch 4.6). */
+const CONDITIONAL = [
+  'if-modified-since',
+  'if-none-match',
+  'if-unmodified-since',
+  'if-match',
+  'if-range',
+];
+
+/** The statuses whose responses have no body (Fetch, "null body status"). */
+const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+
+/** The reason phrases of a response kept without one (RFC 9110, 15). */
+const REASONS: Record<number, string> = {
+  200: 'OK',
+  203: 'Non-Authoritative Information',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  308: 'Permanent Redirect',
+  404: 'Not Found',
+  410: 'Gone',
+};
+
+/** The methods that change nothing a cache keeps (RFC 9110, 9.2.1). */
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
+
+/** A body handed on as it arrives, kept whole as it goes and handed to
+ *  `done` once all of it has, unless it ran past `limit` or stopped. */
+async function* keptAsItGoes(
+  body: AsyncIterable<Uint8Array>,
+  limit: number,
+  done: (bytes: Uint8Array) => void,
+): AsyncIterable<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of body) {
+    size += chunk.length;
+    if (size <= limit) chunks.push(chunk);
+    yield chunk;
+  }
+  if (size <= limit) done(concat(chunks));
 }
 
 /** What each kind of resource is to Fetch (Fetch, "request destination"). */
@@ -814,7 +861,16 @@ export class HtmlNetwork {
     // `cors` whatever the request is (nodejs/undici#1305): handed undici as a
     // mode, `navigate` throws and `no-cors` drops the headers it does not
     // safelist, so the field says less than it should here and no more
-    const { streamedBody, ...rest } = init;
+    //
+    // and it adds `Pragma` and `Cache-Control: no-cache` to a request with a
+    // validator, as Fetch has a browser do (4.6, "HTTP-network-or-cache
+    // fetch"), where this network did all of that and sent the validator as
+    // its own cache's: `force-cache`, which no `fetch` without a cache reads
+    // past that step, leaves the request as it is
+    const { streamedBody, ...sent } = init;
+    const rest = CONDITIONAL.some((name) => name in sent.headers)
+      ? { ...sent, cache: 'force-cache' as const }
+      : sent;
     if (!streamedBody || rest.body === undefined) {
       return runtimeFetch(url, rest);
     }
@@ -1198,6 +1254,107 @@ export class HtmlNetwork {
     this._sizes.clear();
     this._bytes = 0;
     this._clearedAt = Date.now();
+  }
+
+  /** Where a page's own requests are kept where this network was handed no
+   *  store: its memory, made the first time one is. */
+  private _pageMemory: HtmlHttpCacheStore | null = null;
+
+  private get _pageCache(): HtmlHttpCacheStore {
+    return this._store ?? (this._pageMemory ??= memoryHttpCache(this._limit));
+  }
+
+  /** What is kept of a page's request under `key` that answers one with
+   *  these header fields, or null: nothing from before a hard reload. */
+  private async _pageStored(
+    key: string,
+    headers: Record<string, string>,
+  ): Promise<HtmlCachedResponse | null> {
+    let kept: HtmlCachedResponse | null;
+    try {
+      kept = (await this._pageCache.get(key)) ?? null;
+    } catch (error) {
+      this._log('cache', 'unread', key, (error as Error)?.message);
+      return null;
+    }
+    if (!kept || kept.requestTime < this._clearedAt) return null;
+    return varyMatches(kept, headers) ? kept : null;
+  }
+
+  /** A write to where a page's requests are kept, whose failure keeps
+   *  nothing. */
+  private async _pageKeep(
+    write: (store: HtmlHttpCacheStore) => void | Promise<void>,
+  ): Promise<void> {
+    try {
+      await write(this._pageCache);
+    } catch (error) {
+      this._log('cache', 'not kept', (error as Error)?.message);
+    }
+  }
+
+  /** What an unsafe method's answer leaves stale (RFC 9111, 4.4): its URL,
+   *  and the URLs its `Location` and `Content-Location` name on its
+   *  origin. */
+  private async _invalidate(
+    url: string,
+    headers: [string, string][],
+    page: string,
+    opaque?: boolean,
+  ): Promise<void> {
+    const urls = [url];
+    for (const name of ['location', 'content-location']) {
+      const named = headerOf(headers, name);
+      if (named === null) continue;
+      try {
+        const at = new URL(named, url).href;
+        if (originOf(at) === originOf(url)) urls.push(at);
+      } catch {
+        // a field that names no URL leaves nothing
+      }
+    }
+    for (const at of urls) {
+      const key = this._cacheKey(at, page) + (opaque ? ' opaque' : '');
+      await this._pageKeep((store) => store.delete(key));
+      const memory = this._cache.get(key);
+      if (memory) this._forget(key, memory);
+    }
+  }
+
+  /** A page's request answered with what was kept, as `request` answers. */
+  private _fromCache(
+    id: number,
+    request: { url: string; stream?: boolean },
+    kept: HtmlCachedResponse,
+    via: 'disk' | 'memory' | 'revalidated',
+  ): {
+    url: string;
+    status: number;
+    statusText: string;
+    redirected: boolean;
+    headers: [string, string][];
+    charset: string | null;
+    bytes: Uint8Array;
+    chunks?: AsyncIterable<Uint8Array>;
+  } {
+    this._whole(
+      id,
+      fetchedOf(request.url, kept),
+      kept.headers,
+      via === 'revalidated' ? undefined : via,
+    );
+    const { charset } = contentType(headerOf(kept.headers, 'content-type'));
+    const answer = {
+      url: request.url,
+      status: kept.status,
+      statusText: kept.statusText ?? REASONS[kept.status] ?? '',
+      redirected: false,
+      headers: kept.headers,
+      charset,
+    };
+    return request.stream
+      ? { ...answer, bytes: new Uint8Array(0), chunks: once(kept.bytes) }
+      : { ...answer, bytes: kept.bytes };
   }
 
   /**
@@ -1807,6 +1964,8 @@ export class HtmlNetwork {
       through?: string[];
       user?: boolean;
       origin?: string;
+      /** Its cache mode (`FetchRequest.cache`). */
+      cache?: string;
     },
     page: string,
     signal: AbortSignalLike,
@@ -1859,6 +2018,20 @@ export class HtmlNetwork {
     }
     const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
+    // what the HTTP cache may do with it (Fetch 4.6, "HTTP-network-or-cache
+    // fetch"): a page that asks a server itself whether what it has holds
+    // is answered by the server
+    let cache = request.cache ?? 'default';
+    if (cache === 'default' && CONDITIONAL.some((name) => name in headers)) {
+      cache = 'no-store';
+    }
+    if (cache === 'no-cache' && !('cache-control' in headers)) {
+      headers['cache-control'] = 'max-age=0';
+    }
+    if (cache === 'no-store' || cache === 'reload') {
+      headers.pragma ??= 'no-cache';
+      headers['cache-control'] ??= 'no-cache';
+    }
     // the wait for an answer is bounded, and its body is not: a page reads
     // a stream of events, or a model's reply, for as long as it goes on
     const timer = new AbortController();
@@ -1889,6 +2062,58 @@ export class HtmlNetwork {
       given ?? null,
       client,
     );
+    // a GET's answer may be one kept from before, and may be kept for later
+    // (RFC 9111): under the site of the page, as `load` keeps a resource
+    const caching = method === 'GET';
+    // what was answered to a request with cookies is no answer to one
+    // without, and the other way round, as Chrome keeps them apart
+    const key =
+      this._cacheKey(request.url, page) +
+      (request.opaqueOrigin ? ' opaque' : '') +
+      (request.credentials === 'omit' ? ' anonymous' : '');
+    const asked = cacheControl(headers['cache-control'] ?? null);
+    const kept =
+      caching && cache !== 'no-store' && cache !== 'reload'
+        ? await this._pageStored(key, headers)
+        : null;
+    const now = Date.now();
+    if (
+      kept &&
+      (cache === 'force-cache' ||
+        cache === 'only-if-cached' ||
+        (cache === 'default' && freshFor(kept, now, headers)))
+    ) {
+      clearTimeout(timeout);
+      return this._fromCache(id, request, kept, 'disk');
+    }
+    if (caching && cache === 'only-if-cached') {
+      clearTimeout(timeout);
+      this._failed(id, 'only-if-cached');
+      throw new TypeError('Failed to fetch: nothing kept for only-if-cached.');
+    }
+    if (caching && asked.has('only-if-cached')) {
+      // a request that says it takes only what is kept, and nothing is
+      // (RFC 9111, 5.2.1.7)
+      clearTimeout(timeout);
+      return this._fromCache(
+        id,
+        request,
+        {
+          requestTime: now,
+          responseTime: now,
+          status: 504,
+          headers: [],
+          vary: [],
+          bytes: new Uint8Array(0),
+        },
+        'memory',
+      );
+    }
+    // a stale one is asked about by its validators, where the page asked
+    // nothing of the kind itself
+    const validators = kept && conditionalHeaders(kept);
+    const sent = validators ? { ...headers, ...validators } : headers;
+    const requestTime = Date.now();
     let response: ResponseLike;
     try {
       response = await this._paced(request.url, signal, () => {
@@ -1897,7 +2122,7 @@ export class HtmlNetwork {
           request.url,
           {
             method,
-            headers,
+            headers: sent,
             body,
             // a page's stream, which nothing sends again
             ...(body !== undefined && request.streamedBody
@@ -1933,6 +2158,32 @@ export class HtmlNetwork {
     } finally {
       clearTimeout(timeout);
     }
+    const responseTime = Date.now();
+    const entries = [...response.headers.entries()];
+    // an unsafe method that worked leaves what was kept of its URL, and of
+    // the URLs its answer names on its origin, stale (RFC 9111, 4.4)
+    if (
+      !SAFE_METHODS.has(method.toUpperCase()) &&
+      response.status >= 200 &&
+      response.status < 400
+    ) {
+      await this._invalidate(request.url, entries, page, request.opaqueOrigin);
+    }
+    if (kept && validators && response.status === 304) {
+      // still what was kept, with what the 304 says of it now (4.3.4)
+      response.body
+        ?.getReader()
+        .cancel()
+        .catch(() => {});
+      const head = freshened(kept, entries, requestTime, responseTime);
+      await this._pageKeep((store) => store.refresh(key, head));
+      return this._fromCache(
+        id,
+        request,
+        { ...head, bytes: kept.bytes },
+        'revalidated',
+      );
+    }
     this._responded(id, response, request.url);
     const { charset } = contentType(response.headers.get('content-type'));
     const answer = {
@@ -1940,14 +2191,55 @@ export class HtmlNetwork {
       status: response.status,
       statusText: response.statusText,
       redirected: response.redirected,
-      headers: [...response.headers.entries()],
+      headers: entries,
       charset,
     };
-    if (request.stream) {
+    // whether what comes may be kept: a GET's own answer, where neither the
+    // page nor its cache mode said not to
+    const keep =
+      caching &&
+      cache !== 'no-store' &&
+      !asked.has('no-store') &&
+      !response.redirected &&
+      cachedResponse(
+        {
+          status: response.status,
+          statusText: response.statusText,
+          headers: entries,
+          bytes: new Uint8Array(0),
+          requestTime,
+          responseTime,
+        },
+        headers,
+      ) !== null;
+    const store = (bytes: Uint8Array): void => {
+      const response = cachedResponse(
+        {
+          status: answer.status,
+          statusText: answer.statusText,
+          headers: entries,
+          bytes,
+          requestTime,
+          responseTime,
+        },
+        headers,
+      );
+      if (response) void this._pageKeep((store) => store.put(key, response));
+    };
+    // a body of nothing is kept as it comes: a page reads none of a 204's
+    const empty = response.body === null || NULL_BODY.has(response.status);
+    if (keep && empty) store(new Uint8Array(0));
+    // nor is a redirect's, which its follower lets go: one that may be kept
+    // is read whole here first, as small as it is
+    if (request.stream && !(keep && !empty && REDIRECTS.has(response.status))) {
+      const body = this._observed(id, bodyChunks(response));
       return {
         ...answer,
         bytes: new Uint8Array(0),
-        chunks: this._observed(id, bodyChunks(response)),
+        chunks:
+          keep && !empty
+            ? keptAsItGoes(body, this._resourceLimit, store)
+            : body,
       };
     }
     const chunks: Uint8Array[] = [];
@@ -1957,7 +2249,11 @@ export class HtmlNetwork {
     )) {
       chunks.push(chunk);
     }
-    return { ...answer, bytes: concat(chunks) };
+    const bytes = concat(chunks);
+    if (keep && !empty) store(bytes);
+    return request.stream
+      ? { ...answer, bytes: new Uint8Array(0), chunks: once(bytes) }
+      : { ...answer, bytes };
   }
 
   /**
