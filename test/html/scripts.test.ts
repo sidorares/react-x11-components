@@ -9101,6 +9101,58 @@ test('a same-document navigation commits before currententrychange, a transition
   );
 });
 
+test('a precommit handler runs before the commit, may redirect it or add a handler, and a rejection aborts it before anything of it is done', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () { try {' +
+      // redirected, to a replace with a state, and a handler added
+      '  var start = navigation.entries().length;' +
+      '  navigation.onnavigate = function (e) { e.intercept({ precommitHandler: async function (c) {' +
+      '    r.push("pre " + location.hash);' +
+      '    c.redirect("#b", { history: "replace", state: 7 });' +
+      '    c.addHandler(function () { r.push("added " + location.hash); });' +
+      '  } }); };' +
+      '  var res = navigation.navigate("#a"); r.push(navigation.transition.to.url.split("#")[1]);' +
+      '  await res.finished;' +
+      '  r.push(location.hash, navigation.entries().length - start, navigation.currentEntry.getState());' +
+      // a rejection before the commit: both promises, and no entry
+      '  navigation.onnavigate = function (e) { e.intercept({ precommitHandler: function () { return Promise.reject(new Error("no")); } }); };' +
+      '  var bad = navigation.navigate("#c");' +
+      '  r.push(await bad.committed.then(function () { return "committed"; }, function (e) { return e.message; }), location.hash);' +
+      // a traversal: its handlers before its popstate
+      '  navigation.onnavigate = null; await navigation.navigate("#d").finished;' +
+      '  var order = []; onpopstate = function () { order.push("popstate"); };' +
+      '  navigation.onnavigate = function (e) { e.intercept({ handler: function () { order.push("handler"); } }); };' +
+      '  await navigation.back().finished; r.push(order.join(" "));' +
+      // a commit is no place to redirect from
+      '  var later = null; navigation.onnavigate = function (e) { e.intercept({ precommitHandler: function (c) { later = c; } }); };' +
+      '  await navigation.navigate("#e").finished;' +
+      '  try { later.redirect("#f"); } catch (e) { r.push(e.name); }' +
+      '} catch (e) { r.push("threw " + e); }' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      // the precommit handler runs inside `navigate()`, and its redirect is
+      // the transition's destination
+      'pre ',
+      'b',
+      'added #b',
+      '#b',
+      '0',
+      '7',
+      'no',
+      '#b',
+      'handler popstate',
+      'InvalidStateError',
+    ].join('|'),
+  );
+});
+
 test('an intercepted navigation scrolls where it ends, a traversal restores where its entry was scrolled to, and the transition lasts through navigatesuccess', async () => {
   const doc = await hosted(
     '<p id="out"></p><div style="height:3000px"></div><div id="frag">f</div><div style="height:3000px"></div><script>' +
