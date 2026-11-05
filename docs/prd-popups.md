@@ -443,8 +443,10 @@ the prototype, frames nested in frames, `document.domain`, and a window's
 - **A window opened from a realm-less frame** opens as its page, where the page
   reaches in: such a frame has no script of its own to call it. A link a user
   follows in it is its own, and a sandbox's keeps its flags (`openFor`).
-- **`resizeTo` and `moveTo`** on a popup, and `screenX` and `screenY`: a popup
-  takes its size and place from its features, and neither moves after.
+- **`moveTo`** on a popup, and `screenX` and `screenY`: a popup takes its
+  place from its features and does not move after. `resizeTo` / `resizeBy`
+  resize its content (and skip a view transition under way); the host hears
+  them through `HtmlPopup.onResize`.
 - **`document.write` into a popup after its first document.** It is the
   engine's general rule: only a script the parser met writes into its document.
 - **A frame's own session across documents** is unchanged, and a window's first

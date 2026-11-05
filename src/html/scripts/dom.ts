@@ -19337,9 +19337,15 @@ export function installDom(
     callbacks: Map<number, Any>;
     seq: number;
   }
+  /** Size a script set with `resizeTo` / `resizeBy`, which `innerWidth` and
+   *  `innerHeight` answer at once — before the host has laid the window out
+   *  again — so a poll during a view transition's update callback sees it
+   *  (CSS View Transitions, window-resize-aborts-*). */
+  let windowSize: [number, number] | null = null;
   /** Its width and height now. */
   const sizeOf = (v: Viewport): number[] => {
     if (!v.frame) {
+      if (windowSize) return [windowSize[0], windowSize[1]];
       const { width, height } = viewport();
       return [width, height];
     }
@@ -35274,10 +35280,10 @@ export function installDom(
     Object.setPrototypeOf(object, Interface.prototype);
     define(name, Interface);
   }
-  getter('innerWidth', () => viewport().width);
-  getter('innerHeight', () => viewport().height);
-  getter('outerWidth', () => viewport().width);
-  getter('outerHeight', () => viewport().height);
+  getter('innerWidth', () => windowSize?.[0] ?? viewport().width);
+  getter('innerHeight', () => windowSize?.[1] ?? viewport().height);
+  getter('outerWidth', () => windowSize?.[0] ?? viewport().width);
+  getter('outerHeight', () => windowSize?.[1] ?? viewport().height);
   getter('scrollX', () => pageScrollX(viewport(true)));
   getter('scrollY', () => viewport(true).scrollY);
   getter('pageXOffset', () => pageScrollX(viewport(true)));
@@ -35524,6 +35530,38 @@ export function installDom(
     const running = s.ongoing;
     if (running?.event?._dispatching) running.event.preventDefault();
     abortOngoing(s);
+  });
+  /** CSSOM View, `resizeTo` / `resizeBy`: the window's content size, and a
+   *  `resize` at once. A view transition under way is skipped — the
+   *  snapshot viewport changed (CSS View Transitions 1, 7.6). */
+  const resizeWindow = (width: number, height: number): void => {
+    const w = Math.max(0, Math.floor(width));
+    const h = Math.max(0, Math.floor(height));
+    const was = windowSize ?? [viewport().width, viewport().height];
+    windowSize = [w, h];
+    call('windowResizeTo', w, h);
+    const active = activeOf(document);
+    if (active && active._phase !== 'done') {
+      skipTransition(
+        active,
+        new DOMException(
+          'Transition skipped due to viewport size change',
+          'InvalidStateError',
+        ),
+      );
+    }
+    if (was[0] !== w || was[1] !== h) {
+      ownViewport.size = [w, h];
+      fireTrusted(windowTarget, 'resize');
+      if (ownViewport.visual) fireTrusted(ownViewport.visual, 'resize');
+    }
+  };
+  define('resizeTo', (width: Any, height: Any) => {
+    resizeWindow(Number(width) || 0, Number(height) || 0);
+  });
+  define('resizeBy', (dx: Any, dy: Any) => {
+    const at = windowSize ?? [viewport().width, viewport().height];
+    resizeWindow(at[0] + (Number(dx) || 0), at[1] + (Number(dy) || 0));
   });
   /** Whether a message may go where `options` says it is meant for: any
    *  origin, this one, or one written as this one is (HTML 9.4.3). Every

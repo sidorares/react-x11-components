@@ -2566,7 +2566,9 @@ process as every window with an opener does, so `crossOriginIsolated` is false, 
 turns down a document with a policy as a network error: nothing of it runs or is
 drawn.
 
-Not done: `moveTo` and `resizeTo` ([the design](../prd-popups.md#left-out)).
+`resizeTo` / `resizeBy` resize a popup's content and skip a view transition
+under way; the host hears them through `HtmlPopup.onResize`. Not done:
+`moveTo` ([the design](../prd-popups.md#left-out)).
 
 ### Sandboxes and framing
 

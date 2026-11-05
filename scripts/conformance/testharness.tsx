@@ -371,6 +371,10 @@ function Run(props: {
   const [opened, setOpened] = useState<
     { id: number; url: string; popup?: HtmlPopup; name?: string }[]
   >([]);
+  /** A popup's content size after `resizeTo`, keyed by the tab id. */
+  const [sizes, setSizes] = useState<
+    Record<number, { width: number; height: number }>
+  >({});
   const count = useRef(0);
   const add = (url: string, popup?: HtmlPopup, name?: string) => {
     count.current += 1;
@@ -387,12 +391,28 @@ function Run(props: {
     unblocked: true,
     open(popup) {
       if (props.page !== current) return false;
-      add(popup.url, popup);
+      const id = add(popup.url, popup);
+      setSizes((all) => ({
+        ...all,
+        [id]: {
+          width: popup.width || popup.features.width || WIDTH,
+          height: popup.height || popup.features.height || HEIGHT,
+        },
+      }));
+      popup.onResize((size) => {
+        setSizes((all) => ({ ...all, [id]: size }));
+      });
       return true;
     },
   };
-  const closed = (id: number) =>
+  const closed = (id: number) => {
     setOpened((all) => all.filter((tab) => tab.id !== id));
+    setSizes((all) => {
+      const next = { ...all };
+      delete next[id];
+      return next;
+    });
+  };
   const tab = (
     main: boolean,
     first: Loaded | string,
@@ -443,8 +463,8 @@ function Run(props: {
             position: 'absolute',
             left: WIDTH * id,
             top: 0,
-            width: popup?.features.width ?? WIDTH,
-            height: popup?.features.height ?? HEIGHT,
+            width: sizes[id]?.width ?? popup?.features.width ?? WIDTH,
+            height: sizes[id]?.height ?? popup?.features.height ?? HEIGHT,
             overflow: 'scroll',
             backgroundColor: '#ffffff',
             flexDirection: 'column',
