@@ -162,9 +162,12 @@ test("a page's stream is sent as it is over HTTP/2, and an empty one ends its re
   }
 });
 
-test('a network made with http2: false keeps to HTTP/1.1', async (t) => {
+test("a network made with http2: false leaves the request to the runtime's own fetch", async (t) => {
   const base = await serve(t);
   const network = new HtmlNetwork({ http2: false });
   const got = await send(network, `${base}/`, { method: 'GET' });
-  assert.equal(versionOf(got), '1.1');
+  // HTTP/1.1, unless the runtime's fetch offers HTTP/2 itself, as Node 26's
+  // does
+  const own = await fetch(`${base}/`);
+  assert.equal(versionOf(got), own.headers.get('x-version'));
 });

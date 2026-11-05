@@ -1040,22 +1040,22 @@ a host for its suffix, which refuses `Domain=com` and not `Domain=co.uk`.
 `src/html/undici.ts` is the fifth: `undici`, which offers HTTP/2 as an https
 connection is made, is an **optional peer** and a devDependency, loaded the
 first time `HtmlNetwork` sends over https, its types written out. Neither
-runtime's `fetch` speaks HTTP/2, and the npm package's `Agent` handed to
-Node's own `fetch` fails as it is used (the two undicis' handler APIs differ
-by a major), so where the package is there an https request goes through
-**its** `fetch` and an `Agent({ allowH2: true })`, and anything else through
-the runtime's as before; on Bun none of it is loaded. **It stands in for
-the runtime's own `fetch` alone** (`fetchIsRuntimes`): a `fetch` put on the
-global after `undici.ts` was evaluated is asked, as every test here that
-mocks `globalThis.fetch` for an https URL needs, and an instrumented
-application too. `threadTransport`'s
-worker loads it the same way, by `require`. **The peer range starts at
-8.3.0, and the loaders hold to it** (`fixedVersion`): before it undici's
-`fetch` over HTTP/2 never ended a request whose body it knew was empty
-(fixed by nodejs/undici#5169, on no 7.x), and the server waited for the
-rest of it for good. npm only warns of a peer out of range, so an older
-undici is not used, and the network stays on HTTP/1.1. Node 20 cannot run
-undici 8 (it asks for 22.19), so HTTP/2 is Node 22.19's and later.
+runtime's `fetch` speaks HTTP/2 before Node 26, and the npm package's
+`Agent` handed to Node's own `fetch` fails as it is used (the two undicis'
+handler APIs differ by a major), so where the package is there an https
+request goes through **its** `fetch` and an `Agent({ allowH2: true })`, and
+anything else through the runtime's as before; on Bun none of it is loaded.
+**It stands in for the runtime's own `fetch` alone** (`fetchIsRuntimes`): a
+`fetch` put on the global after `undici.ts` was evaluated is asked, as every
+test here that mocks `globalThis.fetch` for an https URL needs, and an
+instrumented application too. `threadTransport`'s worker loads it the same
+way, by `require`. **The peer range starts at 8.3.0, and the loaders hold to
+it** (`fixedVersion`): before it undici's `fetch` over HTTP/2 never ended a
+request whose body it knew was empty (fixed by nodejs/undici#5169, on no
+7.x), and the server waited for the rest of it for good. npm only warns of a
+peer out of range, so an older undici is not used, and the network stays on
+HTTP/1.1. Node 20 cannot run undici 8 (it asks for 22.19), so HTTP/2 is Node
+22.19's and later.
 
 ## Running someone else's program
 

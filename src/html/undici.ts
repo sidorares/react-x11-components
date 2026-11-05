@@ -2,8 +2,8 @@
 // is built on, newer, with a dispatcher that offers `h2` as a connection
 // is made (ALPN) and speaks it where the server takes it.
 //
-// Why not the runtime's. Node's `fetch` is undici too, and speaks HTTP/1.1
-// unless it is handed a dispatcher with `allowH2`; the only one it can be
+// Why not the runtime's. Node's `fetch` is undici too, and before Node 26
+// speaks HTTP/1.1 unless it is handed a dispatcher with `allowH2`; the only one it can be
 // handed that it will take is its own, reached through undici's global
 // dispatcher symbol, which is reaching into the runtime. The package's
 // `Agent` handed to the runtime's `fetch` fails as it is used (`invalid
