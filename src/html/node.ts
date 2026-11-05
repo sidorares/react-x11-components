@@ -390,6 +390,8 @@ import {
 } from './layout/inline.js';
 import type { FontsLike } from './layout/inline.js';
 import type { SvgMeasure } from './scripts/svg-geometry.js';
+import { bboxOf } from './scripts/svg-geometry.js';
+import { ShapeAnimations } from './css/shape-animations.js';
 import type { TextRun } from '../richtext/index.js';
 // Through the inline module rather than a second cache: the offsets table for
 // a layout is built once, on the first selection that needs it.
@@ -1330,6 +1332,21 @@ export class HtmlViewNode extends Node {
   /** The timer for the next frame of an animated image, and when it is due. */
   private _gifTimer: unknown = null;
   private _gifAt = Infinity;
+  /**
+   * The clock the animations of the drawings' elements run on, across
+   * builds and cascades (`ShapeAnimations`): a drawing with one under way
+   * is asked again when it next changes (`_shapeFrame`), as `_askShapes`
+   * asks one a change reached.
+   */
+  private _shapeMotion: ShapeAnimations = (() => {
+    const clock = new ShapeAnimations(() => animationClock.now());
+    clock.running = () => this._animating();
+    clock.bbox = (el) => bboxOf(el, this._svgMeasureNow());
+    clock.onDue = () => this._armShapes();
+    return clock;
+  })();
+  private _shapeTimer: unknown = null;
+  private _shapeAt = Infinity;
   /**
    * The elements the build of the boxes that is due has to style again,
    * where every change asking for it said which (`_invalidate`), and null
@@ -3283,6 +3300,7 @@ export class HtmlViewNode extends Node {
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
       this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
+      this._cascade.shapeAnimations = this._shapeMotion;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
       faces = kept.faces;
@@ -3401,6 +3419,7 @@ export class HtmlViewNode extends Node {
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
       this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
+      this._cascade.shapeAnimations = this._shapeMotion;
       this._sheetsRead = {
         look,
         scale: this._scale,
@@ -6603,6 +6622,7 @@ export class HtmlViewNode extends Node {
     this._dropHeldHover();
     this._disarmGif();
     this._gifs.clear();
+    this._disarmShapes();
     if (this._settleTimer !== null) resizeClock.disarm(this._settleTimer);
     this._settleTimer = null;
     if (this._owedTimer !== null) owedClock.disarm(this._owedTimer);
@@ -7678,6 +7698,11 @@ export class HtmlViewNode extends Node {
    *  where a drawing was laid out, in CSS pixels. */
   svgMeasure(): SvgMeasure {
     this._prepare(this.abs.width || 1);
+    return this._svgMeasureNow();
+  }
+
+  /** `svgMeasure` of the document as it stands, which a paint asks. */
+  private _svgMeasureNow(): SvgMeasure {
     const size = (el: Element): number => {
       for (let at: AnyNode | null = el; at; at = at.parent) {
         if (!isElement(at)) break;
@@ -11160,6 +11185,40 @@ export class HtmlViewNode extends Node {
       Math.max(1, at - animationClock.now()),
     );
   }
+
+  /** A timer for the next drawing whose shapes animate, where none is due
+   *  sooner. None while a drag is drawn cheaper (`_behind`), and none at
+   *  rest. */
+  private _armShapes(): void {
+    if (this.destroyed || this._cheap || !this._animating()) return;
+    const at = this._shapeMotion.nextDue();
+    if (at === Infinity) return;
+    if (this._shapeTimer !== null && this._shapeAt <= at) return;
+    this._disarmShapes();
+    this._shapeAt = at;
+    this._shapeTimer = animationClock.arm(
+      this._shapeFrame,
+      Math.max(1, at - animationClock.now()),
+    );
+  }
+
+  private _disarmShapes(): void {
+    if (this._shapeTimer === null) return;
+    animationClock.disarm(this._shapeTimer);
+    this._shapeTimer = null;
+    this._shapeAt = Infinity;
+  }
+
+  /** The drawings whose shapes an animation changes by now are asked
+   *  again, and repainted where what they draw moved. */
+  private readonly _shapeFrame = (): void => {
+    this._shapeTimer = null;
+    this._shapeAt = Infinity;
+    if (this.destroyed) return;
+    const due = this._shapeMotion.takeDue(animationClock.now() + 1);
+    if (due.size) this._askShapes(due);
+    this._armShapes();
+  };
 
   private _disarmGif(): void {
     if (this._gifTimer === null) return;
