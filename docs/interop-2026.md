@@ -445,16 +445,18 @@ out or drawn, as before.
 **view-transitions (60.7%).** The `::view-transition` pseudo-element
 tree is drawn ([#909]), its styles are in `getComputedStyle()` and its
 animations in `getAnimations()`, which tell their events ([#929]). Not
-there: rendering held while the update runs (`render-blocking/`), where
-the parse yields to the scripts that block it now ([#978]) and holding the
-rendering is the half not started; and cross-document transitions
-(`@view-transition { navigation: auto }`) — `pageswap` and `pagereveal` are
-told where one document replaces another ([#980]), with a `viewTransition`
-of null, but the old state is not captured before the element takes the
-new source, and a `pageswap` listener's name changes do not reach a
-capture — between them most of what is left; a transition in a frame; and
-a transition's vertical axes, which [#975] leaves, though `writing-mode`
-and `text-orientation` are in `getComputedStyle()` now.
+A `<link rel=expect blocking=render>` holds animation frames until the
+element its href names is in the tree, or until the parse ends where that
+id never appears — the `html/dom/render-blocking/element-render-blocking-*`
+half. Still not there: `blocking=render` on scripts and stylesheets, and
+`PerformancePaintTiming` those tests assert with; and cross-document
+transitions (`@view-transition { navigation: auto }`) — `pageswap` and
+`pagereveal` are told where one document replaces another ([#980]), with a
+`viewTransition` of null, but the old state is not captured before the
+element takes the new source, and a `pageswap` listener's name changes do
+not reach a capture — between them most of what is left; a transition in a
+frame; and a transition's vertical axes, which [#975] leaves, though
+`writing-mode` and `text-orientation` are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user
