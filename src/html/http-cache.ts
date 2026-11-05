@@ -15,6 +15,9 @@ export interface HtmlCachedResponse {
   requestTime: number;
   responseTime: number;
   status: number;
+  /** Its reason phrase, where it was kept with one: what a page reads as
+   *  `statusText`. */
+  statusText?: string;
   /** Its header fields, names lowercased, without `Set-Cookie` and without
    *  those about the connection or the coding the body came in
    *  (`keptHeaders`). */
@@ -50,10 +53,13 @@ export interface HtmlHttpCacheStore {
   clear?(): void | Promise<void>;
 }
 
-/** The statuses a response may be kept for here. The network asks for a
- *  subresource's 2xx alone, and of those only these are heuristically
- *  cacheable (RFC 9110, 15.1); a 206 is a range nothing here asks for. */
-const KEPT_STATUSES = new Set([200, 203]);
+/** The statuses a response is heuristically cacheable with (RFC 9110,
+ *  15.1): kept by a validator or a `Last-Modified` alone. Any other final
+ *  status is kept only where the response says how long it is fresh. A 206
+ *  is a range nothing here asks for, and is kept with none of them. */
+const HEURISTIC_STATUSES = new Set([
+  200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501,
+]);
 
 /** Header fields a kept response leaves out (RFC 9111, 3.1): those about
  *  the connection; the coding the body arrived in and its length on the
@@ -137,8 +143,9 @@ function seconds(value: string | null | undefined): number | null {
  * How long a kept response is fresh for, in milliseconds (RFC 9111,
  * 4.2.1): its `max-age`, else its `Expires` less its `Date`, else a tenth
  * of the time since it was last modified, up to a week (4.2.2). A response
- * that says `no-cache` — in `Cache-Control`, or in a `Pragma` where there is
- * no `Cache-Control`, as Chrome reads one — is fresh for none of it, and is
+ * that says `no-cache` — in `Cache-Control`, or in a `Pragma` unless its
+ * `Cache-Control` says `immutable`, as browsers read one (WPT's
+ * `pragma-no-cache-with-cache-control`) — is fresh for none of it, and is
  * asked about at each use; so is one whose freshness is written wrong. A
  * private cache reads no `s-maxage`.
  */
@@ -146,8 +153,10 @@ export function freshnessLifetime(head: HtmlCachedHead): number {
   const field = headerOf(head.headers, 'cache-control');
   const directives = cacheControl(field);
   if (directives.has('no-cache')) return 0;
+  // a `Pragma: no-cache` holds beside a `Cache-Control` that would keep the
+  // response, but an `immutable` one, as Chrome and Firefox read it
   if (
-    field === null &&
+    !directives.has('immutable') &&
     /(?:^|,)\s*no-cache\s*(?:,|$)/i.test(headerOf(head.headers, 'pragma') ?? '')
   ) {
     return 0;
@@ -160,7 +169,11 @@ export function freshnessLifetime(head: HtmlCachedHead): number {
     return at === null ? 0 : Math.max(0, at - date);
   }
   const modified = dateOf(headerOf(head.headers, 'last-modified'));
-  if (modified !== null && modified < date && KEPT_STATUSES.has(head.status)) {
+  if (
+    modified !== null &&
+    modified < date &&
+    (HEURISTIC_STATUSES.has(head.status) || directives.has('public'))
+  ) {
     return Math.min((date - modified) / 10, HEURISTIC_MAX_MS);
   }
   return 0;
@@ -180,6 +193,92 @@ export function currentAge(head: HtmlCachedHead, now: number): number {
  *  the server (RFC 9111, 4.2). */
 export function isFresh(head: HtmlCachedHead, now: number): boolean {
   return freshnessLifetime(head) > currentAge(head, now);
+}
+
+/**
+ * Whether a kept response may answer a request with these header fields
+ * without asking the server (RFC 9111, 4.2 and 5.2.1): fresh, and as fresh
+ * as the request's own `Cache-Control` asks — no older than its `max-age`,
+ * fresh for its `min-fresh` yet, or stale by no more than its `max-stale`.
+ * A request that says `no-cache` or `no-store`, or `Pragma: no-cache` with
+ * no `Cache-Control`, takes none.
+ */
+export function freshFor(
+  head: HtmlCachedHead,
+  now: number,
+  request: Readonly<Record<string, string>>,
+): boolean {
+  const field = request['cache-control'] ?? null;
+  const asked = cacheControl(field);
+  if (asked.has('no-cache') || asked.has('no-store')) return false;
+  if (
+    field === null &&
+    /(?:^|,)\s*no-cache\s*(?:,|$)/i.test(request.pragma ?? '')
+  ) {
+    return false;
+  }
+  const age = currentAge(head, now);
+  const lifetime = freshnessLifetime(head);
+  const maxAge = seconds(asked.get('max-age'));
+  if (maxAge !== null && age > maxAge) return false;
+  const minFresh = seconds(asked.get('min-fresh'));
+  if (minFresh !== null && lifetime - age < minFresh) return false;
+  const said = cacheControl(headerOf(head.headers, 'cache-control'));
+  // a response that has to be asked about once stale is, whatever the
+  // request will take (5.2.2.2, 5.2.2.4)
+  const strict = said.has('no-cache') || said.has('must-revalidate');
+  if (asked.has('max-stale') && !strict) {
+    // a stale response, up to the age it names, or any where it names none
+    const stale = asked.get('max-stale');
+    if (stale === null || stale === undefined) return true;
+    const by = seconds(stale);
+    return by !== null && age - lifetime <= by;
+  }
+  return lifetime > age;
+}
+
+/**
+ * An `HtmlHttpCacheStore` in the process's memory, of `limit` bytes of
+ * bodies at most, the least recently used going first: what a network
+ * handed no store keeps a page's own requests in.
+ */
+export function memoryHttpCache(limit: number): HtmlHttpCacheStore {
+  const kept = new Map<string, HtmlCachedResponse>();
+  let bytes = 0;
+  const drop = (key: string): void => {
+    const was = kept.get(key);
+    if (!was) return;
+    bytes -= was.bytes.length;
+    kept.delete(key);
+  };
+  return {
+    get(key) {
+      const response = kept.get(key);
+      if (!response) return null;
+      kept.delete(key);
+      kept.set(key, response);
+      return response;
+    },
+    put(key, response) {
+      drop(key);
+      if (response.bytes.length > limit) return;
+      kept.set(key, response);
+      bytes += response.bytes.length;
+      for (const oldest of kept.keys()) {
+        if (bytes <= limit) break;
+        drop(oldest);
+      }
+    },
+    refresh(key, head) {
+      const was = kept.get(key);
+      if (was) kept.set(key, { ...head, bytes: was.bytes });
+    },
+    delete: drop,
+    clear() {
+      kept.clear();
+      bytes = 0;
+    },
+  };
 }
 
 /** The request header fields a kept response says the server chose it by
@@ -212,6 +311,7 @@ const normal = (value: string): string => value.trim().replace(/\s+/g, ' ');
 export function cachedResponse(
   answer: {
     status: number;
+    statusText?: string;
     headers: readonly (readonly [string, string])[];
     bytes: Uint8Array;
     requestTime: number;
@@ -219,8 +319,18 @@ export function cachedResponse(
   },
   request: Readonly<Record<string, string>>,
 ): HtmlCachedResponse | null {
-  if (!KEPT_STATUSES.has(answer.status)) return null;
-  if (cacheControl(headerOf(answer.headers, 'cache-control')).has('no-store')) {
+  // a final status, and no range (RFC 9111, 3)
+  if (answer.status < 200 || answer.status === 206 || answer.status === 304) {
+    return null;
+  }
+  const directives = cacheControl(headerOf(answer.headers, 'cache-control'));
+  if (directives.has('no-store')) return null;
+  if (
+    !HEURISTIC_STATUSES.has(answer.status) &&
+    !directives.has('public') &&
+    !directives.has('max-age') &&
+    headerOf(answer.headers, 'expires') === null
+  ) {
     return null;
   }
   const names = varyNames(answer.headers);
@@ -229,6 +339,7 @@ export function cachedResponse(
     requestTime: answer.requestTime,
     responseTime: answer.responseTime,
     status: answer.status,
+    ...(answer.statusText ? { statusText: answer.statusText } : {}),
     headers: keptHeaders(answer.headers),
     vary: names.map((n) => [n, n in request ? normal(request[n]) : null]),
   };

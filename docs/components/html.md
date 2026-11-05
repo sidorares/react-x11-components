@@ -1056,9 +1056,37 @@ memory, bounded by `cacheBytes`, and the store it is handed, which a later
 network finds — `HtmlProfile`'s `httpCache` keeps it on disk, for every
 process of a browser. `clear()` is a hard reload: nothing asked for before
 it is used, and the next request for each goes with `Cache-Control:
-no-cache`. A document, a page's own `fetch` and a redirect are not kept;
-where a redirect led is, under its own URL. The `log` option says `cached`
+no-cache`. A document is not kept, nor is a redirect a subresource
+followed; where it led is, under its own URL. The `log` option says `cached`
 for a response the cache answered and `revalidated` for a 304.
+
+**A page's own `fetch` and `XMLHttpRequest` go through the same cache**, a
+GET at a time, in the store the network was handed or, with none, a store
+of its own in memory of `cacheBytes`. Any final status a server says is
+fresh is kept, as RFC 9111 has it, and a 200, 204, 301, 404 or one of the
+other heuristically cacheable statuses with a validator alone — any status
+where the response says `public`. A redirect is kept as any response is, so
+`only-if-cached` follows one it has. What a request with cookies was
+answered is kept apart from what one without was. A `Pragma: no-cache` in a
+response holds beside a `Cache-Control` that would keep it, but an
+`immutable` one, as browsers read it. Its cache
+mode is honoured as Fetch has it: `no-store` and `reload` ask past it and
+send `Pragma` and `Cache-Control: no-cache`, `no-store` keeping nothing;
+`no-cache` asks about what is kept with `Cache-Control: max-age=0`;
+`force-cache` and `only-if-cached` take what is kept however stale, and
+`only-if-cached` fails where nothing is. So does a request's own
+`Cache-Control`: `no-cache`, `no-store`, `max-age`, `min-fresh`,
+`max-stale`, and `only-if-cached`, a 504 where nothing is kept. A page that
+sends `If-None-Match` or another conditional field itself is answered by
+the server, untouched. A 304 to a request the cache made answers with what
+was kept and the header fields the 304 brought, and a POST, a PUT, a DELETE
+or any unsafe method that worked makes what was kept of its URL, and of the
+URLs its `Location` and `Content-Location` name on its origin, stale.
+Not read: partial content (a range is asked for each time),
+`stale-while-revalidate` (a stale response is asked about before it is
+used), `No-Vary-Search`, and a POST's answer as the content of the URL its
+`Content-Location` names. One response is kept a URL, so a response that
+varies takes the place of the variant kept before it.
 
 **A body the network holds whole has a limit, `resourceBytes`** (256 MB by
 default): a script, a stylesheet, an image, a font, or a page's request for

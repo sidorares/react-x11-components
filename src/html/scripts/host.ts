@@ -409,6 +409,9 @@ export interface FetchRequest {
    *  `Sec-Fetch-Site` is reckoned from the origin, which a redirect does not
    *  change. Absent, its client's, or none where `opaqueOrigin`. */
   origin?: string;
+  /** Its cache mode (Fetch, `RequestCache`): what the HTTP cache may answer
+   *  it with and keep of it. Absent, `default`. */
+  cache?: string;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -9750,6 +9753,9 @@ export class DomHost {
         ...(request.destination ? { destination: request.destination } : {}),
         ...(urls.length ? { through: [...urls] } : {}),
         ...(opaqueOrigin && page !== 'null' ? { origin: page } : {}),
+        ...(request.cache && request.cache !== 'default'
+          ? { cache: request.cache }
+          : {}),
       };
       if (response.redirected && request.redirect === 'error') {
         release(response);
