@@ -68,6 +68,13 @@ export interface HtmlPopup {
    *  `Cross-Origin-Opener-Policy` takes the window from its opener does not
    *  close it: the opener reads it as closed, and it goes on here. */
   readonly closed: boolean;
+  /** Its content size in CSS pixels: the features' as opened, until a
+   *  script `resizeTo`s it. */
+  readonly width: number;
+  readonly height: number;
+  /** A script asked to resize it (`window.resizeTo`). The host updates the
+   *  window it shows. */
+  resizeTo(width: number, height: number): void;
   /** The user closed it: its document unloads, and the host stops showing
    *  it. */
   close(): void;
@@ -75,6 +82,10 @@ export interface HtmlPopup {
   onClose(listener: () => void): () => void;
   /** A script asked for it to come to the front. */
   onFocus(listener: () => void): () => void;
+  /** A script resized it. Answers the way to stop listening. */
+  onResize(
+    listener: (size: { width: number; height: number }) => void,
+  ): () => void;
 }
 
 /**

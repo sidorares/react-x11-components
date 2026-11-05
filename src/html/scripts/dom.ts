@@ -3741,11 +3741,86 @@ export function installDom(
       asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
+  /**
+   * Whether this document's rendering opportunities are blocked (HTML,
+   * "render-blocking"): a connected `<link rel=expect blocking=render>`
+   * whose media matches, until the element its href names is in the tree
+   * — or until the parse finishes, where that id never appears or the
+   * href is not this document. Animation frame callbacks wait; the
+   * stylesheet hold in `<Html>` is separate (`_renderBlocked`).
+   */
+  const renderOpportunitiesBlocked = (): boolean => {
+    if (document._unloaded) return false;
+    let links: Any;
+    try {
+      links = document.querySelectorAll('link');
+    } catch {
+      return false;
+    }
+    const loading = document._ready === 'loading';
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
+      if (!link?.isConnected) continue;
+      const rel = str(link.getAttribute?.('rel') ?? '');
+      if (!/(?:^|\s)expect(?:\s|$)/i.test(rel)) continue;
+      const blocking = str(link.getAttribute?.('blocking') ?? '');
+      if (!/(?:^|\s)render(?:\s|$)/i.test(blocking)) continue;
+      const media = str(link.getAttribute?.('media') ?? '').trim();
+      if (media) {
+        try {
+          if (!matchMedia(media).matches) continue;
+        } catch {
+          continue;
+        }
+      }
+      const href = str(link.getAttribute?.('href') ?? '');
+      let url: URL;
+      let docUrl: URL;
+      try {
+        url = new URL(href, location.href);
+        docUrl = new URL(location.href);
+      } catch {
+        if (loading) return true;
+        continue;
+      }
+      const sameDoc =
+        url.origin === docUrl.origin &&
+        url.pathname === docUrl.pathname &&
+        url.search === docUrl.search;
+      const id = sameDoc ? decodeURIComponent(url.hash.slice(1)) : '';
+      if (!id) {
+        // not this document, or no fragment: blocks until the parse ends
+        if (loading) return true;
+        continue;
+      }
+      // the document's indicated part for that fragment: an `id`, or an
+      // `<a name>` (element-render-blocking-041)
+      const byId = document.getElementById(id);
+      const byName =
+        !byId && typeof document.getElementsByName === 'function'
+          ? document.getElementsByName(id)[0]
+          : null;
+      const found = byId ?? byName;
+      if (found?.isConnected) continue;
+      // missing: hold while parsing; once interactive, the expectation
+      // is over (element-render-blocking-024)
+      if (loading) return true;
+    }
+    return false;
+  };
   const runFrame = (): void => {
     // in the frame: a frame its steps ask for is the next one
     // (`nextFrame`), and not one more beside this
     frameTimer = -1;
     renderingOwed = false;
+    // a render-blocking `<link rel=expect>` holds every rendering
+    // opportunity — including animation frame callbacks — until its
+    // element is in, or the parse ends (html/dom/render-blocking/)
+    if (renderOpportunitiesBlocked()) {
+      frameTimer = 0;
+      wantFrame();
+      return;
+    }
     // the documents shown for the first time are revealed before the
     // rest of the rendering steps (HTML's "update the rendering")
     if (revealOwed) reveal();
@@ -19571,9 +19646,15 @@ export function installDom(
     callbacks: Map<number, Any>;
     seq: number;
   }
+  /** Size a script set with `resizeTo` / `resizeBy`, which `innerWidth` and
+   *  `innerHeight` answer at once — before the host has laid the window out
+   *  again — so a poll during a view transition's update callback sees it
+   *  (CSS View Transitions, window-resize-aborts-*). */
+  let windowSize: [number, number] | null = null;
   /** Its width and height now. */
   const sizeOf = (v: Viewport): number[] => {
     if (!v.frame) {
+      if (windowSize) return [windowSize[0], windowSize[1]];
       const { width, height } = viewport();
       return [width, height];
     }
@@ -35514,10 +35595,10 @@ export function installDom(
     Object.setPrototypeOf(object, Interface.prototype);
     define(name, Interface);
   }
-  getter('innerWidth', () => viewport().width);
-  getter('innerHeight', () => viewport().height);
-  getter('outerWidth', () => viewport().width);
-  getter('outerHeight', () => viewport().height);
+  getter('innerWidth', () => windowSize?.[0] ?? viewport().width);
+  getter('innerHeight', () => windowSize?.[1] ?? viewport().height);
+  getter('outerWidth', () => windowSize?.[0] ?? viewport().width);
+  getter('outerHeight', () => windowSize?.[1] ?? viewport().height);
   getter('scrollX', () => pageScrollX(viewport(true)));
   getter('scrollY', () => viewport(true).scrollY);
   getter('pageXOffset', () => pageScrollX(viewport(true)));
@@ -35764,6 +35845,38 @@ export function installDom(
     const running = s.ongoing;
     if (running?.event?._dispatching) running.event.preventDefault();
     abortOngoing(s);
+  });
+  /** CSSOM View, `resizeTo` / `resizeBy`: the window's content size, and a
+   *  `resize` at once. A view transition under way is skipped — the
+   *  snapshot viewport changed (CSS View Transitions 1, 7.6). */
+  const resizeWindow = (width: number, height: number): void => {
+    const w = Math.max(0, Math.floor(width));
+    const h = Math.max(0, Math.floor(height));
+    const was = windowSize ?? [viewport().width, viewport().height];
+    windowSize = [w, h];
+    call('windowResizeTo', w, h);
+    const active = activeOf(document);
+    if (active && active._phase !== 'done') {
+      skipTransition(
+        active,
+        new DOMException(
+          'Transition skipped due to viewport size change',
+          'InvalidStateError',
+        ),
+      );
+    }
+    if (was[0] !== w || was[1] !== h) {
+      ownViewport.size = [w, h];
+      fireTrusted(windowTarget, 'resize');
+      if (ownViewport.visual) fireTrusted(ownViewport.visual, 'resize');
+    }
+  };
+  define('resizeTo', (width: Any, height: Any) => {
+    resizeWindow(Number(width) || 0, Number(height) || 0);
+  });
+  define('resizeBy', (dx: Any, dy: Any) => {
+    const at = windowSize ?? [viewport().width, viewport().height];
+    resizeWindow(at[0] + (Number(dx) || 0), at[1] + (Number(dy) || 0));
   });
   /** Whether a message may go where `options` says it is meant for: any
    *  origin, this one, or one written as this one is (HTML 9.4.3). Every

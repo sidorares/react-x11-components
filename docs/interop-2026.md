@@ -444,17 +444,20 @@ out or drawn, as before.
 
 **view-transitions (60.7%).** The `::view-transition` pseudo-element
 tree is drawn ([#909]), its styles are in `getComputedStyle()` and its
-animations in `getAnimations()`, which tell their events ([#929]).
-Cross-document: where `@view-transition { navigation: auto }` opts in
-(including nested in `@layer` / `@media`, and by layer _order_ among
+animations in `getAnimations()`, which tell their events ([#929]). A
+`<link rel=expect blocking=render>` holds animation frames until the
+element its href names is in the tree, or until the parse ends where that
+id never appears — the `html/dom/render-blocking/element-render-blocking-*`
+half. Cross-document: where `@view-transition { navigation: auto }` opts
+in (including nested in `@layer` / `@media`, and by layer _order_ among
 competing rules), `pageswap` and `pagereveal` carry a `ViewTransition`
 ([#980]'s events), and `pageswap` runs before the old state is captured
 so a listener can still set names. Still not there: handing that capture
-into the new document's first paint when the view remounts; rendering
-held for script/style `blocking=render` and paint timing; a transition
-in a frame; and a transition's vertical axes, which [#975] leaves,
-though `writing-mode` and `text-orientation` are in `getComputedStyle()`
-now.
+into the new document's first paint when the view remounts;
+`blocking=render` on scripts and stylesheets, and `PerformancePaintTiming`
+those tests assert with; a transition in a frame; and a transition's
+vertical axes, which [#975] leaves, though `writing-mode` and
+`text-orientation` are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user

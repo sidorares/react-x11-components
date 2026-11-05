@@ -196,6 +196,11 @@ when:
   late sheet restyles the document. A host that never answers a head sheet
   leaves the document undrawn, as a browser that never hears back does; a
   host that cannot fetch one returns `null`.
+- **A `<link rel=expect blocking=render>` holds animation frames** until
+  the element its href names is in the tree (by `id`, or an `<a name>`),
+  or until the parse ends where that name never appears. Its `media` must
+  match. Scripts and styles with `blocking=render`, and paint timing, are
+  not this yet.
 - **An image moves the boxes only where its size lays something out.** An
   `<img>` built before its image arrived is the size its `width` and
   `height` attributes say, and takes its image's size where it lands, in
@@ -2570,7 +2575,9 @@ process as every window with an opener does, so `crossOriginIsolated` is false, 
 turns down a document with a policy as a network error: nothing of it runs or is
 drawn.
 
-Not done: `moveTo` and `resizeTo` ([the design](../prd-popups.md#left-out)).
+`resizeTo` / `resizeBy` resize a popup's content and skip a view transition
+under way; the host hears them through `HtmlPopup.onResize`. Not done:
+`moveTo` ([the design](../prd-popups.md#left-out)).
 
 ### Sandboxes and framing
 

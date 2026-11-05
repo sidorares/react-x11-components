@@ -8199,37 +8199,50 @@ export class HtmlViewNode extends Node {
       }
     }
     const name = m[2] ?? '';
-    const entry = this._vt?.entries.get(name);
-    // one that is not there has the style it would be made with, its
-    // element's inherited, as Chromium answers: before a transition, after
-    // it, and for an image the transition has none of. In an update
-    // callback, the old state's parts are there.
+    const entry = name ? this._vt?.entries.get(name) : undefined;
+    const part = m[1] as TransitionPart['part'] | undefined;
+    // A part the live tree never built still answers the style it would
+    // have if generated — Chromium does, so a page can ask
+    // `::view-transition-new(name)` when only the old image was captured
+    // (only-child-new.html, root to element) and `:only-child` follows
+    // whether its sibling image exists. In an update callback, only the
+    // old state's parts are there. Before or after a transition, and for
+    // a name the transition never had, inherit from the root.
+    const phase = this._vt?.phase;
     const there =
-      this._vt?.phase === 'old' && (!m[1] || (!!entry?.old && m[1] !== 'new'));
+      phase === 'live'
+        ? !part || !!entry
+        : phase === 'old'
+          ? !part || (!!entry?.old && part !== 'new')
+          : false;
     if (!there) {
       return cssomStyle(inherit(rootStyle, cascade.initial), this._scale, null);
     }
-    const timeline = new AnimationTimeline();
+    const timeline =
+      phase === 'live' && this._vt
+        ? this._vt.timeline
+        : new AnimationTimeline();
     timeline.now = animationClock.now();
     const classes = entry?.classes ?? [];
     const at = (
-      part: TransitionPart['part'],
+      which: TransitionPart['part'],
       parent: ComputedStyle,
       onlyChild: boolean,
     ) =>
       cascade.transitionStyle(
         element,
-        part,
-        part === 'view-transition' ? '' : name,
+        which,
+        which === 'view-transition' ? '' : name,
         classes,
         onlyChild,
         parent,
         [],
         timeline,
-        part === 'view-transition' ? part : `view-transition-${part}(${name})`,
+        which === 'view-transition'
+          ? which
+          : `view-transition-${which}(${name})`,
       );
     let style = at('view-transition', rootStyle, false);
-    const part = m[1] as TransitionPart['part'] | undefined;
     if (part) {
       style = at('group', style, (this._vt?.entries.size ?? 1) === 1);
       if (part !== 'group') {

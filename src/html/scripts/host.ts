@@ -5919,6 +5919,13 @@ export class DomHost {
       case 'windowFocus':
         this.windows?.focus(Number(a));
         return null;
+      case 'windowResizeTo': {
+        // a script's `resizeTo` in this window: a popup's host updates the
+        // window it shows; a top-level tab has no popup and keeps the size
+        // the realm already set (`windowSize`)
+        this._seams.popup?.resizeTo(Number(a) || 0, Number(b) || 0);
+        return null;
+      }
       case 'windowNavigate':
         // nothing runs a script in another window's document here, and HTML
         // has it do nothing for another origin's

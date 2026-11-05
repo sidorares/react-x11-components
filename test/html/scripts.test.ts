@@ -1021,6 +1021,35 @@ test('a page sees what the parser puts in the document after its first script, a
   );
 });
 
+test('link rel=expect blocking=render holds animation frames until its element is parsed', async () => {
+  // Rendering opportunities stay blocked while an expect link's id is
+  // missing and the document is still loading (HTML render-blocking).
+  // Forced here after load so the harness need not interleave a parser
+  // delay with the page's timers; WPT's element-render-blocking-*.html
+  // cover the real parse.
+  const doc = await hosted('<p id="out"></p>');
+  doc.run(
+    'document._ready = "loading";' +
+      'var link = document.createElement("link");' +
+      'link.rel = "expect"; link.href = "#never"; link.setAttribute("blocking", "render");' +
+      'document.head.appendChild(link);' +
+      'var fired = false;' +
+      'requestAnimationFrame(function () { fired = true; });' +
+      'setTimeout(function () {' +
+      '  var mid = fired ? "fired" : "held";' +
+      '  document._ready = "complete";' +
+      '  requestAnimationFrame(function () {' +
+      '    document.getElementById("out").textContent = mid + "|" + (fired ? "fired" : "held");' +
+      '  });' +
+      '}, 50);',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t.includes('|')),
+    'held|fired',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a deferred script and a module wait for the parse to end, and find what follows them', async () => {
   const doc = await hosted(
     '<p id="a">a</p><script defer src="d.js"></script>' +
@@ -15043,6 +15072,61 @@ test('@view-transition in a later @layer wins over an earlier one that opts out'
   ]);
 });
 
+test('window.resizeTo changes innerWidth at once, fires resize, and skips a view transition under way', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' html::view-transition-group(*) { animation-duration: 10s }' +
+      ' html::view-transition-new(*) { animation: unset; opacity: 0 }' +
+      ' html::view-transition-old(*) { animation-duration: 10s; opacity: 1 }' +
+      '</style></head><body><p id="out"></p><script>' +
+      'var r = [], resized = false;' +
+      'addEventListener("resize", function () { resized = true; });' +
+      'var before = [innerWidth, innerHeight];' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  resizeTo(before[0] / 2, before[1] / 2);' +
+      '  r.push(innerWidth === before[0] / 2, innerHeight === before[1] / 2, resized);' +
+      '  return vt.finished;' +
+      '}).then(function () {' +
+      '  r.push("finished");' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      'vt.ready.catch(function (e) { r.push("ready " + e.name); });' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|true|true|finished',
+    doc.logs.join('\n'),
+  );
+});
+
+test('window.resizeTo during a view transition update rejects ready with InvalidStateError', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><body><p id="out"></p><script>' +
+      'var r = [];' +
+      'var vt = document.startViewTransition(function () {' +
+      '  var w = innerWidth, h = innerHeight;' +
+      '  resizeTo(w / 2, h / 2);' +
+      '  r.push(innerWidth === w / 2);' +
+      '});' +
+      'vt.ready.then(' +
+      '  function () { r.push("ready ok"); },' +
+      '  function (e) { r.push("ready " + e.name); }' +
+      ').then(function () { return vt.finished; })' +
+      '.then(function () {' +
+      '  r.push("finished");' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'true|ready InvalidStateError|finished',
+    doc.logs.join('\n'),
+  );
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +
@@ -15104,6 +15188,48 @@ metric(
     assert.equal(await at(10, 10), '#ffffff', 'and nothing where it was');
   },
 );
+
+test('::view-transition-new :only-child follows whether the old image was captured', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      '::view-transition-new(root) { background-color: blue; color: blue }' +
+      '::view-transition-new(root):only-child { background-color: red; color: red }' +
+      '::view-transition-new(*):only-child { color: red }' +
+      '</style></head><body><div id="target"></div><p id="out"></p><script>' +
+      'var r = [], target = document.getElementById("target"), html = document.documentElement;' +
+      'function read() {' +
+      '  var s = getComputedStyle(html, "::view-transition-new(root)");' +
+      '  return s.backgroundColor + "|" + s.color;' +
+      '}' +
+      'html.style.viewTransitionName = "none";' +
+      'var t1 = document.startViewTransition(function () { html.style.viewTransitionName = "root"; });' +
+      't1.ready.then(function () {' +
+      '  r.push(read());' +
+      '  return t1.finished;' +
+      '}).then(function () {' +
+      // root → a differently named element: only old(root) is generated;
+      // getComputedStyle(::view-transition-new(root)) still answers its
+      // rules, and :only-child does not match because the old image exists
+      '  target.style.viewTransitionName = "none";' +
+      '  html.style.viewTransitionName = "root";' +
+      '  var t2 = document.startViewTransition(function () {' +
+      '    html.style.viewTransitionName = "none";' +
+      '    target.style.viewTransitionName = "element";' +
+      '  });' +
+      '  return t2.ready.then(function () { r.push(read()); });' +
+      '}).then(function () {' +
+      '  document.getElementById("out").textContent = r.join(";");' +
+      '}).catch(function (e) {' +
+      '  document.getElementById("out").textContent = "ERR:" + (e && e.message || e);' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'rgb(255, 0, 0)|rgb(255, 0, 0);rgb(0, 0, 255)|rgb(0, 0, 255)',
+    doc.logs.join('\n'),
+  );
+});
 
 test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
   const doc = await hosted(
