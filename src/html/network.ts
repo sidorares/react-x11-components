@@ -1735,25 +1735,34 @@ export class HtmlNetwork {
     }
     const headers: Record<string, string> = {};
     for (const [name, value] of request.headers) {
-      // what a browser sets itself, and a page may not (Fetch 2.2.2)
+      // what a browser sets itself, and a page may not (Fetch 2.2.2); a
+      // `User-Agent` is the page's to set
       if (
-        /^(host|origin|referer|cookie|user-agent|content-length|connection)$/i.test(
-          name,
-        )
+        /^(host|origin|referer|cookie|content-length|connection)$/i.test(name)
       ) {
         continue;
       }
       headers[name.toLowerCase()] = value;
     }
-    headers['user-agent'] = this._userAgent;
+    headers['user-agent'] ??= this._userAgent;
     headers['accept-language'] ??= this._language;
     headers.accept ??= '*/*';
     // a frame's request is the frame's, and its site for cookies the page's
     const client = request.client ?? page;
-    headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
+    // the method as the page normalized it: `patch` is not `PATCH`
+    // (Fetch 2.2.1), and only the six standard names were upper-cased
+    const method = request.method;
+    // an `Origin` where CORS reads one, a request to another origin, or
+    // where the method is not one a link could make (Fetch 3.1, "append a
+    // request `Origin` header"): a page's GET of its own origin has none
+    const own =
+      !request.opaqueOrigin && originOf(client) === originOf(request.url);
+    const bodiless = /^(GET|HEAD)$/i.test(method);
+    if (!own || !bodiless) {
+      headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
+    }
     const referrer = referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
-    const method = request.method.toUpperCase();
     // the wait for an answer is bounded, and its body is not: a page reads
     // a stream of events, or a model's reply, for as long as it goes on
     const timer = new AbortController();
@@ -1768,16 +1777,20 @@ export class HtmlNetwork {
       this._timeout,
     );
     this._log('fetch', method, request.url);
+    // text goes as its bytes: handed to the runtime as a string, it would
+    // be sent with a `Content-Type: text/plain` the page never asked for
+    // (Fetch 5, "extract a body" gives a buffer none)
+    const given = bodiless
+      ? undefined
+      : (request.bytes ?? request.body ?? undefined);
     const body =
-      method === 'GET' || method === 'HEAD'
-        ? undefined
-        : (request.bytes ?? request.body ?? undefined);
+      typeof given === 'string' ? new TextEncoder().encode(given) : given;
     const id = this._begin(
       'fetch',
       request.url,
       method,
       headers,
-      body ?? null,
+      given ?? null,
       client,
     );
     let response: ResponseLike;

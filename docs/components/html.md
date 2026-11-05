@@ -957,6 +957,28 @@ charset }` — the `<script>` is the request's `element`, and the root
   same says `redirected`, and what it answers is held to where it landed, but
   the hops between have gone unasked.
 
+**A page's `Request` and `Headers` are Fetch's, checked as it checks them.**
+A `Headers` is a list of names and values in the order they were added,
+each name as first given, so `getSetCookie()` hands back each `Set-Cookie`
+and iteration is sorted, combined and live, as Web IDL iterates a pair
+list. What a page hands one is converted as Web IDL converts a
+`HeadersInit` (an object with an `@@iterator` is a sequence, any other a
+record, asked for its keys once), and a value above U+00FF is a
+`TypeError`. A request may not name `CONNECT`, `TRACE` or `TRACK`, neither
+as its method nor in `X-HTTP-Method-Override` and its kin, which are left
+out; `patch` stays `patch`, since only the six standard methods are
+upper-cased. A `RequestInit` member out of its enumeration is a
+`TypeError`, as is a `window` that is not null and `only-if-cached` outside
+`same-origin`, and `fetch()` rejects with whatever the `Request` it makes
+first would throw. A `Request`'s attributes are its prototype's and
+read-only, its `referrer` reads `about:client` for the page, `''` for none
+and the URL it was given where that is the page's origin. A request made
+from another takes its body, and leaves it used, and a stream already read
+or held by a reader is no body. A keepalive request's body counts against
+64 KiB in flight, given back as its promise settles. On the wire a page's
+`User-Agent` is its own, a GET or a HEAD of its own origin carries no
+`Origin`, and a body of bytes goes with no `Content-Type` it did not set.
+
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
 HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no
