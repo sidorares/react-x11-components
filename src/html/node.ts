@@ -15255,6 +15255,17 @@ export class HtmlViewNode extends Node {
    * of it and all it holds, but the elements in it captured on their own.
    * The name two elements share, which skips the transition, or ''.
    */
+  /**
+   * Text of a stylesheet the document's `@import` fetched, for
+   * `CSSImportRule.styleSheet` in the page's realm — so a layered import's
+   * `@view-transition` is visible to the opt-in walk.
+   */
+  importedCss(href: string): string | null {
+    const url = this._urls.resolve(href);
+    if (!url) return null;
+    return this._resources.stylesheet(url)?.text ?? null;
+  }
+
   transitionCaptureOld(): string {
     this.transitionEnd();
     this._prepare(this.abs.width || 1);

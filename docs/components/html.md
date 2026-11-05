@@ -1804,15 +1804,17 @@ of its scripts runs, so what a browser draws after the event this draws
 before it. The `viewTransition` of both is null.
 
 Where a document opts in with `@view-transition { navigation: auto }`
-(including inside `@layer` and `@media`), a same-origin navigation's
-`pageswap` and the next document's `pagereveal` carry a `ViewTransition`.
-Capturing the old document's named elements into the new one's first frame
-— and layer cascade order among competing `@view-transition` rules — is
-not complete yet. Also not yet: where a document was scrolled to restored
-when it is shown again, and its `history.scrollRestoration`, which are its
-own; a traversal the host starts with `session.go` told as a `navigate` in
-the document it leaves, which `handle.beforeUnload()` asks the rest of;
-and a frame's history in the tab's.
+(including inside `@layer` / `@media`, and by layer order among competing
+rules — a later named layer wins, unlayered over any), a same-origin
+navigation's `pageswap` and the next document's `pagereveal` carry a
+`ViewTransition`. `pageswap` runs before the old state is captured, so a
+listener can still set `view-transition-name`. Handing that capture into
+the new document's first paint when the view remounts is not complete yet.
+Also not yet: where a document was scrolled to restored when it is shown
+again, and its `history.scrollRestoration`, which are its own; a traversal
+the host starts with `session.go` told as a `navigate` in the document it
+leaves, which `handle.beforeUnload()` asks the rest of; and a frame's
+history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
 hears `pageshow` after its `load`. A navigation to another document that

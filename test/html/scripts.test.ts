@@ -15008,6 +15008,41 @@ test('@view-transition { navigation: auto } opts a cross-document pagereveal int
   assert.equal(await settled(doc, 'out', (t) => t !== ''), 'auto');
 });
 
+test('@view-transition in a later @layer wins over an earlier one that opts out', async () => {
+  // WPT at-rule-in-layer-cascade: document order has inertB last with
+  // none, but the layer order names active after both inerts.
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      '@layer inertA, inertB, active;' +
+      '@layer inertA { @view-transition { navigation: none } }' +
+      '@layer active { @view-transition { navigation: auto } }' +
+      '@layer inertB { @view-transition { navigation: none } }' +
+      '</style></head><body><p id="out"></p><script>' +
+      'var r = [];' +
+      'for (var i = 0; i < document.styleSheets.length; i++) {' +
+      '  var rules = document.styleSheets[i].cssRules;' +
+      '  for (var j = 0; j < rules.length; j++) {' +
+      '    var rule = rules[j];' +
+      '    if (rule.name !== undefined && rule.cssRules) {' +
+      '      r.push(rule.name, rule.cssRules.length ? rule.cssRules[0].navigation : "");' +
+      '    }' +
+      '  }' +
+      '}' +
+      'document.getElementById("out").textContent = JSON.stringify(r);' +
+      '</script></body></html>',
+  );
+  assert.deepEqual(JSON.parse(await settled(doc, 'out', (t) => t !== '')), [
+    'inertA, inertB, active',
+    '',
+    'inertA',
+    'none',
+    'active',
+    'auto',
+    'inertB',
+    'none',
+  ]);
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +

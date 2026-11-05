@@ -1765,6 +1765,7 @@ export function makeHtmlHandle(
     transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
     transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
     transitionEnd: () => nodeRef.current?.transitionEnd(),
+    importedCss: (href) => nodeRef.current?.importedCss(href) ?? null,
     selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
     selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',
     selectPoints: (points) => nodeRef.current?.selectPoints(points),
