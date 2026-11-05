@@ -5267,6 +5267,11 @@ export class DomHost {
         } catch {
           return false;
         }
+      // a head stylesheet still on its way holds the page's first paint
+      // (`HtmlViewNode.renderBlocked`), which the animation-frame loop
+      // asks so rAF waits as it does for `blocking=render`
+      case 'renderBlocked':
+        return this._seams.handle.renderBlocked() === true;
 
       // a document's `@font-face` faces, `document.fonts`'s (CSS Font
       // Loading 3), asked of the view that draws it: the page's, or a

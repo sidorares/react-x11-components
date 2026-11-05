@@ -1050,6 +1050,74 @@ test('link rel=expect blocking=render holds animation frames until its element i
   );
 });
 
+test('script blocking=render holds animation frames until it loads, then paint timing is told', async () => {
+  // As test_render_blocking.js: rAF and first-paint wait on a
+  // render-blocking script, then PerformancePaintTiming entries appear.
+  let release!: (code: string) => void;
+  const pending = new Promise<string>((ok) => {
+    release = ok;
+  });
+  const doc = await hosted(
+    '<p id="out">-</p><script>' +
+      'var fired = false;' +
+      'requestAnimationFrame(function () { fired = true; });' +
+      'setTimeout(function () {' +
+      '  document.getElementById("out").textContent =' +
+      '    (fired ? "fired" : "held") + "|" +' +
+      '    (typeof PerformancePaintTiming) + "|" +' +
+      '    performance.getEntriesByType("paint").length;' +
+      '}, 50);' +
+      '</script>' +
+      '<script async blocking="render" src="block.js"></script>',
+    { scripts: { 'https://example.test/dir/block.js': pending } },
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t.includes('|')),
+    'held|function|0',
+    'rAF and paint held while the script loads; PerformancePaintTiming is there',
+  );
+  await act(async () => release('void 0'));
+  doc.run(
+    'requestAnimationFrame(function () {' +
+      '  var paints = performance.getEntriesByType("paint").map(function (e) {' +
+      '    return e.name;' +
+      '  }).join(",");' +
+      '  document.getElementById("out").textContent =' +
+      '    "held|" + (fired ? "fired" : "held") + "|" + paints;' +
+      '});',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t.includes('first-paint')),
+    'held|fired|first-paint,first-contentful-paint',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a pending head stylesheet holds animation frames until it arrives', async () => {
+  const held = new HeldSheets();
+  const doc = await hosted(
+    '<html id="root"><head><script>' +
+      ROOT_NOTE +
+      'var fired = false;' +
+      'requestAnimationFrame(function () { fired = true; note("raf"); });' +
+      'setTimeout(function () { note(fired ? "fired" : "held"); }, 50);' +
+      '</script><link rel="stylesheet" href="slow.css"></head>' +
+      '<body><p id="out"></p></body></html>',
+    { held },
+  );
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('held') || t.includes('fired')),
+    'held',
+    'rAF waits on the head sheet',
+  );
+  await held.answer('slow.css', 'p { color: #000 }');
+  assert.equal(
+    await rootLog(doc, (t) => t.includes('raf')),
+    'held raf',
+    'rAF runs once the sheet is in',
+  );
+});
+
 test('a deferred script and a module wait for the parse to end, and find what follows them', async () => {
   const doc = await hosted(
     '<p id="a">a</p><script defer src="d.js"></script>' +
