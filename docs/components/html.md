@@ -1803,14 +1803,16 @@ rendering" tells it. `<Html>` lays a document out and draws it before any
 of its scripts runs, so what a browser draws after the event this draws
 before it. The `viewTransition` of both is null.
 
-Not yet: a cross-document view transition (`@view-transition { navigation:
-auto }`), which would capture the old document's named elements as it goes
-and run its tree over the new one's first frame; where a document was
-scrolled to restored when it is shown again, and its
-`history.scrollRestoration`, which are its own; a traversal the host starts
-with `session.go` told as a `navigate` in the document it leaves, which
-`handle.beforeUnload()` asks the rest of; and a frame's history in the
-tab's.
+Where a document opts in with `@view-transition { navigation: auto }`
+(including inside `@layer` and `@media`), a same-origin navigation's
+`pageswap` and the next document's `pagereveal` carry a `ViewTransition`.
+Capturing the old document's named elements into the new one's first frame
+— and layer cascade order among competing `@view-transition` rules — is
+not complete yet. Also not yet: where a document was scrolled to restored
+when it is shown again, and its `history.scrollRestoration`, which are its
+own; a traversal the host starts with `session.go` told as a `navigate` in
+the document it leaves, which `handle.beforeUnload()` asks the rest of;
+and a frame's history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
 hears `pageshow` after its `load`. A navigation to another document that

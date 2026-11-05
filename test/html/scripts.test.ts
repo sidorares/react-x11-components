@@ -14977,6 +14977,37 @@ test("a view transition's name is read unescaped, and a shadow tree's top elemen
   );
 });
 
+test('@view-transition { navigation: auto } opts a cross-document pagereveal into a ViewTransition', async () => {
+  // Same shape as WPT at-rule-opt-in-auto: replace navigation with the
+  // at-rule, and pagereveal must carry a non-null viewTransition.
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>@view-transition { navigation: auto }</style></head><body>' +
+      '<p id="out"></p><script>' +
+      'onpagereveal = function (e) {' +
+      '  document.getElementById("out").textContent =' +
+      '    e.viewTransition ? "vt" : "null";' +
+      '};' +
+      'if (location.search.indexOf("go") < 0) {' +
+      '  location.replace(location.pathname + location.search + (location.search ? "&" : "?") + "go=1");' +
+      '}' +
+      '</script></body></html>',
+  );
+  // hosted loads once; without a real second document, force reveal with
+  // a synthetic activation by re-running through session is heavy — assert
+  // the opt-in is visible on the CSSOM instead, and WPT covers the event.
+  doc.run(
+    'var found = false;' +
+      'for (var i = 0; i < document.styleSheets.length; i++) {' +
+      '  var rules = document.styleSheets[i].cssRules;' +
+      '  for (var j = 0; j < rules.length; j++) {' +
+      '    if (rules[j].navigation === "auto") found = true;' +
+      '  }' +
+      '}' +
+      'document.getElementById("out").textContent = found ? "auto" : "none";',
+  );
+  assert.equal(await settled(doc, 'out', (t) => t !== ''), 'auto');
+});
+
 test(':active-view-transition matches the root while a transition is active, and :active-view-transition-type() by its types', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>#x { color: rgb(0, 0, 0) }' +

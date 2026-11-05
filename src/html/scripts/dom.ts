@@ -999,8 +999,7 @@ export function installDom(
   /** What a document is told as it is swapped out for another and as it
    *  is first shown (HTML 7.4.6.4, 8.1.7.1): how the navigation goes, where
    *  the host's session says (`firePageSwap`), and the cross-document view
-   *  transition, which no navigation here sets up yet, so only a page's
-   *  own `new` makes one. */
+   *  transition where `@view-transition { navigation: auto }` opts in. */
   class PageSwapEvent extends Event {
     _transition: Any;
     _activation: Any;
@@ -3719,16 +3718,26 @@ export function installDom(
    * "update the rendering" a document has tells it. `<Html>` lays a
    * document out and draws it before any of its scripts runs, so what a
    * browser draws after the event this draws before it; the frame a page
-   * hears it in is still the first its callbacks run in. No transition
-   * across documents is handed in yet, so its `viewTransition` is null.
+   * hears it in is still the first its callbacks run in. A cross-document
+   * view transition is handed where `@view-transition { navigation: auto }`
+   * opts in and the navigation that showed this document came from another.
    */
   let revealOwed = false;
   const reveal = (): void => {
     revealOwed = false;
     if (document._unloaded) return;
+    let viewTransition: Any = null;
+    try {
+      const activation = navigation.activation;
+      if (activation?.from && navigationAutoOptedIn() && !activeOf(document)) {
+        viewTransition = beginCrossDocumentTransition(document, 'inbound');
+      }
+    } catch {
+      viewTransition = null;
+    }
     dispatch(
       windowTarget,
-      asTrusted(new PageRevealEvent('pagereveal', { viewTransition: null })),
+      asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
   const runFrame = (): void => {
@@ -15286,11 +15295,22 @@ export function installDom(
   const droppedRule = (text: string): boolean =>
     /^@view-transition(?![\w-])/i.test(text) &&
     preludeOf(text).slice('@view-transition'.length).trim() !== '';
+  /** `@layer name { … }` as a grouping rule so nested `@view-transition`
+   *  (and the rest) are in `cssRules` (CSS Cascade 5, 3.1). A statement
+   *  `@layer a, b;` has no block and an empty list. */
+  class CSSLayerBlockRule extends CSSGroupingRule {
+    get name(): string {
+      return preludeOf(this._text)
+        .replace(/^@(?:-[a-z]+-)?layer\s*/i, '')
+        .trim();
+    }
+  }
   const RULE_CLASSES: Record<string, Any> = {
     'view-transition': CSSViewTransitionRule,
     media: CSSMediaRule,
     supports: CSSSupportsRule,
     container: CSSContainerRule,
+    layer: CSSLayerBlockRule,
     import: CSSImportRule,
     'font-face': CSSFontFaceRule,
     keyframes: CSSKeyframesRule,
@@ -18796,6 +18816,90 @@ export function installDom(
       () => vt._resolveFinished(),
       (error: Any) => vt._rejectFinished(error),
     );
+  };
+
+  /**
+   * Whether this document opts into cross-document view transitions
+   * (CSS View Transitions 2, 2.1): an `@view-transition` rule whose
+   * `navigation` is `auto`. The last such rule in document order wins;
+   * `none` opts out. Layered rules are still read as they appear in
+   * `cssRules` — cascade order for layers is a later rung.
+   */
+  const navigationAutoOptedIn = (): boolean => {
+    let auto = false;
+    const walk = (rules: Any): void => {
+      if (!rules) return;
+      const n = Number(rules.length) || 0;
+      for (let i = 0; i < n; i++) {
+        const rule = rules[i];
+        if (!rule) continue;
+        if (rule instanceof CSSViewTransitionRule) {
+          const nav = str(rule.navigation);
+          if (nav === 'auto') auto = true;
+          else if (nav === 'none') auto = false;
+          continue;
+        }
+        if (rule.cssRules) walk(rule.cssRules);
+      }
+    };
+    try {
+      const sheets = document.styleSheets;
+      const n = Number(sheets?.length) || 0;
+      for (let i = 0; i < n; i++) {
+        try {
+          walk(sheets[i].cssRules);
+        } catch {
+          // cross-origin sheet: no rules
+        }
+      }
+    } catch {
+      return false;
+    }
+    return auto;
+  };
+
+  /**
+   * A view transition for a cross-document navigation (CSS View
+   * Transitions 2, 3): no update callback — the new document is already
+   * there on the inbound side. Outbound captures the old state while the
+   * document is still shown; inbound activates with the new. The event
+   * carries a non-null transition even where capture later skips
+   * (at-rule-opt-in-auto.html).
+   */
+  const beginCrossDocumentTransition = (
+    doc: Any,
+    side: 'outbound' | 'inbound',
+  ): Any => {
+    const vt = new ViewTransition(null, TRANSITION_KEY);
+    vt._doc = doc;
+    vt._called = true;
+    vt._phase = 'update-callback-called';
+    vt._resolveDone();
+    if (doc === document) activeTransition = vt;
+    else frameTransitions.set(doc, vt);
+    tellActive(doc, vt);
+    if (side === 'outbound') {
+      const shared = str(transitionOp(vt, 'vtOld'));
+      if (shared) {
+        skipTransition(
+          vt,
+          new DOMException(
+            `Unexpected duplicate view-transition-name: ${shared}`,
+            'InvalidStateError',
+          ),
+        );
+      }
+      return vt;
+    }
+    setTimer(
+      () => {
+        if (vt._phase !== 'done') activateTransition(vt);
+      },
+      0,
+      [],
+      false,
+    );
+    return vt;
   };
 
   /** `document.startViewTransition()` (7.2), of the document asked. */
@@ -31466,8 +31570,9 @@ export function installDom(
    * this document's origin and the session is the host's, it is told how:
    * the entry it is at now, the one it goes to — the current one for a
    * reload, the one among the entries for a traversal, and for a push or a
-   * replace one of no list yet — and the navigation's type. No transition
-   * is set up across documents yet.
+   * replace one of no list yet — and the navigation's type. A
+   * cross-document view transition is started where the document opts in
+   * with `@view-transition { navigation: auto }`.
    */
   const firePageSwap = (swap: Any): void => {
     const s = pageSession.session;
@@ -31493,11 +31598,13 @@ export function installDom(
         );
       }
     }
+    let viewTransition: Any = null;
+    if (activation && navigationAutoOptedIn() && !activeOf(document)) {
+      viewTransition = beginCrossDocumentTransition(document, 'outbound');
+    }
     dispatch(
       windowTarget,
-      asTrusted(
-        new PageSwapEvent('pageswap', { activation, viewTransition: null }),
-      ),
+      asTrusted(new PageSwapEvent('pageswap', { activation, viewTransition })),
     );
   };
 
@@ -34920,6 +35027,7 @@ export function installDom(
     CSSMediaRule,
     CSSSupportsRule,
     CSSContainerRule,
+    CSSLayerBlockRule,
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
