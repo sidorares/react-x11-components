@@ -15094,6 +15094,48 @@ metric(
   },
 );
 
+test('::view-transition-new :only-child follows whether the old image was captured', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      '::view-transition-new(root) { background-color: blue; color: blue }' +
+      '::view-transition-new(root):only-child { background-color: red; color: red }' +
+      '::view-transition-new(*):only-child { color: red }' +
+      '</style></head><body><div id="target"></div><p id="out"></p><script>' +
+      'var r = [], target = document.getElementById("target"), html = document.documentElement;' +
+      'function read() {' +
+      '  var s = getComputedStyle(html, "::view-transition-new(root)");' +
+      '  return s.backgroundColor + "|" + s.color;' +
+      '}' +
+      'html.style.viewTransitionName = "none";' +
+      'var t1 = document.startViewTransition(function () { html.style.viewTransitionName = "root"; });' +
+      't1.ready.then(function () {' +
+      '  r.push(read());' +
+      '  return t1.finished;' +
+      '}).then(function () {' +
+      // root → a differently named element: only old(root) is generated;
+      // getComputedStyle(::view-transition-new(root)) still answers its
+      // rules, and :only-child does not match because the old image exists
+      '  target.style.viewTransitionName = "none";' +
+      '  html.style.viewTransitionName = "root";' +
+      '  var t2 = document.startViewTransition(function () {' +
+      '    html.style.viewTransitionName = "none";' +
+      '    target.style.viewTransitionName = "element";' +
+      '  });' +
+      '  return t2.ready.then(function () { r.push(read()); });' +
+      '}).then(function () {' +
+      '  document.getElementById("out").textContent = r.join(";");' +
+      '}).catch(function (e) {' +
+      '  document.getElementById("out").textContent = "ERR:" + (e && e.message || e);' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'rgb(255, 0, 0)|rgb(255, 0, 0);rgb(0, 0, 255)|rgb(0, 0, 255)',
+    doc.logs.join('\n'),
+  );
+});
+
 test("a view transition's pseudo-elements are selectors that match nothing, and one written as no selector takes it is a syntax error", async () => {
   const doc = await hosted(
     '<p id="out"></p><style id="s"></style><script>' +
