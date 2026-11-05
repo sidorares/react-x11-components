@@ -93,6 +93,35 @@ export interface StreamsInternals {
    *  (IsReadableStreamDisturbed), which a body that is one says it is
    *  used by (Fetch 5, "body is unusable"). */
   disturbed(stream: unknown): boolean;
+  /** Whether a reader holds a readable stream (IsReadableStreamLocked). */
+  locked(stream: unknown): boolean;
+  /** A readable byte stream of these bytes, closed: a body's stream where
+   *  its source is a byte sequence (Fetch 5, "extract a body"). The bytes
+   *  are copied, so the source stays whole for a body sent again. */
+  bytesStream(bytes: Uint8Array): unknown;
+  /** A readable byte stream fed from outside, what the network answers a
+   *  body with as it arrives: `pull` is told a read waits, `cancel` that
+   *  nothing will read on. */
+  fedBytes(
+    pull: () => void,
+    cancel: (reason: unknown) => void,
+  ): {
+    stream: unknown;
+    enqueue(bytes: Uint8Array): void;
+    close(): void;
+    error(e: unknown): void;
+  };
+  /** A body's two branches (Fetch 5, "clone a body"): ReadableStreamTee
+   *  with `cloneForBranch2`, so neither reads the other's buffers. */
+  teeBody(stream: unknown): [unknown, unknown];
+  /** A body fully read (Fetch 5, "fully read"): its chunks, each of which
+   *  has to be a `Uint8Array`, through read requests, which no `then` a
+   *  page put on `Object.prototype` reaches. */
+  readAll(
+    stream: unknown,
+    done: (bytes: Uint8Array) => void,
+    fail: (e: unknown) => void,
+  ): void;
   /** An interface's members as Web IDL has them: enumerable, and
    *  `length`s of its operations as the IDL counts them. */
   idl(Interface: unknown): void;
@@ -1758,7 +1787,7 @@ export function installStreams(
 
   // --- tee ---------------------------------------------------------------------
 
-  const defaultTee = (rs: Any): [Any, Any] => {
+  const defaultTee = (rs: Any, cloneForBranch2 = false): [Any, Any] => {
     const reader = acquireDefaultReader(rs);
     let reading = false;
     let readAgain = false;
@@ -1780,7 +1809,14 @@ export function installStreams(
           microtask(() => {
             readAgain = false;
             if (!canceled1) defaultControllerEnqueue(branch1.controller, chunk);
-            if (!canceled2) defaultControllerEnqueue(branch2.controller, chunk);
+            if (!canceled2) {
+              // a body's second branch reads a copy (Fetch's "clone a
+              // body"), which StructuredClone makes of a view's bytes
+              defaultControllerEnqueue(
+                branch2.controller,
+                cloneForBranch2 ? cloneChunk(chunk) : chunk,
+              );
+            }
             reading = false;
             if (readAgain) pull();
           });
@@ -1824,6 +1860,26 @@ export function installStreams(
     return [branch1, branch2];
   };
 
+  /** A chunk as StructuredClone copies it, where it is bytes: a view of
+   *  the same kind over a copy of its bytes, or a copy of a buffer; any
+   *  other chunk as it is. */
+  const cloneChunk = (chunk: Any): Any => {
+    if (viewKind(chunk) !== null) {
+      const info = viewInfo(chunk);
+      const copy = cloneBuffer(info.buffer, info.byteOffset, info.byteLength);
+      return info.ctor === DV
+        ? new DV(copy)
+        : new info.ctor(copy, 0, info.length);
+    }
+    if (isObject(chunk)) {
+      try {
+        return apply(abSlice, chunk, [0]);
+      } catch {
+        // no ArrayBuffer
+      }
+    }
+    return chunk;
+  };
   const cloneAsUint8Array = (view: Any): Any => {
     const info = viewInfo(view);
     return new U8(cloneBuffer(info.buffer, info.byteOffset, info.byteLength));
@@ -3672,6 +3728,85 @@ export function installStreams(
       return rs.reader ? rs.reader.requests.length : 0;
     },
     disturbed: (x) => !!readableOf(x).disturbed,
+    locked: (x) =>
+      readableOf(x).reader !== undefined && readableOf(x).reader !== null,
+    bytesStream: (bytes) => {
+      const rs = createReadableByteStream(
+        noop,
+        () => resolvedWith(),
+        () => resolvedWith(),
+      );
+      const copy = new U8(bytes);
+      if (apply(taByteLength, copy, [])) {
+        byteControllerEnqueue(rs.controller, viewInfo(copy));
+      }
+      byteControllerClose(rs.controller);
+      return rs.obj;
+    },
+    fedBytes: (pull, cancel) => {
+      const rs = createReadableByteStream(
+        noop,
+        () => {
+          pull();
+          return resolvedWith();
+        },
+        (reason) => {
+          cancel(reason);
+          return resolvedWith();
+        },
+      );
+      const c = rs.controller;
+      return {
+        stream: rs.obj,
+        enqueue: (bytes) => byteControllerEnqueue(c, viewInfo(bytes)),
+        close: () => {
+          if (!c.closeRequested && rs.state === 'readable') {
+            byteControllerClose(c);
+          }
+        },
+        error: (e) => byteControllerError(c, e),
+      };
+    },
+    teeBody: (x) => {
+      const rs = readableOf(x);
+      const [a, b] =
+        rs.controller.tag === 'RBC' ? byteTee(rs) : defaultTee(rs, true);
+      return [a.obj, b.obj];
+    },
+    readAll: (x, done, fail) => {
+      let reader: Any;
+      try {
+        reader = acquireDefaultReader(readableOf(x));
+      } catch (e) {
+        fail(e);
+        return;
+      }
+      const parts: Any[] = [];
+      let size = 0;
+      const step = (): void =>
+        defaultReaderRead(reader, {
+          chunk: (chunk) => {
+            if (viewKind(chunk) !== 'Uint8Array') {
+              fail(typeError('The body held a chunk that is no Uint8Array.'));
+              return;
+            }
+            parts[parts.length] = chunk;
+            size += apply(taByteLength, chunk, []);
+            microtask(step);
+          },
+          close: () => {
+            const out = new U8(size);
+            let at = 0;
+            for (let i = 0; i < parts.length; i += 1) {
+              apply(u8Set, out, [parts[i], at]);
+              at += apply(taByteLength, parts[i], []);
+            }
+            done(out);
+          },
+          error: (e) => fail(e),
+        });
+      step();
+    },
     idl,
   };
   return { classes, internals };

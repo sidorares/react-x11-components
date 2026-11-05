@@ -20513,39 +20513,227 @@ export function installDom(
     return form;
   };
 
+  // --- the Body mixin (Fetch 5) ------------------------------------------------
+  //
+  // A body is a stream and, where it was made of one, a source: the bytes it
+  // was given, or the text the network answered with. Its stream is a byte
+  // stream made only when something asks for it (`body`, a clone of a body
+  // already being read), so a page that reads `text()` of a response pays
+  // for no stream; and `bodyUsed` is what Fetch says it is, the stream
+  // disturbed, which a read of `text()` with no stream yet stands in for
+  // (`_bodyUsed`). A holder — a `Request`, a `Response` — keeps `_raw`,
+  // `_text`, `_stream` and `_bodyUsed`, and every method reads it through
+  // these.
+
+  /** Whether a holder has a body at all (Fetch 5, a body that is null). */
+  const hasBody = (o: Any): boolean =>
+    o._raw !== null || o._text !== null || o._stream !== null;
+  /** A stream as this realm knows it, or as its own getter says, where it
+   *  is another realm's. */
+  const streamLocked = (s: Any): boolean =>
+    streamInternals.isReadableStream(s)
+      ? streamInternals.locked(s)
+      : !!s.locked;
+  const streamDisturbed = (s: Any): boolean =>
+    streamInternals.isReadableStream(s) && streamInternals.disturbed(s);
+  const bodyUsedOf = (o: Any): boolean =>
+    o._bodyUsed || (o._stream !== null && streamDisturbed(o._stream));
+  /** Fetch 5, "unusable": a body read from, or one a reader holds. */
+  const bodyUnusable = (o: Any): boolean =>
+    hasBody(o) &&
+    (bodyUsedOf(o) || (o._stream !== null && streamLocked(o._stream)));
+  /** A source's bytes: what it was given, or its text encoded once. */
+  const bodyBytes = (o: Any): Uint8Array => {
+    if (o._raw === null) o._raw = utf8Bytes(o._text ?? '');
+    return o._raw;
+  };
+  /** The body's stream, made of its source the first time it is asked for;
+   *  one already read through a method has nothing left in it. */
+  const bodyStream = (o: Any): Any => {
+    if (!hasBody(o)) return null;
+    if (o._stream === null) {
+      if (o._bodyUsed) {
+        // what a method read leaves: a stream read to its end, which its
+        // reader still holds (Fetch 5, "fully read")
+        o._stream = streamInternals.bytesStream(new Uint8Array(0));
+        streamInternals.readAll(
+          o._stream,
+          () => {},
+          () => {},
+        );
+      } else o._stream = streamInternals.bytesStream(bodyBytes(o));
+    }
+    return o._stream;
+  };
+  /** The body read whole (Fetch 5, "consume body"): a promise of its bytes,
+   *  or of its text where `text` is asked, rejected for a body that is
+   *  unusable; one with no body is nothing. */
+  const consumeBody = (
+    o: Any,
+    method: string,
+    kind: string,
+    text = false,
+  ): Promise<Any> =>
+    new Promise((resolve, reject) => {
+      if (bodyUnusable(o)) {
+        reject(
+          new TypeError(
+            `Failed to execute '${method}' on '${kind}': body stream already read`,
+          ),
+        );
+        return;
+      }
+      if (!hasBody(o)) {
+        resolve(text ? '' : new Uint8Array(0));
+        return;
+      }
+      if (o._stream === null) {
+        o._bodyUsed = true;
+        if (text && o._raw === null) {
+          // UTF-8 decode, which takes a byte order mark off
+          const t = str(o._text);
+          resolve(t.charCodeAt(0) === 0xfeff ? t.slice(1) : t);
+        } else {
+          const bytes = bodyBytes(o);
+          resolve(text ? new TextDecoder().decode(bytes) : bytes);
+        }
+        return;
+      }
+      const done = (bytes: Uint8Array): void =>
+        resolve(text ? new TextDecoder().decode(bytes) : bytes);
+      if (streamInternals.isReadableStream(o._stream)) {
+        streamInternals.readAll(o._stream, done, reject);
+      } else drainStream(o._stream).then(done, reject);
+    });
+  /** A holder's body given to a copy (Fetch 5, "clone a body"): a stream
+   *  teed, the source shared, which nothing writes. */
+  const cloneBody = (o: Any, copy: Any): void => {
+    copy._raw = o._raw;
+    copy._text = o._text;
+    if (o._stream !== null) {
+      const [mine, theirs] = streamInternals.isReadableStream(o._stream)
+        ? streamInternals.teeBody(o._stream)
+        : o._stream.tee();
+      o._stream = mine;
+      copy._stream = theirs;
+    }
+  };
+  /** The methods of the Body mixin, the same on both interfaces. */
+  const bodyMethods = (Interface: Any, kind: string): void => {
+    const methods: Record<string, (this: Any) => Any> = {
+      arrayBuffer(this: Any) {
+        return consumeBody(this, 'arrayBuffer', kind).then(
+          (bytes: Uint8Array) => bytes.buffer,
+        );
+      },
+      blob(this: Any) {
+        return consumeBody(this, 'blob', kind).then(
+          (bytes: Uint8Array) =>
+            new Blob([bytes], { type: this.headers.get('content-type') ?? '' }),
+        );
+      },
+      bytes(this: Any) {
+        return consumeBody(this, 'bytes', kind);
+      },
+      formData(this: Any) {
+        return consumeBody(this, 'formData', kind).then((bytes: Uint8Array) =>
+          formDataOf(bytes, this.headers.get('content-type')),
+        );
+      },
+      json(this: Any) {
+        return consumeBody(this, 'json', kind, true).then((t: string) =>
+          JSON.parse(t),
+        );
+      },
+      text(this: Any) {
+        return consumeBody(this, 'text', kind, true);
+      },
+      /** The body as text as it arrives: its stream through a UTF-8
+       *  decoder, used from the moment it is asked for. */
+      textStream(this: Any) {
+        if (bodyUnusable(this)) {
+          throw new TypeError(
+            `Failed to execute 'textStream' on '${kind}': body stream already read`,
+          );
+        }
+        // a body is used from the moment it is asked for; no body is a
+        // stream of nothing, and stays unused
+        const stream =
+          bodyStream(this) ?? streamInternals.bytesStream(new Uint8Array(0));
+        if (hasBody(this)) this._bodyUsed = true;
+        return stream.pipeThrough(new TextDecoderStream());
+      },
+    };
+    for (const [name, fn] of Object.entries(methods)) {
+      Object.defineProperty(fn, 'name', { value: name });
+      Object.defineProperty(Interface.prototype, name, {
+        value: fn,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    for (const [name, get] of Object.entries({
+      body(this: Any) {
+        return this._bodyStream();
+      },
+      bodyUsed(this: Any) {
+        return bodyUsedOf(this);
+      },
+    })) {
+      Object.defineProperty(Interface.prototype, name, {
+        get,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+  };
+  /** The statuses whose response has no body (Fetch 2.2.3). */
+  const NULL_BODY_STATUS = [101, 103, 204, 205, 304];
+
+  /** What marks a response this realm makes rather than a page: its type,
+   *  guard, URL and redirection are then the init's to say, where a page's
+   *  `ResponseInit` has a status, a status text and headers and no more. */
+  const RESPONSE_MADE = Symbol('responseMade');
+
+  /** `Response` (Fetch 6.4). Its attributes are its prototype's, read-only. */
   class Response {
-    readonly status: number;
-    readonly statusText: string;
-    readonly url: string;
-    readonly headers: Any;
-    readonly redirected: boolean;
+    _status: number;
+    _statusText: string;
+    _url: string;
+    _headers: Any;
+    _redirected: boolean;
     /** `basic` for the page's own origin, `cors` for another's that let it
      *  read, `opaque` for a `no-cors` request's, which it may not. */
-    readonly type: string;
-    /** The body as text, where it was given as text, */
-    _body: string;
-    /** or its bytes, where it was given as bytes — a buffer, a view or a
-     *  `Blob`, and what the network answered (`__fetched`): a `.wasm`, an
-     *  image, a font, which no text decoding may pass through. */
+    _type: string;
+    /** The body's source: its bytes — a buffer, a view, a `Blob`, what the
+     *  network answered (`__fetched`) — or its text; and its stream, where
+     *  it is one or one has been made. */
     _raw: Uint8Array | null = null;
-    bodyUsed = false;
+    _text: string | null = null;
+    _stream: Any = null;
+    _bodyUsed = false;
     /** The number an opaque response's body is held by in the host, which
      *  no script reads (`caches.ts`). */
     _held: number | null = null;
     constructor(body: Any = null, init: Any = {}) {
-      this._body = '';
-      const page = init.type === undefined;
-      this.type = page ? 'default' : str(init.type);
-      this.status = Number(init.status ?? 200);
-      this.statusText = String(init.statusText ?? '');
+      if (init === null || init === undefined) init = {};
+      const page = init[RESPONSE_MADE] !== true;
+      this._type = page ? 'default' : str(init.type ?? 'default');
+      // each member read once, as Web IDL converts a dictionary
+      const status = init.status;
+      const statusText = init.statusText;
+      const headers = init.headers;
+      this._status = status === undefined ? 200 : Number(status);
+      this._statusText = statusText === undefined ? '' : String(statusText);
       if (page) {
         // what a page may make one of (Fetch 6.4, "initialize a response")
-        if (!(this.status >= 200 && this.status <= 599)) {
+        if (!(this._status >= 200 && this._status <= 599)) {
           throw new RangeError(
-            `Failed to construct 'Response': The status provided (${this.status}) is outside the range [200, 599].`,
+            `Failed to construct 'Response': The status provided (${this._status}) is outside the range [200, 599].`,
           );
         }
-        if (!/^[\t\u0020-\u007e\u0080-\u00ff]*$/.test(this.statusText)) {
+        if (!/^[\t -~\u0080-ÿ]*$/.test(this._statusText)) {
           throw new TypeError(
             "Failed to construct 'Response': Invalid statusText",
           );
@@ -20553,19 +20741,19 @@ export function installDom(
         if (
           body !== null &&
           body !== undefined &&
-          [101, 103, 204, 205, 304].includes(this.status)
+          NULL_BODY_STATUS.includes(this._status)
         ) {
           throw new TypeError(
             "Failed to construct 'Response': Response with null body status cannot have body",
           );
         }
       }
-      this.headers = guardedHeaders(
-        init.headers ?? {},
+      this._headers = guardedHeaders(
+        headers ?? {},
         page ? 'response' : str(init.guard ?? 'immutable'),
       );
-      this.url = String(init.url ?? '');
-      this.redirected = !!init.redirected;
+      this._url = page ? '' : String(init.url ?? '');
+      this._redirected = page ? false : !!init.redirected;
       if (body === null || body === undefined) return;
       if (page) {
         // a page's: its body extracted, and its type the header where it
@@ -20575,131 +20763,78 @@ export function installDom(
         // fetch's body on through one, to count its progress
         if (extracted.stream) this._stream = extracted.stream;
         else this._raw = extracted.bytes;
-        if (extracted.type !== null && !this.headers.has('content-type')) {
-          this.headers.set('content-type', extracted.type);
+        if (extracted.type !== null && !this._headers.has('content-type')) {
+          this._headers.set('content-type', extracted.type);
         }
         return;
       }
-      // the network's, or one made of another's body: as it is
+      // the network's, or one made of another's body: as it is, and none
+      // at all for a status that has none
+      if (NULL_BODY_STATUS.includes(this._status)) return;
       if (body instanceof ReadableStream) this._stream = body;
       else if (body instanceof Uint8Array) this._raw = body;
       else if (body instanceof Blob) this._raw = body._bytes;
-      else this._body = str(body);
+      else this._text = str(body);
+    }
+    get type(): string {
+      return this._type;
+    }
+    get url(): string {
+      return this._url;
+    }
+    get redirected(): boolean {
+      return this._redirected;
+    }
+    get status(): number {
+      return this._status;
     }
     get ok(): boolean {
-      return this.status >= 200 && this.status < 300;
+      return this._status >= 200 && this._status < 300;
     }
-    /** The body's bytes, read once, as every method reads it. */
-    _bytes(): Uint8Array {
-      if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
-      this.bodyUsed = true;
-      return this._raw ?? new TextEncoder().encode(this._body);
+    get statusText(): string {
+      return this._statusText;
     }
-    _read(): string {
-      if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
-      if (this._raw) return new TextDecoder().decode(this._bytes());
-      this.bodyUsed = true;
-      return this._body;
+    get headers(): Any {
+      return this._headers;
     }
-    /** A body given as a stream, read to its end: the bytes of each chunk,
-     *  which has to be a view of them (Fetch, "extract a body"). */
-    async _drain(): Promise<Uint8Array> {
-      if (this.bodyUsed) throw new TypeError('Body has already been consumed.');
-      this.bodyUsed = true;
-      return drainStream(this._stream);
-    }
-    text(): Promise<string> {
-      if (this._given()) {
-        return this._drain().then((bytes) => new TextDecoder().decode(bytes));
-      }
-      try {
-        return Promise.resolve(this._read());
-      } catch (e) {
-        return Promise.reject(e);
-      }
-    }
-    json(): Promise<Any> {
-      return this.text().then((t) => JSON.parse(t));
-    }
-    bytes(): Promise<Uint8Array> {
-      if (this._given()) return this._drain();
-      try {
-        return Promise.resolve(new Uint8Array(this._bytes()));
-      } catch (e) {
-        return Promise.reject(e);
-      }
-    }
-    /** Whether the body is a stream the page gave, rather than one this
-     *  made of the bytes it holds. */
-    _given(): boolean {
-      return !!this._stream && !this._made;
-    }
-    arrayBuffer(): Promise<ArrayBuffer> {
-      return this.bytes().then((bytes) => bytes.buffer as ArrayBuffer);
-    }
-    blob(): Promise<Any> {
-      return this.bytes().then(
-        (bytes) =>
-          new Blob([bytes], { type: this.headers.get('content-type') ?? '' }),
-      );
-    }
-    formData(): Promise<Any> {
-      return this.bytes().then((bytes) =>
-        formDataOf(bytes, this.headers.get('content-type')),
-      );
-    }
-    /** The body as a stream of its bytes, read once, as the methods read
-     *  it: what the app router of Next.js reads a server's payload with. */
-    get body(): Any {
-      if (this._stream) return this._stream;
-      // one made with none has none (Fetch 6.5, a response's body), and an
-      // opaque one's is no script's
+    /** The body's stream: none for one made with none (Fetch 6.5), and an
+     *  opaque one's is no script's. */
+    _bodyStream(): Any {
       if (
-        this.type === 'opaque' ||
-        this.type === 'opaqueredirect' ||
-        this.type === 'error' ||
-        (this.type === 'default' && this._raw === null && this._body === '')
+        this._type === 'opaque' ||
+        this._type === 'opaqueredirect' ||
+        this._type === 'error'
       ) {
         return null;
       }
-      const response = this;
-      this._made = true;
-      this._stream = new ReadableStream({
-        pull(controller: Any) {
-          // read as a reader asks, which is what makes it used
-          response.bodyUsed = true;
-          const bytes =
-            response._raw ?? new TextEncoder().encode(response._body);
-          if (bytes.length) controller.enqueue(new Uint8Array(bytes));
-          controller.close();
-        },
-      });
-      return this._stream;
+      return bodyStream(this);
     }
-    _stream: Any = null;
-    _made = false;
     clone(): Any {
-      if (this.bodyUsed) throw new TypeError('Response body is already used');
-      const init = {
-        status: this.status,
-        statusText: this.statusText,
-        url: this.url,
-        redirected: this.redirected,
-        type: this.type,
-        headers: this.headers,
-        guard: this.headers._guard,
-      };
-      if (this._given()) {
-        const [mine, theirs] = this._stream.tee();
-        this._stream = mine;
-        return new Response(theirs, init);
+      if (bodyUnusable(this)) {
+        throw new TypeError(
+          "Failed to execute 'clone' on 'Response': Response body is already used",
+        );
       }
-      const copy = new Response(this._raw ?? this._body, init);
+      const copy = new Response(null, {
+        [RESPONSE_MADE]: true,
+        status: this._status,
+        statusText: this._statusText,
+        url: this._url,
+        redirected: this._redirected,
+        type: this._type,
+        headers: this._headers,
+        guard: this._headers._guard,
+      });
+      cloneBody(this, copy);
       copy._held = this._held;
       return copy;
     }
     static error(): Any {
-      return new Response(null, { status: 0, type: 'error' });
+      return new Response(null, {
+        [RESPONSE_MADE]: true,
+        status: 0,
+        type: 'error',
+      });
     }
     static redirect(url: Any, status: Any = 302): Any {
       const to = new URL(str(url), location.href).href;
@@ -20710,6 +20845,7 @@ export function installDom(
         );
       }
       return new Response(null, {
+        [RESPONSE_MADE]: true,
         status: code,
         type: 'default',
         headers: [['location', to]],
@@ -20722,15 +20858,25 @@ export function installDom(
           "Failed to execute 'json' on 'Response': The data provided cannot be converted to JSON.",
         );
       }
-      const headers = new Headers(init.headers ?? {});
+      const headers = new Headers(init?.headers ?? {});
       if (!headers.has('content-type')) {
         headers.set('content-type', 'application/json');
       }
       return new Response(text, {
-        status: init.status,
-        statusText: init.statusText,
+        status: init?.status,
+        statusText: init?.statusText,
         headers,
       });
+    }
+  }
+  bodyMethods(Response, 'Response');
+  idlAttributes(Response);
+  for (const key of ['clone', 'error', 'redirect', 'json']) {
+    for (const on of [Response.prototype, Response] as Any[]) {
+      const d = Object.getOwnPropertyDescriptor(on, key);
+      if (d && typeof d.value === 'function') {
+        Object.defineProperty(on, key, { ...d, enumerable: true });
+      }
     }
   }
 
@@ -20746,7 +20892,7 @@ export function installDom(
   const KEEPALIVE_QUOTA = 65536;
   const fetches = new Map<
     number,
-    { resolve: Any; reject: Any; streamed?: boolean }
+    { resolve: Any; reject: Any; streamed?: boolean; head?: boolean }
   >();
   /** The bodies still arriving, by request: the controller of the stream
    *  each response reads (`__fetchChunk`, `__fetchEnd`). */
@@ -20852,6 +20998,7 @@ export function installDom(
     const range = headers.get('range');
     if (range === null) {
       return new Response(blob, {
+        [RESPONSE_MADE]: true,
         status: 200,
         statusText: 'OK',
         headers: { 'content-length': String(full), 'content-type': type },
@@ -20871,6 +21018,7 @@ export function installDom(
     }
     const part = blob.slice(start, end + 1, type);
     return new Response(part, {
+      [RESPONSE_MADE]: true,
       status: 206,
       statusText: 'Partial Content',
       headers: {
@@ -20921,6 +21069,7 @@ export function installDom(
           .join('')
       : 'text/plain;charset=US-ASCII';
     return new Response(body, {
+      [RESPONSE_MADE]: true,
       status: 200,
       statusText: 'OK',
       headers: { 'content-type': mime },
@@ -21022,14 +21171,17 @@ export function installDom(
           );
           return;
         }
-      } else if (request && (request._raw || request._stream)) {
-        if (request.bodyUsed) {
+      } else if (request && hasBody(request)) {
+        if (bodyUnusable(request)) {
           reject(new TypeError('Body has already been consumed.'));
           return;
         }
         request._bodyUsed = true;
         extracted = {
-          bytes: request._raw,
+          // a source, where it has one, is what is sent
+          bytes:
+            request._raw ??
+            (request._text !== null ? bodyBytes(request) : null),
           stream: request._stream,
           type: null,
         };
@@ -21093,7 +21245,12 @@ export function installDom(
       // connection. A `Request` whose bytes a page read as a stream still
       // has them.
       const sourceless = !!extracted?.stream && !extracted.bytes;
-      fetches.set(id, { resolve, reject, streamed: sourceless });
+      fetches.set(id, {
+        resolve,
+        reject,
+        streamed: sourceless,
+        head: method === 'HEAD',
+      });
       signal?.addEventListener?.('abort', () => {
         // after the headers, an abort errors the body that is arriving
         const body = fetchBodies.get(id);
@@ -21265,8 +21422,9 @@ export function installDom(
     _priority = 'auto';
     _isReloadNavigation = false;
     _isHistoryNavigation = false;
-    /** The body's bytes, or the stream it is, or neither for none. */
+    /** The body's source and its stream (the Body mixin, above). */
     _raw: Uint8Array | null = null;
+    _text: string | null = null;
     _stream: Any = null;
     _bodyUsed = false;
     constructor(input: Any, init: Any = {}) {
@@ -21395,18 +21553,13 @@ export function installDom(
         this._mode === 'no-cors' ? 'request-no-cors' : 'request',
       );
       const hasInit = given.body !== undefined && given.body !== null;
-      const fromHas = !!(from && (from._raw || from._stream));
+      const fromHas = !!from && hasBody(from);
       // a request whose body was read, or is being read, gives none, but
       // one given a body of its own takes nothing from it
       const takes = fromHas && !hasInit && !init[REQUEST_CLONE];
-      if (takes && from.bodyUsed) {
+      if (takes && bodyUnusable(from)) {
         throw new TypeError(
           `${on}: Cannot construct a Request with a Request object that has already been used.`,
-        );
-      }
-      if (takes && from._stream?.locked) {
-        throw new TypeError(
-          `${on}: Cannot construct a Request with a Request whose body is locked.`,
         );
       }
       if (
@@ -21436,6 +21589,7 @@ export function installDom(
         }
       } else if (from && fromHas) {
         this._raw = from._raw;
+        this._text = from._text;
         this._stream = from._stream;
         // the body moves to the new request, and the one it came from is
         // used (Fetch 6.3, "creating a proxy" of its body)
@@ -21496,79 +21650,24 @@ export function installDom(
     get duplex(): string {
       return 'half';
     }
-    /** Used where it was read, or its stream was read from or cancelled
-     *  (Fetch 5, "body is unusable" less a lock). */
-    get bodyUsed(): boolean {
-      return (
-        this._bodyUsed ||
-        (!!this._stream &&
-          streamInternals.isReadableStream(this._stream) &&
-          streamInternals.disturbed(this._stream))
-      );
-    }
-    get body(): Any {
-      if (this._stream) return this._stream;
-      if (!this._raw) return null;
-      // made once, of the bytes, as a response's is
-      const bytes = this._raw;
-      this._stream = new ReadableStream({
-        pull(controller: Any) {
-          if (bytes.length) controller.enqueue(new Uint8Array(bytes));
-          controller.close();
-        },
-      });
-      return this._stream;
+    _bodyStream(): Any {
+      return bodyStream(this);
     }
     clone(): Any {
-      if (this.bodyUsed) {
+      if (bodyUnusable(this)) {
         throw new TypeError(
           "Failed to execute 'clone' on 'Request': Request body is already used",
         );
       }
       const copy = new Request(this, { [REQUEST_CLONE]: true });
-      if (this._stream) {
-        const [mine, theirs] = this._stream.tee();
-        this._stream = mine;
-        copy._stream = theirs;
-      }
+      cloneBody(this, copy);
       return copy;
-    }
-    /** The body read once, as a response that holds it: what every method
-     *  reads it through. */
-    _consume(): Promise<Any> {
-      if (this.bodyUsed) {
-        return Promise.reject(new TypeError('Body has already been consumed.'));
-      }
-      if (this._stream || this._raw) this._bodyUsed = true;
-      return Promise.resolve(
-        new Response(this._stream ?? this._raw ?? null, {
-          type: 'basic',
-          headers: this.headers,
-        }),
-      );
-    }
-    text(): Promise<string> {
-      return this._consume().then((r) => r.text());
-    }
-    json(): Promise<Any> {
-      return this._consume().then((r) => r.json());
-    }
-    arrayBuffer(): Promise<ArrayBuffer> {
-      return this._consume().then((r) => r.arrayBuffer());
-    }
-    bytes(): Promise<Uint8Array> {
-      return this._consume().then((r) => r.bytes());
-    }
-    blob(): Promise<Any> {
-      return this._consume().then((r) => r.blob());
-    }
-    formData(): Promise<Any> {
-      return this._consume().then((r) => r.formData());
     }
   }
 
   // its attributes and operations as Web IDL has them: accessors that
   // check what they are called on, and every member enumerable
+  bodyMethods(Request, 'Request');
   idlAttributes(Request);
   for (const key of Object.getOwnPropertyNames(Request.prototype)) {
     if (key === 'constructor' || key.startsWith('_')) continue;
@@ -21903,6 +22002,7 @@ export function installDom(
             ),
           );
           response = new Response('', {
+            [RESPONSE_MADE]: true,
             status: answer.status,
             statusText: answer.statusText,
             headers: answer.headers,
@@ -24385,6 +24485,7 @@ export function installDom(
    *  an opaque one's body stays there, under the number it is held by. */
   const responseFrom = (head: Any, bytes: Uint8Array | null): Any => {
     const response: Any = new Response(bytes, {
+      [RESPONSE_MADE]: true,
       status: head.status,
       statusText: head.statusText,
       headers: head.headers,
@@ -24459,11 +24560,10 @@ export function installDom(
       const body = response.body;
       if (body === null) return Promise.resolve(new Uint8Array(0));
       return drainStream(body, () => {
-        response.bodyUsed = true;
+        response._bodyUsed = true;
       });
     },
-    disturbed: (response: Any) =>
-      response.bodyUsed || !!response._stream?.locked,
+    disturbed: (response: Any) => bodyUnusable(response),
     responseFrom,
     requestFrom,
     idlAttributes,
@@ -35012,7 +35112,7 @@ export function installDom(
           `WebAssembly.${name}(): HTTP status code is not ok`,
         );
       }
-      return response.arrayBuffer();
+      return (response as Any).arrayBuffer();
     };
     method('compile', function compile_(bytes: Any) {
       return compile(bytes);
@@ -36792,27 +36892,28 @@ export function installDom(
       // a body that is still arriving is a stream the host feeds; the
       // network's bytes otherwise, which cross as base64: a string is all
       // that crosses, and one of raw bytes is mostly escapes once it is JSON
-      const body = answer.streaming
-        ? new ReadableStream(
-            {
-              start(controller: Any) {
-                fetchBodies.set(id, fetchedBody(controller));
-              },
-              pull() {
-                if (fetchBodies.get(id)?.pulled()) fetchBodies.delete(id);
-              },
-              cancel() {
-                if (fetchBodies.delete(id)) call('abortFetch', id);
-              },
-            },
-            // a reader's read is what asks for bytes, so what has come by
-            // then is one chunk (`fetchedBody`)
-            { highWaterMark: 0 },
-          )
-        : typeof answer.base64 === 'string'
-          ? ''
-          : answer.body;
+      // a HEAD has no body, nor has a status that has none (Fetch 4.6)
+      const none = pending.head || NULL_BODY_STATUS.includes(answer.status);
+      if (none && answer.streaming) call('abortFetch', id);
+      // a body still arriving is a byte stream the host feeds, made of none
+      // of the page's globals; a reader's read is what asks for bytes, so
+      // what has come by then is one chunk (`fetchedBody`)
+      let body: Any = null;
+      if (none) body = null;
+      else if (answer.streaming) {
+        const fed = streamInternals.fedBytes(
+          () => {
+            if (fetchBodies.get(id)?.pulled()) fetchBodies.delete(id);
+          },
+          () => {
+            if (fetchBodies.delete(id)) call('abortFetch', id);
+          },
+        );
+        fetchBodies.set(id, fetchedBody(fed));
+        body = fed.stream;
+      } else if (typeof answer.base64 !== 'string') body = answer.body;
       const response = new Response(body, {
+        [RESPONSE_MADE]: true,
         status: answer.status,
         statusText: answer.statusText,
         headers: answer.headers,
@@ -36820,7 +36921,7 @@ export function installDom(
         redirected: answer.redirected,
         type: answer.type ?? 'basic',
       });
-      if (typeof answer.base64 === 'string') {
+      if (!none && typeof answer.base64 === 'string') {
         response._raw = bytesOfBase64(answer.base64);
       }
       response._held = answer.held ?? null;
