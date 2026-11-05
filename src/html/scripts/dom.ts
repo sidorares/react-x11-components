@@ -10190,6 +10190,11 @@ export function installDom(
           sessionEntry(String(call('frameLocation', frame._id))),
         ];
         made.session.index = 0;
+        // a navigation from the initial `about:blank` replaces it (HTML
+        // 7.4.2.2), so the document it shows came by a replace from no entry
+        // the API showed
+        made.session.arrived = { type: 'replace', fromIndex: -1, from: null };
+        made.session.activation = null;
         made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
@@ -28603,9 +28608,9 @@ export function installDom(
     /** Where the document is scrolled to, and a scroll of it. */
     scroll(): [number, number];
     scrollTo(x: number, y: number): void;
-    /** HTML 7.2.6.1, "has entries and events disabled": a document that is
-     *  its frame's initial `about:blank`, or of an opaque origin, has no
-     *  entries and tells no navigation of its. Absent, false. */
+    /** What makes the document's entries and events disabled besides not
+     *  being fully active (`entriesDisabled`): being its frame's initial
+     *  `about:blank`, or of an opaque origin. Absent, false. */
     disabled?(): boolean;
     /** The document the session is of, whose unload counter a method
      *  reads, and where it is a frame's, whether it is still fully active
@@ -28670,6 +28675,11 @@ export function installDom(
     api: null,
   });
   const currentOf = (s: Session): SessionEntry => s.entries[s.index];
+  /** HTML 7.2.6.1, "has entries and events disabled": a document that is
+   *  not fully active, its frame's initial `about:blank`, or of an opaque
+   *  origin (`ctx.disabled`) shows no entries and tells no navigation. */
+  const entriesDisabled = (s: Session): boolean =>
+    !s.ctx.active() || !!s.ctx.disabled?.();
 
   /** An entry's origin, as the entries the API shows are told apart by. */
   const entryOrigin = (entry: SessionEntry): string => {
@@ -29339,6 +29349,10 @@ export function installDom(
     const committing = s.committing;
     s.committing = null;
     committing?.();
+    // a document whose entries and events are disabled hears nothing of
+    // its entries changing (HTML, "update the navigation API entries for a
+    // same-document navigation")
+    if (entriesDisabled(s)) return;
     dispatch(
       s.navigation,
       asTrusted(
@@ -29380,6 +29394,7 @@ export function installDom(
     s.ctx.setUrl(url);
     persist(s);
     entryChanged(s, type, from);
+    if (entriesDisabled(s)) return;
     for (const gone of dropped) {
       if (gone.api) dispatch(gone.api, asTrusted(new Event('dispose')));
     }
@@ -29881,11 +29896,11 @@ export function installDom(
     }
     entries(): Any[] {
       const s = this._s;
-      if (s.ctx.disabled?.()) return [];
+      if (entriesDisabled(s)) return [];
       return navEntriesOf(s).map((e) => apiEntryOf(s, e));
     }
     get currentEntry(): Any {
-      if (this._s.ctx.disabled?.()) return null;
+      if (entriesDisabled(this._s)) return null;
       return apiEntryOf(this._s, currentOf(this._s));
     }
     get transition(): Any {
@@ -29893,15 +29908,17 @@ export function installDom(
     }
     get activation(): Any {
       const s = this._s;
+      // none for a document whose entries are disabled (HTML 7.2.6.1)
+      if (entriesDisabled(s)) return null;
       return (s.activation ??= activationOf(s));
     }
     get canGoBack(): boolean {
       const s = this._s;
-      return !s.ctx.disabled?.() && navEntriesOf(s).indexOf(currentOf(s)) > 0;
+      return !entriesDisabled(s) && navEntriesOf(s).indexOf(currentOf(s)) > 0;
     }
     get canGoForward(): boolean {
       const s = this._s;
-      if (s.ctx.disabled?.()) return false;
+      if (entriesDisabled(s)) return false;
       const list = navEntriesOf(s);
       return list.indexOf(currentOf(s)) < list.length - 1;
     }
@@ -30016,7 +30033,7 @@ export function installDom(
       const k = str(key);
       // among the entries the API shows, which a key of another origin's
       // document is not
-      const found = s.ctx.disabled?.()
+      const found = entriesDisabled(s)
         ? undefined
         : navEntriesOf(s).find((e) => e.key === k);
       const index = found ? s.entries.indexOf(found) : -1;
@@ -30080,6 +30097,14 @@ export function installDom(
         );
       }
       const s = this._s;
+      // no current entry to update is refused before the state is
+      // serialized (HTML 7.2.6.4, `updateCurrentEntry()`)
+      if (entriesDisabled(s)) {
+        throw new DOMException(
+          "Failed to execute 'updateCurrentEntry' on 'Navigation': There is no current entry.",
+          'InvalidStateError',
+        );
+      }
       const serialized = serializeClone(options.state);
       const entry = currentOf(s);
       const from = apiEntryOf(s, entry);
@@ -30273,6 +30298,12 @@ export function installDom(
       doc: () => document,
       owner: () => document,
       active: () => !document._unloaded,
+      // a sandbox's and a `data:` document's origin is opaque, and its
+      // entries and events are disabled (HTML 7.2.6.1); a `file:` page's
+      // reads as opaque too, and keeps its history, as browsers keep it
+      disabled: () =>
+        documentOrigin() === 'null' &&
+        !/^file:/i.test(String(call('location'))),
       get target() {
         return windowTarget;
       },

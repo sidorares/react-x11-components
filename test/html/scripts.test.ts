@@ -16395,6 +16395,50 @@ test("an IntersectionObserver's options are read as Chrome reads them, and what 
   );
 });
 
+test('a frame’s entries are disabled where its origin is opaque or it is gone, and a fragment it goes to loads nothing', async () => {
+  // HTML 7.2.6.1, "has entries and events disabled"
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="hash.html"></iframe>' +
+      '<iframe id="s" sandbox="allow-scripts" src="opaque.html"></iframe>' +
+      '<iframe id="b" src="plain.html"></iframe><p id="out"></p><script>' +
+      'window.loads = 0; var opaque = null, rest = null;' +
+      'function done() { if (opaque && rest) document.getElementById("out").textContent = opaque + "|" + rest; }' +
+      'onmessage = function (e) { opaque = e.data; done(); };' +
+      'window.onload = function () { setTimeout(function () {' +
+      // a frame taken out: no entries, and an update refused before its
+      // state is serialized
+      '  var b = document.getElementById("b"), n = b.contentWindow.navigation;' +
+      '  b.remove(); var r = [n.entries().length, String(n.currentEntry), n.canGoBack];' +
+      '  try { n.updateCurrentEntry({ state: document.body }); r.push("no throw"); } catch (e) { r.push(e.name); }' +
+      // a fragment the frame's own script went to as it loaded, once
+      '  setTimeout(function () {' +
+      '    r.push(document.getElementById("f").contentWindow.location.hash, window.loads);' +
+      '    rest = r.join(" "); done();' +
+      '  }, 300);' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'hash.html':
+        '<!doctype html><script>parent.loads++;' +
+        'window.onload = function () { setTimeout(function () { location.hash = "#1"; }, 0); };</script>',
+      'opaque.html':
+        '<!doctype html><script>var t = "no throw", fired = false;' +
+        'navigation.onnavigate = function () { fired = true; };' +
+        'try { navigation.updateCurrentEntry({ state: 1 }); } catch (e) { t = e.name; }' +
+        'navigation.navigate("#1");' +
+        'parent.postMessage([navigation.entries().length, String(navigation.currentEntry), t, fired].join(" "), "*");</script>',
+      'plain.html': '<!doctype html><p>no script here</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '0 null InvalidStateError false|0 null false InvalidStateError #1 1',
+  );
+});
+
 /** A page whose frames run in realms of their own, as `<Html scripts>`
  *  runs them (`drawsFrames`, `frames.ts`): each frame's document drawn by an
  *  `<Html>` of its own over the frame's box, or held where the page lays
