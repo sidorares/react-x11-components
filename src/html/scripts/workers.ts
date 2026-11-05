@@ -12,6 +12,7 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
+import type { FetchMode } from '../fetch-metadata.js';
 import { nodeModule, threadEntry } from './platform.js';
 import type {
   AbortControllerClass,
@@ -193,7 +194,14 @@ function closeNotification(shown: HtmlShownNotification | null | undefined) {
  *  answered: an `importScripts`, or a synchronous `XMLHttpRequest`, which the
  *  page's network is awake to make. */
 type SyncAsk =
-  | { url: string; type?: 'json' | 'text' }
+  | {
+      url: string;
+      type?: 'json' | 'text';
+      /** What it is to Fetch: the worker's own script, or one it imports
+       *  (`Sec-Fetch-Dest`, `-Mode`). */
+      destination?: string;
+      mode?: FetchMode;
+    }
   | { id: number; request: FetchRequest }
   | { id: number; abort: true };
 
@@ -336,7 +344,8 @@ export class PageWorkers implements PageWorkersLike {
         return;
       }
       void (
-        this._seams.script?.(id, m.url, m.type) ?? this._load(m.url, id)
+        this._seams.script?.(id, m.url, m.type) ??
+        this._load(m.url, id, m.destination, m.mode)
       ).then((source) => answer({ source }));
     });
     if (this._background) port1.unref?.();
@@ -514,10 +523,15 @@ export class PageWorkers implements PageWorkersLike {
 
   /** A script's source, through the page's network: null where there is
    *  none to be had. */
-  private async _load(url: string, id: number): Promise<string | null> {
+  private async _load(
+    url: string,
+    id: number,
+    destination = 'script',
+    mode: FetchMode = 'no-cors',
+  ): Promise<string | null> {
     try {
       const response = await this._seams.fetch(
-        { url, method: 'GET', headers: [], body: null },
+        { url, method: 'GET', headers: [], body: null, mode, destination },
         new AbortController().signal,
         id,
       );

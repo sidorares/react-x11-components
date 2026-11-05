@@ -222,6 +222,7 @@ export type { HtmlPermissions, HtmlPermissionState } from './permissions.js';
 export { memoryNotifications, useHtmlNotifications } from './notifications.js';
 export { parseWindowFeatures } from './popups.js';
 export type {
+  HtmlNavigationSource,
   HtmlPopup,
   HtmlPopupFeatures,
   HtmlPopups,

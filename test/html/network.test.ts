@@ -880,7 +880,7 @@ test('a document says what redirected it, with a jar or without, and each hop wh
   }
 });
 
-test('a network with no jar keeps no cookies and leaves redirects to the transport', async () => {
+test('a network with no jar keeps no cookies, and follows redirects itself for what a request says at each hop', async () => {
   const asked: string[] = [];
   const network = new HtmlNetwork({
     fetch: async (url, init) => {
@@ -904,7 +904,9 @@ test('a network with no jar keeps no cookies and leaves redirects to the transpo
     { url: 'https://example.test/b', method: 'GET', headers: [], body: null },
     signal,
   );
-  assert.deepEqual(asked, ['follow -', 'follow -']);
+  // each hop is the network's, since `Sec-Fetch-Site` is worked out again at
+  // every one
+  assert.deepEqual(asked, ['manual -', 'manual -']);
   assert.equal(network.cookies, null);
 });
 

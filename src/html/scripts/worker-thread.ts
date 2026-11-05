@@ -331,8 +331,25 @@ function waitFor<T>(
 }
 
 const host = new DomHost(new Document([]), seams, init.url);
-const importScript = (url: string, type?: 'json' | 'text'): string | null => {
-  sync.postMessage(type ? { url, type } : { url });
+/** What the worker's own script is to Fetch (HTML 10.2.5.1). */
+const OWN_SCRIPT = {
+  destination: init.service
+    ? 'serviceworker'
+    : init.shared
+      ? 'sharedworker'
+      : 'worker',
+  mode: init.type === 'module' ? 'cors' : 'same-origin',
+} as const;
+const importScript = (
+  url: string,
+  type?: 'json' | 'text',
+  own = false,
+): string | null => {
+  sync.postMessage({
+    url,
+    ...(type ? { type } : {}),
+    ...(own ? OWN_SCRIPT : {}),
+  });
   const answer = waitFor(
     (m): m is { source: string | null } => !('id' in (m as object)),
     performance.now() + 60_000,
@@ -370,6 +387,10 @@ const engine = new ScriptEngine(host.bridge, {
           headers:
             type === 'javascript' ? [] : [['accept', MODULE_ACCEPT[type]]],
           body: null,
+          // a module worker's graph is fetched for the worker (HTML 8.1.5.1,
+          // "fetch a module worker script graph"), a JSON or text one as such
+          mode: 'cors',
+          destination: type === 'javascript' ? OWN_SCRIPT.destination : type,
         },
         new AbortController().signal,
       );
@@ -482,7 +503,7 @@ port.on('message', (m: ToWorker) => {
 
 // the worker's script: handed over where it is a blob URL's, and fetched
 // where it is not
-const source = init.source ?? importScript(init.url);
+const source = init.source ?? importScript(init.url, undefined, true);
 script = () => {
   if (source === null) {
     host.workerScope!.error(

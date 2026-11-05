@@ -237,9 +237,9 @@ function FrameDocument({
       scroller.current?.scrollTo({ x: x * zoom, y: y * zoom });
     },
     // a frame's `location` goes on in the frame, and its `open` in a tab
-    navigate: (to, how, post, name) => {
+    navigate: (to, how, post, name, source) => {
       if (how === 'tab') {
-        outer.navigate(to, 'tab', post, name);
+        outer.navigate(to, 'tab', post, name, source);
         return;
       }
       // a fragment the document went to in place, which its realm tells as
