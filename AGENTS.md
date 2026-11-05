@@ -1037,6 +1037,24 @@ devDependency, loaded the first time a host asks for the list and handed
 to a `CookieJar` as `publicSuffix`. Absent, a jar takes the last label of
 a host for its suffix, which refuses `Domain=com` and not `Domain=co.uk`.
 
+`src/html/undici.ts` is the fifth: `undici`, which offers HTTP/2 as an https
+connection is made, is an **optional peer** and a devDependency, loaded the
+first time `HtmlNetwork` sends over https, its types written out. Neither
+runtime's `fetch` speaks HTTP/2, and the npm package's `Agent` handed to
+Node's own `fetch` fails as it is used (the two undicis' handler APIs differ
+by a major), so where the package is there an https request goes through
+**its** `fetch` and an `Agent({ allowH2: true })`, and anything else through
+the runtime's as before; on Bun none of it is loaded. **It stands in for
+the runtime's own `fetch` alone** (`fetchIsRuntimes`): a `fetch` put on the
+global after `undici.ts` was evaluated is asked, as every test here that
+mocks `globalThis.fetch` for an https URL needs, and an instrumented
+application too. `threadTransport`'s
+worker loads it the same way, by `require`. **One mapping, no issue filed
+yet**: undici's HTTP/2 never ends a stream whose body it knows is empty
+(7.30 and 8.12), so an empty body is sent as no body, in `undici.ts`, in the
+worker and in `_send`'s streamed path. When a release fixes it, delete the
+three and move the peer range.
+
 ## Running someone else's program
 
 `src/embed/`, `src/terminal/` and `src/media-player/` are the first things

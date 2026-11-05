@@ -965,6 +965,21 @@ document in the process (`defaultHtmlNetwork`), or one handed in. `new
 HtmlNetwork(options)` takes its own User-Agent, cache size, a store for its
 cache (`httpCache`), transport — a proxy, a test's answers — log and cookie
 jar, and its `html(url)` fetches a document whole, decoded, for `source`.
+
+**HTTP/2 needs the optional peer `undici`** (`npm install undici`). Node's
+and Bun's `fetch` speak HTTP/1.1, so a server that speaks HTTP/2 alone — WPT's
+`.h2.` tests, a gRPC-web endpoint — answers nothing they can read, and a page
+cannot stream a request body to one. With undici installed, `HtmlNetwork`
+sends each request over https through undici's own `fetch` and an agent that
+offers `h2` as the connection is made, which the server takes or not; plain
+http, and every request on Bun, stay with the runtime's. `http2: false`
+turns it off, a host's own `fetch` transport is never replaced, and nor is a
+`fetch` put on the global after the network was loaded — an application's
+instrumentation, a test's answers — which is asked as it always was.
+`threadTransport({ http2 })` does the same on its thread, where it can load
+undici there. An empty request body goes as no body, since undici's HTTP/2
+never ends a stream whose body it knows is empty: the same request on the
+wire, `Content-Length: 0`.
 Nothing about it is required: any `onResource` that answers `'script'` and
 any `fetch` of the same shape will do. See [Cookies and
 storage](#cookies-and-storage).
