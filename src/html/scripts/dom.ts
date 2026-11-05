@@ -28638,6 +28638,12 @@ export function installDom(
       transition: Tracker | null;
     } | null;
     transition: Any;
+    /** What a same-document navigation under way commits as its entry
+     *  changes (`navigateWith`), told before `currententrychange`. */
+    committing?: (() => void) | null;
+    /** The trackers of the traversals asked for and not yet begun, by the
+     *  key each goes to (`traverseTo`). */
+    upcoming?: Map<string, Tracker>;
     activation: Any;
     navigation: Any;
     /** `history.scrollRestoration`: whether a traversal restores where the
@@ -28808,9 +28814,6 @@ export function installDom(
   class NavigationHistoryEntry extends EventTarget {
     declare _entry: SessionEntry;
     declare _session: Session;
-    /** One of no list: an activation's entry of a document that is not
-     *  among the entries (`looseEntryOf`), whose key and id it has. */
-    declare _loose: boolean;
     constructor(token?: Any, entry?: SessionEntry, session?: Session) {
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       super();
@@ -28821,25 +28824,31 @@ export function installDom(
       for (const [name, value] of [
         ['_entry', entry],
         ['_session', session],
-        ['_loose', false],
       ] as const) {
         Object.defineProperty(this, name, { value, writable: true });
       }
     }
+    /** Whether the document of the window it was handed out in is not
+     *  fully active (HTML, `NavigationHistoryEntry`'s getters), past which it says nothing: an entry a
+     *  replace or a push disposed keeps its URL, key and id. */
+    get _gone(): boolean {
+      return !this._session.ctx.active();
+    }
     get url(): string | null {
-      return this._entry.url;
+      return this._gone ? '' : this._entry.url;
     }
     get key(): string {
-      return this.index < 0 && !this._loose ? '' : this._entry.key;
+      return this._gone ? '' : this._entry.key;
     }
     get id(): string {
-      return this.index < 0 && !this._loose ? '' : this._entry.id;
+      return this._gone ? '' : this._entry.id;
     }
     get index(): number {
+      if (this._gone) return -1;
       return navEntriesOf(this._session).indexOf(this._entry);
     }
     get sameDocument(): boolean {
-      return !this._entry.other && this.index >= 0;
+      return !this._gone && !this._entry.other && this.index >= 0;
     }
     getState(): Any {
       const state = this._entry.navState;
@@ -28848,25 +28857,23 @@ export function installDom(
   }
   const apiEntryOf = (s: Session, entry: SessionEntry): Any =>
     (entry.api ??= new NavigationHistoryEntry(TOKEN, entry, s));
-  /** An entry of no list, for an activation's (`_loose`): one a replace
-   *  took the place of, one a navigation is about to make. */
-  const looseEntryOf = (s: Session, entry: SessionEntry): Any => {
-    const made = new NavigationHistoryEntry(TOKEN, entry, s);
-    made._loose = true;
-    return made;
-  };
+  /** An entry of no list, for an activation's: one a replace took the
+   *  place of, one a navigation is about to make, which keeps its key and
+   *  id as any entry does. */
+  const looseEntryOf = (s: Session, entry: SessionEntry): Any =>
+    new NavigationHistoryEntry(TOKEN, entry, s);
 
   class NavigationDestination {
     readonly url: string;
     readonly key: string;
     readonly id: string;
-    readonly index: number;
     readonly sameDocument: boolean;
     _state: string | undefined;
+    _index: () => number;
     constructor(
       token: Any,
       url: string,
-      index: number,
+      index: () => number,
       entry: SessionEntry | null,
       sameDocument: boolean,
       state: string | undefined,
@@ -28875,9 +28882,15 @@ export function installDom(
       this.url = url;
       this.key = entry?.key ?? '';
       this.id = entry?.id ?? '';
-      this.index = index;
+      this._index = index;
       this.sameDocument = sameDocument;
       this._state = state;
+    }
+    /** Where its entry is among the entries now: -1 once it is disposed,
+     *  after the navigation as much as during it (HTML,
+     *  `NavigationDestination`'s `index`). */
+    get index(): number {
+      return this._index();
     }
     getState(): Any {
       return this._state === undefined
@@ -28983,6 +28996,14 @@ export function installDom(
      *  would have scrolled, now, once it has committed and before it has
      *  scrolled. */
     scroll(): void {
+      // an event a page made is refused before anything else is asked of
+      // it (HTML, `scroll()`'s "perform shared checks")
+      if (!this.isTrusted) {
+        throw new DOMException(
+          "Failed to execute 'scroll' on 'NavigateEvent': The event is not trusted.",
+          'SecurityError',
+        );
+      }
       if (this._state !== 'committed' || !this._scroller) {
         throw new DOMException(
           "Failed to execute 'scroll' on 'NavigateEvent': The navigation has not committed, or was scrolled already.",
@@ -29073,25 +29094,28 @@ export function installDom(
 
   /** End a session's ongoing navigation as aborted: its signal,
    *  `navigateerror`, and its promises rejected. */
-  const abortOngoing = (s: Session, error?: Any): void => {
+  const abortOngoing = (s: Session, ...error: Any[]): void => {
     const running = s.ongoing;
     if (!running) return;
     s.ongoing = null;
-    const reason =
-      error ?? new DOMException('The navigation was aborted.', 'AbortError');
+    // an event still being dispatched is canceled with it (HTML 7.2.6.10,
+    // "abort the ongoing navigation"), which its listeners read
+    if (running.event._dispatching) running.event._canceled = true;
+    // a handler's rejection with `undefined` is that, and no AbortError
+    const reason = error.length
+      ? error[0]
+      : new DOMException('The navigation was aborted.', 'AbortError');
     running.controller.abort(reason);
     // `navigateerror` while the transition is still the navigation's, then
-    // its promises, then the method's (HTML 7.2.6.10)
-    // told as an uncaught error is, with where it was thrown
-    dispatch(
-      s.navigation,
-      asTrusted(new ErrorEvent('navigateerror', errorInit(reason))),
-    );
-    if (running.transition && running.transition !== running.tracker) {
-      running.transition.fail(reason);
-    }
+    // the method's promises, then the transition's (HTML 7.2.6.10), told as
+    // an uncaught error is, with where it was thrown, or the document where
+    // nothing of the page's threw it
+    const init = errorInit(reason);
+    if (!init.filename) init.filename = s.ctx.url();
+    dispatch(s.navigation, asTrusted(new ErrorEvent('navigateerror', init)));
     if (running.transition) s.transition = null;
     running.tracker?.fail(reason);
+    running.transition?.fail(reason);
   };
 
   interface NavigateParams {
@@ -29145,7 +29169,8 @@ export function installDom(
     const destination = new NavigationDestination(
       TOKEN,
       params.url,
-      params.target ? navEntriesOf(s).indexOf(params.target) : -1,
+      // read as it is asked for: an entry disposed since has none
+      params.target ? () => navEntriesOf(s).indexOf(params.target!) : () => -1,
       params.target ?? null,
       params.sameDocument,
       params.navState ?? params.target?.navState,
@@ -29160,12 +29185,15 @@ export function installDom(
         destination,
         canIntercept,
         // a navigation to a fragment, not a URL the history API writes,
-        // whatever of it differs (HTML 7.2.6.10)
+        // whatever of it differs, and a traversal to an entry of the
+        // document's at the same URL but for its fragment (HTML 7.2.6.10,
+        // "fire a traverse navigate event")
         hashChange:
           !params.historyApi &&
-          params.type !== 'traverse' &&
           params.sameDocument &&
-          fragmentOf(from.url, params.url) &&
+          (params.type === 'traverse'
+            ? from.url.split('#')[0] === params.url.split('#')[0]
+            : fragmentOf(from.url, params.url)) &&
           hashOf(from.url) !== hashOf(params.url),
         signal: controller.signal,
         info: params.info,
@@ -29193,7 +29221,8 @@ export function installDom(
     }
     const ongoing = s.ongoing!;
     if (event._intercepted) {
-      ongoing.transition = tracker ?? makeTracker();
+      // promises of its own, never the method's (HTML, `NavigationTransition`)
+      ongoing.transition = makeTracker();
       s.transition = new NavigationTransition(
         TOKEN,
         params.type,
@@ -29201,14 +29230,28 @@ export function installDom(
         ongoing.transition,
       );
     }
-    apply(event._intercepted);
-    const entryNow = apiEntryOf(s, currentOf(s));
-    if (event._intercepted) {
-      event._state = 'committed';
-      event._scroller = () => processScroll(s, params.type, params.url);
+    // committed as the entry changes, before `currententrychange` is told
+    // (HTML 7.2.6.10, "notify about the committed-to entry"), so that a
+    // navigation a listener of it starts aborts what is left, the finish
+    let entryNow: Any = null;
+    const commitNow = (): void => {
+      if (entryNow) return;
+      entryNow = apiEntryOf(s, currentOf(s));
+      if (event._intercepted) {
+        event._state = 'committed';
+        event._scroller = () => processScroll(s, params.type, params.url);
+      }
+      // the method's, then the transition's
+      tracker?.commit(entryNow);
+      ongoing.transition?.commit(entryNow);
+    };
+    s.committing = commitNow;
+    try {
+      apply(event._intercepted);
+    } finally {
+      if (s.committing === commitNow) s.committing = null;
     }
-    ongoing.transition?.commit(entryNow);
-    if (tracker !== ongoing.transition) tracker?.commit(entryNow);
+    commitNow();
     // each handler, then the end of all of them (`navigatesuccess`)
     const results: Any[] = [];
     for (const handler of event._intercepts) {
@@ -29234,13 +29277,12 @@ export function installDom(
         }
         event._state = 'finished';
         // `navigatesuccess` while the transition is still the
-        // navigation's, then its promises, then the method's
+        // navigation's, then the method's promise with the entry, then the
+        // transition's with nothing
         dispatch(s.navigation, asTrusted(new Event('navigatesuccess')));
-        if (ongoing.transition && ongoing.transition !== tracker) {
-          ongoing.transition.finish(entryNow);
-        }
         if (ongoing.transition) s.transition = null;
         tracker?.finish(entryNow);
+        ongoing.transition?.finish(undefined);
       },
       (error: Any) => {
         if (s.ongoing?.event !== event) return;
@@ -29294,6 +29336,9 @@ export function installDom(
   };
 
   const entryChanged = (s: Session, type: string | null, from: Any): void => {
+    const committing = s.committing;
+    s.committing = null;
+    committing?.();
     dispatch(
       s.navigation,
       asTrusted(
@@ -29417,13 +29462,23 @@ export function installDom(
     // `navigate` of it (HTML 7.4.2.2, "navigate")
     if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'canceled';
     const from = currentOf(s).url;
-    const fragment = !options.form && fragmentOf(from, url);
+    // a GET form's submission has no body, and to the document's URL but for
+    // a fragment is a fragment navigation as a link's is (HTML 7.4.2.2,
+    // "navigate": no document resource); a POST is another document
+    const fragment = !options.form?.formData && fragmentOf(from, url);
+    // a fragment navigation no `navigate()` started — `location`'s, a
+    // link's — keeps the Navigation API state the entry it leaves has
+    // (HTML 7.4.2.2, "navigate": a null state is the active entry's)
+    const navState =
+      fragment && !options.tracker && options.navState === undefined
+        ? currentOf(s).navState
+        : options.navState;
     const went = navigateWith(
       s,
       {
         url,
         type,
-        navState: options.navState,
+        navState,
         info: options.info,
         tracker: options.tracker,
         userInitiated: options.userInitiated,
@@ -29432,7 +29487,7 @@ export function installDom(
         formData: options.form?.formData,
       },
       (intercepted) => {
-        commitEntry(s, url, type, null, options.navState, type);
+        commitEntry(s, url, type, null, navState, type);
         // a page's handler has it, which scrolls where it ends, and an
         // intercepted navigation is no fragment's to tell `hashchange` of
         if (fragment && !intercepted) {
@@ -29665,6 +29720,11 @@ export function installDom(
   ): void => {
     setTimer(
       () => {
+        // no longer upcoming once its step is taken: the next traversal to
+        // the key is a traversal of its own
+        for (const [key, upcoming] of s.upcoming ?? []) {
+          if (upcoming === tracker) s.upcoming!.delete(key);
+        }
         const target = s.entries[index];
         if (!target) {
           tracker?.fail(
@@ -29796,16 +29856,17 @@ export function installDom(
         );
       }
     }
+    // the new entry has no Navigation API state, whichever of the two
+    // made it (HTML 7.4.4, "URL and history update steps")
     navigateWith(
       s,
       {
         url: to,
         type: mode,
-        navState: from.navState,
         sameDocument: true,
         historyApi: true,
       },
-      () => commitEntry(s, to, mode, serialized, from.navState, mode),
+      () => commitEntry(s, to, mode, serialized, undefined, mode),
     );
   };
 
@@ -29935,15 +29996,17 @@ export function installDom(
           tracker,
           sameDocument: false,
         },
-        () =>
-          commitEntry(
-            s,
-            url,
-            'replace',
-            currentOf(s).state,
-            navState,
-            'reload',
-          ),
+        () => {
+          // a reload a handler took is no new entry: the current one stays,
+          // with the state the reload gave it, and nothing is disposed (HTML,
+          // "update the navigation API entries for a same-document
+          // navigation")
+          const entry = currentOf(s);
+          const from = apiEntryOf(s, entry);
+          entry.navState = navState;
+          persist(s);
+          entryChanged(s, 'reload', from);
+        },
       );
       if (went === 'other') s.ctx.reload(navState);
       return resultOf(tracker);
@@ -29967,12 +30030,18 @@ export function installDom(
       }
       const refused = unloadingRefusal(s, 'traverseTo');
       if (refused) return earlyError(refused);
+      // a traversal to the key already on its way hands back its promises
+      // (HTML, "upcoming traverse API method trackers")
+      const upcoming = (s.upcoming ??= new Map());
+      const pending = upcoming.get(k);
+      if (pending) return resultOf(pending);
       const tracker = makeTracker();
       if (index === s.index) {
         const entry = apiEntryOf(s, currentOf(s));
         tracker.commit(entry);
         tracker.finish(entry);
       } else {
+        upcoming.set(k, tracker);
         traverseTo(s, index, options?.info, tracker);
       }
       return resultOf(tracker);
