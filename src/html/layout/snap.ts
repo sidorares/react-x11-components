@@ -78,20 +78,47 @@ type Axis = (typeof AXES)[number];
 
 const other = (axis: Axis): Axis => (axis === 'x' ? 'y' : 'x');
 
-/** Whether a container snaps on an axis. */
+/** The physical axis a container's block axis runs along: down the page
+ *  in a horizontal writing mode, across it in a vertical one. */
+function blockAxisOf(style: ComputedStyle): Axis {
+  return style.writingMode === 'horizontal-tb' ? 'y' : 'x';
+}
+
+/** Whether a container's flow starts at the far end of a physical axis, the
+ *  right or the bottom: its block start in `vertical-rl` and `sideways-rl`,
+ *  its inline start in a right-to-left line, and in a vertical one that
+ *  runs up the page (CSS Writing Modes 4, 6.1). */
+function startsHigh(style: ComputedStyle, axis: Axis): boolean {
+  const mode = style.writingMode;
+  if (axis === blockAxisOf(style)) {
+    return mode === 'vertical-rl' || mode === 'sideways-rl';
+  }
+  const rtl = style.direction === 'rtl';
+  return axis === 'x' ? rtl : rtl !== (mode === 'sideways-lr');
+}
+
+/** Whether a container snaps on an axis: `block` and `inline` are the
+ *  physical axes its writing mode puts them on. */
 export function snapsOn(style: ComputedStyle, axis: Axis): boolean {
   const type = style.scrollSnapType;
   if (!type) return false;
   if (type.axis === 'both') return true;
-  return axis === 'x'
-    ? type.axis === 'x' || type.axis === 'inline'
-    : type.axis === 'y' || type.axis === 'block';
+  if (type.axis === 'block' || type.axis === 'inline') {
+    const block = blockAxisOf(style);
+    return type.axis === 'block' ? axis === block : axis !== block;
+  }
+  return type.axis === axis;
 }
 
-/** A snap area's alignment on an axis: the block axis's is the first
- *  value, the vertical one in the writing mode documents are laid out in. */
-function alignOn(box: Box, axis: Axis): SnapAlign {
-  return box.style.scrollSnapAlign[axis === 'y' ? 0 : 1];
+/** A snap area's alignment on a physical axis of its container (CSS Scroll
+ *  Snap 1, 6.2): the first value is the container's block axis's, the
+ *  second its inline axis's, and `start` the end its flow starts at — as
+ *  `start` and `end` of the axis's low end here, the left or the top. */
+function alignOn(c: SnapContainer, box: Box, axis: Axis): SnapAlign {
+  const align =
+    box.style.scrollSnapAlign[axis === blockAxisOf(c.style) ? 0 : 1];
+  if (!startsHigh(c.style, axis)) return align;
+  return align === 'start' ? 'end' : align === 'end' ? 'start' : align;
 }
 
 /** A container's snapport on an axis — its scrollport less its
@@ -120,7 +147,7 @@ function placeOf(
   area: SnapArea,
   axis: Axis,
 ): { at: number; to: number } | null {
-  const align = alignOn(area.box, axis);
+  const align = alignOn(c, area.box, axis);
   if (align === 'none') return null;
   const st = area.box.style;
   const client = axis === 'x' ? c.width : c.height;
@@ -518,7 +545,7 @@ export function resnap(
     const keep =
       (c.focused && pair.find(c.focused)) ||
       (c.targeted && pair.find(c.targeted)) ||
-      ky.box;
+      (blockAxisOf(c.style) === 'y' ? ky.box : kx.box);
     return lineUp(c, keep, out.x, out.y);
   }
   return out;
