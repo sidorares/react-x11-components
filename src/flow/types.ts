@@ -391,6 +391,119 @@ export interface NodeRenderContext<Data = FlowNodeData> {
   rect: FlowRect;
 }
 
+/** What {@link FlowNodeType.glBody} is handed, to say which body a node
+ *  has. Called every GL frame the node is in view, so it is a lookup — an
+ *  app's map of bodies by node id — and not a constructor. */
+export interface NodeGlBodyContext<Data = FlowNodeData> {
+  node: FlowNode<Data>;
+  selected: boolean;
+  zoom: number;
+}
+
+/**
+ * One frame of a {@link FlowGlBody}: the texture the pane wants, and the
+ * unit the body is drawn in.
+ *
+ * `width × height` is the body's box in **device pixels**, at the zoom the
+ * graph on the GPU was built at. `scale` is device pixels per **graph
+ * unit** — the display's scale times that zoom — so a body that lays itself
+ * out `width / scale` by `height / scale` of its own units is in graph
+ * units, as a `render` body is, and zooms with the pane: twice the zoom is
+ * the same picture at twice the pixels, drawn again once the zoom rests.
+ */
+export interface FlowGlBodyFrame {
+  width: number;
+  height: number;
+  scale: number;
+  /** The viewport zoom of the graph this frame is drawn for. */
+  zoom: number;
+}
+
+/**
+ * What a {@link FlowGlBody} drew: its own texture, made in the context it
+ * was handed. RGBA, premultiplied, row 0 at the bottom — as a framebuffer
+ * draws it — and filtered as the body left it: the pane samples it through
+ * a zoom gesture, so `LINEAR` and `CLAMP_TO_EDGE` are what it wants.
+ */
+export interface FlowGlTexture {
+  texture: unknown;
+  width: number;
+  height: number;
+}
+
+/** How a {@link FlowGlBody} asks the pane that draws it for a frame. */
+export interface FlowGlBodyHost {
+  /** The body has something new to show: its `draw` is called again in the
+   *  next frame. Asks for nothing while the body is out of view. */
+  requestFrame(): void;
+}
+
+/**
+ * Pointer input over a body, forwarded by the pane: a press below the
+ * header, its drag and release wherever they go, motion while no button is
+ * down, and the wheel. Coordinates are **body-local graph units**: (0, 0)
+ * is the body's top-left corner, the unit is the one {@link
+ * FlowGlBodyFrame.scale} measures, whatever the zoom.
+ */
+export interface FlowGlBodyPointer {
+  type: 'down' | 'drag' | 'up' | 'move' | 'leave' | 'wheel';
+  x: number;
+  y: number;
+  /** `1` left, `2` middle, `3` right. */
+  button?: number;
+  /** The click count — `2` is the second press of a double click. */
+  detail?: number;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+  /** The wheel's, for `'wheel'`. */
+  deltaX?: number;
+  deltaY?: number;
+  /** Whether the device measured the scroll rather than clicking it. */
+  smooth?: boolean;
+}
+
+/**
+ * A node body drawn through the pane's own GL context — see
+ * {@link FlowNodeType.glBody}.
+ *
+ * Structural on purpose: `<Flow>` defines it and imports nothing that
+ * implements it, and `@react-x11/components/maps`'s `GlMapLayer` fits it
+ * without importing `<Flow>`. The app joins the two.
+ */
+export interface FlowGlBody {
+  /** The pane started drawing this body, and this is how it asks for
+   *  frames. Called inside a GL frame, the first the body is drawn in. */
+  attach?(host: FlowGlBodyHost): void;
+  /**
+   * The pane stopped drawing it: its node left the graph, its type stopped
+   * naming it, or the GL surface went. What it made in the pane's context
+   * is its own to let go of — from here, as `<Map>`'s own GL pane does from
+   * its teardown — and a later `attach` starts it again.
+   */
+  detach?(): void;
+  /**
+   * Draw into the body's texture and answer it, or null to leave the card's
+   * own fill there. Called inside the pane's GL frame, with the pane's
+   * context current, before the pane draws anything of the graph: bind a
+   * framebuffer of your own and set every state you draw with. The pane
+   * puts back its framebuffer and the state it draws with afterwards, so
+   * nothing the body leaves bound reaches the graph — and nothing the graph
+   * left bound is anything the body may rely on.
+   *
+   * Called when the body asked for a frame, when its size changed, and the
+   * first time it is in view — never for a pan, which moves the texture
+   * already drawn.
+   */
+  draw(gl: unknown, frame: FlowGlBodyFrame): FlowGlTexture | null;
+  /** Pointer input over the body. Answer `true` to take it: a press taken
+   *  starts a gesture whose drag and release come here too, and a wheel
+   *  taken does not zoom the pane. Left out, or `false`, the pane has it as
+   *  it would over a card. */
+  pointer?(event: FlowGlBodyPointer): boolean;
+}
+
 /**
  * A node type: what the node is shaped like, where it connects, how it is
  * drawn — and, when drawing is not enough, what it *mounts*.
@@ -443,10 +556,41 @@ export interface FlowNodeType<Data = FlowNodeData> {
    * it, so there is always somewhere to grab that is not a text field.
    */
   render?: (context: NodeRenderContext<Data>) => ReactNode;
+  /**
+   * A body drawn through the pane's own GL context, on the GL renderer: a
+   * live map, a 3D view, anything that draws with GL. The pane asks it for
+   * a texture the size of the body's box and draws that as a quad in the
+   * card, in the graph's own paint order — under the header's title and the
+   * handles, over the cards below, under the ones above — and moves it with
+   * the graph: a pan is the texture drawn somewhere else, and a zoom
+   * gesture the texture scaled until the zoom rests and the body is drawn
+   * again at the new size.
+   *
+   * What it is not is a second `<glarea>`. A `<Map renderer="gl">` mounted
+   * through `render` gets one of its own, among the pane's surface's
+   * children, and core does not stack a surface among another surface's
+   * children: on macOS every GL layer shares one depth, under the overlay
+   * that holds the bodies, and on X11 it is a child window nothing orders
+   * against the bodies' panes.
+   *
+   * Called every GL frame the node is in view, with the node — so it is a
+   * lookup into bodies the app keeps, and the same object for as long as
+   * the node has that body (see {@link FlowGlBody}). Input over the body is
+   * forwarded to {@link FlowGlBody.pointer}; the header strip still drags
+   * the node, as it does above a `render` body.
+   *
+   * **The 2D renderer has no GL**, and there the node is what its other
+   * seams say: a type with `render` mounts that, a type with `paint` paints
+   * itself, and one with neither is a card with a title bar and an empty
+   * body. So `render` mounting a `<Map>` is the natural fallback for a type
+   * whose `glBody` draws one, and nothing of it is mounted under GL.
+   */
+  glBody?: (context: NodeGlBodyContext<Data>) => FlowGlBody | null | undefined;
   /** The strip along the top of the node that {@link FlowNodeType.render}
-   * does not cover — where the pane draws the title, and what the node is
-   * dragged by. Graph units; default 26. `0` hands the whole box over, and
-   * then only the keyboard can move the node. */
+   * or {@link FlowNodeType.glBody} does not cover — where the pane draws
+   * the title, and what the node is dragged by. Graph units; default 26.
+   * `0` hands the whole box over, and then only the keyboard can move the
+   * node. */
   headerHeight?: number;
 }
 
@@ -679,6 +823,13 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    * @internal
    */
   onPanels?: (rects: readonly FlowRect[]) => void;
+  /**
+   * Whether node types' `glBody` is drawn — the GL renderer is drawing, or
+   * on its way — so a type that has one mounts no `render` body. `<Flow>`
+   * sets it; left out, the element reads `renderer === 'gl'`.
+   * @internal
+   */
+  glBodies?: boolean;
   onNodeBodies?: (
     bodies: readonly NodeBodyRect[],
     sync: boolean,
@@ -694,10 +845,11 @@ export interface FlowProps<N = FlowNodeData, E = unknown> {
    *
    * **Not yet a replacement.** The GL renderer draws the graph — cards,
    * edges, arrowheads, handles, labels, the grid, the minimap — but not yet
-   * a node type's own `paint`, nor a mounted body over the surface. Labels
-   * are drawn from distance fields, sharp at every zoom, and a string drawn
-   * for the first time arrives a frame or two after the frame that asked
-   * for it; `onFrame`'s `gaps` counts what a frame left out.
+   * a node type's own `paint`; a type's `glBody` is what draws through its
+   * context. Labels are drawn from distance fields, sharp at every zoom, and
+   * a string drawn for the first time arrives a frame or two after the
+   * frame that asked for it; `onFrame`'s `gaps` counts what a frame left
+   * out.
    * `docs/prd-flow-gl.md` has the plan and the numbers.
    */
   renderer?: 'retained' | 'gl';

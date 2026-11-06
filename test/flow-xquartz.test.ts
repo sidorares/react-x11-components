@@ -41,6 +41,7 @@ const form: FlowNodeType = {
 async function run(
   xquartz: boolean,
   type: string | null = 'form',
+  types: Record<string, FlowNodeType> = { form },
 ): Promise<{
   renderers: Set<string>;
   glareas: number;
@@ -67,7 +68,7 @@ async function run(
               { id: 'a', type: type ?? undefined, position: { x: 40, y: 40 } },
             ],
             defaultEdges: [],
-            nodeTypes: { form } as Record<string, FlowNodeType<unknown>>,
+            nodeTypes: types as Record<string, FlowNodeType<unknown>>,
             // the bare client has none of what the grid's tile pattern needs
             background: false,
             renderer: 'gl',
@@ -127,6 +128,18 @@ test('on XQuartz, a body type no node uses does not cost the graph its GL surfac
   // its widget types for every scene, and its lattices of plain cards drew
   // in 2D on XQuartz — a node dragged at 20 fps where GL drags it at 75.
   const { renderers, glareas, errors } = await run(true, null);
+  assert.ok(
+    glareas > 0 || errors.length > 0,
+    `a GL surface was attempted (glareas ${glareas}, errors ${JSON.stringify(errors)}, frames ${[...renderers]})`,
+  );
+});
+
+test('on XQuartz, a graph whose bodies are GL bodies keeps its GL surface', async () => {
+  // A GL body is drawn by the graph's own surface, not mounted over it, so
+  // nothing of it needs the overlay XQuartz cannot show — and its `render`
+  // is the 2D renderer's fallback, mounted only where GL is not drawing.
+  const map: FlowNodeType = { ...form, glBody: () => null };
+  const { renderers, glareas, errors } = await run(true, 'form', { form: map });
   assert.ok(
     glareas > 0 || errors.length > 0,
     `a GL surface was attempted (glareas ${glareas}, errors ${JSON.stringify(errors)}, frames ${[...renderers]})`,

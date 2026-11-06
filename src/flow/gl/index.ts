@@ -9,14 +9,19 @@
 // surface and answers with the node behind it, which is the pane — and asks
 // for frames through `setGlRequest`, so every change the 2D renderer would
 // have repainted becomes one GL frame.
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 
-import type { FlowFrameStats } from '../types.js';
+import type {
+  FlowFrameStats,
+  FlowGlBody,
+  FlowGlBodyHost,
+  FlowGlTexture,
+} from '../types.js';
 import { FlowGlRenderer, now } from './renderer.js';
 import { LabelAtlas } from './text.js';
 import type { TextSource } from './text.js';
-import type { FlowGlFrame, FlowGlTarget } from './renderer.js';
+import type { FlowGlFrame, FlowGlTarget, GlBodyRequest } from './renderer.js';
 
 /** What the surface needs of the pane — `FlowGraphNode`, structurally. */
 export interface FlowGlSource {
@@ -27,6 +32,26 @@ export interface FlowGlSource {
   glText?(): TextSource | null;
   setGlRequest(request: (() => void) | null): void;
   bodyBudget(): FlowFrameStats['bodies'];
+  /** The GL body a node has now (`FlowNodeType.glBody`), or null: none, or
+   *  no such node any more. */
+  glBodyOf?(id: string): FlowGlBody | null;
+}
+
+/** A GL body the surface draws, and what it keeps of it between frames. */
+interface BodySlot {
+  body: FlowGlBody;
+  host: FlowGlBodyHost;
+  /** Asked for a frame since it last drew. */
+  dirty: boolean;
+  /** The frame it was last in view in (`FlowGlDriver.frames`): in the last one
+   *  drawn is the only time its asking for a frame means one. */
+  seen: number;
+  /** What it last drew, and at what size it was asked for. */
+  texture: FlowGlTexture | null;
+  width: number;
+  height: number;
+  /** Threw from `draw`: drawn as its card from then on. */
+  broken: boolean;
 }
 
 export interface FlowGlSurfaceProps {
@@ -99,8 +124,10 @@ export function targetOf(info: DrawInfoLike): FlowGlTarget {
 const MAX_SLICES = 64;
 
 /** The surface's state across renders: the renderer lives as long as the GL
- *  context it was made for, which is longer than any one props object. */
-class Driver {
+ *  context it was made for, which is longer than any one props object.
+ *  Exported for the tests that drive a frame by hand against a recording GL
+ *  table, as `<Map>`'s `GlMapDriver` is. */
+export class FlowGlDriver {
   props: FlowGlSurfaceProps;
   private area: AreaNode | null = null;
   private renderer: FlowGlRenderer | null = null;
@@ -121,6 +148,12 @@ class Driver {
   private failed = false;
   /** Labels are being set (`setLabels`); one run at a time. */
   private setting = false;
+  /** The GL bodies this surface has drawn, by node id (`renderBodies`). */
+  private readonly slots = new Map<string, BodySlot>();
+  /** The context `draw` was last handed, for the bodies' frames. */
+  private bodyGl: unknown = null;
+  /** Frames drawn, counted — what a body's `seen` is measured against. */
+  private frames = 0;
 
   constructor(props: FlowGlSurfaceProps) {
     this.props = props;
@@ -144,6 +177,7 @@ class Driver {
 
   detach(): void {
     this.props.pane.current?.setGlRequest(null);
+    this.detachBodies();
     if (this.settle != null) timers.clearTimeout?.(this.settle);
     this.settle = null;
     this.atlas?.dispose();
@@ -181,7 +215,14 @@ class Driver {
           height: target.height / target.scale / zoom,
         });
       }
-      const stats = this.renderer.drawFrame(frame, target, atlas ?? undefined);
+      this.bodyGl = gl;
+      this.frames++;
+      const stats = this.renderer.drawFrame(
+        pane.glBodyOf ? { ...frame, bodies: this.renderBodies } : frame,
+        target,
+        atlas ?? undefined,
+      );
+      this.pruneBodies();
       if (frame.world) this.worldKey = frame.key;
       if (frame.lifted !== undefined) this.liftedKey = frame.liftedKey ?? null;
       // Labels this frame could not draw yet are set now, between frames.
@@ -253,12 +294,126 @@ class Driver {
    */
   private admit(atlas: LabelAtlas, moving: boolean): void {
     atlas.admit = !moving;
-    if (moving) {
-      if (this.settle != null) timers.clearTimeout?.(this.settle);
-      this.settle = timers.setTimeout?.(() => {
-        this.settle = null;
-        this.request();
-      }, 120);
+    if (moving) this.settleSoon();
+  }
+
+  /** A frame once the zoom gesture under way has stopped — 120 ms after
+   *  the last frame that found it moving. */
+  private settleSoon(): void {
+    if (this.settle != null) timers.clearTimeout?.(this.settle);
+    this.settle = timers.setTimeout?.(() => {
+      this.settle = null;
+      this.request();
+    }, 120);
+  }
+
+  /**
+   * The bodies in view, drawn where they need to be: one that asked for a
+   * frame, one asked for at another size — the world rebuilt at another
+   * zoom — and one seen for the first time. Every other in view answers the
+   * texture it drew last, so a pan draws no body: the world it is part of
+   * moves, and it with it.
+   *
+   * Nor does a zoom gesture, while it moves: a body that has a texture is
+   * drawn from it, stretched with the world, whatever it asked for or
+   * whatever size it is wanted at now, and is drawn again once the zoom has
+   * rested — as `<Flow>` holds mounted bodies out of a zoom, and for the
+   * same reason. The world is built again at a zoom twice the one it was,
+   * and a map drawn again at every rebuild set its labels again at each
+   * new scale: 38 frames a second of each map on screen, for pictures a
+   * zoom draws stretched anyway.
+   */
+  readonly renderBodies = (
+    inView: readonly GlBodyRequest[],
+    moving: boolean,
+  ): ReadonlyMap<string, FlowGlTexture> => {
+    const pane = this.props.pane.current;
+    const out = new Map<string, FlowGlTexture>();
+    if (!pane?.glBodyOf) return out;
+    for (const { id, frame } of inView) {
+      const body = pane.glBodyOf(id);
+      let slot = this.slots.get(id);
+      if (slot && slot.body !== body) {
+        this.slots.delete(id);
+        slot.body.detach?.();
+        slot = undefined;
+      }
+      if (!body) continue;
+      if (!slot) slot = this.attachBody(id, body);
+      slot.seen = this.frames;
+      if (slot.broken) continue;
+      const resized =
+        slot.texture === null ||
+        slot.width !== frame.width ||
+        slot.height !== frame.height;
+      if ((slot.dirty || resized) && moving && slot.texture !== null) {
+        // drawn once the zoom rests, which asks for the frame that does it
+        this.settleSoon();
+      } else if (slot.dirty || resized) {
+        slot.dirty = false;
+        try {
+          const texture = body.draw(this.bodyGl, frame);
+          slot.texture = texture;
+          slot.width = frame.width;
+          slot.height = frame.height;
+        } catch (error) {
+          // A body is the app's: one that throws is drawn as its card, and
+          // the graph — and every other body — draws on.
+          slot.broken = true;
+          slot.texture = null;
+          warn(`a GL node body threw and is drawn as its card: ${error}`);
+        }
+      }
+      if (slot.texture) out.set(id, slot.texture);
+    }
+    return out;
+  };
+
+  private attachBody(id: string, body: FlowGlBody): BodySlot {
+    const slot: BodySlot = {
+      body,
+      dirty: true,
+      seen: this.frames,
+      texture: null,
+      width: 0,
+      height: 0,
+      broken: false,
+      host: {
+        requestFrame: () => {
+          if (this.slots.get(id) !== slot) return;
+          slot.dirty = true;
+          if (slot.seen === this.frames) this.request();
+        },
+      },
+    };
+    this.slots.set(id, slot);
+    body.attach?.(slot.host);
+    return slot;
+  }
+
+  /** Let go of the bodies whose node is gone, or whose type now names
+   *  another — out of view too, which `renderBodies` never sees. */
+  private pruneBodies(): void {
+    if (this.slots.size === 0) return;
+    const pane = this.props.pane.current;
+    for (const [id, slot] of this.slots) {
+      if (slot.seen === this.frames) continue;
+      if (pane?.glBodyOf?.(id) === slot.body) continue;
+      this.slots.delete(id);
+      slot.body.detach?.();
+    }
+  }
+
+  /** Every body let go: the surface is going, or has failed. */
+  detachBodies(): void {
+    const slots = [...this.slots.values()];
+    this.slots.clear();
+    for (const slot of slots) {
+      try {
+        slot.body.detach?.();
+      } catch (error) {
+        warn(`a GL node body threw as it was let go: ${error}`);
+      }
     }
   }
 
@@ -299,7 +454,19 @@ class Driver {
 const timers = globalThis as {
   setTimeout?(fn: () => void, ms: number): unknown;
   clearTimeout?(id: unknown): void;
+  process?: { env?: Record<string, string | undefined> };
+  console?: { warn(message: string): void };
 };
+
+/** A development warning, once per message — production says nothing. */
+const warned = new Set<string>();
+function warn(message: string): void {
+  if (timers.process?.env?.NODE_ENV === 'production' || warned.has(message)) {
+    return;
+  }
+  warned.add(message);
+  timers.console?.warn(`@react-x11/components <Flow>: ${message}`);
+}
 
 const FILL = {
   position: 'absolute',
@@ -321,12 +488,17 @@ const FILL_WITH_BODIES = { ...FILL, pointerEvents: 'box-none' } as const;
  * it lands on the pane wherever it is in the tree.
  */
 export function FlowGlSurface(props: FlowGlSurfaceProps): ReactElement {
-  const driver = useMemo(() => new Driver(props), []);
+  const driver = useMemo(() => new FlowGlDriver(props), []);
   driver.props = props;
   useEffect(() => {
     driver.attach();
     return () => driver.detach();
   }, [driver]);
+  // The bodies are let go in the commit that takes the surface away, before
+  // core destroys the <glarea> and its context: what a body made in it is
+  // deleted while there is a context to delete it from — the arrangement
+  // `<Map>`'s own GL pane makes for its buffers.
+  useLayoutEffect(() => () => driver.detachBodies(), [driver]);
   return React.createElement('glarea', {
     ref: driver.areaRef,
     // With bodies over it, the surface must pass the pointer through between

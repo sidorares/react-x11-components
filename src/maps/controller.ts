@@ -304,6 +304,19 @@ export const settleClock = {
   },
 };
 
+/** The highest refresh rate any screen reports, or null where none does —
+ *  what `<Map>` and a `GlMapLayer` hand {@link MapController.setFrameRate}. */
+export function fastestRefresh(
+  screens: readonly { readonly refreshRate: number | null }[],
+): number | null {
+  let hz: number | null = null;
+  for (const screen of screens) {
+    const rate = screen.refreshRate;
+    if (rate !== null && (hz === null || rate > hz)) hz = rate;
+  }
+  return hz;
+}
+
 function clamp(value: number, low: number, high: number): number {
   return value < low ? low : value > high ? high : value;
 }
