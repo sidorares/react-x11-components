@@ -9,6 +9,7 @@
  * Pure, and imported by `network.ts`, which every request goes through: no
  * host and no realm.
  */
+import type { ReferrerPolicy } from './referrer.js';
 import type { UrlClass, UrlLike } from './scripts/platform.js';
 
 declare const URL: UrlClass;
@@ -33,6 +34,13 @@ export interface FetchMetadata {
    *  a time is made by someone else: a page's request, whose redirects the
    *  host follows (`fetch-hops.ts`). */
   through?: readonly string[];
+  /** Where its `Referer` is worked out from at each hop, where the network
+   *  follows its redirects itself: the URL it is made from, null for none.
+   *  Absent, the `Referer` its header fields carry is sent as it is. */
+  referrer?: string | null;
+  /** The policy that is worked out under, which a redirect's
+   *  `Referrer-Policy` changes from there on. */
+  referrerPolicy?: ReferrerPolicy;
 }
 
 /** The site of a URL (HTML, "obtain a site"), for whoever has no public

@@ -103,6 +103,12 @@ import { corsCheck, redirectTainted } from './scripts/fetch-hops.js';
 import { nodeModule } from './scripts/platform.js';
 import { fetchIsRuntimes, loadHttp2Fetch } from './undici.js';
 import { MODULE_ACCEPT } from './scripts/script-origin.js';
+import {
+  determineReferrer,
+  referrerPolicyOf,
+  referrerPolicyOfHeaders,
+} from './referrer.js';
+import type { ReferrerPolicy } from './referrer.js';
 import { isXmlType } from './xml-prolog.js';
 import type {
   AbortControllerClass,
@@ -938,6 +944,11 @@ export class HtmlNetwork {
     /** The URLs before this one, which a request that left the site on
      *  its way is held to as not same-site (6265bis 5.2). */
     const before: string[] = [];
+    // its referrer, worked out at each hop from what the one before came
+    // to, under a policy a redirect may change (Fetch 4.1, "main fetch",
+    // step 8; 4.4, "HTTP-redirect fetch")
+    let referrer = metadata?.referrer;
+    let policy = metadata?.referrerPolicy ?? '';
     for (let hop = 0; ; hop += 1) {
       const sending =
         carrying &&
@@ -962,6 +973,12 @@ export class HtmlNetwork {
           headers,
           metadataHeaders(at, metadata, before, this._siteOf),
         );
+      }
+      if (referrer !== undefined) {
+        delete headers.referer;
+        referrer =
+          referrer === null ? null : determineReferrer(referrer, at, policy);
+        if (referrer) headers.referer = referrer;
       }
       if (sending) {
         const header = sending.jar.header(at, sending.context);
@@ -990,6 +1007,7 @@ export class HtmlNetwork {
       }
       const entries = [...response.headers.entries()];
       hops?.push({ url: at, headers: entries });
+      policy = referrerPolicyOfHeaders(entries) || policy;
       // throws why it may not go on: a `CorsError`, which fails the load
       if (cors) {
         const asked = redirectTainted([...before, at], cors.origin);
@@ -1412,8 +1430,10 @@ export class HtmlNetwork {
       (opaque ? ' opaque' : '');
     // only what goes to a server is sent with header fields, and a
     // `data:` URL of megabytes is not parsed again to make them
+    // under the policy its element or its document says (Referrer Policy)
+    const policy = referrerPolicyOf(asker.referrerPolicy);
     const headers = http
-      ? this._headers(kind, url, asker.client ?? page, cors, module)
+      ? this._headers(kind, url, asker.client ?? page, cors, module, policy)
       : null;
     const id = this._begin(kind, url, 'GET', headers ?? {}, null, page);
     const kept = this._cache.get(key);
@@ -1459,6 +1479,8 @@ export class HtmlNetwork {
                 mode: resourceMode(kind, cors),
                 destination: module ?? RESOURCE_DESTINATIONS[kind],
                 origin: opaque ? 'null' : originOf(asker.client ?? page),
+                referrer: asker.client ?? page,
+                referrerPolicy: policy,
               },
             );
     // what the memory holds of it until it is here, and after if it is
@@ -1543,13 +1565,14 @@ export class HtmlNetwork {
     page: string,
     cors?: ResourceCors,
     module?: 'json' | 'text',
+    policy: ReferrerPolicy = '',
   ): Record<string, string> {
     const headers: Record<string, string> = {
       'user-agent': this._userAgent,
       accept: ACCEPT[module ?? kind],
       'accept-language': this._language,
     };
-    const referrer = referrerFor(page, url);
+    const referrer = determineReferrer(page, url, policy);
     if (referrer) headers.referer = referrer;
     if (cors) headers.origin = cors.origin;
     return headers;
@@ -1966,6 +1989,9 @@ export class HtmlNetwork {
       origin?: string;
       /** Its cache mode (`FetchRequest.cache`). */
       cache?: string;
+      /** Its `Referer`, worked out (`FetchRequest.referrer`): null for none,
+       *  absent for the client's under the default policy. */
+      referrer?: string | null;
     },
     page: string,
     signal: AbortSignalLike,
@@ -2016,7 +2042,12 @@ export class HtmlNetwork {
     if (!own || !bodiless) {
       headers.origin = request.opaqueOrigin ? 'null' : originOf(client);
     }
-    const referrer = referrerFor(client, request.url);
+    // what the host worked out for this hop, or the client's under the
+    // default policy
+    const referrer =
+      request.referrer !== undefined
+        ? request.referrer
+        : referrerFor(client, request.url);
     if (referrer) headers.referer = referrer;
     // what the HTTP cache may do with it (Fetch 4.6, "HTTP-network-or-cache
     // fetch"): a page that asks a server itself whether what it has holds
@@ -2988,25 +3019,10 @@ export function videoSource(
   return scheme === 'http' || scheme === 'https' ? allowed : null;
 }
 
-/**
- * Referrer-Policy's default, `strict-origin-when-cross-origin`: the whole
- * URL to the same origin, the origin alone to another, and nothing from a
- * secure page to an insecure one, or from anything but the web.
- */
+/** What a request from `page` to `target` says in its `Referer` under the
+ *  default policy, `strict-origin-when-cross-origin`. */
 function referrerFor(page: string, target: string): string | null {
-  try {
-    const from = new URL(page);
-    const to = new URL(target);
-    if (from.protocol !== 'http:' && from.protocol !== 'https:') return null;
-    if (from.protocol === 'https:' && to.protocol === 'http:') return null;
-    if (from.origin === to.origin) {
-      from.hash = '';
-      return from.href;
-    }
-    return `${from.origin}/`;
-  } catch {
-    return null;
-  }
+  return determineReferrer(page, target, '');
 }
 
 /** A page's origin as an `Origin` header says it: `null` for one that is

@@ -16,6 +16,7 @@
 //
 // Part of the engine's chunk (`./runtime.ts`): nothing here is reached
 // before a page's scripts run.
+import { documentReferrerPolicy, linkReferrerPolicy } from '../referrer.js';
 import React, { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import type { ScrollableNode } from 'react-x11';
@@ -303,6 +304,8 @@ function FrameDocument({
     to: string,
     post: FramePost | null,
     rel: string | undefined,
+    /** The link's referrer policy, or its document's. */
+    referrerPolicy = '',
   ) => {
     const keyword = target.toLowerCase();
     if (keyword === '_top' || keyword === '_parent') {
@@ -326,9 +329,11 @@ function FrameDocument({
           post,
         });
       } else outer.navigate(to, 'tab');
-    } else if (where === 'here') host.navigateFrame(frame, to, post);
-    else if (scripts.navigateFrame) scripts.navigateFrame(where, to, post);
-    else if (!realm) host.navigateFrame(where, to, post);
+    } else if (where === 'here') {
+      host.navigateFrame(frame, to, post, referrerPolicy);
+    } else if (scripts.navigateFrame) {
+      scripts.navigateFrame(where, to, post, referrerPolicy);
+    } else if (!realm) host.navigateFrame(where, to, post, referrerPolicy);
   };
   const { look } = context;
   return hx(
@@ -364,7 +369,13 @@ function FrameDocument({
         while (link && link.name !== 'a' && link.name !== 'area') {
           link = link.parent?.type === 'tag' ? (link.parent as Element) : null;
         }
-        send(linkTarget(link, document), href, null, link?.attribs.rel);
+        send(
+          linkTarget(link, document),
+          href,
+          null,
+          link?.attribs.rel,
+          linkReferrerPolicy(link) || documentReferrerPolicy(document),
+        );
       },
       onSubmit: (submission) => {
         const { url: to, method, body, contentType, target } = submission;

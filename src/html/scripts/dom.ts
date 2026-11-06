@@ -10139,7 +10139,8 @@ export function installDom(
         // `about:blank` keeps its session too (`frameWindowOf`)
         doc: () => frameDocumentOf(frame) ?? doc,
         target,
-        away: (url) => void call('frameNavigate', frame._id, url),
+        away: (url, _replace, referrerPolicy) =>
+          void call('frameNavigate', frame._id, url, referrerPolicy ?? ''),
         tellsFragments: false,
         reload: () => {
           if (unloadAllowed(owner.doc, target)) {
@@ -21305,9 +21306,10 @@ export function installDom(
             cache: str(init.cache ?? request?.cache ?? 'default'),
             redirect: str(init.redirect ?? request?.redirect ?? 'follow'),
             integrity: str(init.integrity ?? request?.integrity ?? ''),
-            referrerPolicy: str(
-              init.referrerPolicy ?? request?.referrerPolicy ?? '',
-            ),
+            // `client`, `no-referrer` or a URL of its origin, and its
+            // policy, as the `Request` it would be has them (Fetch 2.2.5)
+            referrer: probe._referrer,
+            referrerPolicy: probe._referrerPolicy,
             destination: str(request?.destination ?? ''),
           }),
         );
@@ -29198,8 +29200,9 @@ export function installDom(
     doc(): Any;
     /** Where `popstate` and `hashchange` are told: the window. */
     target: Any;
-    /** A navigation to another document, the host's. */
-    away(url: string, replace: boolean): void;
+    /** A navigation to another document, the host's, under the referrer
+     *  policy of the link that started it, where one did. */
+    away(url: string, replace: boolean, referrerPolicy?: string): void;
     /** Whether the host hears of a fragment navigation too: the page's
      *  does, which a browser keeps an entry of its own for and scrolls. */
     tellsFragments: boolean;
@@ -30347,7 +30350,7 @@ export function installDom(
     // the host hears of another document where nothing kept the navigation
     // in this one
     if (went === 'other' && !options.hostFollows) {
-      s.ctx.away(url, type === 'replace');
+      s.ctx.away(url, type === 'replace', linkReferrerPolicy(options));
     }
     return went;
   };
@@ -30383,6 +30386,18 @@ export function installDom(
   /** A link's activation, a click's or a script's (HTML 4.6.4, "follow the
    *  hyperlink"): `navigate` first, and the host follows it only where it
    *  goes to another document. False where the page kept it. */
+  /** The referrer policy a link's navigation is made under (HTML 7.4.2.2,
+   *  "follow the hyperlink"): `no-referrer` for one with `noreferrer` in its
+   *  `rel`, else its `referrerpolicy`. '' for none, or no link. */
+  const linkReferrerPolicy = (options: { sourceElement?: Any }): string => {
+    const link = options.sourceElement;
+    if (!link || typeof link.getAttribute !== 'function') return '';
+    if (link instanceof HTMLFormElement) return '';
+    const rel = str(link.getAttribute('rel') ?? '').toLowerCase();
+    if (/(^|\s)noreferrer(\s|$)/.test(rel)) return 'no-referrer';
+    return str(link.getAttribute('referrerpolicy') ?? '');
+  };
+
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
     if (!anchor.hasAttribute('href')) return true;
     if (anchor.hasAttribute('download')) return !downloadLink(anchor);

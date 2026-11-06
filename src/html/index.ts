@@ -58,6 +58,7 @@ import {
   tagOf,
 } from './dom.js';
 import { focusableElement } from './focus.js';
+import { documentReferrerPolicy, referrerPolicyOf } from './referrer.js';
 import type { Document, Element, HtmlChange } from './dom.js';
 import type { AnyNode } from 'domhandler';
 import { ELEMENT, HtmlViewNode, registerHtmlView } from './node.js';
@@ -1158,6 +1159,10 @@ function useCodeFamily(source: string, family: string): string | null {
 
 // --- the component ----------------------------------------------------------
 
+/** The elements a `referrerpolicy` attribute says the referrer of what
+ *  they load for (HTML 2.5.5): an image's, a script's and a link's. */
+const REFERRING = new Set(['img', 'script', 'link']);
+
 /**
  * A rendered HTML document. Text selects across the whole of it — mouse
  * (double/triple click for word and block), Ctrl+A, Ctrl+C, and X11 PRIMARY
@@ -1230,6 +1235,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
   const windowFocused = useWindowState().focused;
   // what the document's sandbox takes from it, which its host knows
   const sandbox = props._sandbox ?? 0;
+  const headers = props.headers;
   // a link that says to save what it names, with no script to read it: the
   // realm answers for one where a document's scripts run (`downloadLink`)
   const onDownload = sandbox & SB_DOWNLOADS ? undefined : props.onDownload;
@@ -1240,7 +1246,17 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     if (!given) return given;
     const opaque = !!(sandbox & SB_ORIGIN);
     const origin = opaque ? 'null' : baseUrl ? originOfUrl(baseUrl) : null;
-    return (request: ResourceRequest) => {
+    return (resource: ResourceRequest) => {
+      // under its element's referrer policy, or its document's
+      const policy =
+        referrerPolicyOf(
+          REFERRING.has(tagOf(resource.element))
+            ? attr(resource.element, 'referrerpolicy')
+            : null,
+        ) || documentReferrerPolicy(resource.element, headers);
+      const request = policy
+        ? { ...resource, referrerPolicy: policy }
+        : resource;
       const asked = opaque ? { ...request, opaqueOrigin: true } : request;
       if (
         request.kind !== 'font' ||
@@ -1256,7 +1272,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
           : result,
       );
     };
-  }, [props.onResource, sandbox, baseUrl]);
+  }, [props.onResource, sandbox, baseUrl, headers]);
   const followed = React.useMemo(() => {
     const refuses = props._linksAlone
       ? sandbox & (SB_POPUPS | SB_PROPAGATES | SB_DOWNLOADS)

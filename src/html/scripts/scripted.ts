@@ -22,6 +22,7 @@
 //
 // Light on purpose: `<Html>` imports it whether or not a document turns
 // scripts on, and the engine is loaded only once one does (`./hook.ts`).
+import { documentReferrerPolicy, linkReferrerPolicy } from '../referrer.js';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { HtmlSyncNetwork } from '../network.js';
 import type { ReactNode } from 'react';
@@ -834,7 +835,15 @@ export function useScriptedHtml(
       const target = linkTarget(link, document);
       const to = navigableFor(document, target);
       if (typeof to !== 'string' && scripts.navigateFrame) {
-        scripts.navigateFrame(to, href, null);
+        // under the link's referrer policy, or the document it is in
+        scripts.navigateFrame(
+          to,
+          href,
+          null,
+          linkReferrerPolicy(link) ||
+            scripts.runner?.()?.host.documentReferrerPolicy() ||
+            documentReferrerPolicy(link, latest.current.props.headers),
+        );
         return;
       }
       if (to === 'tab' && heldByFlags(href, target, link?.attribs.rel, null)) {

@@ -16,6 +16,7 @@
 // standard asks a site to expect of one. `clients.matchAll()` lists the
 // clients of the process. Another process's change to a registration is read
 // as the next request asks about the scope (`_sync`).
+import { referrerPolicyOfHeaders } from '../referrer.js';
 import type {
   AbortSignalLike,
   AbortControllerClass,
@@ -132,6 +133,9 @@ interface Version {
     | 'redundant';
   registration: Registration;
   scripts: Map<string, HtmlServiceWorkerScript>;
+  /** What its main script's response said of its referrers
+   *  (`Referrer-Policy`), which its thread's requests are made under. */
+  referrerPolicy: string;
   /** Null until its script has run once. */
   handlesFetch: boolean | null;
   skipWaiting: boolean;
@@ -528,6 +532,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       record.id,
     );
     version.handlesFetch = record.handlesFetch;
+    version.referrerPolicy = record.referrerPolicy ?? '';
     for (const script of record.scripts) {
       version.scripts.set(script.url, script);
     }
@@ -547,6 +552,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       state: 'parsed',
       registration,
       scripts: new Map(),
+      referrerPolicy: '',
       handlesFetch: null,
       skipWaiting: false,
       thread: null,
@@ -578,6 +584,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         type: v.type,
         handlesFetch: v.handlesFetch ?? true,
         scripts: [...v.scripts.values()],
+        ...(v.referrerPolicy ? { referrerPolicy: v.referrerPolicy } : {}),
       };
     this._keeper.store.save({
       scope,
@@ -773,6 +780,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         origin: registration.origin,
         secure: true,
         keySecrets: this._latest?.seams.workerSeams().keySecrets ?? [],
+        referrerPolicy: version.referrerPolicy,
         service: {
           scope: registration.scope,
           worker: this._workerView(version),
@@ -928,7 +936,8 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         false,
         type,
       );
-      version.scripts.set(url, script);
+      const { referrerPolicy: _policy, ...kept } = script;
+      version.scripts.set(url, kept);
       return textOf(script.body);
     } catch {
       return null;
@@ -1063,7 +1072,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       );
     }
     const type = job.kind === 'update' && newest ? newest.type : job.type;
-    let main: HtmlServiceWorkerScript;
+    let main: HtmlServiceWorkerScript & { referrerPolicy?: string };
     try {
       main = await this._fetchScript(job.script, registration, true);
     } catch (error) {
@@ -1082,7 +1091,11 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
       return;
     }
     const version = this._makeVersion(job.script, type, registration);
-    version.scripts.set(job.script, main);
+    // its policy container is its main script's response's (Service
+    // Workers 1, "Run Service Worker"), and its script what is kept
+    const { referrerPolicy, ...script } = main;
+    version.referrerPolicy = referrerPolicy ?? '';
+    version.scripts.set(job.script, script);
     const ran = await this._start(version);
     if (!ran) {
       this._forget(version);
@@ -1126,7 +1139,7 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
     registration: Registration,
     main: boolean,
     module?: 'json' | 'text',
-  ): Promise<HtmlServiceWorkerScript> {
+  ): Promise<HtmlServiceWorkerScript & { referrerPolicy: string }> {
     let response: FetchResponse;
     try {
       response = await this._network(
@@ -1193,7 +1206,12 @@ export class ServiceWorkerRegistry implements HtmlServiceWorkerRegistry {
         );
       }
     }
-    return { url, type, body: responseBytes(response) };
+    return {
+      url,
+      type,
+      body: responseBytes(response),
+      referrerPolicy: referrerPolicyOfHeaders(response.headers),
+    };
   }
 
   /** A worker that came to nothing. */

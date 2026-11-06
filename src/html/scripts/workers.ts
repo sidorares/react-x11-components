@@ -12,6 +12,7 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
+import { referrerPolicyOfHeaders } from '../referrer.js';
 import type { FetchMode } from '../fetch-metadata.js';
 import { nodeModule, threadEntry } from './platform.js';
 import type {
@@ -343,10 +344,20 @@ export class PageWorkers implements PageWorkersLike {
           );
         return;
       }
+      // the worker's own script says what its requests' referrers are made
+      // under (HTML 10.2.5.1, "run a worker", a policy container from its
+      // response)
+      const own = m.destination !== undefined;
       void (
         this._seams.script?.(id, m.url, m.type) ??
-        this._load(m.url, id, m.destination, m.mode)
-      ).then((source) => answer({ source }));
+        this._load(m.url, id, m.destination, m.mode, own)
+      ).then((loaded) =>
+        answer(
+          typeof loaded === 'object' && loaded !== null
+            ? loaded
+            : { source: loaded },
+        ),
+      );
     });
     if (this._background) port1.unref?.();
     return id;
@@ -528,16 +539,19 @@ export class PageWorkers implements PageWorkersLike {
     id: number,
     destination = 'script',
     mode: FetchMode = 'no-cors',
-  ): Promise<string | null> {
+    own = false,
+  ): Promise<string | null | { source: string | null; policy: string }> {
     try {
       const response = await this._seams.fetch(
         { url, method: 'GET', headers: [], body: null, mode, destination },
         new AbortController().signal,
         id,
       );
-      return response.status >= 200 && response.status < 300
-        ? response.body
-        : null;
+      const source =
+        response.status >= 200 && response.status < 300 ? response.body : null;
+      return own
+        ? { source, policy: referrerPolicyOfHeaders(response.headers) }
+        : source;
     } catch {
       return null;
     }

@@ -43,6 +43,9 @@ export interface HtmlServiceWorkerVersion {
    *  started to hear a request it would not answer. */
   handlesFetch: boolean;
   scripts: HtmlServiceWorkerScript[];
+  /** The policy its requests' referrers are made under, as its main
+   *  script's response said it (`Referrer-Policy`). Absent, none. */
+  referrerPolicy?: string;
 }
 
 /** A registration, as a store keeps it. Only a worker that finished
