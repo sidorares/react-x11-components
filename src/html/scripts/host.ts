@@ -698,6 +698,13 @@ export interface HandleInternals {
    *  scroller it measures, `x` or `y`, and `r` after it where the scroll
    *  origin is at its end (`HtmlViewNode.timelineAxisOf`). */
   timelineAxis(element: Element, axis: string): string;
+  /** The source an anonymous timeline on an element measures, null for
+   *  the viewport, and the physical axis it does along; undefined for one
+   *  with no box (`HtmlViewNode.timelineSourceOf`). */
+  timelineSource(
+    element: Element,
+    axis: string,
+  ): { source: Element | null; axis: 'x' | 'y' } | undefined;
   /** And one a page cancelled (`HtmlViewNode.cancelCss`). */
   cancelCss(kind: 'animation' | 'transition', key: number): void;
   /** A view transition's steps, as the page's realm runs them: its old
@@ -5495,7 +5502,11 @@ export class DomHost {
             element: id(x.element),
             timeline:
               x.timeline.kind === 'scroll'
-                ? { ...x.timeline, source: id(x.timeline.source) }
+                ? {
+                    ...x.timeline,
+                    source: id(x.timeline.source),
+                    from: x.timeline.from ? id(x.timeline.from) : undefined,
+                  }
                 : x.timeline.kind === 'view'
                   ? { ...x.timeline, subject: id(x.timeline.subject) }
                   : x.timeline,
@@ -5532,6 +5543,18 @@ export class DomHost {
         const el = this._element(a);
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         return handle?.timelineAxis?.(el, String(b)) ?? '';
+      }
+      // where an anonymous timeline on an element looks for its source:
+      // its id, or none for the viewport, and the physical axis, `x` or `y`;
+      // '' for a subject with no box
+      case 'timelineSource': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        const found = handle?.timelineSource?.(el, String(b));
+        if (!found) return '';
+        const source = found.source ? this.idOf(found.source) : '';
+        return `${source},${found.axis}`;
       }
       // one on a scroll's timeline: `align`, `start` or `hold`, the time
       // (null to hold it where its timeline has it) and its rate

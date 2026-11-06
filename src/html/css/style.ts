@@ -5686,8 +5686,26 @@ export function settleOverflow(style: ComputedStyle): void {
   const scrollsX = x !== 'visible' && x !== 'clip';
   const scrollsY = y !== 'visible' && y !== 'clip';
   if (scrollsX === scrollsY) return;
+  const clipped = scrollsX ? y === 'clip' : x === 'clip';
   if (scrollsX) style.overflowY = y === 'visible' ? 'auto' : 'hidden';
   else style.overflowX = x === 'visible' ? 'auto' : 'hidden';
+  if (clipped) CLIPPED_AXIS.set(style, scrollsX ? 'y' : 'x');
+}
+
+/** The axis a scroll container's style was written to `clip` on, which
+ *  computes to `hidden` beside one that scrolls (`settleOverflow`). */
+const CLIPPED_AXIS = new WeakMap<ComputedStyle, 'x' | 'y'>();
+
+/**
+ * Whether a scroll container scrolls along an axis for an anonymous scroll
+ * or view timeline looking for its source (CSS Scroll-driven Animations 1,
+ * 2.2.1): its `overflow` there is neither `visible` nor `clip`, as it was
+ * written. One clipped on that axis and scrolled on the other is a
+ * single-axis scroll container, which the lookup passes over.
+ */
+export function scrollsAlong(style: ComputedStyle, axis: 'x' | 'y'): boolean {
+  const v = axis === 'x' ? style.overflowX : style.overflowY;
+  return v !== 'visible' && v !== 'clip' && CLIPPED_AXIS.get(style) !== axis;
 }
 
 /** A `<visual-box>` (CSS Box 4): the edge of a box a property names. */
@@ -8780,6 +8798,17 @@ const LOGICAL: Record<string, Logical> = (() => {
   for (const [name, physical, vertical] of sizes) {
     out[name] = { kind: 'size', physical, vertical };
   }
+  // the overflow of an axis, by the same turn (CSS Overflow 3, 3.2)
+  out['overflow-inline'] = {
+    kind: 'size',
+    physical: 'overflow-x',
+    vertical: 'overflow-y',
+  };
+  out['overflow-block'] = {
+    kind: 'size',
+    physical: 'overflow-y',
+    vertical: 'overflow-x',
+  };
   for (const block of ['start', 'end'] as const) {
     for (const inline of ['start', 'end'] as const) {
       out[`border-${block}-${inline}-radius`] = {

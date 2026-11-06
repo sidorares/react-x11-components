@@ -1783,6 +1783,8 @@ export function makeHtmlHandle(
       nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
     timelineAxis: (element, axis) =>
       nodeRef.current?.timelineAxisOf(element, axis) ?? '',
+    timelineSource: (element, axis) =>
+      nodeRef.current?.timelineSourceOf(element, axis),
     cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
     cssKeyframes: (element, pseudo, name) =>
       nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
