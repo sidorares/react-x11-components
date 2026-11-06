@@ -167,8 +167,10 @@ import {
   NO_ANIMATIONS,
   NO_TRANSITIONS,
   easingText,
+  overTiming,
   timingAt,
 } from './css/animation.js';
+import type { TimingOverride } from './css/animation.js';
 import type { CssEventRecord, ScrollProgress } from './css/timeline.js';
 import {
   RANGE_END,
@@ -10947,6 +10949,51 @@ export class HtmlViewNode extends Node {
     this.invalidate(true, this, 'props');
   }
 
+  /**
+   * A page's `updateTiming()` on a CSS animation's effect (CSS Animations
+   * 2, 4.2): what it set — its duration, delay, iterations, direction and
+   * fill, as a JSON object of them — stands over the longhands
+   * from then on, and the animation is restyled at once
+   * (`AnimationTimeline.timeAnimation`).
+   */
+  timeAnimation(key: number, json: string): void {
+    if (!this._animating()) return;
+    let given: Record<string, unknown>;
+    try {
+      given = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const over: TimingOverride = {};
+    const { duration, delay, iterations, direction, fill } = given;
+    if (duration === 'auto' || typeof duration === 'number') {
+      over.duration = duration;
+    }
+    if (typeof delay === 'number') over.delay = delay;
+    // `Infinity` crosses as null, which JSON has for it
+    if (typeof iterations === 'number' || iterations === null) {
+      over.iterations = iterations ?? Infinity;
+    }
+    if (
+      direction === 'normal' ||
+      direction === 'reverse' ||
+      direction === 'alternate' ||
+      direction === 'alternate-reverse'
+    ) {
+      over.direction = direction;
+    }
+    if (
+      fill === 'none' ||
+      fill === 'forwards' ||
+      fill === 'backwards' ||
+      fill === 'both'
+    ) {
+      over.fill = fill;
+    }
+    this._timeline.now = animationClock.now();
+    if (this._timeline.timeAnimation(key, over)) this._scheduleFrame();
+  }
+
   /** And one on a scroll's timeline, whose time is a percentage of it:
    *  held at `time`, running from the start time `time`, or aligned to its
    *  range again, at `rate` (`AnimationTimeline.seekScrolled`). */
@@ -14411,7 +14458,7 @@ export class HtmlViewNode extends Node {
       const lists = style.animations;
       const i = a.index;
       const at = <T>(list: readonly T[]): T => list[i % list.length];
-      const timing = timingAt(lists, i);
+      const timing = overTiming(timingAt(lists, i), a.run.timing);
       const ref = style.animationTimeline.length
         ? at(style.animationTimeline)
         : ({ kind: 'auto' } as TimelineRef);
