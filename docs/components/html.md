@@ -5548,7 +5548,10 @@ property whose values do not interpolate, a keyword, goes over at once,
 but under `transition-behavior: allow-discrete`, which runs it and has it
 go over half way (CSS Transitions 2) — `content-visibility` and `display`
 being the end that is not `hidden` or `none` all the while it runs, so what
-an accordion shuts is drawn as it shuts. Under `interpolate-size:
+an accordion shuts is drawn as it shuts. An element whose `display` goes to
+`none` starts no transition, but where `display` itself runs with
+`allow-discrete`, which keeps its box, and what runs beside it, to the end
+of the run: a popover or a menu faded out as it is hidden. Under `interpolate-size:
 allow-keywords` (CSS Values 5), inherited and so usually set on `:root`, a
 `width` or a `height` runs between a length and a keyword — `height: 0` to
 `auto` — through a `calc-size()` of the keyword, both ends written as one
@@ -7056,6 +7059,9 @@ plural ones it had first as them. A page reads an `auto` inset that a
 `position-area` or `anchor-center` places a box against its default anchor
 by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
 multicol container's columns has its insets read where the strip had it.
+`getComputedStyle` reads a `::backdrop`'s style, and the option's where a
+position option placed it; a box an option placed reads the option's insets
+where both sides of an axis are lengths.
 A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
 is out of the cascade until it is let be. `anchor-valid` hides a box that
 refers to its default anchor — an `anchor()` or an `anchor-size()` that

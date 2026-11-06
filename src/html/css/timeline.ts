@@ -1960,6 +1960,16 @@ function transitionFields(list: Transitions): ReadonlyMap<string, number> {
   return out;
 }
 
+/** Whether a style's transitions run `display` itself, which only
+ *  `allow-discrete` does (CSS Transitions 2, 3.1): what an element whose
+ *  `display` comes to `none` is shown through, to the end of the run. */
+export function transitionsDisplay(list: Transitions): boolean {
+  const index = transitionFields(list).get('display');
+  return (
+    index !== undefined && item(list.behaviors, index) === 'allow-discrete'
+  );
+}
+
 const TRANSITION_FIELDS = new WeakMap<Transitions, Map<string, number>>();
 const FIELDS_BY_KEY = new Map<string, Map<string, number>>();
 

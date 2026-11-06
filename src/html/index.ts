@@ -914,6 +914,7 @@ export interface HtmlHandle {
     pseudo?:
       | 'before'
       | 'after'
+      | 'backdrop'
       | 'file-selector-button'
       | HighlightPseudo
       | `view-transition${string}`

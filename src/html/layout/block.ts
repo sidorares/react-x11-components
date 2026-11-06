@@ -11131,6 +11131,14 @@ export function resolvedInsets(
   while (root.parent) root = root.parent;
   const anchoredBy = defaultAnchorOf(root, box);
   const placedStyle = PLACED_STYLE.get(box) ?? style;
+  // and where both sides of an axis are lengths, as the option it was
+  // placed by has them (6.2)
+  if (placedStyle !== style) {
+    sides[0] = placedStyle.top;
+    sides[1] = placedStyle.right;
+    sides[2] = placedStyle.bottom;
+    sides[3] = placedStyle.left;
+  }
   const nought = (i: number): boolean =>
     !!anchoredBy &&
     sides[i] === AUTO &&
@@ -11138,7 +11146,7 @@ export function resolvedInsets(
       (i % 2
         ? placedStyle.justifyAnchorCenter
         : placedStyle.alignAnchorCenter));
-  const anchored = style.anchorInsets;
+  const anchored = placedStyle.anchorInsets;
   const lengths = (i: number): boolean =>
     sides[i] !== AUTO &&
     !anchored?.[INSET_SIDES[i]] &&

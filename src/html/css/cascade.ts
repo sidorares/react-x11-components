@@ -119,6 +119,7 @@ import {
   animatedWillChange,
   fieldsAnimatedBy,
   noteAnimated,
+  transitionsDisplay,
 } from './timeline.js';
 import { sampleScripts } from './scripted.js';
 import type { ScriptAnimations } from './scripted.js';
@@ -8634,8 +8635,12 @@ export class Cascade {
     // none on what its animations set, now or in the style before
     if (timeline) {
       const pseudo = target!;
-      if (style.display === 'none') timeline.dropTransitions(el, pseudo);
-      else {
+      // — but for `display` itself, where `allow-discrete` runs it, which
+      // holds the element as it was until the run is over (CSS Transitions
+      // 2, 3.1)
+      if (style.display === 'none' && !transitionsDisplay(style.transitions)) {
+        timeline.dropTransitions(el, pseudo);
+      } else {
         const settled = style;
         style = timeline.transition(
           el,
