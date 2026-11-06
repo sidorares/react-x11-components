@@ -2849,7 +2849,7 @@ test('a box with a default anchor in a scroll container is placed in its scrolla
       '<div class="s"><div class="f r"><div class="a"></div></div>' +
       '<div class="t" id="anchored" style="position-anchor:--a"></div>' +
       '<div class="t" id="plain"></div></div>' +
-      '<div class="s" style="display:flex;flex-direction:column-reverse">' +
+      '<div class="s" id="s2" style="display:flex;flex-direction:column-reverse">' +
       '<div class="f"><div class="a" style="anchor-name:--b"></div></div>' +
       '<div class="t" id="up" style="position-anchor:--b"></div></div>',
     600,
@@ -2863,7 +2863,7 @@ test('a box with a default anchor in a scroll container is placed in its scrolla
   assert.deepStrictEqual(size('plain'), [100, 100]);
   assert.deepStrictEqual(size('up'), [200, 200]);
   // past the top of the padding box, where the content is
-  const s = boxOf(el, 'up').y - (boxOf(el, 'up').parent!.y + 3);
+  const s = boxOf(el, 'up').y - (boxOf(el, 's2').y + 3);
   assert.strictEqual(s, -100, 'grown up the page');
 });
 
