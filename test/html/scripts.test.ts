@@ -15450,6 +15450,65 @@ test("el.style keeps scroll snapping's values as their grammars take them, and g
   );
 });
 
+test('scrollIntoView lines up the element outset by its scroll-margin in the scrollport inset by scroll-padding, in a container and in the viewport', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html style="scroll-padding-top: 30px"><body style="margin: 0">' +
+      '<div id="s" style="height: 100px; overflow: scroll; scroll-padding: 20px 0 10px">' +
+      '<div style="height: 300px"></div><div id="a" style="height: 10px; scroll-margin: 5px 0 15px"></div>' +
+      '<div style="height: 300px"></div></div>' +
+      '<div style="height: 1000px"></div><div id="b" style="height: 10px; scroll-margin-top: 12px"></div>' +
+      '<div style="height: 1000px"></div><p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [];' +
+      'document.getElementById("a").scrollIntoView(); r.push(s.scrollTop);' +
+      'document.getElementById("a").scrollIntoView(false); r.push(s.scrollTop);' +
+      'document.getElementById("b").scrollIntoView();' +
+      'requestAnimationFrame(function () { r.push(scrollY); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script></body></html>',
+    { pane: 300 },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '275|235|1058',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a page that scrolls the viewport as it loads reads back where it went, before the pane takes it, and the viewport reaches as far as what is positioned out of the flow', async () => {
+  // the default seams, in a pane of core's, which holds a scroll its extent
+  // cannot take yet for its next pass
+  const logs: string[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 400, height: 300, overflow: 'scroll' } },
+      h(Html, {
+        source:
+          '<!DOCTYPE html><html><body style="margin: 0; overflow: scroll">' +
+          '<div style="position: absolute; left: 3000px; top: 0; width: 10px; height: 10px"></div>' +
+          '<div style="height: 2000px"></div>' +
+          '<div style="position: absolute; top: 4000px; width: 10px; height: 10px"></div>' +
+          '<script>var v = document.scrollingElement;' +
+          'v.scrollTo(1000, 3000);' +
+          'console.log("at " + [v.scrollWidth, v.scrollHeight, v.scrollLeft, v.scrollTop, scrollX, scrollY].join(","));' +
+          '</script></body></html>',
+        scripts: {
+          log: (_level: string, text: string) => void logs.push(text),
+        },
+      }),
+    ),
+    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+  );
+  const end = Date.now() + 5000;
+  while (!logs.some((l) => l.startsWith('at ')) && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+  }
+  assert.strictEqual(
+    logs.find((l) => l.startsWith('at ')),
+    'at 3010,4010,1000,3000,1000,3000',
+    logs.join('\n'),
+  );
+});
+
 test('a snap container lines an area up at the start of its own flow: the right in a right-to-left line and in vertical-rl, where the block axis runs across', async () => {
   const doc = await hosted(
     '<style>.s { width: 100px; height: 100px; overflow: scroll; scroll-snap-type: both mandatory }' +

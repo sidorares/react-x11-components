@@ -7071,9 +7071,18 @@ match-parent` takes the default anchor of the parent element, or of a
 pseudo-element's originating element, where that is absolutely positioned
 and the anchor is acceptable for the box. An `anchor-scope` on a `display:
 contents` element scopes what it holds, and an anchor in a block inside an
-inline containing block is inside it, as its element is. Not done: each
-anchor reference's own remembered scroll offset — a
-layout takes every anchor where it is scrolled to then.
+inline containing block is inside it, as its element is. A box follows a
+scroll on an axis only where its default anchor and the anchors it is placed
+against share the nearest scroll container for that axis, and a container
+whose `overflow` is `clip` on one axis beside a scroll on the other is a
+scroll container on the other alone, as Chrome has it: what it is scrolled
+across is no scroll a box follows. A scroll container in a vertical writing
+mode is scrolled, and read, in the page's axes, from its right in
+`vertical-rl` (`scrollLeft` negative), whatever axes its frame lays it out
+in. Not done: each anchor reference's own remembered scroll offset — a
+layout takes every anchor where it is scrolled to then — and a root in a
+vertical writing mode whose viewport a box is placed in (WPT's
+`anchor-scroll-position-try-007` to `010`).
 
 A script's `el.style` takes each of these properties only as its grammar
 has it, in canonical form — `anchor()` and `anchor-size()` with the name
@@ -7262,7 +7271,14 @@ URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
 asked, in a container that snaps and in one that does not; `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
-what each was snapped to. The area each axis lined up is kept by its
+what each was snapped to. Whether or not a container snaps, what such
+a scroll lines up is the element's border box outset by its
+`scroll-margin`, in the scrollport inset by the container's
+`scroll-padding`, the viewport's by the root's (CSS Scroll Snap 1, 6.1
+and 6.2): a heading `scroll-margin-top: 12px` under a page's
+`scroll-padding-top: 30px` comes to rest 42px below the top. A target in a
+sticky box stuck in the container is lined up in the whole scrollport,
+since no scroll takes it clear of the padding. The area each axis lined up is kept by its
 element, and a layout that moves it scrolls the container with it — the
 viewport as far as the document reaches after that layout; where the
 snapport can no longer show the areas both axes lined up, the container
@@ -7310,6 +7326,16 @@ them, the out-of-flow boxes positioned against it by their border boxes,
 and nothing a box inside it clips. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
+
+**A page reads the viewport where it asked it to go.** Core's pane holds
+a scroll its extent cannot take yet for its next pass, which is where a
+page that scrolls as it loads leaves it: such a scroll is read back from
+the hold, across as well as down, so `scrollTo(0, 900)` reads `900` on
+the next line, as in a browser, and not the top. And the viewport reaches
+as far as a box positioned out of the flow that nothing clips reaches,
+down and across, whatever box that clips what it holds is around it in the
+tree: absolute boxes under a `body { overflow: scroll }` positioned against
+the page made it no wider than the window.
 
 **A scroll is a move and no layout**: the boxes are moved by the
 difference, the ink bounds worked out again, the scrollport repainted and

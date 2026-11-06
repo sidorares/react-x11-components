@@ -73,6 +73,7 @@ import {
   INLINE_BEFORE_ABSOLUTE,
   anchorsImplicitly,
   scrolls,
+  scrollsAlong,
 } from '../css/style.js';
 import {
   about,
@@ -2055,6 +2056,10 @@ export function layoutDocument(
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
   let bottom = Math.max(flowBottom, reach);
+  // and how far across a positioned box no box clips reaches, which the
+  // ink of a box that clips what it holds leaves out where it is
+  // positioned against something outside that box
+  let positionedRight = -Infinity;
   let fixed: Box[] | null = null;
   // and the ones in the blocks it kept, which no box fixed to the viewport
   // is among (`reuseBlockers`)
@@ -2068,6 +2073,7 @@ export function layoutDocument(
       continue;
     }
     if (clipsFor(box, root).length) continue;
+    positionedRight = Math.max(positionedRight, box.x + box.width);
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
     // it — design 094 was a window tall and no taller, its text past the
@@ -2089,8 +2095,8 @@ export function layoutDocument(
   // and the document is as wide as the window and what spills past its left
   const width = viewportStartsRight(root)
     ? viewportWidth + spill
-    : inkRight > viewportWidth + 0.5
-      ? Math.max(viewportWidth, viewportReach(root).right)
+    : inkRight > viewportWidth + 0.5 || positionedRight > viewportWidth + 0.5
+      ? Math.max(viewportWidth, viewportReach(root).right, positionedRight)
       : viewportWidth;
   return {
     width,
@@ -8172,7 +8178,10 @@ function anchoredStyle(
         const at = referencedAnchor(box, style, ref.name, ctx);
         if (!at) return null;
         const of = anchorRect(at, box, ctx);
-        if (defaultAnchor && sameScrollContext(at, defaultAnchor)) {
+        if (
+          defaultAnchor &&
+          sameScrollContext(at, defaultAnchor, across ? 'x' : 'y')
+        ) {
           scrolled = true;
         }
         return anchorInset(
@@ -8296,10 +8305,14 @@ function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
   // and where the box's anchor references are taken at a displacement of
   // its default anchor, one scrolled with that seen moved back by it
   const shift = ctx.anchorShift;
-  const back =
-    shift && sameScrollContext(anchor, shift.anchor) ? shift : NO_SHIFT;
-  const at = { ...moved, x: moved.x - back.x, y: moved.y - back.y };
-  return framed.any ? inFrameOf(at, anchor, box) : at;
+  const backX =
+    shift && sameScrollContext(anchor, shift.anchor, 'x') ? shift.x : 0;
+  const backY =
+    shift && sameScrollContext(anchor, shift.anchor, 'y') ? shift.y : 0;
+  // in the box's axes, which the shift is in, through any frame the
+  // anchor is turned in
+  const seen = framed.any ? inFrameOf(moved, anchor, box) : moved;
+  return { ...seen, x: seen.x - backX, y: seen.y - backY };
 }
 
 /**
@@ -8415,8 +8428,6 @@ function laidArea(area: PositionArea, axes: AnchorAxes): PositionArea {
 
 const NO_TACTICS: readonly TryTactic[] = [];
 
-const NO_SHIFT = { x: 0, y: 0 };
-
 /** The physical sides an inset's `anchor()` may not read: the other
  *  axis's. */
 const ACROSS = new Set(['left', 'right']);
@@ -8428,12 +8439,13 @@ const OTHER_AXIS: Record<InsetSide, ReadonlySet<string>> = {
   right: DOWN,
 };
 
-/** Whether one scroll moves two anchors alike: in the same scroll
- *  container, and fixed to the viewport both or neither. */
-function sameScrollContext(a: Box, b: Box): boolean {
+/** Whether one scroll moves two anchors alike along `axis`: in the same
+ *  scroll container for that axis, and fixed to the viewport both or
+ *  neither. */
+function sameScrollContext(a: Box, b: Box, axis: 'x' | 'y'): boolean {
   if (a === b) return true;
   return (
-    nearestScrollerOf(a) === nearestScrollerOf(b) &&
+    nearestScrollerOf(a, axis) === nearestScrollerOf(b, axis) &&
     drawnAtViewport(a) === drawnAtViewport(b)
   );
 }
@@ -8734,11 +8746,13 @@ function contentsScopedAway(
   return false;
 }
 
-/** The scroll container a box is scrolled in: the nearest around it, or
- *  null for the viewport. */
-function nearestScrollerOf(box: Box): Box | null {
+/** The scroll container a box is scrolled in along `axis`: the nearest
+ *  around it that scrolls along it, or null for the viewport. One whose
+ *  `overflow` was written `clip` on that axis, beside one that scrolls on
+ *  the other, is a scroll container on the other alone (`scrollsAlong`). */
+function nearestScrollerOf(box: Box, axis: 'x' | 'y'): Box | null {
   for (let at = box.parent; at; at = at.parent) {
-    if (isScroller(at)) return at;
+    if (isScroller(at) && scrollsAlong(at.style, axis)) return at;
   }
   return null;
 }
