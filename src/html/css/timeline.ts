@@ -16,7 +16,14 @@
 // left them. What it says the element (`HtmlViewNode`) needs a frame for is
 // what it restyles on the next one (`live`, `nextFrame`).
 
-import { ease, progressAt, timingAt, tracksOf } from './animation.js';
+import {
+  ease,
+  overTiming,
+  progressAt,
+  timingAt,
+  tracksOf,
+} from './animation.js';
+import type { TimingOverride } from './animation.js';
 import type { Animations, Easing, Timing, Transitions } from './animation.js';
 import {
   discreteField,
@@ -105,6 +112,9 @@ export interface Running {
   /** Whether it is new and waits, held at its start, for the paint that
    *  first shows it (`AnimationTimeline.startsAtPaint`). */
   pending?: boolean;
+  /** What a page's `updateTiming()` set on its effect, over the style's
+   *  longhands (`AnimationTimeline.timeAnimation`). */
+  timing?: TimingOverride;
 }
 
 /**
@@ -434,7 +444,7 @@ export class AnimationTimeline {
             : named;
         if (!inherits) inherits = animatesInherited(rule);
         const timing = proportional(
-          timingAt(animations, i),
+          overTiming(timingAt(animations, i), run.timing),
           Math.max(to - from, 0),
         );
         const active =
@@ -475,7 +485,7 @@ export class AnimationTimeline {
         });
         continue;
       }
-      const timing = timingAt(animations, i);
+      const timing = overTiming(timingAt(animations, i), run.timing);
       clocked = true;
       // new, it waits at its start for the paint that first shows it
       if (fresh && this.startsAtPaint) {
@@ -1616,6 +1626,27 @@ export class AnimationTimeline {
           run.pagePaused = paused;
           if (paused || run.hold !== null) run.hold = currentTime;
           else run.start = this.now - (run.trig?.rate ?? 1) * currentTime;
+          target.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * A page's `updateTiming()` on a CSS animation's effect: what it set
+   * stands over the longhands from then on (`Running.timing`), and the run
+   * is restyled at the next frame. The element it is on, or null where no
+   * run under way has the key.
+   */
+  timeAnimation(key: number, timing: TimingOverride): object | null {
+    for (const [el, targets] of this._targets) {
+      for (const target of targets.values()) {
+        for (const run of target.running) {
+          if (!run || RUN_KEYS.get(run) !== key) continue;
+          run.timing = { ...run.timing, ...timing };
+          this._sought.add(el);
           target.next = 0;
           return el;
         }

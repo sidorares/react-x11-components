@@ -16360,6 +16360,42 @@ test("a page's view timeline, and a CSS scroll(nearest)'s, look for a source pas
   );
 });
 
+test("a page's updateTiming() on a CSS animation's effect stands over the longhands it names, in what is drawn and read back, and the rest follow the style", async () => {
+  const doc = await hosted(
+    '<style>@keyframes z { from { z-index: 0 } to { z-index: 100 } }' +
+      ' #s { overflow: auto; width: 100px; height: 100px } #s > div { height: 50px; z-index: -1 }' +
+      ' #t { animation: z 1s linear forwards; animation-timeline: view() }' +
+      ' #c { animation: z 100s infinite }</style>' +
+      '<div id="s"><div></div><div></div><div></div><div id="t"></div>' +
+      '<div></div><div></div><div></div></div><div id="c"></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), t = document.getElementById("t"),' +
+      '  c = document.getElementById("c"), r = [];' +
+      // the clock's: an iteration count of infinity, an effect easing of
+      // linear, and a duration set over the style's while its delay follows
+      'var a = c.getAnimations()[0], timing = a.effect.getTiming();' +
+      'r.push(timing.iterations, timing.easing);' +
+      'a.effect.updateTiming({ duration: 2000, endDelay: 5 });' +
+      'c.style.animationDuration = "4s"; c.style.animationDelay = "6s";' +
+      'timing = a.effect.getTiming();' +
+      'r.push(timing.duration, timing.delay, timing.endDelay);' +
+      // a view timeline's, past its range and filling forwards, and then not
+      's.scrollTop = 201;' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  r.push(getComputedStyle(t).zIndex);' +
+      '  t.getAnimations()[0].effect.updateTiming({ fill: "none" });' +
+      '  r.push(getComputedStyle(t).zIndex);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'Infinity|linear|2000|6000|5|100|-1',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

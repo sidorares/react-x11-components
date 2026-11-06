@@ -2013,6 +2013,14 @@ Blink, and the end of its scroller's scroll is in the active phase of one
 that ends there. What a style does to one the page holds — an
 `animation-play-state` that pauses it, say — shows in its `playState`
 once `getAnimations()` lists it again, and it is never pending for that.
+Its effect's `getTiming()` and `getComputedTiming()` read the cascade as
+it stands, a style changed since included, with an easing of `linear`,
+since `animation-timing-function` eases each keyframe; and what a page's
+`updateTiming()` sets of its duration, delay, iteration count, direction
+and fill stands over that longhand from then on, in what is drawn and what
+`getComputedStyle` reads at once, as CSS Animations 2, 4.2 has it, while
+the rest follow the style. Its `endDelay`, `iterationStart` and `easing`
+read back as the page set them and change nothing drawn yet.
 Its effect's `getKeyframes()` lists its `@keyframes`' frames,
 those at one offset and of one easing merged, with a frame made of the
 element's style under its animations at an end the rule leaves out.

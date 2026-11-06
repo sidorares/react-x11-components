@@ -2701,6 +2701,7 @@ export function installDom(
     _timing: Any = timingOf(undefined);
     _animation: Any = null;
     getTiming(): Any {
+      if ((this as Any)._css) refreshCssTiming(this);
       const t = this._timing;
       return {
         delay: t.delay,
@@ -2732,6 +2733,8 @@ export function installDom(
         );
       }
       this._timing = next;
+      // a CSS animation's stands over its longhands from then on
+      this._animation?._timingSet?.(timing ?? {});
       this._animation?._effectChanged();
     }
     /**
@@ -2885,6 +2888,7 @@ export function installDom(
     /** Its computed timing (Web Animations 1, 6.6), its times percentages
      *  where its timeline is progress-based (Web Animations 2, 6.6). */
     getComputedTiming(): Any {
+      if ((this as Any)._css) refreshCssTiming(this);
       const t = this._timing;
       const n = this._norm();
       const s = this._state();
@@ -5026,6 +5030,25 @@ export function installDom(
     get animationName(): string {
       return this._name;
     }
+    /** What a page's `updateTiming()` set on its effect — of its duration,
+     *  delay, iterations, direction and fill — stands over the
+     *  `animation-*` longhand it names from then on, in what is drawn as
+     *  here (CSS Animations 2, 4.2; `HtmlViewNode.timeAnimation`). */
+    _timingSet(given: Any): void {
+      const t = this._effect?._timing;
+      if (!t) return;
+      const keys = (this._effect._pageTiming ??= new Set<string>());
+      for (const k of Object.keys(given)) {
+        if (given[k] !== undefined) keys.add(k);
+      }
+      const set: Record<string, Any> = {};
+      for (const k of TIMING_OVERRIDES) {
+        if (given[k] !== undefined) set[k] = t[k];
+      }
+      if (Object.keys(set).length) {
+        call('timeAnimation', this._key, JSON.stringify(set));
+      }
+    }
     /** What a page did to it — a seek, `pause()`, `play()`, `finish()` —
      *  is the cascade's run's as well, so what is drawn, what is read back
      *  and the events it tells follow it. It is in no list of a script's
@@ -5090,6 +5113,15 @@ export function installDom(
     override _report(): void {}
     override _watch(): void {}
   }
+  /** What of an effect's timing a page's `updateTiming()` may set over a
+   *  CSS animation's longhands (`CSSAnimation._timingSet`). */
+  const TIMING_OVERRIDES = [
+    'duration',
+    'delay',
+    'iterations',
+    'direction',
+    'fill',
+  ];
   /** Each CSS animation's object, by its run's key. */
   const cssAnimationObjects = new Map<number, Any>();
   /** The CSS animations a page's script did something to, which are none
@@ -5129,6 +5161,44 @@ export function installDom(
     }
     return tl;
   };
+  /** A CSS animation's effect's timing as the cascade has it: its
+   *  longhands', and what a page set over them. Its easing is linear,
+   *  since `animation-timing-function` eases each keyframe (CSS
+   *  Animations 2, 4.2), and an infinite iteration count crosses as JSON's
+   *  null. */
+  const cssTimingOf = (info: Any, effect?: Any): Any => {
+    const t = timingOf(
+      {
+        duration: info.duration,
+        delay: info.delay,
+        iterations: info.iterations ?? Infinity,
+        direction: info.direction,
+        fill: info.fill,
+      },
+      null,
+    );
+    // and what the page set that no longhand has — `endDelay`,
+    // `iterationStart`, `easing` — kept as it set it
+    const was = effect?._timing;
+    for (const k of effect?._pageTiming ?? []) {
+      if (TIMING_OVERRIDES.includes(k) || !was) continue;
+      t[k] = was[k];
+      if (k === 'easing') t._easing = was._easing;
+    }
+    return t;
+  };
+  /** A CSS animation's effect's timing again, from the cascade as its
+   *  styles stand now, which a page may have changed since
+   *  `getAnimations()` listed it (`KeyframeEffect.getTiming`). */
+  const refreshCssTiming = (effect: Any): void => {
+    const a = effect._animation;
+    const target = effect._target;
+    if (!(a instanceof CSSAnimation) || !target?._id) return;
+    const raw = call('cssAnimations', target._id, false);
+    const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
+    const info = list.find((i: Any) => i.key === a._key);
+    if (info) effect._timing = cssTimingOf(info, effect);
+  };
   /** The CSS animations under way on `target`, or on what it holds, or in
    *  the document for null, in tree order and then their order in
    *  `animation-name` (CSS Animations 2, 4.1, "the composite order"). */
@@ -5148,12 +5218,6 @@ export function installDom(
       const el = wrap(info.element);
       if (!a) {
         const effect = new KeyframeEffect(el, null, {
-          duration: info.duration,
-          delay: info.delay,
-          iterations: info.iterations,
-          direction: info.direction,
-          fill: info.fill,
-          easing: info.easing,
           pseudoElement: info.pseudo || null,
         });
         effect._css = {
@@ -5167,17 +5231,7 @@ export function installDom(
       } else {
         a._timeline = cssTimelineOf(info.timeline);
       }
-      a._effect._timing = timingOf(
-        {
-          duration: info.duration,
-          delay: info.delay,
-          iterations: info.iterations,
-          direction: info.direction,
-          fill: info.fill,
-          easing: info.easing,
-        },
-        null,
-      );
+      a._effect._timing = cssTimingOf(info, a._effect);
       a._rangeStart = rangeEdgeOf(info.rangeStart, false);
       a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
       // a task the page left pending is the cascade's now, and done

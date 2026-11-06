@@ -951,6 +951,36 @@ export function timingAt(animations: Animations, index: number): Timing {
   };
 }
 
+/**
+ * What a page's `updateTiming()` set on a CSS animation's effect, which
+ * stands over the `animation-*` longhand it names from then on, whatever
+ * the style comes to (CSS Animations 2, 4.2): the rest still follow it.
+ * An effect's easing is none of them: it eases the iteration under the
+ * keyframes' `animation-timing-function`, which is no longhand's.
+ */
+export interface TimingOverride {
+  duration?: number | 'auto';
+  delay?: number;
+  iterations?: number;
+  direction?: AnimationDirection;
+  fill?: FillMode;
+}
+
+/** A run's timing with what a page set laid over it (`TimingOverride`). */
+export function overTiming(timing: Timing, over?: TimingOverride): Timing {
+  if (!over) return timing;
+  const out = { ...timing };
+  if (over.duration !== undefined) {
+    out.duration = over.duration === 'auto' ? 0 : over.duration;
+    out.auto = over.duration === 'auto';
+  }
+  if (over.delay !== undefined) out.delay = over.delay;
+  if (over.iterations !== undefined) out.iterations = over.iterations;
+  if (over.direction !== undefined) out.direction = over.direction;
+  if (over.fill !== undefined) out.fill = over.fill;
+  return out;
+}
+
 /** Whether an animation has yet to start, is under way, or is over. */
 export type Phase = 'before' | 'active' | 'after';
 

@@ -672,6 +672,9 @@ export interface HandleInternals {
   /** And a CSS animation, held there where the page paused it
    *  (`HtmlViewNode.seekAnimation`). */
   seekAnimation(key: number, currentTime: number, paused: boolean): void;
+  /** And its timing, as a page's `updateTiming()` set it on its effect: a
+   *  JSON object of what it set (`HtmlViewNode.timeAnimation`). */
+  timeAnimation(key: number, timing: string): void;
   /** And one on a scroll's timeline, held, run from a start time or
    *  aligned to its range (`HtmlViewNode.seekScrolled`). */
   seekScrolled(
@@ -5521,6 +5524,10 @@ export class DomHost {
           a === 'animation' ? 'animation' : 'transition',
           Number(b),
         );
+        return null;
+      // a page's `updateTiming()` on a CSS animation's effect
+      case 'timeAnimation':
+        this._seams.handle.timeAnimation?.(Number(a), String(b));
         return null;
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
