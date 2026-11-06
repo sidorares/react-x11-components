@@ -31,9 +31,33 @@ import {
 } from '../src/rich-text-editor/keymap.js';
 import {
   docFromMarkdown,
+  docFromText,
   markdownCodec,
   markdownFromDoc,
+  textFromDoc,
 } from '../src/rich-text-editor/markdown.js';
+import {
+  composerParts,
+  composerSchema,
+  pasteAttachment,
+} from '../src/rich-text-editor/composer.js';
+import {
+  fenceOf,
+  inlineMarkup,
+  markupConfig,
+  MarkupScanner,
+} from '../src/rich-text-editor/markup.js';
+import type {
+  LineMarkup,
+  MarkupConfig,
+  MarkupMode,
+} from '../src/rich-text-editor/markup.js';
+import { deriveLook } from '../src/rich-text-editor/look.js';
+import { KeyedStore } from '../src/rich-text-editor/store.js';
+import {
+  CodeRunCache,
+  LIGHT_TOKEN_STYLES,
+} from '../src/code-language/index.js';
 import { replaceDocumentTr } from '../src/rich-text-editor/replace.js';
 import { schema } from '../src/rich-text-editor/schema.js';
 import {
@@ -1633,4 +1657,411 @@ test('tableRepair: a ragged table is made whole on the next change to it', () =>
   );
   state = state.apply(state.tr.insertText('!'));
   assert.deepStrictEqual(grid(state), ['a|b', '!1|']);
+});
+
+// --- a composer: lines, markup, atoms ---------------------------------------------------
+
+/** What a line's markup draws, as `text:role` — easier to read than offsets. */
+function spansOf(text: string, mode: MarkupMode): string[] {
+  return inlineMarkup(text, mode).map(
+    (s) => `${text.slice(s.from, s.to)}:${s.role}`,
+  );
+}
+
+test('format="text" writes back exactly what was typed: nothing escaped, every line, the blank ones too', () => {
+  for (const value of [
+    '2 * 3',
+    'snake_case and __init__',
+    'src/**/*.ts',
+    '# not a heading\n- not a list\n> not a quote',
+    '```ts\nconst a = `b`;\n```',
+    'one\n\n\nfour',
+    'ends on a line feed\n',
+    '\\*not\\* escaped twice',
+  ]) {
+    for (const s of [schema, composerSchema]) {
+      assert.strictEqual(
+        textFromDoc(docFromText(s, value)),
+        value,
+        `${JSON.stringify(value)} round-trips`,
+      );
+    }
+  }
+});
+
+test('fenceOf: three backticks or tildes, indented at most three, with an info string a backtick fence has no backtick in', () => {
+  assert.deepStrictEqual(fenceOf('```ts'), {
+    char: '`',
+    length: 3,
+    info: 'ts',
+  });
+  assert.deepStrictEqual(fenceOf('   ~~~~ python  x'), {
+    char: '~',
+    length: 4,
+    info: 'python  x',
+  });
+  assert.strictEqual(fenceOf('    ```'), null, 'four spaces is indented code');
+  assert.strictEqual(fenceOf('``'), null);
+  assert.strictEqual(fenceOf('```a```'), null, 'a code span, not a fence');
+  assert.strictEqual(fenceOf('text ```'), null);
+});
+
+test('inlineMarkup: code spans in either mode, markdown’s own syntax only in "markdown", and nothing where markdown would read nothing', () => {
+  assert.deepStrictEqual(spansOf('a `b` c', 'code'), [
+    'b:code',
+    '`:codeMarker',
+    '`:codeMarker',
+  ]);
+  assert.deepStrictEqual(
+    spansOf('``x`y``', 'code'),
+    ['x`y:code', '``:codeMarker', '``:codeMarker'],
+    'a run pairs with a run as long',
+  );
+  assert.deepStrictEqual(spansOf('an `unclosed span', 'code'), []);
+  assert.deepStrictEqual(
+    spansOf('**bold** _em_', 'code'),
+    [],
+    '"code" is code',
+  );
+  assert.deepStrictEqual(spansOf('**Note**: _first_ ~~no~~', 'markdown'), [
+    'Note:strong',
+    'first:em',
+    'no:strike',
+    '~~:marker',
+    '~~:marker',
+    '**:marker',
+    '**:marker',
+    '_:marker',
+    '_:marker',
+  ]);
+  for (const literal of [
+    '2 * 3',
+    'a * b * c',
+    'snake_case_name',
+    'src/**/*.ts',
+    '\\*escaped\\*',
+  ]) {
+    assert.deepStrictEqual(spansOf(literal, 'markdown'), [], literal);
+  }
+  assert.deepStrictEqual(spansOf('`**not bold**`', 'markdown'), [
+    '**not bold**:code',
+    '`:codeMarker',
+    '`:codeMarker',
+  ]);
+  assert.deepStrictEqual(spansOf('## Title', 'markdown'), [
+    'Title:heading',
+    '##:marker',
+  ]);
+  assert.deepStrictEqual(spansOf('> said', 'markdown'), [
+    'said:quote',
+    '>:marker',
+  ]);
+  assert.deepStrictEqual(spansOf('  12. item', 'markdown'), ['12.:listMarker']);
+});
+
+/** A document of lines, keyed as the view keys it. */
+function scanned(
+  text: string,
+  mode: MarkupMode = 'code',
+): {
+  doc: PMNode;
+  keys: BlockKeys;
+  store: KeyedStore<LineMarkup>;
+  scanner: MarkupScanner;
+  config: MarkupConfig;
+  at: (line: number) => LineMarkup | undefined;
+} {
+  const doc = docFromText(composerSchema, text);
+  const keys = new BlockKeys(doc);
+  const store = new KeyedStore<LineMarkup>();
+  const scanner = new MarkupScanner();
+  const config = markupConfig(mode, TEST_LOOK);
+  scanner.scan(doc, (pos) => keys.keyAt(pos), config, store);
+  const at = (line: number): LineMarkup | undefined => {
+    let pos = 0;
+    for (let i = 0; i < line; i++) pos += doc.child(i).nodeSize;
+    return store.get(keys.keyAt(pos)!);
+  };
+  return { doc, keys, store, scanner, config, at };
+}
+
+const TEST_LOOK = deriveLook({}, { lines: true });
+
+test('MarkupScanner: a fence runs from its opening line to the line that closes it, on one band, its code coloured', () => {
+  const { at } = scanned(
+    ['say `x`:', '```js', 'const a = 1;', '', '~~~', '```', 'after'].join('\n'),
+  );
+  assert.strictEqual(at(0)?.fence, null);
+  assert.strictEqual(at(0)?.inline.length, 3, 'a code span');
+  assert.deepStrictEqual(
+    [1, 2, 3, 4, 5].map((i) => [at(i)?.fence, at(i)?.band]),
+    [
+      ['open', 'start'],
+      ['body', 'middle'],
+      ['body', 'middle'],
+      ['body', 'middle'],
+      ['close', 'end'],
+    ],
+    'a tilde line does not close a backtick fence',
+  );
+  assert.strictEqual(at(6), undefined, 'a plain line has no markup');
+  const code = at(2)!.inline;
+  assert.ok(
+    code.length > 1 && new Set(code.map((d) => d.style.color)).size > 1,
+    'the code line is coloured by its tokens',
+  );
+  assert.strictEqual(at(1)!.inline[0].style.color, TEST_LOOK.muted);
+});
+
+test('MarkupScanner: a fence still open runs to the end; one line alone is a band of one', () => {
+  const open = scanned('text\n```\ncode\nmore');
+  assert.deepStrictEqual(
+    [1, 2, 3].map((i) => open.at(i)?.band),
+    ['start', 'middle', 'end'],
+  );
+  const alone = scanned('text\n```py');
+  assert.strictEqual(alone.at(1)?.band, 'only');
+});
+
+test('MarkupScanner: a keystroke tells only the lines whose markup changed', () => {
+  const lines = ['intro'];
+  lines.push('```ts');
+  for (let i = 0; i < 400; i++) lines.push(`const v${i} = ${i};`);
+  lines.push('```');
+  for (let i = 0; i < 400; i++) lines.push(`line ${i} with \`code\``);
+  const s = scanned(lines.join('\n'));
+  const told = new Set<string>();
+  for (const key of s.store.keys()) s.store.subscribe(key, () => told.add(key));
+  // a letter typed in the middle of the fence
+  let pos = 0;
+  for (let i = 0; i < 200; i++) pos += s.doc.child(i).nodeSize;
+  const state = EditorState.create({ doc: s.doc });
+  const tr = state.tr.insertText('x', pos + 3);
+  s.keys.update(tr.doc, tr.mapping);
+  s.scanner.scan(tr.doc, (p) => s.keys.keyAt(p), s.config, s.store);
+  assert.ok(told.size >= 1 && told.size <= 2, `told ${told.size} lines`);
+  // a fence closed early: every line after the new close changes
+  told.clear();
+  const close = tr.doc.resolve(pos + 1).end();
+  const split = EditorState.create({ doc: tr.doc })
+    .tr.split(close)
+    .insertText('```', close + 2);
+  s.keys.update(split.doc, split.mapping);
+  s.scanner.scan(split.doc, (p) => s.keys.keyAt(p), s.config, s.store);
+  assert.ok(told.size > 190, 'the lines that left the fence were told');
+});
+
+test('CodeRunCache.runsByLine: the runs a line at a time, each line’s array kept while its tokens are', () => {
+  const cache = new CodeRunCache();
+  const opts = { styles: LIGHT_TOKEN_STYLES, color: '#000' };
+  const a = ['const a = 1;', '/* open', 'still comment */', 'let b = 2;'];
+  const first = cache.runsByLine(a, 'js', opts);
+  assert.deepStrictEqual(
+    first.map((line) => line.map((r) => r.text).join('')),
+    a,
+  );
+  const b = [...a];
+  b[0] = 'const a = 10;';
+  const second = cache.runsByLine(b, 'js', opts);
+  assert.notStrictEqual(second[0], first[0]);
+  for (let i = 1; i < a.length; i++)
+    assert.strictEqual(second[i], first[i], `line ${i} kept its runs`);
+  const plain = new CodeRunCache().runsByLine(['x', '', 'y'], '', opts);
+  assert.deepStrictEqual(
+    plain.map((line) => line.map((r) => r.text)),
+    [['x'], [], ['y']],
+  );
+});
+
+test('composerSchema: a mention writes `@label` into the value and an attachment `[label]`', () => {
+  const { mention, attachment } = composerSchema.nodes;
+  const doc = composerSchema.node('doc', null, [
+    composerSchema.node('paragraph', null, [
+      composerSchema.text('ask '),
+      mention.create({ id: 'u1', label: 'ada', data: { team: 'core' } }),
+      composerSchema.text(' about '),
+      attachment.create({
+        kind: 'paste',
+        id: '1',
+        label: 'Pasted text #1 +3 lines',
+        data: 'a\nb\nc',
+      }),
+    ]),
+    composerSchema.node('paragraph', null, [composerSchema.text('2 * 3')]),
+  ]);
+  const value = textFromDoc(doc);
+  assert.strictEqual(value, 'ask @ada about [Pasted text #1 +3 lines]\n2 * 3');
+  const parts = composerParts(doc);
+  assert.strictEqual(parts.text, value);
+  assert.deepStrictEqual(
+    parts.mentions.map((m) => [m.kind, m.id, m.label, m.data, m.token, m.at]),
+    [['user', 'u1', 'ada', { team: 'core' }, '@ada', 4]],
+  );
+  const [paste] = parts.attachments;
+  assert.strictEqual(paste.data, 'a\nb\nc');
+  assert.strictEqual(
+    value.slice(paste.at, paste.at + paste.token.length),
+    paste.token,
+  );
+  // and through HTML, what a copy to another application carries
+  const html = htmlFromContent(composerSchema, doc);
+  assert.match(html, /data-mention="user"/);
+  assert.strictEqual(
+    textFromDoc(docFromHTML(composerSchema, html)),
+    value,
+    'the atoms come back as atoms',
+  );
+});
+
+test('pasteAttachment: past the lines or the characters, numbered on from the highest; a plain paste is text', () => {
+  const doc = docFromText(composerSchema, 'hello');
+  const long = Array.from({ length: 12 }, (_, i) => `l${i}`).join('\n');
+  const options = { lines: 10, chars: 2000 };
+  assert.strictEqual(
+    pasteAttachment(doc, { text: 'short', image: null, plain: false }, options),
+    null,
+  );
+  const atom = pasteAttachment(
+    doc,
+    { text: long, image: null, plain: false },
+    options,
+  )!;
+  assert.strictEqual(atom.type.name, 'attachment');
+  assert.strictEqual(atom.attrs.label, 'Pasted text #1 +12 lines');
+  assert.strictEqual(atom.attrs.data, long);
+  assert.strictEqual(
+    pasteAttachment(doc, { text: long, image: null, plain: true }, options),
+    null,
+    'Shift-Mod-V pastes it as text',
+  );
+  const wide = pasteAttachment(
+    doc,
+    { text: 'x'.repeat(2001), image: null, plain: false },
+    options,
+  );
+  assert.strictEqual(wide?.attrs.label, 'Pasted text #1 +1 line');
+  const holding = composerSchema.node('doc', null, [
+    composerSchema.node('paragraph', null, [atom]),
+  ]);
+  assert.strictEqual(
+    pasteAttachment(holding, { text: long, image: null, plain: false }, options)
+      ?.attrs.label,
+    'Pasted text #2 +12 lines',
+  );
+  const png = new Uint8Array([137, 80, 78, 71]);
+  const image = pasteAttachment(
+    doc,
+    { text: null, image: png, plain: false },
+    options,
+  );
+  assert.strictEqual(image?.attrs.kind, 'image');
+  assert.strictEqual(image?.attrs.label, 'Image #1');
+  assert.strictEqual(
+    pasteAttachment(
+      docFromText(schema, 'x'),
+      { text: long, image: null, plain: false },
+      options,
+    ),
+    null,
+    'a schema with no attachment pastes text',
+  );
+});
+
+test('defaultPlugins({ lines }): the markdown shortcuts are off unless asked for, and Shift-Enter is a new line', () => {
+  const run = (options: { lines?: boolean; inputRules?: boolean }): string => {
+    let state = EditorState.create({
+      schema,
+      plugins: defaultPlugins(schema, options),
+    });
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(tr: Transaction) {
+        state = state.apply(tr);
+      },
+      someProp() {
+        return undefined;
+      },
+    } as unknown as EditorView;
+    // what an input rule hears: a space typed after `#`
+    state = state.apply(state.tr.insertText('#'));
+    let handled = false;
+    for (const plugin of state.plugins) {
+      const f = plugin.props.handleTextInput as
+        | ((v: EditorView, from: number, to: number, text: string) => boolean)
+        | undefined;
+      const { from, to } = state.selection;
+      if (f?.call(plugin, view, from, to, ' ')) {
+        handled = true;
+        break;
+      }
+    }
+    if (!handled) state = state.apply(state.tr.insertText(' '));
+    return state.doc.firstChild!.type.name;
+  };
+  assert.strictEqual(run({}), 'heading');
+  assert.strictEqual(run({ lines: true }), 'paragraph');
+  assert.strictEqual(run({ lines: true, inputRules: true }), 'heading');
+
+  let state = EditorState.create({
+    doc: docFromText(schema, 'ab'),
+    plugins: defaultPlugins(schema, { lines: true }),
+    selection: undefined,
+  });
+  state = state.apply(
+    state.tr.setSelection(TextSelection.create(state.doc, 2)),
+  );
+  const handler = keydownHandler({}); // only to share the event's shape
+  void handler;
+  let next = state;
+  const view = {
+    get state() {
+      return next;
+    },
+    dispatch(tr: Transaction) {
+      next = next.apply(tr);
+    },
+  } as unknown as EditorView;
+  const shiftEnter = toDomKeyEvent(
+    {
+      keysym: 0xff0d,
+      shiftKey: true,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+    },
+    'ctrl',
+  );
+  for (const plugin of state.plugins) {
+    const f = plugin.props.handleKeyDown as
+      ((v: EditorView, e: unknown) => boolean) | undefined;
+    if (f?.call(plugin, view, shiftEnter)) break;
+  }
+  assert.strictEqual(next.doc.childCount, 2, 'a new paragraph, not a break');
+  assert.strictEqual(textFromDoc(next.doc), 'a\nb');
+});
+
+test('the clipboard in a document of lines: one paragraph a line both ways, blank lines kept', () => {
+  const doc = docFromText(schema, 'one\n\nthree');
+  const state = EditorState.create({ doc });
+  const lines: ClipboardView = {
+    state,
+    someProp: () => undefined,
+    asEditorView: {} as EditorView,
+    textLines: true,
+  };
+  const all = state.doc.slice(0, state.doc.content.size);
+  assert.strictEqual(serializeForClipboard(lines, all).text, 'one\n\nthree');
+  const slice = parseFromClipboard(
+    lines,
+    'a\n\nb\r\nc',
+    '<p>ignored</p>',
+    true,
+    state.doc.resolve(1),
+  )!;
+  assert.deepStrictEqual(
+    textFromDoc(state.apply(state.tr.replaceSelection(slice)).doc).split('\n'),
+    ['a', '', 'b', 'cone', '', 'three'],
+  );
 });

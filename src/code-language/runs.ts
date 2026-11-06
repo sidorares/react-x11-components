@@ -21,6 +21,7 @@
 // Explicit rather than automatic, because the alternative is this package
 // depending on highlight.js for every app that renders a fence — see
 // AGENTS.md on tree-shaking, and `textmate.ts` for the same shape.
+import { spliceAll } from '../internal/splice.js';
 import { languageForTag, tokenizeText } from './registry.js';
 import { tokenStyleFor } from './theme.js';
 import type { Language, Token, Tokenizer, TokenStyles } from './types.js';
@@ -209,6 +210,80 @@ export class CodeRunCache<R = CodeRun> {
         this.tokens[i] = tokens;
       }
       for (const run of runs) out.push(run);
+    }
+    return out;
+  }
+
+  /**
+   * The same runs, a line at a time: one array per line, with no newline
+   * runs. A line keeps the array it had while its tokens are the same, so a
+   * caller drawing each line apart — a composer, whose lines are paragraphs
+   * — tells by identity which lines to draw again. The lines the text shares
+   * with the last call at either end are an edit's surroundings, so typing
+   * in the middle of a long block keeps the arrays of every line below it
+   * the tokenizer's state comes back to. A tag with no language is each
+   * line as one plain run, and an empty line is no runs.
+   */
+  runsByLine(
+    next: readonly string[],
+    tag: string,
+    opts: CodeRunOptions,
+  ): R[][] {
+    const language =
+      opts.language ??
+      (tag ? (opts.resolveLanguage?.(tag) ?? languageForTag(tag)) : null);
+    const key = [language, opts.styles, opts.color, opts.resolveToken];
+    if (!this.key || key.some((part, i) => part !== this.key![i])) {
+      this.dispose();
+      this.key = key;
+      this.lines = [];
+      this.tokens = [];
+      this.lineRuns = [];
+      this.newline = this.decorate({ text: '\n', color: opts.color });
+      if (language) {
+        this.tokenizer = language.createTokenizer({ invalidate: () => {} });
+        this.tokenizer.setLines(this.lines);
+      }
+    }
+    const tokenizer = this.tokenizer;
+    const lines = this.lines;
+    const shared = Math.min(lines.length, next.length);
+    let from = 0;
+    while (from < shared && lines[from] === next[from]) from++;
+    let tail = 0;
+    while (
+      tail < shared - from &&
+      lines[lines.length - 1 - tail] === next[next.length - 1 - tail]
+    ) {
+      tail++;
+    }
+    const removed = lines.length - from - tail;
+    const inserted = next.length - from - tail;
+    if (removed > 0 || inserted > 0) {
+      spliceAll(lines, from, removed, next.slice(from, from + inserted));
+      spliceAll(this.tokens, from, removed, new Array(inserted));
+      spliceAll(this.lineRuns, from, removed, new Array(inserted));
+      tokenizer?.edit({ fromLine: from, removed, inserted });
+    }
+    const out: R[][] = [];
+    for (let i = 0; i < lines.length; i++) {
+      let runs = this.lineRuns[i];
+      if (!tokenizer) {
+        if (!runs) {
+          runs = lines[i]
+            ? [this.decorate({ text: lines[i], color: opts.color })]
+            : [];
+          this.lineRuns[i] = runs;
+        }
+      } else {
+        const tokens = tokenizer.lineTokens(i);
+        if (!runs || this.tokens[i] !== tokens) {
+          runs = lineRuns(lines[i]!, tokens, opts).map(this.decorate);
+          this.lineRuns[i] = runs;
+          this.tokens[i] = tokens;
+        }
+      }
+      out.push(runs);
     }
     return out;
   }

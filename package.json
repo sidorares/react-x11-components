@@ -202,6 +202,7 @@
     "examples:qml": "node --import tsx examples/qml/qml.tsx",
     "examples:reorder": "node --import tsx examples/reorder.tsx",
     "examples:rich-text-editor": "node --import tsx examples/rich-text-editor.tsx",
+    "examples:rich-text-editor-composer": "node --import tsx examples/rich-text-editor-composer.tsx",
     "examples:table": "node --import tsx examples/table.tsx",
     "examples:tabs": "node --import tsx examples/tabs.tsx",
     "examples:terminal": "node --import tsx examples/terminal.tsx",

@@ -53,7 +53,7 @@ import type { Style } from 'react-x11/style';
 import { redo, undo } from 'prosemirror-history';
 import { Fragment, Slice } from 'prosemirror-model';
 import type { Node as PMNode, Schema } from 'prosemirror-model';
-import { EditorState } from 'prosemirror-state';
+import { EditorState, Selection } from 'prosemirror-state';
 import type { Command, Plugin, Transaction } from 'prosemirror-state';
 import type { EditorProps, EditorView } from 'prosemirror-view';
 
@@ -76,6 +76,7 @@ import {
 } from './commands.js';
 import { DROP_TYPES, SLICE_TYPE } from './drag.js';
 import type { DropAnswer } from './drag.js';
+import type { DomKeyEvent } from './keymap.js';
 import { docFromHTML, htmlFromContent } from './html.js';
 import { defaultPlugins } from './keymap.js';
 import { deriveLook } from './look.js';
@@ -83,6 +84,10 @@ import { toggleMark } from './marks.js';
 import type { MarkStyle } from './look.js';
 import { docFromText, markdownCodec, textFromDoc } from './markdown.js';
 import type { MarkdownCodec } from './markdown.js';
+import { indentFence, markupConfig } from './markup.js';
+import type { MarkupMode } from './markup.js';
+import { PASTE_DEFAULTS, pasteAttachment } from './composer.js';
+import type { PasteAsAttachment } from './composer.js';
 import { registerEditorElements, ROOT_ELEMENT, TEXT_ELEMENT } from './nodes.js';
 import { renderBlockRange, renderBlocks } from './render.js';
 import { replaceDocumentTr } from './replace.js';
@@ -218,8 +223,33 @@ interface CommonProps {
   /** Mod-Enter — or plain Enter, with `submitOnEnter`. */
   onSubmit?: (ev: RichTextEditorEvent) => void;
   /** Enter submits (Shift+Enter is a new line) — a chat composer. Not in a
-   *  list or a code block, where Enter goes on editing. */
+   *  list or a code block, nor in a fence `markup` found, where Enter goes
+   *  on editing. */
   submitOnEnter?: boolean;
+  /**
+   * Draw the text as what it would mean as markdown, and change none of it:
+   * a composer's value is what was typed. `'code'` sets a fence's lines in
+   * the code face on one band, their syntax coloured, and a code span on a
+   * tint, every backtick still there; `'markdown'` draws emphasis, strong,
+   * strikethrough, headings, quotes and list markers too. Read from the
+   * document's lines — for `format="text"`. Default `'none'`.
+   */
+  markup?: 'none' | MarkupMode;
+  /**
+   * A paste past this size goes in as an attachment — `[Pasted text #1 +312
+   * lines]`, its text the atom's `data` — where the schema has an
+   * `attachment` node (`composerSchema`). `true`: past ten lines or 2,000
+   * characters. Shift-Mod-V pastes text as text, and an image with no text
+   * beside it is an attachment too.
+   */
+  pasteAsAttachment?: boolean | PasteAsAttachment;
+  /**
+   * What was sent before, oldest first, in `format`: Up on the first line
+   * shows the one before, Down on the last line the one after, and Down past
+   * the newest gives back the draft as it was left. (`history` is the undo
+   * history's.)
+   */
+  recall?: readonly string[];
   /** A link was activated: Mod-click while editing, a click when read-only.
    *  The editor never navigates by itself. */
   onLink?: (href: string, ev: X11MouseEvent<DrawnNode>) => void;
@@ -419,6 +449,8 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     styles,
   } = props;
   const format = props.format ?? 'markdown';
+  // a document of lines: one paragraph a line, both ways
+  const lines = format === 'text';
   const schema = props.state?.schema ?? props.schema ?? defaultSchema;
   const codec = useMemo(
     () => codecFor(schema, format, props.markdown),
@@ -441,9 +473,11 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         resolveLanguage: props.resolveLanguage,
         highlight: props.highlight,
         dim: disabled,
+        lines,
       }),
     [
       theme,
+      lines,
       props.fontSize,
       props.fontFamily,
       props.monoFamily,
@@ -469,8 +503,16 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         inputRules: props.inputRules,
         keymap: props.keymap,
         typography: props.typography,
+        lines,
       }),
-    [schema, props.history, props.inputRules, props.keymap, props.typography],
+    [
+      schema,
+      props.history,
+      props.inputRules,
+      props.keymap,
+      props.typography,
+      lines,
+    ],
   );
   // The suggestion plugin, made once while there are suggesters: it reads
   // the latest prop through `latest`, so an inline array is not a rebuild —
@@ -509,6 +551,43 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     () => ({ suggestion: { color: look.accent }, ...props.decorationClasses }),
     [look.accent, props.decorationClasses],
   );
+  const markupMode = props.markup ?? 'none';
+  const markup = useMemo(
+    () => (markupMode === 'none' ? null : markupConfig(markupMode, look)),
+    [markupMode, look],
+  );
+  const pasteAs = props.pasteAsAttachment;
+  const pasteOptions = useMemo<PasteAsAttachment | null>(
+    () =>
+      pasteAs === true
+        ? PASTE_DEFAULTS
+        : pasteAs
+          ? {
+              lines: pasteAs.lines,
+              chars: pasteAs.chars,
+              images: pasteAs.images,
+            }
+          : null,
+    [
+      pasteAs === true,
+      typeof pasteAs === 'object' ? pasteAs.lines : undefined,
+      typeof pasteAs === 'object' ? pasteAs.chars : undefined,
+      typeof pasteAs === 'object' ? pasteAs.images : undefined,
+    ],
+  );
+
+  // Recall: which of `recall` is shown, and the draft it was left from. A
+  // new entry — a prompt just sent — starts over from the draft.
+  const recalling = useRef<{ index: number; draft: PMNode } | null>(null);
+  const recallList = props.recall;
+  const recallSeen = useRef('');
+  const recallKey = recallList?.length
+    ? `${recallList.length}\u0000${recallList[recallList.length - 1]}`
+    : '';
+  if (recallKey !== recallSeen.current) {
+    recallSeen.current = recallKey;
+    recalling.current = null;
+  }
 
   const config: ViewConfig = {
     onRender: () => {},
@@ -526,6 +605,16 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       preedit: look.text,
     },
     decorationClasses,
+    markup,
+    lines,
+    ...(pasteOptions
+      ? {
+          pasteNode: (paste) =>
+            pasteAttachment(view.state.doc, paste, pasteOptions),
+          pasteImages: pasteOptions.images !== false,
+        }
+      : null),
+    unclaimedKey: (dom) => unclaimedKey(dom),
   };
 
   const viewRef = useRef<RichEditorView | null>(null);
@@ -674,6 +763,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
         const doc = typeof value === 'string' ? c.parse(value) : value;
         if (typeof value === 'string' && !options.format)
           reported.current = value;
+        recalling.current = null;
         replaceDocument(view, doc, options.addToHistory ?? false);
       },
       insertContent(value, fmt) {
@@ -752,6 +842,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     if (value === undefined || props.state || value === reported.current)
       return;
     reported.current = value;
+    recalling.current = null;
     replaceDocument(view, codec.parse(value), false);
   }, [props.value, props.state, codec, view]);
 
@@ -837,7 +928,7 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
       const submit =
         !listing &&
         (p.submitOnEnter
-          ? plain && !inListOrCode(view.state)
+          ? plain && !inListOrCode(view.state) && !inFence()
           : primary && !ev.shiftKey);
       if (submit) {
         ev.preventDefault();
@@ -858,6 +949,70 @@ export function RichTextEditor(props: RichTextEditorProps): ReactElement {
     }
     if (k === XK_ESCAPE && linkEdit) setLinkEdit(null);
   };
+
+  /** Whether the caret is on a fence's line that Enter should go on from:
+   *  its opening line, or a line of its code. */
+  function inFence(): boolean {
+    const fence = view.markupAt(view.state.selection.head)?.fence;
+    return fence === 'open' || fence === 'body';
+  }
+
+  /** The keys no plugin claimed that are the component's: Tab in a fence,
+   *  and Up and Down through `recall` at the ends of the document. */
+  function unclaimedKey(dom: DomKeyEvent): boolean {
+    if (!view.editable || dom.ctrlKey || dom.metaKey || dom.altKey)
+      return false;
+    if (dom.key === 'Tab') {
+      if (!markup) return false;
+      const tr = indentFence(
+        view.state,
+        (pos) => view.markupAt(pos),
+        dom.shiftKey ? -1 : 1,
+      );
+      if (!tr) return false;
+      if (tr.docChanged) view.dispatch(tr.scrollIntoView());
+      return true;
+    }
+    if ((dom.key === 'ArrowUp' || dom.key === 'ArrowDown') && !dom.shiftKey)
+      return recallStep(dom.key === 'ArrowUp' ? -1 : 1);
+    return false;
+  }
+
+  /** Up on the first line, or Down on the last: the prompt before or
+   *  after the one shown, and past the newest the draft. */
+  function recallStep(dir: -1 | 1): boolean {
+    const list = latest.current.recall;
+    if (!list?.length) return false;
+    const state = view.state;
+    const { selection } = state;
+    if (!selection.empty) return false;
+    const $head = selection.$head;
+    if ($head.depth < 1) return false;
+    const edge = dir < 0 ? 0 : state.doc.childCount - 1;
+    if ($head.index(0) !== edge) return false;
+    if (!view.endOfTextblock(dir < 0 ? 'up' : 'down')) return false;
+    const cur = recalling.current;
+    // nothing is recalled yet: Up starts at the newest, Down has nowhere
+    if (!cur && dir > 0) return false;
+    const next = cur ? cur.index + dir : list.length - 1;
+    if (next < 0) return false;
+    let doc: PMNode;
+    if (next >= list.length) {
+      doc = cur!.draft;
+      recalling.current = null;
+    } else {
+      doc = codecRef.current.parse(list[next]);
+      recalling.current = { index: next, draft: cur?.draft ?? state.doc };
+    }
+    const tr = replaceDocumentTr(state, doc, false);
+    // Up leaves the caret at the top and Down at the bottom, so the next
+    // press goes on through the list rather than through the lines
+    tr.setSelection(
+      dir < 0 ? Selection.atStart(tr.doc) : Selection.atEnd(tr.doc),
+    );
+    view.dispatch(tr.scrollIntoView());
+    return true;
+  }
 
   const onMouseDown = (ev: X11MouseEvent): void => {
     latest.current.onMouseDown?.(ev);
@@ -1294,6 +1449,15 @@ export { defaultPlugins, editingKeymap, markdownInputRules } from './keymap.js';
 // What a plugin's `handleKeyDown` is really handed: ProseMirror's
 // declarations say DOM `KeyboardEvent`, which this platform has no values of.
 export type { DefaultPluginOptions, DomKeyEvent } from './keymap.js';
+export { composerParts, composerSchema, pasteAttachment } from './composer.js';
+export type {
+  AttachmentKind,
+  ComposerAtom,
+  ComposerParts,
+  PasteAsAttachment,
+} from './composer.js';
+export { fenceOf, inlineMarkup, lineText } from './markup.js';
+export type { LineMarkup, MarkupMode, MarkupSpan } from './markup.js';
 export {
   dedentCode,
   goToCell,

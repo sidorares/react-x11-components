@@ -145,11 +145,26 @@ export class CodeBlockRunCache {
   private family: string | undefined;
   private size: number | undefined;
 
-  runs(
-    source: string,
+  /** The runs a line at a time, each line's array kept while its tokens
+   *  are (`CodeRunCache.runsByLine`) — for code whose lines are drawn
+   *  apart. */
+  runsByLine(
+    lines: readonly string[],
     look: CodeBlockLook,
     options: CodeBlockRunOptions = {},
-  ): TextRun[] {
+  ): TextRun[][] {
+    const cache = this._cache(look);
+    const { lang = '', language, resolveLanguage, highlight = true } = options;
+    return cache.runsByLine(lines, highlight ? lang : '', {
+      styles: look.styles,
+      color: look.color,
+      ...(highlight && language ? { language } : null),
+      ...(highlight && resolveLanguage ? { resolveLanguage } : null),
+      resolveToken: look.resolveToken,
+    });
+  }
+
+  private _cache(look: CodeBlockLook): CodeRunCache<TextRun> {
     if (!this.cache || this.family !== look.family || this.size !== look.size) {
       this.cache?.dispose();
       const { family, size } = look;
@@ -161,8 +176,17 @@ export class CodeBlockRunCache {
         size,
       }));
     }
+    return this.cache;
+  }
+
+  runs(
+    source: string,
+    look: CodeBlockLook,
+    options: CodeBlockRunOptions = {},
+  ): TextRun[] {
+    const cache = this._cache(look);
     const { lang = '', language, resolveLanguage, highlight = true } = options;
-    return this.cache.runs(source, highlight ? lang : '', {
+    return cache.runs(source, highlight ? lang : '', {
       styles: look.styles,
       color: look.color,
       ...(highlight && language ? { language } : null),
