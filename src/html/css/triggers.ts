@@ -511,6 +511,83 @@ export interface ViewPlace {
    *  moved on, so the range takes in every scroll at which it is seen. */
   up?: number;
   down?: number;
+  /** The sticky boxes from the subject up to its scroller, as the scroll
+   *  moves them (`StickyLimit`): where they are, the crossings are found
+   *  from how the subject actually moves, and `up` and `down` are not
+   *  read. */
+  stickies?: readonly StickyLimit[];
+}
+
+/**
+ * A sticky box between a view timeline's subject and its scroller, along
+ * the timeline's axis and from the scrollport's start as the scroll is now,
+ * at rest: how far it is offset for a scroll `d` further on is
+ * `stickyOffset` — held no nearer the scrollport's start than `low`, its
+ * start inset, and its start no further on than `high`, where its end meets
+ * the end inset, and moved no further than its containing block lets it,
+ * from `min` (no more than 0) to `max` (no less).
+ */
+export interface StickyLimit {
+  start: number;
+  low: number | null;
+  high: number | null;
+  min: number;
+  max: number;
+}
+
+/** How far a sticky box is offset where the scroll is `d` further on than
+ *  now (CSS Position 3, 3.4): the end inset first, then the start inset,
+ *  which wins where they disagree, kept inside its containing block. */
+export function stickyOffset(k: StickyLimit, d: number): number {
+  const at = k.start - d;
+  let off = 0;
+  if (k.high !== null) off = Math.min(off, k.high - at);
+  if (k.low !== null) off = Math.max(off, k.low - at);
+  return Math.max(k.min, Math.min(k.max, off));
+}
+
+/**
+ * How far the scroll goes from where it is now before an edge of a subject
+ * sticky boxes move reaches `line`, the subject's edge `edge` along from
+ * its start: the first scroll it does so at where `first`, and the last
+ * where not, since a stuck subject stays at a line over a span of scroll.
+ * Its place only ever moves back as the scroll moves on, so the scroll is
+ * found by halving.
+ */
+function stickyCrossing(
+  place: ViewPlace,
+  stickies: readonly StickyLimit[],
+  edge: number,
+  line: number,
+  first: boolean,
+): number {
+  const f = (d: number): number => {
+    let off = 0;
+    for (const k of stickies) off += stickyOffset(k, d);
+    return place.start + edge - d + off - line;
+  };
+  const span = Math.abs(place.start) + Math.abs(line) + Math.abs(edge);
+  let lo = -2 * span - 1;
+  let hi = 2 * span + 1;
+  for (const k of stickies) {
+    lo -= Math.abs(k.max) + Math.abs(k.min);
+    hi += Math.abs(k.max) + Math.abs(k.min);
+  }
+  for (let i = 0; i < 100 && hi - lo > 1e-6; i += 1) {
+    const mid = (lo + hi) / 2;
+    const v = f(mid);
+    if (first ? v > 0 : v >= 0) lo = mid;
+    else hi = mid;
+  }
+  // the place is linear between where a sticky box starts and stops
+  // holding it, so the crossing is where the line through the two ends of
+  // what is left meets it — exact, where halving would stop short of it
+  const a = f(lo);
+  const b = f(hi);
+  if (a !== b && Math.sign(a) !== Math.sign(b)) {
+    return lo + (a * (hi - lo)) / (a - b);
+  }
+  return first ? hi : lo;
 }
 
 /**
@@ -529,10 +606,20 @@ export function viewEdgeAt(edge: RangeEdge, place: ViewPlace): number {
   // start entering and its end reaching the far edge where a sticky box has
   // held it back, and its start reaching the near edge and its end leaving
   // where one has carried it on
-  const enters = start - up - portEnd;
-  const leaves = end + down - portStart;
-  const a = start + down - portStart;
-  const b = end - up - portEnd;
+  const stickies = place.stickies;
+  const size = end - start;
+  const enters = stickies?.length
+    ? stickyCrossing(place, stickies, 0, portEnd, true)
+    : start - up - portEnd;
+  const leaves = stickies?.length
+    ? stickyCrossing(place, stickies, size, portStart, false)
+    : end + down - portStart;
+  const a = stickies?.length
+    ? stickyCrossing(place, stickies, 0, portStart, false)
+    : start + down - portStart;
+  const b = stickies?.length
+    ? stickyCrossing(place, stickies, size, portEnd, true)
+    : end - up - portEnd;
   let from: number;
   let to: number;
   switch (edge.name ?? 'cover') {
