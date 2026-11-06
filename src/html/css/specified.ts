@@ -1016,6 +1016,17 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
         ? value
         : null,
   'position-area': (value) => positionAreaText(value),
+  // `normal`, or a size type, `scroll-state` and `anchored`, each once, in
+  // that order (CSS Conditional 5, 3.1; CSS Anchor Positioning 2)
+  'container-type': (value) => {
+    const words = value.toLowerCase().split(/\s+/);
+    if (words.length === 1 && words[0] === 'normal') return 'normal';
+    const order = ['size', 'inline-size', 'scroll-state', 'anchored'];
+    if (!words.every((w) => order.includes(w))) return null;
+    if (new Set(words).size !== words.length) return null;
+    if (words.includes('size') && words.includes('inline-size')) return null;
+    return order.filter((w) => words.includes(w)).join(' ');
+  },
   'position-try-order': (value) =>
     TRY_ORDER.test(value) ? value.toLowerCase() : null,
   'position-visibility': (value) => {

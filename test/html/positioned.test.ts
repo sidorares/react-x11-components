@@ -3731,6 +3731,53 @@ test('position-area, position-try-fallbacks and anchored() are read', () => {
   );
   assert.strictEqual(anchoredHolds('fallback: left top', 'top left'), true);
   assert.strictEqual(anchoredHolds('fallback: sideways', null), null);
+  // `any` matches what is on its axis, and one keyword of an axis has it
+  // on the other
+  assert.strictEqual(anchoredHolds('fallback: any', 'span-bottom'), true);
+  assert.strictEqual(
+    anchoredHolds('fallback: any span-bottom', 'span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: span-end any', 'span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: span-bottom', 'right span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: right', 'right span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: left', 'right span-bottom'),
+    false,
+  );
+  // a logical area read against the writing modes it was placed in
+  const ownRtl = { mode: 'horizontal-tb' as const, rtl: true };
+  const lr = { mode: 'vertical-lr' as const, rtl: false };
+  assert.strictEqual(
+    anchoredHolds('fallback: bottom right', 'block-end inline-end', {
+      cb: lr,
+      own: ownRtl,
+    }),
+    true,
+  );
+});
+
+test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>@position-try --pt{left:300px}' +
+      '#b{position:fixed;width:100px;height:100px;inset:0;left:9999px;' +
+      'position-try-fallbacks:--pt}</style></head>' +
+      '<body><div id="b"></div></body></html>',
+    800,
+  );
+  const el = view(node);
+  const b = findById(el.document, 'b')!;
+  assert.strictEqual(el.elementRect(b)?.x, 300);
+  assert.strictEqual(el.computedStyle(b)?.left, '300px');
 });
 
 test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {

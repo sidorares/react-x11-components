@@ -268,6 +268,7 @@ import type {
 } from './layout/boxes.js';
 import {
   ANCHOR_FALLBACK,
+  ANCHOR_FALLBACK_AXES,
   anchorAt,
   carryBlockers,
   containmentApplies,
@@ -10394,6 +10395,9 @@ export class HtmlViewNode extends Node {
       // and the position option an anchored container was placed by
       fallback: style.anchoredContainer
         ? (ANCHOR_FALLBACK.get(box) ?? null)
+        : null,
+      fallbackAxes: style.anchoredContainer
+        ? (ANCHOR_FALLBACK_AXES.get(box) ?? null)
         : null,
     };
   }

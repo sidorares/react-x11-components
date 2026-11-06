@@ -955,24 +955,80 @@ export function parseTryFallbacks(
 export function fallbackMatches(
   value: string | undefined,
   applied: string | null,
+  axes: { cb: WritingAxes; own: WritingAxes } | null = null,
 ): boolean | null {
   if (value === undefined) return applied !== null;
   const v = splitValue(value.trim().toLowerCase()).join(' ');
   if (v === 'none') return applied === null;
+  const area = queriedArea(v);
+  if (area) {
+    if (applied === null) return false;
+    const was = parsePositionArea(applied);
+    if (!was) return false;
+    // each where it is on the page, a logical keyword read against the
+    // writing modes the option was placed in
+    const ltr: WritingAxes = { mode: 'horizontal-tb', rtl: false };
+    const cb = axes?.cb ?? ltr;
+    const own = axes?.own ?? ltr;
+    const at = areaTracks(was, cb, own);
+    const asked = areaTracks(area.area, cb, own);
+    const same = (a: [number, number], b: [number, number]) =>
+      a[0] === b[0] && a[1] === b[1];
+    // and `any`, written or left out, on the axis it stands for, which is
+    // where the area made of it with another keyword for it differs
+    let anyX = false;
+    let anyY = false;
+    if (area.other) {
+      const other = areaTracks(area.other, cb, own);
+      anyX = !same(other.cols, asked.cols);
+      anyY = !same(other.rows, asked.rows);
+    }
+    return (
+      (area.all || anyX || same(at.cols, asked.cols)) &&
+      (area.all || anyY || same(at.rows, asked.rows))
+    );
+  }
   const query = parseTryOption(v);
   if (!query) return null;
   if (applied === null) return false;
-  if (query.area) {
-    const was = parsePositionArea(applied);
-    return (
-      !!was &&
-      was.cols[0] === query.area.cols[0] &&
-      was.cols[1] === query.area.cols[1] &&
-      was.rows[0] === query.area.rows[0] &&
-      was.rows[1] === query.area.rows[1]
-    );
-  }
   return v === applied;
+}
+
+/**
+ * A `position-area` an anchored container query asks after (CSS Anchor
+ * Positioning 2): its keywords, `any` among them, which matches what is
+ * on its axis — and a keyword of one axis alone has `any` for the other.
+ * `area` is the area with `span-all` for each `any`, and `other` the same
+ * with `center`, whose difference says which axis is `any`'s; `all` where
+ * nothing but `any` was asked. Null for what is no `position-area`.
+ */
+function queriedArea(v: string): {
+  area: PositionArea;
+  other: PositionArea | null;
+  all: boolean;
+} | null {
+  const words = v.split(' ');
+  if (!words.length || words.length > 2) return null;
+  const rest = words.filter((w) => w !== 'any');
+  if (!rest.length) {
+    const all = parsePositionArea('span-all');
+    return all ? { area: all, other: null, all: true } : null;
+  }
+  if (rest.length === words.length && words.length === 1) {
+    const one = parsePositionArea(words[0]);
+    if (!one) return null;
+    // one keyword of an axis: `any` for the other
+    const axis = one.parts?.[0]?.axis;
+    if (axis === 'either' || axis === 'any') {
+      return { area: one, other: null, all: false };
+    }
+    words.push('any');
+  }
+  const swap = (w: string) => words.map((x) => (x === 'any' ? w : x)).join(' ');
+  const area = parsePositionArea(swap('span-all'));
+  const other = parsePositionArea(swap('center'));
+  if (!area || !other) return null;
+  return { area, other, all: false };
 }
 
 /**
