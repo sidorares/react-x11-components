@@ -6979,7 +6979,9 @@ nothing out. A box anchored to such a box, or to something in it, follows
 it as a chain, on the axes both follow on, from its first layout. A page's
 own scroll that the pane cannot take yet, since it has not measured how
 far the document reaches, is the scroll such a box is placed at, as a
-browser has it at once. Where such a scroll leaves the box overflowing an edge of
+browser has it at once. A scroll in a container a transform scales or
+turns, and a sticky box's move in one, moves the box as far as the
+transform carries it on the box's page. Where such a scroll leaves the box overflowing an edge of
 what it is placed in that is not the anchor's, and it has options, the
 document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
@@ -6989,8 +6991,7 @@ scrolls (`anchors-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
 either hides or shows it in the frame it scrolls. Not done: `anchors-valid`,
 the scrollable containing block a scroll container is for a box with a
-default anchor, a scroll's displacement taken through the transforms of
-what scrolls, and each anchor reference's own remembered scroll offset — a
+default anchor, and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar
