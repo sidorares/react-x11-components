@@ -157,7 +157,10 @@ const NO_GROUP: Group = {
 function whole(box: Box): boolean {
   if (box.kind !== 'block') return true;
   if (box.style.breakInside === 'avoid') return true;
-  return establishesBFC(box) || transformed(box.style);
+  // a transform makes no box monolithic (CSS Fragmentation 3, 4.1): a
+  // positioned box's containing block made by one is broken as any block
+  // is, though its pieces are drawn through the matrix of the whole
+  return establishesBFC(box);
 }
 
 /**
@@ -644,8 +647,12 @@ export function layoutColumns(
   for (const group of groups) strip = Math.max(strip, group.bottom - top);
   let height: number;
   let filled: Filled;
+  // how tall a column is that what is out of the flow is cut into, which
+  // a container with less than a column of content is no shorter than
+  let columnHeight: number;
   if (box.style.columnFill === 'auto') {
     height = Number.isFinite(limit) ? limit : strip;
+    columnHeight = height;
     filled = fill(groups, top, height, height >= limit);
     // a container with a `max-height` and less than a column of content
     // is as tall as its content
@@ -665,6 +672,7 @@ export function layoutColumns(
       height = Math.min(limit, height + filled.shortage);
       filled = fill(groups, top, height, height >= limit);
     }
+    columnHeight = height;
   }
   // the row of columns this is, for the rules between them: each column
   // that holds something, from the start of the line
@@ -681,6 +689,17 @@ export function layoutColumns(
     lefts: Array.from({ length: used }, (_, c) => origin + across(c)),
     width: columns.width,
   });
+  // where each column is, for what is out of the flow inside it, which is
+  // laid out after all of this, in the strip (`stripOf`, `cutIntoColumns`)
+  const geometry: ColumnGeometry = {
+    container: box,
+    tops: [...filled.tops],
+    height: columnHeight,
+    dx: (c) => origin + across(c),
+    dy: (c) => top - (filled.tops[c] ?? filled.tops[0] + c * columnHeight),
+  };
+  GEOMETRY.set(box, geometry);
+  columnsSet.any = true;
   // all in one column where it started, and nothing to move — but a float
   // that is cut where the column ends, which may reach past it
   if (!gathered.loose.size && (!groups.length || filled.starts.length === 1)) {
@@ -709,11 +728,207 @@ export function layoutColumns(
     height,
     dx: (c) => origin + across(c),
     dy: (c) => top - tops[c],
+    geometry,
   });
   return height;
 }
 
+/**
+ * A multicol container's columns as its last layout set them: where each
+ * starts down the strip, how tall they are, and how far a piece of the
+ * strip is moved to each — past the last column, more of the same height,
+ * as content past the container's columns goes on in more of them (8.2).
+ */
+export interface ColumnGeometry {
+  container: Box;
+  tops: number[];
+  height: number;
+  dx(column: number): number;
+  dy(column: number): number;
+}
+
+/** Whether a layout has set any columns, which a positioned box asks
+ *  before it looks for any (`stripOf`). */
+export const columnsSet = { any: false };
+
+/** Each multicol container's columns, as its last layout set them. */
+const GEOMETRY = new WeakMap<Box, ColumnGeometry>();
+
+/** How far columns moved a box from where the strip had it, and where it
+ *  was — what is out of the flow inside the columns is laid out against
+ *  (CSS Anchor Positioning 1, 2: a box inside the fragmentation context
+ *  sees what is in it unfragmented). */
+interface StripPlace {
+  geometry: ColumnGeometry;
+  dx: number;
+  dy: number;
+  width: number;
+  height: number;
+}
+const STRIP = new WeakMap<Box, StripPlace>();
+
+/** Where an out-of-flow box's static position was from the corner of the
+ *  box it is from, in the strip, before columns moved it (`place`). */
+const STRIP_STATIC = new WeakMap<
+  Box,
+  { x: number; y: number; right: number }
+>();
+
+/**
+ * Where a box inside a multicol container's columns is in the strip they
+ * were cut from — its border box, unfragmented — and those columns; null
+ * for a box in no columns. A multicol container is in the columns around
+ * it, and not in its own.
+ */
+export function stripOf(box: Box): {
+  geometry: ColumnGeometry;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} | null {
+  let place: StripPlace | null = null;
+  let placed: Box | null = null;
+  // the nearest multicol container strictly above, and the nearest box
+  // between that the columns moved, the box itself among them
+  let geometry: ColumnGeometry | null = null;
+  for (let at: Box | null = box; at; at = at.parent) {
+    if (at !== box) {
+      const g = GEOMETRY.get(at);
+      if (g) {
+        geometry = g;
+        break;
+      }
+    }
+    if (!place) {
+      const p = STRIP.get(at);
+      if (p) {
+        place = p;
+        placed = at;
+      }
+    }
+  }
+  if (!geometry) return null;
+  if (!place || place.geometry !== geometry) {
+    return {
+      geometry,
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+    };
+  }
+  const own = placed === box;
+  return {
+    geometry,
+    x: box.x - place.dx,
+    y: box.y - place.dy,
+    width: own ? place.width : box.width,
+    height: own ? place.height : box.height,
+  };
+}
+
+/** Where a box's static position is in the strip (`stripOf`), from the
+ *  box it is from: its corner there, and the position from it. */
+export function stripStatic(box: Box): {
+  fromX: number;
+  fromY: number;
+  x: number;
+  y: number;
+  right: number;
+} | null {
+  const at = box.staticPosition;
+  if (!at || at.inside) return null;
+  const from = stripOf(at.from);
+  const kept = STRIP_STATIC.get(box);
+  if (!from) return null;
+  const o = kept ?? at;
+  return { fromX: from.x, fromY: from.y, x: o.x, y: o.y, right: o.right };
+}
+
+/**
+ * Set an out-of-flow box laid out in the strip of `geometry`'s columns in
+ * them (CSS Fragmentation 3): moved whole to the column its top is in where
+ * it fits there, and otherwise cut where each column ends, its pieces kept
+ * beside it as a block's are (`COLUMN_PIECES`). Its strip place is kept for
+ * what is positioned against it, and for an anchor reference to it.
+ * `move` moves it, and what it holds, but for `stays`.
+ */
+export function cutIntoColumns(
+  box: Box,
+  geometry: ColumnGeometry,
+  move: (box: Box, dx: number, dy: number) => void,
+): void {
+  const { tops, height } = geometry;
+  if (!(height >= 1)) return;
+  const topOf = (c: number) =>
+    c < tops.length
+      ? tops[c]
+      : tops[tops.length - 1] + (c - tops.length + 1) * height;
+  let c = 0;
+  while (c + 1 < MOST_COLUMNS && topOf(c + 1) <= box.y + EPS) c += 1;
+  const was = { x: box.x, y: box.y, width: box.width, height: box.height };
+  if (was.y + was.height <= topOf(c) + height + EPS) {
+    const dx = geometry.dx(c);
+    const dy = geometry.dy(c);
+    STRIP.set(box, { geometry, dx, dy, width: was.width, height: was.height });
+    if (dx || dy) move(box, dx, dy);
+    return;
+  }
+  const pieces: ColumnPiece[] = [];
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (let k = c; topOf(k) < was.y + was.height - EPS; k += 1) {
+    const from = Math.max(was.y, topOf(k));
+    const until = Math.min(was.y + was.height, topOf(k) + height);
+    const piece: ColumnPiece = {
+      x: was.x + geometry.dx(k),
+      y: from + geometry.dy(k),
+      width: was.width,
+      height: Math.max(0, until - from),
+      wholeY: was.y + geometry.dy(k),
+      wholeHeight: was.height,
+    };
+    pieces.push(piece);
+    x1 = Math.min(x1, piece.x);
+    y1 = Math.min(y1, piece.y);
+    x2 = Math.max(x2, piece.x + piece.width);
+    y2 = Math.max(y2, piece.y + piece.height);
+    if (pieces.length >= MOST_COLUMNS) break;
+  }
+  // what it holds cut as it is, each piece in the column it reaches down
+  // the strip: its in-flow boxes, and its lines a line at a time (what is
+  // out of the flow in it is laid out after it, and cut by itself)
+  for (const line of box.lines ?? []) {
+    let k = 0;
+    while (k + 1 < MOST_COLUMNS && topOf(k + 1) <= line.y + EPS) k += 1;
+    shiftLine(line, geometry.dx(k), geometry.dy(k));
+  }
+  for (const child of box.children) {
+    if (child.outOfFlow || child.kind === 'text' || child.kind === 'break') {
+      continue;
+    }
+    cutIntoColumns(child, geometry, move);
+  }
+  COLUMN_PIECES.set(box, pieces);
+  columned.any = true;
+  box.x = x1;
+  box.y = y1;
+  box.width = x2 - x1;
+  box.height = y2 - y1;
+  STRIP.set(box, {
+    geometry,
+    dx: x1 - was.x,
+    dy: y1 - was.y,
+    width: was.width,
+    height: was.height,
+  });
+}
+
 interface Placing {
+  geometry: ColumnGeometry;
   gathered: Gathered;
   /** Where each column starts, down the strip. */
   tops: number[];
@@ -723,7 +938,16 @@ interface Placing {
 }
 
 function shift(box: Box, column: number, to: Placing): void {
-  moveTo(box, box.x + to.dx(column), box.y + to.dy(column));
+  const dx = to.dx(column);
+  const dy = to.dy(column);
+  STRIP.set(box, {
+    geometry: to.geometry,
+    dx,
+    dy,
+    width: box.width,
+    height: box.height,
+  });
+  moveTo(box, box.x + dx, box.y + dy);
 }
 
 function shiftLine(line: LineBox, dx: number, dy: number): void {
@@ -813,6 +1037,13 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
   if (span && first === last) {
     // in one column, with a float in it that went its own way: the box
     // itself, which what it holds was moved without
+    STRIP.set(box, {
+      geometry: to.geometry,
+      dx: to.dx(first),
+      dy: to.dy(first),
+      width: box.width,
+      height: box.height,
+    });
     box.x += to.dx(first);
     box.y += to.dy(first);
     if (box.marker) {
@@ -844,6 +1075,13 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     }
     COLUMN_PIECES.set(box, pieces);
     columned.any = true;
+    STRIP.set(box, {
+      geometry: to.geometry,
+      dx: x1 - was.x,
+      dy: y1 - was.y,
+      width: was.width,
+      height: was.height,
+    });
     if (box.marker) {
       box.marker.x += to.dx(first);
       box.marker.y += to.dy(first);
@@ -855,6 +1093,7 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
   }
   for (const [child, c] of asides) {
     const at = child.staticPosition!;
+    STRIP_STATIC.set(child, { x: at.x, y: at.y, right: at.right });
     const width = at.right - at.x;
     at.x = was.x + at.x + to.dx(c) - box.x;
     at.right = at.x + width;

@@ -2053,8 +2053,9 @@ crosses the scroll container nearest it that scrolls along its axis
 (the axis resolved against the nearest one), from `cover 0%` to
 `cover 100%`,
 with its insets — `auto`, as one not given is, the scroll container's
-`scroll-padding` on that side — and for a subject that sticky positioning
-moves, from where it would enter held back as far as its containing block
+`scroll-padding` on that side — with the subject where layout placed it,
+no transform on it or between it and its scroller moving it, and for a
+subject that sticky positioning moves, from where it would enter held back as far as its containing block
 lets it to where it would leave carried as far on. A frame measures each
 again, and a page reads the time the last frame had until the next: a
 script that scrolls, or that changes what the source holds, reads the
@@ -4544,6 +4545,16 @@ edge at the break, `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
 not over it. Right to left, the first column is the one at the right. A
 container as wide as its content is as wide as its columns side by side.
+A transform makes no box monolithic, so a containing block made by one is
+broken as any block is, though its pieces are drawn through the matrix of
+the whole. An absolutely positioned box whose containing block is inside
+the columns — or a fixed one whose containing block a transform makes
+there — is laid out as though nothing were broken, against where the
+strip the columns were cut from had its containing block, and is then cut
+into them as a float with a height is, with what it holds; an anchor it
+refers to in the same columns it sees unbroken, where the strip had it,
+and one outside them the rectangle around the anchor's pieces (CSS Anchor
+Positioning 1, 2). A multicol container in another's columns goes to a column whole, where a browser breaks it.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -5382,7 +5393,9 @@ or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
 `rtl` or a `vertical-rl` one, and a view timeline's subject enters from
 the far side of its scrollport there, its `auto` insets the
-`scroll-padding` at that axis's start and end.
+`scroll-padding` at that axis's start and end. A view timeline's subject is
+where layout placed it: a transform on it, an animated one included, or on
+a box between it and its scroller moves nothing of its timeline.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer
@@ -7015,9 +7028,18 @@ where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchors-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. Not done: `anchors-valid`,
-the scrollable containing block a scroll container is for a box with a
-default anchor, and each anchor reference's own remembered scroll offset — a
+either hides or shows it in the frame it scrolls. A box with a default
+anchor whose containing block is a scroll container's is placed in its
+scrollable containing block (CSS Position 4, 2.1): the padding edge of all
+it scrolls, but for the relative offsets and the transforms of what it
+holds and what is out of the flow. One past what its containing block
+shows is held, as `normal` and `start` and their kin hold it, no further
+than the scroll can reach (CSS Box Alignment 3, 4.4.1.2): without end on
+the side a scroll container's, or the document's, scroll goes, and for a
+box fixed to the viewport anchored in the document, over the initial
+containing block and the root's margin box. `safe` and `unsafe` before
+`normal` are not taken, as Chrome takes neither. Not done: `anchors-valid`,
+and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar

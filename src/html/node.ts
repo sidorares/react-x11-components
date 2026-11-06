@@ -11113,16 +11113,25 @@ export class HtmlViewNode extends Node {
     inset: readonly [Len, Len],
   ): ViewPlace {
     const sticky = stickyReach(box, scroller, down);
-    // where the page has the subject, through the turn of a vertical
-    // writing mode's frame it is laid out in
-    const rect = this._tree?.vertical
-      ? onPage(box, {
-          x: box.x,
-          y: box.y,
-          width: box.width,
-          height: box.height,
-        })
-      : box;
+    // where layout placed the subject, with no transform on it or between
+    // it and its scroller (CSS Scroll-driven Animations 1, 3.2), which
+    // layout moved it by; and where the page has that, through the turn of
+    // a vertical writing mode's frame it is laid out in
+    let dx = 0;
+    let dy = 0;
+    for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
+      if (at.kind === 'inline' || !transformed(at.style)) continue;
+      const [tx, ty] = translationOf(at);
+      dx += tx;
+      dy += ty;
+    }
+    const laid = {
+      x: box.x - dx,
+      y: box.y - dy,
+      width: box.width,
+      height: box.height,
+    };
+    const rect = this._tree?.vertical ? onPage(box, laid) : laid;
     const at = (down ? rect.y : rect.x) - sticky.shift - portStart;
     const size = down ? rect.height : rect.width;
     // from a scroll origin at the axis's end the scrollport's start is its
@@ -11267,18 +11276,22 @@ export class HtmlViewNode extends Node {
     ];
   }
 
-  /** What a view timeline's subject is along an axis, in CSS pixels, for
-   *  a page's `ViewTimeline` (`_viewPlace`): the insets an `auto` one
-   *  comes to there, the scroll container's `scroll-padding`, and how far
-   *  sticky positioning has moved it and can each way. Null where it has
-   *  no box. */
+  /** Where a view timeline's subject is along an axis, in CSS pixels, for
+   *  a page's `ViewTimeline` (`_viewPlace`): its start from the start of
+   *  its scrollport, which is its far side where the scroll origin is at
+   *  the axis's end, as layout placed it — at rest, where sticky
+   *  positioning moves it, and with no transform on it or between it and
+   *  its scroller — and its size; the scroll container's `scroll-padding`
+   *  at that start and end, which an `auto` inset is; and how far sticky
+   *  positioning can move it each way. Null where it has no box. */
   viewAdjustOf(
     element: Element,
     vertical: boolean,
   ): {
+    start: number;
+    size: number;
     padStart: number;
     padEnd: number;
-    shift: number;
     up: number;
     down: number;
   } | null {
@@ -11286,25 +11299,29 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const box = tree && this._firstBoxesOf(tree).get(element);
     if (!box) return null;
-    const scroller = this._timelineSource(
+    const { scroller, reversed } = this._timelineSource(
       box,
       'nearest',
       vertical ? 'y' : 'x',
-    )!.scroller;
+    )!;
     const port = this._scrollportOf(scroller, vertical);
-    const [padStart, padEnd] = this._scrollPadding(
+    const place = this._viewPlace(
+      box,
       scroller,
       vertical,
+      reversed,
+      port.start,
       port.size,
+      [AUTO, AUTO],
     );
-    const sticky = stickyReach(box, scroller, vertical);
     const s = this._scale;
     return {
-      padStart: padStart / s,
-      padEnd: padEnd / s,
-      shift: sticky.shift / s,
-      up: sticky.up / s,
-      down: sticky.down / s,
+      start: place.start / s,
+      size: (place.end - place.start) / s,
+      padStart: place.portStart / s,
+      padEnd: (port.size - place.portEnd) / s,
+      up: (place.up ?? 0) / s,
+      down: (place.down ?? 0) / s,
     };
   }
 

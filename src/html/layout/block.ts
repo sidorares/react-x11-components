@@ -88,6 +88,8 @@ import {
   STUCK,
   anchoredWith,
   anchorScrollsOf,
+  endOrigins,
+  scrollableRect,
   type ScrollMap,
   applyScrollOffsets,
   applyScrollOffsetsIn,
@@ -134,6 +136,10 @@ import {
   forgetColumns,
   layoutColumns,
   spansColumns,
+  columnsSet,
+  cutIntoColumns,
+  stripOf,
+  stripStatic,
 } from './multicol.js';
 import type { Columns } from './multicol.js';
 import {
@@ -1964,7 +1970,14 @@ export function layoutDocument(
       continue;
     }
     const found = ctx.positioned.length;
+    // laid out in the strip of the columns it is inside, and cut into them
+    const strip = inColumns(box, containing);
     layoutPositioned(box, containing, ctx);
+    if (strip) {
+      cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
+        translate(b, dx, dy, () => false),
+      );
+    }
     if (finish && ctx.positioned.length > found) {
       if (found > i + 1) {
         ctx.positioned.splice(i + 1, 0, ...ctx.positioned.splice(found));
@@ -7777,15 +7790,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     return;
   }
   forgetPaneShift(box);
-  const cb =
-    containing.kind === 'inline'
-      ? inlineContainingBlock(containing, box, ctx)
-      : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
+  // what scrolls its default anchor and not it, and how far it has now
+  const anchor = defaultAnchorBox(box, style, ctx);
+  const cb = positionedContaining(box, containing, ctx);
   const options = style.positionTryFallbacks ?? [];
   const root = ctx.anchorRoot ?? null;
   const axes = anchorAxesOf(box, containing);
-  // what scrolls its default anchor and not it, and how far it has now
-  const anchor = defaultAnchorBox(box, style, ctx);
   const ownContext =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
@@ -7843,7 +7853,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const place = (index: number): Placement | null => {
     const tried = triedStyle(index);
     if (!tried) return null;
-    ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+    ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       resolvedStyles.set(index, resolved);
@@ -7872,7 +7882,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
             const tried = triedStyle(i);
             if (!tried) return -Infinity;
             ctx.anchorShift =
-              anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+              anchor && context ? { anchor, x: sx, y: sy } : null;
             try {
               const { resolved, anchoring } = anchoredStyle(
                 box,
@@ -7908,7 +7918,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (transit && own) {
     const moved = transit(box, own, chosen, anchoredFields(triedStyle(chosen)));
     if (moved !== own) {
-      ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+      ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
       try {
         box.style = moved;
         // laid out a moment ago at the values it ran from, which nothing
@@ -8229,6 +8239,19 @@ function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
           width: anchor.width,
           height: anchor.height,
         };
+  // a box laid out in the strip of columns its anchor is in too sees the
+  // anchor unfragmented, where the strip had it (CSS Anchor Positioning
+  // 1, 2); one outside them, the rectangle around its pieces
+  const containing =
+    columnsSet.any && anchor.kind !== 'inline' ? containingBlockFor(box) : null;
+  const strip = containing ? inColumns(box, containing) : null;
+  const anchorStrip = strip ? stripOf(anchor) : null;
+  if (anchorStrip && anchorStrip.geometry === strip!.geometry) {
+    rect.x = anchorStrip.x;
+    rect.y = anchorStrip.y;
+    rect.width = anchorStrip.width;
+    rect.height = anchorStrip.height;
+  }
   const moved = movedAnchorRect(rect, anchor, box);
   if (ctx.anchorRoot) noteAnchorRead(ctx.anchorRoot, anchor);
   // and where the box's anchor references are taken at a displacement of
@@ -8997,6 +9020,74 @@ function justifySelfAs(
  * aligns is aligned in its inset-modified containing block
  * (`selfAligned`). Answers that rectangle, which says whether it fits.
  */
+/**
+ * Where the strip of a multicol container's columns had a box's containing
+ * block, where both are inside the columns: an absolutely positioned box,
+ * or a fixed one a transformed box is the containing block of, whose
+ * containing block is in them is laid out in the strip, as though
+ * nothing were fragmented, and cut into the columns after
+ * (`cutIntoColumns`). Null for any other.
+ */
+function inColumns(box: Box, containing: Box): ReturnType<typeof stripOf> {
+  if (!columnsSet.any) return null;
+  // a fixed box's containing block is in the columns only where a box
+  // with a transform makes it one, which `stripOf` finds of no other
+  const position = box.style.position;
+  if (
+    (position !== 'absolute' && position !== 'fixed') ||
+    containing.kind === 'inline' ||
+    !containing.parent
+  ) {
+    return null;
+  }
+  return stripOf(containing);
+}
+
+/**
+ * The rectangle a positioned box is placed in: an inline box's, its grid
+ * area in a grid (CSS Grid 1, 9.1), whether the box is the grid's child or
+ * deeper in it, or the padding box of what contains it — and that box's
+ * scrollable containing block where it is a scroll container and the box
+ * has a default anchor, so that all it scrolls is room to place the box in
+ * (CSS Anchor Positioning 1, 2.4; CSS Position 4, 2.1).
+ */
+function positionedContaining(
+  box: Box,
+  containing: Box,
+  ctx: LayoutContext,
+): CbRect {
+  if (containing.kind === 'inline') {
+    return inlineContainingBlock(containing, box, ctx);
+  }
+  // inside a multicol container's columns, where the strip had it: the
+  // box is laid out there and cut into the columns after (CSS
+  // Fragmentation 3; CSS Anchor Positioning 1, 2)
+  const strip = inColumns(box, containing);
+  if (strip) {
+    return {
+      x: strip.x + containing.borderLeft,
+      y: strip.y + containing.captionTop + containing.borderTop,
+      width: Math.max(
+        0,
+        strip.width - containing.borderLeft - containing.borderRight,
+      ),
+      height: Math.max(
+        0,
+        strip.height -
+          containing.captionTop -
+          containing.captionBottom -
+          containing.borderTop -
+          containing.borderBottom,
+      ),
+    };
+  }
+  const local =
+    gridArea(box, containing, ctx) ?? containingRect(containing, ctx);
+  return isScroller(containing) && defaultAnchorBox(box, box.style, ctx)
+    ? scrollableRect(containing, local)
+    : local;
+}
+
 function positionedIn(
   box: Box,
   containing: Box,
@@ -9005,14 +9096,11 @@ function positionedIn(
 ): Placement {
   // a grid's is the box's grid area (CSS Grid 1, 9.1), whether the box is
   // the grid's child or deeper in it
-  const area =
-    containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
   // the containing block as it is before a `position-area` takes its cells
   // of it, which a box too big for them is held in as far as it can be
-  const whole =
-    containing.kind === 'inline'
-      ? inlineContainingBlock(containing, box, ctx)
-      : (area ?? containingRect(containing, ctx));
+  const whole = positionedContaining(box, containing, ctx);
+  const area =
+    containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
   // and a box in a `position-area` is in the area's cells
   const placed = anchoring?.area ?? null;
   const { x: cbX, y: cbY, width: cbWidth, height: cbHeight } = placed ?? whole;
@@ -9076,7 +9164,27 @@ function positionedIn(
   // one in the top layer is at the start of its containing block, which
   // is no box's in the flow it was in (CSS Position 4, 3.1), and one in a
   // `position-area` is aligned in it
-  const at = placed || inArea || box.topLayer ? null : box.staticPosition;
+  const flowAt = placed || inArea || box.topLayer ? null : box.staticPosition;
+  // inside a multicol container's columns, where the strip had it, which
+  // the box is laid out in before it is cut into them (`inColumns`)
+  const stripAt =
+    flowAt && !flowAt.inside && inColumns(box, containing)
+      ? stripStatic(box)
+      : null;
+  const at =
+    flowAt && stripAt
+      ? {
+          ...flowAt,
+          x: stripAt.x,
+          y: stripAt.y,
+          right: stripAt.right,
+          // the box it is from, where the strip had it
+          from: Object.assign(Object.create(flowAt.from) as Box, {
+            x: stripAt.fromX,
+            y: stripAt.fromY,
+          }),
+        }
+      : flowAt;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
@@ -9241,6 +9349,7 @@ function positionedIn(
         box.width + box.marginLeft + box.marginRight,
         whole.x,
         whole.width,
+        overflowLimit(box, containing, false, ctx),
       ) + box.marginLeft;
   } else if (
     left !== null &&
@@ -9310,6 +9419,7 @@ function positionedIn(
         box.height + box.marginTop + box.marginBottom,
         whole.y,
         whole.height,
+        overflowLimit(box, containing, true, ctx),
       ) + box.marginTop;
   } else if (top !== null && bottom !== null) {
     // a box that fills what its offsets leave, unless `min-height` or
@@ -9461,7 +9571,10 @@ function selfAligned(
           : 0;
   let centre: number | null = null;
   let stretch = false;
-  let unsafe = false;
+  // an overflow position that says so aligns as it says, overflow or not
+  let unsafe = (down ? style.alignSelfText : style.justifySelfText).startsWith(
+    'unsafe',
+  );
   if (
     (down ? style.alignAnchorCenter : style.justifyAnchorCenter) &&
     anchorCentre !== null
@@ -9530,6 +9643,9 @@ function alignedStart(
   outer: number,
   cbStart: number,
   cbSize: number,
+  /** How much further the overflow limit rect reaches (`overflowLimit`):
+   *  `-Infinity` on both for no start, `Infinity` for no end. */
+  further: { lo: number; hi: number } | null = null,
 ): number {
   const free = a.size - outer;
   const want =
@@ -9538,14 +9654,67 @@ function alignedStart(
   const within = (v: number, lo: number, hi: number) =>
     Math.min(Math.max(v, lo), hi);
   if (free >= 0) return within(want, a.start, a.start + free);
-  const lo = Math.min(a.start, cbStart);
-  const hi = Math.max(a.start + a.size, cbStart + cbSize);
+  let lo = Math.min(a.start, cbStart);
+  let hi = Math.max(a.start + a.size, cbStart + cbSize);
+  if (further) {
+    lo = further.lo === Infinity ? lo : Math.min(lo, further.lo);
+    hi = further.hi === -Infinity ? hi : Math.max(hi, further.hi);
+  }
   if (outer > hi - lo) return lo;
   return within(
     want,
     Math.max(lo, a.start + a.size - outer),
     Math.min(a.start, hi - outer),
   );
+}
+
+/**
+ * How far the overflow limit rect of a positioned box reaches past the
+ * rectangle around its inset-modified containing block and its containing
+ * block (CSS Box Alignment 3, 4.4.1.2), on one axis: the start and the end
+ * it reaches, or null where no further. An absolutely positioned box in a
+ * scroll container's, or the document's, can be scrolled to past it on the
+ * side the scroll reaches, without end, and not before the scroll origin;
+ * a fixed box whose default anchor the pane scrolls can be scrolled into
+ * view anywhere in the document's scrollable overflow area, which is the
+ * initial containing block and the root's margin box (CSS Position 4,
+ * 2.1), where the scroll has them.
+ */
+function overflowLimit(
+  box: Box,
+  containing: Box,
+  down: boolean,
+  ctx: LayoutContext,
+): { lo: number; hi: number } | null {
+  if (containing.kind === 'inline') return null;
+  const position = box.style.position;
+  if (position === 'absolute') {
+    if (containing.parent && !isScroller(containing)) return null;
+    const [fromRight, fromBottom] = endOrigins(containing);
+    return (down ? fromBottom : fromRight)
+      ? { lo: -Infinity, hi: -Infinity }
+      : { lo: Infinity, hi: Infinity };
+  }
+  if (position !== 'fixed' || containing.parent) return null;
+  const anchor = defaultAnchorBox(box, box.style, ctx);
+  if (!anchor || drawnAtViewport(anchor)) return null;
+  // where the scroll has the document, which the box is placed against
+  const shift = ctx.anchorShift;
+  const by = shift ? (down ? shift.y : shift.x) : 0;
+  const icb = down ? ctx.viewportHeight : ctx.viewportWidth;
+  // the root element's box, which the root box holds where the document
+  // has one, and stands for where it is a fragment
+  const html =
+    containing.children.find(
+      (c) => c.el && c.kind !== 'text' && !c.outOfFlow,
+    ) ?? containing;
+  const start = down
+    ? html.y - Math.max(0, html.marginTop)
+    : html.x - Math.max(0, html.marginLeft);
+  const end = down
+    ? html.y + html.height + Math.max(0, html.marginBottom)
+    : html.x + html.width + Math.max(0, html.marginRight);
+  return { lo: Math.min(0, start) - by, hi: Math.max(icb, end) - by };
 }
 
 /** A box's content box or its padding box, as its layout left them. */
