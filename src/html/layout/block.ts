@@ -140,6 +140,7 @@ import {
   spansColumns,
   columnsSet,
   cutIntoColumns,
+  moveColumns,
   stripOf,
   stripStatic,
 } from './multicol.js';
@@ -10520,6 +10521,8 @@ export function translate(
     box.marker.x += dx;
     box.marker.y += dy;
   }
+  // where its columns are, for what is cut into them after the flow
+  if (dy && columnsSet.any) moveColumns(box, dy);
   // the pieces columns broke it in, which are kept beside it
   if (columned.any) {
     const pieces = COLUMN_PIECES.get(box);
