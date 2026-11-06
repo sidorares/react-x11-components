@@ -336,6 +336,7 @@ export function installDom(
     'fontFaces',
     'fontMatch',
     'sheets',
+    'importedCss',
   ]);
   /** The attributes some list goes by (`readsAttributes` in `liveList`). */
   const LIST_ATTRIBUTES = new Set([
@@ -999,8 +1000,7 @@ export function installDom(
   /** What a document is told as it is swapped out for another and as it
    *  is first shown (HTML 7.4.6.4, 8.1.7.1): how the navigation goes, where
    *  the host's session says (`firePageSwap`), and the cross-document view
-   *  transition, which no navigation here sets up yet, so only a page's
-   *  own `new` makes one. */
+   *  transition where `@view-transition { navigation: auto }` opts in. */
   class PageSwapEvent extends Event {
     _transition: Any;
     _activation: Any;
@@ -3719,16 +3719,26 @@ export function installDom(
    * "update the rendering" a document has tells it. `<Html>` lays a
    * document out and draws it before any of its scripts runs, so what a
    * browser draws after the event this draws before it; the frame a page
-   * hears it in is still the first its callbacks run in. No transition
-   * across documents is handed in yet, so its `viewTransition` is null.
+   * hears it in is still the first its callbacks run in. A cross-document
+   * view transition is handed where `@view-transition { navigation: auto }`
+   * opts in and the navigation that showed this document came from another.
    */
   let revealOwed = false;
   const reveal = (): void => {
     revealOwed = false;
     if (document._unloaded) return;
+    let viewTransition: Any = null;
+    try {
+      const activation = navigation.activation;
+      if (activation?.from && navigationAutoOptedIn() && !activeOf(document)) {
+        viewTransition = beginCrossDocumentTransition(document, 'inbound');
+      }
+    } catch {
+      viewTransition = null;
+    }
     dispatch(
       windowTarget,
-      asTrusted(new PageRevealEvent('pagereveal', { viewTransition: null })),
+      asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
   /** Whether an element's `blocking` attribute names `render`. */
@@ -14948,7 +14958,23 @@ export function installDom(
   }
   class CSSImportRule extends CSSRule {
     override _type = 3;
-    readonly styleSheet = null;
+    /** Cached once asked: the sheet it imports, or null where the host
+     *  has none (not yet fetched, or failed). */
+    _sheet: Any = undefined;
+    get styleSheet(): Any {
+      if (this._sheet !== undefined) return this._sheet;
+      const href = this.href;
+      if (!href) return (this._sheet = null);
+      const text = call('importedCss', href);
+      if (text == null || text === false || text === '') {
+        return (this._sheet = null);
+      }
+      const sheet = new CSSStyleSheet();
+      sheet._rules = JSON.parse(
+        String(call('cssRules', str(text))),
+      ) as string[];
+      return (this._sheet = sheet);
+    }
     get href(): string {
       const m = /^(?:url\(\s*)?(["']?)([^"')]*)\1/i.exec(
         conditionOf(this._text),
@@ -15434,11 +15460,22 @@ export function installDom(
   const droppedRule = (text: string): boolean =>
     /^@view-transition(?![\w-])/i.test(text) &&
     preludeOf(text).slice('@view-transition'.length).trim() !== '';
+  /** `@layer name { … }` as a grouping rule so nested `@view-transition`
+   *  (and the rest) are in `cssRules` (CSS Cascade 5, 3.1). A statement
+   *  `@layer a, b;` has no block and an empty list. */
+  class CSSLayerBlockRule extends CSSGroupingRule {
+    get name(): string {
+      return preludeOf(this._text)
+        .replace(/^@(?:-[a-z]+-)?layer\s*/i, '')
+        .trim();
+    }
+  }
   const RULE_CLASSES: Record<string, Any> = {
     'view-transition': CSSViewTransitionRule,
     media: CSSMediaRule,
     supports: CSSSupportsRule,
     container: CSSContainerRule,
+    layer: CSSLayerBlockRule,
     import: CSSImportRule,
     'font-face': CSSFontFaceRule,
     keyframes: CSSKeyframesRule,
@@ -18730,6 +18767,9 @@ export function installDom(
     /** The document it is of. */
     _doc: Any = null;
     _callback: Any;
+    /** Whether `callUpdate` has already run (7.5), or a cross-document
+     *  transition that has no update callback to call. */
+    _called = false;
     _types = new ViewTransitionTypeSet();
     _done: Any;
     _ready: Any;
@@ -18944,6 +18984,200 @@ export function installDom(
       () => vt._resolveFinished(),
       (error: Any) => vt._rejectFinished(error),
     );
+  };
+
+  /**
+   * Which of two cascade layers wins for a normal `@view-transition`
+   * (CSS Cascade 5, 6.4): a later named layer over an earlier one, and a
+   * rule in no layer over any — as `compareLayers` in the host cascade.
+   */
+  const compareVtLayers = (
+    a: readonly number[] | null,
+    b: readonly number[] | null,
+  ): number => {
+    if (a === null) return b === null ? 0 : 1;
+    if (b === null) return -1;
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i += 1) {
+      if (a[i] !== b[i]) return a[i] - b[i];
+    }
+    return b.length - a.length;
+  };
+
+  /**
+   * Whether this document opts into cross-document view transitions
+   * (CSS View Transitions 2, 2.1): the winning `@view-transition` rule's
+   * `navigation` is `auto`. Layers win as the cascade does
+   * (`at-rule-in-layer-cascade`), and within a layer document order;
+   * unlayered beats every layer. An `@import … layer(name)` carries its
+   * imported `@view-transition` under that name.
+   */
+  const navigationAutoOptedIn = (): boolean => {
+    type Cand = {
+      navigation: string;
+      layer: readonly number[] | null;
+      order: number;
+    };
+    const candidates: Cand[] = [];
+    const layers = new Map<string, number>();
+    let anonymous = 0;
+    let ordinal = 0;
+    const rankOf = (name: string): number => {
+      let rank = layers.get(name);
+      if (rank === undefined) {
+        rank = layers.size;
+        layers.set(name, rank);
+      }
+      return rank;
+    };
+    const enter = (
+      name: string,
+      layer: readonly number[] | null,
+      path: string,
+    ): [number[], string] => {
+      const ranks = layer ? [...layer] : [];
+      let full = path;
+      for (const part of name.split('.')) {
+        full = full ? `${full}.${part}` : part;
+        ranks.push(rankOf(full));
+      }
+      return [ranks, full];
+    };
+    const walk = (
+      rules: Any,
+      layer: readonly number[] | null,
+      path: string,
+    ): void => {
+      if (!rules) return;
+      const n = Number(rules.length) || 0;
+      for (let i = 0; i < n; i++) {
+        const rule = rules[i];
+        if (!rule) continue;
+        if (rule instanceof CSSViewTransitionRule) {
+          const nav = str(rule.navigation);
+          if (nav === 'auto' || nav === 'none') {
+            candidates.push({ navigation: nav, layer, order: ordinal++ });
+          }
+          continue;
+        }
+        if (rule instanceof CSSLayerBlockRule) {
+          const names = str(rule.name)
+            .split(',')
+            .map((part: string) => part.trim())
+            .filter(Boolean);
+          const empty = !rule.cssRules || Number(rule.cssRules.length) === 0;
+          if (empty && names.length >= 1) {
+            for (const part of names) enter(part, layer, path);
+            continue;
+          }
+          if (names.length <= 1) {
+            const [ranks, full] = enter(
+              names[0] ?? `\u0000${anonymous++}`,
+              layer,
+              path,
+            );
+            walk(rule.cssRules, ranks, full);
+          }
+          continue;
+        }
+        if (rule instanceof CSSImportRule) {
+          let next = layer;
+          let nextPath = path;
+          const after = str(rule._text).replace(/^@import\s+/i, '');
+          const urlMatch =
+            /^(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
+              after,
+            );
+          const layerMatch = /^\s*layer(?:\s*\(\s*((?:\\.|[^)])*)\s*\))?/i.exec(
+            urlMatch?.[1] ?? '',
+          );
+          if (layerMatch) {
+            const raw = layerMatch[1];
+            const name =
+              raw === undefined
+                ? `\u0000${anonymous++}`
+                : raw.trim() || `\u0000${anonymous++}`;
+            [next, nextPath] = enter(name, layer, path);
+          }
+          try {
+            walk(rule.styleSheet?.cssRules, next, nextPath);
+          } catch {
+            // cross-origin or unfetched import
+          }
+          continue;
+        }
+        if (rule.cssRules) walk(rule.cssRules, layer, path);
+      }
+    };
+    try {
+      const sheets = document.styleSheets;
+      const n = Number(sheets?.length) || 0;
+      for (let i = 0; i < n; i++) {
+        try {
+          walk(sheets[i].cssRules, null, '');
+        } catch {
+          // cross-origin sheet: no rules
+        }
+      }
+    } catch {
+      return false;
+    }
+    if (!candidates.length) return false;
+    candidates.sort((a, b) => {
+      const by = compareVtLayers(a.layer, b.layer);
+      return by !== 0 ? by : a.order - b.order;
+    });
+    return candidates[candidates.length - 1]!.navigation === 'auto';
+  };
+
+  /**
+   * A view transition for a cross-document navigation (CSS View
+   * Transitions 2, 3): no update callback — the new document is already
+   * there on the inbound side. Outbound capture is deferred until after
+   * `pageswap` (`captureOutboundOld`), so a listener can still set
+   * `view-transition-name` (pageswap-fired-before-old-state-capture).
+   * Inbound activates with the new. The event carries a non-null
+   * transition even where capture later skips (at-rule-opt-in-auto.html).
+   */
+  const beginCrossDocumentTransition = (
+    doc: Any,
+    side: 'outbound' | 'inbound',
+  ): Any => {
+    const vt = new ViewTransition(null, TRANSITION_KEY);
+    vt._doc = doc;
+    vt._called = true;
+    vt._phase = 'update-callback-called';
+    vt._resolveDone();
+    if (doc === document) activeTransition = vt;
+    else frameTransitions.set(doc, vt);
+    tellActive(doc, vt);
+    if (side === 'inbound') {
+      setTimer(
+        () => {
+          if (vt._phase !== 'done') activateTransition(vt);
+        },
+        0,
+        [],
+        false,
+      );
+    }
+    return vt;
+  };
+
+  /** Capture the old document after `pageswap` has run (CSS View
+   *  Transitions 2, 3.1): names a listener just set are included. */
+  const captureOutboundOld = (vt: Any): void => {
+    if (!vt || vt._phase === 'done') return;
+    const shared = str(transitionOp(vt, 'vtOld'));
+    if (shared) {
+      skipTransition(
+        vt,
+        new DOMException(
+          `Unexpected duplicate view-transition-name: ${shared}`,
+          'InvalidStateError',
+        ),
+      );
+    }
   };
 
   /** `document.startViewTransition()` (7.2), of the document asked. */
@@ -31626,8 +31860,9 @@ export function installDom(
    * this document's origin and the session is the host's, it is told how:
    * the entry it is at now, the one it goes to — the current one for a
    * reload, the one among the entries for a traversal, and for a push or a
-   * replace one of no list yet — and the navigation's type. No transition
-   * is set up across documents yet.
+   * replace one of no list yet — and the navigation's type. A
+   * cross-document view transition is started where the document opts in
+   * with `@view-transition { navigation: auto }`.
    */
   const firePageSwap = (swap: Any): void => {
     const s = pageSession.session;
@@ -31653,12 +31888,16 @@ export function installDom(
         );
       }
     }
+    let viewTransition: Any = null;
+    if (activation && navigationAutoOptedIn() && !activeOf(document)) {
+      viewTransition = beginCrossDocumentTransition(document, 'outbound');
+    }
     dispatch(
       windowTarget,
-      asTrusted(
-        new PageSwapEvent('pageswap', { activation, viewTransition: null }),
-      ),
+      asTrusted(new PageSwapEvent('pageswap', { activation, viewTransition })),
     );
+    // after pageswap: capture includes names the listener set
+    if (viewTransition) captureOutboundOld(viewTransition);
   };
 
   // An accessor of a base interface answers for any node, as a browser's
@@ -35081,6 +35320,7 @@ export function installDom(
     CSSMediaRule,
     CSSSupportsRule,
     CSSContainerRule,
+    CSSLayerBlockRule,
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,

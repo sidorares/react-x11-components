@@ -2674,22 +2674,45 @@ function importUrl(prelude: string): string | null {
 }
 
 /**
- * An `@import`'s media query list, the rest of its prelude after the URL:
- * null where it has none, and false where no query in it can ever hold
- * here — a list that only names other media, `print` or `braille` — which
- * leaves the sheet out, unasked for (CSS 2.1 6.3). Any other list is the
- * condition the sheet it imports is under (CSS Cascade 4, 2): the sheet is
- * fetched once, and its rules hold at the widths the list does. Taken to
- * hold at every width, as it was, a design that imports a sheet a
- * breakpoint — the Zen Garden's 219, `@import url("219-1367.css") all and
- * (min-width: 1367px)` — had all of them at once.
+ * An `@import`'s layer and the rest of its prelude after the URL (CSS
+ * Cascade 5, 2.2): `layer`, `layer(name)`, or neither — stripped before
+ * the media list is read, so `layer(inertA)` is not a failed media query
+ * that leaves the sheet unfetched (view-transitions
+ * `at-rule-in-layer-cascade-external-stylesheet`).
+ *
+ * `layer` is `false` where the prelude names none; `null` for a bare
+ * `layer` (anonymous); a string for `layer(name)`.
+ */
+export function importLayerOf(afterUrl: string): {
+  layer: string | null | false;
+  rest: string;
+} {
+  const m = /^\s*layer(?:\s*\(\s*((?:\\.|[^)])*)\s*\))?/i.exec(afterUrl);
+  if (!m) return { layer: false, rest: afterUrl };
+  const raw = m[1];
+  const layer =
+    raw === undefined ? null : raw.trim() === '' ? false : raw.trim();
+  return { layer, rest: afterUrl.slice(m[0].length) };
+}
+
+/**
+ * An `@import`'s media query list, the rest of its prelude after the URL
+ * and any `layer(…)`: null where it has none, and false where no query in
+ * it can ever hold here — a list that only names other media, `print` or
+ * `braille` — which leaves the sheet out, unasked for (CSS 2.1 6.3). Any
+ * other list is the condition the sheet it imports is under (CSS Cascade
+ * 4, 2): the sheet is fetched once, and its rules hold at the widths the
+ * list does. Taken to hold at every width, as it was, a design that
+ * imports a sheet a breakpoint — the Zen Garden's 219, `@import
+ * url("219-1367.css") all and (min-width: 1367px)` — had all of them at
+ * once.
  */
 function importConditions(prelude: string): MediaCondition[] | null | false {
   const m =
     /^\s*(?:url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)|"[^"]*"|'[^']*')(.*)$/s.exec(
       prelude,
     );
-  return sheetConditions(m?.[1] ?? '');
+  return sheetConditions(importLayerOf(m?.[1] ?? '').rest);
 }
 
 /**
