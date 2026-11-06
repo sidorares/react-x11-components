@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.37.0](https://github.com/sidorares/react-x11-components/compare/v0.36.0...v0.37.0) (2026-11-06)
+
+
+### Features
+
+* **html:** a request's Referer is made under its referrer policy, at every hop ([#1340](https://github.com/sidorares/react-x11-components/issues/1340)) ([553ac16](https://github.com/sidorares/react-x11-components/commit/553ac16c5ad5e889d1cdcb08c37a892834a61345))
+* **html:** cross-document view transitions when navigation: auto ([#1337](https://github.com/sidorares/react-x11-components/issues/1337)) ([1d9826e](https://github.com/sidorares/react-x11-components/commit/1d9826ea4a0549319bc02114b8e1959cefa225e2))
+
+
+### Bug Fixes
+
+* **html:** a drawing's elements run their CSS animations and transforms ([#1332](https://github.com/sidorares/react-x11-components/issues/1332)) ([25a81f8](https://github.com/sidorares/react-x11-components/commit/25a81f83ebd0488ce1a236b975cea712f2e5fb02))
+* **html:** getComputedStyle styles a missing view-transition image ([#1335](https://github.com/sidorares/react-x11-components/issues/1335)) ([6218127](https://github.com/sidorares/react-x11-components/commit/621812782f52e9653e3854774ecb749799b458d6))
+* **html:** hold animation frames for link rel=expect ([#1336](https://github.com/sidorares/react-x11-components/issues/1336)) ([bdba711](https://github.com/sidorares/react-x11-components/commit/bdba7111dbc88badd6fac1defbc617ce206375ff))
+* **html:** hold rAF for blocking=render and record paint timing ([#1339](https://github.com/sidorares/react-x11-components/issues/1339)) ([e74a3c2](https://github.com/sidorares/react-x11-components/commit/e74a3c26476c4dff5db5656e883ab5f5b3aad719))
+* **html:** view transition offscreen capture from the near edge ([#1338](https://github.com/sidorares/react-x11-components/issues/1338)) ([46a90a9](https://github.com/sidorares/react-x11-components/commit/46a90a9c083032ade5120e27543f7991fc466d96))
+* **html:** window.resizeTo updates size at once and skips a view transition ([#1334](https://github.com/sidorares/react-x11-components/issues/1334)) ([d332cfb](https://github.com/sidorares/react-x11-components/commit/d332cfbf3f554ddfa7cd44d5fac0dcaaab076bc5))
+
 ## [0.36.0](https://github.com/sidorares/react-x11-components/compare/v0.35.0...v0.36.0) (2026-11-05)
 
 
