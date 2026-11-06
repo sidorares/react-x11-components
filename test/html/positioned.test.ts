@@ -2658,6 +2658,33 @@ test('a box anchored to something a scroller scrolls moves with it, on the axes 
   assert.deepStrictEqual(at('t2'), [25, 100], 'across only');
 });
 
+test('a box anchored across a scroll follows it on an axis only where its anchors share the scroll container for that axis, as WPT has it', async () => {
+  // #inner clips across and scrolls down, so across the two anchors are
+  // in #outer both, and down they are not
+  const { node } = await render(
+    '<style>body{margin:0}.s{position:relative;width:200px;height:200px;overflow:scroll}' +
+      '#inner{overflow-x:clip;overflow-y:scroll}' +
+      '.space{width:500px;height:500px}' +
+      '.a{position:absolute;top:100px;left:100px;width:10px;height:10px}' +
+      '#d{anchor-name:--d}#t{anchor-name:--t}' +
+      '#p{position:absolute;width:10px;height:10px;position-anchor:--d;' +
+      'top:anchor(--t top);left:anchor(--t left)}' +
+      '</style><div id="cb" style="position:relative">' +
+      '<div class="s" id="outer"><div class="s" id="inner">' +
+      '<div class="space"></div><div class="a" id="d"></div></div>' +
+      '<div class="space"></div><div class="a" id="t"></div></div>' +
+      '<div id="p"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  assert.deepStrictEqual(at('p'), [100, 100]);
+  el.scrollElementTo(findById(el.document, 'outer')!, { x: 50, y: 50 });
+  assert.deepStrictEqual(at('p'), [50, 100], 'across only');
+});
+
 test('position-visibility hides a box whose anchor a scroll cuts away, or that overflows its containing block, with what it holds', async () => {
   const { node } = await render(
     '<style>body{margin:0}#s{width:300px;height:100px;overflow:hidden scroll}' +
