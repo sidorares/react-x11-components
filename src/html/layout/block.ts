@@ -17,6 +17,7 @@ import {
   isRootElement,
   tagOf,
   topLayerOrder,
+  flatParentOf,
 } from '../dom.js';
 import {
   AUTO,
@@ -276,6 +277,9 @@ export interface LayoutContext {
   /** Each element's own box, its first, found with the anchors: what an
    *  implicit anchor element is found as (`implicitAnchorBox`). */
   elementBoxes?: Map<Element, Box>;
+  /** The elements' styles, for what has no box to carry one: an
+   *  `anchor-scope` on a `display: contents` element (`scopedAway`). */
+  elementStyles?: ReadonlyMap<Element, { style: ComputedStyle }>;
   /** Where the pane around the document has the viewport (`setViewport`),
    *  for a box fixed to it anchored in the document, or the other way
    *  round. */
@@ -1826,6 +1830,7 @@ export function layoutDocument(
     nestedOutOfLine: tree.nestedOutOfLine,
     clipText: tree.clipText,
     anchorRoot: tree.anchors ? tree.root : null,
+    elementStyles: tree.anchors ? tree.styles : undefined,
     ...(reusing
       ? {
           reusePass: ++reusePasses,
@@ -7786,7 +7791,16 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
       }
     }
     PLACED_STYLE.delete(box);
-    positionedIn(box, containing, ctx, null);
+    const placed = positionedIn(box, containing, ctx, null);
+    // and `no-overflow` hides it where it overflows, anchored or not
+    let root = ctx.anchorRoot ?? null;
+    if (!root && style.positionVisibility & 2) {
+      root = box;
+      while (root.parent) root = root.parent;
+    }
+    if (root && style.positionVisibility & 2) {
+      noteVisibility(root, box, !fitsIn(box, placed), false);
+    }
     return;
   }
   forgetPaneShift(box);
@@ -7939,8 +7953,13 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     notePosition(kept[0], kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
   // where it ends up (5.4)
-  if (root && style.positionVisibility & 3) {
-    noteVisibility(root, box, !(placed && fitsIn(box, placed)));
+  if (root && style.positionVisibility & 7) {
+    noteVisibility(
+      root,
+      box,
+      !(placed && fitsIn(box, placed)),
+      !anchor && refersToDefaultAnchor(style),
+    );
   }
   if (!context || !root || !placed) return;
   // moved to where its anchor is with nothing scrolled, on the axes it
@@ -8031,6 +8050,26 @@ function chainLeadOf(
     return state;
   }
   return null;
+}
+
+/**
+ * Whether a style refers to its box's default anchor (CSS Anchor
+ * Positioning 1, 5.4, for `anchor-valid`): an `anchor()` or an
+ * `anchor-size()` that names no anchor, a `position-area` or
+ * `anchor-center`. One that names an anchor refers to that one.
+ */
+function refersToDefaultAnchor(style: ComputedStyle): boolean {
+  if (style.positionArea) return true;
+  if (style.justifyAnchorCenter || style.alignAnchorCenter) return true;
+  const unnamed = (v: AnchorInset | AnchorSize | undefined): boolean =>
+    !!v &&
+    ('calls' in v
+      ? v.calls.some((c) => c.name === null)
+      : (v as { name: string | null }).name === null);
+  return (
+    Object.values(style.anchorInsets ?? {}).some(unnamed) ||
+    Object.values(style.anchorSizes ?? {}).some(unnamed)
+  );
 }
 
 /** The fields of a style an `anchor()` or an `anchor-size()` gives a value:
@@ -8496,7 +8535,29 @@ function defaultAnchorBox(
   if (name !== null) {
     return anchorBoxFor(box, name, ctx, style.positionAnchorTree);
   }
+  if (style.positionAnchorText === 'match-parent') {
+    return parentsAnchorBox(box, ctx);
+  }
   return anchorsImplicitly(style) ? implicitAnchorBox(box, ctx) : null;
+}
+
+/**
+ * `position-anchor: match-parent`'s default anchor (CSS Anchor Positioning
+ * 1, 2.4): the parent element's — a pseudo-element's, its originating
+ * element's — where it is an acceptable anchor for this box too.
+ */
+function parentsAnchorBox(box: Box, ctx: LayoutContext): Box | null {
+  const el = box.pseudo ? GENERATED_FROM.get(box) : box.el;
+  const parent = box.pseudo ? el : el && flatParentOf(el);
+  if (!parent || !indexAnchors(ctx)) return null;
+  const from = ctx.elementBoxes!.get(parent);
+  // `position-anchor` applies to an absolutely positioned box alone, and
+  // a parent of any other kind has no default anchor to match
+  const position = from?.style.position;
+  if (!from || (position !== 'absolute' && position !== 'fixed')) return null;
+  const anchor = defaultAnchorBox(from, from.style, ctx);
+  if (!anchor || anchor === box || holds(box, anchor)) return null;
+  return acceptableAnchor(anchor, box, ctx.anchorOrder!) ? anchor : null;
 }
 
 /**
@@ -8539,7 +8600,7 @@ function anchorBoxFor(
     // a tree-scoped name, matched strictly (CSS Shadow 1, 3.5): a shadow
     // tree's `--a` is not the page's
     if (anchor.style.anchorNamesTree !== tree) continue;
-    if (scopedAway(anchor, box, name)) continue;
+    if (scopedAway(anchor, box, name, ctx.elementStyles)) continue;
     if (!acceptableAnchor(anchor, box, ctx.anchorOrder!)) continue;
     return anchor;
   }
@@ -8608,8 +8669,18 @@ function indexAnchors(ctx: LayoutContext): boolean {
  * shadow tree sets on its host none of the page's. An element's own box is
  * the one asked, and not the boxes inside it that carry its style.
  */
-function scopedAway(anchor: Box, box: Box, name: string): boolean {
+function scopedAway(
+  anchor: Box,
+  box: Box,
+  name: string,
+  styles?: ReadonlyMap<Element, { style: ComputedStyle }>,
+): boolean {
   const tree = anchor.style.anchorNamesTree;
+  // an element of `display: contents` scopes what it holds as any does,
+  // though it has no box to say so: by its elements
+  if (styles && contentsScopedAway(anchor, box, name, tree, styles)) {
+    return true;
+  }
   const scopes = (at: Box): boolean => {
     const scope = at.style.anchorScope;
     if (scope === 'none' || at.style.anchorScopeTree !== tree) return false;
@@ -8628,6 +8699,37 @@ function scopedAway(anchor: Box, box: Box, name: string): boolean {
   }
   for (let at = box.parent; at; at = at.parent) {
     if (scopes(at) && !holds(at, anchor)) return true;
+  }
+  return false;
+}
+
+/** `scopedAway` for the scopes `display: contents` elements set: one
+ *  around the anchor's element and not the box's keeps the name in. */
+function contentsScopedAway(
+  anchor: Box,
+  box: Box,
+  name: string,
+  tree: unknown,
+  styles: ReadonlyMap<Element, { style: ComputedStyle }>,
+): boolean {
+  const elementOf = (b: Box): Element | null =>
+    (b.pseudo ? (GENERATED_FROM.get(b) ?? null) : b.el) ?? null;
+  const from = elementOf(anchor);
+  const to = elementOf(box);
+  if (!from || !to) return false;
+  const around = (el: Element, of: Element): boolean => {
+    for (let at: Element | null = of; at; at = flatParentOf(at)) {
+      if (at === el) return true;
+    }
+    return false;
+  };
+  for (let at = flatParentOf(from); at; at = flatParentOf(at)) {
+    const style = styles.get(at)?.style;
+    if (!style || style.display !== 'contents') continue;
+    const scope = style.anchorScope;
+    if (scope === 'none' || style.anchorScopeTree !== tree) continue;
+    if (scope !== 'all' && !scope.split(', ').includes(name)) continue;
+    if (!around(at, to)) return true;
   }
   return false;
 }
@@ -8668,6 +8770,16 @@ function acceptableAnchor(
       if (at === cb) {
         within = true;
         break;
+      }
+    }
+    // an inline containing block is split around a block in it, which is
+    // the inline's element's as much as its box's: what the element holds
+    if (!within && cb.kind === 'inline' && cb.el && anchor.el) {
+      for (let at = flatParentOf(anchor.el); at; at = flatParentOf(at)) {
+        if (at === cb.el) {
+          within = true;
+          break;
+        }
       }
     }
     if (!within) return false;

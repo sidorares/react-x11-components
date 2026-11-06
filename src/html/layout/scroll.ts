@@ -981,15 +981,27 @@ export function clearDefaultAnchors(root: Box): void {
   ANCHOR_SCROLLS.delete(root);
 }
 
-/** Each box `position-visibility` may hide, by the root of its tree, and
- *  whether it overflowed its containing block where layout placed it. */
-const VISIBILITY = new WeakMap<Box, Map<Box, boolean>>();
+/** Each box `position-visibility` may hide, by the root of its tree:
+ *  whether it overflowed its containing block where layout placed it, and
+ *  whether it refers to a default anchor it has none of (`anchor-valid`). */
+const VISIBILITY = new WeakMap<
+  Box,
+  Map<Box, { overflows: boolean; invalid: boolean }>
+>();
 
 /** Layout placed a box `position-visibility` may hide. */
-export function noteVisibility(root: Box, box: Box, overflows: boolean): void {
+export function noteVisibility(
+  root: Box,
+  box: Box,
+  overflows: boolean,
+  invalid?: boolean,
+): void {
   let map = VISIBILITY.get(root);
   if (!map) VISIBILITY.set(root, (map = new Map()));
-  map.set(box, overflows);
+  map.set(box, {
+    overflows,
+    invalid: invalid ?? map.get(box)?.invalid ?? false,
+  });
 }
 
 /**
@@ -1015,10 +1027,11 @@ export function updatePositionVisibility(
   const anchors = DEFAULT_ANCHORS.get(root);
   const scrolled = ANCHOR_SCROLLS.get(root);
   const changed: Box[] = [];
-  for (const [box, overflows] of map) {
+  for (const [box, { overflows, invalid }] of map) {
     const bits = box.style.positionVisibility;
     const anchor = anchors?.get(box)?.anchor;
     const hidden =
+      (!!(bits & 4) && invalid) ||
       (!!(bits & 2) && overflows) ||
       (!!(bits & 1) &&
         !!anchor &&
