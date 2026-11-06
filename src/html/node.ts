@@ -196,6 +196,7 @@ import {
   inherit,
   sameValue,
   scrolls,
+  scrollsAlong,
   urlOf,
   WILL_HOLD_FIXED,
   WILL_HOLD_FIXED_BOX,
@@ -10410,18 +10411,13 @@ export class HtmlViewNode extends Node {
   ): boolean {
     const source = trigger.source;
     if (source.kind === 'none') return false;
-    const scroller =
-      source.kind === 'scroll' && source.scroller === 'self'
-        ? isScroller(box)
-          ? box
-          : null
-        : source.kind === 'scroll' && source.scroller === 'root'
-          ? null
-          : nearestScroller(box);
-    if (source.kind === 'scroll' && source.scroller === 'self' && !scroller) {
-      return false;
-    }
-    const { down, reversed } = this._timelineAxis(source.axis, scroller);
+    const found = this._timelineSource(
+      box,
+      source.kind === 'scroll' ? source.scroller : 'nearest',
+      source.axis,
+    );
+    if (!found) return false;
+    const { scroller, down, reversed } = found;
     // the scrollport, in document coordinates, and how far it is scrolled
     // from its scroll origin and can scroll
     const {
@@ -10989,7 +10985,7 @@ export class HtmlViewNode extends Node {
     let subject = el as Element;
     let view: boolean;
     let axis: string;
-    let scrollerKind = 'nearest';
+    let scrollerKind: 'nearest' | 'root' | 'self' = 'nearest';
     let inset: readonly [Len, Len] = ['auto', 'auto'];
     if (ref.kind === 'scroll') {
       view = false;
@@ -11010,16 +11006,9 @@ export class HtmlViewNode extends Node {
     } else return null;
     const box = this._firstBoxesOf(tree).get(subject);
     if (!box) return null;
-    const scroller =
-      scrollerKind === 'self'
-        ? isScroller(box)
-          ? box
-          : null
-        : scrollerKind === 'root'
-          ? null
-          : nearestScroller(box);
-    if (scrollerKind === 'self' && !scroller) return null;
-    const { down, reversed } = this._timelineAxis(axis, scroller);
+    const source = this._timelineSource(box, scrollerKind, axis);
+    if (!source) return null;
+    const { scroller, down, reversed } = source;
     const port = this._scrollportOf(scroller, down);
     if (!(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
@@ -11149,6 +11138,53 @@ export class HtmlViewNode extends Node {
     return bodyStyle.writingMode;
   }
 
+  /**
+   * The scroller a timeline on `box` measures, and its axis there
+   * (`_timelineAxis`): the box itself for `self`, which is no source where
+   * it scrolls nothing; the pane for `root`; and for `nearest`, as an
+   * anonymous scroll or view timeline looks for its source (CSS
+   * Scroll-driven Animations 1, 2.2.1), the axis resolved against the
+   * nearest scroll container around the box, and the first from there out
+   * that scrolls along it — past a single-axis one that clips it
+   * (`scrollsAlong`) — or the pane where none does.
+   */
+  private _timelineSource(
+    box: Box,
+    kind: 'nearest' | 'root' | 'self',
+    axis: string,
+  ): { scroller: Box | null; down: boolean; reversed: boolean } | null {
+    if (kind === 'self') {
+      if (!isScroller(box)) return null;
+      return { scroller: box, ...this._timelineAxis(axis, box) };
+    }
+    const nearest = kind === 'root' ? null : nearestScroller(box);
+    const { down } = this._timelineAxis(axis, nearest);
+    let scroller = nearest;
+    while (scroller && !scrollsAlong(scroller.style, down ? 'y' : 'x')) {
+      scroller = nearestScroller(scroller);
+    }
+    const { reversed } = this._timelineAxis(down ? 'y' : 'x', scroller);
+    return { scroller, down, reversed };
+  }
+
+  /** The source an anonymous timeline of a page's on `element` measures,
+   *  null for the viewport's, and the physical axis it does along
+   *  (`_timelineSource`); undefined where the element has no box. */
+  timelineSourceOf(
+    element: Element,
+    axis: string,
+  ): { source: Element | null; axis: 'x' | 'y' } | undefined {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree && this._firstBoxesOf(tree).get(element);
+    if (!box) return undefined;
+    const found = this._timelineSource(box, 'nearest', axis)!;
+    return {
+      source: found.scroller?.el ?? null,
+      axis: found.down ? 'y' : 'x',
+    };
+  }
+
   /** A page's timeline's axis against the scroller it measures, an element
    *  that scrolls or the pane's for any other (`_timelineAxis`): `x` or
    *  `y`, and `r` after it where the scroll origin is at its end. */
@@ -11198,7 +11234,11 @@ export class HtmlViewNode extends Node {
     const tree = this._tree;
     const box = tree && this._firstBoxesOf(tree).get(element);
     if (!box) return null;
-    const scroller = nearestScroller(box);
+    const scroller = this._timelineSource(
+      box,
+      'nearest',
+      vertical ? 'y' : 'x',
+    )!.scroller;
     const port = this._scrollportOf(scroller, vertical);
     const [padStart, padEnd] = this._scrollPadding(
       scroller,
@@ -14379,13 +14419,16 @@ export class HtmlViewNode extends Node {
       if (ref.kind === 'none') timeline = { kind: 'none' };
       else if (ref.kind === 'scroll') {
         const box = boxes.get(el);
-        const scroller =
-          ref.scroller === 'self'
-            ? el
-            : ref.scroller === 'root' || !box
-              ? null
-              : (nearestScroller(box)?.el ?? null);
-        timeline = { kind: 'scroll', source: scroller, axis: ref.axis };
+        const found =
+          ref.scroller === 'self' || !box
+            ? null
+            : this._timelineSource(box, ref.scroller, ref.axis);
+        timeline = {
+          kind: 'scroll',
+          source: ref.scroller === 'self' ? el : (found?.scroller?.el ?? null),
+          axis: ref.axis,
+          from: ref.scroller === 'nearest' ? el : undefined,
+        };
       } else if (ref.kind === 'view') {
         timeline = {
           kind: 'view',
@@ -17185,7 +17228,15 @@ export interface CssAnimationInfo {
   scroll?: { at: number | null; start: number | null; rate: number };
   timeline:
     | { kind: 'document' | 'none' }
-    | { kind: 'scroll'; source: Element | null; axis: string }
+    | {
+        kind: 'scroll';
+        source: Element | null;
+        axis: string;
+        /** The element a `scroll(nearest)` one looks for its source from,
+         *  whose nearest scroll container its axis is resolved against
+         *  rather than the source's own (`_timelineSource`). */
+        from?: Element;
+      }
     | { kind: 'view'; subject: Element; axis: string; inset: string[] };
   rangeStart: string;
   rangeEnd: string;

@@ -3380,6 +3380,10 @@ export function installDom(
   class ScrollTimeline extends AnimationTimeline {
     _source: Any;
     _axis: string;
+    /** The element a CSS `scroll(nearest)` one found its source from, whose
+     *  nearest scroll container its axis is resolved against rather than
+     *  the source's own writing mode (`HtmlViewNode._timelineSource`). */
+    _from: Any = null;
     constructor(options: Any = {}) {
       super();
       this._monotonic = false;
@@ -3417,18 +3421,24 @@ export function installDom(
     _measure(): Any {
       const source = this.source;
       const g = scrollGeometry(source);
-      return g && { ...g, ...this._axisOf(source) };
+      if (!g) return null;
+      // a CSS `scroll(nearest)` one's axis is the one its source was found
+      // along, from the element (`HtmlViewNode._timelineSource`)
+      const from = this._from;
+      const r = from ? call('timelineSource', from._id, this._axis) : '';
+      const along = typeof r === 'string' && r ? r.split(',')[1] : undefined;
+      return { ...g, ...this._axisOf(source, along ?? this._axis) };
     }
     /** Its axis against the writing mode of the scroller it measures, the
      *  root's for the viewport, and whether that scroller's scroll origin
      *  is at the axis's end (`HtmlViewNode.timelineAxisOf`). */
-    _axisOf(source: Any): { vertical: boolean; reversed: boolean } {
-      const r = source ? call('timelineAxis', source._id, this._axis) : '';
+    _axisOf(
+      source: Any,
+      axis: string = this._axis,
+    ): { vertical: boolean; reversed: boolean } {
+      const r = source ? call('timelineAxis', source._id, axis) : '';
       if (typeof r !== 'string' || !r) {
-        return {
-          vertical: this._axis === 'y' || this._axis === 'block',
-          reversed: false,
-        };
+        return { vertical: axis === 'y' || axis === 'block', reversed: false };
       }
       return { vertical: r[0] === 'y', reversed: r[1] === 'r' };
     }
@@ -3507,16 +3517,24 @@ export function installDom(
     get subject(): Any {
       return this._subject;
     }
-    /** The nearest scroll container around the subject, or the viewport's
-     *  scrolling element. */
+    /** The scroll container around the subject it measures, and the
+     *  physical axis it does along: its axis resolved against the nearest
+     *  one, and the first from there out that scrolls along it, or the
+     *  viewport's scrolling element where none does; null for a subject
+     *  with no box (`HtmlViewNode.timelineSourceOf`). */
+    _located(): [Any, 'x' | 'y'] | null {
+      const subject = this._subject;
+      if (!subject?.isConnected) return null;
+      const r = call('timelineSource', subject._id, this._axis);
+      if (typeof r !== 'string' || !r) return null;
+      const [id, along] = r.split(',');
+      return [
+        id ? wrap(Number(id)) : document.scrollingElement,
+        along === 'y' ? 'y' : 'x',
+      ];
+    }
     override get source(): Any {
-      let el = this._subject?.parentElement ?? null;
-      while (el) {
-        if (el === document.documentElement) return document.scrollingElement;
-        if (scrollStateOf(el)) return el;
-        el = el.parentElement;
-      }
-      return this._subject?.isConnected ? document.scrollingElement : null;
+      return this._located()?.[0] ?? null;
     }
     get startOffset(): Any {
       const v = this._view();
@@ -3537,11 +3555,13 @@ export function installDom(
       return this._snapshot();
     }
     override _measure(): Any {
-      const source = this.source;
+      const located = this._located();
+      if (!located) return null;
+      const [source, along] = located;
       const g = scrollGeometry(source);
       const r = docRect(this._subject);
       if (!g || !r) return null;
-      const { vertical, reversed } = this._axisOf(source);
+      const { vertical, reversed } = this._axisOf(source, along);
       // the scroll container's `scroll-padding`, which an `auto` inset is,
       // and how far sticky positioning has moved the subject and can each
       // way, which the range takes in (the document's `_viewPlace`)
@@ -5083,21 +5103,28 @@ export function installDom(
     if (t.kind === 'none') return null;
     const key =
       t.kind === 'scroll'
-        ? `s${t.source}:${t.axis}`
+        ? `s${t.source}:${t.axis}:${t.from ?? ''}`
         : `v${t.subject}:${t.axis}:${t.inset.join(' ')}`;
     let tl = cssTimelines.get(key);
     if (!tl) {
-      tl =
-        t.kind === 'scroll'
-          ? new ScrollTimeline({
-              source: t.source ? wrap(t.source) : document.scrollingElement,
-              axis: t.axis,
-            })
-          : new ViewTimeline({
-              subject: wrap(t.subject),
-              axis: t.axis,
-              inset: t.inset.join(' '),
-            });
+      if (t.kind === 'scroll') {
+        tl = new ScrollTimeline({
+          source: t.source ? wrap(t.source) : document.scrollingElement,
+          axis: t.axis,
+        });
+        // the element it was found from, whose nearest scroll container
+        // its axis is resolved against (`HtmlViewNode._timelineSource`)
+        if (t.from) {
+          tl._from = wrap(t.from);
+          tl._snap();
+        }
+      } else {
+        tl = new ViewTimeline({
+          subject: wrap(t.subject),
+          axis: t.axis,
+          inset: t.inset.join(' '),
+        });
+      }
       cssTimelines.set(key, tl);
     }
     return tl;

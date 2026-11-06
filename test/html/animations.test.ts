@@ -4089,6 +4089,39 @@ test("a scroll() and a view() timeline take block and inline from their scroller
   assert.strictEqual(opacity('vi'), 1, 'vertical-rl inline scrolls nothing');
 });
 
+test('an anonymous scroll() looks past a scroll container that clips its axis, resolved against the nearest one, and overflow-block and overflow-inline are its axes', async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#outer{width:100px;height:100px;overflow:auto}' +
+      '#inner{width:100px;height:300px;overflow-inline:scroll;overflow-block:clip}' +
+      '.bar{width:10px;height:10px;animation:fade linear}' +
+      '#block{animation-timeline:scroll(nearest block)}' +
+      '#inline{animation-timeline:scroll(nearest inline)}' +
+      '</style>' +
+      '<div id="outer"><div id="inner"><div style="width:300px;height:1px"></div>' +
+      '<div class="bar" id="block"></div><div class="bar" id="inline"></div>' +
+      '</div></div>',
+  );
+  const opacity = (id: string) => Number(doc.style(id).opacity);
+  const scroll = async (id: string, to: { x?: number; y?: number }) => {
+    doc.el.scrollElementTo(findById(doc.el.document, id)!, to);
+    await act();
+    for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+    await act();
+  };
+  assert.strictEqual(doc.style('inner').overflowX, 'scroll');
+  // the inner one scrolls across and clips down, which it is written to:
+  // the block timeline passes it for the outer, which scrolls 200 down
+  await scroll('outer', { y: 100 });
+  assert.strictEqual(opacity('block'), 0.5, 'down the outer');
+  // and the inline one is the inner's, 200 across
+  await scroll('inner', { x: 50 });
+  assert.strictEqual(opacity('inline'), 0.25, 'across the inner');
+  assert.strictEqual(opacity('block'), 0.5, 'the inner moves no block');
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

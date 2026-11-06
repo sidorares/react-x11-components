@@ -2041,7 +2041,9 @@ and events — the page's, then each frame's in tree order.
 
 **A scroll timeline is how far its source is scrolled** (Scroll Animations
 1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
-crosses the scroll container nearest it, from `cover 0%` to `cover 100%`,
+crosses the scroll container nearest it that scrolls along its axis
+(the axis resolved against the nearest one), from `cover 0%` to
+`cover 100%`,
 with its insets — `auto`, as one not given is, the scroll container's
 `scroll-padding` on that side — and for a subject that sticky positioning
 moves, from where it would enter held back as far as its containing block
@@ -5039,8 +5041,11 @@ it but a positioned box whose containing block is outside — and one whose
 containers](#scroll-containers)). `clip` clips as `hidden` does and makes no
 scroll container, so it makes no formatting context and leaves a flex or
 grid item its automatic minimum; beside a value that scrolls, a `visible`
-axis is `auto` and a `clip` one `hidden`. `clip` on one axis cuts only that
-one. `overflow-clip-margin` moves the edge `clip` and paint containment
+axis is `auto` and a `clip` one `hidden`, though an anonymous scroll or
+view timeline still takes it for an axis the box does not scroll along.
+`clip` on one axis cuts only that one. `overflow-inline` and
+`overflow-block` are `overflow-x` and `overflow-y` by the box's writing
+mode. `overflow-clip-margin` moves the edge `clip` and paint containment
 cut at: out from the box it names by its length, or in where the length is
 negative, the rounded corners moving out as a browser's do. A box that
 scrolls cuts at its padding box whatever the margin says. A table clips to its table box, with its
@@ -5360,7 +5365,11 @@ and the frames around it are spaced as though it were not there; on any
 other timeline it is placed nowhere and draws nothing, and
 `getKeyframes()` reads it back as given with a `computedOffset` of null.
 A timeline's `block` and `inline` are its scroller's, in the scroller's
-writing mode, and the viewport's in the document's principal one; its
+writing mode, and the viewport's in the document's principal one; a
+`scroll(nearest)` or a `view()` resolves its axis against the nearest
+scroll container around the element and takes the first from there out
+that scrolls along it, past one that clips it (`overflow: clip scroll`),
+or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
 `rtl` or a `vertical-rl` one, and a view timeline's subject enters from
 the far side of its scrollport there, its `auto` insets the
