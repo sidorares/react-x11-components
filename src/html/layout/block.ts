@@ -136,6 +136,10 @@ import {
   forgetColumns,
   layoutColumns,
   spansColumns,
+  columnsSet,
+  cutIntoColumns,
+  stripOf,
+  stripStatic,
 } from './multicol.js';
 import type { Columns } from './multicol.js';
 import {
@@ -1966,7 +1970,14 @@ export function layoutDocument(
       continue;
     }
     const found = ctx.positioned.length;
+    // laid out in the strip of the columns it is inside, and cut into them
+    const strip = inColumns(box, containing);
     layoutPositioned(box, containing, ctx);
+    if (strip) {
+      cutIntoColumns(box, strip.geometry, (b, dx, dy) =>
+        translate(b, dx, dy, () => false),
+      );
+    }
     if (finish && ctx.positioned.length > found) {
       if (found > i + 1) {
         ctx.positioned.splice(i + 1, 0, ...ctx.positioned.splice(found));
@@ -8228,6 +8239,19 @@ function anchorRect(anchor: Box, box: Box, ctx: LayoutContext): CbRect {
           width: anchor.width,
           height: anchor.height,
         };
+  // a box laid out in the strip of columns its anchor is in too sees the
+  // anchor unfragmented, where the strip had it (CSS Anchor Positioning
+  // 1, 2); one outside them, the rectangle around its pieces
+  const containing =
+    columnsSet.any && anchor.kind !== 'inline' ? containingBlockFor(box) : null;
+  const strip = containing ? inColumns(box, containing) : null;
+  const anchorStrip = strip ? stripOf(anchor) : null;
+  if (anchorStrip && anchorStrip.geometry === strip!.geometry) {
+    rect.x = anchorStrip.x;
+    rect.y = anchorStrip.y;
+    rect.width = anchorStrip.width;
+    rect.height = anchorStrip.height;
+  }
   const moved = movedAnchorRect(rect, anchor, box);
   if (ctx.anchorRoot) noteAnchorRead(ctx.anchorRoot, anchor);
   // and where the box's anchor references are taken at a displacement of
@@ -8997,6 +9021,29 @@ function justifySelfAs(
  * (`selfAligned`). Answers that rectangle, which says whether it fits.
  */
 /**
+ * Where the strip of a multicol container's columns had a box's containing
+ * block, where both are inside the columns: an absolutely positioned box,
+ * or a fixed one a transformed box is the containing block of, whose
+ * containing block is in them is laid out in the strip, as though
+ * nothing were fragmented, and cut into the columns after
+ * (`cutIntoColumns`). Null for any other.
+ */
+function inColumns(box: Box, containing: Box): ReturnType<typeof stripOf> {
+  if (!columnsSet.any) return null;
+  // a fixed box's containing block is in the columns only where a box
+  // with a transform makes it one, which `stripOf` finds of no other
+  const position = box.style.position;
+  if (
+    (position !== 'absolute' && position !== 'fixed') ||
+    containing.kind === 'inline' ||
+    !containing.parent
+  ) {
+    return null;
+  }
+  return stripOf(containing);
+}
+
+/**
  * The rectangle a positioned box is placed in: an inline box's, its grid
  * area in a grid (CSS Grid 1, 9.1), whether the box is the grid's child or
  * deeper in it, or the padding box of what contains it — and that box's
@@ -9011,6 +9058,28 @@ function positionedContaining(
 ): CbRect {
   if (containing.kind === 'inline') {
     return inlineContainingBlock(containing, box, ctx);
+  }
+  // inside a multicol container's columns, where the strip had it: the
+  // box is laid out there and cut into the columns after (CSS
+  // Fragmentation 3; CSS Anchor Positioning 1, 2)
+  const strip = inColumns(box, containing);
+  if (strip) {
+    return {
+      x: strip.x + containing.borderLeft,
+      y: strip.y + containing.captionTop + containing.borderTop,
+      width: Math.max(
+        0,
+        strip.width - containing.borderLeft - containing.borderRight,
+      ),
+      height: Math.max(
+        0,
+        strip.height -
+          containing.captionTop -
+          containing.captionBottom -
+          containing.borderTop -
+          containing.borderBottom,
+      ),
+    };
   }
   const local =
     gridArea(box, containing, ctx) ?? containingRect(containing, ctx);
@@ -9095,7 +9164,27 @@ function positionedIn(
   // one in the top layer is at the start of its containing block, which
   // is no box's in the flow it was in (CSS Position 4, 3.1), and one in a
   // `position-area` is aligned in it
-  const at = placed || inArea || box.topLayer ? null : box.staticPosition;
+  const flowAt = placed || inArea || box.topLayer ? null : box.staticPosition;
+  // inside a multicol container's columns, where the strip had it, which
+  // the box is laid out in before it is cut into them (`inColumns`)
+  const stripAt =
+    flowAt && !flowAt.inside && inColumns(box, containing)
+      ? stripStatic(box)
+      : null;
+  const at =
+    flowAt && stripAt
+      ? {
+          ...flowAt,
+          x: stripAt.x,
+          y: stripAt.y,
+          right: stripAt.right,
+          // the box it is from, where the strip had it
+          from: Object.assign(Object.create(flowAt.from) as Box, {
+            x: stripAt.fromX,
+            y: stripAt.fromY,
+          }),
+        }
+      : flowAt;
   const rtl = (at?.from ?? containing).style.direction === 'rtl';
   // where the box is as a flex box's or a grid's one item, aligned in it —
   // or in its grid area
