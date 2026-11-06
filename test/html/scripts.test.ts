@@ -15450,6 +15450,27 @@ test("el.style keeps scroll snapping's values as their grammars take them, and g
   );
 });
 
+test('a snap container lines an area up at the start of its own flow: the right in a right-to-left line and in vertical-rl, where the block axis runs across', async () => {
+  const doc = await hosted(
+    '<style>.s { width: 100px; height: 100px; overflow: scroll; scroll-snap-type: both mandatory }' +
+      ' .c { width: 600px; height: 600px; position: relative }' +
+      ' .t { position: absolute; left: 200px; top: 200px; width: 50px; height: 50px; scroll-snap-align: start }</style>' +
+      '<div class="s" style="direction: rtl"><div class="c"><div class="t"></div></div></div>' +
+      '<div class="s" style="writing-mode: vertical-rl"><div class="c"><div class="t"></div></div></div>' +
+      '<div class="s" style="writing-mode: vertical-lr; scroll-snap-type: block mandatory">' +
+      '<div class="c"><div class="t"></div></div></div>' +
+      '<p id="out"></p><script>' +
+      'document.getElementById("out").textContent = Array.from(document.querySelectorAll(".s"))' +
+      '.map(function (s) { s.scrollTo(-180, 180); return s.scrollLeft + "," + s.scrollTop; }).join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '-350,200|-350,200|200,180',
+    doc.logs.join('\n'),
+  );
+});
+
 test('the viewport snaps where the root makes it a snap container, and again where the area it was snapped to stops being one', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>html { scroll-snap-type: y mandatory }' +
