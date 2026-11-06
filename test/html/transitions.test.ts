@@ -1020,3 +1020,26 @@ metric(
     assert.strictEqual(generated('a').style.color, '#ff0000');
   },
 );
+
+test('`display` runs with allow-discrete: a box going to `none` is kept to the end of the run, with what runs beside it', async (t) => {
+  const doc = await holding(
+    t,
+    '<style>#w{padding:10px;height:200px}#a{height:50px;' +
+      'transition:display 160ms allow-discrete,opacity 160ms linear}' +
+      '#w:hover #a{display:none;opacity:0}</style>' +
+      '<div id="w"><div id="a">a</div></div>',
+  );
+  const shown = () => {
+    try {
+      return doc.style('a');
+    } catch {
+      return null;
+    }
+  };
+  doc.hover('w');
+  await doc.at(animationClock.now() + 80);
+  assert.strictEqual(shown()?.display, 'block', 'held while it runs');
+  assert.ok(shown()!.opacity < 1, 'and the fade with it');
+  await doc.at(animationClock.now() + 240);
+  assert.strictEqual(shown(), null, 'gone at its end');
+});

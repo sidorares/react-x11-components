@@ -3732,3 +3732,17 @@ test('position-area, position-try-fallbacks and anchored() are read', () => {
   assert.strictEqual(anchoredHolds('fallback: left top', 'top left'), true);
   assert.strictEqual(anchoredHolds('fallback: sideways', null), null);
 });
+
+test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>@position-try --pt{left:300px}' +
+      '#b{position:fixed;width:100px;height:100px;inset:0;left:9999px;' +
+      'position-try-fallbacks:--pt}</style></head>' +
+      '<body><div id="b"></div></body></html>',
+    800,
+  );
+  const el = view(node);
+  const b = findById(el.document, 'b')!;
+  assert.strictEqual(el.elementRect(b)?.x, 300);
+  assert.strictEqual(el.computedStyle(b)?.left, '300px');
+});

@@ -1090,12 +1090,12 @@ const MAX_FRAME_DEPTH = 32;
 
 /** The pseudo-elements the host answers a computed style for: a `::before`
  *  or an `::after`, and the highlights (`highlightKey`). */
-type ComputedPseudo = 'before' | 'after' | HighlightPseudo | null;
+type ComputedPseudo = 'before' | 'after' | 'backdrop' | HighlightPseudo | null;
 
 /** What `computed` and `customProperty` are asked of, as the facade names
  *  it (`getComputedStyle`): any other name is the element's own. */
 function computedPseudo(b: Primitive): ComputedPseudo {
-  if (b === 'before' || b === 'after') return b;
+  if (b === 'before' || b === 'after' || b === 'backdrop') return b;
   return typeof b === 'string' && highlightKey(b) !== null
     ? (b as HighlightPseudo)
     : null;
@@ -5268,7 +5268,13 @@ export class DomHost {
         if (!this._inDocument(el)) {
           return this._frameComputed(el, pseudo)?.custom?.get(text(c)) ?? '';
         }
-        return this._seams.handle.customProperty(el, text(c), pseudo) ?? '';
+        return (
+          this._seams.handle.customProperty(
+            el,
+            text(c),
+            pseudo === 'backdrop' ? null : pseudo,
+          ) ?? ''
+        );
       }
       case 'at': {
         this.flush();

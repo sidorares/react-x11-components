@@ -8061,6 +8061,14 @@ export class HtmlViewNode extends Node {
       const own = cascade.partStyle(element, style, pseudo);
       return cssomStyle(own ?? style, this._scale, null);
     }
+    if (pseudo === 'backdrop') {
+      // an element's in the top layer, before its box: placed by a position
+      // option, it has the option's style (CSS Anchor Positioning 1, 6.2)
+      const backdrop = this._backdropOf(tree, element);
+      if (!backdrop) return null;
+      const read = this._placedStyle(backdrop) ?? backdrop.style;
+      return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
+    }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
     const own = (box && this._placedStyle(box)) ?? style;
@@ -12212,6 +12220,17 @@ export class HtmlViewNode extends Node {
   }
 
   /** An element's `::before` or `::after` box (`generatedIn`). */
+  /** An element's `::backdrop`'s box, beside its own in the top layer
+   *  (`_backdrop` in the builder), or null where it has none. */
+  private _backdropOf(tree: BoxTree, el: Element): Box | null {
+    const box = this._ownBoxOf(tree, el);
+    if (!box?.topLayer || !box.parent) return null;
+    for (const at of box.parent.children) {
+      if (at.pseudo === 'backdrop' && GENERATED_FROM.get(at) === el) return at;
+    }
+    return null;
+  }
+
   private _pseudoBoxOf(
     tree: BoxTree,
     el: Element,
