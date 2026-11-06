@@ -83,6 +83,28 @@ export function makeFrame(box: Box, frameStyle: ComputedStyle): Box {
   style.display = 'block';
   style.transform = turnsUp(mode) ? ANTICLOCKWISE : CLOCKWISE;
   style.transformOrigin = [0, 0];
+  // a multicol container's columns are its frame's: they run along its
+  // inline axis and are as tall as its block size, which the frame lays out
+  // as a horizontal flow's (CSS Multi-column 1, 3)
+  if (box.style.columns) {
+    const own = box.style;
+    style.columns = own.columns;
+    style.columnCount = own.columnCount;
+    style.columnWidth = own.columnWidth;
+    style.columnGap = own.columnGap;
+    style.columnGapNormal = own.columnGapNormal;
+    style.columnFill = own.columnFill;
+    style.columnRule = own.columnRule;
+    // and as tall as the root's block size, which its columns are filled to
+    // (3.4): the root's content box, which the frame fills across
+    if (own.boxSizing === 'content-box' && !own.widthKeyword) {
+      style.height = own.width;
+      style.maxHeight = own.maxWidth;
+    }
+    const root = copyStyle(own);
+    root.columns = 0;
+    box.style = root;
+  }
   const frame = new (box.constructor as typeof Box)('block', null, style);
   // a list item's marker goes beside its first line, which is the frame's
   // and turned with it: none is drawn for it yet

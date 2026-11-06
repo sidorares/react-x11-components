@@ -12,6 +12,7 @@ import {
   FONTS,
   boxOf,
   fillsOf,
+  findById,
   h,
   linesOf,
   metric,
@@ -1204,4 +1205,52 @@ test('an absolutely positioned box whose containing block is broken across colum
     resolvedInsets(boxOf(el, 't') as never, 400, 600),
     [30, 55, 30, 5],
   );
+});
+
+test('a box in a box broken across columns is cut where it ends, and holds nothing of a column past it', async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>body{margin:0}' +
+      '#c{columns:3;column-fill:auto;gap:10px;width:230px;height:100px}' +
+      '</style></head><body><div id="c"><div style="height:30px"></div>' +
+      '<div id="rel" style="width:100px;height:200px">' +
+      '<div style="height:20px"></div>' +
+      '<div id="an" style="width:20px;height:70px"></div></div></div>' +
+      '</body></html>',
+    400,
+  );
+  const el = view(node);
+  // 20 of its 70 are in the second column, and none in the third, which
+  // what holds it reaches
+  assert.deepStrictEqual(
+    COLUMN_PIECES.get(boxOf(el, 'an') as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.height,
+    ]),
+    [
+      [0, 50, 50],
+      [80, 0, 20],
+    ],
+  );
+});
+
+test('a multicol container in a vertical writing mode sets its columns down the page, as tall as its block size', async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>body{margin:0}' +
+      '#c{columns:3;column-fill:auto;gap:10px;inline-size:230px;block-size:100px;' +
+      'writing-mode:vertical-rl}</style></head><body><div id="c">' +
+      '<div id="a" style="block-size:150px"></div>' +
+      '<div id="b" style="block-size:100px"></div></div></body></html>',
+    400,
+  );
+  const el = view(node);
+  const rect = (id: string) => {
+    const r = el.elementRect(findById(el.document, id) as never)!;
+    return [r.x, r.y, r.width, r.height];
+  };
+  assert.deepStrictEqual(rect('c'), [0, 0, 100, 230]);
+  // the first block fills the first column, from the right, and half the
+  // second; the second block the rest of that and half the third
+  assert.deepStrictEqual(rect('a'), [0, 0, 100, 150]);
+  assert.deepStrictEqual(rect('b'), [0, 80, 100, 150]);
 });
