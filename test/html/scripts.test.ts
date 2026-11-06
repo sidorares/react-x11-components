@@ -15374,6 +15374,34 @@ test('focus() brings the element into view through the scroll containers around 
   assert.strictEqual(doc.text('out'), 'true|0|0', doc.logs.join('\n'));
 });
 
+test("el.style keeps scroll snapping's values as their grammars take them, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin by the element's writing mode", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div id="e"></div>' +
+      '<div id="v" style="writing-mode: vertical-rl; direction: rtl; scroll-padding: 1px 2px 3px 4px;' +
+      ' scroll-margin: 5px 6px 7px 8px; scroll-padding-top: calc(10px - 20px)"></div><script>' +
+      'var e = document.getElementById("e"), r = [];' +
+      'function set(p, v) { e.style[p] = ""; e.style[p] = v; return e.style.getPropertyValue(p); }' +
+      'r.push(set("scroll-padding", "0 0 0 0"), set("scroll-padding", "auto auto auto auto"),' +
+      ' set("scroll-padding-top", "-20px"), set("scroll-padding-top", "20"), set("scroll-padding", "calc(auto)"),' +
+      ' set("scroll-margin-top", "20%"), set("scroll-margin", "auto"), set("scroll-snap-type", "inline proximity"),' +
+      ' set("scroll-snap-type", "mandatory"), set("scroll-snap-align", "start start"),' +
+      ' set("scroll-snap-stop", "auto"), set("scroll-initial-target", "nearest"));' +
+      'e.style.scrollMargin = ""; e.style.scrollMargin = "1px 2px 3px";' +
+      'r.push(e.style.scrollMarginLeft, e.style.scrollMarginBottom);' +
+      'e.style.scrollPaddingBlock = "auto 10px"; r.push(e.style.scrollPaddingBlockEnd);' +
+      'var cs = getComputedStyle(document.getElementById("v"));' +
+      'r.push(cs.scrollPaddingBlockStart, cs.scrollPaddingInlineStart, cs.scrollMarginBlockEnd,' +
+      ' cs.scrollMarginInlineEnd, cs.scrollPaddingTop, cs.scrollInitialTarget);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0px|auto||||||inline||start||nearest|2px|3px|10px|2px|3px|8px|5px|0px|none',
+    doc.logs.join('\n'),
+  );
+});
+
 test('the viewport snaps where the root makes it a snap container, and again where the area it was snapped to stops being one', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>html { scroll-snap-type: y mandatory }' +

@@ -7242,6 +7242,19 @@ parent's `scroll-snap-align` with the rest of its style, and is none. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
 
+**A page reads scroll snapping's properties as a browser keeps them.**
+`el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
+`scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or
+`scroll-initial-target`, only where its grammar does (CSS Scroll Snap 1, 6
+and 7; Scroll Snap 2, 3.1), and keeps it in its shortest form: `0` is
+`0px`, `inline proximity` is `inline` and four equal sides are one. A
+`scroll-padding` below nought is no value, and a math function that comes
+to less is nought; `scroll-margin` takes no percentage. The shorthands set
+their longhands and are read back from them, and `getComputedStyle` reads
+the flow-relative sides by the element's writing mode and direction, as it
+reads `margin-block-start`. `scroll-snap-stop: before`, which no browser
+takes, is no value.
+
 **The wheel goes to the innermost scroll container under the pointer
 that can move the way it turns**, and on out: one scrolled to its end
 hands the wheel on to the next around it, and then to the box around the

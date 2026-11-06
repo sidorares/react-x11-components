@@ -1379,6 +1379,9 @@ export interface ComputedStyle {
   scrollSnapAlign: readonly [SnapAlign, SnapAlign];
   /** `scroll-snap-stop`. */
   scrollSnapStop: 'normal' | 'always';
+  /** `scroll-initial-target` (CSS Scroll Snap 2, 3.1): whether the box is
+   *  what its nearest scroll container is first scrolled to. */
+  scrollInitialTarget: 'none' | 'nearest';
   /** `scroll-padding`, top, right, bottom and left: what a scroll
    *  container's snapport is inset by, `auto` being none. */
   scrollPaddingTop: Len;
@@ -2029,6 +2032,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     scrollSnapType: null,
     scrollSnapAlign: NO_SNAP_ALIGN,
     scrollSnapStop: 'normal',
+    scrollInitialTarget: 'none',
     scrollPaddingTop: AUTO,
     scrollPaddingRight: AUTO,
     scrollPaddingBottom: AUTO,
@@ -3169,13 +3173,29 @@ export function applyDeclaration(
       if (v === 'normal' || v === 'always') style.scrollSnapStop = v;
       return;
     }
+    case 'scroll-initial-target': {
+      const v = value.trim().toLowerCase();
+      if (v === 'none' || v === 'nearest') style.scrollInitialTarget = v;
+      return;
+    }
     case 'scroll-padding':
     case 'scroll-padding-top':
     case 'scroll-padding-right':
     case 'scroll-padding-bottom':
     case 'scroll-padding-left': {
-      const parts = splitValue(value).map((p) => parseLength(p, ctx));
-      if (!parts.length || !parts.every(validScrollPadding)) return;
+      // a math function that comes to less than nought is nought, where a
+      // literal below it is no value (CSS Values 4, 10.12)
+      const words = splitValue(value);
+      const parts = words.map((p, i) => {
+        const len = parseLength(p, ctx);
+        return typeof len === 'number' &&
+          len < 0 &&
+          /^(?:calc|min|max|clamp)\(/i.test(words[i])
+          ? 0
+          : len;
+      });
+      if (!parts.length || parts.length > (name.length > 14 ? 1 : 4)) return;
+      if (!parts.every(validScrollPadding)) return;
       setScrollSides(style, 'scrollPadding', name.slice(14), parts as Len[]);
       return;
     }
@@ -3186,7 +3206,8 @@ export function applyDeclaration(
     case 'scroll-margin-left': {
       // lengths alone, which may be negative (6.2)
       const parts = splitValue(value).map((p) => parseLength(p, ctx));
-      if (!parts.length || parts.some((p) => typeof p !== 'number')) return;
+      if (!parts.length || parts.length > (name.length > 13 ? 1 : 4)) return;
+      if (parts.some((p) => typeof p !== 'number')) return;
       setScrollSides(style, 'scrollMargin', name.slice(13), parts as number[]);
       return;
     }
@@ -9828,6 +9849,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'scroll-snap-type': ['scrollSnapType'],
   'scroll-snap-align': ['scrollSnapAlign'],
   'scroll-snap-stop': ['scrollSnapStop'],
+  'scroll-initial-target': ['scrollInitialTarget'],
   'scroll-padding': [
     'scrollPaddingTop',
     'scrollPaddingRight',
