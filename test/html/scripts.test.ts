@@ -1290,6 +1290,54 @@ test('an @view-transition rule is a CSSViewTransitionRule, its descriptors as th
   ]);
 });
 
+test("what a page reads back of an anchored box: position-visibility by its names, auto insets an area places as nought, a disabled sheet left out, a shadow root's sheets", async () => {
+  // WPT position-visibility-parsing and -computed (the singular names CSS
+  // Anchor Positioning 1 has now, the plural ones read as them),
+  // auto-inset-margin-getComputedStyle, at-position-try-invalidation and
+  // its shadow DOM twin
+  const doc = await hosted(
+    '<style>#cb{position:relative;width:200px;height:200px;padding:10px}' +
+      '#a{anchor-name:--a;position:absolute;left:20px;top:20px;width:20px;height:20px}' +
+      '.t{position:absolute;width:20px;height:20px;position-anchor:--a}' +
+      '#pa{position-area:bottom right}#jac{justify-self:anchor-center}' +
+      '#lone{position-area:bottom right;position-anchor:--nobody}' +
+      '#f{position:absolute;width:10px;height:10px;left:999px;position-try-fallbacks:--pf}</style>' +
+      '<style id="tries">@position-try --pf { left: 5px; }</style>' +
+      '<p id="out">-</p><div id="cb"><div id="a"></div><div class="t" id="pa"></div>' +
+      '<div class="t" id="jac"></div><div class="t" id="lone"></div><div id="f"></div>' +
+      '<div id="host"></div></div><script>' +
+      'var r = [], s = function (id) { return getComputedStyle(document.getElementById(id)); };' +
+      'var e = document.getElementById("a");' +
+      'e.style.positionVisibility = "no-overflow anchor-visible"; r.push(e.style.positionVisibility);' +
+      'e.style.positionVisibility = "anchors-valid"; r.push(e.style.positionVisibility);' +
+      'r.push(s("cb").positionVisibility, s("pa").left, s("pa").bottom, s("jac").left, s("jac").top);' +
+      'r.push(s("lone").left);' +
+      'var f = document.getElementById("f"); r.push(f.offsetLeft);' +
+      'document.getElementById("tries").sheet.disabled = true; r.push(f.offsetLeft);' +
+      'var root = document.getElementById("host").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<style>p{}</style><link rel=stylesheet href=x.css>";' +
+      'r.push(root.styleSheets.length, root.styleSheets[0].ownerNode === root.firstChild);' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    'anchor-visible no-overflow',
+    'anchor-valid',
+    'anchor-visible',
+    '0px',
+    '0px',
+    '0px',
+    // `anchor-center` across says nothing of the insets down, which are
+    // where its static position placed it
+    '10px',
+    // and with no default anchor, nor of the area's
+    '10px',
+    5,
+    999,
+    2,
+    true,
+  ]);
+});
+
 test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the properties it takes, which a page sets and the box is placed by', async () => {
   // WPT at-position-try-cssom: the name as written, the declarations in
   // order with what the rule takes no part of them, an attribute for each
@@ -15374,6 +15422,34 @@ test('focus() brings the element into view through the scroll containers around 
   assert.strictEqual(doc.text('out'), 'true|0|0', doc.logs.join('\n'));
 });
 
+test("el.style keeps scroll snapping's values as their grammars take them, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin by the element's writing mode", async () => {
+  const doc = await hosted(
+    '<p id="out"></p><div id="e"></div>' +
+      '<div id="v" style="writing-mode: vertical-rl; direction: rtl; scroll-padding: 1px 2px 3px 4px;' +
+      ' scroll-margin: 5px 6px 7px 8px; scroll-padding-top: calc(10px - 20px)"></div><script>' +
+      'var e = document.getElementById("e"), r = [];' +
+      'function set(p, v) { e.style[p] = ""; e.style[p] = v; return e.style.getPropertyValue(p); }' +
+      'r.push(set("scroll-padding", "0 0 0 0"), set("scroll-padding", "auto auto auto auto"),' +
+      ' set("scroll-padding-top", "-20px"), set("scroll-padding-top", "20"), set("scroll-padding", "calc(auto)"),' +
+      ' set("scroll-margin-top", "20%"), set("scroll-margin", "auto"), set("scroll-snap-type", "inline proximity"),' +
+      ' set("scroll-snap-type", "mandatory"), set("scroll-snap-align", "start start"),' +
+      ' set("scroll-snap-stop", "auto"), set("scroll-initial-target", "nearest"));' +
+      'e.style.scrollMargin = ""; e.style.scrollMargin = "1px 2px 3px";' +
+      'r.push(e.style.scrollMarginLeft, e.style.scrollMarginBottom);' +
+      'e.style.scrollPaddingBlock = "auto 10px"; r.push(e.style.scrollPaddingBlockEnd);' +
+      'var cs = getComputedStyle(document.getElementById("v"));' +
+      'r.push(cs.scrollPaddingBlockStart, cs.scrollPaddingInlineStart, cs.scrollMarginBlockEnd,' +
+      ' cs.scrollMarginInlineEnd, cs.scrollPaddingTop, cs.scrollInitialTarget);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0px|auto||||||inline||start||nearest|2px|3px|10px|2px|3px|8px|5px|0px|none',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a snap container lines an area up at the start of its own flow: the right in a right-to-left line and in vertical-rl, where the block axis runs across', async () => {
   const doc = await hosted(
     '<style>.s { width: 100px; height: 100px; overflow: scroll; scroll-snap-type: both mandatory }' +
@@ -16433,6 +16509,36 @@ test("a page's view timeline places its subject where layout put it, with no tra
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
     '600px|900px',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a named timeline is never one a removed element declared, while the document is still to be built again', async () => {
+  const doc = await hosted(
+    '<style>@keyframes z { from { z-index: 0 } to { z-index: 100 } }' +
+      ' .s { overflow: auto; width: 100px; height: 100px } .s > div { height: 50px; z-index: -1 }' +
+      ' .t { view-timeline: --t1; animation: z 1s linear forwards; animation-timeline: --t1 }</style>' +
+      '<main id="m"></main><template id="tp"><div class="s"><div></div><div></div><div></div>' +
+      '<div class="t"></div><div></div><div></div><div></div></div></template>' +
+      '<p id="out"></p><script>' +
+      'var m = document.getElementById("m"), tp = document.getElementById("tp"), r = [];' +
+      'm.append(tp.content.cloneNode(true));' +
+      'requestAnimationFrame(function () {' +
+      // past its range, filling forwards
+      '  m.querySelector(".s").scrollTop = 201;' +
+      '  requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '    r.push(getComputedStyle(m.querySelector(".t")).zIndex);' +
+      // a new one, unscrolled, before its range: no effect
+      '    m.replaceChildren(); m.append(tp.content.cloneNode(true));' +
+      '    r.push(getComputedStyle(m.querySelector(".t")).zIndex);' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  }); });' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '100|-1',
     doc.logs.join('\n'),
   );
 });

@@ -2055,8 +2055,10 @@ crosses the scroll container nearest it that scrolls along its axis
 with its insets — `auto`, as one not given is, the scroll container's
 `scroll-padding` on that side — with the subject where layout placed it,
 no transform on it or between it and its scroller moving it, and for a
-subject that sticky positioning moves, from where it would enter held back as far as its containing block
-lets it to where it would leave carried as far on. A frame measures each
+subject in sticky boxes, each of its ranges from the scroll at which an
+edge of it crosses an edge of the scrollport as the boxes actually move
+it — held at their insets as far as their containing blocks let them, and
+then on with the scroll. A frame measures each
 again, and a page reads the time the last frame had until the next: a
 script that scrolls, or that changes what the source holds, reads the
 time it had, as an animation on it is drawn. Their times, and an
@@ -5356,7 +5358,8 @@ or its nearest ancestor declares with `scroll-timeline-name` or
 where an ancestor's `timeline-scope` takes the name first, the last
 element under that ancestor to declare it, and none where none does —
 and otherwise the last element in the document to declare it, as though
-the root took every name; an element whose own `timeline-scope` takes a
+the root took every name, and never one a page's script has taken out of
+the document since the boxes were last built; an element whose own `timeline-scope` takes a
 name keeps what it and its subtree declare by it from outside; and
 `none`, no timeline and no effect. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
@@ -5369,9 +5372,13 @@ paused` holds it where it is while the scroll moves on, as a page's
 `pause()` does: played again, it is where the scroll has it. A view
 timeline's `auto` inset, as `view()` and `view-timeline-inset` have it
 where none is given, is its scroll container's `scroll-padding` — the
-root's for the pane — and a subject sticky positioning moves, or one in a
-sticky box, is seen from where it would enter held back to where it
-would leave carried on, as Blink and WebKit have it.
+root's for the pane — and for a subject sticky positioning moves, or one
+in a sticky box, each edge of each range is the scroll at which that edge
+of the subject crosses that edge of the scrollport as the sticky boxes
+move it with the scroll, held at their insets and let go where their
+containing blocks run out (WPT's `view-timelines/sticky`); a sticky box
+in a vertical writing mode's frame still takes the most it could hold the
+subject back and carry it on.
 `animation-range`, and its `-start` and `-end`, narrow the part of the
 timeline it runs over: a percentage or a length into the whole timeline,
 or into a named range of a view timeline (`cover`, `contain`, `entry`,
@@ -7025,7 +7032,7 @@ document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
-scrolls (`anchors-visible`, the initial value), and where it overflows its
+scrolls (`anchor-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
 either hides or shows it in the frame it scrolls. A box with a default
 anchor whose containing block is a scroll container's is placed in its
@@ -7037,7 +7044,14 @@ than the scroll can reach (CSS Box Alignment 3, 4.4.1.2): without end on
 the side a scroll container's, or the document's, scroll goes, and for a
 box fixed to the viewport anchored in the document, over the initial
 containing block and the root's margin box. `safe` and `unsafe` before
-`normal` are not taken, as Chrome takes neither. Not done: `anchors-valid`,
+`normal` are not taken, as Chrome takes neither. `position-visibility` takes
+the names it has now, `anchor-visible` and `anchor-valid`, and reads the
+plural ones it had first as them. A page reads an `auto` inset that a
+`position-area` or `anchor-center` places a box against its default anchor
+by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
+multicol container's columns has its insets read where the strip had it.
+A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
+is out of the cascade until it is let be. Not done: `anchor-valid`,
 and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
@@ -7246,6 +7260,19 @@ axis runs across (CSS Scroll Snap 1, 6.2). An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
+
+**A page reads scroll snapping's properties as a browser keeps them.**
+`el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
+`scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or
+`scroll-initial-target`, only where its grammar does (CSS Scroll Snap 1, 6
+and 7; Scroll Snap 2, 3.1), and keeps it in its shortest form: `0` is
+`0px`, `inline proximity` is `inline` and four equal sides are one. A
+`scroll-padding` below nought is no value, and a math function that comes
+to less is nought; `scroll-margin` takes no percentage. The shorthands set
+their longhands and are read back from them, and `getComputedStyle` reads
+the flow-relative sides by the element's writing mode and direction, as it
+reads `margin-block-start`. `scroll-snap-stop: before`, which no browser
+takes, is no value.
 
 **The wheel goes to the innermost scroll container under the pointer
 that can move the way it turns**, and on out: one scrolled to its end
