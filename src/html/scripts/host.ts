@@ -20,6 +20,13 @@
 // have; a navigation is a link the browser follows.
 import { trustworthy } from '../fetch-metadata.js';
 import type { FetchMode } from '../fetch-metadata.js';
+import {
+  determineReferrer,
+  referrerPolicyOf,
+  referrerPolicyOfHeaders,
+  referrerPolicyOfMeta,
+} from '../referrer.js';
+import type { ReferrerPolicy } from '../referrer.js';
 import * as encodingCodecs from '../encoding-codecs.js';
 import type { LegacyDecoder } from '../encoding-codecs.js';
 import {
@@ -412,6 +419,13 @@ export interface FetchRequest {
   /** Its cache mode (Fetch, `RequestCache`): what the HTTP cache may answer
    *  it with and keep of it. Absent, `default`. */
   cache?: string;
+  /**
+   * What its `Referer` says, worked out already (Referrer Policy, 8.3): the
+   * host works it out a hop at a time, from what the hop before came to and
+   * the policy a redirect may have changed. Null for none. Absent, the
+   * client's address under the default policy.
+   */
+  referrer?: string | null;
 }
 /** A dedicated worker the page asked for (`new Worker`), as the host
  *  starts it: its script's address, its kind and its name, the script
@@ -427,6 +441,9 @@ export interface WorkerInit {
   secure: boolean;
   /** What opens the keys its owner makes (`subtle.ts`). */
   keySecrets: Uint8Array[];
+  /** Its owner's referrer policy, which a worker whose script is a blob
+   *  URL's has, as it has no response to say one (HTML 10.2.5.1). */
+  referrerPolicy?: string;
   /** A shared worker's (HTML 10.2.6.4), whose global takes connections
    *  rather than messages of its own. */
   shared?: boolean;
@@ -525,6 +542,9 @@ interface PageRequest extends FetchRequest {
   redirect?: 'follow' | 'error' | 'manual';
   integrity?: string;
   referrerPolicy?: string;
+  /** Its referrer as the page's `Request` has it: `client`, `no-referrer`
+   *  or a URL of the page's origin (Fetch 2.2.5). Absent, `client`. */
+  referrerSource?: string;
   destination?: string;
 }
 
@@ -2384,6 +2404,14 @@ export class DomHost {
   private readonly _opaqueOwn = {};
   /** What `document.referrer` reads. */
   referrer = '';
+  /**
+   * The policy its requests' referrers are made under where a request names
+   * none (HTML, a policy container's referrer policy): the one its response
+   * said in `Referrer-Policy`, a worker's from its script's, set by whoever
+   * makes the host. A `<meta name="referrer">` changes it from there on
+   * (`_noteReferrer`).
+   */
+  referrerPolicy: ReferrerPolicy = '';
   /** Whether the document around this one's frame is of another origin:
    *  what the frame's element is, and all it reaches, is refused it. */
   foreignParent = false;
@@ -4450,6 +4478,7 @@ export class DomHost {
           origin: this._origin(),
           secure: this._secureContext(),
           keySecrets: keySecrets(this._keySecret()),
+          referrerPolicy: this.documentReferrerPolicy(),
         });
       }
       case 'workerPost':
@@ -4788,7 +4817,7 @@ export class DomHost {
         ) {
           return null;
         }
-        this.navigateFrame(frame, text(b), null);
+        this.navigateFrame(frame, text(b), null, text(c));
         return null;
       }
       // a frame's address changed by its own history, with no navigation:
@@ -6734,7 +6763,10 @@ export class DomHost {
     // its head, and stays when it goes (HTML, the `http-equiv` "Content
     // security policy" state)
     if (added.length && parent instanceof Element && parent.name === 'head') {
-      for (const node of added) this._noteCsp(node);
+      for (const node of added) {
+        this._noteCsp(node);
+        this._noteReferrer(node);
+      }
     }
     // a modal dialog taken out of the document is no longer modal, nor in
     // the top layer (HTML 4.11.4, the dialog's removing steps)
@@ -7416,8 +7448,16 @@ export class DomHost {
    * no frame of another origin's is here, so a tracking pixel's POST into a
    * hidden frame is never sent.
    */
-  navigateFrame(frame: Element, url: string, post: FramePost | null): void {
+  navigateFrame(
+    frame: Element,
+    url: string,
+    post: FramePost | null,
+    /** The referrer policy of the link that sent it there, where one did:
+     *  the navigation is made under it rather than the frame's own. */
+    referrerPolicy = '',
+  ): void {
     if (!this._loadsFrame(frame)) return;
+    this._frameNavigated.set(frame, referrerPolicyOf(referrerPolicy));
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);
     this._loadFrame(frame, true, post);
@@ -7636,6 +7676,9 @@ export class DomHost {
               // a nested navigation, which says what holds it
               mode: 'navigate',
               destination: frameDestination(frame),
+              // and where it was made from, under the frame's referrer
+              // policy or its document's (HTML 2.5.5)
+              referrer: this._frameReferrer(frame, src),
             },
             new AbortController().signal,
             this._frameSandbox(frame),
@@ -8696,6 +8739,63 @@ export class DomHost {
     return [...this._csp.values()];
   }
 
+  /** The policy the last `<meta name="referrer">` that said one brought,
+   *  and the elements already heard (HTML 4.2.5.3, the `referrer` name):
+   *  one that goes leaves its policy behind. */
+  private _metaReferrer: ReferrerPolicy = '';
+  private _referrerMetas = new WeakSet<AnyNode>();
+  private _noteReferrer(node: AnyNode): void {
+    if (
+      !(node instanceof Element) ||
+      node.name !== 'meta' ||
+      (node.attribs.name ?? '').trim().toLowerCase() !== 'referrer' ||
+      this._referrerMetas.has(node)
+    ) {
+      return;
+    }
+    this._referrerMetas.add(node);
+    const policy = referrerPolicyOfMeta(node.attribs.content ?? '');
+    if (policy) this._metaReferrer = policy;
+  }
+  /** The document's referrer policy: what its response said, unless a
+   *  `<meta>` in its head said otherwise since. */
+  documentReferrerPolicy(): ReferrerPolicy {
+    const head = DomUtils.findOne(
+      (e) => e.name === 'head',
+      this.document.children,
+      true,
+    );
+    for (const child of head?.children ?? []) this._noteReferrer(child);
+    return this._metaReferrer || this.referrerPolicy;
+  }
+  /** The policy a frame's next navigation is made under, where something
+   *  sent it there (`navigateFrame`): the link's, '' for the document's. */
+  private _frameNavigated = new WeakMap<Element, ReferrerPolicy>();
+  /** What a frame's document request says in its `Referer`: under the
+   *  `<iframe>`'s `referrerpolicy` for what its `src` loads, the link's for
+   *  where a link sent it, and the document's otherwise. */
+  private _frameReferrer(frame: Element, url: string): string | null {
+    const sent = this._frameNavigated.get(frame);
+    this._frameNavigated.delete(frame);
+    const source = this._referrerSource(undefined);
+    if (source === null) return null;
+    const own =
+      sent ??
+      (frame.name === 'iframe'
+        ? referrerPolicyOf(frame.attribs.referrerpolicy)
+        : '');
+    return determineReferrer(source, url, own || this.documentReferrerPolicy());
+  }
+  /** The URL a request's referrer is made from (Referrer Policy, 8.3,
+   *  steps 2 and 3): its client's for `client`, a document with an opaque
+   *  origin having none, and nothing for `no-referrer`. */
+  private _referrerSource(source: string | undefined): string | null {
+    if (source === 'no-referrer') return null;
+    if (source !== undefined && source !== 'client') return source;
+    if (!this.workerScope && this._origin() === 'null') return null;
+    return this.url;
+  }
+
   /** This host's token, which its storage changes carry. */
   private readonly _token = `h${++hostTokens}`;
   private _unwatchStorage: (() => void) | null = null;
@@ -9370,6 +9470,9 @@ export class DomHost {
           : 'follow',
       integrity: raw.integrity,
       referrerPolicy: raw.referrerPolicy,
+      ...(typeof raw.referrer === 'string'
+        ? { referrerSource: raw.referrer }
+        : {}),
       destination: raw.destination,
     };
   }
@@ -9712,6 +9815,12 @@ export class DomHost {
       ...(request.streamedBody ? { streamedBody: true } : {}),
     };
     let tainting: 'basic' | 'cors' | 'opaque' | null = null;
+    // the request's referrer, which each hop works out again from what the
+    // one before came to, and its policy, which a redirect may change
+    // (Fetch 4.1, "main fetch", step 8; 4.4, "HTTP-redirect fetch")
+    let referrer = this._referrerSource(request.referrerSource);
+    let policy =
+      referrerPolicyOf(request.referrerPolicy) || this.documentReferrerPolicy();
     for (;;) {
       const own = page !== 'null' && originOf(hop.url) === page;
       if (own && (tainting === null || tainting === 'basic')) {
@@ -9743,12 +9852,15 @@ export class DomHost {
       const opaqueOrigin =
         page === 'null' || redirectTainted([...urls, hop.url], page);
       const origin = opaqueOrigin ? 'null' : page;
+      const sent =
+        referrer === null ? null : determineReferrer(referrer, hop.url, policy);
+      referrer = sent;
       if (tainting === 'cors') {
         const unsafe = unsafeRequestHeaders(
           hop.headers.filter(([k]) => !request.uaHeaders?.includes(k)),
         );
         if (!SIMPLE_METHODS.has(hop.method) || unsafe.length) {
-          yield* this._preflight(hop, request, unsafe, origin);
+          yield* this._preflight(hop, request, unsafe, origin, sent);
         }
       }
       const response: FetchResponse = yield {
@@ -9776,6 +9888,7 @@ export class DomHost {
         ...(request.cache && request.cache !== 'default'
           ? { cache: request.cache }
           : {}),
+        referrer: sent,
       };
       if (response.redirected && request.redirect === 'error') {
         release(response);
@@ -9821,6 +9934,9 @@ export class DomHost {
       }
       release(response);
       if (request.redirect === 'error') throw new TypeError('Failed to fetch');
+      // a redirect may say what the rest of the way is made under (Fetch
+      // 4.4, "HTTP-redirect fetch", step 15)
+      policy = referrerPolicyOfHeaders(response.headers) || policy;
       if (request.redirect === 'manual') {
         return this._opaqueRedirect(
           hop.url,
@@ -9948,7 +10064,7 @@ export class DomHost {
   private _forWorker(request: PageRequest): HtmlServiceWorkerRequest {
     return {
       ...request,
-      referrer: this.url,
+      referrer: this._referrerSource(request.referrerSource) ?? '',
       destination: request.destination ?? '',
     };
   }
@@ -10245,6 +10361,7 @@ export class DomHost {
     request: PageRequest,
     unsafe: string[],
     origin: string,
+    referrer: string | null,
   ): Generator<FetchRequest, void, FetchResponse> {
     const include = request.credentials === 'include';
     const key = `${origin}\u0000${hop.url}\u0000${include}`;
@@ -10280,9 +10397,11 @@ export class DomHost {
       credentials: 'omit',
       redirect: 'manual',
       ...(origin === 'null' ? { opaqueOrigin: true } : {}),
-      // a request of its own, which says what it is for (Fetch 4.9)
+      // a request of its own, which says what it is for (Fetch 4.9), and
+      // from where, as the request it asks for does
       mode: 'cors',
       ...(request.destination ? { destination: request.destination } : {}),
+      referrer,
     };
     const failed = (why: string) =>
       new CorsError(

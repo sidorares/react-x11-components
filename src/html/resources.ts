@@ -76,11 +76,20 @@ export interface ResourceRequest {
    *  such a document's: same-site with nothing, so with no cookie that is
    *  only a site's own, and `Origin: null` where it sends one. */
   opaqueOrigin?: boolean;
+  /** The policy its `Referer` is made under (Referrer Policy): its
+   *  element's `referrerpolicy`, else its document's, from its response's
+   *  `Referrer-Policy` and its `<meta name="referrer">`. Absent, the
+   *  default, `strict-origin-when-cross-origin`. */
+  referrerPolicy?: string;
 }
 
 /** Who asked for a resource, where that is not the document the host was
- *  handed (`ResourceRequest.client`, `opaqueOrigin`). */
-export type ResourceAsker = Pick<ResourceRequest, 'client' | 'opaqueOrigin'>;
+ *  handed (`ResourceRequest.client`, `opaqueOrigin`), and under what policy
+ *  (`referrerPolicy`). */
+export type ResourceAsker = Pick<
+  ResourceRequest,
+  'client' | 'opaqueOrigin' | 'referrerPolicy'
+>;
 
 /** A CORS request for a resource (HTML 2.5.4, a CORS settings attribute):
  *  the requesting document's origin, and `use-credentials` where another

@@ -50,6 +50,7 @@ import { DomHost, trustworthy, wholeBytes } from './host.js';
 import { corsSetting, judgeScript } from './script-origin.js';
 import type { LoadedScript, ModuleType } from './script-origin.js';
 import { SB_ORIGIN, sandboxOfPolicy } from './sandbox.js';
+import { referrerPolicyOf, referrerPolicyOfHeaders } from '../referrer.js';
 import { PageWorkers } from './workers.js';
 import { registryOf } from './sw-registry.js';
 import type { ServiceClient } from './sw-registry.js';
@@ -305,6 +306,13 @@ export class ScriptRunner {
     // document's own response said of itself
     const sandbox = (slot?.sandbox ?? 0) | sandboxOfPolicy(headers);
     if (sandbox) this.host.shared.sandboxes.set(document, sandbox);
+    // and the policy its requests' referrers are made under, which a
+    // document with no response of its own has from the one around it
+    // (HTML 7.4.2.3, a local scheme's policy container is its creator's)
+    this.host.referrerPolicy =
+      /^about:(blank|srcdoc)\b/.test(url) && _link
+        ? _link.parent.host.documentReferrerPolicy()
+        : referrerPolicyOfHeaders(headers);
     if (_link?.frame) this.host.frameParent = _link.parent.host;
     // the host's to know, and never the facade's: it decides what a realm is
     // handed, and what is refused it
@@ -322,8 +330,12 @@ export class ScriptRunner {
       log: _options.log,
       settled: () => this.host.settled(),
       // what a module imports is another origin's only by its leave
+      // an `import()` a classic script makes as it runs is made under its
+      // element's referrer policy (HTML 8.1.5.1, its fetch options)
       load: (url, type) =>
-        this._scriptFrom(url, null, true, type).then((s) => s && s.text),
+        this._scriptFrom(url, null, true, type, this._executing).then(
+          (s) => s && s.text,
+        ),
       base: () => this.host.url,
       entered: holdAnimationClock,
       left: releaseAnimationClock,
@@ -557,6 +569,9 @@ export class ScriptRunner {
     );
   }
 
+  /** The classic script running now, whose `import()`s are its own. */
+  private _executing: Element | null = null;
+
   /** This document's workers, as a service worker's clients. */
   private _workerClients = new Map<number, ServiceClient>();
 
@@ -607,7 +622,12 @@ export class ScriptRunner {
       this.host.serviceClient;
     if (client?.controlled && /^https?:/i.test(request.url)) {
       const answered = await client.fetch(
-        { ...request, mode: 'cors', destination: '' },
+        {
+          ...request,
+          mode: 'cors',
+          destination: '',
+          referrer: request.referrer ?? '',
+        },
         signal,
       );
       if (answered) {
@@ -1304,10 +1324,13 @@ export class ScriptRunner {
       return;
     }
     this.host.writing = writes ? request.element : null;
+    const outer = this._executing;
+    this._executing = request.element;
     try {
       this.engine.exec(code, url, element, queued.muted);
     } finally {
       this.host.writing = null;
+      this._executing = outer;
     }
     // a loader waits for a script it put in on its `load`
     if (request.src) this.engine.call('__fire', [element, 'load']);
@@ -1321,6 +1344,9 @@ export class ScriptRunner {
     element: Element | null,
     module: boolean,
     type: ModuleType = 'javascript',
+    /** The element whose `referrerpolicy` it is asked for under, where that
+     *  is not its own: the script that imports it. */
+    referring: Element | null = element,
   ): Promise<{ text: string; muted: boolean } | null> {
     const origin = this.host.origin;
     const set = corsSetting(element?.attribs.crossorigin);
@@ -1331,6 +1357,10 @@ export class ScriptRunner {
     const asker = {
       client: this.host.url,
       ...(this.host.sandbox & SB_ORIGIN && { opaqueOrigin: true }),
+      // under its element's referrer policy, or its document's
+      referrerPolicy:
+        referrerPolicyOf(referring?.attribs.referrerpolicy) ||
+        this.host.documentReferrerPolicy(),
     };
     const loaded = await this._options
       .load(url, element, cors, type === 'javascript' ? undefined : type, asker)

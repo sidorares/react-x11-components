@@ -1025,6 +1025,25 @@ transport handed in (`fetch`) sends what it is given. What is not sent: a
 worklet's, a `<link rel=prefetch>`'s, a `<link rel=icon>`'s and a report's,
 which are requests nothing here makes.
 
+**A request's `Referer` is made under a referrer policy**, all eight of
+them. A document's policy is the last `<meta name="referrer">` in its head
+that says one, its old words (`never`, `always`, `default`,
+`origin-when-crossorigin`) among them, and otherwise what its response said
+in `Referrer-Policy` (`headers`); a frame's `about:blank` or `srcdoc`
+document has its parent's, a worker its script's response's, a blob URL's
+worker its owner's, and a service worker its main script's. An `<img>`, a
+`<script>`, a `<link>` and an `<iframe>` with `referrerpolicy` say their
+own. A page's `fetch` takes the `referrer` and `referrerPolicy` it is
+given, and its `Referer` is worked out again at each hop of a redirect,
+from what the hop before came to, so one that went to another origin under
+`origin-when-cross-origin` stays the origin when it comes home, and a
+redirect's own `Referrer-Policy` holds from there on. A preflight carries
+its request's. `onResource` is handed the policy as `referrerPolicy`, and
+`HtmlNetwork` sends what it says. Not yet: a stylesheet's `url()`s are
+asked for as the document's, where CSS has them the sheet's, and a
+top-level navigation carries a `Referer` only for a form's POST, under the
+default policy.
+
 `useHtmlNetwork(url)` is all of them, from one line: `onResource`, a `fetch`,
 a `webSocket` and a `webTransport` for the document at `url`, through `HtmlNetwork` — the runtime's `fetch`, an
 HTTP cache, six requests a host at a time, `file:` only for a `file:` page, no

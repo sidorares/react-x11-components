@@ -2284,7 +2284,15 @@ request that came home through another site reads `same-origin`. Only
 where nothing of that is there does `_exchange` hand the transport
 `redirect: 'follow'`, as before. A navigation's source is the host's to
 hand on (`navigate`'s `source`, `HtmlPopup.source`): anything new that
-sends a window somewhere passes `navigationSource()`.
+sends a window somewhere passes `navigationSource()`. **A `Referer` is worked out
+at each hop too** (`referrer.ts`): `_hops` makes it from what the hop
+before came to, under a policy a redirect's `Referrer-Policy` replaces,
+and hands it over as `FetchRequest.referrer`, which the network sends as it
+is; where the network follows the redirects, `FetchMetadata.referrer` and
+`referrerPolicy` have `_exchange` do the same. So **anything new that makes
+a request for a document says its referrer and its policy** — the
+element's `referrerpolicy`, else `documentReferrerPolicy()` — or it goes
+under the default whatever the page said.
 
 `scripts` is the one switch that executes anything, and it keeps the same
 rule: it is off unless an application turns it on, and what a page loads

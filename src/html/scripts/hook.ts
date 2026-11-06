@@ -110,7 +110,13 @@ export interface ScriptProps {
   stylesheet?: string[];
   /** A frame of the page's sent somewhere by a link or a form whose target
    *  names it, where scripts run: absent where nothing loads a frame. */
-  navigateFrame?: (frame: Element, url: string, post: FramePost | null) => void;
+  navigateFrame?: (
+    frame: Element,
+    url: string,
+    post: FramePost | null,
+    /** The link's referrer policy, or its document's (`navigateFrame`). */
+    referrerPolicy?: string,
+  ) => void;
   /** The pane the page is shown in scrolled, which the page hears as
    *  `scroll`. `<Html>`'s `onViewportScroll`. */
   scrolled?: () => void;
@@ -512,8 +518,12 @@ export function useScripts(
     [],
   );
   const navigateFrame = useCallback(
-    (frame: Element, to: string, post: FramePost | null) =>
-      runner.current?.host.navigateFrame(frame, to, post),
+    (
+      frame: Element,
+      to: string,
+      post: FramePost | null,
+      referrerPolicy?: string,
+    ) => runner.current?.host.navigateFrame(frame, to, post, referrerPolicy),
     [],
   );
   const scrolled = useCallback(() => runner.current?.scrolled(), []);

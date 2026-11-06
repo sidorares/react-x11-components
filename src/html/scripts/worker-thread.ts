@@ -4,6 +4,7 @@
 // posts arrives as text and is made again here; what this posts, and what
 // it fetches, goes to the page process, whose network the browser's policy
 // is kept by.
+import { referrerPolicyOf } from '../referrer.js';
 import { Document } from 'domhandler';
 
 import type { HtmlHandle } from '../index.js';
@@ -331,6 +332,8 @@ function waitFor<T>(
 }
 
 const host = new DomHost(new Document([]), seams, init.url);
+// a blob URL's script has no response to say a policy, and has its owner's
+host.referrerPolicy = referrerPolicyOf(init.referrerPolicy);
 /** What the worker's own script is to Fetch (HTML 10.2.5.1). */
 const OWN_SCRIPT = {
   destination: init.service
@@ -351,9 +354,13 @@ const importScript = (
     ...(own ? OWN_SCRIPT : {}),
   });
   const answer = waitFor(
-    (m): m is { source: string | null } => !('id' in (m as object)),
+    (m): m is { source: string | null; policy?: string } =>
+      !('id' in (m as object)),
     performance.now() + 60_000,
   );
+  // what the worker's own script's response says its requests' referrers
+  // are made under, which an import's has no say in
+  if (own) host.referrerPolicy = referrerPolicyOf(answer?.policy);
   return answer?.source ?? null;
 };
 host.workerScope = {
