@@ -15554,6 +15554,31 @@ test('a snap container lines an area up at the start of its own flow: the right 
   );
 });
 
+test('a re-snap after a layout keeps the area it was snapped to among those that lined up with it, unless the focus moved to another since', async () => {
+  // CSS Scroll Snap 1, "re-snapping after layout changes": two areas share a
+  // row, and a narrower container puts each on a row of its own
+  const doc = await hosted(
+    '<style>#s { width: 200px; height: 100px; overflow: hidden; scroll-snap-type: block mandatory }' +
+      ' .c { width: 100px; height: 100px; float: left } .f { scroll-snap-align: center }</style>' +
+      '<div id="s"><div class="c"></div><div class="c"></div><div class="c f" id="one" tabindex="-1"></div>' +
+      '<div class="c f" id="two" tabindex="-1"></div><div class="c"></div><div class="c"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [s.scrollTop];' +
+      // the focus moves to the second after the snap: it is the one kept
+      'document.getElementById("two").focus(); s.style.width = "100px"; r.push(s.scrollTop);' +
+      's.style.width = "200px"; r.push(s.scrollTop);' +
+      // and with the focus where it was, the one snapped to is
+      's.style.width = "100px"; r.push(s.scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '100|300|100|300',
+    doc.logs.join('\n'),
+  );
+});
+
 test('the viewport snaps where the root makes it a snap container, and again where the area it was snapped to stops being one', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>html { scroll-snap-type: y mandatory }' +
