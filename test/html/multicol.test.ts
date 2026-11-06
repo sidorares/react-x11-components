@@ -6,6 +6,7 @@ import { act, cleanup, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
+import { COLUMN_PIECES } from '../../src/html/layout/boxes.js';
 import {
   FONTS,
   boxOf,
@@ -1159,3 +1160,41 @@ metric(
     );
   },
 );
+
+test('an absolutely positioned box whose containing block is broken across columns is laid out unbroken and cut into them, and sees an anchor in them unbroken', async () => {
+  // CSS Fragmentation 3; CSS Anchor Positioning 1, 2: a box inside the
+  // fragmentation context sees its anchor as unfragmented, and can be
+  // fragmented itself. The columns are 80 wide and 50 tall, 10 apart, so the
+  // strip's y 50 is the head of the second column, 90 across.
+  const { node } = await render(
+    '<style>body{margin:0}.c{columns:2;column-fill:auto;column-gap:10px;width:170px;height:50px}' +
+      '.t{position:absolute;left:anchor(--a left);top:anchor(--a top);' +
+      'width:anchor-size(--a width);height:anchor-size(--a height)}</style>' +
+      '<div class="c"><div style="position:relative;transform:translate(0)">' +
+      '<div style="height:30px"></div>' +
+      '<div style="anchor-name:--a;width:20px;height:40px;margin-left:5px" id="a"></div>' +
+      '<div style="height:30px"></div>' +
+      '<div id="cut" style="position:absolute;top:30px;width:10px;height:30px"></div>' +
+      '<div class="t" id="t"></div></div></div>',
+    400,
+  );
+  const el = view(node);
+  const piecesOf = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  // 20 at the foot of the first column, 10 at the head of the second
+  assert.deepStrictEqual(piecesOf('cut'), [
+    [0, 30, 10, 20],
+    [90, 0, 10, 10],
+  ]);
+  // and anchored to a box broken the same way, its pieces are the anchor's
+  assert.deepStrictEqual(piecesOf('a'), [
+    [5, 30, 20, 20],
+    [95, 0, 20, 20],
+  ]);
+  assert.deepStrictEqual(piecesOf('t'), piecesOf('a'));
+});
