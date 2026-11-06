@@ -7014,9 +7014,18 @@ where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchors-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. Not done: `anchors-valid`,
-the scrollable containing block a scroll container is for a box with a
-default anchor, and each anchor reference's own remembered scroll offset — a
+either hides or shows it in the frame it scrolls. A box with a default
+anchor whose containing block is a scroll container's is placed in its
+scrollable containing block (CSS Position 4, 2.1): the padding edge of all
+it scrolls, but for the relative offsets and the transforms of what it
+holds and what is out of the flow. One past what its containing block
+shows is held, as `normal` and `start` and their kin hold it, no further
+than the scroll can reach (CSS Box Alignment 3, 4.4.1.2): without end on
+the side a scroll container's, or the document's, scroll goes, and for a
+box fixed to the viewport anchored in the document, over the initial
+containing block and the root's margin box. `safe` and `unsafe` before
+`normal` are not taken, as Chrome takes neither. Not done: `anchors-valid`,
+and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar
