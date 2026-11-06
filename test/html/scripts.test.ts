@@ -16560,6 +16560,22 @@ test("a page's rangeStart and rangeEnd on a CSS animation stand over its animati
   );
 });
 
+test('PROBE3', async () => {
+  const doc = await hosted(
+    '<style>@keyframes anim { from { margin-left: 0 } to { margin-left: 100px } }</style>' +
+      '<p id="out"></p><script>' +
+      'var r = [], d = document.createElement("div"); d.style.animation = "anim 100s"; document.body.append(d);' +
+      '["animationstart","animationend","animationcancel"].forEach(function (n) { d.addEventListener(n, function (e) { r.push(n + ":" + e.elapsedTime); }); });' +
+      'var a = d.getAnimations()[0]; r.push(a.playState, a.pending);' +
+      'a.finish(); r.push("fin", a.playState, a.pending, String(a.currentTime));' +
+      'var n = 0; var tick = function () { r.push("f" + n + ":" + a.playState + ":" + a.pending); if (++n < 5) requestAnimationFrame(tick); else document.getElementById("out").textContent = r.join("|"); };' +
+      'requestAnimationFrame(tick);' +
+      'a.finished.then(function () { r.push("finished"); }, function (e) { r.push("frej " + e.name); });' +
+      '</script>',
+  );
+  console.log('OUT', await settled(doc, 'out', (t) => t !== ''));
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

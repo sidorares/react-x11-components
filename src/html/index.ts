@@ -1775,13 +1775,13 @@ export function makeHtmlHandle(
       nodeRef.current?.cssTransitionsOf(element, subtree) ?? [],
     seekTransition: (key, currentTime) =>
       nodeRef.current?.seekTransition(key, currentTime),
-    seekAnimation: (key, currentTime, paused) =>
-      nodeRef.current?.seekAnimation(key, currentTime, paused),
+    seekAnimation: (key, currentTime, paused, overrides) =>
+      nodeRef.current?.seekAnimation(key, currentTime, paused, overrides),
     timeAnimation: (key, timing) => nodeRef.current?.timeAnimation(key, timing),
     rangeAnimation: (key, end, edge) =>
       nodeRef.current?.rangeAnimation(key, end, edge),
-    seekScrolled: (key, mode, time, rate) =>
-      nodeRef.current?.seekScrolled(key, mode, time, rate),
+    seekScrolled: (key, mode, time, rate, overrides) =>
+      nodeRef.current?.seekScrolled(key, mode, time, rate, overrides),
     viewAdjust: (element, vertical, insets) =>
       nodeRef.current?.viewAdjustOf(element, vertical, insets) ?? null,
     timelineAxis: (element, axis) =>

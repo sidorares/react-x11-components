@@ -672,7 +672,12 @@ export interface HandleInternals {
   seekTransition(key: number, currentTime: number): void;
   /** And a CSS animation, held there where the page paused it
    *  (`HtmlViewNode.seekAnimation`). */
-  seekAnimation(key: number, currentTime: number, paused: boolean): void;
+  seekAnimation(
+    key: number,
+    currentTime: number,
+    paused: boolean,
+    overrides?: boolean,
+  ): void;
   /** And its timing, as a page's `updateTiming()` set it on its effect: a
    *  JSON object of what it set (`HtmlViewNode.timeAnimation`). */
   timeAnimation(key: number, timing: string): void;
@@ -686,6 +691,7 @@ export interface HandleInternals {
     mode: 'align' | 'start' | 'hold',
     time: number | null,
     rate: number,
+    overrides?: boolean,
   ): void;
   /** How far from where the scroll is now, in CSS pixels, each edge of a
    *  view timeline's subject crosses each edge of its scrollport, less the
@@ -5549,7 +5555,12 @@ export class DomHost {
         this._seams.handle.rangeAnimation?.(Number(a), b === true, String(c));
         return null;
       case 'seekAnimation':
-        this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
+        this._seams.handle.seekAnimation?.(
+          Number(a),
+          Number(b),
+          c === true,
+          d !== false,
+        );
         return null;
       // a view timeline's subject: how far from the scroll now each of its
       // edges crosses each of its scrollport's, less the insets given
@@ -5584,14 +5595,18 @@ export class DomHost {
       }
       // one on a scroll's timeline: `align`, `start` or `hold`, the time
       // (null to hold it where its timeline has it) and its rate
-      case 'seekScrolled':
+      // its mode with a `-` after it where it overrides no play state
+      case 'seekScrolled': {
+        const mode = text(b).replace(/-$/, '');
         this._seams.handle.seekScrolled?.(
           Number(a),
-          b === 'start' || b === 'hold' ? b : 'align',
+          mode === 'start' || mode === 'hold' ? mode : 'align',
           typeof c === 'number' && Number.isFinite(c) ? c : null,
           Number(d),
+          !text(b).endsWith('-'),
         );
         return null;
+      }
       case 'cssTransitions': {
         this.flush();
         const el = a ? this._element(a) : null;
