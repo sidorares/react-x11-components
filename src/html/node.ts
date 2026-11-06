@@ -14118,6 +14118,63 @@ export class HtmlViewNode extends Node {
    * element before it scrolls it. False for an element with no box, and
    * for one that is no scroll container.
    */
+  /**
+   * What a scroll that brings an element into view lines up (CSSOM View 4,
+   * "determine the scroll-into-view position", by CSS Scroll Snap 1, 6): the
+   * element's border box outset by its `scroll-margin`, top, right, bottom
+   * and left, and the scrollport of `scroller` — the viewport where it is
+   * null — inset by its `scroll-padding`, `auto` being none, in CSS pixels.
+   */
+  scrollInsets(element: Element, scroller: Element | null): number[] {
+    this._prepare(this.abs.width || 1);
+    const s = this._scale;
+    const tree = this._tree;
+    const box = tree ? this._boxOf(tree, element) : null;
+    const st = box?.style ?? null;
+    const margins = st
+      ? [
+          st.scrollMarginTop,
+          st.scrollMarginRight,
+          st.scrollMarginBottom,
+          st.scrollMarginLeft,
+        ]
+      : [0, 0, 0, 0];
+    let port: Box | null = null;
+    let width = 0;
+    let height = 0;
+    if (scroller) {
+      port = this._scrollerOf(scroller);
+      if (port) {
+        const state = scrollStateOf(port);
+        width = state.clientWidth;
+        height = state.clientHeight;
+      }
+    } else {
+      port = this._rootBox();
+      const view = this._viewport();
+      width = view?.width ?? 0;
+      height = view?.height ?? 0;
+    }
+    // a box stuck in the container moves with its scroll, so no scroll
+    // takes it clear of the padding: it is lined up in the whole scrollport,
+    // as Chrome has it
+    for (let at = box; at && at !== port; at = at.parent) {
+      const stuck = at.style.position === 'sticky' ? STUCK.get(at) : null;
+      if (stuck && (stuck[0] || stuck[1]))
+        return [...margins, 0, 0, 0, 0].map((v) => v / s);
+    }
+    const ps = port?.style;
+    const pad = (len: Len | undefined, of: number) =>
+      len === undefined || len === AUTO ? 0 : Math.max(0, resolveLen(len, of));
+    const paddings = [
+      pad(ps?.scrollPaddingTop, height),
+      pad(ps?.scrollPaddingRight, width),
+      pad(ps?.scrollPaddingBottom, height),
+      pad(ps?.scrollPaddingLeft, width),
+    ];
+    return [...margins, ...paddings].map((v) => v / s);
+  }
+
   scrollMoves(scroller: Element, element: Element): boolean {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;

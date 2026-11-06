@@ -15450,6 +15450,29 @@ test("el.style keeps scroll snapping's values as their grammars take them, and g
   );
 });
 
+test('scrollIntoView lines up the element outset by its scroll-margin in the scrollport inset by scroll-padding, in a container and in the viewport', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html style="scroll-padding-top: 30px"><body style="margin: 0">' +
+      '<div id="s" style="height: 100px; overflow: scroll; scroll-padding: 20px 0 10px">' +
+      '<div style="height: 300px"></div><div id="a" style="height: 10px; scroll-margin: 5px 0 15px"></div>' +
+      '<div style="height: 300px"></div></div>' +
+      '<div style="height: 1000px"></div><div id="b" style="height: 10px; scroll-margin-top: 12px"></div>' +
+      '<div style="height: 1000px"></div><p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [];' +
+      'document.getElementById("a").scrollIntoView(); r.push(s.scrollTop);' +
+      'document.getElementById("a").scrollIntoView(false); r.push(s.scrollTop);' +
+      'document.getElementById("b").scrollIntoView();' +
+      'requestAnimationFrame(function () { r.push(scrollY); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script></body></html>',
+    { pane: 300 },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '275|235|1058',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a snap container lines an area up at the start of its own flow: the right in a right-to-left line and in vertical-rl, where the block axis runs across', async () => {
   const doc = await hosted(
     '<style>.s { width: 100px; height: 100px; overflow: scroll; scroll-snap-type: both mandatory }' +
