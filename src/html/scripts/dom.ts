@@ -1059,6 +1059,23 @@ export function installDom(
       this.newState = String(init.newState ?? '');
     }
   }
+  /** A snap container's `scrollsnapchange` and `scrollsnapchanging` (CSS
+   *  Scroll Snap 2, 6.1): the elements it is snapped to, or about to be, in
+   *  its block axis and its inline axis. */
+  class SnapEvent extends Event {
+    readonly snapTargetBlock: Any;
+    readonly snapTargetInline: Any;
+    constructor(type: Any, init: Any = {}) {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'SnapEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      super(type, init);
+      this.snapTargetBlock = init?.snapTargetBlock ?? null;
+      this.snapTargetInline = init?.snapTargetInline ?? null;
+    }
+  }
   /** A media query list's `change` (CSSOM View 4.2): its query, and what
    *  it answers now. */
   class MediaQueryListEvent extends Event {
@@ -19569,6 +19586,8 @@ export function installDom(
     'toggle',
     'scroll',
     'scrollend',
+    'scrollsnapchange',
+    'scrollsnapchanging',
     'resize',
     'contextmenu',
     'wheel',
@@ -35169,6 +35188,7 @@ export function installDom(
     NavigationActivation,
     NavigationPrecommitController,
     ToggleEvent,
+    SnapEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
     KeyframeEffect,
@@ -38115,6 +38135,22 @@ export function installDom(
       if (frameCallbacks.size || renderingOwed) wantFrame();
     }
     const ev = new Event(String(type));
+    ev.isTrusted = true;
+    return dispatch(target, ev);
+  });
+
+  // a snap container's snap targets changed, or are about to (CSS Scroll
+  // Snap 2, 6.1): at the element, and the viewport's at the document,
+  // which alone bubbles; neither is cancelable
+  entry('__snapEvent', () => {
+    const [id, type, block, inline] = input();
+    const target = id ? wrap(id) : document;
+    if (!target) return false;
+    const ev = new SnapEvent(String(type), {
+      bubbles: target === document,
+      snapTargetBlock: block ? wrap(block) : null,
+      snapTargetInline: inline ? wrap(inline) : null,
+    });
     ev.isTrusted = true;
     return dispatch(target, ev);
   });

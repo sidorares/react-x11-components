@@ -7255,6 +7255,17 @@ parent's `scroll-snap-align` with the rest of its style, and is none. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
 
+**A snap container tells a page what it snaps to** (CSS Scroll Snap 2,
+6.1). `scrollsnapchanging` is told as it scrolls, before its `scroll`,
+where the areas it will come to rest at are other than those it last told,
+and `scrollsnapchange` before its `scrollend`, where the areas it rests at
+are: each a `SnapEvent` whose `snapTargetBlock` and `snapTargetInline` are
+the elements lined up on its block and inline axes — a pseudo-element's
+owning element, and a host for what is in a shadow tree the container is
+not in — at the element, and the viewport's at the document, which alone
+bubbles. What a container snapped to as it was first laid out is what it
+was last told, so a scroll that comes back to it tells nothing.
+
 **A page reads scroll snapping's properties as a browser keeps them.**
 `el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
 `scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or

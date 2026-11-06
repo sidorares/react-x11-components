@@ -1730,6 +1730,8 @@ export function makeHtmlHandle(
       nodeRef.current?.checkVisibility(element, asks) ?? false,
     drawnAtViewport: (element: Element) =>
       nodeRef.current?.atViewport(element) ?? false,
+    snapChanged: (element: Element | null, kind: 'change' | 'changing') =>
+      nodeRef.current?.snapChanged(element, kind) ?? null,
     scrollMoves: (scroller: Element, element: Element) =>
       nodeRef.current?.scrollMoves(scroller, element) ?? false,
     showClip: (element: Element, file: string | null, reports?: boolean) =>

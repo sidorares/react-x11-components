@@ -14668,6 +14668,73 @@ export class HtmlViewNode extends Node {
     return lone ? lineUp(lone, aim, x, y) : { x, y };
   }
 
+  /**
+   * What a snap container's `scrollsnapchange` and `scrollsnapchanging` last
+   * told a page it was snapped to (CSS Scroll Snap 2, 6.1), by the
+   * container's element and the viewport's by the document: what it
+   * snapped to as it was first laid out where it was not told at all, so a
+   * scroll that comes back to it tells nothing.
+   */
+  private _snapTold = new Map<
+    Element | Document,
+    { change: string; changing: string }
+  >();
+
+  /** A container's snap targets as an event tells them, the block axis's
+   *  element and the inline axis's — the area's element for a
+   *  pseudo-element's — and their key, which `_snapTold` compares. */
+  private _snapTargets(of: Element | Document): {
+    block: Element | null;
+    inline: Element | null;
+    key: string;
+  } {
+    const keys = this._snapped.get(of);
+    const style =
+      of === this._source.document
+        ? this._rootBox()?.style
+        : this._scrollerOf(of as Element)?.style;
+    const vertical = !!style && style.writingMode !== 'horizontal-tb';
+    const block = (vertical ? keys?.x : keys?.y)?.el ?? null;
+    const inline = (vertical ? keys?.y : keys?.x)?.el ?? null;
+    const id = (el: Element | null) => (el ? this._snapIds.get(el) : 0);
+    for (const el of [block, inline]) {
+      if (el && !this._snapIds.has(el)) {
+        this._snapIds.set(el, ++this._snapIdNext);
+      }
+    }
+    return { block, inline, key: `${id(block)},${id(inline)}` };
+  }
+  /** A number for each element a snap event has named, for its key. */
+  private _snapIds = new WeakMap<Element, number>();
+  private _snapIdNext = 0;
+
+  /** Note a container's snap as told, where nothing was: the snap a layout
+   *  made of one no script had scrolled. */
+  private _seedSnapTold(of: Element | Document): void {
+    if (this._snapTold.has(of)) return;
+    const { key } = this._snapTargets(of);
+    this._snapTold.set(of, { change: key, changing: key });
+  }
+
+  /**
+   * Whether a snap container's targets are other than its `kind` of event
+   * last told — the element's, or the viewport's for null — and so what to
+   * tell now: the block axis's element and the inline axis's. Notes them as
+   * told. Null where they are what was told.
+   */
+  snapChanged(
+    element: Element | null,
+    kind: 'change' | 'changing',
+  ): { block: Element | null; inline: Element | null } | null {
+    const of = element ?? this._source.document;
+    if (!this._snapped.has(of)) return null;
+    const now = this._snapTargets(of);
+    const told = this._snapTold.get(of) ?? { change: '0,0', changing: '0,0' };
+    if (told[kind] === now.key) return null;
+    this._snapTold.set(of, { ...told, [kind]: now.key });
+    return { block: now.block, inline: now.inline };
+  }
+
   /** What the viewport was snapped to, as `_snapped` keeps it. */
   private _noteViewportSnap(at: Snapped): void {
     this._snapped.set(this._source.document, {
@@ -14737,6 +14804,7 @@ export class HtmlViewNode extends Node {
     if (viewport && pane) {
       const at = snapTo(viewport, pane.scrollX, pane.scrollY);
       this._noteViewportSnap(at);
+      this._seedSnapTold(doc);
       this._scrollPaneTo(pane, at.x, at.y);
     }
     for (const box of snapContainersIn(tree.root)) {
@@ -14749,6 +14817,7 @@ export class HtmlViewNode extends Node {
       const state = scrollStateOf(box);
       const at = snapTo(snap, state.x, state.y);
       this._snapped.set(el, { x: snapKey(at.targetX), y: snapKey(at.targetY) });
+      this._seedSnapTold(el);
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
         this._scrollBox(box, at.x / s, at.y / s);
       }

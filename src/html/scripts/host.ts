@@ -133,7 +133,7 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
-import { eventPath, shadowIncludingHolds } from './event-path.js';
+import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
 import {
   Cascade,
@@ -773,6 +773,13 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** A snap container's snap targets, the viewport's for null, where they
+   *  are other than its `kind` of snap event last told
+   *  (`HtmlViewNode.snapChanged`). */
+  snapChanged?(
+    element: Element | null,
+    kind: 'change' | 'changing',
+  ): { block: Element | null; inline: Element | null } | null;
   /** What a page's `MediaSource` came to, for its element's player to
    *  play, or null for none any more: a file of a clip (`clips.ts`), or the
    *  URL of a feed (`feeds.ts`), whose player says what it does
@@ -2916,8 +2923,34 @@ export class DomHost {
   elementsScrolled(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'changing');
       this.entries.call('__fire', [this.idOf(el), 'scroll']);
     }
+  }
+
+  /**
+   * A snap container's `scrollsnapchanging`, as it scrolls, or its
+   * `scrollsnapchange`, before its `scrollend` (CSS Scroll Snap 2, 6.1),
+   * where its snap targets are other than that event last told: at the
+   * element, and the viewport's, for null, at the document.
+   */
+  snapEvent(el: Element | null, kind: 'change' | 'changing'): void {
+    if (this._disposed || !this.entries) return;
+    const told = this._seams.handle.snapChanged?.(el, kind);
+    if (!told) return;
+    // a target in a shadow tree the container is not in is told as the
+    // host it is in, as an event's target is retargeted (DOM 4.2.2.2)
+    const at = el ?? this.document;
+    const idOf = (t: Element | null) => {
+      const node = t && retarget(t, at);
+      return node ? this.idOf(node) : 0;
+    };
+    this.entries.call('__snapEvent', [
+      el ? this.idOf(el) : 0,
+      kind === 'change' ? 'scrollsnapchange' : 'scrollsnapchanging',
+      idOf(told.block),
+      idOf(told.inline),
+    ]);
   }
 
   /** The document's CSS transitions owe these events: `transitionrun`,
@@ -2970,6 +3003,7 @@ export class DomHost {
   elementsScrolledEnd(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'change');
       this.entries.call('__fire', [this.idOf(el), 'scrollend']);
     }
   }
