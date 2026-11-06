@@ -2903,7 +2903,7 @@ test('anchor-valid hides a box that refers to a default anchor it has none of, n
       '<div class="t v" id="lost" style="position-anchor:--gone;top:anchor(bottom,5px)"></div>' +
       '<div class="t v" id="named" style="position-anchor:--gone;top:anchor(--a bottom)"></div>' +
       '<div class="t" id="over" style="position-visibility:no-overflow;top:90px"></div></div>' +
-      '<div class="cb"><div class="scope"><div style="anchor-name:--s;height:30px"></div></div>' +
+      '<div class="cb" id="c2"><div class="scope"><div style="anchor-name:--s;height:30px"></div></div>' +
       '<div class="t" id="scoped" style="position-anchor:--s;top:anchor(bottom,7px)"></div></div>' +
       '<div class="cb"><span style="position:relative" id="span">' +
       '<div><div style="anchor-name:--i;width:50px;height:40px"></div></div>' +
@@ -2917,13 +2917,12 @@ test('anchor-valid hides a box that refers to a default anchor it has none of, n
   );
   const el = view(node);
   const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
-  const top = (id: string) => boxOf(el, id).y - boxOf(el, id).parent!.y;
   assert.strictEqual(hidden('good'), false, 'its default anchor is there');
   assert.strictEqual(hidden('lost'), true, 'it refers to one that is not');
   assert.strictEqual(hidden('named'), false, 'it refers to none by default');
   assert.strictEqual(hidden('over'), true, 'over its containing block');
   // the scope keeps the name in, and the fallback is taken
-  assert.strictEqual(top('scoped'), 7);
+  assert.strictEqual(boxOf(el, 'scoped').y - boxOf(el, 'c2').y, 7);
   // inside the inline's element, if not its box: placed by it
   const anchor = boxOf(el, 'inline');
   assert.strictEqual(anchor.x, 50);
