@@ -308,8 +308,10 @@ export function scrollContent(
     // and a box anchored to something it scrolls, outside it, with its
     // anchor (CSS Anchor Positioning 1, 6.2, the default scroll shift)
     for (const { box: anchored, x, y } of anchoredAcross(box)) {
-      if ((x && dx) || (y && dy)) {
-        move(anchored, x ? -dx : 0, y ? -dy : 0, () => false);
+      // as far as the transforms between carry the scroll on its page
+      const [mx, my] = mapped(scrollMapFor(anchored, box), dx, dy);
+      if ((x && mx) || (y && my)) {
+        move(anchored, x ? -mx : 0, y ? -my : 0, () => false);
         // and the scroll containers around it reach as far as it is now,
         // which what was measured of them at the layout says nothing of
         forgetExtentsAround(anchored);
@@ -327,6 +329,16 @@ export function scrollContent(
 function scrollFromOrigin(box: Box, x: number, y: number, move: MoveBox): void {
   const state = scrollStateOf(box);
   scrollContent(box, x + state.originX, y + state.originY, move);
+}
+
+/** How a scroll of `scroller` carries `anchored`'s anchor on its page, as
+ *  its layout noted it (`AnchorScroll.maps`). */
+function scrollMapFor(anchored: Box, scroller: Box): ScrollMap | null {
+  let root = anchored;
+  while (root.parent) root = root.parent;
+  const state = ANCHOR_SCROLLS.get(root)?.get(anchored);
+  const i = state ? state.scrollers.indexOf(scroller) : -1;
+  return (i >= 0 && state!.maps?.[i]) || null;
 }
 
 /** Forget what was measured of how far the scroll containers around a box
@@ -1222,9 +1234,17 @@ export function wantedScroll(tree: BoxTree, box: Box): ScrollOffset {
  * taken at (its remembered scroll offset), and what it has to fit in,
  * which a scroll asks again with no layout (`refitAnchored`).
  */
+/** What a scroll of a container by one device pixel across and down
+ *  does on the page an anchored box is placed in (`scrollMapOf`): across
+ *  goes to `[a, b]`, down to `[c, d]`. */
+export type ScrollMap = readonly [number, number, number, number];
+
 export interface AnchorScroll {
   /** The scroll containers that scroll the anchor and not the box. */
   scrollers: readonly Box[];
+  /** How each of them moves the anchor on the box's page, where the
+   *  transforms between say more than its offset (`ScrollMap`). */
+  maps?: readonly (ScrollMap | null)[];
   /** 1 where the pane scrolls the anchor and not the box, -1 where it
    *  scrolls the box and not the anchor, 0 where it scrolls both. */
   pane: number;
@@ -1314,22 +1334,37 @@ function scrolledFromOrigin(scroller: Box): ScrollOffset {
  *  offsets of the scroll containers between them, as they are scrolled to
  *  (`offsetOf`), and the pane's, where the viewport is. */
 export function displacementOf(
-  context: { scrollers: readonly Box[]; pane: number },
+  context: {
+    scrollers: readonly Box[];
+    maps?: readonly (ScrollMap | null)[];
+    pane: number;
+  },
   viewport: { x: number; y: number } | null,
   offsetOf: (scroller: Box) => ScrollOffset = scrolledFromOrigin,
 ): [number, number] {
   let x = 0;
   let y = 0;
-  for (const scroller of context.scrollers) {
+  context.scrollers.forEach((scroller, i) => {
     const at = offsetOf(scroller);
-    x += at.x;
-    y += at.y;
-  }
+    const [dx, dy] = mapped(context.maps?.[i], at.x, at.y);
+    x += dx;
+    y += dy;
+  });
   if (context.pane && viewport) {
     x += context.pane * viewport.x;
     y += context.pane * viewport.y;
   }
   return [x, y];
+}
+
+/** An offset `x, y` of a scroll container as it moves what it holds on a
+ *  page `map` says it is carried to (`ScrollMap`). */
+function mapped(
+  map: ScrollMap | null | undefined,
+  x: number,
+  y: number,
+): [number, number] {
+  return map ? [map[0] * x + map[2] * y, map[1] * x + map[3] * y] : [x, y];
 }
 
 /** Whether an anchored box still fits what it has to (`AnchorScroll.room`)
