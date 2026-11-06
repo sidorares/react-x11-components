@@ -2020,7 +2020,12 @@ since `animation-timing-function` eases each keyframe; and what a page's
 and fill stands over that longhand from then on, in what is drawn and what
 `getComputedStyle` reads at once, as CSS Animations 2, 4.2 has it, while
 the rest follow the style. Its `endDelay`, `iterationStart` and `easing`
-read back as the page set them and change nothing drawn yet.
+read back as the page set them and change nothing drawn yet. Its
+`rangeStart` and `rangeEnd`, which a page sets, stand over that end of its
+`animation-range` from then on in the same way; and on a scroll's timeline
+its `startTime` and `currentTime` read its range and its timing as the
+cascade has them, a start time its range aligns moving with a style
+changed since it was listed.
 Its effect's `getKeyframes()` lists its `@keyframes`' frames,
 those at one offset and of one easing merged, with a frame made of the
 element's style under its animations at an end the rule leaves out.
@@ -4556,7 +4561,13 @@ strip the columns were cut from had its containing block, and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
-Positioning 1, 2). A multicol container in another's columns goes to a column whole, where a browser breaks it.
+Positioning 1, 2). A multicol container in a vertical writing mode sets its
+columns in its frame, along the inline axis down the page and as tall as its
+block size, and what is positioned in them is cut where they are. A
+multicol container in another's columns goes to a column whole, where a
+browser breaks it, and a spanner further in than a child of the container is
+set in its column, where a browser breaks the boxes around it about it
+(WPT's `anchor-position-multicol-015` to `017` and `-colspan-`).
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -5393,13 +5404,22 @@ other timeline it is placed nowhere and draws nothing, and
 A timeline's `block` and `inline` are its scroller's, in the scroller's
 writing mode, and the viewport's in the document's principal one; a
 `scroll(nearest)` or a `view()` resolves its axis against the nearest
-scroll container around the element and takes the first from there out
+scroll container around the element in its containing block chain — not
+one an absolutely positioned box is positioned against something outside
+of, which scrolls none of it — and takes the first from there out
 that scrolls along it, past one that clips it (`overflow: clip scroll`),
 or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
 `rtl` or a `vertical-rl` one, and a view timeline's subject enters from
 the far side of its scrollport there, its `auto` insets the
-`scroll-padding` at that axis's start and end. A view timeline's subject is
+`scroll-padding` at that axis's start and end. A `::before`'s or an
+`::after`'s own `scroll()` and `view()` are from its box, in the element's,
+so one generated in a scroll container is that container's; a named
+timeline a `::before` or an `::after` declares is found, its element the
+source a page reads, though a pseudo-element is no scroll container here
+and its timeline is inactive; and a view timeline has a place in a
+scroller that scrolls nothing along its axis, where only a scroll timeline
+is inactive. A view timeline's subject is
 where layout placed it: a transform on it, an animated one included, or on
 a box between it and its scroller moves nothing of its timeline; an inline
 box is the rectangle around its fragments, and a sticky inline box around
@@ -5544,7 +5564,10 @@ property whose values do not interpolate, a keyword, goes over at once,
 but under `transition-behavior: allow-discrete`, which runs it and has it
 go over half way (CSS Transitions 2) — `content-visibility` and `display`
 being the end that is not `hidden` or `none` all the while it runs, so what
-an accordion shuts is drawn as it shuts. Under `interpolate-size:
+an accordion shuts is drawn as it shuts. An element whose `display` goes to
+`none` starts no transition, but where `display` itself runs with
+`allow-discrete`, which keeps its box, and what runs beside it, to the end
+of the run: a popover or a menu faded out as it is hidden. Under `interpolate-size:
 allow-keywords` (CSS Values 5), inherited and so usually set on `:root`, a
 `width` or a `height` runs between a length and a keyword — `height: 0` to
 `auto` — through a `calc-size()` of the keyword, both ends written as one
@@ -7052,6 +7075,9 @@ plural ones it had first as them. A page reads an `auto` inset that a
 `position-area` or `anchor-center` places a box against its default anchor
 by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
 multicol container's columns has its insets read where the strip had it.
+`getComputedStyle` reads a `::backdrop`'s style, and the option's where a
+position option placed it; a box an option placed reads the option's insets
+where both sides of an axis are lengths.
 A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
 is out of the cascade until it is let be. `anchor-valid` hides a box that
 refers to its default anchor — an `anchor()` or an `anchor-size()` that
@@ -7062,9 +7088,18 @@ match-parent` takes the default anchor of the parent element, or of a
 pseudo-element's originating element, where that is absolutely positioned
 and the anchor is acceptable for the box. An `anchor-scope` on a `display:
 contents` element scopes what it holds, and an anchor in a block inside an
-inline containing block is inside it, as its element is. Not done: each
-anchor reference's own remembered scroll offset — a
-layout takes every anchor where it is scrolled to then.
+inline containing block is inside it, as its element is. A box follows a
+scroll on an axis only where its default anchor and the anchors it is placed
+against share the nearest scroll container for that axis, and a container
+whose `overflow` is `clip` on one axis beside a scroll on the other is a
+scroll container on the other alone, as Chrome has it: what it is scrolled
+across is no scroll a box follows. A scroll container in a vertical writing
+mode is scrolled, and read, in the page's axes, from its right in
+`vertical-rl` (`scrollLeft` negative), whatever axes its frame lays it out
+in. Not done: each anchor reference's own remembered scroll offset — a
+layout takes every anchor where it is scrolled to then — and a root in a
+vertical writing mode whose viewport a box is placed in (WPT's
+`anchor-scroll-position-try-007` to `010`).
 
 A script's `el.style` takes each of these properties only as its grammar
 has it, in canonical form — `anchor()` and `anchor-size()` with the name
@@ -7253,7 +7288,14 @@ URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
 asked, in a container that snaps and in one that does not; `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
-what each was snapped to. The area each axis lined up is kept by its
+what each was snapped to. Whether or not a container snaps, what such
+a scroll lines up is the element's border box outset by its
+`scroll-margin`, in the scrollport inset by the container's
+`scroll-padding`, the viewport's by the root's (CSS Scroll Snap 1, 6.1
+and 6.2): a heading `scroll-margin-top: 12px` under a page's
+`scroll-padding-top: 30px` comes to rest 42px below the top. A target in a
+sticky box stuck in the container is lined up in the whole scrollport,
+since no scroll takes it clear of the padding. The area each axis lined up is kept by its
 element, and a layout that moves it scrolls the container with it — the
 viewport as far as the document reaches after that layout; where the
 snapport can no longer show the areas both axes lined up, the container
@@ -7280,6 +7322,17 @@ mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
 
+**A snap container tells a page what it snaps to** (CSS Scroll Snap 2,
+6.1). `scrollsnapchanging` is told as it scrolls, before its `scroll`,
+where the areas it will come to rest at are other than those it last told,
+and `scrollsnapchange` before its `scrollend`, where the areas it rests at
+are: each a `SnapEvent` whose `snapTargetBlock` and `snapTargetInline` are
+the elements lined up on its block and inline axes — a pseudo-element's
+owning element, and a host for what is in a shadow tree the container is
+not in — at the element, and the viewport's at the document, which alone
+bubbles. What a container snapped to as it was first laid out is what it
+was last told, so a scroll that comes back to it tells nothing.
+
 **A page reads scroll snapping's properties as a browser keeps them.**
 `el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
 `scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or
@@ -7305,6 +7358,16 @@ them, the out-of-flow boxes positioned against it by their border boxes,
 and nothing a box inside it clips. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
+
+**A page reads the viewport where it asked it to go.** Core's pane holds
+a scroll its extent cannot take yet for its next pass, which is where a
+page that scrolls as it loads leaves it: such a scroll is read back from
+the hold, across as well as down, so `scrollTo(0, 900)` reads `900` on
+the next line, as in a browser, and not the top. And the viewport reaches
+as far as a box positioned out of the flow that nothing clips reaches,
+down and across, whatever box that clips what it holds is around it in the
+tree: absolute boxes under a `body { overflow: scroll }` positioned against
+the page made it no wider than the window.
 
 **A scroll is a move and no layout**: the boxes are moved by the
 difference, the ink bounds worked out again, the scrollport repainted and

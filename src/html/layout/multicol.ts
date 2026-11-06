@@ -747,6 +747,15 @@ export interface ColumnGeometry {
   dy(column: number): number;
 }
 
+/** Move where a multicol container's columns are with it, down by `dy`:
+ *  what is out of the flow in it is cut into them after the flow, which a
+ *  frame of a vertical writing mode moves its content in place before. */
+export function moveColumns(box: Box, dy: number): void {
+  const geometry = GEOMETRY.get(box);
+  if (!geometry) return;
+  for (let i = 0; i < geometry.tops.length; i += 1) geometry.tops[i] += dy;
+}
+
 /** Whether a layout has set any columns, which a positioned box asks
  *  before it looks for any (`stripOf`). */
 export const columnsSet = { any: false };
@@ -1056,9 +1065,14 @@ function place(box: Box, span: [Unit, Unit] | null, to: Placing): void {
     let y1 = Infinity;
     let x2 = -Infinity;
     let y2 = -Infinity;
+    const end = was.y + was.height;
     for (let c = first; c <= last; c += 1) {
+      // no further than the box goes: what is gathered of one that holds
+      // nothing of its own runs to the next unit of the flow, which may be
+      // a column on
+      if (c > first && to.tops[c] >= end - EPS) break;
       const from = c === first ? was.y : to.tops[c];
-      const until = c === last ? was.y + was.height : to.tops[c] + to.height;
+      const until = c === last ? end : Math.min(end, to.tops[c] + to.height);
       const piece: ColumnPiece = {
         x: was.x + to.dx(c),
         y: from + to.dy(c),

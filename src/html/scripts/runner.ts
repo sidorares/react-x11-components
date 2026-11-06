@@ -986,12 +986,15 @@ export class ScriptRunner {
     this._scrollOwed = setTimeout(() => {
       this._scrollOwed = null;
       if (this._disposed) return;
+      this.host.snapEvent(null, 'changing');
       this.engine.call('__scrolled', null);
       // and `scrollend` a frame on, where no scroll came since (CSSOM View
       // 13.1, "scrollend")
       this._scrollEndOwed = setTimeout(() => {
         this._scrollEndOwed = null;
-        if (!this._disposed) this.engine.call('__scrollended', null);
+        if (this._disposed) return;
+        this.host.snapEvent(null, 'change');
+        this.engine.call('__scrollended', null);
       }, FRAME_MS);
     }, FRAME_MS);
   }

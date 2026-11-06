@@ -133,7 +133,7 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
-import { eventPath, shadowIncludingHolds } from './event-path.js';
+import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
 import {
   Cascade,
@@ -676,6 +676,9 @@ export interface HandleInternals {
   /** And its timing, as a page's `updateTiming()` set it on its effect: a
    *  JSON object of what it set (`HtmlViewNode.timeAnimation`). */
   timeAnimation(key: number, timing: string): void;
+  /** And an end of its range, as a page's `rangeStart` or `rangeEnd` set
+   *  it (`HtmlViewNode.rangeAnimation`). */
+  rangeAnimation(key: number, end: boolean, edge: string): void;
   /** And one on a scroll's timeline, held, run from a start time or
    *  aligned to its range (`HtmlViewNode.seekScrolled`). */
   seekScrolled(
@@ -773,6 +776,17 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** A snap container's snap targets, the viewport's for null, where they
+   *  are other than its `kind` of snap event last told
+   *  (`HtmlViewNode.snapChanged`). */
+  snapChanged?(
+    element: Element | null,
+    kind: 'change' | 'changing',
+  ): { block: Element | null; inline: Element | null } | null;
+  /** An element's `scroll-margin` and a scroll container's
+   *  `scroll-padding`, the viewport's for null, top first, in CSS pixels
+   *  (`HtmlViewNode.scrollInsets`). */
+  scrollInsets?(element: Element, scroller: Element | null): number[];
   /** What a page's `MediaSource` came to, for its element's player to
    *  play, or null for none any more: a file of a clip (`clips.ts`), or the
    *  URL of a feed (`feeds.ts`), whose player says what it does
@@ -1076,12 +1090,12 @@ const MAX_FRAME_DEPTH = 32;
 
 /** The pseudo-elements the host answers a computed style for: a `::before`
  *  or an `::after`, and the highlights (`highlightKey`). */
-type ComputedPseudo = 'before' | 'after' | HighlightPseudo | null;
+type ComputedPseudo = 'before' | 'after' | 'backdrop' | HighlightPseudo | null;
 
 /** What `computed` and `customProperty` are asked of, as the facade names
  *  it (`getComputedStyle`): any other name is the element's own. */
 function computedPseudo(b: Primitive): ComputedPseudo {
-  if (b === 'before' || b === 'after') return b;
+  if (b === 'before' || b === 'after' || b === 'backdrop') return b;
   return typeof b === 'string' && highlightKey(b) !== null
     ? (b as HighlightPseudo)
     : null;
@@ -2916,8 +2930,34 @@ export class DomHost {
   elementsScrolled(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'changing');
       this.entries.call('__fire', [this.idOf(el), 'scroll']);
     }
+  }
+
+  /**
+   * A snap container's `scrollsnapchanging`, as it scrolls, or its
+   * `scrollsnapchange`, before its `scrollend` (CSS Scroll Snap 2, 6.1),
+   * where its snap targets are other than that event last told: at the
+   * element, and the viewport's, for null, at the document.
+   */
+  snapEvent(el: Element | null, kind: 'change' | 'changing'): void {
+    if (this._disposed || !this.entries) return;
+    const told = this._seams.handle.snapChanged?.(el, kind);
+    if (!told) return;
+    // a target in a shadow tree the container is not in is told as the
+    // host it is in, as an event's target is retargeted (DOM 4.2.2.2)
+    const at = el ?? this.document;
+    const idOf = (t: Element | null) => {
+      const node = t && retarget(t, at);
+      return node ? this.idOf(node) : 0;
+    };
+    this.entries.call('__snapEvent', [
+      el ? this.idOf(el) : 0,
+      kind === 'change' ? 'scrollsnapchange' : 'scrollsnapchanging',
+      idOf(told.block),
+      idOf(told.inline),
+    ]);
   }
 
   /** The document's CSS transitions owe these events: `transitionrun`,
@@ -2970,6 +3010,7 @@ export class DomHost {
   elementsScrolledEnd(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'change');
       this.entries.call('__fire', [this.idOf(el), 'scrollend']);
     }
   }
@@ -5086,6 +5127,14 @@ export class DomHost {
       // whether a scroll container's scroll moves an element, which it
       // does not for one positioned against something outside it
       // (`scrollIntoView`)
+      case 'scrollInsets':
+        this.flush();
+        return (
+          this._seams.handle.scrollInsets?.(
+            this._element(a),
+            typeof b === 'number' ? this._element(b) : null,
+          ) ?? [0, 0, 0, 0, 0, 0, 0, 0]
+        ).join(',');
       case 'scrollMoves':
         this.flush();
         return (
@@ -5219,7 +5268,13 @@ export class DomHost {
         if (!this._inDocument(el)) {
           return this._frameComputed(el, pseudo)?.custom?.get(text(c)) ?? '';
         }
-        return this._seams.handle.customProperty(el, text(c), pseudo) ?? '';
+        return (
+          this._seams.handle.customProperty(
+            el,
+            text(c),
+            pseudo === 'backdrop' ? null : pseudo,
+          ) ?? ''
+        );
       }
       case 'at': {
         this.flush();
@@ -5540,6 +5595,10 @@ export class DomHost {
       // a page's `updateTiming()` on a CSS animation's effect
       case 'timeAnimation':
         this._seams.handle.timeAnimation?.(Number(a), String(b));
+        return null;
+      // and its `rangeStart` or `rangeEnd`
+      case 'rangeAnimation':
+        this._seams.handle.rangeAnimation?.(Number(a), b === true, String(c));
         return null;
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);

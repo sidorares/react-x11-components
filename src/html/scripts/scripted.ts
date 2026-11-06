@@ -502,6 +502,7 @@ interface PaneNode {
   oweScrollDown?: (y: number) => void;
   scrollOriginX?: () => number;
   pageScrollX?: () => number | null;
+  pageScrollY?: () => number | null;
   getClientRects(): { x: number; y: number; width: number; height: number }[];
 }
 
@@ -536,7 +537,7 @@ function viewportOf(node: PaneNode | null): ScriptViewport {
     height: (box?.height ?? 0) / zoom,
     // where it is about to be, where it is held at the viewport's origin
     scrollX: (node?.pageScrollX?.() ?? pane?.scrollX ?? 0) / dpr,
-    scrollY: (pane?.scrollY ?? 0) / dpr,
+    scrollY: (node?.pageScrollY?.() ?? pane?.scrollY ?? 0) / dpr,
     originX: (node?.scrollOriginX?.() ?? 0) / dpr,
     zoom,
     dpr,

@@ -2658,6 +2658,33 @@ test('a box anchored to something a scroller scrolls moves with it, on the axes 
   assert.deepStrictEqual(at('t2'), [25, 100], 'across only');
 });
 
+test('a box anchored across a scroll follows it on an axis only where its anchors share the scroll container for that axis, as WPT has it', async () => {
+  // #inner clips across and scrolls down, so across the two anchors are
+  // in #outer both, and down they are not
+  const { node } = await render(
+    '<style>body{margin:0}.s{position:relative;width:200px;height:200px;overflow:scroll}' +
+      '#inner{overflow-x:clip;overflow-y:scroll}' +
+      '.space{width:500px;height:500px}' +
+      '.a{position:absolute;top:100px;left:100px;width:10px;height:10px}' +
+      '#d{anchor-name:--d}#t{anchor-name:--t}' +
+      '#p{position:absolute;width:10px;height:10px;position-anchor:--d;' +
+      'top:anchor(--t top);left:anchor(--t left)}' +
+      '</style><div id="cb" style="position:relative">' +
+      '<div class="s" id="outer"><div class="s" id="inner">' +
+      '<div class="space"></div><div class="a" id="d"></div></div>' +
+      '<div class="space"></div><div class="a" id="t"></div></div>' +
+      '<div id="p"></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y];
+  };
+  assert.deepStrictEqual(at('p'), [100, 100]);
+  el.scrollElementTo(findById(el.document, 'outer')!, { x: 50, y: 50 });
+  assert.deepStrictEqual(at('p'), [50, 100], 'across only');
+});
+
 test('position-visibility hides a box whose anchor a scroll cuts away, or that overflows its containing block, with what it holds', async () => {
   const { node } = await render(
     '<style>body{margin:0}#s{width:300px;height:100px;overflow:hidden scroll}' +
@@ -3704,4 +3731,18 @@ test('position-area, position-try-fallbacks and anchored() are read', () => {
   );
   assert.strictEqual(anchoredHolds('fallback: left top', 'top left'), true);
   assert.strictEqual(anchoredHolds('fallback: sideways', null), null);
+});
+
+test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>@position-try --pt{left:300px}' +
+      '#b{position:fixed;width:100px;height:100px;inset:0;left:9999px;' +
+      'position-try-fallbacks:--pt}</style></head>' +
+      '<body><div id="b"></div></body></html>',
+    800,
+  );
+  const el = view(node);
+  const b = findById(el.document, 'b')!;
+  assert.strictEqual(el.elementRect(b)?.x, 300);
+  assert.strictEqual(el.computedStyle(b)?.left, '300px');
 });

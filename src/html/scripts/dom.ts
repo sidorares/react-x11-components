@@ -293,6 +293,7 @@ export function installDom(
     'svgLength',
     'atViewport',
     'scrollMoves',
+    'scrollInsets',
     'geometry',
     'offset',
     'computed',
@@ -1057,6 +1058,23 @@ export function installDom(
       super(type, init);
       this.oldState = String(init.oldState ?? '');
       this.newState = String(init.newState ?? '');
+    }
+  }
+  /** A snap container's `scrollsnapchange` and `scrollsnapchanging` (CSS
+   *  Scroll Snap 2, 6.1): the elements it is snapped to, or about to be, in
+   *  its block axis and its inline axis. */
+  class SnapEvent extends Event {
+    readonly snapTargetBlock: Any;
+    readonly snapTargetInline: Any;
+    constructor(type: Any, init: Any = {}) {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'SnapEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      super(type, init);
+      this.snapTargetBlock = init?.snapTargetBlock ?? null;
+      this.snapTargetInline = init?.snapTargetInline ?? null;
     }
   }
   /** A media query list's `change` (CSSOM View 4.2): its query, and what
@@ -3612,7 +3630,7 @@ export function installDom(
     }
     override _time(): number | null {
       const v = this._view();
-      if (!v || !(v.max > 0)) return null;
+      if (!v) return null;
       const [from, to] = v.cover;
       if (!(to - from > 0)) return null;
       return ((v.at - from) / (to - from)) * 100;
@@ -4449,6 +4467,7 @@ export function installDom(
     }
     set rangeStart(v: Any) {
       this._rangeStart = rangeEdgeOf(v, false);
+      this._rangeSet(false);
       this._effectChanged();
     }
     get rangeEnd(): Any {
@@ -4456,8 +4475,12 @@ export function installDom(
     }
     set rangeEnd(v: Any) {
       this._rangeEnd = rangeEdgeOf(v, true);
+      this._rangeSet(true);
       this._effectChanged();
     }
+    /** A page set an end of its range: a CSS animation's stands over its
+     *  `animation-range` from then on (`CSSAnimation._rangeSet`). */
+    _rangeSet(_end: boolean): void {}
 
     // -- the procedures
 
@@ -5020,6 +5043,41 @@ export function installDom(
     get animationName(): string {
       return this._name;
     }
+    override _rangeSet(end: boolean): void {
+      const edge = end ? this._rangeEnd : this._rangeStart;
+      if (edge === 'normal') {
+        call('rangeAnimation', this._key, end, '"normal"');
+        return;
+      }
+      // its offset as a percentage and pixels added to it, which is how a
+      // range's offset is linear in what it is a percentage of
+      const px = offsetPx(edge.offset, 0);
+      const pct = offsetPx(edge.offset, 100) - px;
+      call(
+        'rangeAnimation',
+        this._key,
+        end,
+        JSON.stringify({ name: edge.name ?? null, pct, px }),
+      );
+    }
+    /** Where it starts and what its time is, as the cascade has it now: on
+     *  a scroll's timeline its range and its timing may be a style's that
+     *  changed since `getAnimations()` listed it, and a start time its
+     *  range aligns moves with them (`refreshCss`). */
+    override get startTime(): Any {
+      refreshCss(this);
+      return super.startTime;
+    }
+    override set startTime(v: Any) {
+      super.startTime = v;
+    }
+    override get currentTime(): Any {
+      refreshCss(this);
+      return super.currentTime;
+    }
+    override set currentTime(v: Any) {
+      super.currentTime = v;
+    }
     /** What a page's `updateTiming()` set on its effect — of its duration,
      *  delay, iterations, direction and fill — stands over the
      *  `animation-*` longhand it names from then on, in what is drawn as
@@ -5187,7 +5245,27 @@ export function installDom(
     const raw = call('cssAnimations', target._id, false);
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     const info = list.find((i: Any) => i.key === a._key);
-    if (info) effect._timing = cssTimingOf(info, effect);
+    if (!info) return;
+    effect._timing = cssTimingOf(info, effect);
+    a._rangeStart = rangeEdgeOf(info.rangeStart, false);
+    a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+  };
+  /** A CSS animation on a scroll's timeline, its timing and its range read
+   *  again as the cascade has them, and a start time its range aligns
+   *  aligned again (`CSSAnimation.startTime`). */
+  const refreshCss = (a: Any): void => {
+    if (!a._effect || !a._finite()) return;
+    const was = [a._rangeStart, a._rangeEnd, a._effect._timing];
+    refreshCssTiming(a._effect);
+    // where a style moved what it is aligned to: aligned again, and its
+    // finished state with it, as at a frame
+    const moved =
+      JSON.stringify(was) !==
+      JSON.stringify([a._rangeStart, a._rangeEnd, a._effect._timing]);
+    if (moved && a._autoAlign) {
+      a._autoAlignStart();
+      a._updateFinished(false, false);
+    }
   };
   /** The CSS animations under way on `target`, or on what it holds, or in
    *  the document for null, in tree order and then their order in
@@ -7360,7 +7438,13 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[3]);
       if (this._viewport()) {
-        return Math.max(viewport().height, Math.round(docRect(this)?.[3] ?? 0));
+        // as far down as the viewport's scrollable overflow reaches, what
+        // is positioned out of the flow below the root included
+        const d = documentSize();
+        return Math.max(
+          viewport().height,
+          Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
+        );
       }
       return this.clientHeight;
     }
@@ -7484,6 +7568,14 @@ export function installDom(
         }
         return top;
       };
+      // what is lined up: the element's border box outset by its
+      // `scroll-margin`, in the scrollport inset by the container's
+      // `scroll-padding` (CSS Scroll Snap 1, 6.1 and 6.2), each read once
+      // there is a container to scroll
+      const insets = (port: Any): number[] =>
+        String(call('scrollInsets', this._id, port ? port._id : undefined))
+          .split(',')
+          .map(Number);
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === document.documentElement) break;
         const s = scrollStateOf(at);
@@ -7491,8 +7583,19 @@ export function installDom(
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
-        const byX = place(inline, me[0] - (port[0] + s[7]), me[2], s[4]);
-        const byY = place(block, me[1] - (port[1] + s[6]), me[3], s[5]);
+        const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(at);
+        const byX = place(
+          inline,
+          me[0] - ml - (port[0] + s[7] + pl),
+          me[2] + ml + mr,
+          s[4] - pl - pr,
+        );
+        const byY = place(
+          block,
+          me[1] - mt - (port[1] + s[6] + pt),
+          me[3] + mt + mb,
+          s[5] - pt - pb,
+        );
         if (quiet && !byX && !byY) continue;
         call(
           'scrollElement',
@@ -7506,8 +7609,19 @@ export function installDom(
       const r = docRect(this);
       if (!r) return;
       const v = viewport();
-      const byX = place(inline, r[0] - v.scrollX, r[2], v.width);
-      const byY = place(block, r[1] - v.scrollY, r[3], v.height);
+      const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(null);
+      const byX = place(
+        inline,
+        r[0] - ml - (v.scrollX + pl),
+        r[2] + ml + mr,
+        v.width - pl - pr,
+      );
+      const byY = place(
+        block,
+        r[1] - mt - (v.scrollY + pt),
+        r[3] + mt + mb,
+        v.height - pt - pb,
+      );
       if (quiet && !byX && !byY) return;
       call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
     }
@@ -19569,6 +19683,8 @@ export function installDom(
     'toggle',
     'scroll',
     'scrollend',
+    'scrollsnapchange',
+    'scrollsnapchanging',
     'resize',
     'contextmenu',
     'wheel',
@@ -35169,6 +35285,7 @@ export function installDom(
     NavigationActivation,
     NavigationPrecommitController,
     ToggleEvent,
+    SnapEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
     KeyframeEffect,
@@ -38115,6 +38232,22 @@ export function installDom(
       if (frameCallbacks.size || renderingOwed) wantFrame();
     }
     const ev = new Event(String(type));
+    ev.isTrusted = true;
+    return dispatch(target, ev);
+  });
+
+  // a snap container's snap targets changed, or are about to (CSS Scroll
+  // Snap 2, 6.1): at the element, and the viewport's at the document,
+  // which alone bubbles; neither is cancelable
+  entry('__snapEvent', () => {
+    const [id, type, block, inline] = input();
+    const target = id ? wrap(id) : document;
+    if (!target) return false;
+    const ev = new SnapEvent(String(type), {
+      bubbles: target === document,
+      snapTargetBlock: block ? wrap(block) : null,
+      snapTargetInline: inline ? wrap(inline) : null,
+    });
     ev.isTrusted = true;
     return dispatch(target, ev);
   });
