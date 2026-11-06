@@ -52,22 +52,25 @@ top of the one before, and none of them replaces another.
 | `defaultValue` | `string \| Node`                          | Uncontrolled initial document: a string in `format`, or a ProseMirror node.                                                                                                                                                         |
 | `value`        | `string`                                  | Controlled. A value different from the one the editor last reported replaces the document — a reset: not undoable, the caret kept near where it was. Handing back what `onChange` reported changes nothing, and costs a comparison. |
 | `onChange`     | `(ev: RichTextEditorChangeEvent) => void` | Every change to the document; the selection moving is `onSelectionChange`. `ev.value` is serialized the first time it is read.                                                                                                      |
-| `format`       | `'markdown' \| 'html' \| 'text'`          | What `value`, `defaultValue` and `ev.value` are written in. Default `'markdown'`.                                                                                                                                                   |
+| `format`       | `'markdown' \| 'html' \| 'text'`          | What `value`, `defaultValue` and `ev.value` are written in. Default `'markdown'`. `'text'` is a document of lines, written back as typed — see [Composer](#composer).                                                               |
 | `name`         | `string`                                  | Echoed on every event.                                                                                                                                                                                                              |
 
 ### Behaviour
 
-| Prop                | Type                                     | Notes                                                                                                                                                |
-| ------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `placeholder`       | `string`                                 | Drawn in an empty document, after the caret. Also the accessible name when there is no `aria-label`.                                                 |
-| `readOnly`          | `boolean`                                | Focusable, selectable and copyable; nothing edits.                                                                                                   |
-| `disabled`          | `boolean`                                | Inert, out of the tab order, dimmed.                                                                                                                 |
-| `autoFocus`         | `boolean`                                |                                                                                                                                                      |
-| `onSubmit`          | `(ev: RichTextEditorEvent) => void`      | Mod-Enter — or plain Enter, with `submitOnEnter`.                                                                                                    |
-| `submitOnEnter`     | `boolean`                                | Enter submits and Shift+Enter breaks the line: a chat composer. Inside a list or a code block Enter still edits.                                     |
-| `onSelectionChange` | `(ev: RichTextEditorEvent) => void`      |                                                                                                                                                      |
-| `onLink`            | `(href: string, ev: MouseEvent) => void` | A link was activated — Mod-click while editing, a plain click when read-only. The editor never opens anything by itself.                             |
-| `suggestions`       | `Suggester[]`                            | Lists that open at a trigger character as its word is typed — `@` for people, `#` for issues, `/` for a block menu. See [Suggestions](#suggestions). |
+| Prop                | Type                                     | Notes                                                                                                                                                         |
+| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `placeholder`       | `string`                                 | Drawn in an empty document, after the caret. Also the accessible name when there is no `aria-label`.                                                          |
+| `readOnly`          | `boolean`                                | Focusable, selectable and copyable; nothing edits.                                                                                                            |
+| `disabled`          | `boolean`                                | Inert, out of the tab order, dimmed.                                                                                                                          |
+| `autoFocus`         | `boolean`                                |                                                                                                                                                               |
+| `onSubmit`          | `(ev: RichTextEditorEvent) => void`      | Mod-Enter — or plain Enter, with `submitOnEnter`.                                                                                                             |
+| `submitOnEnter`     | `boolean`                                | Enter submits and Shift+Enter breaks the line: a chat composer. Inside a list or a code block Enter still edits.                                              |
+| `onSelectionChange` | `(ev: RichTextEditorEvent) => void`      |                                                                                                                                                               |
+| `onLink`            | `(href: string, ev: MouseEvent) => void` | A link was activated — Mod-click while editing, a plain click when read-only. The editor never opens anything by itself.                                      |
+| `suggestions`       | `Suggester[]`                            | Lists that open at a trigger character as its word is typed — `@` for people, `#` for issues, `/` for a block menu. See [Suggestions](#suggestions).          |
+| `markup`            | `'none' \| 'code' \| 'markdown'`         | Draw the text as what it would mean as markdown, and change none of it: fences and code spans, or all of markdown's inline syntax. See [Composer](#composer). |
+| `pasteAsAttachment` | `boolean \| { lines?, chars?, images? }` | A long paste goes in as an attachment atom, its text the atom's `data`. Needs a schema with `attachment`. See [Composer](#composer).                          |
+| `recall`            | `string[]`                               | What was sent before, oldest first: Up on the first line steps back through it, Down forward, and back to the draft. See [Composer](#composer).               |
 
 ### Chrome and looks
 
@@ -94,7 +97,7 @@ top of the one before, and none of them replaces another.
 | `markdown`            | `MarkdownCodec`                                | A markdown codec for a schema the built-in one cannot read or write.                                                                                                                                                        |
 | `plugins`             | `Plugin[]`                                     | Ahead of the editor's own, so a keymap here wins over the defaults. Give the array a stable identity: a new one is a reconfigure — cheap, and every plugin instance still in it keeps its state, the undo history included. |
 | `history`             | `boolean`                                      | The undo history. Default true.                                                                                                                                                                                             |
-| `inputRules`          | `boolean`                                      | The markdown shortcuts. Default true.                                                                                                                                                                                       |
+| `inputRules`          | `boolean`                                      | The markdown shortcuts. Default true, and false with `format="text"`.                                                                                                                                                       |
 | `keymap`              | `boolean`                                      | The formatting shortcuts. Default true.                                                                                                                                                                                     |
 | `typography`          | `boolean`                                      | Smart quotes, `…` and `—` as they are typed. Default false.                                                                                                                                                                 |
 | `editorProps`         | `EditorProps`                                  | ProseMirror's view props — `handleKeyDown`, `handlePaste`, `decorations`, `transformPasted`… — without a plugin to hold them. See [What a plugin can count on](#what-a-plugin-can-count-on).                                |
@@ -156,10 +159,12 @@ backend's convention, whatever host the process runs on.
 | Shift-Mod-8, Shift-Mod-7, Shift-Mod-9         | Bulleted, numbered, task list                                                                                                                                                                                |
 | Ctrl->                                        | Quote                                                                                                                                                                                                        |
 | Mod-\_                                        | Divider                                                                                                                                                                                                      |
-| Shift-Enter, Mod-Enter                        | Line break (Mod-Enter submits instead when there is an `onSubmit`)                                                                                                                                           |
+| Shift-Enter, Mod-Enter                        | Line break (Mod-Enter submits instead when there is an `onSubmit`); with `format="text"`, a new line                                                                                                         |
 | Enter                                         | New paragraph; in a list a new item, and on an empty item the end of the list                                                                                                                                |
 | Tab, Shift-Tab                                | In a list, nest and un-nest the item; in a code block, indent and dedent; in a table, the next and previous cell (Tab in the last cell adds a row). Anywhere else Tab is not the editor's and moves focus on |
 | Escape, then Tab                              | Leave the editor, from anywhere. An Escape that closes a [suggestion list](#suggestions) closes only the list                                                                                                |
+| Tab, Shift-Tab with `markup`                  | On a fence's code lines, indent and dedent every line the selection touches; Tab with nothing selected types two spaces                                                                                      |
+| Up, Down with `recall`                        | On the first line, the prompt before; on the last line, the one after, and past the newest the draft                                                                                                         |
 | Arrows, Home/End, PageUp/PageDown             | Move, by grapheme and by visual line; Home and End go to the ends of the _line_ as it wraps. Shift extends                                                                                                   |
 | Ctrl-arrows, Ctrl-Home/End (X11)              | By word; to the ends of the document                                                                                                                                                                         |
 | Alt-arrows, Cmd-arrows (macOS)                | By word; to the ends of the line, or of the document                                                                                                                                                         |
@@ -178,7 +183,9 @@ the pointer.
 
 ## Markdown shortcuts
 
-Typed at the start of a paragraph: `# ` to `###### ` (headings), `> `
+With `format="markdown"` or `"html"` — `format="text"` writes back what was
+typed, so they are off there unless `inputRules` turns them on. Typed at the
+start of a paragraph: `# ` to `###### ` (headings), `> `
 (quote), `- `, `* ` or `+ ` (bulleted list), `1. ` (numbered list, starting
 where the number says), `[ ] ` or `[x] ` (a task — in a list item too),
 ` ``` ` or ` ```lang ` and a space (a code block), and `---` (a divider).
@@ -263,6 +270,121 @@ The list's commands are exported for a toolbar, a test, or a list of your
 own: `acceptSuggestion(index?)`, `selectSuggestion(index)` and
 `dismissSuggestion`; `filterSuggestions(items, query)` is the editor's own
 filter, and `suggesterFor(state)` is the suggester whose list is open.
+
+## Composer
+
+A prompt box — for a chat, a comment, an AI agent — is the editor with
+`format="text"` and a few props, each an opt-in on the one before. **The
+value is exactly what was typed.** The markdown codec escapes and
+normalises, which is right for a note and wrong for a prompt: `2 * 3` would
+be sent as `2 \* 3`, and `src/**/*.ts` as `src/\*\*/\*.ts`. Here the
+formatting is drawn over the literal text, and nothing is converted.
+
+**`format="text"`** is a document of lines: one paragraph a line, both ways.
+A line sits on the one above it, with no gap between paragraphs, so a
+wrapped line and a new one look alike. Shift+Enter is a new line, the
+markdown shortcuts are off (`# ` stays `# `), a paste of text is a line a
+paragraph with its blank lines kept and its HTML not read, and a copy is the
+lines. With `submitOnEnter`, Enter sends:
+
+```tsx
+<RichTextEditor format="text" submitOnEnter onSubmit={(ev) => send(ev.value)} />
+```
+
+**`markup="code"`** draws a fence's lines — from the line that opens it, ` ``` `
+or `~~~` with its language, to the line that closes it, or the end — in the
+code face on one band, their syntax coloured by the tokenizers
+[`<Markdown>`](markdown.md)'s fences use (and `resolveLanguage`), and a code
+span on a tint; every backtick stays, dimmed. With `submitOnEnter`, Enter on
+a fence's opening line or in its code is a new line, and on its closing line
+it sends; Tab and Shift+Tab indent and dedent its code lines.
+**`markup="markdown"`** also draws emphasis, strong, strikethrough, headings,
+quotes and list markers, the markers still there, dimmed:
+
+```tsx
+<RichTextEditor
+  format="text"
+  markup="code"
+  submitOnEnter
+  onSubmit={(ev) => send(ev.value)}
+/>
+```
+
+**`schema={composerSchema}`** adds two atoms, each one thing in the editor
+and one token in the value. A `mention` — `kind`, `id`, `label`, and the
+app's own `data` — is written as `@label`, and a suggestion row inserts one.
+An `attachment` — `kind` (`'paste'`, `'image'` or `'file'`), `id`, `label`,
+`data` — is written as `[label]`, and `pasteAsAttachment` makes one of a
+paste past ten lines or 2,000 characters (`{ lines, chars }` for other
+limits): `[Pasted text #1 +312 lines]`, the text in its `data`. Shift+Mod+V
+pastes it as text instead, and an image with no text beside it — a
+screenshot — is an attachment of its PNG bytes. Both are drawn as chips,
+and `markStyles` restyles them by node name (`{ mention: { color } }`). On
+submit, `composerParts(ev.state.doc)` reads the value back with each atom's
+attributes and where its token is:
+
+```tsx
+<RichTextEditor
+  format="text"
+  markup="code"
+  schema={composerSchema}
+  pasteAsAttachment
+  suggestions={[
+    {
+      char: '@',
+      items: ({ query, state }) =>
+        files(query).map((f) => ({
+          label: f.path,
+          insert: state.schema.nodes.mention.create({
+            kind: 'file',
+            id: f.path,
+            label: f.name,
+          }),
+        })),
+    },
+  ]}
+  submitOnEnter
+  onSubmit={(ev) => {
+    const { text, mentions, attachments } = composerParts(ev.state.doc);
+    send(text, mentions, attachments);
+  }}
+/>
+```
+
+`composerParts` answers `{ text, mentions, attachments }`: `text` is the
+value, and each atom is `{ type, kind, id, label, data, token, at }` — `token`
+its text in `text` and `at` where it starts, so an app can put a paste's
+text in its place, or send an image beside it.
+
+**`recall`** is what was sent, oldest first. Up on the first line shows the
+newest and steps back; Down on the last line steps forward, and past the
+newest gives back the draft as it was left. Up leaves the caret on the top
+line and Down on the bottom one, so pressing on goes on through the list.
+Prompt recall is not called `history`: that prop is the undo history.
+
+```tsx
+<RichTextEditor
+  format="text"
+  markup="code"
+  schema={composerSchema}
+  pasteAsAttachment
+  submitOnEnter
+  recall={sent}
+  onSubmit={(ev) => setSent((all) => [...all, ev.value])}
+/>
+```
+
+**What is a line, and what is not.** `markup` reads the textblocks at the top
+of the document, one line each, which is `format="text"`'s shape; in another
+format its fences would sit between paragraph gaps. A fence is CommonMark's:
+three or more backticks or tildes, indented three spaces at most, closed by
+as many of the same or more; a code span pairs a run of backticks with the
+next run as long. Emphasis is matched a line at a time — `snake_case`, `2 *
+3` and `src/**/*.ts` are text, as they are in markdown. The scan is kept
+apart from ProseMirror's decorations, a line at a time with each line's
+result kept by its node, so a keystroke reads the lines again and tells only
+the ones whose markup changed: in a 5,000-line paste, a keystroke costs
+about 2 ms more with `markup="code"`.
 
 ## Tables
 
@@ -553,6 +675,12 @@ function Fence({ node, children, updateAttributes }: NodeViewProps) {
 - **A drag starts only from the selection**, as it does in a browser's
   editor: a press anywhere else is the caret's, and a drag from there
   selects.
+- **A composer's formatting is drawn, never stored.** `markup` decorates
+  the literal text and keeps its markers, as Discord's box, Zed's agent
+  panel and VS Code's chat input do, because the value is a prompt — what
+  a model reads — and every conversion is a character the user did not
+  type. A WYSIWYG composer that stored marks would write them back through
+  the markdown codec, which escapes.
 - **Dropped files become what markdown can say** — an image, or a link.
   The editor reads nothing from them; a drop that uploads, or inlines,
   is `handleDrop`'s.
@@ -574,7 +702,9 @@ another application arrives as its text (react-x11's docs/clipboard.md,
 `dedentCode`, `goToCell`, `isMarkActive`, `isBlockActive`, `markAttrs`); the
 codecs (`docFromMarkdown`, `markdownFromDoc`, `markdownCodec`,
 `docFromHTML`, `htmlFromContent`, `docFromText`, `textFromDoc`);
-`DEFAULT_TOOLBAR` and `toolbarItems`; the suggestion plugin and its commands
+`DEFAULT_TOOLBAR` and `toolbarItems`; the composer's `composerSchema`,
+`composerParts` and `pasteAttachment`, and the line rules `markup` draws
+with (`fenceOf`, `inlineMarkup`, `lineText`); the suggestion plugin and its commands
 (`suggestions`, `suggestionState`, `suggesterFor`, `acceptSuggestion`,
 `selectSuggestion`, `dismissSuggestion`, `filterSuggestions`); the table
 commands (`insertTable`, `addRowBefore`, `addRowAfter`, `addColumnBefore`,
@@ -585,6 +715,8 @@ types `DomKeyEvent`,
 `NodeViewProps`, `ImageInfo`, `MarkStyle`, `RunStyle`, `ToolbarEntry`,
 `ToolbarItem`, `MarkdownCodec`, `Suggester`, `SuggestionItem`,
 `SuggestionQuery`, `SuggestionRow`, `SuggestionState`, `ColumnAlign`,
+`ComposerParts`, `ComposerAtom`, `AttachmentKind`, `PasteAsAttachment`,
+`LineMarkup`, `MarkupMode`, `MarkupSpan`,
 `RemoteCaret` and `DomFocusEvent`.
 
 ## Example

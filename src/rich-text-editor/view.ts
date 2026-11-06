@@ -29,7 +29,7 @@
 //   contenteditable gives ProseMirror.
 import { splitBlock } from 'prosemirror-commands';
 import { redo, redoDepth, undo, undoDepth } from 'prosemirror-history';
-import { Slice } from 'prosemirror-model';
+import { Fragment, Slice } from 'prosemirror-model';
 import type { Node as PMNode } from 'prosemirror-model';
 import {
   AllSelection,
@@ -82,6 +82,8 @@ import { BlockKeys } from './keys.js';
 import { primaryModifierOf, toDomKeyEvent } from './keymap.js';
 import type { DomKeyEvent, PrimaryModifier } from './keymap.js';
 import { styleFromCSS } from './look.js';
+import { MarkupScanner } from './markup.js';
+import type { LineMarkup, MarkupConfig } from './markup.js';
 import type { EditorHost, EditorTextNode, RichEditorNode } from './nodes.js';
 import { KeyedStore } from './store.js';
 import type { BlockWindow } from './virtual.js';
@@ -117,6 +119,25 @@ export interface ViewConfig {
    *  still caret, an accessibility setting — draws it solid. */
   caretBlink?: boolean;
   caretBlinkMs?: number;
+  /** `markup`: what a scan of the document's lines draws over them, or
+   *  null for nothing (./markup.ts). A new object scans again. */
+  markup?: MarkupConfig | null;
+  /** A document of lines — `format="text"`: text is pasted and copied a
+   *  paragraph a line, blank lines kept, and a paste's HTML is not read. */
+  lines?: boolean;
+  /** A paste, offered before it is inserted as text: a node to insert in
+   *  its place — a long paste as an attachment — or null. Not asked for a
+   *  paste of what this editor copied. */
+  pasteNode?(paste: {
+    text: string | null;
+    image: Uint8Array | null;
+    plain: boolean;
+  }): PMNode | null;
+  /** A paste with no text reads the clipboard's PNG for `pasteNode`. */
+  pasteImages?: boolean;
+  /** A key no plugin claimed, before the view's own keys (motion, deletion,
+   *  Tab leaving): true when it was the component's. */
+  unclaimedKey?(ev: DomKeyEvent): boolean;
 }
 
 /** One block's decorations, as its renderer reads them. `sig` is what makes
@@ -336,6 +357,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
   readonly decorations = new KeyedStore<BlockDecorations>();
   /** Which block a node selection has selected, for its renderer. */
   readonly selectedBlocks = new KeyedStore<boolean>();
+  /** Each line's `markup`, for its block's renderer — kept apart from the
+   *  decorations, which are read afresh on every transaction. */
+  readonly markup = new KeyedStore<LineMarkup>();
+  private scanner: MarkupScanner | null = null;
 
   private root: RichEditorNode | null = null;
   private texts = new Map<string, EditorTextNode>();
@@ -401,6 +426,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
     this.direct = props;
     this.config = config;
     this.keys = new BlockKeys(state.doc);
+    this.recomputeMarkup();
     this.recomputeDecorations();
     // Plugin views wait for `mountPluginViews`: a browser's EditorView has
     // its DOM from its constructor, and plugin views are written to find
@@ -489,6 +515,7 @@ export class RichEditorView implements EditorHost, ClipboardView {
     ) {
       this.restartBlink();
     }
+    if (config.markup !== prev.markup) this.recomputeMarkup();
     const c = config.colors;
     const p = prev.colors;
     const redraw =
@@ -570,7 +597,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (state === prev) return;
     this.state = state;
     const docChanged = prev.doc !== state.doc;
-    if (docChanged) this.keys.update(state.doc, mappingOf(trs, prev.doc));
+    if (docChanged) {
+      this.keys.update(state.doc, mappingOf(trs, prev.doc));
+      this.recomputeMarkup();
+    }
     if (prev.plugins !== state.plugins) this.resetPluginViews();
     if (!this.keepGoal) this.goalX = null;
     this.keepGoal = false;
@@ -633,6 +663,8 @@ export class RichEditorView implements EditorHost, ClipboardView {
   destroy(): void {
     if (this.destroyedFlag) return;
     this.destroyedFlag = true;
+    this.scanner?.dispose();
+    this.scanner = null;
     for (const view of this.pluginViews) view.destroy?.();
     this.pluginViews = [];
     this.stopBlink();
@@ -820,6 +852,43 @@ export class RichEditorView implements EditorHost, ClipboardView {
   private stopBlink(): void {
     stopInterval(this.blinkTimer);
     this.blinkTimer = null;
+  }
+
+  // --- markup ------------------------------------------------------------------
+
+  /** Read the document's lines again for `markup` — or, with none, take
+   *  every line's markup away. */
+  private recomputeMarkup(): void {
+    const config = this.config.markup;
+    if (!config) {
+      if (!this.scanner) return;
+      this.scanner.dispose();
+      this.scanner = null;
+      for (const key of [...this.markup.keys()])
+        this.markup.set(key, undefined);
+      return;
+    }
+    this.scanner ??= new MarkupScanner();
+    this.scanner.scan(
+      this.state.doc,
+      (pos) => this.keys.keyAt(pos),
+      config,
+      this.markup,
+    );
+  }
+
+  /** The `markup` of the line `pos` is in — a top-level textblock — if it
+   *  has any: whether it is a fence's, and what is drawn over it. */
+  markupAt(pos: number): LineMarkup | undefined {
+    const $pos = this.state.doc.resolve(pos);
+    if ($pos.depth < 1) return undefined;
+    const key = this.keys.keyAt($pos.before(1));
+    return key ? this.markup.get(key) : undefined;
+  }
+
+  /** A document of lines, for the clipboard (./clipboard.ts). */
+  get textLines(): boolean {
+    return !!this.config.lines;
   }
 
   // --- decorations -------------------------------------------------------------
@@ -1459,6 +1528,10 @@ export class RichEditorView implements EditorHost, ClipboardView {
       // only an Escape nothing claimed: one a plugin took — a suggestion
       // list closing — was spent, and the next Escape arms the Tab instead
       this.tabEscapes = k === XK_ESCAPE;
+      if (this.config.unclaimedKey?.(dom)) {
+        ev.preventDefault();
+        return;
+      }
       if (this.fallbackKey(ev, dom)) ev.preventDefault();
     } finally {
       this.userInput--;
@@ -2008,6 +2081,8 @@ export class RichEditorView implements EditorHost, ClipboardView {
     const files = ev.files;
     // with files on offer, `text` is the URI list itself
     const text = files.length ? null : (ev.text ?? null);
+    // a document of lines takes text as text, whatever HTML came with it
+    if (this.config.lines && text !== null) html = null;
     const slice =
       files.length && !html
         ? filesSlice(this.state.schema, files, $at)
@@ -2108,14 +2183,28 @@ export class RichEditorView implements EditorHost, ClipboardView {
     if (!clipboard || !this.editable) return;
     const options = selection ? { selection } : undefined;
     const [html, text] = await Promise.all([
-      plain ? null : clipboard.read('text/html', options).catch(() => null),
+      plain || this.config.lines
+        ? null
+        : clipboard.read('text/html', options).catch(() => null),
       clipboard.read('text', options).catch(() => null),
     ]);
     if (this.destroyedFlag) return;
+    // an image only where there is no text: a screenshot, a copied picture
+    let image: Uint8Array | null = null;
+    if (
+      (typeof text !== 'string' || text === '') &&
+      this.config.pasteImages &&
+      this.config.pasteNode
+    ) {
+      const png = await clipboard.read('image/png', options).catch(() => null);
+      if (this.destroyedFlag) return;
+      if (png instanceof Uint8Array && png.length > 0) image = png;
+    }
     this.pasteContent(
       typeof text === 'string' ? text : null,
       typeof html === 'string' && html ? html : null,
       plain,
+      image,
     );
   }
 
@@ -2133,11 +2222,17 @@ export class RichEditorView implements EditorHost, ClipboardView {
     text: string | null,
     html: string | null,
     plain: boolean,
+    image: Uint8Array | null = null,
   ): boolean {
     const own = this.lastCopy;
-    const slice =
-      own && text !== null && text === own.text && !plain
-        ? own.slice
+    const ours = !!own && text !== null && text === own.text && !plain;
+    const node = ours
+      ? null
+      : (this.config.pasteNode?.({ text, image, plain }) ?? null);
+    const slice = node
+      ? new Slice(Fragment.from(node), 0, 0)
+      : ours
+        ? own!.slice
         : parseFromClipboard(
             this,
             text,

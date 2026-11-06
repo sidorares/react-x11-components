@@ -261,13 +261,22 @@ export interface DefaultPluginOptions {
   /** Undo and redo (prosemirror-history), with Mod-z / Mod-y. Default on. */
   history?: boolean;
   /** Markdown as you type: `# `, `> `, `- `, `1. `, `[ ] `, ``` ``` ```,
-   *  `---`, and `**bold**`-style marks. Default on. */
+   *  `---`, and `**bold**`-style marks. Default on — off in a document of
+   *  `lines`, whose text is written back as it was typed. */
   inputRules?: boolean;
   /** Formatting shortcuts — Mod-b, Mod-i, Mod-Alt-1…6, lists, quotes. Default on. */
   keymap?: boolean;
   /** Smart quotes, `...` → `…` and `--` → `—`. Default off: in a markdown
    *  document a straight quote is usually meant. */
   typography?: boolean;
+  /**
+   * A document of lines — `format="text"`, one paragraph a line. A line
+   * break (Shift-Enter, Mod-Enter) is a new paragraph, as a line read back
+   * from the value is, and the markdown shortcuts are off unless
+   * `inputRules` turns them on: they would turn `# ` into a heading the
+   * value has no `#` for.
+   */
+  lines?: boolean;
 }
 
 /**
@@ -282,12 +291,21 @@ export function defaultPlugins(
   options: DefaultPluginOptions = {},
 ): Plugin[] {
   const out: Plugin[] = [];
-  const markdown = options.inputRules !== false;
+  const markdown = options.inputRules ?? !options.lines;
   if (markdown || options.typography) {
     out.push(
       markdownInputRules(schema, {
         markdown,
         typography: !!options.typography,
+      }),
+    );
+  }
+  // ahead of the formatting keymap, whose Shift-Enter is a hard break
+  if (options.lines && schema.nodes.paragraph) {
+    out.push(
+      keymap({
+        'Shift-Enter': baseKeymap.Enter,
+        'Mod-Enter': baseKeymap.Enter,
       }),
     );
   }

@@ -294,3 +294,11 @@ What that means for the plugins people reach for:
   mention is text, or text with a mark.
 - **Images in text** — `renderImage` draws an image alone in its paragraph;
   one inside a line needs the same inline-widget run.
+- **The composer** — `format="text"` as a document of lines, `markup`,
+  `composerSchema`, `pasteAsAttachment` and `recall` landed as opt-ins on
+  this element (the reference's "Composer"); what is left of it: a chip that
+  is a padded box rather than tinted text waits on the same inline-widget
+  run; `markup`'s scan reads every line on every keystroke, which is about
+  2 ms at 5,000 lines and could read only the lines an edit reached; an
+  attachment is not opened or expanded in place; and a `@` inside a fence
+  still opens the mention list.

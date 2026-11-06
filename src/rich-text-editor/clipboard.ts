@@ -28,6 +28,7 @@ import type { EditorProps, EditorView } from 'prosemirror-view';
 
 import { clipboardHTML, readHTML, sliceFromElement } from './html.js';
 import type { ShimElement } from './html.js';
+import { lineLeafText } from './markdown.js';
 import type { EditorState } from 'prosemirror-state';
 
 /** What the clipboard code needs of the view — `someProp` over the props a
@@ -40,6 +41,9 @@ export interface ClipboardView {
   ): R | undefined;
   /** The view as a plugin's callback is handed it. */
   readonly asEditorView: EditorView;
+  /** A document of lines (`format="text"`): text is a paragraph a line,
+   *  blank lines included, both ways. */
+  readonly textLines?: boolean;
 }
 
 /** What a copy puts on the clipboard. */
@@ -81,7 +85,10 @@ export function serializeForClipboard(
   const text =
     view.someProp('clipboardTextSerializer', (f) =>
       f(slice, view.asEditorView),
-    ) || slice.content.textBetween(0, slice.content.size, '\n\n');
+    ) ||
+    (view.textLines
+      ? slice.content.textBetween(0, slice.content.size, '\n', lineLeafText)
+      : slice.content.textBetween(0, slice.content.size, '\n\n'));
   return { html, text, slice };
 }
 
@@ -132,8 +139,9 @@ export function parseFromClipboard(
       const marks = $context.marks();
       const paragraph = defaultTextblock($context);
       if (paragraph) {
+        // in a document of lines a blank line is a line too
         const blocks = pasted
-          .split(/(?:\r\n?|\n)+/)
+          .split(view.textLines ? /\r\n?|\n/ : /(?:\r\n?|\n)+/)
           .map((line) =>
             paragraph.create(null, line ? schema.text(line, marks) : null),
           );

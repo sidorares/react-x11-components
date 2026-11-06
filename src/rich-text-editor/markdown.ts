@@ -680,9 +680,13 @@ export function docFromText(schema: Schema, text: string): PMNode {
 }
 
 export function textFromDoc(doc: PMNode): string {
-  return doc.textBetween(0, doc.content.size, '\n', (leaf) =>
-    NODE_ROLE.get(leaf.type.name) === 'hardBreak'
-      ? '\n'
-      : (leaf.type.spec.leafText?.(leaf) ?? ''),
-  );
+  return doc.textBetween(0, doc.content.size, '\n', lineLeafText);
+}
+
+/** An inline leaf in a document of lines: a hard break is a line's end,
+ *  anything else its `leafText` — a mention's `@name`. */
+export function lineLeafText(leaf: PMNode): string {
+  return NODE_ROLE.get(leaf.type.name) === 'hardBreak'
+    ? '\n'
+    : (leaf.type.spec.leafText?.(leaf) ?? '');
 }

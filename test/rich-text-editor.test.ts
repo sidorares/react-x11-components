@@ -36,12 +36,19 @@ import type { DrawnNode } from 'react-x11';
 import { CARET_BLINK_MS } from 'react-x11/node';
 import type { A11yTextState } from 'react-x11/node';
 import { undo } from 'prosemirror-history';
-import { EditorState, Plugin, Selection } from 'prosemirror-state';
+import {
+  EditorState,
+  Plugin,
+  Selection,
+  TextSelection,
+} from 'prosemirror-state';
 import type { Transaction } from 'prosemirror-state';
 import { Decoration, DecorationSet } from 'prosemirror-view';
 
 import {
   RichTextEditor,
+  composerParts,
+  composerSchema,
   defaultPlugins,
   docFromMarkdown,
   schema,
@@ -52,6 +59,7 @@ import type {
   NodeViewProps,
   RichTextEditorHandle,
   RichTextEditorProps,
+  Suggester,
 } from '../src/rich-text-editor/index.js';
 import type { EditorTextNode } from '../src/rich-text-editor/nodes.js';
 import type { ViewConfig } from '../src/rich-text-editor/view.js';
@@ -1377,6 +1385,297 @@ test('a screen reader reads one text, a line per block, and can select and edit 
       ?.events()
       .some((e) => e.type === 'text-insert' || e.type === 'text-delete'),
     'and the edit was announced',
+  );
+});
+
+// --- a composer ---------------------------------------------------------------------
+//
+// `format="text"` is a document of lines, and the composer props are drawn
+// over those lines without changing a character of them.
+
+/** The bottom edge of a drawn node, in device pixels. */
+function bottomOf(node: DrawnNode): number {
+  return node.abs.y + node.abs.height;
+}
+
+for (const scale of [1, 2]) {
+  test(`format="text" at ${scale}x: a line sits on the one above it, and a fence's lines on one band`, async () => {
+    await mount(
+      {
+        format: 'text',
+        markup: 'code',
+        defaultValue: 'one\ntwo\n```js\nlet a;\nlet b;\n```\nend',
+      },
+      { scale },
+    );
+    const [one, two, open, a, b, close, end] = blocks().map(drawn);
+    const near = (x: number, y: number, what: string): void =>
+      assert.ok(Math.abs(x - y) <= 1, `${what}: ${x} against ${y}`);
+    near(two.abs.y, bottomOf(one), 'no gap between two lines');
+    assert.ok(open.abs.y > bottomOf(two), 'the band opens with some room');
+    near(a.abs.y, bottomOf(open), 'the band is one band');
+    near(b.abs.y, bottomOf(a), 'from line to line');
+    near(close.abs.y, bottomOf(b), 'to its closing line');
+    assert.ok(end.abs.y > bottomOf(close), 'and closes with some room');
+    assert.ok(a.abs.x > one.abs.x, 'its lines are inset');
+    assert.strictEqual(open.abs.x, a.abs.x);
+  });
+}
+
+test('format="text": what would be markdown is typed as it is, and Shift+Enter is a new line', async () => {
+  const { editor } = await mount({ format: 'text' });
+  await focusAtEnd();
+  await type('# hi');
+  await userEvent.key(XK_RETURN, { modifiers: ['Shift'] });
+  await type('- 2 * 3 **x**');
+  assert.strictEqual(editor.getValue(), '# hi\n- 2 * 3 **x**');
+  assert.deepStrictEqual(
+    [...Array(editor.state.doc.childCount).keys()].map(
+      (i) => editor.state.doc.child(i).type.name,
+    ),
+    ['paragraph', 'paragraph'],
+    'a line is a paragraph, as the value reads back',
+  );
+});
+
+test('markup="code": a code span and a fence are drawn as code, and the value is what was typed', async () => {
+  const value =
+    'run `npm test` on src/**/*.ts\n```ts\nconst x = 2 * 3; // snake_case\n```';
+  const { editor } = await mount({
+    format: 'text',
+    markup: 'code',
+    defaultValue: value,
+  });
+  const [line, open, code, close] = blocks();
+  const runs = runsOf(line);
+  const plain = runs[0];
+  const span = runs.find((run) => run.text === 'npm test');
+  const ticks = runs.filter((run) => run.text === '`');
+  assert.ok(span, 'the span is a run of its own');
+  assert.notStrictEqual(span.family, plain.family, 'in the code face');
+  assert.ok(span.bg, 'on a tint');
+  assert.strictEqual(ticks.length, 2, 'its backticks are still there');
+  assert.notStrictEqual(ticks[0].color, plain.color, 'dimmed');
+  assert.ok(
+    runsOf(line).some((r) => r.text.includes('src/**/*.ts')),
+    'the glob is text',
+  );
+  for (const fence of [open, close]) {
+    const [run] = runsOf(fence);
+    assert.strictEqual(run.family, span.family);
+    assert.strictEqual(run.color, ticks[0].color, 'a fence line is dimmed');
+  }
+  assert.ok(
+    new Set(runsOf(code).map((r) => r.color)).size > 2,
+    'the code is coloured by its tokens',
+  );
+  assert.strictEqual(editor.getValue(), value);
+  await focusAtEnd();
+  await userEvent.key(XK_RETURN);
+  await type('`b');
+  await waitFor(() =>
+    assert.ok(
+      runsOf(blocks()[4]).every((r) => r.family === plain.family),
+      'a lone backtick is no span',
+    ),
+  );
+  await type('`');
+  await waitFor(() =>
+    assert.ok(runsOf(blocks()[4]).some((r) => r.text === 'b' && r.bg)),
+  );
+  assert.strictEqual(editor.getValue(), `${value}\n\`b\``);
+});
+
+test('markup="markdown": emphasis, headings and list markers are drawn with their markers; "none" draws nothing', async () => {
+  const value = '## Plan\n- **ship** it, _then_ ~~wait~~';
+  const { editor } = await mount({
+    format: 'text',
+    markup: 'markdown',
+    defaultValue: value,
+  });
+  const [heading, item] = blocks();
+  const hashes = runsOf(heading).find((r) => r.text === '##');
+  const title = runsOf(heading).find((r) => r.text.includes('Plan'));
+  assert.ok(hashes && title && hashes.color !== title.color);
+  assert.strictEqual(title.weight, 700);
+  const runs = runsOf(item);
+  assert.strictEqual(runs.find((r) => r.text === 'ship')?.weight, 700);
+  assert.strictEqual(runs.find((r) => r.text === 'then')?.style, 'italic');
+  assert.ok(runs.find((r) => r.text === 'wait')?.strike);
+  assert.strictEqual(runs.filter((r) => r.text === '**').length, 2);
+  assert.notStrictEqual(runs[0].color, runs.find((r) => r.text === ' ')?.color);
+  assert.strictEqual(editor.getValue(), value);
+  cleanup();
+  await mount({ format: 'text', defaultValue: value });
+  assert.deepStrictEqual(
+    blocks().map((b) => runsOf(b).length),
+    [1, 1],
+    'without markup a line is one run',
+  );
+});
+
+test('submitOnEnter with markup: Enter on a fence’s opening line or in its code is a new line, and on its closing line it sends', async () => {
+  const sent: string[] = [];
+  const { editor } = await mount({
+    format: 'text',
+    markup: 'code',
+    submitOnEnter: true,
+    onSubmit: (ev) => sent.push(ev.value),
+  });
+  await focusAtEnd();
+  await type('look:');
+  await userEvent.key(XK_RETURN, { modifiers: ['Shift'] });
+  await type('```py');
+  await userEvent.key(XK_RETURN);
+  await type('print(1)');
+  await userEvent.key(XK_RETURN);
+  await type('```');
+  assert.deepStrictEqual(sent, [], 'nothing sent from inside the fence');
+  assert.strictEqual(editor.state.doc.childCount, 4);
+  await userEvent.key(XK_RETURN);
+  assert.deepStrictEqual(sent, ['look:\n```py\nprint(1)\n```']);
+});
+
+test('markup: Tab indents a fence’s code lines and Shift+Tab takes it back; anywhere else Tab is not the editor’s', async () => {
+  const { editor } = await mount({
+    format: 'text',
+    markup: 'code',
+    defaultValue: 'x\n```\na\nb\n```',
+  });
+  await userEvent.click(drawn(blocks()[0]));
+  const lineStart = (line: number): number => {
+    let pos = 1;
+    for (let i = 0; i < line; i++) pos += editor.state.doc.child(i).nodeSize;
+    return pos;
+  };
+  await act(() =>
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, lineStart(2), lineStart(3) + 1),
+      ),
+    ),
+  );
+  await userEvent.key(XK_TAB);
+  assert.strictEqual(editor.getValue(), 'x\n```\n  a\n  b\n```');
+  await userEvent.key(XK_TAB, { modifiers: ['Shift'] });
+  assert.strictEqual(editor.getValue(), 'x\n```\na\nb\n```');
+  await act(() =>
+    editor.view.dispatch(
+      editor.state.tr.setSelection(
+        TextSelection.create(editor.state.doc, lineStart(0)),
+      ),
+    ),
+  );
+  await userEvent.key(XK_TAB);
+  assert.strictEqual(editor.getValue(), 'x\n```\na\nb\n```', 'Tab moved on');
+});
+
+test('recall: Up on the first line goes back through what was sent, Down comes forward, and past the newest the draft is back', async () => {
+  const { editor } = await mount({
+    format: 'text',
+    recall: ['first', 'second\nline'],
+  });
+  await focusAtEnd();
+  await type('my draft');
+  await userEvent.key(XK_UP);
+  assert.strictEqual(editor.getValue(), 'second\nline');
+  assert.strictEqual(editor.state.selection.head, 1, 'the caret on top');
+  await userEvent.key(XK_UP);
+  assert.strictEqual(editor.getValue(), 'first');
+  await userEvent.key(XK_UP);
+  assert.strictEqual(editor.getValue(), 'first', 'the oldest is the last');
+  await userEvent.key(XK_DOWN);
+  assert.strictEqual(editor.getValue(), 'second\nline');
+  assert.strictEqual(
+    editor.state.selection.head,
+    editor.state.doc.content.size - 1,
+    'the caret at the bottom',
+  );
+  await userEvent.key(XK_DOWN);
+  assert.strictEqual(editor.getValue(), 'my draft', 'the draft as it was left');
+  await userEvent.key(XK_DOWN);
+  assert.strictEqual(editor.getValue(), 'my draft');
+  // a line in the middle moves the caret, as it always did
+  await act(() => editor.setValue('a\nb\nc'));
+  await userEvent.key(XK_END, { modifiers: ['Control'] });
+  await userEvent.key(XK_UP);
+  assert.strictEqual(editor.getValue(), 'a\nb\nc');
+});
+
+test('composerSchema: a suggestion inserts a mention atom — a chip on screen, `@label` in the value', async () => {
+  const people: Suggester[] = [
+    {
+      char: '@',
+      items: ({ state }) => [
+        {
+          label: 'Ada Lovelace',
+          insert: state.schema.nodes.mention.create({
+            id: 'u1',
+            label: 'ada',
+          }),
+        },
+      ],
+    },
+  ];
+  const { editor } = await mount({
+    format: 'text',
+    schema: composerSchema,
+    suggestions: people,
+    markStyles: { attachment: { color: '#ff0000' } },
+  });
+  await focusAtEnd();
+  await type('ask @ad');
+  await waitFor(() => screen.getByText('Ada Lovelace'));
+  await userEvent.key(XK_RETURN);
+  assert.strictEqual(editor.getValue(), 'ask @ada ');
+  const chip = runsOf(blocks()[0]).find((r) => r.text === '@ada');
+  assert.ok(chip?.bg, 'drawn as a chip');
+  const parts = composerParts(editor.state.doc);
+  assert.deepStrictEqual(
+    parts.mentions.map((m) => [m.id, m.at]),
+    [['u1', 4]],
+  );
+});
+
+test('pasteAsAttachment: a long paste is one attachment holding the text; Shift+Ctrl+V pastes it as lines, and a copy is the lines', async () => {
+  const { r, editor } = await mount({
+    format: 'text',
+    schema: composerSchema,
+    pasteAsAttachment: { lines: 3 },
+    markStyles: { attachment: { color: '#ff0000' } },
+    defaultValue: 'see ',
+  });
+  const long = 'a\nb\nc\nd\n\nf';
+  await clipboardOf(r).write({ UTF8_STRING: long });
+  await focusAtEnd();
+  await ctrl(KEY_V);
+  await waitFor(() =>
+    assert.strictEqual(editor.getValue(), 'see [Pasted text #1 +6 lines]'),
+  );
+  assert.strictEqual(composerParts(editor.state.doc).attachments[0].data, long);
+  const chip = runsOf(blocks()[0]).find((r) => r.text.startsWith('[Pasted'));
+  assert.ok(chip?.bg, 'drawn as a chip');
+  assert.strictEqual(chip.color, '#ff0000', 'restyled by markStyles');
+  await ctrl(KEY_V, 'Shift');
+  await waitFor(() =>
+    assert.strictEqual(
+      editor.getValue(),
+      `see [Pasted text #1 +6 lines]${long}`,
+      'every line, the blank one too',
+    ),
+  );
+  await ctrl(KEY_A);
+  await ctrl(KEY_C);
+  await waitFor(async () =>
+    assert.strictEqual(
+      asText(
+        await clipboardOf(r).read({
+          selection: 'CLIPBOARD',
+          target: 'UTF8_STRING',
+        }),
+      ),
+      editor.getValue(),
+    ),
   );
 });
 

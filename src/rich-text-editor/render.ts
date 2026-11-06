@@ -413,17 +413,20 @@ function TextblockView({
   bctx,
 }: BlockProps): ReactElement {
   const decorations = useKeyed(ctx.view.decorations, blockKey);
-  const look = ctx.look.inline(node, bctx);
-  const built = useMemo(
-    () =>
-      buildInline(
-        node,
-        look,
-        decorations?.inline ?? NO_DECORATIONS,
-        decorations?.widgets ?? NO_WIDGETS,
-      ),
-    [node, look, decorations],
-  );
+  // `markup`'s, under the plugins' — so a plugin's colour wins over it
+  const markup = useKeyed(ctx.view.markup, blockKey);
+  const fenced = !!markup?.fence;
+  const look = ctx.look.inline(node, fenced ? { ...bctx, code: true } : bctx);
+  const built = useMemo(() => {
+    const own = decorations?.inline ?? NO_DECORATIONS;
+    const drawn = markup?.inline ?? NO_DECORATIONS;
+    return buildInline(
+      node,
+      look,
+      drawn.length === 0 ? own : own.length === 0 ? drawn : [...drawn, ...own],
+      decorations?.widgets ?? NO_WIDGETS,
+    );
+  }, [node, look, decorations, markup]);
   const code = !!look.code;
   const align = node.attrs.align;
   const text = h(TEXT_ELEMENT, {
@@ -433,7 +436,7 @@ function TextblockView({
     blockKey,
     host: ctx.view,
     style: {
-      ...(code ? codeTextStyle(ctx.look.code) : null),
+      ...(code || fenced ? codeTextStyle(ctx.look.code) : null),
       ...(align === 'left' || align === 'center' || align === 'right'
         ? { textAlign: align }
         : null),
@@ -479,6 +482,34 @@ function TextblockView({
         out,
       );
     }
+  }
+  // A fence's lines, one band. Core rounds a box's four corners or none,
+  // so every line but the last reaches under the next by two radii: the
+  // next line, drawn after it, covers the corners it rounds there, and its
+  // own top corners are drawn over this one's square edge. What is left
+  // rounded is the band's first and last corners.
+  if (markup?.band) {
+    const c = ctx.look.code;
+    const top = markup.band === 'start' || markup.band === 'only';
+    const bottom = markup.band === 'end' || markup.band === 'only';
+    const edge = Math.round(c.padding / 2);
+    const apron = bottom ? 0 : c.radius * 2;
+    out = hx(
+      'box',
+      {
+        style: {
+          flexDirection: 'column',
+          backgroundColor: ctx.look.codeBand,
+          borderRadius: c.radius,
+          paddingLeft: c.padding,
+          paddingRight: c.padding,
+          paddingTop: top ? edge : 0,
+          paddingBottom: bottom ? edge : apron,
+          marginBottom: -apron,
+        },
+      },
+      out,
+    );
   }
   if (box?.background) {
     out = hx(

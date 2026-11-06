@@ -14,7 +14,7 @@
 // a second-level heading, an unknown mark that says `['u', 0]` underlines, and
 // a `style` attribute on either is read for the few properties text can
 // carry. The app's `markStyles` has the last word.
-import { tint } from 'react-x11/style';
+import { interpolate, tint } from 'react-x11/style';
 import type { Mark, Node as PMNode } from 'prosemirror-model';
 
 import { codeBlockLook, codeBlockRuns } from '../codeblock/index.js';
@@ -35,6 +35,9 @@ export interface LookOptions {
   /** A disabled editor: the document is set in the muted ink. (react-x11
    *  styles have no opacity to fade a subtree with.) */
   dim?: boolean;
+  /** A document of lines (`format="text"`): no gap between its blocks, so
+   *  a paragraph is spaced as a wrapped line is. */
+  lines?: boolean;
 }
 
 /** Where a textblock sits, as far as its look is concerned. */
@@ -43,6 +46,8 @@ export interface BlockContext {
   quote: boolean;
   /** A table's header row. */
   header: boolean;
+  /** Set in the code face: a line of a fence `markup` found. */
+  code?: boolean;
 }
 
 export interface EditorLook {
@@ -68,6 +73,13 @@ export interface EditorLook {
   blockGap: number;
   headingScales: readonly number[];
   code: CodeBlockLook;
+  /** The code fill made opaque over the background: what a fence's lines
+   *  are drawn on, which overlap where they meet. */
+  codeBand: string;
+  /** Syntax colouring in code, and the tokenizer seam for a tag — what a
+   *  code block is coloured with, and a fence `markup` found. */
+  highlightCode: boolean;
+  resolveLanguage?: (tag: string) => Language | null;
   /** Two looks with the same key draw identically — the render cache's epoch. */
   key: string;
   /** A textblock's inline look. Cached: the same node type in the same
@@ -192,6 +204,22 @@ export function styleFromCSS(css: string, under: RunStyle): RunStyle {
     }
   }
   return out;
+}
+
+/** A translucent `rgba()` laid over `under`, as one opaque colour; any
+ *  other colour as it is. */
+function opaqueOver(color: string, under: string): string {
+  const m =
+    /^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/.exec(
+      color,
+    );
+  if (!m || Number(m[4]) >= 1) return color;
+  const blended = interpolate(
+    under,
+    `rgb(${m[1]}, ${m[2]}, ${m[3]})`,
+    Number(m[4]),
+  );
+  return typeof blended === 'string' ? blended : color;
 }
 
 function str(value: unknown, fallback: string): string {
@@ -337,14 +365,31 @@ export function deriveLook(
       return { text: label, style: { color: muted, bg: codeBg } };
     }
     const leaf = node.type.spec.leafText?.(node) ?? '';
-    return { text: leaf || name, style: { color: muted, bg: codeBg } };
+    // a composer's atoms are chips: a mention on the accent's tint, an
+    // attachment on the code tint — and the app's `markStyles` over both
+    let style: RunStyle =
+      name === 'mention'
+        ? { color: link, bg: tint(accent, 0.16) }
+        : name === 'attachment'
+          ? { color: text, bg: tint(text, 0.1) }
+          : { color: muted, bg: codeBg };
+    const custom = markStyles?.[name];
+    if (custom) {
+      style = {
+        ...style,
+        ...(typeof custom === 'function'
+          ? custom(node as unknown as Mark, style)
+          : custom),
+      };
+    }
+    return { text: leaf || name, style };
   };
 
   const cache = new Map<string, InlineLook>();
   const inline = (node: PMNode, context: BlockContext): InlineLook => {
     const { kind, level } = blockKind(node);
     const lang = kind === 'code' ? languageOf(node) : '';
-    const key = `${node.type.name}|${kind}|${level}|${lang}|${context.quote ? 'q' : ''}${context.header ? 'h' : ''}`;
+    const key = `${node.type.name}|${kind}|${level}|${lang}|${context.quote ? 'q' : ''}${context.header ? 'h' : ''}${context.code ? 'c' : ''}`;
     const hit = cache.get(key);
     if (hit) return hit;
     const ink = context.quote ? muted : text;
@@ -357,7 +402,7 @@ export function deriveLook(
         weight: 700,
         color: ink,
       };
-    } else if (kind === 'code') {
+    } else if (kind === 'code' || context.code) {
       base = { family: code.family, size: code.size, color: code.color };
     } else {
       base = {
@@ -405,9 +450,12 @@ export function deriveLook(
     headerBg: tint(text, 0.05),
     highlight,
     radius,
-    blockGap: Math.round(size * 0.7),
+    blockGap: options.lines ? 0 : Math.round(size * 0.7),
     headingScales: HEADING_SCALES,
     code,
+    codeBand: opaqueOver(code.fill, background),
+    highlightCode,
+    ...(resolveLanguage ? { resolveLanguage } : null),
     key: [
       text,
       muted,
@@ -421,6 +469,7 @@ export function deriveLook(
       selection,
       caret,
       highlightCode,
+      options.lines ? 'lines' : '',
     ].join('|'),
     inline,
   };
