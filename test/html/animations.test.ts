@@ -4040,6 +4040,55 @@ test('an animation on a scroll() timeline is where its scroller is scrolled, and
   assert.strictEqual(doc.pending(), false, 'and no frame is asked for');
 });
 
+test("a scroll() and a view() timeline take block and inline from their scroller's writing mode, and count from its scroll origin at the right of an rtl or a vertical-rl one", async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '.sc{width:100px;height:100px;overflow:auto}' +
+      '.sc>.wide{width:600px;height:10px}' +
+      '#rtl{direction:rtl} #vrl{writing-mode:vertical-rl}' +
+      '.bar{width:10px;height:10px;animation:fade linear}' +
+      '#ri{animation-timeline:scroll(inline)} #vb{animation-timeline:scroll(block)}' +
+      '#vi{animation-timeline:scroll(inline)}' +
+      '#card{width:50px;height:10px;animation:fade linear;animation-timeline:view(inline)}' +
+      '</style>' +
+      '<div class="sc" id="rtl"><div class="wide" style="display:flex">' +
+      '<div style="width:300px;flex:none"></div><div id="card"></div></div>' +
+      '<div class="bar" id="ri"></div></div>' +
+      '<div class="sc" id="vrl"><div class="wide"></div>' +
+      '<div class="bar" id="vb"></div><div class="bar" id="vi"></div></div>',
+  );
+  const opacity = (id: string) => Number(doc.style(id).opacity);
+  const scroll = async (id: string, to: { x?: number; y?: number }) => {
+    doc.el.scrollElementTo(findById(doc.el.document, id)!, to);
+    await act();
+    for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+    await act();
+  };
+  for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+  await act();
+  // the rtl one scrolls 500 across, from its origin at the right, which is
+  // where each is before anything scrolls it
+  assert.strictEqual(opacity('ri'), 0, 'rtl inline, at its origin');
+  assert.strictEqual(opacity('vb'), 0, 'vertical-rl block, at its origin');
+  // the card, 300 from the right and 50 wide in a scrollport 100 wide, is
+  // covered from 200 to 350 of the scroll from the right
+  assert.strictEqual(opacity('card'), 1, 'before its range: no effect');
+  await scroll('rtl', { x: -250 });
+  assert.strictEqual(opacity('ri'), 0.5, 'rtl inline, half way');
+  assert.ok(
+    Math.abs(opacity('card') - 50 / 150) < 1e-6,
+    `card ${opacity('card')}`,
+  );
+  // the vertical-rl one 520, the two bars beside what is wide
+  await scroll('vrl', { x: -130 });
+  assert.strictEqual(opacity('vb'), 0.25, 'vertical-rl block, across');
+  // the inline axis of a vertical-rl scroller is down it, where nothing
+  // overflows: an inactive timeline, which has no effect
+  assert.strictEqual(opacity('vi'), 1, 'vertical-rl inline scrolls nothing');
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

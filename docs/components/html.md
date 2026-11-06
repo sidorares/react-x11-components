@@ -2055,9 +2055,13 @@ the rest of Typed OM's numbers are there — and an animation's timing is
 normalized to its attachment range, which `rangeStart` and `rangeEnd` name
 (`contain 10%`, `{ rangeName, offset }`, an absolute length). Its start
 time aligns to the range at each frame until a page sets one, and it is
-drawn held at its time, told again at each frame its scroll moves it. Not
-yet: a vertical writing mode's axes, a right-to-left scroller's negative
-offsets, and the viewport's horizontal scroll.
+drawn held at its time, told again at each frame its scroll moves it.
+`block` and `inline` are its source's axes, in the source's writing mode,
+and the viewport's in the document's principal one, the `<body>`'s where
+no containment keeps it to the body; and its time counts from the
+source's scroll origin, at the right of an `rtl` or a `vertical-rl`
+scroller, the bottom of a `sideways-lr` one and the far end of a reversed
+flex box, where its offsets are negative.
 
 What is not drawn: `composite: 'add'` and `'accumulate'` are drawn as
 `replace`; a pseudo-element other than `::before` and `::after`; and on
@@ -5355,8 +5359,12 @@ is in the animation's range, before 0 or past 1 where it is outside it,
 and the frames around it are spaced as though it were not there; on any
 other timeline it is placed nowhere and draws nothing, and
 `getKeyframes()` reads it back as given with a `computedOffset` of null.
-Not yet: a vertical writing
-mode's axes.
+A timeline's `block` and `inline` are its scroller's, in the scroller's
+writing mode, and the viewport's in the document's principal one; its
+progress counts from the scroller's scroll origin, at the right of an
+`rtl` or a `vertical-rl` one, and a view timeline's subject enters from
+the far side of its scrollport there, its `auto` insets the
+`scroll-padding` at that axis's start and end.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer

@@ -694,6 +694,10 @@ export interface HandleInternals {
     up: number;
     down: number;
   } | null;
+  /** The physical axis a page's scroll or view timeline's axis is for the
+   *  scroller it measures, `x` or `y`, and `r` after it where the scroll
+   *  origin is at its end (`HtmlViewNode.timelineAxisOf`). */
+  timelineAxis(element: Element, axis: string): string;
   /** And one a page cancelled (`HtmlViewNode.cancelCss`). */
   cancelCss(kind: 'animation' | 'transition', key: number): void;
   /** A view transition's steps, as the page's realm runs them: its old
@@ -5520,6 +5524,14 @@ export class DomHost {
         return v
           ? `${v.padStart},${v.padEnd},${v.shift},${v.up},${v.down}`
           : '';
+      }
+      // a page's timeline's axis against its scroller: `x` or `y`, and `r`
+      // where its scroll origin is at that axis's end
+      case 'timelineAxis': {
+        this.flush();
+        const el = this._element(a);
+        const handle = this._drawing(el) as Partial<HandleInternals> | null;
+        return handle?.timelineAxis?.(el, String(b)) ?? '';
       }
       // one on a scroll's timeline: `align`, `start` or `hold`, the time
       // (null to hold it where its timeline has it) and its rate

@@ -129,9 +129,10 @@ export function endOrigins(box: Box): [boolean, boolean] {
   const vertical = style.writingMode !== 'horizontal-tb';
   const rtl = style.direction === 'rtl';
   // the block axis starts at the right in `vertical-rl` and
-  // `sideways-rl`, and the inline axis at its end under `rtl`
+  // `sideways-rl`, and the inline axis at its end under `rtl`, and at the
+  // bottom in `sideways-lr`, which runs it up the page
   let x = vertical ? style.writingMode.endsWith('-rl') : rtl;
-  let y = vertical ? rtl : false;
+  let y = vertical ? rtl !== (style.writingMode === 'sideways-lr') : false;
   const display = style.display;
   if (display === 'flex' || display === 'inline-flex') {
     const dir = style.flexDirection;
