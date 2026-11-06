@@ -180,7 +180,12 @@ import {
   triggerActive,
   viewEdgeAt,
 } from './css/triggers.js';
-import type { TimelineTrigger, ViewPlace } from './css/triggers.js';
+import type {
+  RangeName,
+  StickyLimit,
+  TimelineTrigger,
+  ViewPlace,
+} from './css/triggers.js';
 import { AUTO, resolve as resolveLen } from './css/values.js';
 import { ScriptAnimations } from './css/scripted.js';
 import type {
@@ -11173,6 +11178,12 @@ export class HtmlViewNode extends Node {
       inset[i] !== AUTO
         ? resolveLen(inset[i], portSize)
         : padding[reversed ? 1 - i : i];
+    // where the sticky boxes it is in hold it as the scroll moves them, in
+    // the page's axes; a vertical writing mode's frame has them in its own,
+    // and is seen from where they would hold it at most, as before
+    const stickies = this._tree?.vertical
+      ? null
+      : stickyLimits(box, scroller, down, reversed, portStart, portSize);
     return {
       start,
       end: start + size,
@@ -11180,6 +11191,7 @@ export class HtmlViewNode extends Node {
       portEnd: portSize - pad(1),
       up: reversed ? sticky.down : sticky.up,
       down: reversed ? sticky.up : sticky.down,
+      ...(stickies?.length ? { stickies } : null),
     };
   }
 
@@ -11307,25 +11319,19 @@ export class HtmlViewNode extends Node {
     ];
   }
 
-  /** Where a view timeline's subject is along an axis, in CSS pixels, for
-   *  a page's `ViewTimeline` (`_viewPlace`): its start from the start of
-   *  its scrollport, which is its far side where the scroll origin is at
-   *  the axis's end, as layout placed it — at rest, where sticky
-   *  positioning moves it, and with no transform on it or between it and
-   *  its scroller — and its size; the scroll container's `scroll-padding`
-   *  at that start and end, which an `auto` inset is; and how far sticky
-   *  positioning can move it each way. Null where it has no box. */
+  /** How far from where the scroll is now, in CSS pixels, each edge of a
+   *  view timeline's subject crosses each edge of its scrollport, for a
+   *  page's `ViewTimeline` (`_viewPlace`, `viewEdgeAt`): the scrollport
+   *  less `insets`, in CSS pixels or null for `auto`, the scroll
+   *  container's `scroll-padding`; the subject as layout placed it, and
+   *  as the sticky boxes it is in move it. Its start entering, its end
+   *  leaving, its start at the near edge and its end at the far one. Null
+   *  where it has no box. */
   viewAdjustOf(
     element: Element,
     vertical: boolean,
-  ): {
-    start: number;
-    size: number;
-    padStart: number;
-    padEnd: number;
-    up: number;
-    down: number;
-  } | null {
+    insets: [number | null, number | null] = [null, null],
+  ): { enters: number; leaves: number; start: number; end: number } | null {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     const box = tree && this._firstBoxesOf(tree).get(element);
@@ -11336,6 +11342,7 @@ export class HtmlViewNode extends Node {
       vertical ? 'y' : 'x',
     )!;
     const port = this._scrollportOf(scroller, vertical);
+    const s = this._scale;
     const place = this._viewPlace(
       box,
       scroller,
@@ -11343,16 +11350,18 @@ export class HtmlViewNode extends Node {
       reversed,
       port.start,
       port.size,
-      [AUTO, AUTO],
+      [
+        insets[0] === null ? AUTO : insets[0] * s,
+        insets[1] === null ? AUTO : insets[1] * s,
+      ],
     );
-    const s = this._scale;
+    const at = (name: RangeName, pct: number): number =>
+      viewEdgeAt({ name, offset: { pct } }, place) / s;
     return {
-      start: place.start / s,
-      size: (place.end - place.start) / s,
-      padStart: place.portStart / s,
-      padEnd: (port.size - place.portEnd) / s,
-      up: (place.up ?? 0) / s,
-      down: (place.down ?? 0) / s,
+      enters: at('cover', 0),
+      leaves: at('cover', 100),
+      start: at('exit-crossing', 0),
+      end: at('entry-crossing', 100),
     };
   }
 
@@ -17551,6 +17560,62 @@ function stickyReach(
     }
   }
   return { shift, up, down: on };
+}
+
+/**
+ * The sticky boxes from a view timeline's subject up to its scroller, as
+ * the scroll moves each (`StickyLimit`, CSS Position 3, 3.4): where it is
+ * at rest from the scrollport's start, along the timeline's axis and from
+ * its far side where the scroll origin is at the axis's end; the insets
+ * that hold it, against the scrollport; and how far its containing block
+ * lets its margin box move each way.
+ */
+function stickyLimits(
+  box: Box,
+  scroller: Box | null,
+  down: boolean,
+  reversed: boolean,
+  portStart: number,
+  portSize: number,
+): StickyLimit[] {
+  const out: StickyLimit[] = [];
+  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
+    if (at.style.position !== 'sticky' || at.kind === 'inline') continue;
+    let cb = at.parent;
+    while (cb && cb.kind === 'inline') cb = cb.parent;
+    if (!cb) continue;
+    const st = at.style;
+    const stuck = STUCK.get(at);
+    const rest =
+      (down ? at.y : at.x) - (stuck ? (down ? stuck[1] : stuck[0]) : 0);
+    const size = down ? at.height : at.width;
+    const cbAt = (down ? cb.contentY : cb.contentX) - portStart;
+    const cbEnd = cbAt + (down ? cb.contentHeight : cb.contentWidth);
+    const near = rest - portStart;
+    const startInset = down ? st.top : st.left;
+    const endInset = down ? st.bottom : st.right;
+    const before = down ? at.marginTop : at.marginLeft;
+    const after = down ? at.marginBottom : at.marginRight;
+    const inset = (v: Len): number | null =>
+      v === AUTO ? null : resolveLen(v, portSize);
+    // in the scroll's direction: from the far side, with the insets and
+    // the margins the other way round, where its origin is at the end
+    const start = reversed ? portSize - near - size : near;
+    const low = inset(reversed ? endInset : startInset);
+    const far = inset(reversed ? startInset : endInset);
+    const lo = reversed ? portSize - cbEnd : cbAt;
+    const hi = reversed ? portSize - cbAt : cbEnd;
+    const first = reversed ? after : before;
+    const last = reversed ? before : after;
+    out.push({
+      start,
+      low,
+      high: far === null ? null : portSize - far - size,
+      min: Math.min(0, lo + first - start),
+      max: Math.max(0, hi - (start + size + last)),
+    });
+  }
+  return out;
 }
 
 /** The scroll container a box is scrolled by: the nearest one around it,

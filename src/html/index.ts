@@ -1780,8 +1780,8 @@ export function makeHtmlHandle(
     timeAnimation: (key, timing) => nodeRef.current?.timeAnimation(key, timing),
     seekScrolled: (key, mode, time, rate) =>
       nodeRef.current?.seekScrolled(key, mode, time, rate),
-    viewAdjust: (element, vertical) =>
-      nodeRef.current?.viewAdjustOf(element, vertical) ?? null,
+    viewAdjust: (element, vertical, insets) =>
+      nodeRef.current?.viewAdjustOf(element, vertical, insets) ?? null,
     timelineAxis: (element, axis) =>
       nodeRef.current?.timelineAxisOf(element, axis) ?? '',
     timelineSource: (element, axis) =>
