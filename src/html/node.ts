@@ -4005,9 +4005,10 @@ export class HtmlViewNode extends Node {
     if (!viewport) return null;
     const origin = this._scrolledOrigin();
     const held = this.heldScrollX();
+    const down = this._heldDown();
     return {
       x: held ?? viewport.x - origin.x,
-      y: viewport.y - origin.y,
+      y: viewport.y - origin.y + (down === null ? 0 : down - this._heldFromY),
       width: viewport.width,
       height: viewport.height,
     };
@@ -6376,6 +6377,48 @@ export class HtmlViewNode extends Node {
     this._heldFrom = pane.scrollX;
     this._heldOrigin = false;
     this.invalidate(false, this, 'paint');
+  }
+
+  /**
+   * A page scrolled the viewport down to `y`, in the pane's logical pixels,
+   * where the pane has no extent for it yet: core holds the scroll for the
+   * pane's next pass, which measures one (`_holdScrollTo`). A layout before
+   * that pass — the page's scripts showing what is anchored across the
+   * pane's scroll, straight after a `scrollIntoView` — places it against
+   * where the pane is about to be (`_viewportAt`), as a browser, which has
+   * the scroll at once, places it, and not at the top: there, an area under
+   * an anchor scrolled into view was past the viewport's foot, and the box
+   * placed in it stayed where that put it.
+   */
+  oweScrollDown(y: number): void {
+    const pane = this._pane();
+    this._heldScrollY = null;
+    if (!pane) return;
+    // no further than the document reaches, as the pane's pass will clamp
+    // it
+    const most = Math.max(0, this._documentHeight - pane.abs.height);
+    const want = Math.min(Math.max(0, y * pane.scale), most);
+    if (Math.abs(pane.scrollY - want) < 0.5) return;
+    this._heldScrollY = want;
+    this._heldFromY = pane.scrollY;
+  }
+
+  /** The scroll down `oweScrollDown` keeps, in device pixels, or null. */
+  private _heldScrollY: number | null = null;
+  /** Where the pane was when it was held: one that moved since took it, or
+   *  went elsewhere, and the hold is over. */
+  private _heldFromY = 0;
+
+  /** `_heldScrollY`, while the pane is where it was when it was held. */
+  private _heldDown(): number | null {
+    const held = this._heldScrollY;
+    if (held === null) return null;
+    const pane = this._pane();
+    if (!pane || pane.scrollY !== this._heldFromY) {
+      this._heldScrollY = null;
+      return null;
+    }
+    return held;
   }
 
   /** The scroll across `oweScrollReach` keeps for the pane, or null. */

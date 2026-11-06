@@ -499,6 +499,7 @@ interface PaneNode {
   isScroller?: () => boolean;
   scrollTo?: (to: { x?: number; y?: number }) => void;
   oweScrollReach?: (x: number) => void;
+  oweScrollDown?: (y: number) => void;
   scrollOriginX?: () => number;
   pageScrollX?: () => number | null;
   getClientRects(): { x: number; y: number; width: number; height: number }[];
@@ -639,6 +640,10 @@ export function useScriptedHtml(
         // where the pane does not know yet (`oweScrollReach`)
         node()?.oweScrollReach?.(x * zoom);
         surroundings(node()).pane?.scrollTo?.({ x: x * zoom, y: y * zoom });
+        // and what the pane holds for its next pass down, where it has no
+        // extent for it yet, which a layout before that pass places what is
+        // anchored across the pane's scroll against (`oweScrollDown`)
+        node()?.oweScrollDown?.(y * zoom);
       }),
     navigate: config.navigate ?? nothing,
     headers: config.headers ?? props.headers,

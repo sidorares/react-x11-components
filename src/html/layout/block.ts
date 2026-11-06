@@ -87,6 +87,7 @@ import {
   ASIDE_REACH,
   STUCK,
   anchoredWith,
+  anchorScrollsOf,
   applyScrollOffsets,
   applyScrollOffsetsIn,
   clearDefaultAnchors,
@@ -7784,9 +7785,15 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const axes = anchorAxesOf(box, containing);
   // what scrolls its default anchor and not it, and how far it has now
   const anchor = defaultAnchorBox(box, style, ctx);
-  const context =
+  const ownContext =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
+  // or, where its anchor is in the same one as it, and that anchor, or a
+  // box it is in, was placed in another and moved back to where its own
+  // anchor is with nothing scrolled, that one's: the chain's (3.3)
+  const lead =
+    !ownContext && anchor && root ? chainLeadOf(root, anchor, box) : null;
+  const context = ownContext || lead;
   const [sx, sy] = context
     ? displacementOf(context, ctx.viewport ?? null, (s) =>
         ctx.scrollOf ? ctx.scrollOf(s) : { x: 0, y: 0 },
@@ -7922,7 +7929,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (!context || !root || !placed) return;
   // moved to where its anchor is with nothing scrolled, on the axes it
   // follows its anchor on — which the last placement noted
-  const on = defaultAnchorOf(root, box) ?? { x: false, y: false };
+  const followed = defaultAnchorOf(root, box) ?? { x: false, y: false };
+  const on = lead
+    ? { x: followed.x && lead.x, y: followed.y && lead.y }
+    : followed;
   const mx = box.x - box.marginLeft;
   const my = box.y - box.marginTop;
   noteAnchorScroll(root, box, {
@@ -7949,6 +7959,26 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const dx = on.x ? sx : 0;
   const dy = on.y ? sy : 0;
   if (dx || dy) translate(box, dx, dy, () => false);
+}
+
+/** The anchored box placed in another scroll context than its default
+ *  anchor's (`AnchorScroll`) that `anchor` is, or is in, and `box` is not:
+ *  the lead of a chain `box` is anchored at the end of, whose scrolls it
+ *  follows on the axes that one does. */
+function chainLeadOf(
+  root: Box,
+  anchor: Box,
+  box: Box,
+): { scrollers: readonly Box[]; pane: number; x: boolean; y: boolean } | null {
+  const scrolls = anchorScrollsOf(root);
+  if (!scrolls.size) return null;
+  for (let at: Box | null = anchor; at; at = at.parent) {
+    const state = scrolls.get(at);
+    if (!state) continue;
+    for (let b: Box | null = box; b; b = b.parent) if (b === at) return null;
+    return state;
+  }
+  return null;
 }
 
 /** The fields of a style an `anchor()` or an `anchor-size()` gives a value:
