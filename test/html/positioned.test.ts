@@ -2291,6 +2291,55 @@ test("a @position-try rule's declarations are a cascade origin of their own, ove
   );
 });
 
+test('a transition of an anchored box runs between the lengths its anchor() and anchor-size() come to, as the default anchor changes, as the anchor moves, and as a position option is taken', async () => {
+  // CSS Anchor Positioning 1, 3.2 and 6.5: an anchor() is the length it
+  // comes to, and what starts a transition is that length moving, which
+  // the value as written does not; held half-way by steps(2, start)
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:250px;height:250px}' +
+      '.a{width:100px}#a1{height:50px;anchor-name:--a1}' +
+      '#a2{height:90px;anchor-name:--a2}' +
+      '#t{position:absolute;width:anchor-size(width);height:anchor-size(height);' +
+      'top:anchor(top);left:anchor(right);position-anchor:--a1;' +
+      'transition:top 1000s steps(2,start),height 1000s steps(2,start)}' +
+      '#m{position:absolute;left:60px;top:0;width:50px;height:10px;anchor-name:--m}' +
+      '#u{position:absolute;top:20px;left:anchor(--m right);width:10px;height:10px;' +
+      'transition:left 1000s steps(2,start)}' +
+      '#f{position:absolute;top:0;left:300px;width:50px;height:50px;' +
+      'transition:left 1000s steps(2,start)}' +
+      '@position-try --200{left:200px}</style>' +
+      '<div class="cb"><div class="a" id="a1"></div><div class="a" id="a2"></div>' +
+      '<div id="t"></div></div>' +
+      '<div class="cb"><div id="m"></div><div id="u"></div></div>' +
+      '<div class="cb" id="fcb" style="width:400px"><div id="f"></div></div>',
+  );
+  const el = view(node);
+  const change = async (id: string, style: string) => {
+    const target = findById(el.document, id)!;
+    target.attribs.style = style;
+    await act(() =>
+      el.touchDocument([
+        { type: 'attributes', target, attributeName: 'style' },
+      ]),
+    );
+  };
+  const t = () => [boxOf(el, 't').y, boxOf(el, 't').height];
+  assert.deepStrictEqual(t(), [0, 50]);
+  // the default anchor: --a2 is 50 down and 90 tall
+  await change('t', 'position-anchor:--a2');
+  assert.deepStrictEqual(t(), [25, 70], 'half-way to --a2');
+  // the anchor moves 20 across, and what is anchored to it follows half-way
+  assert.strictEqual(boxOf(el, 'u').x, 110);
+  await change('m', 'left:80px');
+  assert.strictEqual(boxOf(el, 'u').x, 120, 'half-way to where it went');
+  // a position option taken as the containing block narrows: from its own
+  // 300 to the option's 200
+  assert.strictEqual(boxOf(el, 'f').x, 300);
+  await change('f', 'position-try-fallbacks:--200');
+  await change('fcb', 'width:300px');
+  assert.strictEqual(boxOf(el, 'f').x, 250, 'half-way to the option');
+});
+
 test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
   // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
   // positioned box that is before the target among their containing

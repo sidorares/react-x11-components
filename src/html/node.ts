@@ -163,7 +163,12 @@ import type {
 import type { ShapeStyles } from './css/shapes.js';
 import { uaStylesheet } from './css/ua.js';
 import { AnimationTimeline } from './css/timeline.js';
-import { NO_ANIMATIONS, easingText, timingAt } from './css/animation.js';
+import {
+  NO_ANIMATIONS,
+  NO_TRANSITIONS,
+  easingText,
+  timingAt,
+} from './css/animation.js';
 import type { CssEventRecord, ScrollProgress } from './css/timeline.js';
 import {
   RANGE_END,
@@ -187,6 +192,7 @@ import {
   COLOR_SOURCE_FIELDS,
   CONTAIN_INLINE_SIZE,
   NO_SNAP_ALIGN,
+  copyStyle,
   inherit,
   sameValue,
   scrolls,
@@ -263,6 +269,7 @@ import {
   laidWhole,
   layoutAsks,
   layoutApart,
+  setPlacedTransitions,
   viewportShiftOf,
   layoutDocument,
   noteMoving,
@@ -288,6 +295,7 @@ import {
   forgetSizesIn,
   isInlineLevel,
 } from './layout/block.js';
+import type { PlacedTransition } from './layout/block.js';
 import {
   frameModeOf,
   onPage,
@@ -994,6 +1002,27 @@ const enum Stale {
   Everything = 4,
 }
 
+/** The fields an anchored box's placed values are transitioned on
+ *  (`_placedTransition`): its insets, sizes and margins, any of which a
+ *  position option can set, and an `anchor()` or an `anchor-size()` can
+ *  give a value. */
+const PLACED_FIELDS: ReadonlySet<string> = new Set([
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'width',
+  'height',
+  'minWidth',
+  'minHeight',
+  'maxWidth',
+  'maxHeight',
+  'marginTop',
+  'marginRight',
+  'marginBottom',
+  'marginLeft',
+]);
+
 export class HtmlViewNode extends Node {
   /** What `<Html>` holds, for the handle (`DocumentInteraction`). */
   interactive: DocumentInteraction | null = null;
@@ -1311,6 +1340,25 @@ export class HtmlViewNode extends Node {
   /** The document's timeline: when each element's animations started
    *  (`css/timeline.ts`). It outlives the cascades and the box trees. */
   private _timeline = new AnimationTimeline();
+  /**
+   * The transitions of what an anchored box's values come to once it is
+   * placed (`PlacedTransition`): of the lengths its `anchor()` insets and
+   * `anchor-size()` sizes come to, and of the values a position option it
+   * takes gives it. On a timeline of their own, on the document's clock, so
+   * the cascade's transitions, which see an `anchor()` and not what it
+   * comes to, neither start nor cancel them; their frames lay the document
+   * out, which places the boxes at them (`_makeFrame`).
+   */
+  private _anchoredTimeline = new AnimationTimeline();
+  /** What each anchored box was last placed by, by element and pseudo:
+   *  where a transition of its placed values starts from. */
+  private _placedBefore = new WeakMap<
+    object,
+    Map<
+      string,
+      { style: ComputedStyle; option: number; anchored: ReadonlySet<string> }
+    >
+  >();
   /** The animations the page's scripts made (`setScriptAnimation`), which
    *  run on the timeline's clock as a CSS animation does. The page's to
    *  make and end, so they outlive a timeline made again. */
@@ -4885,6 +4933,13 @@ export class HtmlViewNode extends Node {
           setViewport(this._tree, this._viewportAt());
           layoutAsks(this._tree, question);
         }
+        // and what transitions a positioned box's placed values, which a
+        // box taking a position option starts from where it was before,
+        // in a tree that may have had no anchor until now
+        setPlacedTransitions(
+          this._tree,
+          this._animating() ? this._placedTransition : null,
+        );
         // An owed layout of lengths taken by boxes out of the flow lays
         // those out alone, against their containing blocks, where the
         // tree, the width and the viewport are the last layout's
@@ -10713,6 +10768,58 @@ export class HtmlViewNode extends Node {
     return timeline;
   }
 
+  /**
+   * What transitions make of an anchored box's placed values
+   * (`PlacedTransition`), as the cascade's transitions make it of computed
+   * ones (`AnimationTimeline.transition`): from what it was placed by last.
+   * Only the fields an anchor function gave a value, now or last time, take
+   * part — and every one of them where the box took another position
+   * option — so a change the cascade transitions already is not run twice.
+   */
+  private readonly _placedTransition: PlacedTransition = (
+    box,
+    after,
+    option,
+    anchored,
+  ) => {
+    const el = box.el ?? (box.pseudo ? box.parent?.el : null);
+    if (!el) return after;
+    const pseudo = box.el ? '' : (box.pseudo ?? '');
+    let byPseudo = this._placedBefore.get(el);
+    if (!byPseudo) this._placedBefore.set(el, (byPseudo = new Map()));
+    const was = byPseudo.get(pseudo);
+    byPseudo.set(pseudo, { style: after, option, anchored });
+    // a box with no transitions, and none under way, starts nothing: what
+    // it was placed by is all it leaves
+    if (
+      after.transitions === NO_TRANSITIONS &&
+      !this._anchoredTimeline.transiting(el)
+    ) {
+      return after;
+    }
+    const placed = this._anchoredTimeline;
+    if (!was && !placed.transiting(el)) return after;
+    const fields =
+      was && was.option !== option
+        ? PLACED_FIELDS
+        : new Set([...anchored, ...(was?.anchored ?? [])]);
+    if (!fields.size && !placed.transiting(el)) return after;
+    // the style before: this one, with what it was placed by last on the
+    // fields that take part, so nothing else starts a transition here
+    const before = was ? copyStyle(after) : null;
+    if (before && was) {
+      const to = before as unknown as Record<string, unknown>;
+      const from = was.style as unknown as Record<string, unknown>;
+      for (const field of fields) to[field] = from[field];
+    }
+    placed.now = animationClock.now();
+    placed.onCssEvent ??= () => this._oweCssEvents();
+    placed.startsAtPaint = true;
+    const moved = placed.transition(el, pseudo, after, () => before);
+    if (moved !== after) this._scheduleFrame();
+    return moved;
+  };
+
   /** Whether the transition events of a pass are to be told. */
   private _cssEventsOwed = false;
   /** Tell the transition events owed, once the pass that owes them has
@@ -10729,6 +10836,7 @@ export class HtmlViewNode extends Node {
       // ended still owed
       const events = [
         ...this._timeline.takeCssEvents(),
+        ...this._anchoredTimeline.takeCssEvents(),
         ...(this._vt?.timeline.takeCssEvents() ?? []),
         ...this._cssEventsLeft.splice(0),
       ];
@@ -11126,6 +11234,7 @@ export class HtmlViewNode extends Node {
     // drawn, a fade out from what the element looks like
     if (this._claims === this._claimsPainted) {
       this._timeline.startPending(animationClock.now());
+      this._anchoredTimeline.startPending(animationClock.now());
     }
     // the surfaces kept for an animation that is over: a box drawn on one
     // keeps one from now on only where it is small enough to keep still
@@ -11136,9 +11245,15 @@ export class HtmlViewNode extends Node {
       );
     });
     // and none while a drag is drawn cheaper (`_behind`)
+    // and the placed values' (`_anchoredTimeline`), whose frames are layouts
+    const nextOf = (at: number | null, or: number | null) =>
+      at === null ? or : or === null ? at : Math.min(at, or);
     const next =
       this._animating() && !this._cheap
-        ? this._timeline.nextFrame(this._skipLifted)
+        ? nextOf(
+            this._timeline.nextFrame(this._skipLifted),
+            this._anchoredTimeline.nextFrame(),
+          )
         : null;
     if (next === null) {
       this._disarmFrame();
@@ -11870,6 +11985,9 @@ export class HtmlViewNode extends Node {
     // made anyway: what it owes is counted from this frame
     if (late >= PAINT_WAIT_MS) this._owedSince = -1;
     this._waitingForPaint = false;
+    // a frame of what transitions the anchored boxes' placed values is a
+    // layout, which places them where the transitions have come to
+    if (this._anchoredTimeline.live().length) this._invalidate(Stale.Layout);
     const claims = this._claims;
     const { reach, generated } = this._animationReach(tree);
     if (
@@ -15056,6 +15174,7 @@ export class HtmlViewNode extends Node {
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
     this._claimsPainted = this._claims;
+    this._anchoredTimeline.startPending(animationClock.now());
     if (this._timeline.startPending(animationClock.now())) {
       this._scheduleFrame();
     }

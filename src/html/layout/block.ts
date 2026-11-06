@@ -275,6 +275,9 @@ export interface LayoutContext {
   /** How far the layout scrolls a scroll container's content
    *  (`wantedScroll`). */
   scrollOf?: (box: Box) => ScrollOffset;
+  /** What transitions make of an anchored box's placed values
+   *  (`PlacedTransition`), where its document runs them. */
+  placedTransition?: PlacedTransition;
   /** While an anchored box is placed, the displacement of its default
    *  anchor its anchor references are taken at (`layoutPositioned`), which
    *  the anchors scrolled with that one are seen moved back by
@@ -430,6 +433,37 @@ const SET_ASIDE = new WeakMap<
  * put back after it; a box fixed to the viewport is none of it.
  */
 const VIEWPORT_SHIFT = new WeakMap<BoxTree, number>();
+
+/**
+ * What transitions make of an anchored box's values once it is placed:
+ * `after` is the style it was placed by, its `anchor()` insets and
+ * `anchor-size()` sizes come to lengths, by the position option `option`
+ * (-1 for its own), and `anchored` the fields of it an anchor function
+ * gave a value. An `anchor()` is the length it comes to (CSS Anchor
+ * Positioning 1, 3.2), so a transition of one starts when that length
+ * moves — the anchor moved, a name moved to another, the default anchor
+ * is another — and as a box takes another option (6.5), which the cascade
+ * sees nothing of. Answers the style to place it by: `after`, or a copy
+ * of it at what the transitions under way have come to.
+ */
+export type PlacedTransition = (
+  box: Box,
+  after: ComputedStyle,
+  option: number,
+  anchored: ReadonlySet<string>,
+) => ComputedStyle;
+
+const PLACED_TRANSITIONS = new WeakMap<BoxTree, PlacedTransition>();
+
+/** Hand a tree what transitions its anchored boxes' placed values
+ *  (`PlacedTransition`), or take it away. */
+export function setPlacedTransitions(
+  tree: BoxTree,
+  fn: PlacedTransition | null,
+): void {
+  if (fn) PLACED_TRANSITIONS.set(tree, fn);
+  else PLACED_TRANSITIONS.delete(tree);
+}
 
 /** How far `tree`'s document is moved right for its scroll origin
  *  (`VIEWPORT_SHIFT`), in device pixels: 0 for one whose origin is at its
@@ -1793,6 +1827,9 @@ export function layoutDocument(
           offsets: tree.relative || scrollsAny(tree),
         }
       : null),
+    // a box that takes a position option, or leaves one, may be in a tree
+    // that had no anchor before the change or has none after it
+    placedTransition: PLACED_TRANSITIONS.get(tree),
     ...(tree.anchors
       ? {
           viewport: unshifted(viewportOf(tree), shifted),
@@ -7716,6 +7753,24 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     !style.justifyAnchorCenter &&
     !style.alignAnchorCenter
   ) {
+    // and where it has transitions, placed again where they have it, as
+    // it leaves a position option it was placed by (`PlacedTransition`);
+    // told of every box, which a box taking an option later starts from
+    const transit = ctx.question ? undefined : ctx.placedTransition;
+    if (transit) {
+      const moved = transit(box, style, -1, NO_FIELDS);
+      if (moved !== style) {
+        try {
+          box.style = moved;
+          positionedIn(box, containing, ctx, null);
+          PLACED_STYLE.set(box, moved);
+        } finally {
+          box.style = style;
+        }
+        return;
+      }
+    }
+    PLACED_STYLE.delete(box);
     positionedIn(box, containing, ctx, null);
     return;
   }
@@ -7769,6 +7824,9 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     triedStyles.set(index, tried);
     return tried;
   };
+  // what the last placement was against, which a transition places the
+  // box against again
+  let lastAnchoring: Anchoring | null = null;
   const place = (index: number): Placement | null => {
     const tried = triedStyle(index);
     if (!tried) return null;
@@ -7776,6 +7834,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       resolvedStyles.set(index, resolved);
+      lastAnchoring = anchoring;
       box.style = resolved;
       return positionedIn(box, containing, ctx, anchoring);
     } finally {
@@ -7829,7 +7888,28 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   }
   if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
   else ANCHOR_FALLBACK.delete(box);
-  const own = resolvedStyles.get(chosen);
+  let own = resolvedStyles.get(chosen);
+  // and where it is, what its transitions make of the values that took
+  // it there: placed again at those, where one is under way
+  const transit = ctx.question ? undefined : ctx.placedTransition;
+  if (transit && own) {
+    const moved = transit(box, own, chosen, anchoredFields(triedStyle(chosen)));
+    if (moved !== own) {
+      ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
+      try {
+        box.style = moved;
+        // laid out a moment ago at the values it ran from, which nothing
+        // a layout keeps of it says changed
+        box.layoutSerial = 0;
+        forgetOne(box);
+        placed = positionedIn(box, containing, ctx, lastAnchoring) ?? placed;
+      } finally {
+        box.style = style;
+        ctx.anchorShift = null;
+      }
+      own = moved;
+    }
+  }
   if (own && own !== style) PLACED_STYLE.set(box, own);
   else PLACED_STYLE.delete(box);
   if (kept && !ctx.question)
@@ -7870,6 +7950,18 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const dy = on.y ? sy : 0;
   if (dx || dy) translate(box, dx, dy, () => false);
 }
+
+/** The fields of a style an `anchor()` or an `anchor-size()` gives a value:
+ *  what a transition of its placed values runs on (`PlacedTransition`). */
+function anchoredFields(style: ComputedStyle | null): ReadonlySet<string> {
+  if (!style || (!style.anchorInsets && !style.anchorSizes)) return NO_FIELDS;
+  return new Set([
+    ...Object.keys(style.anchorInsets ?? {}),
+    ...Object.keys(style.anchorSizes ?? {}),
+  ]);
+}
+
+const NO_FIELDS: ReadonlySet<string> = new Set();
 
 /** Whether a box's margin box is inside the rectangle it was placed in, to
  *  within half a pixel. */

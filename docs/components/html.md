@@ -6897,7 +6897,13 @@ and `anchor-size()` as a `width` or a `height`, each alone or among the
 terms of a `calc()`, a `min()`, a `max()` or a `clamp()`:
 `top: calc(anchor(bottom) + 8px)`, `left: calc((anchor(left) +
 anchor(right)) / 2)`. A call with no anchor and no fallback makes the
-property `auto`. `position-area` places the box in the cells of the 3×3
+property `auto`. A transition of an inset or a size runs between the lengths its
+`anchor()` or `anchor-size()` comes to (3.2), so it starts when that length
+moves — the anchor moved, a name moved to another element, the box's
+default anchor changed — and as the box takes a position option or leaves
+one, which the value as written says nothing of. It runs on a timeline of
+its own, whose frames lay the document out, and `getComputedStyle` reads
+the length it has come to; `getAnimations()` does not list it. `position-area` places the box in the cells of the 3×3
 grid the anchor makes of its containing block — its outer lines the
 containing block's edges, or the anchor's where it reaches past them —
 physical, logical or `span-` keywords, one or two of them. The cells are
