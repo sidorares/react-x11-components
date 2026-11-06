@@ -14132,10 +14132,7 @@ export class HtmlViewNode extends Node {
     const snap = box.style.scrollSnapType && this._snapContainerOf(box);
     if (snap && box.el) {
       const at = aim ? lineUp(snap, aim, x, y) : snapTo(snap, x, y, scroll);
-      this._snapped.set(box.el, {
-        x: snapKey(at.targetX),
-        y: snapKey(at.targetY),
-      });
+      this._snapped.set(box.el, snapKeysOf(at, this._focus.element ?? null));
       return at;
     }
     const lone = aim && this._snapContainerOf(box, aim);
@@ -14166,10 +14163,7 @@ export class HtmlViewNode extends Node {
 
   /** The area each snap container was last snapped to on each axis, by
    *  the container's element, and the viewport's by the document. */
-  private _snapped = new Map<
-    Element | Document,
-    { x: SnapKey | null; y: SnapKey | null }
-  >();
+  private _snapped = new Map<Element | Document, SnapKeys>();
 
   /** A scroll container's snap container: its snap areas, where each is
    *  at no scroll from its scrollport's corner, and its scrollport. With
@@ -14671,10 +14665,10 @@ export class HtmlViewNode extends Node {
 
   /** What the viewport was snapped to, as `_snapped` keeps it. */
   private _noteViewportSnap(at: Snapped): void {
-    this._snapped.set(this._source.document, {
-      x: snapKey(at.targetX),
-      y: snapKey(at.targetY),
-    });
+    this._snapped.set(
+      this._source.document,
+      snapKeysOf(at, this._focus.element ?? null),
+    );
   }
 
   /** After a layout: each snap container snapped to an area lined up with
@@ -14707,10 +14701,12 @@ export class HtmlViewNode extends Node {
           continue;
         }
         // the pane's offsets are device pixels, as the boxes are
-        const at = resnap(snap, pane.scrollX, pane.scrollY, {
-          x: snapBox(snap, keys.x),
-          y: snapBox(snap, keys.y),
-        });
+        const at = resnap(
+          snap,
+          pane.scrollX,
+          pane.scrollY,
+          snapBoxes(snap, keys, this._focus.element ?? null),
+        );
         this._noteViewportSnap(at);
         this._scrollPaneTo(pane, at.x, at.y);
         continue;
@@ -14720,11 +14716,13 @@ export class HtmlViewNode extends Node {
       if (!box || !snap) continue;
       const state = scrollStateOf(box);
       if (lostOnly && !lost(snap, keys, state.x, state.y)) continue;
-      const at = resnap(snap, state.x, state.y, {
-        x: snapBox(snap, keys.x),
-        y: snapBox(snap, keys.y),
-      });
-      this._snapped.set(el, { x: snapKey(at.targetX), y: snapKey(at.targetY) });
+      const at = resnap(
+        snap,
+        state.x,
+        state.y,
+        snapBoxes(snap, keys, this._focus.element ?? null),
+      );
+      this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
         this._scrollBox(box, at.x / s, at.y / s);
       }
@@ -14749,7 +14747,7 @@ export class HtmlViewNode extends Node {
       if (!snap) continue;
       const state = scrollStateOf(box);
       const at = snapTo(snap, state.x, state.y);
-      this._snapped.set(el, { x: snapKey(at.targetX), y: snapKey(at.targetY) });
+      this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
         this._scrollBox(box, at.x / s, at.y / s);
       }
@@ -21209,6 +21207,56 @@ function snapKey(box: Box | null): SnapKey | null {
   if (!box) return null;
   const el = box.el ?? GENERATED_FROM.get(box);
   return el ? { el, pseudo: box.pseudo } : null;
+}
+
+/** What a container was snapped to on each axis, and every area that lined
+ *  up with it there (`Snapped.alignedX`). */
+interface SnapKeys {
+  x: SnapKey | null;
+  y: SnapKey | null;
+  xs?: SnapKey[];
+  ys?: SnapKey[];
+  /** The focused element when it was snapped: a re-snap prefers the
+   *  focused area among those that lined up only where the focus moved
+   *  since. */
+  focus?: Element | null;
+}
+
+function snapKeysOf(at: Snapped, focus: Element | null = null): SnapKeys {
+  const keys = (boxes: readonly Box[] | undefined) =>
+    boxes && boxes.length > 1
+      ? boxes.map(snapKey).filter((k): k is SnapKey => !!k)
+      : undefined;
+  return {
+    x: snapKey(at.targetX),
+    y: snapKey(at.targetY),
+    xs: keys(at.alignedX),
+    ys: keys(at.alignedY),
+    focus,
+  };
+}
+
+/** The areas of a container the keys name, where they are areas now. */
+function snapBoxes(
+  c: SnapContainer,
+  keys: SnapKeys,
+  focus: Element | null,
+): {
+  x: Box | null;
+  y: Box | null;
+  xs?: Box[];
+  ys?: Box[];
+  focusMoved: boolean;
+} {
+  const boxes = (list: SnapKey[] | undefined) =>
+    list?.map((k) => snapBox(c, k)).filter((b): b is Box => !!b);
+  return {
+    x: snapBox(c, keys.x),
+    y: snapBox(c, keys.y),
+    xs: boxes(keys.xs),
+    ys: boxes(keys.ys),
+    focusMoved: (keys.focus ?? null) !== focus,
+  };
 }
 
 /** The area of a container a key names, or null where it is none now. */

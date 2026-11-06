@@ -7247,7 +7247,11 @@ element, and a layout that moves it scrolls the container with it — the
 viewport as far as the document reaches after that layout; where the
 snapport can no longer show the areas both axes lined up, the container
 keeps the focused one, then the URL's target, then the block axis's, and
-lines it up on both. A `mandatory` container no script has scrolled is
+lines it up on both. Every area that lined up with the one a container
+was snapped to is kept with it, and a re-snap chooses among those still
+lined up as a snap does, where the focus has moved to one of them since:
+two areas that share a row, and the second focused after the snap, keep
+the second when a narrower container puts each on a row of its own. A `mandatory` container no script has scrolled is
 snapped where it is after a layout, or after a restyle that changed what a
 container snaps on — the viewport too — and a page that reads where the
 viewport is scrolled reads it after that layout. Where the root snaps, the
