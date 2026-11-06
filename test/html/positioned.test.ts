@@ -2889,6 +2889,48 @@ test('an anchored box past what its containing block shows is held to where the 
   }
 });
 
+test('anchor-valid hides a box that refers to a default anchor it has none of, no-overflow one with no anchor at all, and an anchor scoped by a display: contents element or in an inline containing block is found as by a box', async () => {
+  // WPT position-visibility-anchor-valid-001, -no-overflow-without-anchor,
+  // anchor-scope-display-contents, -anchors-visible-inline-cb, and
+  // position-anchor: match-parent (CSS Anchor Positioning 1, 2.4, 5.4)
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:100px;height:100px}' +
+      '.t{position:absolute;width:20px;height:20px}' +
+      '.v{position-visibility:anchor-valid}' +
+      '.scope{anchor-scope:--s;display:contents}</style>' +
+      '<div class="cb"><div style="anchor-name:--a;height:10px"></div>' +
+      '<div class="t v" id="good" style="position-anchor:--a;top:anchor(bottom)"></div>' +
+      '<div class="t v" id="lost" style="position-anchor:--gone;top:anchor(bottom,5px)"></div>' +
+      '<div class="t v" id="named" style="position-anchor:--gone;top:anchor(--a bottom)"></div>' +
+      '<div class="t" id="over" style="position-visibility:no-overflow;top:90px"></div></div>' +
+      '<div class="cb" id="c2"><div class="scope"><div style="anchor-name:--s;height:30px"></div></div>' +
+      '<div class="t" id="scoped" style="position-anchor:--s;top:anchor(bottom,7px)"></div></div>' +
+      '<div class="cb"><span style="position:relative" id="span">' +
+      '<div><div style="anchor-name:--i;width:50px;height:40px"></div></div>' +
+      '<div class="t" id="inline" style="position-anchor:--i;top:anchor(top);left:anchor(right)"></div>' +
+      '</span></div>' +
+      '<div class="cb"><div id="m" style="anchor-name:--m;height:15px"></div>' +
+      '<div style="position:fixed;position-anchor:--m;inset:0">' +
+      '<div class="t" id="matched" style="position:fixed;position-anchor:match-parent;top:anchor(bottom,3px)"></div>' +
+      '</div></div>',
+    400,
+  );
+  const el = view(node);
+  const hidden = (id: string) => CLAMPED.has(boxOf(el, id) as never);
+  assert.strictEqual(hidden('good'), false, 'its default anchor is there');
+  assert.strictEqual(hidden('lost'), true, 'it refers to one that is not');
+  assert.strictEqual(hidden('named'), false, 'it refers to none by default');
+  assert.strictEqual(hidden('over'), true, 'over its containing block');
+  // the scope keeps the name in, and the fallback is taken
+  assert.strictEqual(boxOf(el, 'scoped').y - boxOf(el, 'c2').y, 7);
+  // inside the inline's element, if not its box: placed by it
+  const anchor = boxOf(el, 'inline');
+  assert.strictEqual(anchor.x, 50);
+  // the parent's default anchor, 15px tall
+  const m = boxOf(el, 'm');
+  assert.strictEqual(boxOf(el, 'matched').y, m.y + m.height);
+});
+
 /** A document in a pane 400 by 200 that scrolls it. */
 async function paned(source: string) {
   let handle: ReturnType<typeof useHtmlHandle> | null = null;

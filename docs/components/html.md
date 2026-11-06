@@ -5401,7 +5401,9 @@ progress counts from the scroller's scroll origin, at the right of an
 the far side of its scrollport there, its `auto` insets the
 `scroll-padding` at that axis's start and end. A view timeline's subject is
 where layout placed it: a transform on it, an animated one included, or on
-a box between it and its scroller moves nothing of its timeline.
+a box between it and its scroller moves nothing of its timeline; an inline
+box is the rectangle around its fragments, and a sticky inline box around
+a block holds the block as a sticky block would.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer
@@ -7051,8 +7053,17 @@ plural ones it had first as them. A page reads an `auto` inset that a
 by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
 multicol container's columns has its insets read where the strip had it.
 A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
-is out of the cascade until it is let be. Not done: `anchor-valid`,
-and each anchor reference's own remembered scroll offset — a
+is out of the cascade until it is let be. `anchor-valid` hides a box that
+refers to its default anchor — an `anchor()` or an `anchor-size()` that
+names none, a `position-area`, `anchor-center` — where it has none; one that
+names its anchors refers to those. `no-overflow` hides a box that overflows
+its containing block whether or not anything anchors it. `position-anchor:
+match-parent` takes the default anchor of the parent element, or of a
+pseudo-element's originating element, where that is absolutely positioned
+and the anchor is acceptable for the box. An `anchor-scope` on a `display:
+contents` element scopes what it holds, and an anchor in a block inside an
+inline containing block is inside it, as its element is. Not done: each
+anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar
@@ -7217,7 +7228,11 @@ start, the end or the centre of the snapport, the scrollport inset by
 `scroll-padding`. A script's scroll — `scrollTo`, `scrollTop` — comes to
 rest at the place nearest where it asked, where `mandatory` says it must and
 within a third of the snapport where `proximity` says it may, or anywhere
-inside an area larger than the snapport; a place past what the container
+inside an area larger than the snapport, but where the snapport's start
+would be inside another area, which intrudes there and has a place of its
+own: a scroll across a small area inside a long one lines it up or rests
+past it, and a container whose long area another grows over where it
+rests snaps again; a place past what the container
 can be scrolled to is as far as it can go that way. A scroll with a
 direction — `scrollBy`, the scroll keys, the wheel once it has rested on the
 container — rests only at a place ahead of where it began, the one nearest
@@ -7258,7 +7273,13 @@ element takes the wheel and the scroll keys for the viewport itself, and
 snaps it as it snaps a container. An area is the nearest scroll container on
 its containing blocks', so a box positioned past a scroll container inside
 the snap container is the snap container's; an anonymous box takes its
-parent's `scroll-snap-align` with the rest of its style, and is none. A
+parent's `scroll-snap-align` with the rest of its style, and is none.
+`block` and `inline`, in `scroll-snap-type` and in the two values of
+`scroll-snap-align`, are the snap container's axes, as its writing mode
+puts them, and an area's `start` is the end the container's flow starts at:
+the right in a right-to-left line, and in `vertical-rl`, where the block
+axis runs across (CSS Scroll Snap 1, 6.2). An area in a vertical writing
+mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
 

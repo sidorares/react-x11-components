@@ -1010,7 +1010,7 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
     return listOf(value, (item) => (DASHED_IDENT.test(item) ? item : null));
   },
   'position-anchor': (value) =>
-    /^(?:normal|none|auto)$/i.test(value)
+    /^(?:normal|none|auto|match-parent)$/i.test(value)
       ? value.toLowerCase()
       : DASHED_IDENT.test(value)
         ? value
