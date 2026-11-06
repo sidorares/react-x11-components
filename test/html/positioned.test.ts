@@ -2251,6 +2251,46 @@ test('an anchor is where its transforms, and those around it, draw it, and a tra
   assert.deepStrictEqual(at('below'), [100, 65, 90, 5], 'at the new scale');
 });
 
+test("a @position-try rule's declarations are a cascade origin of their own, over the element's normal declarations and under its !important ones and its animations, and the latest layer's rule of a name is the one it names", async () => {
+  // CSS Anchor Positioning 1, 4.2: the position fallback origin, between
+  // the author origin and the animation origin; and a name is cascaded as
+  // an `@keyframes` name is
+  const { node } = await render(
+    '<style>body{margin:0}.cb{position:relative;width:100px;height:100px}' +
+      // too wide for its containing block, so it takes its option
+      '.t{position:absolute;left:0;top:0;width:150px;height:10px;' +
+      'position-try-fallbacks:--pf}' +
+      '@position-try --pf{width:50px;left:50px;top:50px}' +
+      '#important{left:10px !important}' +
+      '@keyframes held{from{top:20px}to{top:20px}}' +
+      '#animated{animation:held 1000s paused}' +
+      '@layer low,high;' +
+      '@layer high{@position-try --layered{width:50px;left:30px}}' +
+      '@layer low{@position-try --layered{width:50px;left:70px}}' +
+      '#layered{position-try-fallbacks:--layered}</style>' +
+      '<div class="cb"><div class="t" id="plain"></div></div>' +
+      '<div class="cb"><div class="t" id="inline" style="left:20px"></div></div>' +
+      '<div class="cb"><div class="t" id="important"></div></div>' +
+      '<div class="cb"><div class="t" id="animated"></div></div>' +
+      '<div class="cb"><div class="t" id="layered"></div></div>',
+  );
+  const el = view(node);
+  // each in a containing block 100px tall, one under another
+  const at = (id: string, i: number) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y - 100 * i, b.width];
+  };
+  assert.deepStrictEqual(at('plain', 0), [50, 50, 50]);
+  assert.deepStrictEqual(at('inline', 1), [50, 50, 50], 'over its own style');
+  assert.deepStrictEqual(at('important', 2), [10, 50, 50], 'under !important');
+  assert.deepStrictEqual(at('animated', 3), [50, 20, 50], 'under an animation');
+  assert.deepStrictEqual(
+    at('layered', 4),
+    [30, 0, 50],
+    "the later layer's rule, though it comes first",
+  );
+});
+
 test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
   // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
   // positioned box that is before the target among their containing

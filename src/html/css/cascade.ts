@@ -188,14 +188,19 @@ const enum Origin {
   Presentation = 1,
   Author = 2,
   Inline = 3,
+  /** A `@position-try` rule's declarations, in the position option layout
+   *  tries a box with (CSS Anchor Positioning 1, 4.2, the position
+   *  fallback origin): over the author's normal declarations, its own
+   *  `style` among them, and under animations and every `!important`. */
+  PositionFallback = 4,
   /** What an animation leaves (`restingFrames`): over every declaration
    *  but an `!important` one (CSS Cascade 5, 6.1). */
-  Animation = 4,
-  AuthorImportant = 5,
-  InlineImportant = 6,
+  Animation = 5,
+  AuthorImportant = 6,
+  InlineImportant = 7,
   /** The UA sheet's `!important`, over every author's (CSS Cascade 4,
    *  6.1): HTML's `contain: size` on an image whose `sizes` is `auto`. */
-  UserAgentImportant = 7,
+  UserAgentImportant = 8,
 }
 
 /** Whether a candidate is the UA sheet's, normal or `!important`. */
@@ -384,7 +389,10 @@ interface TreeRules {
   parts: PartRule[];
   keyframes: Map<string, KeyframesRule[]>;
   /** Its `@position-try` rules' declarations, the last of each name. */
-  positionTries: Map<string, Declaration[]>;
+  positionTries: Map<
+    string,
+    { declarations: Declaration[]; layer: readonly number[] | null }
+  >;
 }
 
 function newTreeRules(id: number): TreeRules {
@@ -4575,6 +4583,9 @@ export class Cascade {
   private _functions: Map<string, FunctionRule[]> | null = null;
   /** Whether any tree has a `@position-try` rule (`TreeRules`). */
   private _positionTries = false;
+  /** Whether a position option's style is being cascaded, which tries no
+   *  options of its own (`positionTryStyles`). */
+  private _tryingPosition = false;
   /** The families the document loads itself (`fonts.ts`), or null for a
    *  document with no `@font-face`. */
   private _families: FontFamilies | null;
@@ -4925,9 +4936,14 @@ export class Cascade {
       this._filed.set(sheet, rules);
       this._fileRules(sheet, rules);
     }
-    // a position option, the last of a name in the tree
-    for (const { name, declarations } of sheet.positionTries ?? []) {
-      rules.positionTries.set(name, declarations);
+    // a position option, the last of a name in the latest layer of the
+    // tree (CSS Anchor Positioning 1, 4.2: a name is cascaded as an
+    // `@keyframes` name is), a rule in no layer over every layer's
+    for (const rule of sheet.positionTries ?? []) {
+      const was = rules.positionTries.get(rule.name);
+      if (!was || compareLayers(rule.layer, was.layer) >= 0) {
+        rules.positionTries.set(rule.name, rule);
+      }
       this._positionTries = true;
     }
     for (const rule of sheet.keyframes ?? []) {
@@ -6107,10 +6123,10 @@ export class Cascade {
   ): { declarations: Declaration[]; tree: ShadowRoot | null } | null {
     for (let root = tree; root; root = shadowRootAround(root.host)) {
       const found = this._rootInfo(root).rules.positionTries.get(name);
-      if (found) return { declarations: found, tree: root };
+      if (found) return { declarations: found.declarations, tree: root };
     }
     const found = this._document.positionTries.get(name);
-    return found ? { declarations: found, tree: null } : null;
+    return found ? { declarations: found.declarations, tree: null } : null;
   }
 
   /**
@@ -8627,6 +8643,15 @@ export class Cascade {
         if (style.contentVisibility !== settled.contentVisibility) {
           settleContentVisibility(style);
         }
+        // and the transition origin is over the position fallback origin
+        // too: what a transition sets now, each position option has
+        if (style !== settled && style.positionTryStyles) {
+          style.positionTryStyles = transitionedOptions(
+            style.positionTryStyles,
+            settled,
+            style,
+          );
+        }
       }
     }
     // which faces of the document's own families this family, weight and
@@ -9079,10 +9104,16 @@ export class Cascade {
     ) {
       settleButton(style);
     }
-    // each `@position-try` rule its fallbacks name, its declarations over
-    // the style as though they were the element's own, for layout to try
-    // in turn (`positionTryStyles`); an option naming no rule is none
-    if (this._positionTries && style.positionTryFallbacks) {
+    // each `@position-try` rule its fallbacks name, cascaded with the
+    // element's own declarations at the position fallback origin (CSS
+    // Anchor Positioning 1, 4.2): over its normal declarations, and under
+    // its animations and every `!important` one — for layout to try in
+    // turn (`positionTryStyles`); an option naming no rule is none
+    if (
+      this._positionTries &&
+      style.positionTryFallbacks &&
+      !this._tryingPosition
+    ) {
       let rules = '';
       style.positionTryStyles = style.positionTryFallbacks.map((option) => {
         const found =
@@ -9096,9 +9127,20 @@ export class Cascade {
         rules += `${option.name}{${found.declarations
           .map((d) => `${d.prop}:${d.value}`)
           .join(';')}}`;
-        const tried = copyStyle(style);
+        this._tryingPosition = true;
+        let tried: ComputedStyle;
+        try {
+          tried = this._cascadeStyle(
+            el,
+            parentStyle,
+            inFlexContainer,
+            withPositionTry(candidates, found.declarations, found.tree),
+            own,
+          );
+        } finally {
+          this._tryingPosition = false;
+        }
         for (const d of found.declarations) {
-          this._apply(tried, parentStyle, d, ctx);
           if (TREE_SCOPED.has(d.prop)) noteTree(tried, d, found.tree);
         }
         tried.positionTryStyles = null;
@@ -10996,6 +11038,64 @@ function pick(c: Candidate): Declaration[] {
 /** Candidates in cascade order with what an element's animations leave
  *  among them: after every normal declaration and before the first
  *  `!important` one, a later animation after an earlier. */
+/**
+ * Position options with what transitions set on the element over them: each
+ * field the style after its transitions has otherwise than the style they
+ * ran from (`settled`), the transition origin being over the position
+ * fallback origin (CSS Anchor Positioning 1, 4.2; CSS Cascade 5, 6.1).
+ */
+function transitionedOptions(
+  options: readonly (ComputedStyle | null)[],
+  settled: ComputedStyle,
+  style: ComputedStyle,
+): (ComputedStyle | null)[] {
+  const fields: string[] = [];
+  const from = settled as unknown as Record<string, unknown>;
+  const to = style as unknown as Record<string, unknown>;
+  for (const key of Object.keys(to)) {
+    if (key !== 'positionTryStyles' && from[key] !== to[key]) {
+      fields.push(key);
+    }
+  }
+  if (!fields.length) return [...options];
+  return options.map((option) => {
+    if (!option) return option;
+    const copy = copyStyle(option) as unknown as Record<string, unknown>;
+    for (const key of fields) copy[key] = to[key];
+    return copy as unknown as ComputedStyle;
+  });
+}
+
+/** `candidates` with a `@position-try` rule's declarations among them, at
+ *  the position fallback origin, from the tree the rule is in. */
+function withPositionTry(
+  candidates: readonly Candidate[],
+  declarations: Declaration[],
+  tree: ShadowRoot | null,
+): Candidate[] {
+  let at = 0;
+  while (
+    at < candidates.length &&
+    candidates[at].origin < Origin.PositionFallback
+  ) {
+    at += 1;
+  }
+  return [
+    ...candidates.slice(0, at),
+    {
+      origin: Origin.PositionFallback,
+      context: 0,
+      tree,
+      layer: null,
+      specificity: 0,
+      order: 0,
+      declarations,
+      only: -1,
+    },
+    ...candidates.slice(at),
+  ];
+}
+
 function withAnimations(
   candidates: readonly Candidate[],
   frames: readonly Declaration[][],
@@ -11107,9 +11207,11 @@ function byCascade(a: Candidate, b: Candidate): number {
 
 /** Each origin's place by origin and importance alone: the user agent's;
  *  the presentational hints; the author's normal declarations, `style`
- *  attributes among them; the animations'; the author's `!important`; the
- *  user agent's `!important`. One for each `Origin`, in its order. */
-const IMPORTANCE: readonly number[] = [0, 1, 2, 2, 3, 4, 4, 5];
+ *  attributes among them; a position option's (`PositionFallback`); the
+ *  animations'; the author's `!important`; the user agent's `!important`.
+ *  One for each `Origin`, in its order: an origin added there is added
+ *  here, or every place after it is read one out. */
+const IMPORTANCE: readonly number[] = [0, 1, 2, 2, 3, 4, 5, 5, 6];
 
 /**
  * Which of two layers wins for a normal declaration: a later one over an
