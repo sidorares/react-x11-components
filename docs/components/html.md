@@ -2139,7 +2139,10 @@ until its animations are over, when it is finished.
   holds, as laid out, with its opacity, filter, mask and clip, past its
   border box as far as it draws and the viewport reaches again, leaving out
   the elements in it captured on their own. A named element is a stacking
-  context, as in a browser.
+  context, as in a browser. An inline element's border box is the box
+  around its fragments, and it is captured alone: its text is laid out and
+  painted apart from the lines it is on, as an inline box an inset moves
+  is, so the block around it is captured without it.
 - **The tree.** `::view-transition`, in the top layer over everything, holds
   a group for each name, in the order the names were found: the old
   state's, the root's first, then the new state's. Each group holds an

@@ -7786,7 +7786,11 @@ painted straight onto the context where it is drawn at its size**: a
 picture of it on a surface rounds a faded element a level off, which a
 reference drawn directly does not. And **a named element is a stacking
 context** (`stacksLayers`), or a capture of it leaves out its positioned
-descendants, which another context paints.
+descendants, which another context paints — an inline one as well, which
+`laidApart` lays out and `paintsApart` paints apart from its lines, the
+way an inset moves one: a capture of the block around it leaves its text
+out, and a capture of it paints that text alone. Its border box is its
+fragments' (`_borderRect`), since an inline box keeps no rect.
 
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`

@@ -15056,6 +15056,56 @@ metric(
   },
 );
 
+metric(
+  'a view transition captures an inline element by its fragments: its group is as large as they are, its image is it alone, and the block around it is captured without it',
+  async () => {
+    // CSS View Transitions 1, 7.4: an element's border box, which an inline
+    // element's fragments make; its text was on its block's lines, which the
+    // block's image held and the element's held none of
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' :root { view-transition-name: none }' +
+        ' #c { width: 200px; height: 40px; background: rgb(128, 128, 128);' +
+        '   view-transition-name: c; line-height: 40px }' +
+        ' span { background: rgb(0, 128, 0); padding: 0 10px }' +
+        ' #s { view-transition-name: s } #h { view-transition-name: h }' +
+        ' .on { background: rgb(0, 0, 255) }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        ' html::view-transition-old(c) { animation: unset; opacity: 1 }' +
+        ' html::view-transition-new(c) { animation: unset; opacity: 0 }' +
+        ' html::view-transition-old(*) { animation: unset; opacity: 0 }' +
+        ' html::view-transition-new(s) { animation: unset; opacity: 1 }' +
+        ' html::view-transition-new(h) { animation: unset; opacity: 0 }' +
+        '</style></head><body><div id="c">ab <span id="s">x</span> cd' +
+        ' <span id="h">y</span></div><p id="out"></p><script>' +
+        'var s = document.getElementById("s"), h = document.getElementById("h"), t;' +
+        'var r = s.getBoundingClientRect(), q = h.getBoundingClientRect();' +
+        'function near(a, b) { return Math.abs(parseFloat(a) - b) < 0.01; }' +
+        'requestAnimationFrame(function () {' +
+        '  t = document.startViewTransition(function () { s.className = h.className = "on"; });' +
+        '  t.ready.then(function () { requestAnimationFrame(function () {' +
+        '    var g = getComputedStyle(document.documentElement, "::view-transition-group(s)");' +
+        '    document.getElementById("out").textContent = [r.left, r.top, q.left, q.top,' +
+        '      near(g.width, r.width), near(g.height, r.height)].join(" "); }); });' +
+        '});' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t !== '');
+    const [sx, sy, hx, hy, width, height] = out.split(' ');
+    assert.deepEqual([width, height], ['true', 'true'], out);
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = (x: string, y: string) =>
+      colourAt(doc, abs.x + Number(x) + 3, abs.y + Number(y) + 3);
+    assert.equal(await at(sx, sy), '#0000ff', "a span's new image");
+    assert.equal(
+      await at(hx, hy),
+      '#808080',
+      "the block's old image, without the span in it",
+    );
+  },
+);
+
 test("a view transition's pseudo-elements answer getComputedStyle and getAnimations, and a CSS animation lists its keyframes", async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>' +

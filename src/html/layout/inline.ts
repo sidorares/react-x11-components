@@ -50,7 +50,7 @@ import {
   layerMarks,
   LINE_BOX_RAISES,
   PADDED_FACES,
-  isOffset,
+  laidApart,
   letteredAfter,
   SHADOWED_TEXT,
   SHIFTED_LINES,
@@ -727,7 +727,7 @@ function linesOf(
       ) {
         hasOffset = true;
         raised = true;
-      } else if (!hasOffset && isOffset(item.box.style)) hasOffset = true;
+      } else if (!hasOffset && laidApart(item.box.style)) hasOffset = true;
     }
   }
   // a float in the content is placed on the line it is on, which only the
@@ -4215,7 +4215,7 @@ function collect(
           hasEdgeOn(child, 'end') ||
           (child.decoration !== null &&
             child.style.borderRadius.some((r) => r !== 0)) ||
-          isOffset(child.style) ||
+          laidApart(child.style) ||
           child.style.verticalAlign !== 'baseline' ||
           (fonts !== null && ownsLeading(fonts, block, child.style));
         if (edged) {

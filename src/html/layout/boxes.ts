@@ -7066,6 +7066,14 @@ export function isOffset(style: ComputedStyle): boolean {
   );
 }
 
+/** Whether an inline box's text is laid out apart from the text around it,
+ *  and painted at its own turn among the layers (`paintsApart`): one an
+ *  inset moves, and one a view transition may capture by a name, whose
+ *  image is it alone (CSS View Transitions 1, 7.4). */
+export function laidApart(style: ComputedStyle): boolean {
+  return isOffset(style) || style.viewTransitionName !== 'none';
+}
+
 /** Whether a style may put its box under its stacking context's flow: a
  *  negative `z-index` on a positioned box, or on a flex item, which that
  *  makes a stacking context as it is (`stacksLayers`). */
