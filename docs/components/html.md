@@ -6983,7 +6983,11 @@ anchor — an edge of what it is placed in that is the anchor's, a
 `position-area` or `anchor-center`: a scroll container's scroll, and the
 pane's, for a box fixed to the viewport anchored in the document and for a
 box in the document anchored to one fixed to the viewport, which lays
-nothing out. Where such a scroll leaves the box overflowing an edge of
+nothing out. A box anchored to such a box, or to something in it, follows
+it as a chain, on the axes both follow on, from its first layout. A page's
+own scroll that the pane cannot take yet, since it has not measured how
+far the document reaches, is the scroll such a box is placed at, as a
+browser has it at once. Where such a scroll leaves the box overflowing an edge of
 what it is placed in that is not the anchor's, and it has options, the
 document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
@@ -6991,12 +6995,11 @@ where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchors-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. Not done: vertical
-writing modes, `anchor-size()` in other properties, `position-try-order`,
-`anchors-valid`, a popover's implicit anchor, the scrollable containing
-block a scroll container is for a box with a default anchor, and each
-anchor reference's own remembered scroll offset — a layout takes every
-anchor where it is scrolled to then.
+either hides or shows it in the frame it scrolls. Not done: `anchors-valid`,
+the scrollable containing block a scroll container is for a box with a
+default anchor, a scroll's displacement taken through the transforms of
+what scrolls, and each anchor reference's own remembered scroll offset — a
+layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar
 has it, in canonical form — `anchor()` and `anchor-size()` with the name

@@ -310,6 +310,9 @@ export function scrollContent(
     for (const { box: anchored, x, y } of anchoredAcross(box)) {
       if ((x && dx) || (y && dy)) {
         move(anchored, x ? -dx : 0, y ? -dy : 0, () => false);
+        // and the scroll containers around it reach as far as it is now,
+        // which what was measured of them at the layout says nothing of
+        forgetExtentsAround(anchored);
       }
     }
   }
@@ -324,6 +327,13 @@ export function scrollContent(
 function scrollFromOrigin(box: Box, x: number, y: number, move: MoveBox): void {
   const state = scrollStateOf(box);
   scrollContent(box, x + state.originX, y + state.originY, move);
+}
+
+/** Forget what was measured of how far the scroll containers around a box
+ *  reach (`extentOf`): a scroll moved the box with an anchor it scrolls,
+ *  and they reach as far as it is now (CSS Overflow 3, 2.2). */
+function forgetExtentsAround(box: Box): void {
+  for (let at = box.parent; at; at = at.parent) extents.delete(at);
 }
 
 /**
@@ -1417,9 +1427,22 @@ export function followPane(
     const wantY = state.y && viewport ? -state.pane * viewport.y : 0;
     const [hadX, hadY] = PANE_SHIFT.get(box) ?? [0, 0];
     if (wantX === hadX && wantY === hadY) continue;
-    move(box, wantX - hadX, wantY - hadY, () => false);
+    const dx = wantX - hadX;
+    const dy = wantY - hadY;
+    move(box, dx, dy, () => false);
+    forgetExtentsAround(box);
     PANE_SHIFT.set(box, [wantX, wantY]);
     (moved ??= []).push(box);
+    // and what is anchored to it, or to something in it, as a chain: its
+    // anchor is where the pane's scroll has it (3.3), but for a box the
+    // pane's scroll moves on its own account
+    for (const follower of anchoredWith(box)) {
+      if (map.get(follower.box)?.pane) continue;
+      if (!follower.x && !follower.y) continue;
+      move(follower.box, follower.x ? dx : 0, follower.y ? dy : 0, () => false);
+      forgetExtentsAround(follower.box);
+      moved.push(follower.box);
+    }
   }
   return moved;
 }
