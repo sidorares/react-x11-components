@@ -699,6 +699,9 @@ export interface HandleInternals {
   transitionCaptureNew(): string;
   transitionRemaining(): number | null;
   transitionEnd(): void;
+  /** Text of a stylesheet `@import` fetched, for `CSSImportRule.styleSheet`
+   *  (`HtmlViewNode.importedCss`). */
+  importedCss(href: string): string | null;
   /** What a page's script changed of an `<img>`, or the one it made, is
    *  asked for and watched (`HtmlViewNode.askImage`). */
   askImage(element: Element): void;
@@ -4941,6 +4944,11 @@ export class DomHost {
         return capture
           ? capture.call(handle)
           : this._op('transitionNames', null, null, null, null);
+      }
+      // a fetched `@import`'s text, for `CSSImportRule.styleSheet`
+      case 'importedCss': {
+        const handle = this._seams.handle as Partial<HandleInternals> | null;
+        return handle?.importedCss?.(text(a)) ?? null;
       }
       // a view transition active with its types, `\u0000`-joined — or,
       // given null, none: what `:active-view-transition` matches the root
