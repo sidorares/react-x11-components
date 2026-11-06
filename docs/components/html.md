@@ -6902,8 +6902,14 @@ property `auto`. An animation of an inset or a size with an `anchor()` or an
 the two mixed as a math function of their calls,
 `calc((1 - p) * (a) + p * (b))`, which layout resolves; a length an
 animation runs takes the place of the element's own `anchor()` while it
-runs. A transition of one does not run yet: what starts it is what the
-value comes to, which is layout's. `position-area` places the box in the cells of the 3×3
+runs. A transition of an inset or a size runs between the lengths its
+`anchor()` or `anchor-size()` comes to (3.2), so it starts when that length
+moves — the anchor moved, a name moved to another element, the box's
+default anchor changed — and as the box takes a position option or leaves
+one, which the value as written says nothing of. It runs on a timeline of
+its own, whose frames lay the document out, and `getComputedStyle` reads
+the length it has come to; `getAnimations()` does not list it.
+`position-area` places the box in the cells of the 3×3
 grid the anchor makes of its containing block — its outer lines the
 containing block's edges, or the anchor's where it reaches past them —
 physical, logical or `span-` keywords, one or two of them. The cells are
