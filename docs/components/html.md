@@ -5356,7 +5356,8 @@ or its nearest ancestor declares with `scroll-timeline-name` or
 where an ancestor's `timeline-scope` takes the name first, the last
 element under that ancestor to declare it, and none where none does —
 and otherwise the last element in the document to declare it, as though
-the root took every name; an element whose own `timeline-scope` takes a
+the root took every name, and never one a page's script has taken out of
+the document since the boxes were last built; an element whose own `timeline-scope` takes a
 name keeps what it and its subtree declare by it from outside; and
 `none`, no timeline and no effect. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
@@ -7256,6 +7257,19 @@ the snap container is the snap container's; an anonymous box takes its
 parent's `scroll-snap-align` with the rest of its style, and is none. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
+
+**A page reads scroll snapping's properties as a browser keeps them.**
+`el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
+`scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or
+`scroll-initial-target`, only where its grammar does (CSS Scroll Snap 1, 6
+and 7; Scroll Snap 2, 3.1), and keeps it in its shortest form: `0` is
+`0px`, `inline proximity` is `inline` and four equal sides are one. A
+`scroll-padding` below nought is no value, and a math function that comes
+to less is nought; `scroll-margin` takes no percentage. The shorthands set
+their longhands and are read back from them, and `getComputedStyle` reads
+the flow-relative sides by the element's writing mode and direction, as it
+reads `margin-block-start`. `scroll-snap-stop: before`, which no browser
+takes, is no value.
 
 **The wheel goes to the innermost scroll container under the pointer
 that can move the way it turns**, and on out: one scrolled to its end
