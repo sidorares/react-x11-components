@@ -3,7 +3,7 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert';
 import { act, cleanup, pixelAt, renderX11, screen } from 'react-x11/test';
 import type { DrawnNode } from 'react-x11';
-import { Html } from '../../src/index.js';
+import { Html, useHtmlHandle } from '../../src/index.js';
 import {
   appendChild,
   createHtmlElement as createElement,
@@ -2804,6 +2804,16 @@ test('a box anchored to something a scroller scrolls tries its position options 
 
 /** A document in a pane 400 by 200 that scrolls it. */
 async function paned(source: string) {
+  let handle: ReturnType<typeof useHtmlHandle> | null = null;
+  function Doc() {
+    handle = useHtmlHandle();
+    return h(Html, {
+      source,
+      partial: false,
+      ref: handle.ref,
+      'data-testname': 'doc',
+    });
+  }
   await renderX11(
     h(
       'box',
@@ -2811,7 +2821,7 @@ async function paned(source: string) {
         'data-testname': 'pane',
         style: { width: 400, height: 200, overflow: 'scroll' },
       },
-      h(Html, { source, partial: false, 'data-testname': 'doc' }),
+      h(Doc),
     ),
     { width: 440, height: 300, fonts: FONTS! },
   );
@@ -2825,7 +2835,16 @@ async function paned(source: string) {
     await act(async () => pane.scrollTo(y));
     await act();
   };
-  return { el, rect, scrolled };
+  /** Set an element's `style` attribute, and tell the document so. */
+  const styled = async (id: string, style: string) => {
+    const target = findById(el.document, id)!;
+    target.attribs.style = style;
+    await act(() =>
+      handle!.refresh([{ type: 'attributes', target, attributeName: 'style' }]),
+    );
+    await act();
+  };
+  return { el, rect, scrolled, styled };
 }
 
 metric(
@@ -2863,6 +2882,38 @@ metric(
     assert.deepStrictEqual(at('under'), [300, 170]);
     await scrolled(0);
     assert.deepStrictEqual(at('tip'), [50, 130], 'and back');
+  },
+);
+
+metric(
+  'a box fixed to the viewport anchored to a fixed box that follows an anchor the pane scrolls follows it as well',
+  async () => {
+    // WPT chained-anchor-scrolled: the default scroll shift of a box whose
+    // anchor is an anchored box the pane's scroll shifts is that box's
+    // (CSS Anchor Positioning 1, 3.3)
+    const { rect, scrolled, styled } = await paned(
+      '<style>body{margin:0}#base{anchor-name:--a;margin:300px 0 0 50px;width:50px;height:50px}' +
+        '#a{anchor-name:--b;position:fixed;position-anchor:--a;position-area:bottom;width:50px;height:20px}' +
+        '#b{position:fixed;position-anchor:--b;position-area:bottom;width:50px;height:20px}' +
+        '</style><div id="base"></div><div id="t" style="display:none">' +
+        '<div id="a"></div><div id="b"></div></div>' +
+        '<div style="height:2000px"></div>',
+    );
+    const top = (id: string) => rect(id).y;
+    const bottom = (id: string) => rect(id).y + rect(id).height;
+    // laid out with the pane scrolled, where the area under #a is in the
+    // viewport only where #a is where the scroll has it
+    await scrolled(200);
+    await styled('t', '');
+    assert.strictEqual(top('a'), 350);
+    assert.strictEqual(top('b'), bottom('a'));
+    await scrolled(150);
+    assert.strictEqual(top('a'), 350, 'with its anchor');
+    assert.strictEqual(top('b'), bottom('a'), 'after a scroll');
+    await scrolled(250);
+    assert.strictEqual(top('b'), bottom('a'), 'and another');
+    await scrolled(0);
+    assert.strictEqual(top('b'), bottom('a'), 'and back');
   },
 );
 
