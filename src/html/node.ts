@@ -303,6 +303,7 @@ import {
   pageSides,
 } from './layout/writing.js';
 import {
+  endOrigins,
   isScroller,
   scrollBarHit,
   scrollBarsOf,
@@ -10366,9 +10367,6 @@ export class HtmlViewNode extends Node {
   ): boolean {
     const source = trigger.source;
     if (source.kind === 'none') return false;
-    // across or down the page; the block and inline axes are those of a
-    // horizontal writing mode
-    const down = source.axis === 'block' || source.axis === 'y';
     const scroller =
       source.kind === 'scroll' && source.scroller === 'self'
         ? isScroller(box)
@@ -10380,39 +10378,15 @@ export class HtmlViewNode extends Node {
     if (source.kind === 'scroll' && source.scroller === 'self' && !scroller) {
       return false;
     }
+    const { down, reversed } = this._timelineAxis(source.axis, scroller);
     // the scrollport, in document coordinates, and how far it is scrolled
-    // and can scroll
-    let portStart: number;
-    let portSize: number;
-    let offset: number;
-    let max: number;
-    if (scroller) {
-      const st = scrollStateOf(scroller);
-      portStart = down
-        ? scroller.y + scroller.borderTop
-        : scroller.x + scroller.borderLeft;
-      portSize = down ? st.clientHeight : st.clientWidth;
-      offset = down ? st.y : st.x;
-      max = down ? st.height - st.clientHeight : st.width - st.clientWidth;
-    } else {
-      const viewport = this._viewport();
-      const origin = this._scrolledOrigin();
-      const port = viewport
-        ? {
-            x: viewport.x - origin.x,
-            y: viewport.y - origin.y,
-            width: viewport.width,
-            height: viewport.height,
-          }
-        : { x: 0, y: 0, width: this.abs.width, height: this.abs.height };
-      portStart = down ? port.y : port.x;
-      portSize = down ? port.height : port.width;
-      offset = portStart;
-      max = Math.max(
-        0,
-        (down ? this._documentHeight : this._documentWidth) - portSize,
-      );
-    }
+    // from its scroll origin and can scroll
+    const {
+      start: portStart,
+      size: portSize,
+      offset,
+      max,
+    } = this._scrollportOf(scroller, down);
     if (source.kind === 'scroll') {
       const edges = (range: TimelineTrigger['activation']) =>
         [scrollEdgeAt(range[0], max), scrollEdgeAt(range[1], max)] as const;
@@ -10427,6 +10401,7 @@ export class HtmlViewNode extends Node {
       box,
       scroller,
       down,
+      reversed,
       portStart,
       portSize,
       source.inset,
@@ -10992,7 +10967,6 @@ export class HtmlViewNode extends Node {
     } else return null;
     const box = this._firstBoxesOf(tree).get(subject);
     if (!box) return null;
-    const down = axis === 'block' || axis === 'y';
     const scroller =
       scrollerKind === 'self'
         ? isScroller(box)
@@ -11002,6 +10976,7 @@ export class HtmlViewNode extends Node {
           ? null
           : nearestScroller(box);
     if (scrollerKind === 'self' && !scroller) return null;
+    const { down, reversed } = this._timelineAxis(axis, scroller);
     const port = this._scrollportOf(scroller, down);
     if (!(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
@@ -11019,6 +10994,7 @@ export class HtmlViewNode extends Node {
       box,
       scroller,
       down,
+      reversed,
       port.start,
       port.size,
       inset,
@@ -11047,24 +11023,99 @@ export class HtmlViewNode extends Node {
     box: Box,
     scroller: Box | null,
     down: boolean,
+    reversed: boolean,
     portStart: number,
     portSize: number,
     inset: readonly [Len, Len],
   ): ViewPlace {
     const sticky = stickyReach(box, scroller, down);
-    const start = (down ? box.y : box.x) - sticky.shift - portStart;
+    // where the page has the subject, through the turn of a vertical
+    // writing mode's frame it is laid out in
+    const rect = this._tree?.vertical
+      ? onPage(box, {
+          x: box.x,
+          y: box.y,
+          width: box.width,
+          height: box.height,
+        })
+      : box;
+    const at = (down ? rect.y : rect.x) - sticky.shift - portStart;
+    const size = down ? rect.height : rect.width;
+    // from a scroll origin at the axis's end the scrollport's start is its
+    // far side, and what the subject's near edge is its far one
+    const start = reversed ? portSize - at - size : at;
+    const padding = this._scrollPadding(scroller, down, portSize);
     const pad = (i: 0 | 1): number =>
       inset[i] !== AUTO
         ? resolveLen(inset[i], portSize)
-        : this._scrollPadding(scroller, down, portSize)[i];
+        : padding[reversed ? 1 - i : i];
     return {
       start,
-      end: start + (down ? box.height : box.width),
+      end: start + size,
       portStart: pad(0),
       portEnd: portSize - pad(1),
-      up: sticky.up,
-      down: sticky.down,
+      up: reversed ? sticky.down : sticky.up,
+      down: reversed ? sticky.up : sticky.down,
     };
+  }
+
+  /**
+   * The physical axis a scroll or a view timeline's axis is (CSS
+   * Scroll-driven Animations 1, 2.1): `x` and `y` as they are, `block`
+   * and `inline` against the writing mode of the scroller it measures, the
+   * root's for the pane's; and whether the scroll origin is at that axis's
+   * end (CSS Overflow 3, 2.3), from where its progress counts: an `rtl`
+   * scroller's across, a `vertical-rl` one's, a reversed flex box's along
+   * its main axis.
+   */
+  private _timelineAxis(
+    axis: string,
+    scroller: Box | null,
+  ): { down: boolean; reversed: boolean } {
+    const box = scroller ?? this._rootBox();
+    const mode = scroller
+      ? scroller.style.writingMode
+      : this._principalWritingMode();
+    const across = mode !== 'horizontal-tb';
+    const down =
+      axis === 'y' ||
+      (axis === 'block' && !across) ||
+      (axis === 'inline' && across);
+    if (!box) return { down, reversed: false };
+    const [endX, endY] = endOrigins(box);
+    return { down, reversed: down ? endY && !!scroller : endX };
+  }
+
+  /**
+   * The document's principal writing mode, which is the viewport's (CSS
+   * Writing Modes 4, 8): the first `<body>`'s where the root element has
+   * one, and the root's where it has none, or where containment on either
+   * keeps the body's to the body, as it keeps its `overflow`.
+   */
+  private _principalWritingMode(): ComputedStyle['writingMode'] {
+    const root = this._rootBox();
+    const style = root?.style;
+    if (!root?.el || !style) return 'horizontal-tb';
+    const body = root.el.children.find(
+      (c): c is Element => isElement(c) && tagOf(c) === 'body',
+    );
+    const bodyStyle = body && this._tree?.styles.get(body)?.style;
+    if (!bodyStyle || style.contain || bodyStyle.contain) {
+      return style.writingMode;
+    }
+    return bodyStyle.writingMode;
+  }
+
+  /** A page's timeline's axis against the scroller it measures, an element
+   *  that scrolls or the pane's for any other (`_timelineAxis`): `x` or
+   *  `y`, and `r` after it where the scroll origin is at its end. */
+  timelineAxisOf(element: Element, axis: string): string {
+    this._prepare(this.abs.width || 1);
+    const tree = this._tree;
+    const box = tree && this._firstBoxesOf(tree).get(element);
+    const scroller = box && isScroller(box) ? box : null;
+    const { down, reversed } = this._timelineAxis(axis, scroller);
+    return (down ? 'y' : 'x') + (reversed ? 'r' : '');
   }
 
   /** A scroll container's `scroll-padding` at the start and the end of an
@@ -11137,7 +11188,8 @@ export class HtmlViewNode extends Node {
           ? scroller.y + scroller.borderTop
           : scroller.x + scroller.borderLeft,
         size,
-        offset: down ? st.y : st.x,
+        // from its scroll origin, which may be at the axis's end
+        offset: Math.abs(down ? st.y - st.originY : st.x - st.originX),
         max: down ? st.height - st.clientHeight : st.width - st.clientWidth,
       };
     }
@@ -11156,7 +11208,8 @@ export class HtmlViewNode extends Node {
     return {
       start,
       size,
-      offset: start,
+      // from the viewport's scroll origin, at the right of an `rtl` page
+      offset: down ? start : Math.abs(start - this._originX),
       max: Math.max(
         0,
         (down ? this._documentHeight : this._documentWidth) - size,

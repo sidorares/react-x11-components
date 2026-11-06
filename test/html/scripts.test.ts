@@ -16292,6 +16292,43 @@ test('a scroll timeline is how far its source is scrolled, and an animation on i
   );
 });
 
+test("a page's scroll and view timelines take block and inline from their source's writing mode, and count from its scroll origin", async () => {
+  const doc = await hosted(
+    '<style>.s { overflow: auto; width: 100px; height: 100px }' +
+      ' .w { width: 600px; height: 10px } #r { direction: rtl }' +
+      ' #v { writing-mode: vertical-rl } #l { writing-mode: sideways-lr }' +
+      ' #k { width: 50px; height: 10px; flex: none }</style>' +
+      '<div class="s" id="r"><div class="w" style="display: flex">' +
+      '<div style="width: 300px; flex: none"></div><div id="k"></div></div></div>' +
+      '<div class="s" id="v"><div class="w"></div></div>' +
+      '<div class="s" id="l"><div style="width: 10px; height: 600px"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var r = document.getElementById("r"), v = document.getElementById("v"),' +
+      '  l = document.getElementById("l"), out = [];' +
+      'var ri = new ScrollTimeline({ source: r, axis: "inline" }),' +
+      '  vb = new ScrollTimeline({ source: v, axis: "block" }),' +
+      '  vi = new ScrollTimeline({ source: v, axis: "inline" }),' +
+      '  li = new ScrollTimeline({ source: l, axis: "inline" }),' +
+      '  k = new ViewTimeline({ subject: document.getElementById("k"), axis: "inline" });' +
+      'out.push(String(ri.currentTime), String(vb.currentTime), String(vi.currentTime),' +
+      '  String(li.currentTime), String(k.startOffset), String(k.endOffset));' +
+      'r.scrollLeft = -250; v.scrollLeft = -150; l.scrollTop = -125;' +
+      'requestAnimationFrame(function () {' +
+      '  out.push(String(ri.currentTime), String(vb.currentTime),' +
+      '    String(li.currentTime), Math.round(parseFloat(k.currentTime) * 100) / 100);' +
+      '  document.getElementById("out").textContent = out.join("|");' +
+      '});' +
+      '</script>',
+  );
+  // the card, 300 from the right and 50 wide in a scrollport 100 wide, is
+  // covered from 200 to 350 of the scroll from the right
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '0%|0%|null|0%|200px|350px|50%|30%|25%|33.33',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

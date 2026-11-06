@@ -3147,6 +3147,10 @@ export function installDom(
     height: number;
     originX: number;
     originY: number;
+    /** Whether a timeline's axis is the vertical one for this scroller,
+     *  and its scroll origin at that axis's end (`_axisOf`). */
+    vertical?: boolean;
+    reversed?: boolean;
   }
   const scrollGeometry = (el: Any): ScrollGeometry | null => {
     if (!el || !el.isConnected) return null;
@@ -3411,7 +3415,22 @@ export function installDom(
       this._snapped = this._measure();
     }
     _measure(): Any {
-      return scrollGeometry(this.source);
+      const source = this.source;
+      const g = scrollGeometry(source);
+      return g && { ...g, ...this._axisOf(source) };
+    }
+    /** Its axis against the writing mode of the scroller it measures, the
+     *  root's for the viewport, and whether that scroller's scroll origin
+     *  is at the axis's end (`HtmlViewNode.timelineAxisOf`). */
+    _axisOf(source: Any): { vertical: boolean; reversed: boolean } {
+      const r = source ? call('timelineAxis', source._id, this._axis) : '';
+      if (typeof r !== 'string' || !r) {
+        return {
+          vertical: this._axis === 'y' || this._axis === 'block',
+          reversed: false,
+        };
+      }
+      return { vertical: r[0] === 'y', reversed: r[1] === 'r' };
     }
     _snapshot(): Any {
       if (this._snapped === undefined) this._snap();
@@ -3432,7 +3451,8 @@ export function installDom(
     }
     /** Whether its axis is the vertical one. */
     _vertical(): boolean {
-      return this._axis === 'y' || this._axis === 'block';
+      const g = this._snapshot();
+      return g?.vertical ?? (this._axis === 'y' || this._axis === 'block');
     }
     override _time(): number | null {
       const g: ScrollGeometry | null = this._snapshot();
@@ -3521,17 +3541,25 @@ export function installDom(
       const g = scrollGeometry(source);
       const r = docRect(this._subject);
       if (!g || !r) return null;
-      const vertical = this._vertical();
+      const { vertical, reversed } = this._axisOf(source);
       // the scroll container's `scroll-padding`, which an `auto` inset is,
       // and how far sticky positioning has moved the subject and can each
       // way, which the range takes in (the document's `_viewPlace`)
       const raw = call('viewAdjust', this._subject._id, vertical);
-      const [padStart, padEnd, shift, up, down] =
+      const [left, right, shift, low, high] =
         typeof raw === 'string' && raw ? raw.split(',').map(Number) : NO_ADJUST;
       const port = vertical ? g.height : g.width;
-      const start =
-        (vertical ? r[1] - g.originY : r[0] - g.originX) - shift + 0;
       const size = vertical ? r[3] : r[2];
+      const at = Math.abs(vertical ? g.y : g.x);
+      // its start from the scrollport's start as it is scrolled now, at
+      // rest, and on from there by the scroll; from a scroll origin at the
+      // axis's end, the scrollport's start is its far side, and the
+      // padding, and the ways a sticky box moves, are the other way round
+      const near =
+        (vertical ? r[1] - g.originY - g.y : r[0] - g.originX - g.x) - shift;
+      const start = (reversed ? port - near - size : near) + at + 0;
+      const [padStart, padEnd] = reversed ? [right, left] : [left, right];
+      const [up, down] = reversed ? [high, low] : [low, high];
       const inset = (v: Any, pad: number) =>
         v === 'auto' ? pad : offsetPx(v, port);
       const viewStart = inset(this._inset[0], padStart);
@@ -3548,9 +3576,10 @@ export function installDom(
       const contain: [number, number] = [Math.min(a, b), Math.max(a, b)];
       const max = vertical ? g.maxY : g.maxX;
       return {
-        at: Math.abs(vertical ? g.y : g.x),
+        at,
         max,
         cover,
+        vertical,
         ranges: (name: string): [number, number] =>
           name === 'contain'
             ? contain
