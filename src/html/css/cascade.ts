@@ -94,7 +94,8 @@ import type {
   Stylesheet,
 } from './parse.js';
 import { matchesSyntax } from './syntax.js';
-import { readsAnchor } from './anchor.js';
+import { mixAnchored, readsAnchor } from './anchor.js';
+import type { AnchorInset, AnchorSize, InsetSide } from './anchor.js';
 import { computedText } from '../computed.js';
 import {
   NO_ANIMATIONS,
@@ -122,6 +123,7 @@ import {
 import { sampleScripts } from './scripted.js';
 import type { ScriptAnimations } from './scripted.js';
 import {
+  ANCHOR_SIZE_UNSET,
   animatedFields,
   applyDeclaration,
   fontQuery,
@@ -141,7 +143,12 @@ import {
   initialStyle,
   sameStyle,
 } from './style.js';
-import type { BoxShadow, ComputedStyle, RootLook } from './style.js';
+import type {
+  AnchorSizeField,
+  BoxShadow,
+  ComputedStyle,
+  RootLook,
+} from './style.js';
 import type { FontFamilies } from '../fonts.js';
 import { parseDeclarations } from './parse.js';
 import { CounterStyles, counterStyleRule } from './counter-styles.js';
@@ -8747,7 +8754,22 @@ export class Cascade {
         }
         const computed: Record<string, unknown> = {};
         let flips = false;
+        // an inset or a size with an `anchor()` or an `anchor-size()` at
+        // either end runs between where each end puts the box, which
+        // layout knows (`mixAnchored`); one with neither leaves no anchor
+        // where the element's own declarations had one
+        const anchored = anchorPatch(
+          fields,
+          a as unknown as ComputedStyle,
+          b as unknown as ComputedStyle,
+          q,
+          this._anchorUnits(base),
+        );
         for (const key of fields) {
+          if (anchored?.mixed.has(key)) {
+            computed[key] = q < 0.5 ? a[key] : b[key];
+            continue;
+          }
           const value = interpolateField(key, a[key], b[key], q);
           if (value === undefined) {
             flips = true;
@@ -8755,9 +8777,15 @@ export class Cascade {
           }
           computed[key] = value;
         }
+        if (!flips && anchored) Object.assign(computed, anchored.patch);
         if (flips) {
           const at = discrete(a, b, q);
           for (const key of fields) computed[key] = at[key];
+          const end = (at === a ? a : b) as unknown as ComputedStyle;
+          Object.assign(computed, anchorsOf(fields, end));
+          unchanged = 0;
+        } else if (anchored?.mixed.size) {
+          // where it is next is layout's to say, a frame from now
           unchanged = 0;
         } else if (unchanged > 0 && sample.left > 0) {
           let most = 0;
@@ -8772,6 +8800,20 @@ export class Cascade {
     }
     this._unchangedFor = unchanged;
     return out;
+  }
+
+  /** What a mix of anchored values (`mixAnchored`) reads the lengths beside
+   *  its calls with: the element's units, at its zoom. */
+  private _anchorUnits(style: ComputedStyle): UnitContext {
+    const zoom = style.effectiveZoom;
+    return {
+      em: style.fontSize,
+      rem: style.fontSize,
+      vw: this.viewportWidth * zoom,
+      vh: this.viewportHeight * zoom,
+      scale: this.scale * zoom,
+      zoom,
+    };
   }
 
   /** How long from now the animations `_animatedDeclarations` last worked
@@ -9186,9 +9228,27 @@ export class Cascade {
     d: Declaration,
     ctx: UnitContext,
   ): void {
-    // an animation's value, computed already (`_animatedDeclarations`)
+    // an animation's value, computed already (`_animatedDeclarations`):
+    // what it makes of an inset's `anchor()` or a size's `anchor-size()`
+    // by side, over what the element's own declarations made of the rest
     if (d.computed) {
-      Object.assign(style, d.computed);
+      const { anchorInsets, anchorSizes, ...rest } = d.computed as Record<
+        string,
+        unknown
+      >;
+      Object.assign(style, rest);
+      if (anchorInsets) {
+        style.anchorInsets = mergedAnchors(
+          style.anchorInsets,
+          anchorInsets as Record<string, AnchorInset | null>,
+        );
+      }
+      if (anchorSizes) {
+        style.anchorSizes = mergedAnchors(
+          style.anchorSizes,
+          anchorSizes as Record<string, AnchorSize | null>,
+        );
+      }
       return;
     }
     if (!d.vars) {
@@ -11064,6 +11124,114 @@ function transitionedOptions(
     for (const key of fields) copy[key] = to[key];
     return copy as unknown as ComputedStyle;
   });
+}
+
+/** The inset sides an `anchor()` may stand for (`anchorInsets`). */
+const ANCHOR_INSET_SIDES = new Set(['top', 'right', 'bottom', 'left']);
+
+/** The fields an `anchor-size()` may stand for (`anchorSizes`). */
+const ANCHOR_SIZE_FIELDS = new Set<string>(Object.keys(ANCHOR_SIZE_UNSET));
+
+/** What `fields` of a style hold of `anchor()` and `anchor-size()`, as a
+ *  patch an animated declaration carries (`_apply`): each field's, or null
+ *  for one that holds none. */
+function anchorsOf(
+  fields: readonly string[],
+  style: ComputedStyle,
+): {
+  anchorInsets?: Record<string, unknown>;
+  anchorSizes?: Record<string, unknown>;
+} {
+  const out: {
+    anchorInsets?: Record<string, unknown>;
+    anchorSizes?: Record<string, unknown>;
+  } = {};
+  for (const key of fields) {
+    if (ANCHOR_INSET_SIDES.has(key)) {
+      (out.anchorInsets ??= {})[key] =
+        style.anchorInsets?.[key as InsetSide] ?? null;
+    }
+    if (ANCHOR_SIZE_FIELDS.has(key)) {
+      (out.anchorSizes ??= {})[key] =
+        style.anchorSizes?.[key as AnchorSizeField] ?? null;
+    }
+  }
+  return out;
+}
+
+/**
+ * An animated inset's or size's `anchor()` and `anchor-size()`, `q` of the
+ * way from `a` to `b` (`mixAnchored`): the fields each mixes, and the patch
+ * of the style's anchors to carry — a mix where either end has one, and
+ * none where neither does. Null where no field can hold one.
+ */
+function anchorPatch(
+  fields: readonly string[],
+  a: ComputedStyle,
+  b: ComputedStyle,
+  q: number,
+  units: UnitContext,
+): {
+  mixed: Set<string>;
+  patch: {
+    anchorInsets?: Record<string, unknown>;
+    anchorSizes?: Record<string, unknown>;
+  };
+} | null {
+  let any = false;
+  for (const key of fields) {
+    if (ANCHOR_INSET_SIDES.has(key) || ANCHOR_SIZE_FIELDS.has(key)) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) return null;
+  const mixed = new Set<string>();
+  const patch = anchorsOf(fields, a);
+  const from = patch;
+  const to = anchorsOf(fields, b);
+  const mixInto = (
+    map: 'anchorInsets' | 'anchorSizes',
+    key: string,
+    field: string,
+  ) => {
+    const x = from[map]?.[key] ?? null;
+    const y = to[map]?.[key] ?? null;
+    if (x === null && y === null) return false;
+    const ends = a as unknown as Record<string, unknown>;
+    const other = b as unknown as Record<string, unknown>;
+    const mix = mixAnchored(
+      (x ?? ends[field]) as never,
+      (y ?? other[field]) as never,
+      q,
+      units,
+    );
+    patch[map]![key] = mix ?? (q < 0.5 ? x : y);
+    mixed.add(field);
+    return true;
+  };
+  for (const key of fields) {
+    // an inset's `anchor()` first, which wins over an `anchor-size()` in it
+    if (ANCHOR_INSET_SIDES.has(key) && mixInto('anchorInsets', key, key)) {
+      continue;
+    }
+    if (ANCHOR_SIZE_FIELDS.has(key)) mixInto('anchorSizes', key, key);
+  }
+  return { mixed, patch };
+}
+
+/** Anchors with a patch over them by key, a null taking a key out; null
+ *  where none is left. */
+function mergedAnchors<V>(
+  was: Readonly<Partial<Record<string, V>>> | null,
+  patch: Record<string, V | null>,
+): Record<string, V> | null {
+  const out: Record<string, V> = { ...(was as Record<string, V>) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete out[key];
+    else out[key] = value;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /** `candidates` with a `@position-try` rule's declarations among them, at
