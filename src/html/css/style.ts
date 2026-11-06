@@ -2973,7 +2973,7 @@ export function applyDeclaration(
     }
     case 'position-anchor': {
       const v = value.trim();
-      if (/^(?:normal|auto|none)$/i.test(v)) {
+      if (/^(?:normal|auto|none|match-parent)$/i.test(v)) {
         style.positionAnchor = null;
         style.positionAnchorText = v.toLowerCase();
       } else if (/^--\S+$/.test(v)) {
