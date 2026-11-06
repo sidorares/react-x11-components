@@ -5401,7 +5401,9 @@ progress counts from the scroller's scroll origin, at the right of an
 the far side of its scrollport there, its `auto` insets the
 `scroll-padding` at that axis's start and end. A view timeline's subject is
 where layout placed it: a transform on it, an animated one included, or on
-a box between it and its scroller moves nothing of its timeline.
+a box between it and its scroller moves nothing of its timeline; an inline
+box is the rectangle around its fragments, and a sticky inline box around
+a block holds the block as a sticky block would.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer
