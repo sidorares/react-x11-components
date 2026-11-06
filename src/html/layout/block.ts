@@ -88,6 +88,7 @@ import {
   STUCK,
   anchoredWith,
   anchorScrollsOf,
+  type ScrollMap,
   applyScrollOffsets,
   applyScrollOffsetsIn,
   clearDefaultAnchors,
@@ -7793,7 +7794,12 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // anchor is with nothing scrolled, that one's: the chain's (3.3)
   const lead =
     !ownContext && anchor && root ? chainLeadOf(root, anchor, box) : null;
-  const context = ownContext || lead;
+  const context = ownContext
+    ? {
+        ...ownContext,
+        maps: ownContext.scrollers.map((s) => scrollMapOf(s, box)),
+      }
+    : lead;
   const [sx, sy] = context
     ? displacementOf(context, ctx.viewport ?? null, (s) =>
         ctx.scrollOf ? ctx.scrollOf(s) : { x: 0, y: 0 },
@@ -7937,6 +7943,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const my = box.y - box.marginTop;
   noteAnchorScroll(root, box, {
     scrollers: context.scrollers,
+    maps: context.maps,
     pane: context.pane,
     x: on.x,
     y: on.y,
@@ -7961,6 +7968,35 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (dx || dy) translate(box, dx, dy, () => false);
 }
 
+/**
+ * What a move of one device pixel inside `scroller` does on the page `box`
+ * is placed in: carried out through the transforms between, `scroller`'s
+ * own among them, as a linear map `[a, b, c, d]` (across goes to `a, b`,
+ * down to `c, d`). A scroll of a container moves what it holds so, and a
+ * sticky box moves in its parent so. Null where it is no more than the
+ * move itself: a `scale(2)` scroller scrolled 150 moves what it holds 300
+ * on the page, and an anchor with it (CSS Anchor Positioning 1, 3.3).
+ */
+function scrollMapOf(scroller: Box, box: Box): ScrollMap | null {
+  const at = (x: number, y: number) =>
+    movedAnchorRect(
+      { x: scroller.x + x, y: scroller.y + y, width: 0, height: 0 },
+      scroller,
+      box,
+    );
+  const o = at(0, 0);
+  const ax = at(1, 0);
+  const dn = at(0, 1);
+  const map = [ax.x - o.x, ax.y - o.y, dn.x - o.x, dn.y - o.y] as const;
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  return near(map[0], 1) &&
+    near(map[1], 0) &&
+    near(map[2], 0) &&
+    near(map[3], 1)
+    ? null
+    : map;
+}
+
 /** The anchored box placed in another scroll context than its default
  *  anchor's (`AnchorScroll`) that `anchor` is, or is in, and `box` is not:
  *  the lead of a chain `box` is anchored at the end of, whose scrolls it
@@ -7969,7 +8005,13 @@ function chainLeadOf(
   root: Box,
   anchor: Box,
   box: Box,
-): { scrollers: readonly Box[]; pane: number; x: boolean; y: boolean } | null {
+): {
+  scrollers: readonly Box[];
+  maps?: readonly (ScrollMap | null)[];
+  pane: number;
+  x: boolean;
+  y: boolean;
+} | null {
   const scrolls = anchorScrollsOf(root);
   if (!scrolls.size) return null;
   for (let at: Box | null = anchor; at; at = at.parent) {
@@ -11371,8 +11413,12 @@ function placeSticky(
 function followSticky(box: Box, dx: number, dy: number): void {
   if (box.kind === 'inline') return;
   for (const { box: anchored, x, y } of anchoredWith(box)) {
-    if (!(x && dx) && !(y && dy)) continue;
-    translate(anchored, x ? dx : 0, y ? dy : 0, () => false);
+    // as far as the transforms between carry the move on its page
+    const map = box.parent ? scrollMapOf(box.parent, anchored) : null;
+    const mx = map ? map[0] * dx + map[2] * dy : dx;
+    const my = map ? map[1] * dx + map[3] * dy : dy;
+    if (!(x && mx) && !(y && my)) continue;
+    translate(anchored, x ? mx : 0, y ? my : 0, () => false);
     movedOffLine(anchored);
   }
 }

@@ -2802,6 +2802,41 @@ test('a box anchored to something a scroller scrolls tries its position options 
   assert.strictEqual(await scrolled(51, 249), 'right');
 });
 
+test('a box anchored in a scroller a transform scales follows its anchor as far as the scale carries the scroll, a sticky one too', async () => {
+  // WPT transform-018..023: the default scroll shift is where the scroll
+  // moves the anchor on the box's page, through the scroller's transform
+  // (CSS Anchor Positioning 1, 3.3)
+  const { node } = await render(
+    '<style>body{margin:0}#s{overflow:hidden;width:200px;height:200px;' +
+      'transform-origin:top left;transform:scale(2)}' +
+      '.a{width:20px;height:30px}#a{anchor-name:--a}' +
+      '#b{anchor-name:--b;position:sticky;top:0}' +
+      '.t{position:absolute;width:10px;height:10px;top:anchor(top);left:anchor(right)}' +
+      '#ta{position-anchor:--a}#tb{position-anchor:--b}</style>' +
+      '<div id="s"><div style="height:100px"></div><div class="a" id="a"></div>' +
+      '<div style="height:20px"></div><div class="a" id="b"></div>' +
+      '<div style="height:1000px"></div></div>' +
+      '<div class="t" id="ta"></div><div class="t" id="tb"></div>',
+    600,
+  );
+  const el = view(node);
+  const rect = (id: string) => el.elementRect(findById(el.document, id)!)!;
+  const beside = (t: string, a: string) => {
+    const at = rect(a);
+    const by = rect(t);
+    return [by.x - (at.x + at.width), by.y - at.y];
+  };
+  const scroller = findById(el.document, 's')!;
+  assert.deepStrictEqual(beside('ta', 'a'), [0, 0]);
+  assert.deepStrictEqual(beside('tb', 'b'), [0, 0]);
+  for (const y of [40, 100, 160, 0]) {
+    el.scrollElementTo(scroller, { x: 0, y });
+    await act();
+    assert.deepStrictEqual(beside('ta', 'a'), [0, 0], `scrolled ${y}`);
+    assert.deepStrictEqual(beside('tb', 'b'), [0, 0], `stuck, at ${y}`);
+  }
+});
+
 /** A document in a pane 400 by 200 that scrolls it. */
 async function paned(source: string) {
   let handle: ReturnType<typeof useHtmlHandle> | null = null;
