@@ -328,7 +328,10 @@ import {
   updatePositionVisibility,
   scrolledBy,
   scrollMoves,
+  scrollInFrame,
+  scrollOnPage,
   scrollStateOf,
+  turnedOnPage,
   setScrollOffsets,
   STUCK,
   wantedScroll,
@@ -4058,13 +4061,43 @@ export class HtmlViewNode extends Node {
     const root = tree.root;
     if (refitAnchored(root, this._fromOrigin(viewport))) {
       // asked as a paint reads where the boxes are: the layout is the
-      // next frame's
-      void Promise.resolve().then(() => this._invalidate(Stale.Layout));
+      // next frame's — or the read's that asked, now (`_settleRead`)
+      if (this._reading) this._refitOwed = true;
+      else void Promise.resolve().then(() => this._invalidate(Stale.Layout));
     }
     if (!updatePositionVisibility(root, viewport).length) return false;
     stackLayers(root);
     computePaintBounds(root, tree.movedInline);
     return true;
+  }
+
+  /** Whether a page's read is following the pane (`_settleRead`), and
+   *  whether that found a box anchored across its scroll to place again. */
+  private _reading = false;
+  private _refitOwed = false;
+
+  /**
+   * Bring the document up to date for a page's read of where a box is
+   * (`_settle`), with what the pane's scroll moved placed against it
+   * (`_followViewport`) — and a box anchored across that scroll that no
+   * longer fits laid out again by its position options at once, as a
+   * browser's forced layout places it, where a paint leaves it to the next
+   * frame (CSS Anchor Positioning 1, 6.5): read in the animation frame
+   * after a scroll, it was where it no longer fit.
+   */
+  private _settleRead(): void {
+    this._settle();
+    this._reading = true;
+    try {
+      this._followViewport();
+    } finally {
+      this._reading = false;
+    }
+    if (!this._refitOwed) return;
+    this._refitOwed = false;
+    this._invalidate(Stale.Layout);
+    this._settle();
+    this._followViewport();
   }
 
   private _viewportHeight(): number {
@@ -7555,8 +7588,7 @@ export class HtmlViewNode extends Node {
    * element with no box — `display: none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
-    this._settle();
-    this._followViewport();
+    this._settleRead();
     return this._rectOf(element);
   }
 
@@ -8751,8 +8783,7 @@ export class HtmlViewNode extends Node {
    * has none. Null for an element with no box.
    */
   offsetRect(element: Element): OffsetRect | null {
-    this._settle();
-    this._followViewport();
+    this._settleRead();
     const tree = this._tree;
     const box = tree ? this._ownBoxOf(tree, element) : null;
     const own = tree && box ? this._laidOutAt(tree, box) : null;
@@ -14001,14 +14032,20 @@ export class HtmlViewNode extends Node {
     }
     const state = scrollStateOf(box);
     const s = this._scale;
-    // from its scroll origin, as `scrollLeft` and `scrollTop` count
-    return {
+    // from its scroll origin, as `scrollLeft` and `scrollTop` count, in the
+    // page's axes where a frame of a vertical writing mode turns its own
+    const at = scrollOnPage(box, {
       x: (state.x - state.originX) / s,
       y: (state.y - state.originY) / s,
-      width: state.width / s,
-      height: state.height / s,
-      clientWidth: state.clientWidth / s,
-      clientHeight: state.clientHeight / s,
+    });
+    const turned = this._tree?.vertical && turnedOnPage(box);
+    return {
+      x: at.x,
+      y: at.y,
+      width: (turned ? state.height : state.width) / s,
+      height: (turned ? state.width : state.height) / s,
+      clientWidth: (turned ? state.clientHeight : state.clientWidth) / s,
+      clientHeight: (turned ? state.clientWidth : state.clientHeight) / s,
       clientTop: state.clientTop / s,
       clientLeft: state.clientLeft / s,
     };
@@ -14112,7 +14149,16 @@ export class HtmlViewNode extends Node {
     if (!box) return null;
     const state = scrollStateOf(box);
     const s = this._scale;
-    // `to` is from its scroll origin, as `scrollLeft` is
+    // `to` is from its scroll origin, as `scrollLeft` is, and in the
+    // page's axes, which a frame of a vertical writing mode turns
+    const vertical = !!this._tree?.vertical;
+    if (vertical) {
+      const now = scrollOnPage(box, {
+        x: (state.x - state.originX) / s,
+        y: (state.y - state.originY) / s,
+      });
+      to = scrollInFrame(box, { x: to.x ?? now.x, y: to.y ?? now.y });
+    }
     const at = this._snapScroll(
       box,
       to.x === undefined ? state.x : to.x * s + state.originX,
@@ -14123,12 +14169,14 @@ export class HtmlViewNode extends Node {
     // a scroll into view of what the container shows as it is moves
     // nothing, and costs nothing
     if (Math.abs(at.x - state.x) < 0.5 && Math.abs(at.y - state.y) < 0.5) {
-      return {
+      const kept = {
         x: (state.x - state.originX) / s,
         y: (state.y - state.originY) / s,
       };
+      return vertical ? scrollOnPage(box, kept) : kept;
     }
-    return this._scrollBox(box, at.x / s, at.y / s);
+    const moved = this._scrollBox(box, at.x / s, at.y / s);
+    return vertical ? scrollOnPage(box, moved) : moved;
   }
 
   /**

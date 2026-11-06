@@ -852,6 +852,37 @@ test('a scroll container whose scroll origin is at its right or its bottom scrol
   assert.strictEqual(node.scrollStateOf(rtl)!.x, -50, 'and stays there');
 });
 
+test('a scroll container in a `vertical-rl` flow scrolls across from its right and down, as the page reads it, whatever axes its frame lays it out in', async () => {
+  const { el: node } = await renderScrolled(
+    '<!doctype html><html><head><style>body{margin:0;writing-mode:vertical-rl}' +
+      '#s{width:400px;height:400px;overflow:scroll}' +
+      '#c{width:1000px;height:1000px}</style></head>' +
+      '<body><div id="s"><div id="c"></div></div></body></html>',
+    600,
+    800,
+  );
+  const list = el(node, 's');
+  const state = node.scrollStateOf(list)!;
+  assert.deepStrictEqual(
+    [state.x, state.y, state.width, state.height, state.clientWidth],
+    [0, 0, 1000, 1000, 400],
+  );
+  assert.deepStrictEqual(node.elementRect(el(node, 'c')), {
+    x: -200,
+    y: 0,
+    width: 1000,
+    height: 1000,
+  });
+  node.scrollElementTo(list, { x: -300, y: 450 });
+  await act();
+  assert.deepStrictEqual(
+    [node.scrollStateOf(list)!.x, node.scrollStateOf(list)!.y],
+    [-300, 450],
+  );
+  const rect = node.elementRect(el(node, 'c'))!;
+  assert.deepStrictEqual([rect.x, rect.y], [100, -450], 'moved right and up');
+});
+
 test('the wheel does not scroll an `overflow: hidden` box, and the handle does', async () => {
   const { el: node } = await renderScrolled(
     LIST.replace('overflow-y:auto', 'overflow:hidden'),

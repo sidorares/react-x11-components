@@ -18,9 +18,15 @@
 // scrolling `main` stays where it is.
 import type { Element } from 'domhandler';
 
-import { scrolls } from '../css/style.js';
+import { scrolls, scrollsAlong } from '../css/style.js';
 import { CLAMPED, clampBox, unclampBox } from './boxes.js';
-import { FRAME_ROOTS, pageRectOf } from './writing.js';
+import {
+  FRAME_ROOTS,
+  frameOf,
+  pageRectOf,
+  reflects,
+  turnsUp,
+} from './writing.js';
 import type { Box, BoxTree, LineBox } from './boxes.js';
 import { clipsOverflow, containingBlockOf, hasRect, holds } from '../paint.js';
 
@@ -126,13 +132,22 @@ interface Extent {
  */
 export function endOrigins(box: Box): [boolean, boolean] {
   const style = box.style;
-  const vertical = style.writingMode !== 'horizontal-tb';
   const rtl = style.direction === 'rtl';
+  // in a frame, whose axes are those of the horizontal flow it is laid out
+  // as (`layout/writing.ts`), the inline axis runs across it from its left,
+  // and the block axis down it from its top — but `vertical-lr`'s, laid
+  // out from the bottom and put back (`reflectFrame`)
+  const frame = frameOf(box);
+  const vertical = !frame && style.writingMode !== 'horizontal-tb';
   // the block axis starts at the right in `vertical-rl` and
   // `sideways-rl`, and the inline axis at its end under `rtl`, and at the
   // bottom in `sideways-lr`, which runs it up the page
   let x = vertical ? style.writingMode.endsWith('-rl') : rtl;
-  let y = vertical ? rtl !== (style.writingMode === 'sideways-lr') : false;
+  let y = frame
+    ? reflects(FRAME_ROOTS.get(frame)!.style.writingMode)
+    : vertical
+      ? rtl !== (style.writingMode === 'sideways-lr')
+      : false;
   const display = style.display;
   if (display === 'flex' || display === 'inline-flex') {
     const dir = style.flexDirection;
@@ -144,6 +159,49 @@ export function endOrigins(box: Box): [boolean, boolean] {
     }
   }
   return [x, y];
+}
+
+/**
+ * An offset of a scroll container from its scroll origin — `scrollLeft`
+ * and `scrollTop` — as the page has it, from one in the axes of the frames
+ * it is laid out in (`layout/writing.ts`), the nearest first: a frame turned
+ * clockwise has its content moved across by what moves the page's down,
+ * and down by what moves the page's leftwards. A box in no frame has the
+ * page's axes.
+ */
+export function scrollOnPage(box: Box, at: ScrollOffset): ScrollOffset {
+  let { x, y } = at;
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    const up = turnsUp(FRAME_ROOTS.get(frame)!.style.writingMode);
+    [x, y] = up ? [y, -x] : [-y, x];
+  }
+  // and no -0 a page reads as one
+  return { x: x + 0, y: y + 0 };
+}
+
+/** An offset from a scroll container's scroll origin as the page has it,
+ *  in the axes of the frames it is laid out in (`scrollOnPage` undone). */
+export function scrollInFrame(box: Box, at: ScrollOffset): ScrollOffset {
+  const frames: Box[] = [];
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    frames.push(frame);
+  }
+  let { x, y } = at;
+  for (let i = frames.length - 1; i >= 0; i -= 1) {
+    const up = turnsUp(FRAME_ROOTS.get(frames[i])!.style.writingMode);
+    [x, y] = up ? [-y, x] : [y, -x];
+  }
+  return { x, y };
+}
+
+/** Whether a box is laid out in a frame turned an odd number of times,
+ *  whose width is the page's height. */
+export function turnedOnPage(box: Box): boolean {
+  let turned = false;
+  for (let frame = frameOf(box); frame; frame = frameOf(frame)) {
+    turned = !turned;
+  }
+  return turned;
 }
 
 /** How many boxes measuring scroll containers has walked (`extentOf`), for a
@@ -309,7 +367,11 @@ export function scrollContent(
     // anchor (CSS Anchor Positioning 1, 6.2, the default scroll shift)
     for (const { box: anchored, x, y } of anchoredAcross(box)) {
       // as far as the transforms between carry the scroll on its page
-      const [mx, my] = mapped(scrollMapFor(anchored, box), dx, dy);
+      const [mx, my] = mapped(
+        scrollMapFor(anchored, box),
+        scrollsAlong(box.style, 'x') ? dx : 0,
+        scrollsAlong(box.style, 'y') ? dy : 0,
+      );
       if ((x && mx) || (y && my)) {
         move(anchored, x ? -mx : 0, y ? -my : 0, () => false);
         // and the scroll containers around it reach as far as it is now,
@@ -1399,7 +1461,13 @@ export function displacementOf(
   let y = 0;
   context.scrollers.forEach((scroller, i) => {
     const at = offsetOf(scroller);
-    const [dx, dy] = mapped(context.maps?.[i], at.x, at.y);
+    // a container clipped on an axis is no scroll container on it, and
+    // what it is scrolled there is no scroll a box follows its anchor by
+    const [dx, dy] = mapped(
+      context.maps?.[i],
+      scrollsAlong(scroller.style, 'x') ? at.x : 0,
+      scrollsAlong(scroller.style, 'y') ? at.y : 0,
+    );
     x += dx;
     y += dy;
   });
