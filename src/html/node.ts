@@ -240,6 +240,7 @@ import {
   PAINT_ORDER,
   SHAPE_STYLES,
   SHIFTED_LINES,
+  STICKY_SIZES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
   TRANSITION_KEYS,
@@ -307,6 +308,7 @@ import {
 import type { PlacedTransition } from './layout/block.js';
 import {
   frameModeOf,
+  frameOf as frameOfBox,
   onPage,
   pageMargins,
   pageSides,
@@ -11161,6 +11163,16 @@ export class HtmlViewNode extends Node {
     inset: readonly [Len, Len],
   ): ViewPlace {
     const sticky = stickyReach(box, scroller, down);
+    const tree = this._tree;
+    const held = tree
+      ? stickyAround(tree, this._firstBoxesOf(tree), box, scroller)
+      : [];
+    // how far they hold it now, which its place at rest is without
+    let shift = 0;
+    for (const at of held) {
+      const stuck = STUCK.get(at);
+      if (stuck) shift += down ? stuck[1] : stuck[0];
+    }
     // where layout placed the subject, with no transform on it or between
     // it and its scroller (CSS Scroll-driven Animations 1, 3.2), which
     // layout moved it by; and where the page has that, through the turn of
@@ -11173,14 +11185,20 @@ export class HtmlViewNode extends Node {
       dx += tx;
       dy += ty;
     }
+    // an inline box has no rectangle of its own: it is where its
+    // fragments are on its block's lines, all of them together
+    const own =
+      box.kind === 'inline' && this._tree
+        ? (this._fragmentsOf(this._tree, box)?.all ?? box)
+        : box;
     const laid = {
-      x: box.x - dx,
-      y: box.y - dy,
-      width: box.width,
-      height: box.height,
+      x: own.x - dx,
+      y: own.y - dy,
+      width: own.width,
+      height: own.height,
     };
-    const rect = this._tree?.vertical ? onPage(box, laid) : laid;
-    const at = (down ? rect.y : rect.x) - sticky.shift - portStart;
+    const rect = tree?.vertical ? onPage(box, laid) : laid;
+    const at = (down ? rect.y : rect.x) - shift - portStart;
     const size = down ? rect.height : rect.width;
     // from a scroll origin at the axis's end the scrollport's start is its
     // far side, and what the subject's near edge is its far one
@@ -11195,7 +11213,7 @@ export class HtmlViewNode extends Node {
     // and is seen from where they would hold it at most, as before
     const stickies = this._tree?.vertical
       ? null
-      : stickyLimits(box, scroller, down, reversed, portStart, portSize);
+      : stickyLimits(held, down, reversed, portStart, portSize);
     return {
       start,
       end: start + size,
@@ -14251,9 +14269,9 @@ export class HtmlViewNode extends Node {
     const state = scrollStateOf(box);
     const left = box.x + box.borderLeft;
     const top = box.y + box.borderTop;
-    const at = (child: Box) =>
+    const at = (child: Box, rect: SnapRect) =>
       scrollMoves(box, child)
-        ? { x: child.x - left + state.x, y: child.y - top + state.y }
+        ? { x: rect.x - left + state.x, y: rect.y - top + state.y }
         : null;
     const areas = only ? areaIn(box, only, at) : snapAreasIn(box, at);
     if (!areas) return null;
@@ -14309,8 +14327,8 @@ export class HtmlViewNode extends Node {
     const port = this._viewport();
     if (!tree || !root || !style || !port) return null;
     if (!only && !style.scrollSnapType) return null;
-    const at = (child: Box) =>
-      fixedToViewport(child) ? null : { x: child.x, y: child.y };
+    const at = (child: Box, rect: SnapRect) =>
+      fixedToViewport(child) ? null : { x: rect.x, y: rect.y };
     const areas = only ? areaIn(root, only, at) : snapAreasIn(root, at);
     if (!areas) return null;
     return {
@@ -17594,24 +17612,24 @@ function stickyReach(
  * lets its margin box move each way.
  */
 function stickyLimits(
-  box: Box,
-  scroller: Box | null,
+  held: readonly Box[],
   down: boolean,
   reversed: boolean,
   portStart: number,
   portSize: number,
 ): StickyLimit[] {
   const out: StickyLimit[] = [];
-  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
-    if (at.style.position !== 'sticky' || at.kind === 'inline') continue;
-    let cb = at.parent;
-    while (cb && cb.kind === 'inline') cb = cb.parent;
+  for (const at of held) {
+    // an inline one is where its fragments are (`setStickyRect`)
+    const sized = at.kind === 'inline' ? STICKY_SIZES.get(at) : at;
+    if (!sized) continue;
+    const cb = stickyBlockOf(at);
     if (!cb) continue;
     const st = at.style;
     const stuck = STUCK.get(at);
     const rest =
       (down ? at.y : at.x) - (stuck ? (down ? stuck[1] : stuck[0]) : 0);
-    const size = down ? at.height : at.width;
+    const size = down ? sized.height : sized.width;
     const cbAt = (down ? cb.contentY : cb.contentX) - portStart;
     const cbEnd = cbAt + (down ? cb.contentHeight : cb.contentWidth);
     const near = rest - portStart;
@@ -17639,6 +17657,45 @@ function stickyLimits(
     });
   }
   return out;
+}
+
+/**
+ * The sticky boxes a view timeline's subject is in, up to its scroller:
+ * those around its box, and the sticky inline boxes around its element, a
+ * block in which is in an anonymous block beside the inline box's pieces
+ * and moved with them (`CUT_PIECES`), and no box of which is around it.
+ */
+function stickyAround(
+  tree: BoxTree,
+  firstBoxes: ReadonlyMap<Element, Box>,
+  box: Box,
+  scroller: Box | null,
+): Box[] {
+  const out: Box[] = [];
+  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
+    if (at.style.position === 'sticky') out.push(at);
+  }
+  const stop = scroller?.el ?? null;
+  for (let el = box.el ? flatParentOf(box.el) : null; el && el !== stop;) {
+    if (!isElement(el)) break;
+    const style = tree.styles.get(el)?.style;
+    const at = style?.position === 'sticky' ? firstBoxes.get(el) : undefined;
+    if (at?.kind === 'inline' && !out.includes(at)) out.push(at);
+    el = flatParentOf(el);
+  }
+  return out;
+}
+
+/** The containing block a sticky box keeps inside, as the layout has it
+ *  (`stickyContainer`): past the inline boxes around it and an anonymous
+ *  block no page wrote, which a sticky inline box broken around a block is
+ *  in. */
+function stickyBlockOf(box: Box): Box | null {
+  let cb = box.parent;
+  while (cb && (cb.kind === 'inline' || (cb.parent && !cb.el && !cb.pseudo))) {
+    cb = cb.parent;
+  }
+  return cb;
 }
 
 /** The scroll container a box is scrolled by: the nearest one around it,
@@ -21297,10 +21354,7 @@ function snapBox(c: SnapContainer, key: SnapKey | null): Box | null {
  *  tree order, each placed by `at` — null for one that is not the
  *  container's to scroll. An inline box's rect is never laid out, and is
  *  no area here. */
-function snapAreasIn(
-  container: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] {
+function snapAreasIn(container: Box, at: SnapPlace): SnapArea[] {
   const out: SnapArea[] = [];
   const walk = (b: Box): void => {
     for (const child of b.children) {
@@ -21317,11 +21371,7 @@ function snapAreasIn(
 
 /** The one snap area a box is under a container, as `snapAreasIn` would
  *  find it, or null where it is none of the container's. */
-function areaIn(
-  container: Box,
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] | null {
+function areaIn(container: Box, box: Box, at: SnapPlace): SnapArea[] | null {
   if (!canBeArea(box)) return null;
   let a = box.parent;
   while (a && a !== container) a = a.parent;
@@ -21353,15 +21403,23 @@ function holdsArea(container: Box, box: Box): boolean {
   return true;
 }
 
-function areaAt(
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea | null {
-  const place = at(box);
+function areaAt(box: Box, at: SnapPlace): SnapArea | null {
+  // a box in a vertical writing mode's frame is laid out turned, and is
+  // where the page draws it
+  const laid = { x: box.x, y: box.y, width: box.width, height: box.height };
+  const rect = frameOfBox(box) ? onPage(box, laid) : laid;
+  const place = at(box, rect);
   return place
-    ? { box, x: place.x, y: place.y, width: box.width, height: box.height }
+    ? { box, x: place.x, y: place.y, width: rect.width, height: rect.height }
     : null;
 }
+
+/** A snap area's border box as the page has it. */
+type SnapRect = { x: number; y: number; width: number; height: number };
+
+/** Where a box's snap area is, from its rectangle on the page, in a snap
+ *  container's coordinates at no scroll; null where it is none of its. */
+type SnapPlace = (box: Box, rect: SnapRect) => { x: number; y: number } | null;
 
 /** The scroll containers in a tree that snap on an axis. */
 function snapContainersIn(root: Box): Box[] {
