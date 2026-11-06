@@ -14091,6 +14091,14 @@ export class HtmlViewNode extends Node {
       width = view?.width ?? 0;
       height = view?.height ?? 0;
     }
+    // a box stuck in the container moves with its scroll, so no scroll
+    // takes it clear of the padding: it is lined up in the whole scrollport,
+    // as Chrome has it
+    for (let at = box; at && at !== port; at = at.parent) {
+      const stuck = at.style.position === 'sticky' ? STUCK.get(at) : null;
+      if (stuck && (stuck[0] || stuck[1]))
+        return [...margins, 0, 0, 0, 0].map((v) => v / s);
+    }
     const ps = port?.style;
     const pad = (len: Len | undefined, of: number) =>
       len === undefined || len === AUTO ? 0 : Math.max(0, resolveLen(len, of));

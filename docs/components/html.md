@@ -7230,7 +7230,9 @@ a scroll lines up is the element's border box outset by its
 `scroll-margin`, in the scrollport inset by the container's
 `scroll-padding`, the viewport's by the root's (CSS Scroll Snap 1, 6.1
 and 6.2): a heading `scroll-margin-top: 12px` under a page's
-`scroll-padding-top: 30px` comes to rest 42px below the top. The area each axis lined up is kept by its
+`scroll-padding-top: 30px` comes to rest 42px below the top. A target in a
+sticky box stuck in the container is lined up in the whole scrollport,
+since no scroll takes it clear of the padding. The area each axis lined up is kept by its
 element, and a layout that moves it scrolls the container with it — the
 viewport as far as the document reaches after that layout; where the
 snapport can no longer show the areas both axes lined up, the container
