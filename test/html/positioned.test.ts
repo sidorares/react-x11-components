@@ -2837,6 +2837,58 @@ test('a box anchored in a scroller a transform scales follows its anchor as far 
   }
 });
 
+test('a box with a default anchor in a scroll container is placed in its scrollable containing block, and one without in its padding box', async () => {
+  // WPT scrollable-containing-block-*: CSS Anchor Positioning 1, 2.4 and
+  // CSS Position 4, 2.1 — the padding edge of the scrollable overflow area,
+  // relative offsets and transforms of what it holds left out
+  const { node } = await render(
+    '<style>body{margin:0}.s{overflow:hidden;position:relative;width:80px;height:80px;' +
+      'border:3px solid;padding:10px}.f{min-width:180px;min-height:180px}' +
+      '.r{position:relative;left:20px;top:40px}.a{anchor-name:--a}' +
+      '.t{position:absolute;inset:0}</style>' +
+      '<div class="s"><div class="f r"><div class="a"></div></div>' +
+      '<div class="t" id="anchored" style="position-anchor:--a"></div>' +
+      '<div class="t" id="plain"></div></div>' +
+      '<div class="s" style="display:flex;flex-direction:column-reverse">' +
+      '<div class="f"><div class="a" style="anchor-name:--b"></div></div>' +
+      '<div class="t" id="up" style="position-anchor:--b"></div></div>',
+    600,
+  );
+  const el = view(node);
+  const size = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.width, b.height];
+  };
+  assert.deepStrictEqual(size('anchored'), [200, 200]);
+  assert.deepStrictEqual(size('plain'), [100, 100]);
+  assert.deepStrictEqual(size('up'), [200, 200]);
+  // past the top of the padding box, where the content is
+  const s = boxOf(el, 'up').y - (boxOf(el, 'up').parent!.y + 3);
+  assert.strictEqual(s, -100, 'grown up the page');
+});
+
+test('an anchored box past what its containing block shows is held to where the document can be scrolled, and not to the viewport', async () => {
+  // WPT position-area-overflow-icb-001 and -004: the overflow limit rect
+  // reaches without end down a document's scroll, and over the document's
+  // scrollable overflow area for a fixed box anchored in it (CSS Box
+  // Alignment 3, 4.4.1.2)
+  const doc = (position: string) =>
+    '<!doctype html><html><head><style>html{height:150vh}body{margin:0}' +
+    '#a{anchor-name:--a;position:absolute;top:50%;left:50%;width:40px;height:40px}' +
+    `#t{position:${position};position-anchor:--a;position-area:bottom center;` +
+    'width:10px;height:60vh}</style></head><body><div id="a"></div><div id="t"></div>';
+  for (const position of ['absolute', 'fixed']) {
+    const { node } = await render(doc(position), 400);
+    const el = view(node);
+    const a = boxOf(el, 'a');
+    assert.strictEqual(
+      boxOf(el, 't').y,
+      a.y + a.height,
+      `${position}: below its anchor, not pushed up`,
+    );
+  }
+});
+
 /** A document in a pane 400 by 200 that scrolls it. */
 async function paned(source: string) {
   let handle: ReturnType<typeof useHtmlHandle> | null = null;
