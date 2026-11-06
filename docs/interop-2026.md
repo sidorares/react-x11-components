@@ -145,7 +145,7 @@ PR's run, which the last column names.
 | scroll-driven-animations         | 146   | 4.9%  | 71.8% | the timeline properties (#885), `ScrollTimeline` and `ViewTimeline` over Web Animations' model (#892), their grammars (#893), CSS's `animation-timeline` (#894), `animation-range` (#899), `CSSAnimation`s (#906), `timeline-scope` (#907), timeline offsets (#908)                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | shape                            | 24    | 41.6% | 95.8% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860), `CSSAnimation`s and `CSSTransition`s (#906, #928)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929), offscreen and massive-element capture from the near edge (`massive-element-*-offscreen`, `far-away-capture`)                                                                                                                                                                                                                                                                                                                                                   |
 | webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | webrtc                           | 91    | 0.2%  | 57.0% | `RTCPeerConnection` over werift, its transceivers, transports and data channels, `MediaStream` and fake devices ([#1030])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | webtransport                     | 58    | 0.0%  | 100%  | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), its sessions held to the document's `connect-src` ([#1021]), quico 0.8.0, which retired the adapter's workarounds ([#1046]), and a back-forward cache ([#1049]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                              |
@@ -448,16 +448,23 @@ animations in `getAnimations()`, which tell their events ([#929]). A
 `<link rel=expect blocking=render>` holds animation frames until the
 element its href names is in the tree, or until the parse ends where that
 id never appears — the `html/dom/render-blocking/element-render-blocking-*`
-half. Cross-document: where `@view-transition { navigation: auto }` opts
-in (including nested in `@layer` / `@media`, and by layer _order_ among
-competing rules), `pageswap` and `pagereveal` carry a `ViewTransition`
-([#980]'s events), and `pageswap` runs before the old state is captured
-so a listener can still set names. Still not there: handing that capture
-into the new document's first paint when the view remounts;
-`blocking=render` on scripts and stylesheets, and `PerformancePaintTiming`
-those tests assert with; a transition in a frame; and a transition's
-vertical axes, which [#975] leaves, though `writing-mode` and
-`text-orientation` are in `getComputedStyle()` now.
+half. A named element's capture still intersects the viewport expanded by
+one viewport on each side, and where that band misses it entirely — a
+massive element fixed far below, or a far-away one — takes up to one
+viewport of ink from the edge nearest the viewport, so
+`massive-element-*-offscreen` and `far-away-capture` have a picture
+rather than an empty surface. Cross-document: where `@view-transition {
+navigation: auto }` opts in (including nested in `@layer` / `@media`, and
+by layer _order_ among competing rules), `pageswap` and `pagereveal`
+carry a `ViewTransition` ([#980]'s events), and `pageswap` runs before
+the old state is captured so a listener can still set names. Still not
+there: handing that capture into the new document's first paint when the
+view remounts; `blocking=render` on scripts and stylesheets, and
+`PerformancePaintTiming` those tests assert with; the snapshot containing
+block for a `position: static` `::view-transition` while scrolled
+(`snapshot-containing-block-static`); a transition in a frame; and a
+transition's vertical axes, which [#975] leaves, though `writing-mode`
+and `text-orientation` are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user
