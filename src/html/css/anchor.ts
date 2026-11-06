@@ -306,6 +306,84 @@ export function anchorMathValue<R>(
 }
 
 /**
+ * A length as CSS writes it, from device pixels at `scale`: what a mix of
+ * anchored values (`mixAnchored`) puts beside its calls. Null for what has
+ * no such text: `auto`, and a `min()` or a `max()` of a percentage.
+ */
+function lengthText(len: Len, scale: number): string | null {
+  if (len === AUTO) return null;
+  if (typeof len === 'number') return `${len / scale}px`;
+  if (len.of) return null;
+  return len.px ? `calc(${len.pct}% + ${len.px / scale}px)` : `${len.pct}%`;
+}
+
+/** An inset's or a size's value as calls and the text around them, for a
+ *  mix of two to put together: a math function as it is, a lone call as a
+ *  call with nothing around it, and a length as text with no call. */
+function templateOf<R extends AnchorRef | AnchorSizeRef>(
+  value: R | AnchorMath<R> | Len,
+  scale: number,
+): Pick<AnchorMath<R>, 'calls' | 'fallbacks' | 'between'> | null {
+  if (typeof value === 'object' && value !== null && 'calls' in value) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null && 'fallback' in value) {
+    const ref = value as R;
+    const fallback =
+      ref.fallback === null ? null : lengthText(ref.fallback, scale);
+    if (ref.fallback !== null && fallback === null) return null;
+    return { calls: [ref], fallbacks: [fallback], between: ['', ''] };
+  }
+  const text = lengthText(value as Len, scale);
+  return text === null ? null : { calls: [], fallbacks: [], between: [text] };
+}
+
+/**
+ * Two values of an inset or a size, at least one of them with `anchor()`
+ * or `anchor-size()` in it, mixed `q` of the way from `a` to `b`: a math
+ * function of the calls of both, `calc((1 - q) * (a) + q * (b))`, which
+ * layout reads where the anchors are known (`anchorMathValue`). A mix of
+ * what each comes to is what this comes to, so an animation or a
+ * transition between anchored values runs between where each puts the box
+ * (CSS Anchor Positioning 1, 3.2: an `anchor()` animates as the length it
+ * comes to). Null where one end has no text a mix can hold — `auto`, which
+ * goes over half-way as any value that does not interpolate does.
+ */
+export function mixAnchored<R extends AnchorRef | AnchorSizeRef>(
+  a: R | AnchorMath<R> | Len,
+  b: R | AnchorMath<R> | Len,
+  q: number,
+  units: UnitContext,
+): AnchorMath<R> | null {
+  // what the lengths beside the calls are read with: a math function's own
+  // units where an end is one, which are the element's either way, and a
+  // length is written out at the scale it is read back at
+  const own = (v: unknown) =>
+    typeof v === 'object' && v !== null && 'units' in v
+      ? (v as AnchorMath<R>).units
+      : null;
+  const read = own(a) ?? own(b) ?? units;
+  const s = read.scale || 1;
+  const from = templateOf<R>(a, s);
+  const to = templateOf<R>(b, s);
+  if (!from || !to || from.calls.length + to.calls.length === 0) return null;
+  // `calc((1 - q) * (` before what `a` holds, `) + q * (` between the two,
+  // and `))` after `b`
+  const between = [...from.between];
+  between[0] = `calc(${1 - q} * (${between[0]}`;
+  const last = between.length - 1;
+  between[last] = `${between[last]}) + ${q} * (${to.between[0]}`;
+  between.push(...to.between.slice(1));
+  between[between.length - 1] += '))';
+  return {
+    calls: [...from.calls, ...to.calls],
+    fallbacks: [...from.fallbacks, ...to.fallbacks],
+    between,
+    units: read,
+  };
+}
+
+/**
  * A `position-area`: the tracks of the 3×3 grid the anchor makes of the
  * containing block it takes, across (`cols`) and down (`rows`), each a
  * first and a last track — 0 before the anchor, 1 the anchor's, 2 after —

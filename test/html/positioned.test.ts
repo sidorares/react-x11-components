@@ -2340,6 +2340,34 @@ test('a transition of an anchored box runs between the lengths its anchor() and 
   assert.strictEqual(boxOf(el, 'f').x, 250, 'half-way to the option');
 });
 
+test("an animation runs an inset's anchor() and a size's anchor-size() between where each end puts the box, and a length it runs takes the place of the element's own anchor()", async () => {
+  // CSS Anchor Positioning 1, 3.2: an anchor() is the length it comes to,
+  // and animates as one; held half-way by steps(2, start)
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:400px;height:400px}' +
+      '.a{width:100px;height:100px}#a1{anchor-name:--a1}' +
+      '#a2{anchor-name:--a2;width:200px}' +
+      '.t{position:absolute;width:50px;height:50px;left:0}' +
+      '@keyframes tops{from{top:anchor(--a1 top)}to{top:anchor(--a2 bottom)}}' +
+      '@keyframes widths{from{width:anchor-size(--a1 width)}' +
+      'to{width:anchor-size(--a2 width)}}' +
+      '@keyframes plain{from{top:10px}to{top:30px}}' +
+      '#tops{animation:tops 9999s steps(2,start)}' +
+      '#widths{top:0;animation:widths 9999s steps(2,start)}' +
+      '#plain{top:anchor(--a2 bottom);animation:plain 9999s steps(2,start)}' +
+      '</style><div id="cb"><div class="a" id="a1"></div>' +
+      '<div class="a" id="a2"></div><div class="t" id="tops"></div>' +
+      '<div class="t" id="widths"></div><div class="t" id="plain"></div></div>',
+  );
+  const el = view(node);
+  // from --a1's top at 0 to --a2's bottom at 200
+  assert.strictEqual(boxOf(el, 'tops').y, 100);
+  // from 100 wide to 200 wide
+  assert.strictEqual(boxOf(el, 'widths').width, 150);
+  // the animation's 20px, not the anchor's 200
+  assert.strictEqual(boxOf(el, 'plain').y, 20);
+});
+
 test('an anchor a positioned box holds is laid out before a box anchored to it that comes first, as a browser lays them out', async () => {
   // CSS Anchor Positioning 1, 2.3: the anchor is acceptable, being in a
   // positioned box that is before the target among their containing
