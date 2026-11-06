@@ -864,10 +864,19 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
   'position-visibility': (value) => {
     const words = value.toLowerCase().split(/\s+/);
     if (words.length === 1 && words[0] === 'always') return 'always';
-    const order = ['anchors-valid', 'anchors-visible', 'no-overflow'];
-    if (!words.every((w) => order.includes(w))) return null;
-    if (new Set(words).size !== words.length) return null;
-    return order.filter((w) => words.includes(w)).join(' ');
+    // the plural names CSS Anchor Positioning 1 had first are read as
+    // the singular ones it has now
+    const named = words.map((w) =>
+      w === 'anchors-valid'
+        ? 'anchor-valid'
+        : w === 'anchors-visible'
+          ? 'anchor-visible'
+          : w,
+    );
+    const order = ['anchor-valid', 'anchor-visible', 'no-overflow'];
+    if (!named.every((w) => order.includes(w))) return null;
+    if (new Set(named).size !== named.length) return null;
+    return order.filter((w) => named.includes(w)).join(' ');
   },
   'position-try-fallbacks': tryFallbacks,
   'position-try': (value) => {

@@ -1290,6 +1290,54 @@ test('an @view-transition rule is a CSSViewTransitionRule, its descriptors as th
   ]);
 });
 
+test("what a page reads back of an anchored box: position-visibility by its names, auto insets an area places as nought, a disabled sheet left out, a shadow root's sheets", async () => {
+  // WPT position-visibility-parsing and -computed (the singular names CSS
+  // Anchor Positioning 1 has now, the plural ones read as them),
+  // auto-inset-margin-getComputedStyle, at-position-try-invalidation and
+  // its shadow DOM twin
+  const doc = await hosted(
+    '<style>#cb{position:relative;width:200px;height:200px;padding:10px}' +
+      '#a{anchor-name:--a;position:absolute;left:20px;top:20px;width:20px;height:20px}' +
+      '.t{position:absolute;width:20px;height:20px;position-anchor:--a}' +
+      '#pa{position-area:bottom right}#jac{justify-self:anchor-center}' +
+      '#lone{position-area:bottom right;position-anchor:--nobody}' +
+      '#f{position:absolute;width:10px;height:10px;left:999px;position-try-fallbacks:--pf}</style>' +
+      '<style id="tries">@position-try --pf { left: 5px; }</style>' +
+      '<p id="out">-</p><div id="cb"><div id="a"></div><div class="t" id="pa"></div>' +
+      '<div class="t" id="jac"></div><div class="t" id="lone"></div><div id="f"></div>' +
+      '<div id="host"></div></div><script>' +
+      'var r = [], s = function (id) { return getComputedStyle(document.getElementById(id)); };' +
+      'var e = document.getElementById("a");' +
+      'e.style.positionVisibility = "no-overflow anchor-visible"; r.push(e.style.positionVisibility);' +
+      'e.style.positionVisibility = "anchors-valid"; r.push(e.style.positionVisibility);' +
+      'r.push(s("cb").positionVisibility, s("pa").left, s("pa").bottom, s("jac").left, s("jac").top);' +
+      'r.push(s("lone").left);' +
+      'var f = document.getElementById("f"); r.push(f.offsetLeft);' +
+      'document.getElementById("tries").sheet.disabled = true; r.push(f.offsetLeft);' +
+      'var root = document.getElementById("host").attachShadow({ mode: "open" });' +
+      'root.innerHTML = "<style>p{}</style><link rel=stylesheet href=x.css>";' +
+      'r.push(root.styleSheets.length, root.styleSheets[0].ownerNode === root.firstChild);' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    'anchor-visible no-overflow',
+    'anchor-valid',
+    'anchor-visible',
+    '0px',
+    '0px',
+    '0px',
+    // `anchor-center` across says nothing of the insets down, which are
+    // where its static position placed it
+    '10px',
+    // and with no default anchor, nor of the area's
+    '10px',
+    5,
+    999,
+    2,
+    true,
+  ]);
+});
+
 test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the properties it takes, which a page sets and the box is placed by', async () => {
   // WPT at-position-try-cssom: the name as written, the declarations in
   // order with what the rule takes no part of them, an attribute for each

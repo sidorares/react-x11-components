@@ -969,9 +969,9 @@ export interface ComputedStyle {
   /** `position-try-order`. */
   positionTryOrder: string;
   /** `position-visibility` (CSS Anchor Positioning 1, 5.4): when the box
-   *  is strongly hidden, as bits — `anchors-visible` (1) where its default
+   *  is strongly hidden, as bits — `anchor-visible` (1) where its default
    *  anchor is clipped away, `no-overflow` (2) where it overflows its
-   *  containing block, `anchors-valid` (4) — 0 for `always`. */
+   *  containing block, `anchor-valid` (4) — 0 for `always`. */
   positionVisibility: number;
   /** The insets written with an `anchor()`, alone or in a math function,
    *  by side: what each comes to is layout's, and the inset itself holds
@@ -2995,12 +2995,14 @@ export function applyDeclaration(
       }
       let bits = 0;
       for (const w of words) {
+        // the names CSS Anchor Positioning 1 gives them now, and the
+        // plural ones it gave them first, which pages still write
         const bit =
-          w === 'anchors-visible'
+          w === 'anchor-visible' || w === 'anchors-visible'
             ? 1
             : w === 'no-overflow'
               ? 2
-              : w === 'anchors-valid'
+              : w === 'anchor-valid' || w === 'anchors-valid'
                 ? 4
                 : 0;
         if (!bit || bits & bit) return;
