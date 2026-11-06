@@ -3564,35 +3564,31 @@ export function installDom(
       const g = scrollGeometry(source);
       if (!g) return null;
       const { vertical } = this._axisOf(source, along);
-      // where layout placed the subject, from the scrollport's start — its
-      // far side where the scroll origin is at the axis's end — with no
-      // transform and at rest where sticky positioning moves it; the
-      // scroll container's `scroll-padding`, which an `auto` inset is; and
-      // how far sticky positioning can move it each way, which the range
-      // takes in (the document's `_viewPlace`)
-      const raw = call('viewAdjust', this._subject._id, vertical);
-      if (typeof raw !== 'string' || !raw) return null;
-      const [near, size, padStart, padEnd, up, down] = raw
-        .split(',')
-        .map(Number);
       const port = vertical ? g.height : g.width;
       const at = Math.abs(vertical ? g.y : g.x);
-      // and on from there by the scroll
-      const start = near + at + 0;
-      const inset = (v: Any, pad: number) =>
-        v === 'auto' ? pad : offsetPx(v, port);
-      const viewStart = inset(this._inset[0], padStart);
-      const viewEnd = port - inset(this._inset[1], padEnd);
-      // its edges where a sticky box holds it back as it enters, and
-      // carries it on as it leaves
-      const s0 = start - up;
-      const s1 = start + size - up;
-      const e0 = start + down;
-      const e1 = start + size + down;
-      const cover: [number, number] = [s0 - viewEnd, e1 - viewStart];
-      const a = s1 - viewEnd;
-      const b = e0 - viewStart;
-      const contain: [number, number] = [Math.min(a, b), Math.max(a, b)];
+      // the scroll, from where it is now, at which each edge of the
+      // subject crosses each edge of the scrollport less its insets — an
+      // `auto` one the scroll container's `scroll-padding` — as layout
+      // placed it and as the sticky boxes it is in move it (the document's
+      // `_viewPlace`): its start entering, its end leaving, its start at
+      // the near edge and its end at the far one
+      const given = (v: Any): Any => (v === 'auto' ? '' : offsetPx(v, port));
+      const raw = call(
+        'viewAdjust',
+        this._subject._id,
+        vertical,
+        given(this._inset[0]),
+        given(this._inset[1]),
+      );
+      if (typeof raw !== 'string' || !raw) return null;
+      const [enters, leaves, startAt, endAt] = raw
+        .split(',')
+        .map((v: string) => Number(v) + at + 0);
+      const cover: [number, number] = [enters, leaves];
+      const contain: [number, number] = [
+        Math.min(startAt, endAt),
+        Math.max(startAt, endAt),
+      ];
       const max = vertical ? g.maxY : g.maxX;
       return {
         at,
@@ -3607,9 +3603,9 @@ export function installDom(
               : name === 'exit'
                 ? [contain[1], cover[1]]
                 : name === 'entry-crossing'
-                  ? [s0 - viewEnd, s1 - viewEnd]
+                  ? [enters, endAt]
                   : name === 'exit-crossing'
-                    ? [e0 - viewStart, e1 - viewStart]
+                    ? [startAt, leaves]
                     : name === 'scroll'
                       ? [0, max]
                       : cover,
@@ -6359,6 +6355,19 @@ export function installDom(
     }
     get delegatesFocus(): boolean {
       return call('shadowDelegates', this._id) === true;
+    }
+    /** DocumentOrShadowRoot's: the sheets of the tree's `<style>` and
+     *  `<link>` elements, as a document's are. */
+    get styleSheets(): Any {
+      return heldList(this, 'styleSheets', () =>
+        listMade(
+          StyleSheetList,
+          [],
+          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
+          true,
+          null,
+        ),
+      );
     }
     get clonable(): boolean {
       return str(call('shadowFlags', this._id))[0] === '1';
@@ -15687,6 +15696,8 @@ export function installDom(
     set disabled(v: Any) {
       this._disabled = !!v;
       if (!this._owner) readopt(this);
+      // an element's, which the host leaves out of the cascade
+      else call('sheetDisabled', this._owner._id, this._disabled);
     }
     get ownerNode(): Any {
       return this._owner;
