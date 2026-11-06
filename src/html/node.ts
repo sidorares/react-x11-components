@@ -14489,12 +14489,7 @@ export class HtmlViewNode extends Node {
           inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
         };
       } else if (ref.kind === 'name') {
-        const named = namedTimeline(
-          tree,
-          el,
-          ref.name,
-          this._source.document,
-        );
+        const named = namedTimeline(tree, el, ref.name, this._source.document);
         timeline = !named
           ? { kind: 'none' }
           : named.view
