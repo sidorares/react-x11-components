@@ -2056,6 +2056,10 @@ export function layoutDocument(
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
   let bottom = Math.max(flowBottom, reach);
+  // and how far across a positioned box no box clips reaches, which the
+  // ink of a box that clips what it holds leaves out where it is
+  // positioned against something outside that box
+  let positionedRight = -Infinity;
   let fixed: Box[] | null = null;
   // and the ones in the blocks it kept, which no box fixed to the viewport
   // is among (`reuseBlockers`)
@@ -2069,6 +2073,7 @@ export function layoutDocument(
       continue;
     }
     if (clipsFor(box, root).length) continue;
+    positionedRight = Math.max(positionedRight, box.x + box.width);
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
     // it — design 094 was a window tall and no taller, its text past the
@@ -2090,8 +2095,8 @@ export function layoutDocument(
   // and the document is as wide as the window and what spills past its left
   const width = viewportStartsRight(root)
     ? viewportWidth + spill
-    : inkRight > viewportWidth + 0.5
-      ? Math.max(viewportWidth, viewportReach(root).right)
+    : inkRight > viewportWidth + 0.5 || positionedRight > viewportWidth + 0.5
+      ? Math.max(viewportWidth, viewportReach(root).right, positionedRight)
       : viewportWidth;
   return {
     width,

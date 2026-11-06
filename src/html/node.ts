@@ -6420,7 +6420,6 @@ export class HtmlViewNode extends Node {
     if (want <= reaches + 0.5) return;
     this._heldScrollX = want / pane.scale;
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = false;
     this.invalidate(false, this, 'paint');
   }
 
@@ -6472,19 +6471,27 @@ export class HtmlViewNode extends Node {
    *  scrolled by something else — the wheel, a smooth scroll core runs —
    *  and the hold is over (`heldScrollX`). */
   private _heldFrom = 0;
-  /** Whether the scroll held is the viewport's origin, which a page reads
-   *  as where the pane is (`pageScrollX`); a page's own `scrollTo` held is
-   *  read where the pane is until it takes it. */
-  private _heldOrigin = false;
 
   /**
-   * `heldScrollX` where what is held is the viewport's scroll origin, a page
-   * starting there or kept there as what spills past its left grows: a page
-   * reads the pane there, and has its rectangles measured from there, from
-   * its first script, as a browser starts it there. Null otherwise.
+   * `heldScrollX`, read by a page: the viewport's scroll origin, a page
+   * starting there or kept there as what spills past its left grows, and a
+   * page's own `scrollTo` across that the pane cannot take yet — where a
+   * browser has the viewport already, so a page reads it there and has its
+   * rectangles measured from there. Null where none is held.
    */
   pageScrollX(): number | null {
-    return this._heldOrigin ? this.heldScrollX() : null;
+    return this.heldScrollX();
+  }
+
+  /**
+   * Where the pane is down, in device pixels, where a page's scroll down is
+   * held for the pane's next pass (`oweScrollDown`): where it is about to
+   * be, which a browser has it at already, so a page that scrolls the
+   * viewport as it loads reads back where it went, and not the top. Null
+   * where none is held.
+   */
+  pageScrollY(): number | null {
+    return this._heldDown();
   }
 
   /** Hand the pane the scroll across a page asked for before it reached
@@ -6539,7 +6546,6 @@ export class HtmlViewNode extends Node {
     const from = pane.scrollX - was;
     this._heldScrollX = (from + origin) / (pane.scale || 1);
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = true;
     this.invalidate(false, this, 'paint');
   }
 

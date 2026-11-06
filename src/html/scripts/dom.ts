@@ -7361,7 +7361,13 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[3]);
       if (this._viewport()) {
-        return Math.max(viewport().height, Math.round(docRect(this)?.[3] ?? 0));
+        // as far down as the viewport's scrollable overflow reaches, what
+        // is positioned out of the flow below the root included
+        const d = documentSize();
+        return Math.max(
+          viewport().height,
+          Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
+        );
       }
       return this.clientHeight;
     }
