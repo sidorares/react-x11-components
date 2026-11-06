@@ -4151,6 +4151,61 @@ test('a view() timeline places its subject where layout put it, with no transfor
   assert.ok(Math.abs(opacity('b') - 30 / 140) < 1e-6, `b ${opacity('b')}`);
 });
 
+test("a view timeline's ranges follow its subject as a sticky box around it holds it and lets it go", async (t) => {
+  // WPT's view-timeline-sticky-offscreen-1: a box `top: 400px` with 200px
+  // of its containing block below it, the subject 100 tall 50 into it, in a
+  // scrollport 500 tall; at rest the subject is 750 down. Its cover range is
+  // from 250 to 1050, and it is held as it enters, so it is contained only
+  // once the box has run out of room, from 550 to 950
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#sc{height:500px;overflow:auto} .sp{height:550px}' +
+      '#st{position:sticky;top:400px;height:200px}' +
+      '#t{position:relative;top:50px;height:100px;animation:fade linear;' +
+      'animation-timeline:view();animation-range:contain}' +
+      '#c{height:100px;animation:fade linear;animation-timeline:view()}' +
+      '</style><div id="sc"><div class="sp"></div><div class="sp">' +
+      '<div style="height:150px"></div><div id="st"><div id="t"></div></div>' +
+      '</div><div class="sp"></div></div>',
+    400,
+  );
+  const opacity = (id: string) => Number(doc.style(id).opacity);
+  const scroll = async (y: number) => {
+    doc.el.scrollElementTo(findById(doc.el.document, 'sc')!, { y });
+    await act();
+    for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+    await act();
+  };
+  await scroll(500);
+  assert.strictEqual(opacity('t'), 1, 'held as it enters: not contained yet');
+  await scroll(650);
+  assert.ok(Math.abs(opacity('t') - 0.25) < 1e-6, `t ${opacity('t')}`);
+  await scroll(850);
+  assert.ok(Math.abs(opacity('t') - 0.75) < 1e-6, `t ${opacity('t')}`);
+  // and the crossings themselves: held at the top, its end reaches the
+  // far edge first at 550, and its start leaves the near one at last at 1050
+  const place = {
+    start: 750,
+    end: 850,
+    portStart: 0,
+    portEnd: 500,
+    stickies: [{ start: 700, low: 400, high: null, min: -150, max: 200 }],
+  };
+  const edge = (name: RangeName, pct: number) =>
+    Math.round(viewEdgeAt({ name, offset: { pct } }, place) * 1e6) / 1e6;
+  assert.deepStrictEqual(
+    [
+      edge('cover', 0),
+      edge('cover', 100),
+      edge('contain', 0),
+      edge('contain', 100),
+    ],
+    [250, 1050, 550, 950],
+  );
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

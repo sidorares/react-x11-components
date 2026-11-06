@@ -2055,8 +2055,10 @@ crosses the scroll container nearest it that scrolls along its axis
 with its insets — `auto`, as one not given is, the scroll container's
 `scroll-padding` on that side — with the subject where layout placed it,
 no transform on it or between it and its scroller moving it, and for a
-subject that sticky positioning moves, from where it would enter held back as far as its containing block
-lets it to where it would leave carried as far on. A frame measures each
+subject in sticky boxes, each of its ranges from the scroll at which an
+edge of it crosses an edge of the scrollport as the boxes actually move
+it — held at their insets as far as their containing blocks let them, and
+then on with the scroll. A frame measures each
 again, and a page reads the time the last frame had until the next: a
 script that scrolls, or that changes what the source holds, reads the
 time it had, as an animation on it is drawn. Their times, and an
@@ -5370,9 +5372,13 @@ paused` holds it where it is while the scroll moves on, as a page's
 `pause()` does: played again, it is where the scroll has it. A view
 timeline's `auto` inset, as `view()` and `view-timeline-inset` have it
 where none is given, is its scroll container's `scroll-padding` — the
-root's for the pane — and a subject sticky positioning moves, or one in a
-sticky box, is seen from where it would enter held back to where it
-would leave carried on, as Blink and WebKit have it.
+root's for the pane — and for a subject sticky positioning moves, or one
+in a sticky box, each edge of each range is the scroll at which that edge
+of the subject crosses that edge of the scrollport as the sticky boxes
+move it with the scroll, held at their insets and let go where their
+containing blocks run out (WPT's `view-timelines/sticky`); a sticky box
+in a vertical writing mode's frame still takes the most it could hold the
+subject back and carry it on.
 `animation-range`, and its `-start` and `-end`, narrow the part of the
 timeline it runs over: a percentage or a length into the whole timeline,
 or into a named range of a view timeline (`cover`, `contain`, `entry`,
