@@ -15450,6 +15450,30 @@ test("el.style keeps scroll snapping's values as their grammars take them, and g
   );
 });
 
+test('a snap container tells scrollsnapchanging as it scrolls to another area and scrollsnapchange before its scrollend, with the area it snaps to', async () => {
+  const doc = await hosted(
+    '<style>#s { height: 100px; overflow: scroll; scroll-snap-type: y mandatory }' +
+      ' .a { height: 100px; scroll-snap-align: start }</style>' +
+      '<div id="s"><div class="a" id="a1"></div><div class="a" id="a2"></div><div class="a"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [];' +
+      'function note(e) { r.push(e.type + ":" + (e.snapTargetBlock && e.snapTargetBlock.id) + ":" +' +
+      ' e.snapTargetInline + ":" + e.bubbles + ":" + (e instanceof SnapEvent)); }' +
+      's.addEventListener("scrollsnapchanging", note); s.onscrollsnapchange = note;' +
+      's.addEventListener("scrollend", function () { r.push("end"); if (r.length > 3) done(); else again(); });' +
+      'function again() { s.scrollTo(0, 10); }' +
+      'function done() { document.getElementById("out").textContent = r.join("|"); }' +
+      'requestAnimationFrame(function () { s.scrollTo(0, 120); });' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'scrollsnapchanging:a2:null:false:true|scrollsnapchange:a2:null:false:true|end|' +
+      'scrollsnapchanging:a1:null:false:true|scrollsnapchange:a1:null:false:true|end',
+    doc.logs.join('\n'),
+  );
+});
+
 test('scrollIntoView lines up the element outset by its scroll-margin in the scrollport inset by scroll-padding, in a container and in the viewport', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html style="scroll-padding-top: 30px"><body style="margin: 0">' +
