@@ -9,10 +9,7 @@ const vp = (w = 800, h = 600) => ({ x: 0, y: 0, width: w, height: h });
 
 test('captureClipRect intersects ink with the viewport expanded by one viewport', () => {
   // element from y=0 to 40000, partially onscreen: band is [-600, 1200]
-  const clip = captureClipRect(
-    { x: 0, y: 0, width: 100, height: 40000 },
-    vp(),
-  );
+  const clip = captureClipRect({ x: 0, y: 0, width: 100, height: 40000 }, vp());
   assert.deepEqual(clip, { x0: 0, y0: 0, x1: 100, y1: 1200 });
 });
 
