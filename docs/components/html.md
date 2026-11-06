@@ -196,11 +196,15 @@ when:
   late sheet restyles the document. A host that never answers a head sheet
   leaves the document undrawn, as a browser that never hears back does; a
   host that cannot fetch one returns `null`.
-- **A `<link rel=expect blocking=render>` holds animation frames** until
-  the element its href names is in the tree (by `id`, or an `<a name>`),
-  or until the parse ends where that name never appears. Its `media` must
-  match. Scripts and styles with `blocking=render`, and paint timing, are
-  not this yet.
+- **Render-blocking holds animation frames** until the blocker settles: a
+  `<link rel=expect blocking=render>` until the element its href names is
+  in the tree (by `id`, or an `<a name>`), or until the parse ends where
+  that name never appears; a `<script>` or stylesheet `<link>` with
+  `blocking=render` until its `load` or `error`; and a head stylesheet the
+  host is still fetching, as `<Html>` already holds the first paint for.
+  Its `media` must match. The first unblocked frame records
+  `PerformancePaintTiming` entries (`first-paint`,
+  `first-contentful-paint`).
 - **An image moves the boxes only where its size lays something out.** An
   `<img>` built before its image arrived is the size its `width` and
   `height` attributes say, and takes its image's size where it lands, in

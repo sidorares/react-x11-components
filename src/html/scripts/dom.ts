@@ -3741,86 +3741,159 @@ export function installDom(
       asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
+  /** Whether an element's `blocking` attribute names `render`. */
+  const blocksRender = (el: Any): boolean =>
+    /(?:^|\s)render(?:\s|$)/i.test(str(el?.getAttribute?.('blocking') ?? ''));
+  /** Whether a linked resource's media matches, or is absent. */
+  const mediaMatches = (el: Any): boolean => {
+    const media = str(el?.getAttribute?.('media') ?? '').trim();
+    if (!media) return true;
+    try {
+      return matchMedia(media).matches;
+    } catch {
+      return false;
+    }
+  };
   /**
    * Whether this document's rendering opportunities are blocked (HTML,
    * "render-blocking"): a connected `<link rel=expect blocking=render>`
    * whose media matches, until the element its href names is in the tree
    * — or until the parse finishes, where that id never appears or the
-   * href is not this document. Animation frame callbacks wait; the
-   * stylesheet hold in `<Html>` is separate (`_renderBlocked`).
+   * href is not this document; a `<script>`, `<style>` or stylesheet
+   * `<link>` with `blocking=render` whose resource has not settled; or a
+   * head stylesheet the host is still waiting on (`renderBlocked`).
+   * Animation frame callbacks wait on any of those.
    */
   const renderOpportunitiesBlocked = (): boolean => {
     if (document._unloaded) return false;
-    let links: Any;
+    // a head stylesheet still pending holds the first paint in `<Html>`
+    // (`_renderBlocked`); ask the same so its rAF waits too
     try {
-      links = document.querySelectorAll('link');
+      if (call('renderBlocked') === true) return true;
+    } catch {
+      // no view yet
+    }
+    let nodes: Any;
+    try {
+      nodes = document.querySelectorAll('link, script, style');
     } catch {
       return false;
     }
     const loading = document._ready === 'loading';
-    for (let i = 0; i < links.length; i++) {
-      const link = links[i];
-      if (!link?.isConnected) continue;
-      const rel = str(link.getAttribute?.('rel') ?? '');
-      if (!/(?:^|\s)expect(?:\s|$)/i.test(rel)) continue;
-      const blocking = str(link.getAttribute?.('blocking') ?? '');
-      if (!/(?:^|\s)render(?:\s|$)/i.test(blocking)) continue;
-      const media = str(link.getAttribute?.('media') ?? '').trim();
-      if (media) {
-        try {
-          if (!matchMedia(media).matches) continue;
-        } catch {
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (!el?.isConnected) continue;
+      const tag = str(el.localName ?? '').toLowerCase();
+      if (tag === 'link') {
+        const rel = str(el.getAttribute?.('rel') ?? '');
+        if (/(?:^|\s)expect(?:\s|$)/i.test(rel)) {
+          if (!blocksRender(el) || !mediaMatches(el)) continue;
+          const href = str(el.getAttribute?.('href') ?? '');
+          let url: URL;
+          let docUrl: URL;
+          try {
+            url = new URL(href, location.href);
+            docUrl = new URL(location.href);
+          } catch {
+            if (loading) return true;
+            continue;
+          }
+          const sameDoc =
+            url.origin === docUrl.origin &&
+            url.pathname === docUrl.pathname &&
+            url.search === docUrl.search;
+          const id = sameDoc ? decodeURIComponent(url.hash.slice(1)) : '';
+          if (!id) {
+            // not this document, or no fragment: blocks until the parse ends
+            if (loading) return true;
+            continue;
+          }
+          // the document's indicated part for that fragment: an `id`, or an
+          // `<a name>` (element-render-blocking-041)
+          const byId = document.getElementById(id);
+          const byName =
+            !byId && typeof document.getElementsByName === 'function'
+              ? document.getElementsByName(id)[0]
+              : null;
+          const found = byId ?? byName;
+          if (found?.isConnected) continue;
+          // missing: hold while parsing; once interactive, the expectation
+          // is over (element-render-blocking-024)
+          if (loading) return true;
           continue;
         }
-      }
-      const href = str(link.getAttribute?.('href') ?? '');
-      let url: URL;
-      let docUrl: URL;
-      try {
-        url = new URL(href, location.href);
-        docUrl = new URL(location.href);
-      } catch {
-        if (loading) return true;
+        // stylesheet `<link blocking=render>`: until its load or error
+        if (
+          /(?:^|\s)stylesheet(?:\s|$)/i.test(rel) &&
+          blocksRender(el) &&
+          mediaMatches(el) &&
+          !el._resourceSettled
+        ) {
+          return true;
+        }
         continue;
       }
-      const sameDoc =
-        url.origin === docUrl.origin &&
-        url.pathname === docUrl.pathname &&
-        url.search === docUrl.search;
-      const id = sameDoc ? decodeURIComponent(url.hash.slice(1)) : '';
-      if (!id) {
-        // not this document, or no fragment: blocks until the parse ends
-        if (loading) return true;
+      // `<script blocking=render>`: until its load or error. A `<style
+      // blocking=render>`'s `@import`s hold through the host's
+      // `renderBlocked` above once the sheet is read; with none it is
+      // already applied.
+      if (tag !== 'script' || !blocksRender(el) || el._resourceSettled) {
         continue;
       }
-      // the document's indicated part for that fragment: an `id`, or an
-      // `<a name>` (element-render-blocking-041)
-      const byId = document.getElementById(id);
-      const byName =
-        !byId && typeof document.getElementsByName === 'function'
-          ? document.getElementsByName(id)[0]
-          : null;
-      const found = byId ?? byName;
-      if (found?.isConnected) continue;
-      // missing: hold while parsing; once interactive, the expectation
-      // is over (element-render-blocking-024)
-      if (loading) return true;
+      // an external script, or a module (inline ones fetch imports): an
+      // empty classic inline has already run by the time a frame asks
+      const src = str(el.getAttribute?.('src') ?? '').trim();
+      const type = str(el.getAttribute?.('type') ?? '')
+        .trim()
+        .toLowerCase();
+      const module =
+        type === 'module' ||
+        type === 'importmap' ||
+        type === 'speculationrules';
+      if (src || module) return true;
     }
     return false;
+  };
+  /** First paint timing entries, once a rendering opportunity runs. */
+  let paintsNoted = false;
+  const notePaints = (): void => {
+    if (paintsNoted) return;
+    paintsNoted = true;
+    const startTime = now();
+    for (const name of ['first-paint', 'first-contentful-paint'] as const) {
+      noteEntry(
+        Object.assign(Object.create(PerformancePaintTiming.prototype), {
+          name,
+          entryType: 'paint',
+          startTime,
+          duration: 0,
+          toJSON() {
+            return {
+              name: this.name,
+              entryType: this.entryType,
+              startTime: this.startTime,
+              duration: this.duration,
+            };
+          },
+        }),
+      );
+    }
   };
   const runFrame = (): void => {
     // in the frame: a frame its steps ask for is the next one
     // (`nextFrame`), and not one more beside this
     frameTimer = -1;
     renderingOwed = false;
-    // a render-blocking `<link rel=expect>` holds every rendering
-    // opportunity — including animation frame callbacks — until its
-    // element is in, or the parse ends (html/dom/render-blocking/)
+    // render-blocking resources hold every rendering opportunity —
+    // including animation frame callbacks — until they settle
+    // (html/dom/render-blocking/)
     if (renderOpportunitiesBlocked()) {
       frameTimer = 0;
       wantFrame();
       return;
     }
+    // the first unblocked frame is the document's first paint
+    notePaints();
     // the documents shown for the first time are revealed before the
     // rest of the rendering steps (HTML's "update the rendering")
     if (revealOwed) reveal();
@@ -22991,8 +23064,14 @@ export function installDom(
           (type === undefined || e.entryType === str(type)),
       ),
   });
+  /** Paint Timing 1: `performance.getEntriesByType('paint')` entries. */
+  class PerformancePaintTiming {
+    constructor() {
+      throw new TypeError('Illegal constructor');
+    }
+  }
   class PerformanceObserver {
-    static readonly supportedEntryTypes = ['mark', 'measure'];
+    static readonly supportedEntryTypes = ['mark', 'measure', 'paint'];
     _fn: Any;
     _types = new Set<string>();
     _queue: Any[] = [];
@@ -35183,6 +35262,7 @@ export function installDom(
     FontFaceSet,
     FontFaceSetLoadEvent,
     PerformanceObserver,
+    PerformancePaintTiming,
     MessageEvent,
     MessageChannel,
     MessagePort,
@@ -36864,9 +36944,14 @@ export function installDom(
           trusted(new Event('cancel', { bubbles: true })),
         );
       // a `<link>`'s sheet applied, or not to be had, or what an `<img>`
-      // came to: neither bubbles
+      // came to: neither bubbles. A render-blocking script or sheet that
+      // settles unblocks animation frames (`renderOpportunitiesBlocked`).
       case 'load':
       case 'error':
+        if (target && typeof target === 'object') {
+          target._resourceSettled = true;
+          if (frameCallbacks.size || renderingOwed) wantFrame();
+        }
         return dispatch(target, trusted(new Event(e.type)));
       default:
         return true;
@@ -37887,6 +37972,12 @@ export function installDom(
     // a scroll container scrolled: the timelines on it move at the next
     // frame
     if (type === 'scroll') nudgeFrames();
+    // a render-blocking script or sheet that settles unblocks animation
+    // frames (`renderOpportunitiesBlocked`)
+    if (type === 'load' || type === 'error') {
+      target._resourceSettled = true;
+      if (frameCallbacks.size || renderingOwed) wantFrame();
+    }
     const ev = new Event(String(type));
     ev.isTrusted = true;
     return dispatch(target, ev);

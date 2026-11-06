@@ -5426,7 +5426,14 @@ export class HtmlViewNode extends Node {
    * arrived: the flash of unstyled content, and the first frame's work
    * twice. A sheet the host declined, or failed to fetch, holds nothing,
    * and once something is drawn a sheet arriving restyles it as before.
+   * The page's animation-frame loop asks the same question
+   * (`call('renderBlocked')`), so a pending head sheet holds rAF as a
+   * `blocking=render` script does.
    */
+  renderBlocked(): boolean {
+    return this._renderBlocked();
+  }
+
   private _renderBlocked(): boolean {
     for (const ref of this._source.facts().sheets) {
       if (ref.kind !== 'link' || ref.media !== null) continue;

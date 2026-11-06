@@ -447,24 +447,25 @@ tree is drawn ([#909]), its styles are in `getComputedStyle()` and its
 animations in `getAnimations()`, which tell their events ([#929]). A
 `<link rel=expect blocking=render>` holds animation frames until the
 element its href names is in the tree, or until the parse ends where that
-id never appears — the `html/dom/render-blocking/element-render-blocking-*`
-half. A named element's capture still intersects the viewport expanded by
-one viewport on each side, and where that band misses it entirely — a
-massive element fixed far below, or a far-away one — takes up to one
-viewport of ink from the edge nearest the viewport, so
-`massive-element-*-offscreen` and `far-away-capture` have a picture
-rather than an empty surface. Cross-document: where `@view-transition {
-navigation: auto }` opts in (including nested in `@layer` / `@media`, and
-by layer _order_ among competing rules), `pageswap` and `pagereveal`
-carry a `ViewTransition` ([#980]'s events), and `pageswap` runs before
-the old state is captured so a listener can still set names. Still not
-there: handing that capture into the new document's first paint when the
-view remounts; `blocking=render` on scripts and stylesheets, and
-`PerformancePaintTiming` those tests assert with; the snapshot containing
-block for a `position: static` `::view-transition` while scrolled
-(`snapshot-containing-block-static`); a transition in a frame; and a
-transition's vertical axes, which [#975] leaves, though `writing-mode`
-and `text-orientation` are in `getComputedStyle()` now.
+id never appears ([#1336]); `blocking=render` on scripts and stylesheet
+links, a pending head sheet, and `PerformancePaintTiming`
+(`first-paint` / `first-contentful-paint`) do the same for the
+`html/dom/render-blocking/` helpers that assert paint after load. A named
+element's capture still intersects the viewport expanded by one viewport
+on each side, and where that band misses it entirely — a massive element
+fixed far below, or a far-away one — takes up to one viewport of ink from
+the edge nearest the viewport, so `massive-element-*-offscreen` and
+`far-away-capture` have a picture rather than an empty surface.
+Cross-document: where `@view-transition { navigation: auto }` opts in
+(including nested in `@layer` / `@media`, and by layer _order_ among
+competing rules), `pageswap` and `pagereveal` carry a `ViewTransition`
+([#980]'s events), and `pageswap` runs before the old state is captured
+so a listener can still set names. Still not there: handing that capture
+into the new document's first paint when the view remounts; the snapshot
+containing block for a `position: static` `::view-transition` while
+scrolled (`snapshot-containing-block-static`); a transition in a frame;
+and a transition's vertical axes, which [#975] leaves, though
+`writing-mode` and `text-orientation` are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user

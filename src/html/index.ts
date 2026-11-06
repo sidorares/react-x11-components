@@ -938,6 +938,13 @@ export interface HtmlHandle {
    */
   matchMedia(query: string): boolean;
   /**
+   * Whether the document's first rendering still waits on a head stylesheet
+   * or an import of one (HTML, "render-blocking"). The page's animation-frame
+   * loop asks this so a pending sheet holds rAF as `blocking=render` does.
+   * False with no document.
+   */
+  renderBlocked(): boolean;
+  /**
    * Settled once no style sheet holds back a script the parser met (HTML,
    * "has a style sheet that is blocking scripts"): of the sheets the parse
    * made, those before `script` in the document — or all of them, for a
@@ -1811,6 +1818,7 @@ export function makeHtmlHandle(
       pseudo?: 'before' | 'after' | HighlightPseudo | null,
     ) => nodeRef.current?.customProperty(element, name, pseudo ?? null) ?? null,
     matchMedia: (query: string) => nodeRef.current?.matchMedia(query) ?? false,
+    renderBlocked: () => nodeRef.current?.renderBlocked() ?? false,
     fontFaces: () => nodeRef.current?.fontFaces() ?? [],
     matchFonts: (query, text) =>
       nodeRef.current?.matchFonts(query, text) ?? { keys: [], found: false },
