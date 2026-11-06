@@ -78,20 +78,47 @@ type Axis = (typeof AXES)[number];
 
 const other = (axis: Axis): Axis => (axis === 'x' ? 'y' : 'x');
 
-/** Whether a container snaps on an axis. */
+/** The physical axis a container's block axis runs along: down the page
+ *  in a horizontal writing mode, across it in a vertical one. */
+function blockAxisOf(style: ComputedStyle): Axis {
+  return style.writingMode === 'horizontal-tb' ? 'y' : 'x';
+}
+
+/** Whether a container's flow starts at the far end of a physical axis, the
+ *  right or the bottom: its block start in `vertical-rl` and `sideways-rl`,
+ *  its inline start in a right-to-left line, and in a vertical one that
+ *  runs up the page (CSS Writing Modes 4, 6.1). */
+function startsHigh(style: ComputedStyle, axis: Axis): boolean {
+  const mode = style.writingMode;
+  if (axis === blockAxisOf(style)) {
+    return mode === 'vertical-rl' || mode === 'sideways-rl';
+  }
+  const rtl = style.direction === 'rtl';
+  return axis === 'x' ? rtl : rtl !== (mode === 'sideways-lr');
+}
+
+/** Whether a container snaps on an axis: `block` and `inline` are the
+ *  physical axes its writing mode puts them on. */
 export function snapsOn(style: ComputedStyle, axis: Axis): boolean {
   const type = style.scrollSnapType;
   if (!type) return false;
   if (type.axis === 'both') return true;
-  return axis === 'x'
-    ? type.axis === 'x' || type.axis === 'inline'
-    : type.axis === 'y' || type.axis === 'block';
+  if (type.axis === 'block' || type.axis === 'inline') {
+    const block = blockAxisOf(style);
+    return type.axis === 'block' ? axis === block : axis !== block;
+  }
+  return type.axis === axis;
 }
 
-/** A snap area's alignment on an axis: the block axis's is the first
- *  value, the vertical one in the writing mode documents are laid out in. */
-function alignOn(box: Box, axis: Axis): SnapAlign {
-  return box.style.scrollSnapAlign[axis === 'y' ? 0 : 1];
+/** A snap area's alignment on a physical axis of its container (CSS Scroll
+ *  Snap 1, 6.2): the first value is the container's block axis's, the
+ *  second its inline axis's, and `start` the end its flow starts at — as
+ *  `start` and `end` of the axis's low end here, the left or the top. */
+function alignOn(c: SnapContainer, box: Box, axis: Axis): SnapAlign {
+  const align =
+    box.style.scrollSnapAlign[axis === blockAxisOf(c.style) ? 0 : 1];
+  if (!startsHigh(c.style, axis)) return align;
+  return align === 'start' ? 'end' : align === 'end' ? 'start' : align;
 }
 
 /** A container's snapport on an axis — its scrollport less its
@@ -120,7 +147,7 @@ function placeOf(
   area: SnapArea,
   axis: Axis,
 ): { at: number; to: number } | null {
-  const align = alignOn(area.box, axis);
+  const align = alignOn(c, area.box, axis);
   if (align === 'none') return null;
   const st = area.box.style;
   const client = axis === 'x' ? c.width : c.height;
@@ -148,6 +175,57 @@ function placeOf(
   else at = start + size / 2 - (padStart + port / 2);
   at = clamp(at);
   return { at, to: at };
+}
+
+/**
+ * Where an area larger than the snapport may rest nearest `want`, on an
+ * axis ("snapping boxes that overflow the scrollport"): anywhere it covers
+ * the snapport, but where the snapport's start would be inside another of
+ * the container's areas, which intrudes there and has a snap position of
+ * its own — so a scroll that comes to rest across a small area inside a
+ * long one lines that area up, or rests past it, and does not cut it.
+ */
+function nearestCovering(
+  c: SnapContainer,
+  area: SnapArea,
+  place: { at: number; to: number },
+  axis: Axis,
+  want: number,
+  areas: readonly SnapArea[],
+): number {
+  const { pad } = snapportOn(c, axis);
+  // the open stretches of the range the other areas take out
+  const cuts: [number, number][] = [];
+  for (const other of areas) {
+    if (other === area || !placeOf(c, other, axis)) continue;
+    const st = other.box.style;
+    const before = axis === 'x' ? st.scrollMarginLeft : st.scrollMarginTop;
+    const after = axis === 'x' ? st.scrollMarginRight : st.scrollMarginBottom;
+    const start = (axis === 'x' ? other.x : other.y) - before - pad;
+    const end =
+      start + (axis === 'x' ? other.width : other.height) + before + after;
+    if (end > place.at && start < place.to) cuts.push([start, end]);
+  }
+  if (!cuts.length) return nearestIn(want, place);
+  cuts.sort((a, b) => a[0] - b[0]);
+  // what is left of the range, stretch by stretch
+  let best = place.at;
+  let off = Infinity;
+  const take = (from: number, to: number) => {
+    if (to < from) return;
+    const at = Math.min(Math.max(want, from), to);
+    if (Math.abs(at - want) < off) {
+      off = Math.abs(at - want);
+      best = at;
+    }
+  };
+  let from = place.at;
+  for (const [start, end] of cuts) {
+    if (start >= from) take(from, Math.min(start, place.to));
+    from = Math.max(from, end);
+  }
+  take(from, place.to);
+  return off === Infinity ? nearestIn(want, place) : best;
 }
 
 /** The place in a range nearest a place: itself, inside it. */
@@ -256,7 +334,12 @@ function snapEach(
       const place = placeOf(c, area, axis);
       // where it was asked to be is a place an area larger than the
       // snapport may rest
-      if (place) places.push({ at: nearestIn(want, place), box: area.box });
+      if (!place) continue;
+      const at =
+        place.to > place.at
+          ? nearestCovering(c, area, place, axis, want, areas)
+          : place.at;
+      places.push({ at, box: area.box });
     }
     // a page goes no farther than a snapport where a place ahead is that
     // near, however much nearer a farther one is to where it was going
@@ -496,8 +579,20 @@ export function resnap(
     if (!area || !visibleAcross(c, area, axis, axis === 'x' ? y : x)) continue;
     const place = placeOf(c, area, axis);
     if (!place) continue;
+    const here = axis === 'x' ? x : y;
+    // a covering area another now intrudes on where the container is no
+    // longer holds it there: it comes to rest where a snap would
+    if (
+      place.to > place.at &&
+      here > place.at - 0.5 &&
+      here < place.to + 0.5 &&
+      Math.abs(nearestCovering(c, area, place, axis, here, c.areas) - here) >
+        0.5
+    ) {
+      continue;
+    }
     kept[axis] = area;
-    const at = nearestIn(axis === 'x' ? x : y, place);
+    const at = nearestIn(here, place);
     if (axis === 'x') {
       out.x = at;
       out.targetX = target;
@@ -518,7 +613,7 @@ export function resnap(
     const keep =
       (c.focused && pair.find(c.focused)) ||
       (c.targeted && pair.find(c.targeted)) ||
-      ky.box;
+      (blockAxisOf(c.style) === 'y' ? ky.box : kx.box);
     return lineUp(c, keep, out.x, out.y);
   }
   return out;
