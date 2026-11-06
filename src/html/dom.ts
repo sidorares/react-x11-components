@@ -2248,6 +2248,18 @@ export class HtmlSource {
  * (`_extendFacts`). One loop with all of it in it, as the whole scan has it:
  * a call for each element was a twentieth of the scan.
  */
+/** The `<style>` and `<link>` elements a page's script disabled the sheet
+ *  of (`sheet.disabled`), which the cascade reads none of. */
+const DISABLED_SHEETS = new WeakSet<Element>();
+
+/** Disable an element's sheet, or let it be: whether that changed it. */
+export function setSheetDisabled(el: Element, disabled: boolean): boolean {
+  if (DISABLED_SHEETS.has(el) === disabled) return false;
+  if (disabled) DISABLED_SHEETS.add(el);
+  else DISABLED_SHEETS.delete(el);
+  return true;
+}
+
 function scanElements(
   facts: ScannedFacts,
   elements: Iterable<Element>,
@@ -2269,7 +2281,7 @@ function scanElements(
       // out; any other is under it, as though an `@media` block of it
       // were around all of it (HTML 4.2.6, 4.2.4).
       const media = sheetConditions(attr(el, 'media') ?? '');
-      if (media !== false) {
+      if (media !== false && !DISABLED_SHEETS.has(el)) {
         sheets.push({
           kind: 'inline',
           text: rawTextOf(el),
@@ -2286,7 +2298,9 @@ function scanElements(
         // asks for it, and as an `@import` under one is asked for.
         const media = sheetConditions(attr(el, 'media') ?? '');
         if (media !== false) {
-          sheets.push({ kind: 'link', href, element: el, media });
+          if (!DISABLED_SHEETS.has(el)) {
+            sheets.push({ kind: 'link', href, element: el, media });
+          }
           facts.resources.push(el);
         }
       } else if (isStylePreload(el)) facts.resources.push(el);
