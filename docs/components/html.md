@@ -7062,9 +7062,18 @@ match-parent` takes the default anchor of the parent element, or of a
 pseudo-element's originating element, where that is absolutely positioned
 and the anchor is acceptable for the box. An `anchor-scope` on a `display:
 contents` element scopes what it holds, and an anchor in a block inside an
-inline containing block is inside it, as its element is. Not done: each
-anchor reference's own remembered scroll offset — a
-layout takes every anchor where it is scrolled to then.
+inline containing block is inside it, as its element is. A box follows a
+scroll on an axis only where its default anchor and the anchors it is placed
+against share the nearest scroll container for that axis, and a container
+whose `overflow` is `clip` on one axis beside a scroll on the other is a
+scroll container on the other alone, as Chrome has it: what it is scrolled
+across is no scroll a box follows. A scroll container in a vertical writing
+mode is scrolled, and read, in the page's axes, from its right in
+`vertical-rl` (`scrollLeft` negative), whatever axes its frame lays it out
+in. Not done: each anchor reference's own remembered scroll offset — a
+layout takes every anchor where it is scrolled to then — and a root in a
+vertical writing mode whose viewport a box is placed in (WPT's
+`anchor-scroll-position-try-007` to `010`).
 
 A script's `el.style` takes each of these properties only as its grammar
 has it, in canonical form — `anchor()` and `anchor-size()` with the name
