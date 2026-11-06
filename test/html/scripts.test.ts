@@ -16329,6 +16329,37 @@ test("a page's scroll and view timelines take block and inline from their source
   );
 });
 
+test("a page's view timeline, and a CSS scroll(nearest)'s, look for a source past a scroll container that clips their axis", async () => {
+  const doc = await hosted(
+    '<style>#o { width: 100px; height: 100px; overflow-inline: scroll; overflow-block: clip }' +
+      ' #i { width: 100px; height: 100px; writing-mode: vertical-rl;' +
+      ' overflow-inline: scroll; overflow-block: clip }' +
+      ' #k { width: 50px; height: 50px; writing-mode: horizontal-tb;' +
+      ' animation: n 1s; animation-timeline: scroll(nearest block) }' +
+      ' @keyframes n {}</style>' +
+      '<div id="o"><div id="i"><div id="k"></div></div></div>' +
+      '<p id="out"></p><script>' +
+      'var o = document.getElementById("o"), i = document.getElementById("i"),' +
+      '  k = document.getElementById("k");' +
+      'requestAnimationFrame(function () {' +
+      '  var name = function (e) { return e ? e.id || e.localName : String(e); };' +
+      '  document.getElementById("out").textContent = [' +
+      '    name(new ViewTimeline({ subject: k, axis: "inline" }).source),' +
+      '    name(new ViewTimeline({ subject: k, axis: "block" }).source),' +
+      '    name(k.getAnimations()[0].timeline.source)].join("|");' +
+      '});' +
+      '</script>',
+  );
+  // the inner one is vertical-rl: its inline axis is down, which it
+  // scrolls, and its block axis across, which it clips, as the outer
+  // scrolls it
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'i|o|o',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +
