@@ -2053,8 +2053,9 @@ crosses the scroll container nearest it that scrolls along its axis
 (the axis resolved against the nearest one), from `cover 0%` to
 `cover 100%`,
 with its insets — `auto`, as one not given is, the scroll container's
-`scroll-padding` on that side — and for a subject that sticky positioning
-moves, from where it would enter held back as far as its containing block
+`scroll-padding` on that side — with the subject where layout placed it,
+no transform on it or between it and its scroller moving it, and for a
+subject that sticky positioning moves, from where it would enter held back as far as its containing block
 lets it to where it would leave carried as far on. A frame measures each
 again, and a page reads the time the last frame had until the next: a
 script that scrolls, or that changes what the source holds, reads the
@@ -5391,7 +5392,9 @@ or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
 `rtl` or a `vertical-rl` one, and a view timeline's subject enters from
 the far side of its scrollport there, its `auto` insets the
-`scroll-padding` at that axis's start and end.
+`scroll-padding` at that axis's start and end. A view timeline's subject is
+where layout placed it: a transform on it, an animated one included, or on
+a box between it and its scroller moves nothing of its timeline.
 `animation-timeline`, `scroll-timeline-name` and `-axis`,
 `view-timeline-name`, `-axis` and `-inset`, the `scroll-timeline` and
 `view-timeline` shorthands, and `timeline-scope` answer

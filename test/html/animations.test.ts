@@ -4122,6 +4122,35 @@ test('an anonymous scroll() looks past a scroll container that clips its axis, r
   assert.strictEqual(opacity('block'), 0.5, 'the inner moves no block');
 });
 
+test('a view() timeline places its subject where layout put it, with no transform on it or between it and its scroller', async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '@keyframes drop { from { opacity: 0; translate: 0 0 } to { opacity: 1; translate: 0 300px } }' +
+      '#list{height:100px;overflow:auto}' +
+      '#moved{translate:0 50px}' +
+      '.card{height:40px}' +
+      '#a{animation:fade linear;animation-timeline:view()}' +
+      '#b{animation:drop linear;animation-timeline:view()}' +
+      '</style><div id="list"><div style="height:300px"></div>' +
+      '<div id="moved"><div class="card" id="a"></div></div>' +
+      '<div class="card" id="b"></div><div style="height:300px"></div></div>',
+  );
+  const opacity = (id: string) => Number(doc.style(id).opacity);
+  for (let i = 0; i < 2; i += 1) await doc.clock.frame();
+  await act();
+  // the card at 300 is covered from 200 to 340, whatever its parent's
+  // translate draws it at; the one under it, at 340, from 240 to 380,
+  // however far its own animation moves it
+  doc.el.scrollElementTo(findById(doc.el.document, 'list')!, { y: 270 });
+  await act();
+  for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+  await act();
+  assert.ok(Math.abs(opacity('a') - 70 / 140) < 1e-6, `a ${opacity('a')}`);
+  assert.ok(Math.abs(opacity('b') - 30 / 140) < 1e-6, `b ${opacity('b')}`);
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

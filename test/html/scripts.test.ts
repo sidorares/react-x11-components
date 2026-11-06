@@ -16396,6 +16396,26 @@ test("a page's updateTiming() on a CSS animation's effect stands over the longha
   );
 });
 
+test("a page's view timeline places its subject where layout put it, with no transform between it and its scroller", async () => {
+  const doc = await hosted(
+    '<style>#s { overflow-x: scroll; width: 200px; height: 200px }' +
+      ' #c { translate: 50px; width: 1800px } .sp { width: 800px; display: inline-block }' +
+      ' #k { width: 100px; height: 100px; display: inline-block; scale: 2 }</style>' +
+      '<div id="s"><div id="c"><div class="sp"></div><div id="k"></div><div class="sp"></div></div></div>' +
+      '<p id="out"></p><script>' +
+      'var tl = new ViewTimeline({ subject: document.getElementById("k"), axis: "inline" });' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  document.getElementById("out").textContent = [String(tl.startOffset), String(tl.endOffset)].join("|");' +
+      '}); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '600px|900px',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

@@ -683,17 +683,19 @@ export interface HandleInternals {
     time: number | null,
     rate: number,
   ): void;
-  /** What a view timeline's subject is along an axis, in CSS pixels: its
-   *  scroll container's `scroll-padding` there, which an `auto` inset is,
-   *  and how far sticky positioning has moved it and can each way
+  /** Where a view timeline's subject is along an axis, in CSS pixels: its
+   *  start from its scrollport's, as layout placed it, and its size; its
+   *  scroll container's `scroll-padding` there, which an `auto` inset is;
+   *  and how far sticky positioning can move it each way
    *  (`HtmlViewNode.viewAdjustOf`). */
   viewAdjust(
     element: Element,
     vertical: boolean,
   ): {
+    start: number;
+    size: number;
     padStart: number;
     padEnd: number;
-    shift: number;
     up: number;
     down: number;
   } | null;
@@ -5532,15 +5534,16 @@ export class DomHost {
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
         return null;
-      // a view timeline's subject: its scroller's `scroll-padding` along
-      // the axis, and how far sticky positioning moved it and can each way
+      // a view timeline's subject: where layout placed it from its
+      // scrollport's start and its size, its scroller's `scroll-padding`
+      // along the axis, and how far sticky positioning can move it each way
       case 'viewAdjust': {
         this.flush();
         const el = this._element(a);
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
         const v = handle?.viewAdjust?.(el, b === true);
         return v
-          ? `${v.padStart},${v.padEnd},${v.shift},${v.up},${v.down}`
+          ? `${v.start},${v.size},${v.padStart},${v.padEnd},${v.up},${v.down}`
           : '';
       }
       // a page's timeline's axis against its scroller: `x` or `y`, and `r`
