@@ -6355,6 +6355,19 @@ export function installDom(
     get delegatesFocus(): boolean {
       return call('shadowDelegates', this._id) === true;
     }
+    /** DocumentOrShadowRoot's: the sheets of the tree's `<style>` and
+     *  `<link>` elements, as a document's are. */
+    get styleSheets(): Any {
+      return heldList(this, 'styleSheets', () =>
+        listMade(
+          StyleSheetList,
+          [],
+          () => wrapAll(call('sheets', this._id)).map((el) => sheetOf(el)),
+          true,
+          null,
+        ),
+      );
+    }
     get clonable(): boolean {
       return str(call('shadowFlags', this._id))[0] === '1';
     }
@@ -15652,6 +15665,8 @@ export function installDom(
     set disabled(v: Any) {
       this._disabled = !!v;
       if (!this._owner) readopt(this);
+      // an element's, which the host leaves out of the cascade
+      else call('sheetDisabled', this._owner._id, this._disabled);
     }
     get ownerNode(): Any {
       return this._owner;

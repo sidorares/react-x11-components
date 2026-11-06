@@ -8012,7 +8012,7 @@ moves with it, on the axes both follow on (`followersOf`, under
 it, moves as far as its stickiness moves it, at a layout and at a scroll
 (`anchoredWith`, from `followSticky`). Anything new that moves an anchor
 without a layout moves its followers through one of the two. And
-`anchors-visible` hides a box whose anchor is not seen at all — hidden by
+`anchor-visible` hides a box whose anchor is not seen at all — hidden by
 `visibility`, or in a box `position-visibility` hid, its own anchor gone —
 which a restyle in place can change without a layout, so it asks again
 where the tree has anchors (`_revisit`).

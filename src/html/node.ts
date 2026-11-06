@@ -19063,7 +19063,8 @@ const CASCADE_TAGS = new Set(['style', 'link', 'meta', 'base']);
  * cascade: one of those its sheets, its pragmas and its base are read from
  * (`DocumentSource.facts`, `metaColorScheme`, `pragmaLanguage`) — a
  * `<style>`'s `media`, a sheet's `<link>`'s `href` and `media` and any
- * `<link>`'s `rel`, a pragma `<meta>`'s, before or after (`pragmaMeta`), a
+ * `<link>`'s `rel`, a sheet a script disabled (`-rx-sheet-disabled`), a
+ * pragma `<meta>`'s, before or after (`pragmaMeta`), a
  * `<base>`'s `href`. Any other is an attribute as any element's is: a
  * bundler marks the `<link>` it is loading (rspack's
  * `data-rspack-loading`), and GitHub sets its icon's `href` at every
@@ -19077,10 +19078,14 @@ function changesCascade(
 ): boolean {
   switch (tagOf(el)) {
     case 'style':
-      return name === 'media' && isStyleOrScript(el);
+      return (
+        (name === 'media' || name === '-rx-sheet-disabled') &&
+        isStyleOrScript(el)
+      );
     case 'link':
       return (
         (name === 'rel' && !isForeign(el)) ||
+        (name === '-rx-sheet-disabled' && isSheetLink(el)) ||
         ((name === 'href' || name === 'media') && isSheetLink(el))
       );
     case 'meta':
