@@ -4206,6 +4206,106 @@ test("a view timeline's ranges follow its subject as a sticky box around it hold
   );
 });
 
+test('a view() on an inline box is where its fragments are, and a sticky inline box around a block moves its timeline as a sticky block does', async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '.sc{overflow-y:scroll;height:100px;width:200px} .sp{height:300px}' +
+      '.w{position:sticky;top:40px}' +
+      '.su{height:50px;animation:fade linear both;animation-timeline:view()}' +
+      '#word{animation:fade linear both;animation-timeline:view()}' +
+      '</style>' +
+      '<div class="sc" id="a"><div class="sp"></div><div class="w">' +
+      '<div class="su" id="sa"></div></div><div class="sp"></div></div>' +
+      '<div class="sc" id="b"><div class="sp"></div><span class="w">' +
+      '<div class="su" id="sb"></div></span><div class="sp"></div></div>' +
+      '<div class="sc" id="c"><div class="sp"></div>' +
+      '<p style="margin:0;line-height:20px">a <span id="word">word</span></p>' +
+      '<div class="sp"></div></div>',
+  );
+  const opacity = (id: string) => Number(doc.style(id).opacity);
+  const scroll = async (y: number) => {
+    for (const id of ['a', 'b', 'c']) {
+      doc.el.scrollElementTo(findById(doc.el.document, id)!, { y });
+    }
+    await act();
+    for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+    await act();
+  };
+  // the word, on a line 20 tall at 300, is covered from about 200 to 320:
+  // its fragment is its font's content area, which is about the line's
+  await scroll(260);
+  assert.ok(Math.abs(opacity('word') - 0.5) < 0.02, `word ${opacity('word')}`);
+  await scroll(280);
+  const [a0, b0] = [opacity('sa'), opacity('sb')];
+  await scroll(320);
+  const [a1, b1] = [opacity('sa'), opacity('sb')];
+  // held at the top, each moves along its timeline as far for the same
+  // scroll; it had stood still for the inline one, whose box is beside
+  // the block's and around none of it
+  assert.ok(b1 - b0 > 0.05, `inline: ${b0} to ${b1}`);
+  assert.ok(Math.abs(b1 - b0 - (a1 - a0)) < 1e-4, `${a1 - a0} ${b1 - b0}`);
+});
+
+test("an anonymous scroll() of a box positioned against something outside a scroll container is no timeline of that container's", async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#sc{width:100px;height:50px;overflow-x:scroll;display:flex}' +
+      '#sc>.e{flex:none;width:100px;height:10px}' +
+      '.bar{width:10px;height:10px;animation:fade linear;animation-timeline:scroll(inline nearest)}' +
+      '#apart{position:absolute;left:0;top:0}' +
+      '</style><div id="sc"><div class="bar" id="apart"></div><div class="bar" id="in"></div>' +
+      '<div class="e"></div><div class="e"></div><div class="e"></div></div>',
+  );
+  doc.el.scrollElementTo(findById(doc.el.document, 'sc')!, { x: 100 });
+  await act();
+  for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+  await act();
+  // the one in the flow is scrolled by the flex box, half way across; the
+  // absolute one is positioned against the root, which the flex box is
+  // inside, and its nearest scroller is the pane, which scrolls nothing
+  // across: no timeline, and no effect
+  assert.strictEqual(Number(doc.style('in').opacity), 0.5);
+  assert.strictEqual(Number(doc.style('apart').opacity), 1);
+});
+
+test("a ::before's own scroll() and view() are from its box, and a view timeline has a place in a scroller that scrolls nothing its way", async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '@keyframes dim { from { opacity: 1 } to { opacity: 0 } }' +
+      '.sc{width:100px;height:100px;overflow:auto}' +
+      '.in{width:100px;height:300px}' +
+      // its own scroll(nearest): the scroller it is generated in, at 0
+      '#a::before{content:"";display:block;height:10px;animation:fade linear;' +
+      'animation-timeline:scroll(nearest)}' +
+      // a view() across, where nothing scrolls across: still a place
+      '#b::before{content:"";display:block;height:10px;animation:dim linear;' +
+      'animation-timeline:view(inline)}' +
+      '</style>' +
+      '<div class="sc" id="a"><div class="in"></div></div>' +
+      '<div class="sc" id="b"><div class="in"></div></div>',
+  );
+  for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+  await act();
+  const before = (id: string) =>
+    Number(
+      (
+        boxOf(doc.el, id).children.find(
+          (box) => (box as LaidBox & { pseudo?: string }).pseudo === 'before',
+        ) as unknown as { style: ComputedStyle }
+      ).style.opacity,
+    );
+  assert.strictEqual(before('a'), 0, 'its scroller, at its start');
+  // the subject is as wide as the scrollport, which scrolls nothing
+  // across: half way through its cover range, where it was inactive
+  assert.strictEqual(before('b'), 0.5, 'a view across');
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

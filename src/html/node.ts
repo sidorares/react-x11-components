@@ -241,6 +241,7 @@ import {
   PAINT_ORDER,
   SHAPE_STYLES,
   SHIFTED_LINES,
+  STICKY_SIZES,
   TEXT_SHIFTS,
   TRANSITION_IMAGES,
   TRANSITION_KEYS,
@@ -307,12 +308,14 @@ import {
 import type { PlacedTransition } from './layout/block.js';
 import {
   frameModeOf,
+  frameOf as frameOfBox,
   onPage,
   pageMargins,
   pageSides,
 } from './layout/writing.js';
 import {
   endOrigins,
+  escapes,
   isScroller,
   scrollBarHit,
   scrollBarsOf,
@@ -327,7 +330,10 @@ import {
   updatePositionVisibility,
   scrolledBy,
   scrollMoves,
+  scrollInFrame,
+  scrollOnPage,
   scrollStateOf,
+  turnedOnPage,
   setScrollOffsets,
   STUCK,
   wantedScroll,
@@ -4057,13 +4063,43 @@ export class HtmlViewNode extends Node {
     const root = tree.root;
     if (refitAnchored(root, this._fromOrigin(viewport))) {
       // asked as a paint reads where the boxes are: the layout is the
-      // next frame's
-      void Promise.resolve().then(() => this._invalidate(Stale.Layout));
+      // next frame's — or the read's that asked, now (`_settleRead`)
+      if (this._reading) this._refitOwed = true;
+      else void Promise.resolve().then(() => this._invalidate(Stale.Layout));
     }
     if (!updatePositionVisibility(root, viewport).length) return false;
     stackLayers(root);
     computePaintBounds(root, tree.movedInline);
     return true;
+  }
+
+  /** Whether a page's read is following the pane (`_settleRead`), and
+   *  whether that found a box anchored across its scroll to place again. */
+  private _reading = false;
+  private _refitOwed = false;
+
+  /**
+   * Bring the document up to date for a page's read of where a box is
+   * (`_settle`), with what the pane's scroll moved placed against it
+   * (`_followViewport`) — and a box anchored across that scroll that no
+   * longer fits laid out again by its position options at once, as a
+   * browser's forced layout places it, where a paint leaves it to the next
+   * frame (CSS Anchor Positioning 1, 6.5): read in the animation frame
+   * after a scroll, it was where it no longer fit.
+   */
+  private _settleRead(): void {
+    this._settle();
+    this._reading = true;
+    try {
+      this._followViewport();
+    } finally {
+      this._reading = false;
+    }
+    if (!this._refitOwed) return;
+    this._refitOwed = false;
+    this._invalidate(Stale.Layout);
+    this._settle();
+    this._followViewport();
   }
 
   private _viewportHeight(): number {
@@ -6385,7 +6421,6 @@ export class HtmlViewNode extends Node {
     if (want <= reaches + 0.5) return;
     this._heldScrollX = want / pane.scale;
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = false;
     this.invalidate(false, this, 'paint');
   }
 
@@ -6437,19 +6472,27 @@ export class HtmlViewNode extends Node {
    *  scrolled by something else — the wheel, a smooth scroll core runs —
    *  and the hold is over (`heldScrollX`). */
   private _heldFrom = 0;
-  /** Whether the scroll held is the viewport's origin, which a page reads
-   *  as where the pane is (`pageScrollX`); a page's own `scrollTo` held is
-   *  read where the pane is until it takes it. */
-  private _heldOrigin = false;
 
   /**
-   * `heldScrollX` where what is held is the viewport's scroll origin, a page
-   * starting there or kept there as what spills past its left grows: a page
-   * reads the pane there, and has its rectangles measured from there, from
-   * its first script, as a browser starts it there. Null otherwise.
+   * `heldScrollX`, read by a page: the viewport's scroll origin, a page
+   * starting there or kept there as what spills past its left grows, and a
+   * page's own `scrollTo` across that the pane cannot take yet — where a
+   * browser has the viewport already, so a page reads it there and has its
+   * rectangles measured from there. Null where none is held.
    */
   pageScrollX(): number | null {
-    return this._heldOrigin ? this.heldScrollX() : null;
+    return this.heldScrollX();
+  }
+
+  /**
+   * Where the pane is down, in device pixels, where a page's scroll down is
+   * held for the pane's next pass (`oweScrollDown`): where it is about to
+   * be, which a browser has it at already, so a page that scrolls the
+   * viewport as it loads reads back where it went, and not the top. Null
+   * where none is held.
+   */
+  pageScrollY(): number | null {
+    return this._heldDown();
   }
 
   /** Hand the pane the scroll across a page asked for before it reached
@@ -6504,7 +6547,6 @@ export class HtmlViewNode extends Node {
     const from = pane.scrollX - was;
     this._heldScrollX = (from + origin) / (pane.scale || 1);
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = true;
     this.invalidate(false, this, 'paint');
   }
 
@@ -7554,8 +7596,7 @@ export class HtmlViewNode extends Node {
    * element with no box — `display: none`, or not in the document.
    */
   elementRect(element: Element): Rect | null {
-    this._settle();
-    this._followViewport();
+    this._settleRead();
     return this._rectOf(element);
   }
 
@@ -8750,8 +8791,7 @@ export class HtmlViewNode extends Node {
    * has none. Null for an element with no box.
    */
   offsetRect(element: Element): OffsetRect | null {
-    this._settle();
-    this._followViewport();
+    this._settleRead();
     const tree = this._tree;
     const box = tree ? this._ownBoxOf(tree, element) : null;
     const own = tree && box ? this._laidOutAt(tree, box) : null;
@@ -11065,7 +11105,7 @@ export class HtmlViewNode extends Node {
    */
   private _timelineProgress = (
     el: object,
-    _pseudo: string,
+    pseudo: string,
     ref: TimelineRef,
   ): ScrollProgress | null => {
     const tree = this._tree;
@@ -11074,6 +11114,10 @@ export class HtmlViewNode extends Node {
     let view: boolean;
     let axis: string;
     let scrollerKind: 'nearest' | 'root' | 'self' = 'nearest';
+    // the pseudo-element whose box it is from: the one animated, for its
+    // own `scroll()` and `view()`, or the one declaring a named one
+    let declaredBy: 'before' | 'after' | undefined =
+      pseudo === 'before' || pseudo === 'after' ? pseudo : undefined;
     let inset: readonly [Len, Len] = ['auto', 'auto'];
     if (ref.kind === 'scroll') {
       view = false;
@@ -11089,21 +11133,30 @@ export class HtmlViewNode extends Node {
         subject,
         ref.name,
         this._source.document,
+        this._pseudoStyleOf,
       );
       if (!named) return null;
       subject = named.el;
+      declaredBy = named.pseudo;
       view = named.view;
       axis = named.axis;
       inset = named.inset;
       scrollerKind = view ? 'nearest' : 'self';
     } else return null;
-    const box = this._firstBoxesOf(tree).get(subject);
+    // a `::before`'s or an `::after`'s own timeline is from its box, which
+    // is in the element's: `scroll(nearest)` on one in a scroll container
+    // is the container's
+    const box = declaredBy
+      ? this._pseudoBoxOf(tree, subject, declaredBy)
+      : this._firstBoxesOf(tree).get(subject);
     if (!box) return null;
     const source = this._timelineSource(box, scrollerKind, axis);
     if (!source) return null;
     const { scroller, down, reversed } = source;
     const port = this._scrollportOf(scroller, down);
-    if (!(port.max > 0)) return null;
+    // a scroll timeline of a scroller that scrolls nothing that way is
+    // inactive; a view timeline's subject still has a place in it
+    if (!view && !(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
     if (!view) {
       return {
@@ -11135,6 +11188,14 @@ export class HtmlViewNode extends Node {
     };
   };
 
+  /** An element's `::before`'s or `::after`'s style, where it has a box
+   *  (`namedTimeline`'s pseudo-elements). */
+  private _pseudoStyleOf: PseudoStyleOf = (el, which) => {
+    const tree = this._tree;
+    const box = tree ? this._pseudoBoxOf(tree, el, which) : null;
+    return box ? generatedStyle(box) : null;
+  };
+
   /**
    * Where a view timeline's subject is in the scrollport it is seen in,
    * along one axis (`ViewPlace`): its border box from the scrollport's
@@ -11154,6 +11215,16 @@ export class HtmlViewNode extends Node {
     inset: readonly [Len, Len],
   ): ViewPlace {
     const sticky = stickyReach(box, scroller, down);
+    const tree = this._tree;
+    const held = tree
+      ? stickyAround(tree, this._firstBoxesOf(tree), box, scroller)
+      : [];
+    // how far they hold it now, which its place at rest is without
+    let shift = 0;
+    for (const at of held) {
+      const stuck = STUCK.get(at);
+      if (stuck) shift += down ? stuck[1] : stuck[0];
+    }
     // where layout placed the subject, with no transform on it or between
     // it and its scroller (CSS Scroll-driven Animations 1, 3.2), which
     // layout moved it by; and where the page has that, through the turn of
@@ -11166,14 +11237,20 @@ export class HtmlViewNode extends Node {
       dx += tx;
       dy += ty;
     }
+    // an inline box has no rectangle of its own: it is where its
+    // fragments are on its block's lines, all of them together
+    const own =
+      box.kind === 'inline' && this._tree
+        ? (this._fragmentsOf(this._tree, box)?.all ?? box)
+        : box;
     const laid = {
-      x: box.x - dx,
-      y: box.y - dy,
-      width: box.width,
-      height: box.height,
+      x: own.x - dx,
+      y: own.y - dy,
+      width: own.width,
+      height: own.height,
     };
-    const rect = this._tree?.vertical ? onPage(box, laid) : laid;
-    const at = (down ? rect.y : rect.x) - sticky.shift - portStart;
+    const rect = tree?.vertical ? onPage(box, laid) : laid;
+    const at = (down ? rect.y : rect.x) - shift - portStart;
     const size = down ? rect.height : rect.width;
     // from a scroll origin at the axis's end the scrollport's start is its
     // far side, and what the subject's near edge is its far one
@@ -11188,7 +11265,7 @@ export class HtmlViewNode extends Node {
     // and is seen from where they would hold it at most, as before
     const stickies = this._tree?.vertical
       ? null
-      : stickyLimits(box, scroller, down, reversed, portStart, portSize);
+      : stickyLimits(held, down, reversed, portStart, portSize);
     return {
       start,
       end: start + size,
@@ -14019,14 +14096,20 @@ export class HtmlViewNode extends Node {
     }
     const state = scrollStateOf(box);
     const s = this._scale;
-    // from its scroll origin, as `scrollLeft` and `scrollTop` count
-    return {
+    // from its scroll origin, as `scrollLeft` and `scrollTop` count, in the
+    // page's axes where a frame of a vertical writing mode turns its own
+    const at = scrollOnPage(box, {
       x: (state.x - state.originX) / s,
       y: (state.y - state.originY) / s,
-      width: state.width / s,
-      height: state.height / s,
-      clientWidth: state.clientWidth / s,
-      clientHeight: state.clientHeight / s,
+    });
+    const turned = this._tree?.vertical && turnedOnPage(box);
+    return {
+      x: at.x,
+      y: at.y,
+      width: (turned ? state.height : state.width) / s,
+      height: (turned ? state.width : state.height) / s,
+      clientWidth: (turned ? state.clientHeight : state.clientWidth) / s,
+      clientHeight: (turned ? state.clientWidth : state.clientHeight) / s,
       clientTop: state.clientTop / s,
       clientLeft: state.clientLeft / s,
     };
@@ -14099,6 +14182,63 @@ export class HtmlViewNode extends Node {
    * element before it scrolls it. False for an element with no box, and
    * for one that is no scroll container.
    */
+  /**
+   * What a scroll that brings an element into view lines up (CSSOM View 4,
+   * "determine the scroll-into-view position", by CSS Scroll Snap 1, 6): the
+   * element's border box outset by its `scroll-margin`, top, right, bottom
+   * and left, and the scrollport of `scroller` — the viewport where it is
+   * null — inset by its `scroll-padding`, `auto` being none, in CSS pixels.
+   */
+  scrollInsets(element: Element, scroller: Element | null): number[] {
+    this._prepare(this.abs.width || 1);
+    const s = this._scale;
+    const tree = this._tree;
+    const box = tree ? this._boxOf(tree, element) : null;
+    const st = box?.style ?? null;
+    const margins = st
+      ? [
+          st.scrollMarginTop,
+          st.scrollMarginRight,
+          st.scrollMarginBottom,
+          st.scrollMarginLeft,
+        ]
+      : [0, 0, 0, 0];
+    let port: Box | null = null;
+    let width = 0;
+    let height = 0;
+    if (scroller) {
+      port = this._scrollerOf(scroller);
+      if (port) {
+        const state = scrollStateOf(port);
+        width = state.clientWidth;
+        height = state.clientHeight;
+      }
+    } else {
+      port = this._rootBox();
+      const view = this._viewport();
+      width = view?.width ?? 0;
+      height = view?.height ?? 0;
+    }
+    // a box stuck in the container moves with its scroll, so no scroll
+    // takes it clear of the padding: it is lined up in the whole scrollport,
+    // as Chrome has it
+    for (let at = box; at && at !== port; at = at.parent) {
+      const stuck = at.style.position === 'sticky' ? STUCK.get(at) : null;
+      if (stuck && (stuck[0] || stuck[1]))
+        return [...margins, 0, 0, 0, 0].map((v) => v / s);
+    }
+    const ps = port?.style;
+    const pad = (len: Len | undefined, of: number) =>
+      len === undefined || len === AUTO ? 0 : Math.max(0, resolveLen(len, of));
+    const paddings = [
+      pad(ps?.scrollPaddingTop, height),
+      pad(ps?.scrollPaddingRight, width),
+      pad(ps?.scrollPaddingBottom, height),
+      pad(ps?.scrollPaddingLeft, width),
+    ];
+    return [...margins, ...paddings].map((v) => v / s);
+  }
+
   scrollMoves(scroller: Element, element: Element): boolean {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
@@ -14130,7 +14270,16 @@ export class HtmlViewNode extends Node {
     if (!box) return null;
     const state = scrollStateOf(box);
     const s = this._scale;
-    // `to` is from its scroll origin, as `scrollLeft` is
+    // `to` is from its scroll origin, as `scrollLeft` is, and in the
+    // page's axes, which a frame of a vertical writing mode turns
+    const vertical = !!this._tree?.vertical;
+    if (vertical) {
+      const now = scrollOnPage(box, {
+        x: (state.x - state.originX) / s,
+        y: (state.y - state.originY) / s,
+      });
+      to = scrollInFrame(box, { x: to.x ?? now.x, y: to.y ?? now.y });
+    }
     const at = this._snapScroll(
       box,
       to.x === undefined ? state.x : to.x * s + state.originX,
@@ -14141,12 +14290,14 @@ export class HtmlViewNode extends Node {
     // a scroll into view of what the container shows as it is moves
     // nothing, and costs nothing
     if (Math.abs(at.x - state.x) < 0.5 && Math.abs(at.y - state.y) < 0.5) {
-      return {
+      const kept = {
         x: (state.x - state.originX) / s,
         y: (state.y - state.originY) / s,
       };
+      return vertical ? scrollOnPage(box, kept) : kept;
     }
-    return this._scrollBox(box, at.x / s, at.y / s);
+    const moved = this._scrollBox(box, at.x / s, at.y / s);
+    return vertical ? scrollOnPage(box, moved) : moved;
   }
 
   /**
@@ -14216,9 +14367,9 @@ export class HtmlViewNode extends Node {
     const state = scrollStateOf(box);
     const left = box.x + box.borderLeft;
     const top = box.y + box.borderTop;
-    const at = (child: Box) =>
+    const at = (child: Box, rect: SnapRect) =>
       scrollMoves(box, child)
-        ? { x: child.x - left + state.x, y: child.y - top + state.y }
+        ? { x: rect.x - left + state.x, y: rect.y - top + state.y }
         : null;
     const areas = only ? areaIn(box, only, at) : snapAreasIn(box, at);
     if (!areas) return null;
@@ -14274,8 +14425,8 @@ export class HtmlViewNode extends Node {
     const port = this._viewport();
     if (!tree || !root || !style || !port) return null;
     if (!only && !style.scrollSnapType) return null;
-    const at = (child: Box) =>
-      fixedToViewport(child) ? null : { x: child.x, y: child.y };
+    const at = (child: Box, rect: SnapRect) =>
+      fixedToViewport(child) ? null : { x: rect.x, y: rect.y };
     const areas = only ? areaIn(root, only, at) : snapAreasIn(root, at);
     if (!areas) return null;
     return {
@@ -14551,7 +14702,13 @@ export class HtmlViewNode extends Node {
           inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
         };
       } else if (ref.kind === 'name') {
-        const named = namedTimeline(tree, el, ref.name, this._source.document);
+        const named = namedTimeline(
+          tree,
+          el,
+          ref.name,
+          this._source.document,
+          this._pseudoStyleOf,
+        );
         timeline = !named
           ? { kind: 'none' }
           : named.view
@@ -17400,26 +17557,37 @@ function namedTimeline(
   el: Element,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
     if (style) {
       const own = declaredTimeline(at, style, name);
       if (own) return own;
-      if (scopes(style, name)) return scopedTimeline(tree, at, name, doc);
+      if (scopes(style, name))
+        return scopedTimeline(tree, at, name, doc, pseudoOf);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
-  return scopedTimeline(tree, null, name, doc);
+  return scopedTimeline(tree, null, name, doc, pseudoOf);
 }
 
 interface NamedTimeline {
   el: Element;
+  /** Where its `::before` or its `::after` declares it, whose box is the
+   *  scroller or the subject; the element is still what a page reads. */
+  pseudo?: 'before' | 'after';
   view: boolean;
   axis: string;
   inset: readonly [Len, Len];
 }
+
+/** The style of an element's `::before` or `::after`, where it has one. */
+type PseudoStyleOf = (
+  el: Element,
+  which: 'before' | 'after',
+) => ComputedStyle | null;
 
 /** Whether a style's `timeline-scope` takes a name. */
 function scopes(style: ComputedStyle, name: string): boolean {
@@ -17431,6 +17599,24 @@ function scopes(style: ComputedStyle, name: string): boolean {
 
 /** The timeline an element declares by a name, a scroll's before a view's
  *  and a later place in a list before an earlier (4.3). */
+/** What `declaredTimeline` finds in a style, or in a pseudo-element's of
+ *  `el`, passing over the many that declare no timeline at all. */
+function declaredIn(
+  el: Element,
+  style: ComputedStyle | null,
+  name: string,
+  pseudo?: 'before' | 'after',
+): NamedTimeline | null {
+  if (
+    !style ||
+    (style.scrollTimelineName === 'none' && style.viewTimelineName === 'none')
+  ) {
+    return null;
+  }
+  const timeline = declaredTimeline(el, style, name);
+  return timeline && pseudo ? { ...timeline, pseudo } : timeline;
+}
+
 function declaredTimeline(
   at: Element,
   style: ComputedStyle,
@@ -17469,19 +17655,18 @@ function scopedTimeline(
   scope: Element | null,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   let found: NamedTimeline | null = null;
   for (const [el, entry] of tree.styles) {
     if (el === scope) continue;
-    const style = entry.style;
-    // most elements declare no timeline, and are passed over cheaply
-    if (
-      style.scrollTimelineName === 'none' &&
-      style.viewTimelineName === 'none'
-    ) {
-      continue;
-    }
-    const timeline = declaredTimeline(el, style, name);
+    // the element's own, and its `::before`'s and `::after`'s after it
+    const timeline =
+      declaredIn(el, entry.style, name) ??
+      (pseudoOf && GENERATED_ON.has(el)
+        ? (declaredIn(el, pseudoOf(el, 'after'), name, 'after') ??
+          declaredIn(el, pseudoOf(el, 'before'), name, 'before'))
+        : null);
     if (!timeline) continue;
     // the tree is the last build's, and may hold an element a page's script
     // has taken out since: what it declared is no timeline now
@@ -17561,24 +17746,24 @@ function stickyReach(
  * lets its margin box move each way.
  */
 function stickyLimits(
-  box: Box,
-  scroller: Box | null,
+  held: readonly Box[],
   down: boolean,
   reversed: boolean,
   portStart: number,
   portSize: number,
 ): StickyLimit[] {
   const out: StickyLimit[] = [];
-  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
-    if (at.style.position !== 'sticky' || at.kind === 'inline') continue;
-    let cb = at.parent;
-    while (cb && cb.kind === 'inline') cb = cb.parent;
+  for (const at of held) {
+    // an inline one is where its fragments are (`setStickyRect`)
+    const sized = at.kind === 'inline' ? STICKY_SIZES.get(at) : at;
+    if (!sized) continue;
+    const cb = stickyBlockOf(at);
     if (!cb) continue;
     const st = at.style;
     const stuck = STUCK.get(at);
     const rest =
       (down ? at.y : at.x) - (stuck ? (down ? stuck[1] : stuck[0]) : 0);
-    const size = down ? at.height : at.width;
+    const size = down ? sized.height : sized.width;
     const cbAt = (down ? cb.contentY : cb.contentX) - portStart;
     const cbEnd = cbAt + (down ? cb.contentHeight : cb.contentWidth);
     const near = rest - portStart;
@@ -17608,11 +17793,62 @@ function stickyLimits(
   return out;
 }
 
-/** The scroll container a box is scrolled by: the nearest one around it,
- *  or null for the pane the document is in. */
+/**
+ * The sticky boxes a view timeline's subject is in, up to its scroller:
+ * those around its box, and the sticky inline boxes around its element, a
+ * block in which is in an anonymous block beside the inline box's pieces
+ * and moved with them (`CUT_PIECES`), and no box of which is around it.
+ */
+function stickyAround(
+  tree: BoxTree,
+  firstBoxes: ReadonlyMap<Element, Box>,
+  box: Box,
+  scroller: Box | null,
+): Box[] {
+  const out: Box[] = [];
+  for (let at: Box | null = box; at && at !== scroller; at = at.parent) {
+    if (at.style.position === 'sticky') out.push(at);
+  }
+  const stop = scroller?.el ?? null;
+  for (let el = box.el ? flatParentOf(box.el) : null; el && el !== stop;) {
+    if (!isElement(el)) break;
+    const style = tree.styles.get(el)?.style;
+    const at = style?.position === 'sticky' ? firstBoxes.get(el) : undefined;
+    if (at?.kind === 'inline' && !out.includes(at)) out.push(at);
+    el = flatParentOf(el);
+  }
+  return out;
+}
+
+/** The containing block a sticky box keeps inside, as the layout has it
+ *  (`stickyContainer`): past the inline boxes around it and an anonymous
+ *  block no page wrote, which a sticky inline box broken around a block is
+ *  in. */
+function stickyBlockOf(box: Box): Box | null {
+  let cb = box.parent;
+  while (cb && (cb.kind === 'inline' || (cb.parent && !cb.el && !cb.pseudo))) {
+    cb = cb.parent;
+  }
+  return cb;
+}
+
+/** The scroll container a box is scrolled by: the nearest one around it
+ *  in its containing block chain, or null for the pane the document is in.
+ *  One a box positioned out of the flow on the way escapes (`escapes`),
+ *  its containing block outside it, scrolls none of it. */
 function nearestScroller(box: Box): Box | null {
-  for (let at = box.parent; at; at = at.parent) {
-    if (isScroller(at)) return at;
+  const apart: Box[] = [];
+  for (let at: Box | null = box; at;) {
+    if (at.outOfFlow) apart.push(at);
+    const parent: Box | null = at.parent;
+    if (
+      parent &&
+      isScroller(parent) &&
+      !apart.some((b) => escapes(b, parent))
+    ) {
+      return parent;
+    }
+    at = parent;
   }
   return null;
 }
@@ -21264,10 +21500,7 @@ function snapBox(c: SnapContainer, key: SnapKey | null): Box | null {
  *  tree order, each placed by `at` — null for one that is not the
  *  container's to scroll. An inline box's rect is never laid out, and is
  *  no area here. */
-function snapAreasIn(
-  container: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] {
+function snapAreasIn(container: Box, at: SnapPlace): SnapArea[] {
   const out: SnapArea[] = [];
   const walk = (b: Box): void => {
     for (const child of b.children) {
@@ -21284,11 +21517,7 @@ function snapAreasIn(
 
 /** The one snap area a box is under a container, as `snapAreasIn` would
  *  find it, or null where it is none of the container's. */
-function areaIn(
-  container: Box,
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] | null {
+function areaIn(container: Box, box: Box, at: SnapPlace): SnapArea[] | null {
   if (!canBeArea(box)) return null;
   let a = box.parent;
   while (a && a !== container) a = a.parent;
@@ -21320,15 +21549,23 @@ function holdsArea(container: Box, box: Box): boolean {
   return true;
 }
 
-function areaAt(
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea | null {
-  const place = at(box);
+function areaAt(box: Box, at: SnapPlace): SnapArea | null {
+  // a box in a vertical writing mode's frame is laid out turned, and is
+  // where the page draws it
+  const laid = { x: box.x, y: box.y, width: box.width, height: box.height };
+  const rect = frameOfBox(box) ? onPage(box, laid) : laid;
+  const place = at(box, rect);
   return place
-    ? { box, x: place.x, y: place.y, width: box.width, height: box.height }
+    ? { box, x: place.x, y: place.y, width: rect.width, height: rect.height }
     : null;
 }
+
+/** A snap area's border box as the page has it. */
+type SnapRect = { x: number; y: number; width: number; height: number };
+
+/** Where a box's snap area is, from its rectangle on the page, in a snap
+ *  container's coordinates at no scroll; null where it is none of its. */
+type SnapPlace = (box: Box, rect: SnapRect) => { x: number; y: number } | null;
 
 /** The scroll containers in a tree that snap on an axis. */
 function snapContainersIn(root: Box): Box[] {

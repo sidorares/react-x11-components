@@ -293,6 +293,7 @@ export function installDom(
     'svgLength',
     'atViewport',
     'scrollMoves',
+    'scrollInsets',
     'geometry',
     'offset',
     'computed',
@@ -3612,7 +3613,7 @@ export function installDom(
     }
     override _time(): number | null {
       const v = this._view();
-      if (!v || !(v.max > 0)) return null;
+      if (!v) return null;
       const [from, to] = v.cover;
       if (!(to - from > 0)) return null;
       return ((v.at - from) / (to - from)) * 100;
@@ -7420,7 +7421,13 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[3]);
       if (this._viewport()) {
-        return Math.max(viewport().height, Math.round(docRect(this)?.[3] ?? 0));
+        // as far down as the viewport's scrollable overflow reaches, what
+        // is positioned out of the flow below the root included
+        const d = documentSize();
+        return Math.max(
+          viewport().height,
+          Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
+        );
       }
       return this.clientHeight;
     }
@@ -7544,6 +7551,14 @@ export function installDom(
         }
         return top;
       };
+      // what is lined up: the element's border box outset by its
+      // `scroll-margin`, in the scrollport inset by the container's
+      // `scroll-padding` (CSS Scroll Snap 1, 6.1 and 6.2), each read once
+      // there is a container to scroll
+      const insets = (port: Any): number[] =>
+        String(call('scrollInsets', this._id, port ? port._id : undefined))
+          .split(',')
+          .map(Number);
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === document.documentElement) break;
         const s = scrollStateOf(at);
@@ -7551,8 +7566,19 @@ export function installDom(
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
-        const byX = place(inline, me[0] - (port[0] + s[7]), me[2], s[4]);
-        const byY = place(block, me[1] - (port[1] + s[6]), me[3], s[5]);
+        const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(at);
+        const byX = place(
+          inline,
+          me[0] - ml - (port[0] + s[7] + pl),
+          me[2] + ml + mr,
+          s[4] - pl - pr,
+        );
+        const byY = place(
+          block,
+          me[1] - mt - (port[1] + s[6] + pt),
+          me[3] + mt + mb,
+          s[5] - pt - pb,
+        );
         if (quiet && !byX && !byY) continue;
         call(
           'scrollElement',
@@ -7566,8 +7592,19 @@ export function installDom(
       const r = docRect(this);
       if (!r) return;
       const v = viewport();
-      const byX = place(inline, r[0] - v.scrollX, r[2], v.width);
-      const byY = place(block, r[1] - v.scrollY, r[3], v.height);
+      const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(null);
+      const byX = place(
+        inline,
+        r[0] - ml - (v.scrollX + pl),
+        r[2] + ml + mr,
+        v.width - pl - pr,
+      );
+      const byY = place(
+        block,
+        r[1] - mt - (v.scrollY + pt),
+        r[3] + mt + mb,
+        v.height - pt - pb,
+      );
       if (quiet && !byX && !byY) return;
       call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
     }
