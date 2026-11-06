@@ -121,6 +121,7 @@ import {
   parserError,
   tagOf,
   typeNameOf,
+  setSheetDisabled,
   xmlTree,
 } from '../dom.js';
 import {
@@ -4449,6 +4450,20 @@ export class DomHost {
         state.version = this._s.sheetVersion += 1;
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}\u0000${rules[0]}`;
+      }
+      // a `<style>`'s or a `<link>`'s sheet disabled, or let be (CSSOM
+      // 6.1.1, `disabled`): out of the cascade while it is, told as a
+      // change of an attribute nothing has, which the cascade reads
+      case 'sheetDisabled': {
+        const el = this._element(a);
+        if (setSheetDisabled(el, b === true)) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-sheet-disabled',
+          });
+        }
+        return null;
       }
       case 'sheetDelete': {
         const el = this._element(a);

@@ -179,8 +179,8 @@ function insetText(inset: readonly [Len, Len], scale: number): string | null {
 function positionVisibilityText(bits: number): string {
   if (!bits) return 'always';
   return [
-    bits & 4 ? 'anchors-valid' : '',
-    bits & 1 ? 'anchors-visible' : '',
+    bits & 4 ? 'anchor-valid' : '',
+    bits & 1 ? 'anchor-visible' : '',
     bits & 2 ? 'no-overflow' : '',
   ]
     .filter(Boolean)

@@ -7,6 +7,7 @@ import type { DrawnNode } from 'react-x11';
 import { Html } from '../../src/index.js';
 import { parseColor } from '../../src/html/css/values.js';
 import { COLUMN_PIECES } from '../../src/html/layout/boxes.js';
+import { resolvedInsets } from '../../src/html/layout/block.js';
 import {
   FONTS,
   boxOf,
@@ -1197,4 +1198,10 @@ test('an absolutely positioned box whose containing block is broken across colum
     [95, 0, 20, 20],
   ]);
   assert.deepStrictEqual(piecesOf('t'), piecesOf('a'));
+  // and its insets read where the strip had it, not the rectangle around
+  // its pieces (WPT anchor-getComputedStyle-002)
+  assert.deepStrictEqual(
+    resolvedInsets(boxOf(el, 't') as never, 400, 600),
+    [30, 55, 30, 5],
+  );
 });

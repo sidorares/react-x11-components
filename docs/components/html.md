@@ -7026,7 +7026,7 @@ document is laid out again in the next frame and the options tried where
 the anchor is now. `position-visibility` hides a box, with all it holds,
 where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
-scrolls (`anchors-visible`, the initial value), and where it overflows its
+scrolls (`anchor-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
 either hides or shows it in the frame it scrolls. A box with a default
 anchor whose containing block is a scroll container's is placed in its
@@ -7038,7 +7038,14 @@ than the scroll can reach (CSS Box Alignment 3, 4.4.1.2): without end on
 the side a scroll container's, or the document's, scroll goes, and for a
 box fixed to the viewport anchored in the document, over the initial
 containing block and the root's margin box. `safe` and `unsafe` before
-`normal` are not taken, as Chrome takes neither. Not done: `anchors-valid`,
+`normal` are not taken, as Chrome takes neither. `position-visibility` takes
+the names it has now, `anchor-visible` and `anchor-valid`, and reads the
+plural ones it had first as them. A page reads an `auto` inset that a
+`position-area` or `anchor-center` places a box against its default anchor
+by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
+multicol container's columns has its insets read where the strip had it.
+A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
+is out of the cascade until it is let be. Not done: `anchor-valid`,
 and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
