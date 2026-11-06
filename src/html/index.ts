@@ -1732,6 +1732,10 @@ export function makeHtmlHandle(
       nodeRef.current?.atViewport(element) ?? false,
     snapChanged: (element: Element | null, kind: 'change' | 'changing') =>
       nodeRef.current?.snapChanged(element, kind) ?? null,
+    scrollInsets: (element: Element, scroller: Element | null) =>
+      nodeRef.current?.scrollInsets(element, scroller) ?? [
+        0, 0, 0, 0, 0, 0, 0, 0,
+      ],
     scrollMoves: (scroller: Element, element: Element) =>
       nodeRef.current?.scrollMoves(scroller, element) ?? false,
     showClip: (element: Element, file: string | null, reports?: boolean) =>
