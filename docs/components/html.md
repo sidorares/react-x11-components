@@ -7260,7 +7260,13 @@ element takes the wheel and the scroll keys for the viewport itself, and
 snaps it as it snaps a container. An area is the nearest scroll container on
 its containing blocks', so a box positioned past a scroll container inside
 the snap container is the snap container's; an anonymous box takes its
-parent's `scroll-snap-align` with the rest of its style, and is none. A
+parent's `scroll-snap-align` with the rest of its style, and is none.
+`block` and `inline`, in `scroll-snap-type` and in the two values of
+`scroll-snap-align`, are the snap container's axes, as its writing mode
+puts them, and an area's `start` is the end the container's flow starts at:
+the right in a right-to-left line, and in `vertical-rl`, where the block
+axis runs across (CSS Scroll Snap 1, 6.2). An area in a vertical writing
+mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
 
