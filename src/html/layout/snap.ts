@@ -177,6 +177,57 @@ function placeOf(
   return { at, to: at };
 }
 
+/**
+ * Where an area larger than the snapport may rest nearest `want`, on an
+ * axis ("snapping boxes that overflow the scrollport"): anywhere it covers
+ * the snapport, but where the snapport's start would be inside another of
+ * the container's areas, which intrudes there and has a snap position of
+ * its own — so a scroll that comes to rest across a small area inside a
+ * long one lines that area up, or rests past it, and does not cut it.
+ */
+function nearestCovering(
+  c: SnapContainer,
+  area: SnapArea,
+  place: { at: number; to: number },
+  axis: Axis,
+  want: number,
+  areas: readonly SnapArea[],
+): number {
+  const { pad } = snapportOn(c, axis);
+  // the open stretches of the range the other areas take out
+  const cuts: [number, number][] = [];
+  for (const other of areas) {
+    if (other === area || !placeOf(c, other, axis)) continue;
+    const st = other.box.style;
+    const before = axis === 'x' ? st.scrollMarginLeft : st.scrollMarginTop;
+    const after = axis === 'x' ? st.scrollMarginRight : st.scrollMarginBottom;
+    const start = (axis === 'x' ? other.x : other.y) - before - pad;
+    const end =
+      start + (axis === 'x' ? other.width : other.height) + before + after;
+    if (end > place.at && start < place.to) cuts.push([start, end]);
+  }
+  if (!cuts.length) return nearestIn(want, place);
+  cuts.sort((a, b) => a[0] - b[0]);
+  // what is left of the range, stretch by stretch
+  let best = place.at;
+  let off = Infinity;
+  const take = (from: number, to: number) => {
+    if (to < from) return;
+    const at = Math.min(Math.max(want, from), to);
+    if (Math.abs(at - want) < off) {
+      off = Math.abs(at - want);
+      best = at;
+    }
+  };
+  let from = place.at;
+  for (const [start, end] of cuts) {
+    if (start >= from) take(from, Math.min(start, place.to));
+    from = Math.max(from, end);
+  }
+  take(from, place.to);
+  return off === Infinity ? nearestIn(want, place) : best;
+}
+
 /** The place in a range nearest a place: itself, inside it. */
 function nearestIn(want: number, place: { at: number; to: number }): number {
   return Math.min(Math.max(want, place.at), place.to);
@@ -283,7 +334,12 @@ function snapEach(
       const place = placeOf(c, area, axis);
       // where it was asked to be is a place an area larger than the
       // snapport may rest
-      if (place) places.push({ at: nearestIn(want, place), box: area.box });
+      if (!place) continue;
+      const at =
+        place.to > place.at
+          ? nearestCovering(c, area, place, axis, want, areas)
+          : place.at;
+      places.push({ at, box: area.box });
     }
     // a page goes no farther than a snapport where a place ahead is that
     // near, however much nearer a farther one is to where it was going
@@ -523,8 +579,20 @@ export function resnap(
     if (!area || !visibleAcross(c, area, axis, axis === 'x' ? y : x)) continue;
     const place = placeOf(c, area, axis);
     if (!place) continue;
+    const here = axis === 'x' ? x : y;
+    // a covering area another now intrudes on where the container is no
+    // longer holds it there: it comes to rest where a snap would
+    if (
+      place.to > place.at &&
+      here > place.at - 0.5 &&
+      here < place.to + 0.5 &&
+      Math.abs(nearestCovering(c, area, place, axis, here, c.areas) - here) >
+        0.5
+    ) {
+      continue;
+    }
     kept[axis] = area;
-    const at = nearestIn(axis === 'x' ? x : y, place);
+    const at = nearestIn(here, place);
     if (axis === 'x') {
       out.x = at;
       out.targetX = target;

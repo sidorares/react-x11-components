@@ -7203,7 +7203,11 @@ start, the end or the centre of the snapport, the scrollport inset by
 `scroll-padding`. A script's scroll — `scrollTo`, `scrollTop` — comes to
 rest at the place nearest where it asked, where `mandatory` says it must and
 within a third of the snapport where `proximity` says it may, or anywhere
-inside an area larger than the snapport; a place past what the container
+inside an area larger than the snapport, but where the snapport's start
+would be inside another area, which intrudes there and has a place of its
+own: a scroll across a small area inside a long one lines it up or rests
+past it, and a container whose long area another grows over where it
+rests snaps again; a place past what the container
 can be scrolled to is as far as it can go that way. A scroll with a
 direction — `scrollBy`, the scroll keys, the wheel once it has rested on the
 container — rests only at a place ahead of where it began, the one nearest
