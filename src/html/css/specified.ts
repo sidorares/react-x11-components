@@ -84,6 +84,13 @@ export function specifiedValue(
   if (/(?<![\w-])anchor(?:-size)?\(/i.test(value)) {
     return rewriteAnchors(value.trim(), name);
   }
+  // what scroll snapping takes (CSS Scroll Snap 1 and 2)
+  const snap = SNAP_GRAMMARS[name];
+  if (snap) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return snap(word);
+  }
   // what scroll-driven animations name and take (Scroll Animations 1)
   const timeline = TIMELINE_GRAMMARS[name];
   if (timeline) {
@@ -586,6 +593,152 @@ const TIMELINE_GRAMMARS: Record<string, (value: string) => string | null> = {
   'view-timeline': (value) => listOf(value, (item) => timelineItem(item, true)),
 };
 
+// --- scroll snapping (CSS Scroll Snap 1, 6 and 7; Scroll Snap 2) --------------
+
+/** One `scroll-padding` value: `auto`, or a `<length-percentage>` not
+ *  below nought, which a math function is clamped to as it computes and a
+ *  literal is not (CSS Scroll Snap 1, 6.1); `0` is `0px`. One
+ *  `scroll-margin` value is a `<length>`, which may be negative (6.2). */
+function snapLength(word: string, padding: boolean): string | null {
+  if (padding && /^auto$/i.test(word)) return 'auto';
+  if (/^(?:calc|min|max|clamp)\(/i.test(word)) {
+    // a math function of lengths and numbers, and percentages where the
+    // property takes them: never a keyword
+    if (!lengthPercentage(word)) return null;
+    const inner = word.slice(word.indexOf('(') + 1, -1);
+    if (/(?<![\w-])(?:auto|[a-z-]*content)(?![\w-])/i.test(inner)) return null;
+    if (!padding && inner.includes('%')) return null;
+    return serializeMath(word) ?? word;
+  }
+  if (!lengthPercentage(word)) return null;
+  if (!padding && word.endsWith('%')) return null;
+  if (padding && /^-/.test(word) && !/^-0*\.?0*(?:[a-z%]*)$/i.test(word)) {
+    return null;
+  }
+  const zero = /^[+-]?0*\.?0*$/.test(word);
+  return zero ? '0px' : word.toLowerCase();
+}
+
+/** One to `max` values of a box's sides, each `snapLength`'s, collapsed to
+ *  the fewest that say them (CSSOM's shortest serialization). */
+function snapSides(
+  value: string,
+  padding: boolean,
+  max: number,
+): string | null {
+  const words = splitValue(value).filter(Boolean);
+  if (!words.length || words.length > max) return null;
+  const read = words.map((w) => snapLength(w, padding));
+  if (read.some((w) => w === null)) return null;
+  const v = read as string[];
+  if (max === 2) return v.length === 2 && v[0] !== v[1] ? v.join(' ') : v[0];
+  return shortestSides(fourOf(v)).join(' ');
+}
+
+/** Four sides, top first, from one to four values as a box's are given. */
+function fourOf(v: readonly string[]): string[] {
+  const [t, r = t, b = t, l = r] = v;
+  return [t, r, b, l];
+}
+
+/** Four sides, top first, as few as say them. */
+function shortestSides([t, r, b, l]: readonly string[]): string[] {
+  if (l !== r) return [t, r, b, l];
+  if (b !== t) return [t, r, b];
+  if (r !== t) return [t, r];
+  return [t];
+}
+
+const SNAP_LONGHANDS = (prefix: string) => ({
+  four: ['top', 'right', 'bottom', 'left'].map((s) => `${prefix}-${s}`),
+  block: [`${prefix}-block-start`, `${prefix}-block-end`],
+  inline: [`${prefix}-inline-start`, `${prefix}-inline-end`],
+});
+
+const SNAP_GRAMMARS: Record<string, (value: string) => string | null> = {
+  // `none`, or an axis and a strictness, `proximity` left out (6.1);
+  // `pair` is Scroll Snap 2's
+  'scroll-snap-type': (value) => {
+    const words = splitValue(value.toLowerCase()).filter(Boolean);
+    if (words.length === 1 && words[0] === 'none') return 'none';
+    if (!words.length || words.length > 2) return null;
+    if (!/^(?:x|y|block|inline|both|pair)$/.test(words[0])) return null;
+    const strict = words[1] ?? 'proximity';
+    if (strict !== 'mandatory' && strict !== 'proximity') return null;
+    return strict === 'mandatory' ? `${words[0]} mandatory` : words[0];
+  },
+  // the block axis's alignment then the inline axis's, the second left
+  // out where it is the first (6.2)
+  'scroll-snap-align': (value) => {
+    const words = splitValue(value.toLowerCase()).filter(Boolean);
+    if (!words.length || words.length > 2) return null;
+    if (!words.every((w) => /^(?:none|start|end|center)$/.test(w))) return null;
+    return words.length === 2 && words[0] !== words[1]
+      ? words.join(' ')
+      : words[0];
+  },
+  'scroll-snap-stop': (value) => {
+    const word = value.toLowerCase();
+    return word === 'normal' || word === 'always' ? word : null;
+  },
+  // Scroll Snap 2, 3.1
+  'scroll-initial-target': (value) => {
+    const word = value.toLowerCase();
+    return word === 'none' || word === 'nearest' ? word : null;
+  },
+  ...Object.fromEntries(
+    (['scroll-padding', 'scroll-margin'] as const).flatMap((prefix) => {
+      const padding = prefix === 'scroll-padding';
+      const one = (value: string) => snapSides(value, padding, 1);
+      const { four, block, inline } = SNAP_LONGHANDS(prefix);
+      return [
+        [prefix, (value: string) => snapSides(value, padding, 4)],
+        [`${prefix}-block`, (value: string) => snapSides(value, padding, 2)],
+        [`${prefix}-inline`, (value: string) => snapSides(value, padding, 2)],
+        ...[...four, ...block, ...inline].map((n) => [n, one]),
+      ];
+    }),
+  ),
+};
+
+/** A scroll snap shorthand's longhands from its canonical value, or null
+ *  for a name that is none. */
+function snapLonghands(name: string, value: string): [string, string][] | null {
+  const m = /^(scroll-padding|scroll-margin)(?:-(block|inline))?$/.exec(name);
+  if (!m) return null;
+  const longhands = SNAP_LONGHANDS(m[1]);
+  const words = splitValue(value).filter(Boolean);
+  if (!m[2]) {
+    return fourOf(words).map((v, i) => [longhands.four[i], v]);
+  }
+  const pair = m[2] === 'block' ? longhands.block : longhands.inline;
+  return [
+    [pair[0], words[0]],
+    [pair[1], words[1] ?? words[0]],
+  ];
+}
+
+/** A scroll snap shorthand read back from its longhands, '' where one is
+ *  missing; null for a name that is none. */
+function snapComposed(
+  name: string,
+  longhand: (name: string) => string | null,
+): string | null {
+  const m = /^(scroll-padding|scroll-margin)(?:-(block|inline))?$/.exec(name);
+  if (!m) return null;
+  const longhands = SNAP_LONGHANDS(m[1]);
+  const names = !m[2]
+    ? longhands.four
+    : m[2] === 'block'
+      ? longhands.block
+      : longhands.inline;
+  const values = names.map(longhand);
+  if (values.some((v) => v === null)) return '';
+  const v = values as string[];
+  if (v.length === 2) return v[0] === v[1] ? v[0] : v.join(' ');
+  return shortestSides(v).join(' ');
+}
+
 /** What `el.style` keeps for a shorthand it expands (CSSOM 6.7, "set a
  *  CSS declaration" of a shorthand): each longhand and its value, from
  *  the shorthand's canonical value; null for one this does not expand. */
@@ -594,6 +747,8 @@ export function expandShorthand(
   value: string,
 ): [string, string][] | null {
   const name = prop.toLowerCase();
+  const snap = snapLonghands(name, value);
+  if (snap) return snap;
   if (name === 'animation') return animationLonghandsOf(value);
   if (name === 'marker') return MARKER_LONGHANDS.map((side) => [side, value]);
   if (name === 'position-try') {
@@ -650,6 +805,8 @@ export function composeShorthand(
   longhand: (name: string) => string | null,
 ): string | null {
   const name = prop.toLowerCase();
+  const snap = snapComposed(name, longhand);
+  if (snap !== null) return snap;
   if (name === 'marker') {
     const sides = MARKER_LONGHANDS.map(longhand);
     if (sides.some((v) => v === null)) return '';
@@ -864,10 +1021,19 @@ const ANCHOR_GRAMMARS: Record<string, (value: string) => string | null> = {
   'position-visibility': (value) => {
     const words = value.toLowerCase().split(/\s+/);
     if (words.length === 1 && words[0] === 'always') return 'always';
-    const order = ['anchors-valid', 'anchors-visible', 'no-overflow'];
-    if (!words.every((w) => order.includes(w))) return null;
-    if (new Set(words).size !== words.length) return null;
-    return order.filter((w) => words.includes(w)).join(' ');
+    // the plural names CSS Anchor Positioning 1 had first are read as
+    // the singular ones it has now
+    const named = words.map((w) =>
+      w === 'anchors-valid'
+        ? 'anchor-valid'
+        : w === 'anchors-visible'
+          ? 'anchor-visible'
+          : w,
+    );
+    const order = ['anchor-valid', 'anchor-visible', 'no-overflow'];
+    if (!named.every((w) => order.includes(w))) return null;
+    if (new Set(named).size !== named.length) return null;
+    return order.filter((w) => named.includes(w)).join(' ');
   },
   'position-try-fallbacks': tryFallbacks,
   'position-try': (value) => {

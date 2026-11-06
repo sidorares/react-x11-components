@@ -179,8 +179,8 @@ function insetText(inset: readonly [Len, Len], scale: number): string | null {
 function positionVisibilityText(bits: number): string {
   if (!bits) return 'always';
   return [
-    bits & 4 ? 'anchors-valid' : '',
-    bits & 1 ? 'anchors-visible' : '',
+    bits & 4 ? 'anchor-valid' : '',
+    bits & 1 ? 'anchor-visible' : '',
     bits & 2 ? 'no-overflow' : '',
   ]
     .filter(Boolean)
@@ -895,6 +895,7 @@ function ruleAndScrollProperties(
   out['scroll-snap-type'] = scrollSnapTypeText(style.scrollSnapType);
   out['scroll-snap-align'] = pair(...style.scrollSnapAlign);
   out['scroll-snap-stop'] = style.scrollSnapStop;
+  out['scroll-initial-target'] = style.scrollInitialTarget;
   out['scroll-margin-top'] = px(style.scrollMarginTop, scale);
   out['scroll-margin-right'] = px(style.scrollMarginRight, scale);
   out['scroll-margin-bottom'] = px(style.scrollMarginBottom, scale);
@@ -1361,6 +1362,8 @@ function logicalProperties(
     for (const part of ['width', 'style', 'color']) {
       out[`border-${logical}-${part}`] = out[`border-${physical[i]}-${part}`];
     }
+    out[`scroll-margin-${logical}`] = out[`scroll-margin-${physical[i]}`];
+    out[`scroll-padding-${logical}`] = out[`scroll-padding-${physical[i]}`];
   });
   const vertical = style.writingMode !== 'horizontal-tb';
   const [inline, block] = vertical ? ['height', 'width'] : ['width', 'height'];

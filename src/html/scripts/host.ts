@@ -121,6 +121,7 @@ import {
   parserError,
   tagOf,
   typeNameOf,
+  setSheetDisabled,
   xmlTree,
 } from '../dom.js';
 import {
@@ -683,22 +684,17 @@ export interface HandleInternals {
     time: number | null,
     rate: number,
   ): void;
-  /** Where a view timeline's subject is along an axis, in CSS pixels: its
-   *  start from its scrollport's, as layout placed it, and its size; its
-   *  scroll container's `scroll-padding` there, which an `auto` inset is;
-   *  and how far sticky positioning can move it each way
-   *  (`HtmlViewNode.viewAdjustOf`). */
+  /** How far from where the scroll is now, in CSS pixels, each edge of a
+   *  view timeline's subject crosses each edge of its scrollport, less the
+   *  insets given — null for `auto`, the `scroll-padding` there — as
+   *  layout placed it and as the sticky boxes it is in move it: its start
+   *  entering, its end leaving, its start at the near edge and its end at
+   *  the far one (`HtmlViewNode.viewAdjustOf`). */
   viewAdjust(
     element: Element,
     vertical: boolean,
-  ): {
-    start: number;
-    size: number;
-    padStart: number;
-    padEnd: number;
-    up: number;
-    down: number;
-  } | null;
+    insets: [number | null, number | null],
+  ): { enters: number; leaves: number; start: number; end: number } | null;
   /** The physical axis a page's scroll or view timeline's axis is for the
    *  scroller it measures, `x` or `y`, and `r` after it where the scroll
    *  origin is at its end (`HtmlViewNode.timelineAxisOf`). */
@@ -4450,6 +4446,20 @@ export class DomHost {
         this._sheetsChanged.add(el);
         return `${was}\u0000${state.version}\u0000${rules[0]}`;
       }
+      // a `<style>`'s or a `<link>`'s sheet disabled, or let be (CSSOM
+      // 6.1.1, `disabled`): out of the cascade while it is, told as a
+      // change of an attribute nothing has, which the cascade reads
+      case 'sheetDisabled': {
+        const el = this._element(a);
+        if (setSheetDisabled(el, b === true)) {
+          this._tell(el, {
+            type: 'attributes',
+            target: el,
+            attributeName: '-rx-sheet-disabled',
+          });
+        }
+        return null;
+      }
       case 'sheetDelete': {
         const el = this._element(a);
         const state = this._sheetOf(el);
@@ -5534,17 +5544,16 @@ export class DomHost {
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
         return null;
-      // a view timeline's subject: where layout placed it from its
-      // scrollport's start and its size, its scroller's `scroll-padding`
-      // along the axis, and how far sticky positioning can move it each way
+      // a view timeline's subject: how far from the scroll now each of its
+      // edges crosses each of its scrollport's, less the insets given
       case 'viewAdjust': {
         this.flush();
         const el = this._element(a);
         const handle = this._drawing(el) as Partial<HandleInternals> | null;
-        const v = handle?.viewAdjust?.(el, b === true);
-        return v
-          ? `${v.start},${v.size},${v.padStart},${v.padEnd},${v.up},${v.down}`
-          : '';
+        const inset = (v: unknown): number | null =>
+          typeof v === 'number' && Number.isFinite(v) ? v : null;
+        const v = handle?.viewAdjust?.(el, b === true, [inset(c), inset(d)]);
+        return v ? `${v.enters},${v.leaves},${v.start},${v.end}` : '';
       }
       // a page's timeline's axis against its scroller: `x` or `y`, and `r`
       // where its scroll origin is at that axis's end
