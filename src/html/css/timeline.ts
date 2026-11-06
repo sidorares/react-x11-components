@@ -115,6 +115,9 @@ export interface Running {
   /** What a page's `updateTiming()` set on its effect, over the style's
    *  longhands (`AnimationTimeline.timeAnimation`). */
   timing?: TimingOverride;
+  /** What a page's `rangeStart` and `rangeEnd` set, over its
+   *  `animation-range` (`AnimationTimeline.rangeAnimation`). */
+  range?: { start?: RangeEdge; end?: RangeEdge };
 }
 
 /**
@@ -388,12 +391,12 @@ export class AnimationTimeline {
             ? null
             : (this.scrollProgress?.(el, pseudo, ref) ?? null);
         // where its range starts and ends on the timeline (5.1)
-        const rangeStart = rangeStarts.length
-          ? rangeStarts[i % rangeStarts.length]
-          : null;
-        const rangeEnd = rangeEnds.length
-          ? rangeEnds[i % rangeEnds.length]
-          : null;
+        const rangeStart =
+          run.range?.start ??
+          (rangeStarts.length ? rangeStarts[i % rangeStarts.length] : null);
+        const rangeEnd =
+          run.range?.end ??
+          (rangeEnds.length ? rangeEnds[i % rangeEnds.length] : null);
         const from = p && rangeStart && p.edgeAt ? p.edgeAt(rangeStart) : 0;
         const to = p && rangeEnd && p.edgeAt ? p.edgeAt(rangeEnd) : 100;
         if (ref.kind !== 'none') {
@@ -1646,6 +1649,27 @@ export class AnimationTimeline {
         for (const run of target.running) {
           if (!run || RUN_KEYS.get(run) !== key) continue;
           run.timing = { ...run.timing, ...timing };
+          this._sought.add(el);
+          target.next = 0;
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * A page's `rangeStart` or `rangeEnd` on a CSS animation: it stands over
+   * that end of its `animation-range` from then on (CSS Animations 2,
+   * 4.2; `Running.range`), and the run is restyled at the next frame. The
+   * element it is on, or null where no run under way has the key.
+   */
+  rangeAnimation(key: number, end: boolean, edge: RangeEdge): object | null {
+    for (const [el, targets] of this._targets) {
+      for (const target of targets.values()) {
+        for (const run of target.running) {
+          if (!run || RUN_KEYS.get(run) !== key) continue;
+          run.range = { ...run.range, [end ? 'end' : 'start']: edge };
           this._sought.add(el);
           target.next = 0;
           return el;

@@ -2020,7 +2020,12 @@ since `animation-timing-function` eases each keyframe; and what a page's
 and fill stands over that longhand from then on, in what is drawn and what
 `getComputedStyle` reads at once, as CSS Animations 2, 4.2 has it, while
 the rest follow the style. Its `endDelay`, `iterationStart` and `easing`
-read back as the page set them and change nothing drawn yet.
+read back as the page set them and change nothing drawn yet. Its
+`rangeStart` and `rangeEnd`, which a page sets, stand over that end of its
+`animation-range` from then on in the same way; and on a scroll's timeline
+its `startTime` and `currentTime` read its range and its timing as the
+cascade has them, a start time its range aligns moving with a style
+changed since it was listed.
 Its effect's `getKeyframes()` lists its `@keyframes`' frames,
 those at one offset and of one easing merged, with a frame made of the
 element's style under its animations at an end the rule leaves out.

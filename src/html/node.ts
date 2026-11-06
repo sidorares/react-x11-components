@@ -181,6 +181,7 @@ import {
   viewEdgeAt,
 } from './css/triggers.js';
 import type {
+  RangeEdge,
   RangeName,
   StickyLimit,
   TimelineTrigger,
@@ -11039,6 +11040,41 @@ export class HtmlViewNode extends Node {
     if (this._timeline.timeAnimation(key, over)) this._scheduleFrame();
   }
 
+  /**
+   * A page's `rangeStart` or `rangeEnd` on a CSS animation (CSS Animations
+   * 2, 4.2): it stands over that end of its `animation-range` from then on
+   * (`AnimationTimeline.rangeAnimation`). `json` is the edge as the page
+   * has it — `"normal"`, or a range's name, null for none, and its offset
+   * as a percentage and CSS pixels added to it.
+   */
+  rangeAnimation(key: number, end: boolean, json: string): void {
+    if (!this._animating()) return;
+    let given: unknown;
+    try {
+      given = JSON.parse(json);
+    } catch {
+      return;
+    }
+    let edge: RangeEdge;
+    if (given === 'normal') edge = end ? RANGE_END : RANGE_START;
+    else if (given && typeof given === 'object') {
+      const { name, pct, px } = given as {
+        name?: unknown;
+        pct?: unknown;
+        px?: unknown;
+      };
+      const p = typeof pct === 'number' && Number.isFinite(pct) ? pct : 0;
+      const x =
+        typeof px === 'number' && Number.isFinite(px) ? px * this._scale : 0;
+      edge = {
+        name: typeof name === 'string' ? (name as RangeName) : null,
+        offset: p ? (x ? { pct: p, px: x } : { pct: p }) : x,
+      };
+    } else return;
+    this._timeline.now = animationClock.now();
+    if (this._timeline.rangeAnimation(key, end, edge)) this._scheduleFrame();
+  }
+
   /** And one on a scroll's timeline, whose time is a percentage of it:
    *  held at `time`, running from the start time `time`, or aligned to its
    *  range again, at `rate` (`AnimationTimeline.seekScrolled`). */
@@ -14714,11 +14750,13 @@ export class HtmlViewNode extends Node {
           : null),
         timeline,
         rangeStart: edgeText(
-          style.animationRangeStart[i % style.animationRangeStart.length],
+          a.run.range?.start ??
+            style.animationRangeStart[i % style.animationRangeStart.length],
           false,
         ),
         rangeEnd: edgeText(
-          style.animationRangeEnd[i % style.animationRangeEnd.length],
+          a.run.range?.end ??
+            style.animationRangeEnd[i % style.animationRangeEnd.length],
           true,
         ),
       });

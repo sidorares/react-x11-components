@@ -1782,6 +1782,8 @@ export function makeHtmlHandle(
     seekAnimation: (key, currentTime, paused) =>
       nodeRef.current?.seekAnimation(key, currentTime, paused),
     timeAnimation: (key, timing) => nodeRef.current?.timeAnimation(key, timing),
+    rangeAnimation: (key, end, edge) =>
+      nodeRef.current?.rangeAnimation(key, end, edge),
     seekScrolled: (key, mode, time, rate) =>
       nodeRef.current?.seekScrolled(key, mode, time, rate),
     viewAdjust: (element, vertical, insets) =>
