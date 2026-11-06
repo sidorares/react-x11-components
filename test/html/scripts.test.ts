@@ -16602,6 +16602,28 @@ test('a named timeline is never one a removed element declared, while the docume
   );
 });
 
+test('a named timeline an ::after declares has its element for its source', async () => {
+  const doc = await hosted(
+    '<style>.cb { timeline-scope: --p }' +
+      ' #c::after { content: "x"; display: block; width: 40px; height: 100px;' +
+      ' overflow: scroll; scroll-timeline: --p }' +
+      ' #t { width: 10px; height: 10px; animation: a linear; animation-timeline: --p }' +
+      ' @keyframes a { to { opacity: 0 } }</style>' +
+      '<div class="cb"><div id="t"></div><div id="c"></div></div>' +
+      '<p id="out"></p><script>' +
+      'requestAnimationFrame(function () {' +
+      '  var tl = document.getElementById("t").getAnimations()[0].timeline;' +
+      '  document.getElementById("out").textContent = tl ? String(tl.source && tl.source.id) : "none";' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'c',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

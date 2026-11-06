@@ -3613,7 +3613,7 @@ export function installDom(
     }
     override _time(): number | null {
       const v = this._view();
-      if (!v || !(v.max > 0)) return null;
+      if (!v) return null;
       const [from, to] = v.cover;
       if (!(to - from > 0)) return null;
       return ((v.at - from) / (to - from)) * 100;

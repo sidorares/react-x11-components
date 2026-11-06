@@ -5401,7 +5401,14 @@ or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
 `rtl` or a `vertical-rl` one, and a view timeline's subject enters from
 the far side of its scrollport there, its `auto` insets the
-`scroll-padding` at that axis's start and end. A view timeline's subject is
+`scroll-padding` at that axis's start and end. A `::before`'s or an
+`::after`'s own `scroll()` and `view()` are from its box, in the element's,
+so one generated in a scroll container is that container's; a named
+timeline a `::before` or an `::after` declares is found, its element the
+source a page reads, though a pseudo-element is no scroll container here
+and its timeline is inactive; and a view timeline has a place in a
+scroller that scrolls nothing along its axis, where only a scroll timeline
+is inactive. A view timeline's subject is
 where layout placed it: a transform on it, an animated one included, or on
 a box between it and its scroller moves nothing of its timeline; an inline
 box is the rectangle around its fragments, and a sticky inline box around

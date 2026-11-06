@@ -11069,7 +11069,7 @@ export class HtmlViewNode extends Node {
    */
   private _timelineProgress = (
     el: object,
-    _pseudo: string,
+    pseudo: string,
     ref: TimelineRef,
   ): ScrollProgress | null => {
     const tree = this._tree;
@@ -11078,6 +11078,10 @@ export class HtmlViewNode extends Node {
     let view: boolean;
     let axis: string;
     let scrollerKind: 'nearest' | 'root' | 'self' = 'nearest';
+    // the pseudo-element whose box it is from: the one animated, for its
+    // own `scroll()` and `view()`, or the one declaring a named one
+    let declaredBy: 'before' | 'after' | undefined =
+      pseudo === 'before' || pseudo === 'after' ? pseudo : undefined;
     let inset: readonly [Len, Len] = ['auto', 'auto'];
     if (ref.kind === 'scroll') {
       view = false;
@@ -11093,21 +11097,30 @@ export class HtmlViewNode extends Node {
         subject,
         ref.name,
         this._source.document,
+        this._pseudoStyleOf,
       );
       if (!named) return null;
       subject = named.el;
+      declaredBy = named.pseudo;
       view = named.view;
       axis = named.axis;
       inset = named.inset;
       scrollerKind = view ? 'nearest' : 'self';
     } else return null;
-    const box = this._firstBoxesOf(tree).get(subject);
+    // a `::before`'s or an `::after`'s own timeline is from its box, which
+    // is in the element's: `scroll(nearest)` on one in a scroll container
+    // is the container's
+    const box = declaredBy
+      ? this._pseudoBoxOf(tree, subject, declaredBy)
+      : this._firstBoxesOf(tree).get(subject);
     if (!box) return null;
     const source = this._timelineSource(box, scrollerKind, axis);
     if (!source) return null;
     const { scroller, down, reversed } = source;
     const port = this._scrollportOf(scroller, down);
-    if (!(port.max > 0)) return null;
+    // a scroll timeline of a scroller that scrolls nothing that way is
+    // inactive; a view timeline's subject still has a place in it
+    if (!view && !(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
     if (!view) {
       return {
@@ -11137,6 +11150,14 @@ export class HtmlViewNode extends Node {
       edgeAt: (e) => ((viewEdgeAt(e, place) - from) / (to - from)) * 100,
       view: true,
     };
+  };
+
+  /** An element's `::before`'s or `::after`'s style, where it has a box
+   *  (`namedTimeline`'s pseudo-elements). */
+  private _pseudoStyleOf: PseudoStyleOf = (el, which) => {
+    const tree = this._tree;
+    const box = tree ? this._pseudoBoxOf(tree, el, which) : null;
+    return box ? generatedStyle(box) : null;
   };
 
   /**
@@ -14645,7 +14666,13 @@ export class HtmlViewNode extends Node {
           inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
         };
       } else if (ref.kind === 'name') {
-        const named = namedTimeline(tree, el, ref.name, this._source.document);
+        const named = namedTimeline(
+          tree,
+          el,
+          ref.name,
+          this._source.document,
+          this._pseudoStyleOf,
+        );
         timeline = !named
           ? { kind: 'none' }
           : named.view
@@ -17492,26 +17519,37 @@ function namedTimeline(
   el: Element,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
     if (style) {
       const own = declaredTimeline(at, style, name);
       if (own) return own;
-      if (scopes(style, name)) return scopedTimeline(tree, at, name, doc);
+      if (scopes(style, name))
+        return scopedTimeline(tree, at, name, doc, pseudoOf);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
-  return scopedTimeline(tree, null, name, doc);
+  return scopedTimeline(tree, null, name, doc, pseudoOf);
 }
 
 interface NamedTimeline {
   el: Element;
+  /** Where its `::before` or its `::after` declares it, whose box is the
+   *  scroller or the subject; the element is still what a page reads. */
+  pseudo?: 'before' | 'after';
   view: boolean;
   axis: string;
   inset: readonly [Len, Len];
 }
+
+/** The style of an element's `::before` or `::after`, where it has one. */
+type PseudoStyleOf = (
+  el: Element,
+  which: 'before' | 'after',
+) => ComputedStyle | null;
 
 /** Whether a style's `timeline-scope` takes a name. */
 function scopes(style: ComputedStyle, name: string): boolean {
@@ -17523,6 +17561,24 @@ function scopes(style: ComputedStyle, name: string): boolean {
 
 /** The timeline an element declares by a name, a scroll's before a view's
  *  and a later place in a list before an earlier (4.3). */
+/** What `declaredTimeline` finds in a style, or in a pseudo-element's of
+ *  `el`, passing over the many that declare no timeline at all. */
+function declaredIn(
+  el: Element,
+  style: ComputedStyle | null,
+  name: string,
+  pseudo?: 'before' | 'after',
+): NamedTimeline | null {
+  if (
+    !style ||
+    (style.scrollTimelineName === 'none' && style.viewTimelineName === 'none')
+  ) {
+    return null;
+  }
+  const timeline = declaredTimeline(el, style, name);
+  return timeline && pseudo ? { ...timeline, pseudo } : timeline;
+}
+
 function declaredTimeline(
   at: Element,
   style: ComputedStyle,
@@ -17561,19 +17617,18 @@ function scopedTimeline(
   scope: Element | null,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   let found: NamedTimeline | null = null;
   for (const [el, entry] of tree.styles) {
     if (el === scope) continue;
-    const style = entry.style;
-    // most elements declare no timeline, and are passed over cheaply
-    if (
-      style.scrollTimelineName === 'none' &&
-      style.viewTimelineName === 'none'
-    ) {
-      continue;
-    }
-    const timeline = declaredTimeline(el, style, name);
+    // the element's own, and its `::before`'s and `::after`'s after it
+    const timeline =
+      declaredIn(el, entry.style, name) ??
+      (pseudoOf && GENERATED_ON.has(el)
+        ? (declaredIn(el, pseudoOf(el, 'after'), name, 'after') ??
+          declaredIn(el, pseudoOf(el, 'before'), name, 'before'))
+        : null);
     if (!timeline) continue;
     // the tree is the last build's, and may hold an element a page's script
     // has taken out since: what it declared is no timeline now
