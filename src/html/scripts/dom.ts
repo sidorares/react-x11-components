@@ -3356,8 +3356,6 @@ export function installDom(
   const documentTimeline = new DocumentTimeline();
 
   const SCROLL_AXES = ['block', 'inline', 'x', 'y'];
-  /** A subject with no box's `scroll-padding` and sticky reach. */
-  const NO_ADJUST = [0, 0, 0, 0, 0];
   const holdTimeline = (timeline: Any): void => {
     heldTimelines.add(
       RealWeakRef ? new RealWeakRef(timeline) : { deref: () => timeline },
@@ -3563,27 +3561,23 @@ export function installDom(
       if (!located) return null;
       const [source, along] = located;
       const g = scrollGeometry(source);
-      const r = docRect(this._subject);
-      if (!g || !r) return null;
-      const { vertical, reversed } = this._axisOf(source, along);
-      // the scroll container's `scroll-padding`, which an `auto` inset is,
-      // and how far sticky positioning has moved the subject and can each
-      // way, which the range takes in (the document's `_viewPlace`)
+      if (!g) return null;
+      const { vertical } = this._axisOf(source, along);
+      // where layout placed the subject, from the scrollport's start — its
+      // far side where the scroll origin is at the axis's end — with no
+      // transform and at rest where sticky positioning moves it; the
+      // scroll container's `scroll-padding`, which an `auto` inset is; and
+      // how far sticky positioning can move it each way, which the range
+      // takes in (the document's `_viewPlace`)
       const raw = call('viewAdjust', this._subject._id, vertical);
-      const [left, right, shift, low, high] =
-        typeof raw === 'string' && raw ? raw.split(',').map(Number) : NO_ADJUST;
+      if (typeof raw !== 'string' || !raw) return null;
+      const [near, size, padStart, padEnd, up, down] = raw
+        .split(',')
+        .map(Number);
       const port = vertical ? g.height : g.width;
-      const size = vertical ? r[3] : r[2];
       const at = Math.abs(vertical ? g.y : g.x);
-      // its start from the scrollport's start as it is scrolled now, at
-      // rest, and on from there by the scroll; from a scroll origin at the
-      // axis's end, the scrollport's start is its far side, and the
-      // padding, and the ways a sticky box moves, are the other way round
-      const near =
-        (vertical ? r[1] - g.originY - g.y : r[0] - g.originX - g.x) - shift;
-      const start = (reversed ? port - near - size : near) + at + 0;
-      const [padStart, padEnd] = reversed ? [right, left] : [left, right];
-      const [up, down] = reversed ? [high, low] : [low, high];
+      // and on from there by the scroll
+      const start = near + at + 0;
       const inset = (v: Any, pad: number) =>
         v === 'auto' ? pad : offsetPx(v, port);
       const viewStart = inset(this._inset[0], padStart);
