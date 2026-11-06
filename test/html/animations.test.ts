@@ -4248,6 +4248,30 @@ test('a view() on an inline box is where its fragments are, and a sticky inline 
   assert.ok(Math.abs(b1 - b0 - (a1 - a0)) < 1e-4, `${a1 - a0} ${b1 - b0}`);
 });
 
+test("an anonymous scroll() of a box positioned against something outside a scroll container is no timeline of that container's", async (t) => {
+  const doc = await running(
+    t,
+    '<style>body{margin:0}' +
+      '@keyframes fade { from { opacity: 0 } to { opacity: 1 } }' +
+      '#sc{width:100px;height:50px;overflow-x:scroll;display:flex}' +
+      '#sc>.e{flex:none;width:100px;height:10px}' +
+      '.bar{width:10px;height:10px;animation:fade linear;animation-timeline:scroll(inline nearest)}' +
+      '#apart{position:absolute;left:0;top:0}' +
+      '</style><div id="sc"><div class="bar" id="apart"></div><div class="bar" id="in"></div>' +
+      '<div class="e"></div><div class="e"></div><div class="e"></div></div>',
+  );
+  doc.el.scrollElementTo(findById(doc.el.document, 'sc')!, { x: 100 });
+  await act();
+  for (let i = 0; i < 3; i += 1) await doc.clock.frame();
+  await act();
+  // the one in the flow is scrolled by the flex box, half way across; the
+  // absolute one is positioned against the root, which the flex box is
+  // inside, and its nearest scroller is the pane, which scrolls nothing
+  // across: no timeline, and no effect
+  assert.strictEqual(Number(doc.style('in').opacity), 0.5);
+  assert.strictEqual(Number(doc.style('apart').opacity), 1);
+});
+
 test('a keyframe at a timeline offset is placed in the range on a view timeline, outside it where it falls outside, and nowhere on the clock', async (t) => {
   const doc = await triggering(
     t,

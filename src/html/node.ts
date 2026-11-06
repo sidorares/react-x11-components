@@ -314,6 +314,7 @@ import {
 } from './layout/writing.js';
 import {
   endOrigins,
+  escapes,
   isScroller,
   scrollBarHit,
   scrollBarsOf,
@@ -17732,11 +17733,23 @@ function stickyBlockOf(box: Box): Box | null {
   return cb;
 }
 
-/** The scroll container a box is scrolled by: the nearest one around it,
- *  or null for the pane the document is in. */
+/** The scroll container a box is scrolled by: the nearest one around it
+ *  in its containing block chain, or null for the pane the document is in.
+ *  One a box positioned out of the flow on the way escapes (`escapes`),
+ *  its containing block outside it, scrolls none of it. */
 function nearestScroller(box: Box): Box | null {
-  for (let at = box.parent; at; at = at.parent) {
-    if (isScroller(at)) return at;
+  const apart: Box[] = [];
+  for (let at: Box | null = box; at;) {
+    if (at.outOfFlow) apart.push(at);
+    const parent: Box | null = at.parent;
+    if (
+      parent &&
+      isScroller(parent) &&
+      !apart.some((b) => escapes(b, parent))
+    ) {
+      return parent;
+    }
+    at = parent;
   }
   return null;
 }
