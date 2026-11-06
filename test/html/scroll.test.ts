@@ -302,6 +302,39 @@ test('a snap container comes to rest where an area lines up, and follows it thro
   assert.equal(near.scrollElementTo(far, { y: 180 })?.y, 200, 'near enough');
 });
 
+test('in an area larger than the snapport a snap rests where it covers the snapport, but not where another area intrudes at its start', async () => {
+  // CSS Scroll Snap 1, "snapping boxes that overflow the scrollport": a
+  // long area holds small ones, and a scroll across one of them lines it
+  // up or rests past it, nearest where it was going
+  const { el: node } = await renderScrolled(
+    '<style>body{margin:0}div{position:absolute}' +
+      '#s{width:500px;height:500px;overflow:scroll;scroll-snap-type:x mandatory}' +
+      '#space{width:4000px;height:10px}.t{height:400px;scroll-snap-align:start}</style>' +
+      '<div id="s"><div id="space"></div><div style="left:200px">' +
+      '<div id="long" class="t" style="width:3000px"></div>' +
+      '<div class="t" style="left:200px;width:200px"></div>' +
+      '<div class="t" style="left:600px;width:200px"></div>' +
+      '<div class="t" style="left:1200px;width:200px"></div></div></div>',
+    600,
+  );
+  const s = el(node, 's');
+  assert.equal(
+    node.scrollElementTo(s, { x: 450 })?.x,
+    400,
+    'the small one at 400',
+  );
+  assert.equal(
+    node.scrollElementTo(s, { x: 950 })?.x,
+    1000,
+    'past the one at 800',
+  );
+  assert.equal(
+    node.scrollElementTo(s, { x: 1650 })?.x,
+    1650,
+    'clear of them all',
+  );
+});
+
 test('snapping on both axes comes to rest where the areas it lines up are shown, their scroll margins included', async () => {
   // CSS Scroll Snap 1, 5.1: the nearest place on each axis alone may show
   // neither area there, and then one axis is snapped first and the other
