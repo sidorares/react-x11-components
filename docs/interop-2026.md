@@ -445,24 +445,26 @@ out or drawn, as before.
 **view-transitions (60.7%).** The `::view-transition` pseudo-element
 tree is drawn ([#909]), its styles are in `getComputedStyle()` and its
 animations in `getAnimations()`, which tell their events ([#929]). A
-named element's capture still intersects the viewport expanded by one
-viewport on each side, and where that band misses it entirely — a
+`<link rel=expect blocking=render>` holds animation frames until the
+element its href names is in the tree, or until the parse ends where that
+id never appears — the `html/dom/render-blocking/element-render-blocking-*`
+half. A named element's capture still intersects the viewport expanded by
+one viewport on each side, and where that band misses it entirely — a
 massive element fixed far below, or a far-away one — takes up to one
 viewport of ink from the edge nearest the viewport, so
 `massive-element-*-offscreen` and `far-away-capture` have a picture
-rather than an empty surface. Not there: rendering held while the update
-runs (`render-blocking/`), where the parse yields to the scripts that
-block it now ([#978]) and holding the rendering is the half not started;
-and cross-document transitions (`@view-transition { navigation: auto }`)
-— `pageswap` and `pagereveal` are told where one document replaces
-another ([#980]), with a `viewTransition` of null, but the old state is
-not captured before the element takes the new source, and a `pageswap`
-listener's name changes do not reach a capture — between them most of
-what is left; a transition in a frame; and a transition's vertical axes,
-which [#975] leaves, though `writing-mode` and `text-orientation` are in
-`getComputedStyle()` now. The snapshot containing block for a
-`position: static` `::view-transition` while scrolled
-(`snapshot-containing-block-static`) is still open.
+rather than an empty surface. Cross-document: where `@view-transition {
+navigation: auto }` opts in (including nested in `@layer` / `@media`, and
+by layer _order_ among competing rules), `pageswap` and `pagereveal`
+carry a `ViewTransition` ([#980]'s events), and `pageswap` runs before
+the old state is captured so a listener can still set names. Still not
+there: handing that capture into the new document's first paint when the
+view remounts; `blocking=render` on scripts and stylesheets, and
+`PerformancePaintTiming` those tests assert with; the snapshot containing
+block for a `position: static` `::view-transition` while scrolled
+(`snapshot-containing-block-static`); a transition in a frame; and a
+transition's vertical axes, which [#975] leaves, though `writing-mode`
+and `text-orientation` are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user

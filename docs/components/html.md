@@ -196,6 +196,11 @@ when:
   late sheet restyles the document. A host that never answers a head sheet
   leaves the document undrawn, as a browser that never hears back does; a
   host that cannot fetch one returns `null`.
+- **A `<link rel=expect blocking=render>` holds animation frames** until
+  the element its href names is in the tree (by `id`, or an `<a name>`),
+  or until the parse ends where that name never appears. Its `media` must
+  match. Scripts and styles with `blocking=render`, and paint timing, are
+  not this yet.
 - **An image moves the boxes only where its size lays something out.** An
   `<img>` built before its image arrived is the size its `width` and
   `height` attributes say, and takes its image's size where it lands, in
@@ -1803,14 +1808,18 @@ rendering" tells it. `<Html>` lays a document out and draws it before any
 of its scripts runs, so what a browser draws after the event this draws
 before it. The `viewTransition` of both is null.
 
-Not yet: a cross-document view transition (`@view-transition { navigation:
-auto }`), which would capture the old document's named elements as it goes
-and run its tree over the new one's first frame; where a document was
-scrolled to restored when it is shown again, and its
-`history.scrollRestoration`, which are its own; a traversal the host starts
-with `session.go` told as a `navigate` in the document it leaves, which
-`handle.beforeUnload()` asks the rest of; and a frame's history in the
-tab's.
+Where a document opts in with `@view-transition { navigation: auto }`
+(including inside `@layer` / `@media`, and by layer order among competing
+rules — a later named layer wins, unlayered over any), a same-origin
+navigation's `pageswap` and the next document's `pagereveal` carry a
+`ViewTransition`. `pageswap` runs before the old state is captured, so a
+listener can still set `view-transition-name`. Handing that capture into
+the new document's first paint when the view remounts is not complete yet.
+Also not yet: where a document was scrolled to restored when it is shown
+again, and its `history.scrollRestoration`, which are its own; a traversal
+the host starts with `session.go` told as a `navigate` in the document it
+leaves, which `handle.beforeUnload()` asks the rest of; and a frame's
+history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
 hears `pageshow` after its `load`. A navigation to another document that
@@ -2566,7 +2575,9 @@ process as every window with an opener does, so `crossOriginIsolated` is false, 
 turns down a document with a policy as a network error: nothing of it runs or is
 drawn.
 
-Not done: `moveTo` and `resizeTo` ([the design](../prd-popups.md#left-out)).
+`resizeTo` / `resizeBy` resize a popup's content and skip a view transition
+under way; the host hears them through `HtmlPopup.onResize`. Not done:
+`moveTo` ([the design](../prd-popups.md#left-out)).
 
 ### Sandboxes and framing
 

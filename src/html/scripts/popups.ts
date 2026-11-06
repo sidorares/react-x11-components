@@ -459,8 +459,13 @@ export class Popup implements HtmlPopup {
   readonly serviceKeeper: HtmlServiceWorkers | null;
   readonly creatorClient: ServiceClient | null;
   private _url: string;
+  private _width: number;
+  private _height: number;
   private _closes = new Set<() => void>();
   private _focuses = new Set<() => void>();
+  private _resizes = new Set<
+    (size: { width: number; height: number }) => void
+  >();
   private _views: RunnerSeams[] = [];
   private _sheets: string[] = [];
   private _idle = idleHandle();
@@ -483,6 +488,8 @@ export class Popup implements HtmlPopup {
     this.openedAt = ask.url;
     this.name = ask.name;
     this.features = ask.features;
+    this._width = Math.max(0, Math.floor(ask.features.width ?? 0));
+    this._height = Math.max(0, Math.floor(ask.features.height ?? 0));
     this.creator = creator;
     this.referrer = ask.features.noreferrer ? null : creator;
     this.post = ask.post ?? null;
@@ -499,6 +506,24 @@ export class Popup implements HtmlPopup {
 
   get closed(): boolean {
     return this.slot?.closing ?? false;
+  }
+
+  get width(): number {
+    return this._width;
+  }
+
+  get height(): number {
+    return this._height;
+  }
+
+  resizeTo(width: number, height: number): void {
+    const w = Math.max(0, Math.floor(Number(width) || 0));
+    const h = Math.max(0, Math.floor(Number(height) || 0));
+    if (w === this._width && h === this._height) return;
+    this._width = w;
+    this._height = h;
+    const size = { width: w, height: h };
+    for (const listener of [...this._resizes]) listener(size);
   }
 
   /** The opaque origin that opened it, where one did: what its first
@@ -557,6 +582,13 @@ export class Popup implements HtmlPopup {
   onFocus(listener: () => void): () => void {
     this._focuses.add(listener);
     return () => this._focuses.delete(listener);
+  }
+
+  onResize(
+    listener: (size: { width: number; height: number }) => void,
+  ): () => void {
+    this._resizes.add(listener);
+    return () => this._resizes.delete(listener);
   }
 
   focused(): void {

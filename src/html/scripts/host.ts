@@ -699,6 +699,9 @@ export interface HandleInternals {
   transitionCaptureNew(): string;
   transitionRemaining(): number | null;
   transitionEnd(): void;
+  /** Text of a stylesheet `@import` fetched, for `CSSImportRule.styleSheet`
+   *  (`HtmlViewNode.importedCss`). */
+  importedCss(href: string): string | null;
   /** What a page's script changed of an `<img>`, or the one it made, is
    *  asked for and watched (`HtmlViewNode.askImage`). */
   askImage(element: Element): void;
@@ -4942,6 +4945,11 @@ export class DomHost {
           ? capture.call(handle)
           : this._op('transitionNames', null, null, null, null);
       }
+      // a fetched `@import`'s text, for `CSSImportRule.styleSheet`
+      case 'importedCss': {
+        const handle = this._seams.handle as Partial<HandleInternals> | null;
+        return handle?.importedCss?.(text(a)) ?? null;
+      }
       // a view transition active with its types, `\u0000`-joined — or,
       // given null, none: what `:active-view-transition` matches the root
       // by, told as a change of an attribute nothing has
@@ -5911,6 +5919,13 @@ export class DomHost {
       case 'windowFocus':
         this.windows?.focus(Number(a));
         return null;
+      case 'windowResizeTo': {
+        // a script's `resizeTo` in this window: a popup's host updates the
+        // window it shows; a top-level tab has no popup and keeps the size
+        // the realm already set (`windowSize`)
+        this._seams.popup?.resizeTo(Number(a) || 0, Number(b) || 0);
+        return null;
+      }
       case 'windowNavigate':
         // nothing runs a script in another window's document here, and HTML
         // has it do nothing for another origin's
