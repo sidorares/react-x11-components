@@ -4544,6 +4544,16 @@ edge at the break, `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
 not over it. Right to left, the first column is the one at the right. A
 container as wide as its content is as wide as its columns side by side.
+A transform makes no box monolithic, so a containing block made by one is
+broken as any block is, though its pieces are drawn through the matrix of
+the whole. An absolutely positioned box whose containing block is inside
+the columns — or a fixed one whose containing block a transform makes
+there — is laid out as though nothing were broken, against where the
+strip the columns were cut from had its containing block, and is then cut
+into them as a float with a height is, with what it holds; an anchor it
+refers to in the same columns it sees unbroken, where the strip had it,
+and one outside them the rectangle around the anchor's pieces (CSS Anchor
+Positioning 1, 2). A multicol container in another's columns goes to a column whole, where a browser breaks it.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
