@@ -5465,6 +5465,9 @@ function containerNamesOf(value: string): string | null {
  * whatever it would be without it, as in Chrome.
  */
 export function settleContainer(style: ComputedStyle): void {
+  // an anchored container is style-contained as a size one is (CSS Anchor
+  // Positioning 2): what counts in it counts nothing outside it
+  if (style.anchoredContainer) style.contain |= CONTAIN_STYLE;
   if (style.containerType === 'normal') return;
   style.contain |= CONTAIN_STYLE;
   if (style.containerType === 'size') {

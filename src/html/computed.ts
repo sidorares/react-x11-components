@@ -117,6 +117,36 @@ function len(value: Len | 'none', scale: number): string {
   return `calc(${pct} ${sign} ${px(Math.abs(value.px), scale)})`;
 }
 
+/** `translate` as it computes: across, then down where it is not 0px,
+ *  then the depth where it is not 0. */
+function translateText(t: ComputedStyle['translate'], scale: number): string {
+  if (!t) return 'none';
+  const [x, y, z] = t;
+  if (z) return `${len(x, scale)} ${len(y, scale)} ${px(z, scale)}`;
+  return y === 0 ? len(x, scale) : `${len(x, scale)} ${len(y, scale)}`;
+}
+
+/** `rotate` as it computes: an angle in the plane, or about an axis
+ *  named where it is one of the page's. */
+function rotateText(t: ComputedStyle['rotate']): string {
+  if (!t) return 'none';
+  if (t.kind === 'rotate') return `${num(t.angle)}deg`;
+  const angle = `${num(t.angle)}deg`;
+  if (t.x === 1 && !t.y && !t.z) return `x ${angle}`;
+  if (!t.x && t.y === 1 && !t.z) return `y ${angle}`;
+  if (!t.x && !t.y && t.z === 1) return `z ${angle}`;
+  return `${num(t.x)} ${num(t.y)} ${num(t.z)} ${angle}`;
+}
+
+/** `scale` as it computes: one factor where all are the same and none is
+ *  in depth, two where none is, three otherwise. */
+function scaleText(t: ComputedStyle['scale']): string {
+  if (!t) return 'none';
+  const [x, y, z] = t;
+  if (z !== 1) return `${float6(x)} ${float6(y)} ${float6(z)}`;
+  return x === y ? float6(x) : `${float6(x)} ${float6(y)}`;
+}
+
 /** A size as it computes: its `calc-size()`, or its keyword where it is
  *  one, which the length beside it stands in for. `fit-content()` is no
  *  keyword a browser takes on a size, so what it reads is what it reads
@@ -1227,6 +1257,11 @@ function cssomAt(
       : box
         ? transformMatrixText(style.transform, box, scale)
         : cssomTransform(style.transform, scale);
+  // and the transforms of their own, as they compute (CSS Transforms 2,
+  // 5): what is left at its initial value at the end left out
+  out.translate = translateText(style.translate, scale);
+  out.rotate = rotateText(style.rotate);
+  out.scale = scaleText(style.scale);
   const widths = [
     style.borderTopWidth,
     style.borderRightWidth,

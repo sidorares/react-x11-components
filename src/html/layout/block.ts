@@ -7608,6 +7608,14 @@ export function placedStyleOf(box: Box): ComputedStyle | null {
  *  was one of its `position-try-fallbacks`; none where it was its own. */
 export const ANCHOR_FALLBACK = new WeakMap<Box, string>();
 
+/** The writing modes that option was placed in: its containing block's and
+ *  the box's own, which a logical `position-area` in the option and in a
+ *  query is read against, to compare where on the page each is. */
+export const ANCHOR_FALLBACK_AXES = new WeakMap<
+  Box,
+  { cb: WritingAxes; own: WritingAxes }
+>();
+
 /**
  * What placing a box against its default anchor gives it beside its style
  * (`anchoredStyle`): the cells of its `position-area`, which it takes for
@@ -7925,8 +7933,10 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     // and where none does, the one it had
     if (!found) placed = place(start);
   }
-  if (chosen >= 0) ANCHOR_FALLBACK.set(box, options[chosen].text);
-  else ANCHOR_FALLBACK.delete(box);
+  if (chosen >= 0) {
+    ANCHOR_FALLBACK.set(box, options[chosen].text);
+    ANCHOR_FALLBACK_AXES.set(box, { cb: axes.cb, own: axes.own });
+  } else ANCHOR_FALLBACK.delete(box);
   let own = resolvedStyles.get(chosen);
   // and where it is, what its transitions make of the values that took
   // it there: placed again at those, where one is under way

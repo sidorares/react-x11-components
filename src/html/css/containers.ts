@@ -11,6 +11,7 @@
 
 import { compare, evaluateCondition, styleQuery } from './conditions.js';
 import { fallbackMatches } from './anchor.js';
+import type { WritingAxes } from './anchor.js';
 import type { Kleene, Registered } from './conditions.js';
 
 /** One query of an `@container` rule's list: the container's name, if it
@@ -53,6 +54,9 @@ export interface ScrollStates {
    *  (`ANCHOR_FALLBACK`), null for its own: what `anchored(fallback)`
    *  asks, which layout answers as it answers the rest. */
   fallback: string | null;
+  /** The writing modes it was placed in, which a logical `position-area`
+   *  is read against (`fallbackMatches`). */
+  fallbackAxes?: { cb: WritingAxes; own: WritingAxes } | null;
 }
 
 /** A container no layout has placed, or that is nothing of the three. */
@@ -190,7 +194,8 @@ export function containerHolds(
     }
     if (fn === 'anchored') {
       return scroll
-        ? (anchoredHolds(inner, scroll.fallback) ?? undefined)
+        ? (anchoredHolds(inner, scroll.fallback, scroll.fallbackAxes) ??
+            undefined)
         : undefined;
     }
     if (fn !== '') return undefined;
@@ -239,6 +244,7 @@ export function scrollStateHolds(
 export function anchoredHolds(
   inner: string,
   applied: string | null,
+  axes: { cb: WritingAxes; own: WritingAxes } | null = null,
 ): Kleene | null {
   const text = inner.trim();
   const wrapped =
@@ -250,7 +256,7 @@ export function anchoredHolds(
       valid = false;
       return undefined;
     }
-    const held = fallbackMatches(m[1], applied);
+    const held = fallbackMatches(m[1], applied, axes);
     if (held === null) valid = false;
     return held ?? undefined;
   });

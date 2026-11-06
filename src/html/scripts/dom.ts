@@ -15409,9 +15409,21 @@ export function installDom(
             : part.name;
         }
         if (part.kind === 'fn') {
-          return part.name.toLowerCase() === 'style'
-            ? `style(${serializeQueryIn(part.inner, true)})`
-            : `${part.name}(${part.inner})`;
+          const fn = part.name.toLowerCase();
+          if (fn === 'style') {
+            return `style(${serializeQueryIn(part.inner, true)})`;
+          }
+          // an anchored container's query (CSS Anchor Positioning 2), but
+          // a feature with no value, which is `<general-enclosed>`
+          if (fn === 'anchored' && !/:\s*\)*\s*$/.test(part.inner)) {
+            // its keywords in lower case, a dashed ident as written
+            const query = serializeQueryIn(part.inner, false).replace(
+              /--[\w-]+|[A-Za-z][\w-]*/g,
+              (w) => (w.startsWith('--') ? w : w.toLowerCase()),
+            );
+            return `anchored(${query})`;
+          }
+          return `${part.name}(${part.inner})`;
         }
         return `(${serializeQueryIn(part.inner, inStyle)})`;
       })

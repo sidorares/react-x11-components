@@ -7005,8 +7005,15 @@ change — and tries each other where it does not, its own first, keeping
 the first that fits, or the one it had where none does.
 `container-type: anchored` makes the box answer `@container
 anchored(fallback: …)` for what it holds: the option it took, written as
-in its list and matched word for word (a `position-area` by the cells it
-takes), `none` where it took none, and any option in a boolean context.
+in its list and matched word for word, `none` where it took none, and any
+option in a boolean context. A `position-area` is matched by where its cells
+are on the page, each logical keyword read against the writing modes the box
+was placed in, and `any` matches what is on its axis — written, or left out
+beside a keyword of one axis. Such a container is style-contained, as a size
+container is, and `getComputedStyle` reads its `container-type` in the
+order the grammar has; an `@container` rule's `conditionText` writes an
+`anchored()` query as CSSOM serializes one. A computed style reads
+`translate`, `rotate` and `scale` as they compute.
 That answer is layout's, so as for a size query, a layout that changes it
 restyles what it holds and lays the document out again. An anchor is the
 last box with the name that is not the positioned box or inside it and is

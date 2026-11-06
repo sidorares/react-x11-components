@@ -3731,6 +3731,39 @@ test('position-area, position-try-fallbacks and anchored() are read', () => {
   );
   assert.strictEqual(anchoredHolds('fallback: left top', 'top left'), true);
   assert.strictEqual(anchoredHolds('fallback: sideways', null), null);
+  // `any` matches what is on its axis, and one keyword of an axis has it
+  // on the other
+  assert.strictEqual(anchoredHolds('fallback: any', 'span-bottom'), true);
+  assert.strictEqual(
+    anchoredHolds('fallback: any span-bottom', 'span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: span-end any', 'span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: span-bottom', 'right span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: right', 'right span-bottom'),
+    true,
+  );
+  assert.strictEqual(
+    anchoredHolds('fallback: left', 'right span-bottom'),
+    false,
+  );
+  // a logical area read against the writing modes it was placed in
+  const ownRtl = { mode: 'horizontal-tb' as const, rtl: true };
+  const lr = { mode: 'vertical-lr' as const, rtl: false };
+  assert.strictEqual(
+    anchoredHolds('fallback: bottom right', 'block-end inline-end', {
+      cb: lr,
+      own: ownRtl,
+    }),
+    true,
+  );
 });
 
 test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {
