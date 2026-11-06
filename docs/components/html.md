@@ -7225,7 +7225,12 @@ URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
 asked, in a container that snaps and in one that does not; `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
-what each was snapped to. The area each axis lined up is kept by its
+what each was snapped to. Whether or not a container snaps, what such
+a scroll lines up is the element's border box outset by its
+`scroll-margin`, in the scrollport inset by the container's
+`scroll-padding`, the viewport's by the root's (CSS Scroll Snap 1, 6.1
+and 6.2): a heading `scroll-margin-top: 12px` under a page's
+`scroll-padding-top: 30px` comes to rest 42px below the top. The area each axis lined up is kept by its
 element, and a layout that moves it scrolls the container with it — the
 viewport as far as the document reaches after that layout; where the
 snapport can no longer show the areas both axes lined up, the container

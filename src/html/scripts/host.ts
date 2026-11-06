@@ -777,6 +777,10 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** An element's `scroll-margin` and a scroll container's
+   *  `scroll-padding`, the viewport's for null, top first, in CSS pixels
+   *  (`HtmlViewNode.scrollInsets`). */
+  scrollInsets?(element: Element, scroller: Element | null): number[];
   /** What a page's `MediaSource` came to, for its element's player to
    *  play, or null for none any more: a file of a clip (`clips.ts`), or the
    *  URL of a feed (`feeds.ts`), whose player says what it does
@@ -5076,6 +5080,14 @@ export class DomHost {
       // whether a scroll container's scroll moves an element, which it
       // does not for one positioned against something outside it
       // (`scrollIntoView`)
+      case 'scrollInsets':
+        this.flush();
+        return (
+          this._seams.handle.scrollInsets?.(
+            this._element(a),
+            typeof b === 'number' ? this._element(b) : null,
+          ) ?? [0, 0, 0, 0, 0, 0, 0, 0]
+        ).join(',');
       case 'scrollMoves':
         this.flush();
         return (
