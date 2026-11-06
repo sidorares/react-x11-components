@@ -307,6 +307,7 @@ import {
 import type { PlacedTransition } from './layout/block.js';
 import {
   frameModeOf,
+  frameOf as frameOfBox,
   onPage,
   pageMargins,
   pageSides,
@@ -14219,9 +14220,9 @@ export class HtmlViewNode extends Node {
     const state = scrollStateOf(box);
     const left = box.x + box.borderLeft;
     const top = box.y + box.borderTop;
-    const at = (child: Box) =>
+    const at = (child: Box, rect: SnapRect) =>
       scrollMoves(box, child)
-        ? { x: child.x - left + state.x, y: child.y - top + state.y }
+        ? { x: rect.x - left + state.x, y: rect.y - top + state.y }
         : null;
     const areas = only ? areaIn(box, only, at) : snapAreasIn(box, at);
     if (!areas) return null;
@@ -14277,8 +14278,8 @@ export class HtmlViewNode extends Node {
     const port = this._viewport();
     if (!tree || !root || !style || !port) return null;
     if (!only && !style.scrollSnapType) return null;
-    const at = (child: Box) =>
-      fixedToViewport(child) ? null : { x: child.x, y: child.y };
+    const at = (child: Box, rect: SnapRect) =>
+      fixedToViewport(child) ? null : { x: rect.x, y: rect.y };
     const areas = only ? areaIn(root, only, at) : snapAreasIn(root, at);
     if (!areas) return null;
     return {
@@ -21350,10 +21351,7 @@ function snapBox(c: SnapContainer, key: SnapKey | null): Box | null {
  *  tree order, each placed by `at` — null for one that is not the
  *  container's to scroll. An inline box's rect is never laid out, and is
  *  no area here. */
-function snapAreasIn(
-  container: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] {
+function snapAreasIn(container: Box, at: SnapPlace): SnapArea[] {
   const out: SnapArea[] = [];
   const walk = (b: Box): void => {
     for (const child of b.children) {
@@ -21370,11 +21368,7 @@ function snapAreasIn(
 
 /** The one snap area a box is under a container, as `snapAreasIn` would
  *  find it, or null where it is none of the container's. */
-function areaIn(
-  container: Box,
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea[] | null {
+function areaIn(container: Box, box: Box, at: SnapPlace): SnapArea[] | null {
   if (!canBeArea(box)) return null;
   let a = box.parent;
   while (a && a !== container) a = a.parent;
@@ -21406,15 +21400,23 @@ function holdsArea(container: Box, box: Box): boolean {
   return true;
 }
 
-function areaAt(
-  box: Box,
-  at: (box: Box) => { x: number; y: number } | null,
-): SnapArea | null {
-  const place = at(box);
+function areaAt(box: Box, at: SnapPlace): SnapArea | null {
+  // a box in a vertical writing mode's frame is laid out turned, and is
+  // where the page draws it
+  const laid = { x: box.x, y: box.y, width: box.width, height: box.height };
+  const rect = frameOfBox(box) ? onPage(box, laid) : laid;
+  const place = at(box, rect);
   return place
-    ? { box, x: place.x, y: place.y, width: box.width, height: box.height }
+    ? { box, x: place.x, y: place.y, width: rect.width, height: rect.height }
     : null;
 }
+
+/** A snap area's border box as the page has it. */
+type SnapRect = { x: number; y: number; width: number; height: number };
+
+/** Where a box's snap area is, from its rectangle on the page, in a snap
+ *  container's coordinates at no scroll; null where it is none of its. */
+type SnapPlace = (box: Box, rect: SnapRect) => { x: number; y: number } | null;
 
 /** The scroll containers in a tree that snap on an axis. */
 function snapContainersIn(root: Box): Box[] {
