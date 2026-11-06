@@ -676,6 +676,9 @@ export interface HandleInternals {
   /** And its timing, as a page's `updateTiming()` set it on its effect: a
    *  JSON object of what it set (`HtmlViewNode.timeAnimation`). */
   timeAnimation(key: number, timing: string): void;
+  /** And an end of its range, as a page's `rangeStart` or `rangeEnd` set
+   *  it (`HtmlViewNode.rangeAnimation`). */
+  rangeAnimation(key: number, end: boolean, edge: string): void;
   /** And one on a scroll's timeline, held, run from a start time or
    *  aligned to its range (`HtmlViewNode.seekScrolled`). */
   seekScrolled(
@@ -5540,6 +5543,10 @@ export class DomHost {
       // a page's `updateTiming()` on a CSS animation's effect
       case 'timeAnimation':
         this._seams.handle.timeAnimation?.(Number(a), String(b));
+        return null;
+      // and its `rangeStart` or `rangeEnd`
+      case 'rangeAnimation':
+        this._seams.handle.rangeAnimation?.(Number(a), b === true, String(c));
         return null;
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);

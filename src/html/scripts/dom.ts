@@ -4449,6 +4449,7 @@ export function installDom(
     }
     set rangeStart(v: Any) {
       this._rangeStart = rangeEdgeOf(v, false);
+      this._rangeSet(false);
       this._effectChanged();
     }
     get rangeEnd(): Any {
@@ -4456,8 +4457,12 @@ export function installDom(
     }
     set rangeEnd(v: Any) {
       this._rangeEnd = rangeEdgeOf(v, true);
+      this._rangeSet(true);
       this._effectChanged();
     }
+    /** A page set an end of its range: a CSS animation's stands over its
+     *  `animation-range` from then on (`CSSAnimation._rangeSet`). */
+    _rangeSet(_end: boolean): void {}
 
     // -- the procedures
 
@@ -5020,6 +5025,41 @@ export function installDom(
     get animationName(): string {
       return this._name;
     }
+    override _rangeSet(end: boolean): void {
+      const edge = end ? this._rangeEnd : this._rangeStart;
+      if (edge === 'normal') {
+        call('rangeAnimation', this._key, end, '"normal"');
+        return;
+      }
+      // its offset as a percentage and pixels added to it, which is how a
+      // range's offset is linear in what it is a percentage of
+      const px = offsetPx(edge.offset, 0);
+      const pct = offsetPx(edge.offset, 100) - px;
+      call(
+        'rangeAnimation',
+        this._key,
+        end,
+        JSON.stringify({ name: edge.name ?? null, pct, px }),
+      );
+    }
+    /** Where it starts and what its time is, as the cascade has it now: on
+     *  a scroll's timeline its range and its timing may be a style's that
+     *  changed since `getAnimations()` listed it, and a start time its
+     *  range aligns moves with them (`refreshCss`). */
+    override get startTime(): Any {
+      refreshCss(this);
+      return super.startTime;
+    }
+    override set startTime(v: Any) {
+      super.startTime = v;
+    }
+    override get currentTime(): Any {
+      refreshCss(this);
+      return super.currentTime;
+    }
+    override set currentTime(v: Any) {
+      super.currentTime = v;
+    }
     /** What a page's `updateTiming()` set on its effect — of its duration,
      *  delay, iterations, direction and fill — stands over the
      *  `animation-*` longhand it names from then on, in what is drawn as
@@ -5187,7 +5227,27 @@ export function installDom(
     const raw = call('cssAnimations', target._id, false);
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     const info = list.find((i: Any) => i.key === a._key);
-    if (info) effect._timing = cssTimingOf(info, effect);
+    if (!info) return;
+    effect._timing = cssTimingOf(info, effect);
+    a._rangeStart = rangeEdgeOf(info.rangeStart, false);
+    a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+  };
+  /** A CSS animation on a scroll's timeline, its timing and its range read
+   *  again as the cascade has them, and a start time its range aligns
+   *  aligned again (`CSSAnimation.startTime`). */
+  const refreshCss = (a: Any): void => {
+    if (!a._effect || !a._finite()) return;
+    const was = [a._rangeStart, a._rangeEnd, a._effect._timing];
+    refreshCssTiming(a._effect);
+    // where a style moved what it is aligned to: aligned again, and its
+    // finished state with it, as at a frame
+    const moved =
+      JSON.stringify(was) !==
+      JSON.stringify([a._rangeStart, a._rangeEnd, a._effect._timing]);
+    if (moved && a._autoAlign) {
+      a._autoAlignStart();
+      a._updateFinished(false, false);
+    }
   };
   /** The CSS animations under way on `target`, or on what it holds, or in
    *  the document for null, in tree order and then their order in

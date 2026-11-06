@@ -16522,6 +16522,44 @@ test('a named timeline is never one a removed element declared, while the docume
   );
 });
 
+test("a page's rangeStart and rangeEnd on a CSS animation stand over its animation-range, and its start time follows a style changed since it was listed", async () => {
+  const doc = await hosted(
+    '<style>#s { overflow-y: scroll; width: 300px; height: 200px }' +
+      ' #t { margin: 800px 0; width: 100px; height: 100px;' +
+      ' animation: m auto linear; view-timeline: --v; animation-timeline: --v;' +
+      ' animation-range: entry 0% entry 100% }' +
+      ' @keyframes m { from { margin-left: 0 } to { margin-left: 100px } }</style>' +
+      '<div id="s"><div id="t"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), t = document.getElementById("t"), r = [];' +
+      'var pct = function (v) { return v === null ? "null" : Math.round(v.value * 100) / 100; };' +
+      'var a = t.getAnimations()[0];' +
+      'a.ready.then(function () {' +
+      '  s.scrollTop = 650;' +
+      '  requestAnimationFrame(function () {' +
+      // the page's end, and a start the style moves
+      '    a.rangeEnd = "contain 100%"; t.style.animationRangeStart = "entry 50%";' +
+      '    requestAnimationFrame(function () {' +
+      '      r.push(pct(a.startTime), pct(a.currentTime), pct(a.effect.getComputedTiming().duration));' +
+      // a style's end changes nothing the page set
+      '      t.style.animationRangeEnd = "entry 100%";' +
+      '      requestAnimationFrame(function () {' +
+      '        r.push(pct(a.effect.getComputedTiming().duration), getComputedStyle(t).marginLeft);' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '});' +
+      '</script>',
+  );
+  // cover runs from 600 to 900: entry 50% is at 650, contain 100% at 800
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '16.67|0|50|50|0px',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +
