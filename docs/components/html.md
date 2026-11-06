@@ -5393,7 +5393,9 @@ other timeline it is placed nowhere and draws nothing, and
 A timeline's `block` and `inline` are its scroller's, in the scroller's
 writing mode, and the viewport's in the document's principal one; a
 `scroll(nearest)` or a `view()` resolves its axis against the nearest
-scroll container around the element and takes the first from there out
+scroll container around the element in its containing block chain — not
+one an absolutely positioned box is positioned against something outside
+of, which scrolls none of it — and takes the first from there out
 that scrolls along it, past one that clips it (`overflow: clip scroll`),
 or the viewport where none does; its
 progress counts from the scroller's scroll origin, at the right of an
