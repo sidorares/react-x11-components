@@ -15877,7 +15877,8 @@ export class HtmlViewNode extends Node {
    * moves it — none for one fixed to the viewport.
    */
   private _placementOf(box: Box): Placement {
-    let m: Matrix = [1, 0, 0, 1, box.x, box.y];
+    const own = this._borderRect(box);
+    let m: Matrix = [1, 0, 0, 1, own.x, own.y];
     for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
       const placed = placedMatrix(at);
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
@@ -15890,12 +15891,24 @@ export class HtmlViewNode extends Node {
       );
     }
     return {
-      width: box.width,
-      height: box.height,
+      width: own.width,
+      height: own.height,
       matrix: m,
       direction: box.style.direction,
       mixBlendMode: box.style.mixBlendMode,
     };
+  }
+
+  /**
+   * An element's border box as a view transition captures it (7.4), in the
+   * document's device pixels: a box's own, and an inline box's the box
+   * around its fragments, which its rect does not say (`_fragmentsOf`).
+   */
+  private _borderRect(box: Box): Rect {
+    const tree = this._tree;
+    const all =
+      box.kind === 'inline' && tree ? this._fragmentsOf(tree, box)?.all : null;
+    return all ?? { x: box.x, y: box.y, width: box.width, height: box.height };
   }
 
   /**
@@ -15953,12 +15966,17 @@ export class HtmlViewNode extends Node {
     const fixed = drawnAtViewport(box);
     const vx = fixed ? 0 : viewport.x - this.abs.x;
     const vy = fixed ? 0 : viewport.y - this.abs.y;
-    const inkX = Math.min(box.boundsX, box.x);
-    const inkY = Math.min(box.boundsY, box.y);
-    const inkW =
-      Math.max(box.boundsX + box.boundsWidth, box.x + box.width) - inkX;
-    const inkH =
-      Math.max(box.boundsY + box.boundsHeight, box.y + box.height) - inkY;
+    const own = this._borderRect(box);
+    // an inline box's bounds are its lines', which it shares
+    const inline = box.kind === 'inline';
+    const inkX = inline ? own.x : Math.min(box.boundsX, own.x);
+    const inkY = inline ? own.y : Math.min(box.boundsY, own.y);
+    const inkW = inline
+      ? own.width
+      : Math.max(box.boundsX + box.boundsWidth, own.x + own.width) - inkX;
+    const inkH = inline
+      ? own.height
+      : Math.max(box.boundsY + box.boundsHeight, own.y + own.height) - inkY;
     const clip = captureClipRect(
       { x: inkX, y: inkY, width: inkW, height: inkH },
       { x: vx, y: vy, width: viewport.width, height: viewport.height },
@@ -15987,8 +16005,8 @@ export class HtmlViewNode extends Node {
     });
     return {
       surface,
-      inkX: x0 - box.x,
-      inkY: y0 - box.y,
+      inkX: x0 - own.x,
+      inkY: y0 - own.y,
       inkWidth: w,
       inkHeight: h,
     };
@@ -16143,7 +16161,7 @@ export class HtmlViewNode extends Node {
           if (top.pseudo === 'view-transition') others.add(top);
         }
       }
-      const size = root ? this._viewportPlacement(own) : own;
+      const size = root ? this._viewportPlacement(own) : this._borderRect(own);
       // drawn at its size, as it is: straight onto the context, as the
       // document would draw it there
       if (Math.abs(w - size.width) < 1e-6 && Math.abs(h - size.height) < 1e-6) {
@@ -16201,8 +16219,9 @@ export class HtmlViewNode extends Node {
       });
       return;
     }
-    const originX = x - box.x;
-    const originY = y - box.y;
+    const own = this._borderRect(box);
+    const originX = x - own.x;
+    const originY = y - own.y;
     paintCapture(ctx, tree, box, {
       ...base,
       originX,
