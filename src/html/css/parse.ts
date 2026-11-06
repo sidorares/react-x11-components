@@ -174,8 +174,14 @@ export interface Stylesheet {
   /** Its `@function` rules, in order. */
   functions?: FunctionRule[];
   /** Its `@position-try` rules (CSS Anchor Positioning 1, 4.2), in order:
-   *  a name, and the declarations of the properties such a rule may set. */
-  positionTries?: { name: string; declarations: Declaration[] }[];
+   *  a name, the declarations of the properties such a rule may set, and
+   *  the cascade layer it is in, as a style rule's — the latest layer's
+   *  rule of a name being the one that names it. */
+  positionTries?: {
+    name: string;
+    declarations: Declaration[];
+    layer: readonly number[] | null;
+  }[];
 }
 
 /**
@@ -541,6 +547,7 @@ export function parseStylesheet(
               declarations: parseDeclarations(at.block).filter(
                 (d) => !d.important && POSITION_TRY_PROPS.test(d.prop),
               ),
+              layer,
             });
           }
         } else if (name === 'function' && at.block !== null) {

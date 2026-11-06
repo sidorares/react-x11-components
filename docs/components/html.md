@@ -6923,7 +6923,15 @@ or its insets go past each other and leave it no room: the tactics
 `flip-block`, `flip-inline` and `flip-start`, and `flip-x` and `flip-y`
 across and down, alone or combined, a `@position-try` rule by its name
 (its insets, margins, sizes, self-alignment, `position-anchor` and
-`position-area`, worked out as the element's own), and a `position-area`.
+`position-area`), and a `position-area`. A rule's declarations are a
+cascade origin of their own (4.2, the position fallback origin): over the
+element's normal declarations, its `style` attribute among them, and under
+its animations, its transitions and every `!important` declaration, so an
+option's style is the element's cascaded again with them in it. An
+`!important` declaration in the rule is invalid and dropped, and so is a
+rule whose prelude is not one dashed name. Of the rules of a name, the
+latest in the highest cascade layer is the one it names, a rule in no layer
+over every layer's.
 The box keeps the option it was last placed by while that fits — its last
 successful position option, kept by element across layouts and builds,
 and forgotten where its `position`, its default anchor or its options

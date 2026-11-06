@@ -15076,8 +15076,10 @@ export function installDom(
       const name = part.slice(0, colon).trim().toLowerCase();
       if (!POSITION_TRY_TAKES.has(name)) continue;
       let value = part.slice(colon + 1).trim();
+      // `!important` makes a declaration in it invalid (CSS Anchor
+      // Positioning 1, 4.2), and the rest of the rule stands
       const important = /!\s*important$/i.test(value);
-      if (important) value = value.replace(/\s*!\s*important$/i, '');
+      if (important) continue;
       if (!value) continue;
       const at = out.findIndex((d) => d.name === name);
       if (at >= 0) out.splice(at, 1);
@@ -15459,8 +15461,12 @@ export function installDom(
   /** Whether CSS drops a rule as it parses it: an `@view-transition` with
    *  a prelude (CSS View Transitions 2, 2.1). */
   const droppedRule = (text: string): boolean =>
-    /^@view-transition(?![\w-])/i.test(text) &&
-    preludeOf(text).slice('@view-transition'.length).trim() !== '';
+    (/^@view-transition(?![\w-])/i.test(text) &&
+      preludeOf(text).slice('@view-transition'.length).trim() !== '') ||
+    // a `@position-try` names one dashed ident (CSS Anchor Positioning 1,
+    // 4.2), or is no rule
+    (/^@position-try(?![\w-])/i.test(text) &&
+      !/^--\S+$/.test(preludeOf(text).slice('@position-try'.length).trim()));
   /** `@layer name { … }` as a grouping rule so nested `@view-transition`
    *  (and the rest) are in `cssRules` (CSS Cascade 5, 3.1). A statement
    *  `@layer a, b;` has no block and an empty list. */
@@ -15621,7 +15627,7 @@ export function installDom(
         return at;
       }
       // a rule the host would keep and CSS drops (`droppedRule`)
-      if (/^\s*@view-transition/i.test(text)) oneRule(text);
+      if (/^\s*@(?:view-transition|position-try)/i.test(text)) oneRule(text);
       const answer = String(call('sheetInsert', this._owner._id, text, at));
       const first = answer.indexOf('\u0000');
       const second = answer.indexOf('\u0000', first + 1);
