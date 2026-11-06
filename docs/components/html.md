@@ -5345,7 +5345,8 @@ or its nearest ancestor declares with `scroll-timeline-name` or
 where an ancestor's `timeline-scope` takes the name first, the last
 element under that ancestor to declare it, and none where none does —
 and otherwise the last element in the document to declare it, as though
-the root took every name; an element whose own `timeline-scope` takes a
+the root took every name, and never one a page's script has taken out of
+the document since the boxes were last built; an element whose own `timeline-scope` takes a
 name keeps what it and its subtree declare by it from outside; and
 `none`, no timeline and no effect. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
@@ -7014,18 +7015,9 @@ where its default anchor is cut away entirely by a box that clips between
 the two, or by the viewport for a box fixed to it whose anchor the pane
 scrolls (`anchors-visible`, the initial value), and where it overflows its
 inset-modified containing block (`no-overflow`); a scroll that changes
-either hides or shows it in the frame it scrolls. A box with a default
-anchor whose containing block is a scroll container's is placed in its
-scrollable containing block (CSS Position 4, 2.1): the padding edge of all
-it scrolls, but for the relative offsets and the transforms of what it
-holds and what is out of the flow. One past what its containing block
-shows is held, as `normal` and `start` and their kin hold it, no further
-than the scroll can reach (CSS Box Alignment 3, 4.4.1.2): without end on
-the side a scroll container's, or the document's, scroll goes, and for a
-box fixed to the viewport anchored in the document, over the initial
-containing block and the root's margin box. `safe` and `unsafe` before
-`normal` are not taken, as Chrome takes neither. Not done: `anchors-valid`,
-and each anchor reference's own remembered scroll offset — a
+either hides or shows it in the frame it scrolls. Not done: `anchors-valid`,
+the scrollable containing block a scroll container is for a box with a
+default anchor, and each anchor reference's own remembered scroll offset — a
 layout takes every anchor where it is scrolled to then.
 
 A script's `el.style` takes each of these properties only as its grammar

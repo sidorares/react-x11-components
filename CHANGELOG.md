@@ -1,25 +1,5 @@
 # Changelog
 
-## [0.38.0](https://github.com/sidorares/react-x11-components/compare/v0.37.0...v0.38.0) (2026-11-06)
-
-
-### Features
-
-* **rich-text-editor:** a hybrid composer — lines, markup, atoms, paste attachments and recall ([#1344](https://github.com/sidorares/react-x11-components/issues/1344)) ([48089b6](https://github.com/sidorares/react-x11-components/commit/48089b600af05cadf708d50dff521c6771393050))
-
-
-### Bug Fixes
-
-* **html:** a [@position-try](https://github.com/position-try) rule's declarations are a cascade origin of their own, under !important, animations and transitions, where they were laid over all of them ([#1341](https://github.com/sidorares/react-x11-components/issues/1341)) ([b6bba12](https://github.com/sidorares/react-x11-components/commit/b6bba12d5836ad463246717bdb635a988d9802ae))
-* **html:** a page's updateTiming() on a CSS animation's effect stands over the longhands it sets, in what is drawn, and getTiming() reads the cascade as it stands ([#1350](https://github.com/sidorares/react-x11-components/issues/1350)) ([4563ff3](https://github.com/sidorares/react-x11-components/commit/4563ff3724a5ce63a4981f16cd0c5ea02b07c435))
-* **html:** a scroll in a transformed scroller moves what is anchored as far as the transform carries it ([#1349](https://github.com/sidorares/react-x11-components/issues/1349)) ([983062b](https://github.com/sidorares/react-x11-components/commit/983062bf5d201e9a4566ea697eb081a6ea8e8684))
-* **html:** a scroll or a view timeline takes block and inline from its scroller's writing mode and counts from its scroll origin, where it read block as down and counted from the left ([#1346](https://github.com/sidorares/react-x11-components/issues/1346)) ([4f32cb8](https://github.com/sidorares/react-x11-components/commit/4f32cb8cfb3eeb684e870e03a8ae90b399990105))
-* **html:** a transition of an anchored box runs between the lengths its anchor() and anchor-size() come to, and as it takes or leaves a position option, where none ran ([#1345](https://github.com/sidorares/react-x11-components/issues/1345)) ([37ad45e](https://github.com/sidorares/react-x11-components/commit/37ad45eb1bcbf7584a47401fc340803651217f09))
-* **html:** an anchored box is placed in the scrollable containing block of the scroll container that contains it, and held no further in than the scroll can reach ([#1351](https://github.com/sidorares/react-x11-components/issues/1351)) ([cbc5140](https://github.com/sidorares/react-x11-components/commit/cbc514034feb88a837c0b04828749610243b7d18))
-* **html:** an animation runs an inset's anchor() and a size's anchor-size() between where each end puts the box, where it went over to its fallback ([#1343](https://github.com/sidorares/react-x11-components/issues/1343)) ([94cf10d](https://github.com/sidorares/react-x11-components/commit/94cf10df9011aff1cf478c1bdb5b6a3a594328c8))
-* **html:** an anonymous scroll() or view() looks past a scroll container that clips its axis, and overflow-block and overflow-inline are parsed ([#1348](https://github.com/sidorares/react-x11-components/issues/1348)) ([fef8ac5](https://github.com/sidorares/react-x11-components/commit/fef8ac52975966ceb3e1fdef9f6bfe24f134c05b))
-* **html:** anchored boxes chained to one the pane's scroll moves follow it, and a page's own scroll places them before the pane takes it ([#1347](https://github.com/sidorares/react-x11-components/issues/1347)) ([6246df9](https://github.com/sidorares/react-x11-components/commit/6246df99e2682c2739acb4ea9551ef0ad017494f))
-
 ## [0.37.0](https://github.com/sidorares/react-x11-components/compare/v0.36.0...v0.37.0) (2026-11-06)
 
 

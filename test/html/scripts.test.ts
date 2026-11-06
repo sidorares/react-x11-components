@@ -16396,6 +16396,36 @@ test("a page's updateTiming() on a CSS animation's effect stands over the longha
   );
 });
 
+test('a named timeline is never one a removed element declared, while the document is still to be built again', async () => {
+  const doc = await hosted(
+    '<style>@keyframes z { from { z-index: 0 } to { z-index: 100 } }' +
+      ' .s { overflow: auto; width: 100px; height: 100px } .s > div { height: 50px; z-index: -1 }' +
+      ' .t { view-timeline: --t1; animation: z 1s linear forwards; animation-timeline: --t1 }</style>' +
+      '<main id="m"></main><template id="tp"><div class="s"><div></div><div></div><div></div>' +
+      '<div class="t"></div><div></div><div></div><div></div></div></template>' +
+      '<p id="out"></p><script>' +
+      'var m = document.getElementById("m"), tp = document.getElementById("tp"), r = [];' +
+      'm.append(tp.content.cloneNode(true));' +
+      'requestAnimationFrame(function () {' +
+      // past its range, filling forwards
+      '  m.querySelector(".s").scrollTop = 201;' +
+      '  requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '    r.push(getComputedStyle(m.querySelector(".t")).zIndex);' +
+      // a new one, unscrolled, before its range: no effect
+      '    m.replaceChildren(); m.append(tp.content.cloneNode(true));' +
+      '    r.push(getComputedStyle(m.querySelector(".t")).zIndex);' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  }); });' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '100|-1',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

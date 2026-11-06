@@ -11043,7 +11043,12 @@ export class HtmlViewNode extends Node {
       axis = ref.axis;
       inset = ref.inset;
     } else if (ref.kind === 'name') {
-      const named = namedTimeline(tree, subject, ref.name);
+      const named = namedTimeline(
+        tree,
+        subject,
+        ref.name,
+        this._source.document,
+      );
       if (!named) return null;
       subject = named.el;
       view = named.view;
@@ -14484,7 +14489,12 @@ export class HtmlViewNode extends Node {
           inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
         };
       } else if (ref.kind === 'name') {
-        const named = namedTimeline(tree, el, ref.name);
+        const named = namedTimeline(
+          tree,
+          el,
+          ref.name,
+          this._source.document,
+        );
         timeline = !named
           ? { kind: 'none' }
           : named.view
@@ -17330,18 +17340,19 @@ function namedTimeline(
   tree: BoxTree,
   el: Element,
   name: string,
+  doc: Document,
 ): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
     if (style) {
       const own = declaredTimeline(at, style, name);
       if (own) return own;
-      if (scopes(style, name)) return scopedTimeline(tree, at, name);
+      if (scopes(style, name)) return scopedTimeline(tree, at, name, doc);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
-  return scopedTimeline(tree, null, name);
+  return scopedTimeline(tree, null, name, doc);
 }
 
 interface NamedTimeline {
@@ -17398,6 +17409,7 @@ function scopedTimeline(
   tree: BoxTree,
   scope: Element | null,
   name: string,
+  doc: Document,
 ): NamedTimeline | null {
   let found: NamedTimeline | null = null;
   for (const [el, entry] of tree.styles) {
@@ -17412,6 +17424,9 @@ function scopedTimeline(
     }
     const timeline = declaredTimeline(el, style, name);
     if (!timeline) continue;
+    // the tree is the last build's, and may hold an element a page's script
+    // has taken out since: what it declared is no timeline now
+    if (!inDocument(el, doc)) continue;
     let under = scope === null;
     for (
       let at: AnyNode | null = el;

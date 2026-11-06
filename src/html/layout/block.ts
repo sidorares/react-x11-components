@@ -88,8 +88,6 @@ import {
   STUCK,
   anchoredWith,
   anchorScrollsOf,
-  endOrigins,
-  scrollableRect,
   type ScrollMap,
   applyScrollOffsets,
   applyScrollOffsetsIn,
@@ -7779,12 +7777,15 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     return;
   }
   forgetPaneShift(box);
-  // what scrolls its default anchor and not it, and how far it has now
-  const anchor = defaultAnchorBox(box, style, ctx);
-  const cb = positionedContaining(box, containing, ctx);
+  const cb =
+    containing.kind === 'inline'
+      ? inlineContainingBlock(containing, box, ctx)
+      : (gridArea(box, containing, ctx) ?? containingRect(containing, ctx));
   const options = style.positionTryFallbacks ?? [];
   const root = ctx.anchorRoot ?? null;
   const axes = anchorAxesOf(box, containing);
+  // what scrolls its default anchor and not it, and how far it has now
+  const anchor = defaultAnchorBox(box, style, ctx);
   const ownContext =
     anchor &&
     scrollContextOf(anchor, box, (b) => drawnAtViewport(b) && !!ctx.viewport);
@@ -7842,7 +7843,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   const place = (index: number): Placement | null => {
     const tried = triedStyle(index);
     if (!tried) return null;
-    ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
+    ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       resolvedStyles.set(index, resolved);
@@ -7871,7 +7872,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
             const tried = triedStyle(i);
             if (!tried) return -Infinity;
             ctx.anchorShift =
-              anchor && context ? { anchor, x: sx, y: sy } : null;
+              anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
             try {
               const { resolved, anchoring } = anchoredStyle(
                 box,
@@ -7907,7 +7908,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   if (transit && own) {
     const moved = transit(box, own, chosen, anchoredFields(triedStyle(chosen)));
     if (moved !== own) {
-      ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
+      ctx.anchorShift = anchor && (sx || sy) ? { anchor, x: sx, y: sy } : null;
       try {
         box.style = moved;
         // laid out a moment ago at the values it ran from, which nothing
@@ -8996,29 +8997,6 @@ function justifySelfAs(
  * aligns is aligned in its inset-modified containing block
  * (`selfAligned`). Answers that rectangle, which says whether it fits.
  */
-/**
- * The rectangle a positioned box is placed in: an inline box's, its grid
- * area in a grid (CSS Grid 1, 9.1), whether the box is the grid's child or
- * deeper in it, or the padding box of what contains it — and that box's
- * scrollable containing block where it is a scroll container and the box
- * has a default anchor, so that all it scrolls is room to place the box in
- * (CSS Anchor Positioning 1, 2.4; CSS Position 4, 2.1).
- */
-function positionedContaining(
-  box: Box,
-  containing: Box,
-  ctx: LayoutContext,
-): CbRect {
-  if (containing.kind === 'inline') {
-    return inlineContainingBlock(containing, box, ctx);
-  }
-  const local =
-    gridArea(box, containing, ctx) ?? containingRect(containing, ctx);
-  return isScroller(containing) && defaultAnchorBox(box, box.style, ctx)
-    ? scrollableRect(containing, local)
-    : local;
-}
-
 function positionedIn(
   box: Box,
   containing: Box,
@@ -9027,11 +9005,14 @@ function positionedIn(
 ): Placement {
   // a grid's is the box's grid area (CSS Grid 1, 9.1), whether the box is
   // the grid's child or deeper in it
-  // the containing block as it is before a `position-area` takes its cells
-  // of it, which a box too big for them is held in as far as it can be
-  const whole = positionedContaining(box, containing, ctx);
   const area =
     containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
+  // the containing block as it is before a `position-area` takes its cells
+  // of it, which a box too big for them is held in as far as it can be
+  const whole =
+    containing.kind === 'inline'
+      ? inlineContainingBlock(containing, box, ctx)
+      : (area ?? containingRect(containing, ctx));
   // and a box in a `position-area` is in the area's cells
   const placed = anchoring?.area ?? null;
   const { x: cbX, y: cbY, width: cbWidth, height: cbHeight } = placed ?? whole;
@@ -9260,7 +9241,6 @@ function positionedIn(
         box.width + box.marginLeft + box.marginRight,
         whole.x,
         whole.width,
-        overflowLimit(box, containing, false, ctx),
       ) + box.marginLeft;
   } else if (
     left !== null &&
@@ -9330,7 +9310,6 @@ function positionedIn(
         box.height + box.marginTop + box.marginBottom,
         whole.y,
         whole.height,
-        overflowLimit(box, containing, true, ctx),
       ) + box.marginTop;
   } else if (top !== null && bottom !== null) {
     // a box that fills what its offsets leave, unless `min-height` or
@@ -9482,10 +9461,7 @@ function selfAligned(
           : 0;
   let centre: number | null = null;
   let stretch = false;
-  // an overflow position that says so aligns as it says, overflow or not
-  let unsafe = (down ? style.alignSelfText : style.justifySelfText).startsWith(
-    'unsafe',
-  );
+  let unsafe = false;
   if (
     (down ? style.alignAnchorCenter : style.justifyAnchorCenter) &&
     anchorCentre !== null
@@ -9554,9 +9530,6 @@ function alignedStart(
   outer: number,
   cbStart: number,
   cbSize: number,
-  /** How much further the overflow limit rect reaches (`overflowLimit`):
-   *  `-Infinity` on both for no start, `Infinity` for no end. */
-  further: { lo: number; hi: number } | null = null,
 ): number {
   const free = a.size - outer;
   const want =
@@ -9565,67 +9538,14 @@ function alignedStart(
   const within = (v: number, lo: number, hi: number) =>
     Math.min(Math.max(v, lo), hi);
   if (free >= 0) return within(want, a.start, a.start + free);
-  let lo = Math.min(a.start, cbStart);
-  let hi = Math.max(a.start + a.size, cbStart + cbSize);
-  if (further) {
-    lo = further.lo === Infinity ? lo : Math.min(lo, further.lo);
-    hi = further.hi === -Infinity ? hi : Math.max(hi, further.hi);
-  }
+  const lo = Math.min(a.start, cbStart);
+  const hi = Math.max(a.start + a.size, cbStart + cbSize);
   if (outer > hi - lo) return lo;
   return within(
     want,
     Math.max(lo, a.start + a.size - outer),
     Math.min(a.start, hi - outer),
   );
-}
-
-/**
- * How far the overflow limit rect of a positioned box reaches past the
- * rectangle around its inset-modified containing block and its containing
- * block (CSS Box Alignment 3, 4.4.1.2), on one axis: the start and the end
- * it reaches, or null where no further. An absolutely positioned box in a
- * scroll container's, or the document's, can be scrolled to past it on the
- * side the scroll reaches, without end, and not before the scroll origin;
- * a fixed box whose default anchor the pane scrolls can be scrolled into
- * view anywhere in the document's scrollable overflow area, which is the
- * initial containing block and the root's margin box (CSS Position 4,
- * 2.1), where the scroll has them.
- */
-function overflowLimit(
-  box: Box,
-  containing: Box,
-  down: boolean,
-  ctx: LayoutContext,
-): { lo: number; hi: number } | null {
-  if (containing.kind === 'inline') return null;
-  const position = box.style.position;
-  if (position === 'absolute') {
-    if (containing.parent && !isScroller(containing)) return null;
-    const [fromRight, fromBottom] = endOrigins(containing);
-    return (down ? fromBottom : fromRight)
-      ? { lo: -Infinity, hi: -Infinity }
-      : { lo: Infinity, hi: Infinity };
-  }
-  if (position !== 'fixed' || containing.parent) return null;
-  const anchor = defaultAnchorBox(box, box.style, ctx);
-  if (!anchor || drawnAtViewport(anchor)) return null;
-  // where the scroll has the document, which the box is placed against
-  const shift = ctx.anchorShift;
-  const by = shift ? (down ? shift.y : shift.x) : 0;
-  const icb = down ? ctx.viewportHeight : ctx.viewportWidth;
-  // the root element's box, which the root box holds where the document
-  // has one, and stands for where it is a fragment
-  const html =
-    containing.children.find(
-      (c) => c.el && c.kind !== 'text' && !c.outOfFlow,
-    ) ?? containing;
-  const start = down
-    ? html.y - Math.max(0, html.marginTop)
-    : html.x - Math.max(0, html.marginLeft);
-  const end = down
-    ? html.y + html.height + Math.max(0, html.marginBottom)
-    : html.x + html.width + Math.max(0, html.marginRight);
-  return { lo: Math.min(0, start) - by, hi: Math.max(icb, end) - by };
 }
 
 /** A box's content box or its padding box, as its layout left them. */

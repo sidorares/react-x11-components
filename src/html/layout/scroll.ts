@@ -686,46 +686,6 @@ function reachOf(
 }
 
 /**
- * A scroll container's scrollable containing block (CSS Position 4, 2.1):
- * its padding box, grown to the padding edge of its scrollable overflow
- * area — its in-flow content's margin boxes with its padding past them,
- * either way from its scroll origin — leaving out the boxes out of the
- * flow, and where relative offsets and transforms move what it holds,
- * which a layout has applied to none of it yet. In the device pixels its
- * boxes are laid out in, as its layout left them, with nothing scrolled.
- */
-export function scrollableRect(
-  box: Box,
-  padding: { x: number; y: number; width: number; height: number },
-): { x: number; y: number; width: number; height: number } {
-  const { right, bottom, leftmost, topmost } = reachOf(
-    padding.x,
-    box.lines,
-    box.children,
-    () => true,
-    null,
-    0,
-  );
-  const x1 = Math.min(
-    padding.x,
-    leftmost === Infinity ? padding.x : leftmost - box.padLeft,
-  );
-  const y1 = Math.min(
-    padding.y,
-    topmost === Infinity ? padding.y : topmost - box.padTop,
-  );
-  const x2 = Math.max(
-    padding.x + padding.width,
-    right === -Infinity ? -Infinity : right + box.padRight,
-  );
-  const y2 = Math.max(
-    padding.y + padding.height,
-    bottom === -Infinity ? -Infinity : bottom + box.padBottom,
-  );
-  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
-}
-
-/**
  * How far the viewport's scrollable overflow reaches across, in the
  * document's coordinates (CSS Overflow 3, 2.2): the root box's margin box
  * and what it holds, as a scroll container's content is measured
