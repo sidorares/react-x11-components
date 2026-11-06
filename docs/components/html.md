@@ -5356,7 +5356,8 @@ or its nearest ancestor declares with `scroll-timeline-name` or
 where an ancestor's `timeline-scope` takes the name first, the last
 element under that ancestor to declare it, and none where none does —
 and otherwise the last element in the document to declare it, as though
-the root took every name; an element whose own `timeline-scope` takes a
+the root took every name, and never one a page's script has taken out of
+the document since the boxes were last built; an element whose own `timeline-scope` takes a
 name keeps what it and its subtree declare by it from outside; and
 `none`, no timeline and no effect. Its timing
 is a proportion of the timeline, an `auto` duration filling it, and at
