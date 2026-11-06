@@ -9043,6 +9043,30 @@ function inColumns(box: Box, containing: Box): ReturnType<typeof stripOf> {
   return stripOf(containing);
 }
 
+/** A box's padding box where the strip of the columns it is in had its
+ *  border box (`stripOf`). */
+function stripPadding(
+  containing: Box,
+  strip: { x: number; y: number; width: number; height: number },
+): CbRect {
+  return {
+    x: strip.x + containing.borderLeft,
+    y: strip.y + containing.captionTop + containing.borderTop,
+    width: Math.max(
+      0,
+      strip.width - containing.borderLeft - containing.borderRight,
+    ),
+    height: Math.max(
+      0,
+      strip.height -
+        containing.captionTop -
+        containing.captionBottom -
+        containing.borderTop -
+        containing.borderBottom,
+    ),
+  };
+}
+
 /**
  * The rectangle a positioned box is placed in: an inline box's, its grid
  * area in a grid (CSS Grid 1, 9.1), whether the box is the grid's child or
@@ -9063,24 +9087,7 @@ function positionedContaining(
   // box is laid out there and cut into the columns after (CSS
   // Fragmentation 3; CSS Anchor Positioning 1, 2)
   const strip = inColumns(box, containing);
-  if (strip) {
-    return {
-      x: strip.x + containing.borderLeft,
-      y: strip.y + containing.captionTop + containing.borderTop,
-      width: Math.max(
-        0,
-        strip.width - containing.borderLeft - containing.borderRight,
-      ),
-      height: Math.max(
-        0,
-        strip.height -
-          containing.captionTop -
-          containing.captionBottom -
-          containing.borderTop -
-          containing.borderBottom,
-      ),
-    };
-  }
+  if (strip) return stripPadding(containing, strip);
   const local =
     gridArea(box, containing, ctx) ?? containingRect(containing, ctx);
   return isScroller(containing) && defaultAnchorBox(box, box.style, ctx)
@@ -10985,12 +10992,28 @@ export function resolvedInsets(
     containing && placedIn(box, containing, viewportWidth, viewportHeight);
   if (!placed) return null;
   const { top, left, width, height } = placed;
+  const ownWidth = placed.own?.width ?? box.width;
+  const ownHeight = placed.own?.height ?? box.height;
   const used = [
     top,
-    width - left - box.marginLeft - box.width - box.marginRight,
-    height - top - box.marginTop - box.height - box.marginBottom,
+    width - left - box.marginLeft - ownWidth - box.marginRight,
+    height - top - box.marginTop - ownHeight - box.marginBottom,
     left,
   ];
+  // with a default anchor, an `auto` inset of an axis a `position-area`
+  // or `anchor-center` places the box on is nought (CSS Anchor
+  // Positioning 1, 3.1 and 4.2), which is what a page reads of it
+  let root = box;
+  while (root.parent) root = root.parent;
+  const anchoredBy = defaultAnchorOf(root, box);
+  const placedStyle = PLACED_STYLE.get(box) ?? style;
+  const nought = (i: number): boolean =>
+    !!anchoredBy &&
+    sides[i] === AUTO &&
+    (!!placedStyle.positionArea ||
+      (i % 2
+        ? placedStyle.justifyAnchorCenter
+        : placedStyle.alignAnchorCenter));
   const anchored = style.anchorInsets;
   const lengths = (i: number): boolean =>
     sides[i] !== AUTO &&
@@ -10998,6 +11021,7 @@ export function resolvedInsets(
     sides[i + 2] !== AUTO &&
     !anchored?.[INSET_SIDES[i + 2]];
   return used.map((v, i) => {
+    if (nought(i)) return 0;
     const axis = i % 2;
     if (!lengths(axis)) return v;
     return resolveOrNull(sides[i], axis ? width : height) ?? v;
@@ -11011,6 +11035,9 @@ interface PlacedRect {
   left: number;
   width: number;
   height: number;
+  /** The box's own size, where it is not its rect's: one cut into columns
+   *  is as large as all its pieces (`cutIntoColumns`). */
+  own?: { width: number; height: number };
 }
 
 /** What `positionedIn` placed a box against where that is an inline box: no
@@ -11028,6 +11055,20 @@ function placedIn(
   viewportHeight: number,
 ): PlacedRect | undefined {
   if (containing.kind === 'inline') return PLACED_IN_INLINE.get(box);
+  // laid out in the strip of the columns it is in, and cut into them after
+  // (`inColumns`): where the strip had the two
+  const strip = inColumns(box, containing);
+  const own = strip ? stripOf(box) : null;
+  if (strip && own) {
+    const cb = stripPadding(containing, strip);
+    return {
+      top: own.y - box.marginTop - cb.y,
+      left: own.x - box.marginLeft - cb.x,
+      width: cb.width,
+      height: cb.height,
+      own: { width: own.width, height: own.height },
+    };
+  }
   const cb = paddingRectOf(containing, viewportWidth, viewportHeight, true);
   // where layout placed them, before a scroll moved either: a scroll
   // moves a box back by its offset, which is added back
