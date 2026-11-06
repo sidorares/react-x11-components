@@ -4556,7 +4556,13 @@ strip the columns were cut from had its containing block, and is then cut
 into them as a float with a height is, with what it holds; an anchor it
 refers to in the same columns it sees unbroken, where the strip had it,
 and one outside them the rectangle around the anchor's pieces (CSS Anchor
-Positioning 1, 2). A multicol container in another's columns goes to a column whole, where a browser breaks it.
+Positioning 1, 2). A multicol container in a vertical writing mode sets its
+columns in its frame, along the inline axis down the page and as tall as its
+block size, and what is positioned in them is cut where they are. A
+multicol container in another's columns goes to a column whole, where a
+browser breaks it, and a spanner further in than a child of the container is
+set in its column, where a browser breaks the boxes around it about it
+(WPT's `anchor-position-multicol-015` to `017` and `-colspan-`).
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and

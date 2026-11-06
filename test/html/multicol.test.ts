@@ -1254,3 +1254,29 @@ test('a multicol container in a vertical writing mode sets its columns down the 
   assert.deepStrictEqual(rect('a'), [0, 0, 100, 150]);
   assert.deepStrictEqual(rect('b'), [0, 80, 100, 150]);
 });
+
+test("a box positioned in the columns of a vertical writing mode is cut where they are, past the container's borders", async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>body{margin:0}' +
+      '#c{border:solid transparent;border-width:3px 5px 7px 9px;columns:3;' +
+      'column-fill:auto;gap:10px;inline-size:230px;block-size:100px;' +
+      'writing-mode:vertical-rl}' +
+      '#an{anchor-name:--a;inline-size:20px;block-size:70px}' +
+      '#t{position:absolute;position-anchor:--a;inset:anchor(inside)}' +
+      '</style></head><body><div id="c"><div style="block-size:30px"></div>' +
+      '<div style="position:relative;inline-size:100px;block-size:200px">' +
+      '<div style="block-size:20px"></div><div id="an"></div><div id="t"></div>' +
+      '</div></div></body></html>',
+    400,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  // over its anchor's pieces, each in the column its anchor's is in
+  assert.deepStrictEqual(pieces('t'), pieces('an'));
+});
