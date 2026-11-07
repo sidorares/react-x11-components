@@ -15065,6 +15065,10 @@ export class HtmlViewNode extends Node {
     if (Math.abs(x - pane.scrollX) < 0.5 && Math.abs(y - pane.scrollY) < 0.5) {
       return;
     }
+    // where the pane holds it for its next pass, a page reads where it is
+    // going, as it reads a scroll of its own (`oweScrollDown`)
+    this.oweScrollReach(x / pane.scale);
+    this.oweScrollDown(y / pane.scale);
     const again = () => {
       if (this._pane() === pane) pane.scrollTo({ x: x / s, y: y / s });
     };
