@@ -7889,6 +7889,16 @@ export function installDom(
     focus(options?: Any): void {
       const had = document.activeElement === this;
       call('focus', this._id);
+      // a focus that moved during an intercepted navigation keeps the
+      // page's choice at the end (HTML, "focus changed during ongoing
+      // navigation")
+      if (
+        !had &&
+        document.activeElement === this &&
+        pageSession.session.ongoing
+      ) {
+        pageSession.session.focusChanged = true;
+      }
       // an editing host focused takes the caret, at its start, where the
       // selection was anywhere else: what a command then edits, as Chromium
       // and Firefox have it. One focused already keeps what it has, none
@@ -7911,7 +7921,12 @@ export function installDom(
       }
     }
     blur(): void {
-      if (document.activeElement === this) call('blur');
+      if (document.activeElement === this) {
+        call('blur');
+        if (pageSession.session.ongoing) {
+          pageSession.session.focusChanged = true;
+        }
+      }
     }
     click(): void {
       if (isDisabled(this)) return;
@@ -30034,6 +30049,10 @@ export function installDom(
     /** `history.scrollRestoration`: whether a traversal restores where the
      *  entry it goes to was scrolled to. */
     restoration: 'auto' | 'manual';
+    /** Whether focus moved while a navigation was under way (HTML,
+     *  "focus changed during ongoing navigation"): an intercepted end
+     *  then leaves the focus where it is. */
+    focusChanged: boolean;
     /** Whether the entries are the host's session's, the documents' before
      *  and after this one among them (`HtmlSessionHistory`), rather than
      *  this document's alone. */
@@ -30331,6 +30350,10 @@ export function installDom(
     _dispatching = false;
     /** `intercept()`'s `scroll`: after the handlers, or the page's. */
     _scrollBehavior: 'after-transition' | 'manual' = 'after-transition';
+    /** `intercept()`'s `focusReset`: after the handlers, or the page's.
+     *  Null until set — treated as `after-transition` when finishing
+     *  (HTML 7.2.6.9). */
+    _focusReset: 'after-transition' | 'manual' | null = null;
     /** Where the navigation is (HTML 7.2.6.9, "interception state"): what
      *  `scroll()` may do, and whether the end scrolls. */
     _state: 'none' | 'intercepted' | 'committed' | 'scrolled' | 'finished' =
@@ -30369,6 +30392,20 @@ export function installDom(
           name,
         );
       };
+      // WebIDL converts `NavigationInterceptOptions` before the method
+      // steps: an invalid `focusReset` is a TypeError and nothing of the
+      // call runs (WPT `focus-reset/basic.html`).
+      if (
+        options != null &&
+        Object.prototype.hasOwnProperty.call(options, 'focusReset') &&
+        options.focusReset !== undefined &&
+        options.focusReset !== 'manual' &&
+        options.focusReset !== 'after-transition'
+      ) {
+        throw new TypeError(
+          "Failed to execute 'intercept' on 'NavigateEvent': Failed to read the 'focusReset' property from 'NavigationInterceptOptions': The provided value is not a valid enum value of type NavigationFocusReset.",
+        );
+      }
       if (!this.isTrusted) fail('The event is not trusted.', 'SecurityError');
       if (!this._dispatching) {
         fail('The event is not being dispatched.', 'InvalidStateError');
@@ -30398,6 +30435,14 @@ export function installDom(
           );
         }
         this._precommits.push(options.precommitHandler);
+      }
+      if (
+        options != null &&
+        Object.prototype.hasOwnProperty.call(options, 'focusReset') &&
+        (options.focusReset === 'manual' ||
+          options.focusReset === 'after-transition')
+      ) {
+        this._focusReset = options.focusReset;
       }
       if (
         options?.scroll === 'manual' ||
@@ -30610,12 +30655,42 @@ export function installDom(
     return new NavigationActivation(TOKEN, entry, from, arrived.type);
   };
 
+  /** HTML 7.2.6.10.5, "potentially reset the focus": after an intercepted
+   *  navigation, focus the body (or an autofocus delegate) unless the page
+   *  moved focus during it or asked for `manual`. */
+  const potentiallyResetFocus = (s: Session, event: Any): void => {
+    const changed = s.focusChanged;
+    s.focusChanged = false;
+    if (changed) return;
+    if (event._focusReset === 'manual') return;
+    const doc = s.ctx.doc();
+    // autofocus delegate first (HTML); without one, the body, then the
+    // document element — `autofocus.html` is the next step of that
+    const target = doc.body ?? doc.documentElement;
+    const active = doc.activeElement;
+    // already there (a focused control removed, focus fixup to the body)
+    // needs no focusing steps: body's `focus` would fire and fail WPT's
+    // `change-focus-then-remove-during-intercept`
+    if (!target || active === target) return;
+    // the body is not a focusable widget here, so `body.focus()` leaves
+    // the control lit; blur the active one so `activeElement` falls back
+    // to the body, as the focusing steps for the viewport do
+    if (active && typeof active.blur === 'function') {
+      call('blur');
+    } else if (typeof target.focus === 'function') {
+      target.focus({ preventScroll: true });
+    }
+    // our own reset is not a page-driven focus change
+    s.focusChanged = false;
+  };
+
   /** End a session's ongoing navigation as aborted: its signal,
    *  `navigateerror`, and its promises rejected. */
   const abortOngoing = (s: Session, ...error: Any[]): void => {
     const running = s.ongoing;
     if (!running) return;
     s.ongoing = null;
+    s.focusChanged = false;
     // an event still being dispatched is canceled with it (HTML 7.2.6.10,
     // "abort the ongoing navigation"), which its listeners read
     if (running.event._dispatching) running.event._canceled = true;
@@ -30768,6 +30843,7 @@ export function installDom(
     );
     const tracker = params.tracker ?? null;
     s.ongoing = { controller, tracker, event, transition: null };
+    s.focusChanged = false;
     noteBusy(s);
     event._dispatching = true;
     const go = dispatch(s.navigation, event);
@@ -30841,9 +30917,11 @@ export function installDom(
         results,
         () => {
           if (s.ongoing?.event !== event) return;
-          s.ongoing = null;
-          // what it scrolls to, unless the page scrolled it or said it would
-          // (HTML 7.2.6.9, "potentially process scroll behavior")
+          // finish given true: focus, then scroll, then done
+          // (HTML 7.2.6.10.5); `navigatesuccess` after both
+          if (event._state === 'committed' || event._state === 'scrolled') {
+            potentiallyResetFocus(s, event);
+          }
           if (
             event._state === 'committed' &&
             event._scrollBehavior === 'after-transition'
@@ -30852,6 +30930,7 @@ export function installDom(
             event._scroller?.();
           }
           event._state = 'finished';
+          s.ongoing = null;
           // `navigatesuccess` while the transition is still the
           // navigation's, then the method's promise with the entry, then the
           // transition's with nothing
@@ -30862,6 +30941,11 @@ export function installDom(
         },
         (error: Any) => {
           if (s.ongoing?.event !== event) return;
+          // finish given false, then abort (HTML, handler failure): focus
+          // reset before `navigateerror`
+          if (event._state === 'committed' || event._state === 'scrolled') {
+            potentiallyResetFocus(s, event);
+          }
           event._state = 'finished';
           abortOngoing(s, error);
         },
@@ -31864,6 +31948,7 @@ export function installDom(
       index: 0,
       ongoing: null,
       restoration: 'auto',
+      focusChanged: false,
       transition: null,
       activation: null,
       navigation: null,
@@ -37296,6 +37381,11 @@ export function installDom(
           trusted(new Event('reset', { bubbles: true, cancelable: true })),
         );
       case 'focusin': {
+        // a press or a widget that moved the focus during a navigation
+        // (HTML's focus update steps set the flag)
+        if (pageSession.session.ongoing) {
+          pageSession.session.focusChanged = true;
+        }
         dispatch(
           target,
           trusted(new FocusEvent('focus', { relatedTarget: related })),
