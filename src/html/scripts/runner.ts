@@ -63,7 +63,7 @@ import type {
   WorkerInit,
 } from './host.js';
 import type { Popup, PopupAsk } from './popups.js';
-import { forgetKept, liveSession } from './session.js';
+import { arriveAt, forgetKept, liveSession } from './session.js';
 import { openApart, slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
 import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
@@ -135,7 +135,8 @@ export interface ScriptsOptions extends Omit<
    *  where no view draws it (`FrameSeat`). */
   undrawn?: boolean;
   /** The host's session history across the documents it shows here
-   *  (`HtmlScripts`' `session`): a page's, never a frame's. */
+   *  (`HtmlScripts`' `session`): a page's tab, or a frame's own across
+   *  the documents that frame shows. */
   session?: HtmlSessionHistory | null;
 }
 
@@ -685,8 +686,19 @@ export class ScriptRunner {
               ? adopt
               : Reflect.get(current(), key),
       });
+      // a frame's session across the documents it shows, where the view
+      // keeps one: each document is the next of that history, as a tab's
+      // documents are of the host's (`HtmlSessionHistory`)
+      const session = view.session ?? null;
+      const arrival = session ? arriveAt(session, url) : null;
       seat = Object.assign(made, {
-        runner: new ScriptRunner(document, url, seams, { parent: this, frame }),
+        runner: new ScriptRunner(
+          document,
+          url,
+          seams,
+          { parent: this, frame },
+          arrival,
+        ),
       });
       this._seats.set(document, seat);
       this._seatsWatched ??= this.host.onFrames(() => this._dropFrames());

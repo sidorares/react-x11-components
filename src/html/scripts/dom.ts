@@ -10509,6 +10509,13 @@ export function installDom(
       // the document the session is of, which its initial `about:blank`'s
       // hands on to the frame's first (`frameWindowOf`)
       const owner = { doc };
+      // filled once `makeSession` returns, which `go` / `reload` /
+      // `traverseAway` close over; `pending` is how the next document
+      // arrived, set as `away` is asked, for the handoff in `frameWindowOf`
+      const slot: {
+        session?: Any;
+        pending: 'push' | 'replace' | null;
+      } = { pending: null };
       made = makeSession({
         owner: () => owner.doc,
         // in the document while its document is the frame's (HTML 7.3.3,
@@ -10524,22 +10531,56 @@ export function installDom(
         // `about:blank` keeps its session too (`frameWindowOf`)
         doc: () => frameDocumentOf(frame) ?? doc,
         target,
-        away: (url, _replace, referrerPolicy) =>
-          void call('frameNavigate', frame._id, url, referrerPolicy ?? ''),
-        tellsFragments: false,
-        reload: () => {
-          if (unloadAllowed(owner.doc, target)) {
-            call('frameNavigate', frame._id, at());
-          }
+        away: (url, replace, referrerPolicy) => {
+          slot.pending = replace ? 'replace' : 'push';
+          call('frameNavigate', frame._id, url, referrerPolicy ?? '');
         },
+        tellsFragments: false,
+        reload: (navState) => {
+          if (!unloadAllowed(owner.doc, target)) return;
+          const s = slot.session;
+          if (s) {
+            const from = s.entries[s.index];
+            s.arrived = {
+              type: 'reload',
+              fromIndex: s.index,
+              from,
+            };
+            s.activation = null;
+            if (navState !== undefined && from) from.navState = navState;
+          }
+          call('frameNavigate', frame._id, at());
+        },
+        // past this frame's own entries there is nowhere: a frame is not
+        // joint with its tab's history yet
         go: () => {},
+        // a step to another of this frame's documents: the entry is already
+        // in the list, and the document it names is loaded in the frame
+        traverseAway: (delta) => {
+          const s = slot.session;
+          if (!s) return;
+          const fromIndex = s.index;
+          const to = fromIndex + Math.trunc(delta);
+          const targetEntry = s.entries[to];
+          if (!targetEntry) return;
+          s.index = to;
+          s.arrived = {
+            type: 'traverse',
+            fromIndex,
+            from: s.entries[fromIndex],
+          };
+          s.activation = null;
+          call('frameNavigate', frame._id, targetEntry.url);
+        },
         // a frame's scroll is its own document's, which no entry keeps
         scroll: () => [0, 0],
         scrollTo: () => {},
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
       });
+      slot.session = made.session;
       made.owner = owner;
+      made.slot = slot;
       frameSessions.set(doc, made);
     }
     return made;
@@ -10567,29 +10608,87 @@ export function installDom(
   const frameWindowOf = (doc: Any, frame: Any): Any => {
     let win = frameWindows.get(doc);
     if (win) return win;
-    // the first document a frame loads after its initial `about:blank`
-    // keeps that one's window, and with it what the page set on it — a
-    // handler on its `navigation` among them (HTML 7.4.6.2, "initialize the
-    // document object")
+    // a same-origin document the frame shows next keeps the window of the
+    // one before it, and with it the session and what the page set on the
+    // window — a handler on its `navigation` among them (HTML 7.4.6.2,
+    // "initialize the document object"). The first after the initial
+    // `about:blank` replaces that blank's empty history; every later one
+    // keeps the entries `navigateTo` already wrote, or pushes where the
+    // navigation came from outside that (a parent setting `src`).
     const last = keptFrameWindows.get(frame);
-    if (last?.initial && last.doc !== doc) {
+    if (last && last.doc !== doc) {
+      const wasInitial = last.initial;
+      const previous = last.doc;
       last.setDoc(doc);
       last.initial = call('frameInitialBlank', frame._id) === true;
-      const made = frameSessions.get(last.doc);
+      const made = frameSessions.get(previous);
       if (made) {
-        made.session.entries = [
-          sessionEntry(String(call('frameLocation', frame._id))),
-        ];
-        made.session.index = 0;
-        // a navigation from the initial `about:blank` replaces it (HTML
-        // 7.4.2.2), so the document it shows came by a replace from no entry
-        // the API showed
-        made.session.arrived = { type: 'replace', fromIndex: -1, from: null };
-        made.session.activation = null;
+        const at = String(call('frameLocation', frame._id));
+        if (wasInitial) {
+          made.session.entries = [sessionEntry(at, undefined, 0)];
+          made.session.index = 0;
+          // a navigation from the initial `about:blank` replaces it (HTML
+          // 7.4.2.2), so the document it shows came by a replace from no
+          // entry the API showed
+          made.session.arrived = {
+            type: 'replace',
+            fromIndex: -1,
+            from: null,
+          };
+          made.session.activation = null;
+        } else {
+          const bare = (u: string) => u.split('#')[0];
+          const known = made.session.entries.findIndex(
+            (e: Any) => bare(e.url) === bare(at),
+          );
+          const slot = made.slot as {
+            pending: 'push' | 'replace' | null;
+          } | null;
+          const pending = slot?.pending ?? null;
+          if (slot) slot.pending = null;
+          const from = made.session.entries[made.session.index] ?? null;
+          const fromIndex = made.session.index;
+          if (pending === 'push' || (pending === null && known < 0)) {
+            // a cross-document `navigateTo` plans the host session only
+            // (`planAway`); a frame's own entries still need the push here
+            // — including a push to the URL it is already at — and a
+            // parent setting `src`/`srcdoc` to a new address is a push
+            if (from) from.scroll = made.session.ctx.scroll();
+            const entry = sessionEntry(at, undefined, (from?.doc ?? 0) + 1);
+            made.session.entries.splice(made.session.index + 1);
+            made.session.entries.push(entry);
+            made.session.index = made.session.entries.length - 1;
+            made.session.arrived = { type: 'push', fromIndex, from };
+            made.session.activation = null;
+          } else if (pending === 'replace') {
+            if (from) from.scroll = made.session.ctx.scroll();
+            // a replace across documents is still another document's entry
+            const entry = sessionEntry(at, from?.key, (from?.doc ?? 0) + 1);
+            made.session.entries[made.session.index] = entry;
+            made.session.arrived = {
+              type: 'replace',
+              fromIndex,
+              from,
+            };
+            made.session.activation = null;
+          } else if (known >= 0) {
+            // a traversal or a reload: the entry is already in the list
+            // (`traverseAway` / `reload`), and may only need its final URL
+            made.session.index = known;
+            made.session.entries[known].url = at;
+          }
+        }
         made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
-      frameTargets.set(doc, frameTargets.get(last.doc));
+      // a new document on a kept window hears none of the last one's
+      // listeners (HTML 7.4.1): `onbeforeunload` and the rest go with it
+      const target = frameTargets.get(previous);
+      if (target) {
+        target._handlers = Object.create(null);
+        target._listeners = Object.create(null);
+      }
+      frameTargets.set(doc, target);
       // shown once it is the frame's, which it is only once it is in
       if (!last.initial) doc._pageShowing = true;
       last.doc = doc;
@@ -11082,8 +11181,22 @@ export function installDom(
       return String(call('frameLocation', frame._id));
     };
     const go = (url: Any, replace = false): void => {
-      const href = String(call('resolve', str(url)));
+      // against the frame's address, not the page's: `?1` on a blank
+      // frame is that blank's query, as a browser resolves a frame's
+      // `location`
+      let href: string;
+      try {
+        href = new URL(str(url), at()).href;
+      } catch {
+        href = String(call('resolve', str(url)));
+      }
       const doc = frameDocumentOf(frame);
+      // the frame's session, made as its window's `navigation` is — so a
+      // `location` assignment before anything read `navigation` still
+      // pushes an entry of the history the next document keeps
+      if (doc && !frameSessions.get(doc)) {
+        void frameWindowOf(doc, frame).navigation;
+      }
       const made = doc && frameSessions.get(doc);
       if (made) {
         navigateTo(
@@ -29829,6 +29942,11 @@ export function installDom(
     other?: boolean;
     /** Its URL's origin, worked out once. */
     origin?: string;
+    /** Which document of a frame's session this entry is of: same-document
+     *  navigations share a number, and a cross-document push gets a new
+     *  one — what `sameDocument` reads for a frame that keeps one history
+     *  across the documents it shows. */
+    doc?: number;
   }
   /** What a window's session history stands on. */
   interface SessionContext {
@@ -29928,13 +30046,18 @@ export function installDom(
       from: SessionEntry | null;
     } | null;
   }
-  const sessionEntry = (url: string, key?: string): SessionEntry => ({
+  const sessionEntry = (
+    url: string,
+    key?: string,
+    doc?: number,
+  ): SessionEntry => ({
     url,
     key: key ?? CRYPTO.uuid(),
     id: CRYPTO.uuid(),
     state: null,
     navState: undefined,
     api: null,
+    doc,
   });
   const currentOf = (s: Session): SessionEntry => s.entries[s.index];
   /** HTML 7.2.6.1, "has entries and events disabled": a document that is
@@ -30123,7 +30246,14 @@ export function installDom(
       return navEntriesOf(this._session).indexOf(this._entry);
     }
     get sameDocument(): boolean {
-      return !this._gone && !this._entry.other && this.index >= 0;
+      if (this._gone || this._entry.other || this.index < 0) return false;
+      const cur = currentOf(this._session);
+      // a frame's session across documents: only entries of the document
+      // shown now are same-document (HTML, `NavigationHistoryEntry`)
+      if (this._entry.doc !== undefined && cur.doc !== undefined) {
+        return this._entry.doc === cur.doc;
+      }
+      return true;
     }
     getState(): Any {
       const state = this._entry.navState;
@@ -30844,7 +30974,11 @@ export function installDom(
     const from = apiEntryOf(s, old);
     // where the document is scrolled to is the entry's it leaves
     old.scroll = s.ctx.scroll();
-    const entry = sessionEntry(url, mode === 'replace' ? old.key : undefined);
+    const entry = sessionEntry(
+      url,
+      mode === 'replace' ? old.key : undefined,
+      old.doc,
+    );
     entry.state = state;
     entry.navState = navState;
     let dropped: SessionEntry[];
@@ -31726,7 +31860,7 @@ export function installDom(
   ): { session: Session; history: Any; navigation: Any } => {
     const s: Session = {
       ctx,
-      entries: [sessionEntry(ctx.url())],
+      entries: [sessionEntry(ctx.url(), undefined, 0)],
       index: 0,
       ongoing: null,
       restoration: 'auto',
@@ -37818,6 +37952,38 @@ export function installDom(
     const target = frameTargets.get(doc);
     if (target) unloadTree(doc, target);
     else doc._unloaded = true;
+    return true;
+  });
+  // a frame's document the host put in with no realm of its own: make its
+  // window and session now, so a navigation that replaces it — a parent
+  // setting `src`, before any script read `contentWindow` — keeps the
+  // entries of the history the next document shows
+  entry('__ensureFrameSession', () => {
+    const [id] = input();
+    const frame = wrap(id);
+    if (!frame) return false;
+    const doc = frameDocumentOf(frame);
+    if (!doc) return false;
+    void frameWindowOf(doc, frame).navigation;
+    return true;
+  });
+  // the frame went to another origin: drop the window and session this
+  // realm kept, so a later same-origin document is not contiguous with
+  // the entries from before the gap (HTML, `navigation.entries()`). The
+  // WindowProxy stays — it is the frame element's for as long as the
+  // element is (HTML 7.2.3), including across origins.
+  entry('__forgetFrameWindow', () => {
+    const [id] = input();
+    const frame = wrap(id);
+    if (!frame) return false;
+    const last = keptFrameWindows.get(frame);
+    if (last) {
+      frameWindows.delete(last.doc);
+      frameSessions.delete(last.doc);
+      frameTargets.delete(last.doc);
+      keptFrameWindows.delete(frame);
+    }
+    frameLocations.delete(frame);
     return true;
   });
 
