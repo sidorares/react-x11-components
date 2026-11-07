@@ -7907,23 +7907,22 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     const order = !ordered
       ? [-1, ...options.map((_, i) => i)]
       : sortedOptions(options.length, (i) => {
-            const tried = triedStyle(i);
-            if (!tried) return -Infinity;
-            ctx.anchorShift =
-              anchor && context ? { anchor, x: sx, y: sy } : null;
-            try {
-              const { resolved, anchoring } = anchoredStyle(
-                box,
-                tried,
-                cb,
-                ctx,
-                axes,
-              );
-              return roomOf(resolved, anchoring?.area ?? cb, axes);
-            } finally {
-              ctx.anchorShift = null;
-            }
-          });
+          const tried = triedStyle(i);
+          if (!tried) return -Infinity;
+          ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
+          try {
+            const { resolved, anchoring } = anchoredStyle(
+              box,
+              tried,
+              cb,
+              ctx,
+              axes,
+            );
+            return roomOf(resolved, anchoring?.area ?? cb, axes);
+          } finally {
+            ctx.anchorShift = null;
+          }
+        });
     for (const i of order) {
       if (keep && i === start) continue;
       const tried = place(i);
