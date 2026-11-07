@@ -452,12 +452,19 @@ competing rules), `pageswap` and `pagereveal` carry a `ViewTransition`
 so a listener can still set names. A `::view-transition` with
 `position: static` (or `relative`) is still sized and placed against the
 snapshot containing block — the viewport, whatever the scroll — as
-absolute already was (`snapshot-containing-block-static`). Still not
-there: handing the outbound capture into the new document's first paint
-when the view remounts; a transition in a frame (the static snapshot
-containing block in an iframe among them); and a transition's vertical
-axes, which [#975] leaves, though `writing-mode` and `text-orientation`
-are in `getComputedStyle()` now.
+absolute already was (`snapshot-containing-block-static`). A group's
+`writing-mode`, `direction`, `text-orientation`, `mix-blend-mode` and
+`color-scheme` come from the element it captures
+(`writing-mode-container-resize`, `pseudo-get-computed-style`), so UA
+`inline-size` / `block-size` on the images follow it; and a
+`::view-transition` on a vertical root stays outside that root's
+orthogonal frame, with the group's size taken in the page's axes. Still
+not there: handing the outbound capture into the new document's first
+paint when the view remounts; a transition in a frame (the static
+snapshot containing block in an iframe among them); `backdrop-filter` on
+the group; and the last of a vertical root's shared-element geometry
+(`*-root-vertical-writing-mode`, `massive-element-*-of-viewport-*` under
+`vertical-lr`).
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user

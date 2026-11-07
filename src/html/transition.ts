@@ -17,14 +17,22 @@ import type { SurfaceLike } from './surfaces.js';
 /**
  * Where an element is, as a transition captures it (7.4): its border box's
  * size and the matrix from its corner to the viewport's, both in device
- * pixels, and what of its style its group takes (7.8).
+ * pixels, and what of its style its group takes (7.8) — writing mode,
+ * direction, text orientation, mix-blend-mode and color-scheme, so the
+ * group's `inline-size` / `block-size` and the images' logical insets
+ * follow the element (WPT `*-root-vertical-writing-mode`,
+ * `massive-element-*-of-viewport-*` under `vertical-lr`).
  */
 export interface Placement {
   width: number;
   height: number;
   matrix: Matrix;
   direction: string;
+  writingMode: string;
+  textOrientation: string;
   mixBlendMode: string;
+  /** The element's `color-scheme` as written (`colorSchemeKeywords`). */
+  colorScheme: string;
 }
 
 /** An element as the old state had it: where it was, and a picture of it

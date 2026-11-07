@@ -112,10 +112,24 @@ export function makeFrame(box: Box, frameStyle: ComputedStyle): Box {
   const children = box.children;
   box.children = [];
   box.append(frame);
-  frame.children = children;
-  for (const child of children) child.parent = frame;
+  // the top layer is against the viewport, not the flow: a
+  // `::view-transition` (and a `::backdrop`) on a vertical root must stay
+  // on the root in the page's axes — putting it in the frame would turn
+  // its groups and swap their width/height (`*-root-vertical-writing-mode`,
+  // `massive-element-*-of-viewport-*` under `vertical-lr`)
+  const intoFrame: Box[] = [];
+  for (const child of children) {
+    if (child.topLayer) {
+      child.parent = box;
+      box.children.push(child);
+    } else {
+      child.parent = frame;
+      intoFrame.push(child);
+    }
+  }
+  frame.children = intoFrame;
   const turned = new Map<ComputedStyle, ComputedStyle>();
-  const stack: Box[] = [...children];
+  const stack: Box[] = [...intoFrame];
   while (stack.length) {
     const at = stack.pop()!;
     let own = turned.get(at.style);

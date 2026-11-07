@@ -308,8 +308,11 @@ import {
 } from './layout/block.js';
 import type { PlacedTransition } from './layout/block.js';
 import {
+  FRAME_ROOTS,
+  FRAMES,
   frameModeOf,
   frameOf as frameOfBox,
+  frameRectOf,
   onPage,
   pageMargins,
   pageSides,
@@ -16139,7 +16142,10 @@ export class HtmlViewNode extends Node {
       height: viewport.height,
       matrix: [1, 0, 0, 1, 0, 0],
       direction: box.style.direction,
+      writingMode: box.style.writingMode,
+      textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
+      colorScheme: box.style.colorSchemeKeywords,
     };
   }
 
@@ -16147,12 +16153,18 @@ export class HtmlViewNode extends Node {
    * Where a box's border box is from the viewport's corner, as the matrix
    * from its own corner, in device pixels (7.4): the place layout gave it,
    * its transform and those of the boxes around it, and the scroll that
-   * moves it — none for one fixed to the viewport.
+   * moves it — none for one fixed to the viewport. A box in a vertical
+   * writing mode's frame is reported in the page's axes (`onPage`): the
+   * transition tree sits outside that frame, so a frame-local size would
+   * swap its group's width and height.
    */
   private _placementOf(box: Box): Placement {
-    const own = this._borderRect(box);
+    const laid = this._borderRect(box);
+    const own = this._tree?.vertical ? onPage(box, laid) : laid;
     let m: Matrix = [1, 0, 0, 1, own.x, own.y];
     for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+      // the frame's turn is already in `own` via `onPage`
+      if (FRAMES.has(at) || FRAME_ROOTS.has(at)) continue;
       const placed = placedMatrix(at);
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
     }
@@ -16168,14 +16180,19 @@ export class HtmlViewNode extends Node {
       height: own.height,
       matrix: m,
       direction: box.style.direction,
+      writingMode: box.style.writingMode,
+      textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
+      colorScheme: box.style.colorSchemeKeywords,
     };
   }
 
   /**
    * An element's border box as a view transition captures it (7.4), in the
-   * document's device pixels: a box's own, and an inline box's the box
-   * around its fragments, which its rect does not say (`_fragmentsOf`).
+   * document's layout pixels (a vertical frame's, where it is in one): a
+   * box's own, and an inline box's the box around its fragments, which its
+   * rect does not say (`_fragmentsOf`). Placement maps it to the page
+   * (`_placementOf`); capture paints in these coordinates.
    */
   private _borderRect(box: Box): Rect {
     const tree = this._tree;
@@ -16250,25 +16267,49 @@ export class HtmlViewNode extends Node {
     const inkH = inline
       ? own.height
       : Math.max(box.boundsY + box.boundsHeight, own.y + own.height) - inkY;
-    const clip = captureClipRect(
-      { x: inkX, y: inkY, width: inkW, height: inkH },
-      { x: vx, y: vy, width: viewport.width, height: viewport.height },
-    );
+    // clip against the viewport in the page's axes: a vertical frame's
+    // layout rect is not the viewport's (`onPage`), and the transition
+    // places the capture in the page's
+    const laidInk = { x: inkX, y: inkY, width: inkW, height: inkH };
+    const pageInk = tree.vertical ? onPage(box, laidInk) : laidInk;
+    const pageOwn = tree.vertical ? onPage(box, own) : own;
+    const clip = captureClipRect(pageInk, {
+      x: vx,
+      y: vy,
+      width: viewport.width,
+      height: viewport.height,
+    });
     if (!clip) return null;
     const { x0, y0, x1, y1 } = clip;
     const w = x1 - x0;
     const h = y1 - y0;
     if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;
+    // paint in layout coordinates: undo the page mapping for the clip
+    let paintX = x0;
+    let paintY = y0;
+    if (tree.vertical) {
+      const frame = frameOfBox(box);
+      const mode = frame ? FRAME_ROOTS.get(frame)?.style.writingMode : null;
+      if (frame && mode) {
+        const laid = frameRectOf(
+          frame,
+          { x: x0, y: y0, width: w, height: h },
+          mode,
+        );
+        paintX = laid.x;
+        paintY = laid.y;
+      }
+    }
     const surface = this._surface(w, h);
     if (!surface) return null;
     paintCapture(surface.getContext('2d') as PaintContext, tree, box, {
       ...base,
-      originX: -x0,
-      originY: -y0,
+      originX: -paintX,
+      originY: -paintY,
       canvas: undefined,
       viewport: {
-        x: -x0,
-        y: -y0,
+        x: -paintX,
+        y: -paintY,
         width: viewport.width,
         height: viewport.height,
       },
@@ -16278,8 +16319,8 @@ export class HtmlViewNode extends Node {
     });
     return {
       surface,
-      inkX: x0 - own.x,
-      inkY: y0 - own.y,
+      inkX: x0 - pageOwn.x,
+      inkY: y0 - pageOwn.y,
       inkWidth: w,
       inkHeight: h,
     };
@@ -16349,7 +16390,10 @@ export class HtmlViewNode extends Node {
         declarations(
           `width: ${cssPx(at.width, s)}; height: ${cssPx(at.height, s)}; ` +
             `transform: ${groupTransform(at.matrix, at.width, at.height, s)}; ` +
-            `direction: ${at.direction}; mix-blend-mode: ${at.mixBlendMode}` +
+            `writing-mode: ${at.writingMode}; direction: ${at.direction}; ` +
+            `text-orientation: ${at.textOrientation}; ` +
+            `mix-blend-mode: ${at.mixBlendMode}; ` +
+            `color-scheme: ${at.colorScheme}` +
             (both && entry.anim ? `; animation-name: ${entry.anim}` : ''),
         ),
       );
