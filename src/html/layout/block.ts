@@ -7724,11 +7724,12 @@ export function commitLastPositions(): void {
  *  most first, a tie in the order written. */
 function sortedOptions(
   count: number,
-  _order: string,
   room: (index: number) => number,
 ): number[] {
-  const rooms = Array.from({ length: count }, (_, i) => room(i));
-  return rooms.map((_, i) => i).sort((a, b) => rooms[b] - rooms[a]);
+  // the base style among them, first where it ties (6.2)
+  const indexes = Array.from({ length: count + 1 }, (_, i) => i - 1);
+  const rooms = new Map(indexes.map((i) => [i, room(i)]));
+  return indexes.sort((a, b) => rooms.get(b)! - rooms.get(a)!);
 }
 
 /**
@@ -7910,33 +7911,35 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     start = chosen = -1;
     placed = place(-1);
   }
-  if (options.length && !(placed && fitsIn(box, placed))) {
+  // under a `position-try-order`, the base style is sorted with the
+  // options, and only the last successful one is kept before them (6.2)
+  const ordered = style.positionTryOrder !== 'normal' && options.length > 0;
+  const keep = !ordered || last?.key === key;
+  if (options.length && !(keep && placed && fitsIn(box, placed))) {
     // each option it is not placed by, its own first (6.5), and the others
     // in the order `position-try-order` sorts them
     let found = false;
-    const order =
-      style.positionTryOrder === 'normal' || options.length < 2
-        ? options.map((_, i) => i)
-        : sortedOptions(options.length, style.positionTryOrder, (i) => {
-            const tried = triedStyle(i);
-            if (!tried) return -Infinity;
-            ctx.anchorShift =
-              anchor && context ? { anchor, x: sx, y: sy } : null;
-            try {
-              const { resolved, anchoring } = anchoredStyle(
-                box,
-                tried,
-                cb,
-                ctx,
-                axes,
-              );
-              return roomOf(resolved, anchoring?.area ?? cb, axes);
-            } finally {
-              ctx.anchorShift = null;
-            }
-          });
-    for (const i of [-1, ...order]) {
-      if (i === start) continue;
+    const order = !ordered
+      ? [-1, ...options.map((_, i) => i)]
+      : sortedOptions(options.length, (i) => {
+          const tried = triedStyle(i);
+          if (!tried) return -Infinity;
+          ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
+          try {
+            const { resolved, anchoring } = anchoredStyle(
+              box,
+              tried,
+              cb,
+              ctx,
+              axes,
+            );
+            return roomOf(resolved, anchoring?.area ?? cb, axes);
+          } finally {
+            ctx.anchorShift = null;
+          }
+        });
+    for (const i of order) {
+      if (keep && i === start) continue;
       const tried = place(i);
       if (tried && fitsIn(box, tried)) {
         chosen = i;
