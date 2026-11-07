@@ -15140,6 +15140,57 @@ metric(
 );
 
 metric(
+  'a static ::view-transition is sized against the snapshot containing block while scrolled',
+  async () => {
+    // CSS View Transitions 1, 3.4 / WPT snapshot-containing-block-static:
+    // position: static still uses the viewport (snapshot containing block)
+    // for size and place, so a 100%×100% lime cover fills the scrolled
+    // viewport rather than the initial containing block at the document's
+    // top (which would leave the root's red inset showing).
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' :root { view-transition-name: none; background: rgb(255, 0, 0);' +
+        '   box-shadow: 0 0 0 10px inset rgb(255, 0, 0) }' +
+        ' body { height: 400vh; margin: 0 }' +
+        ' #t { position: absolute; left: 200px; top: 600px; width: 100px;' +
+        '   height: 100px; background: rgb(143, 188, 143);' +
+        '   view-transition-name: target }' +
+        ' ::view-transition { position: static; display: block;' +
+        '   height: 100%; width: 100%; background: rgb(50, 205, 50) }' +
+        ' ::view-transition-group(target),' +
+        ' ::view-transition-image-pair(target),' +
+        ' ::view-transition-old(target),' +
+        ' ::view-transition-new(target) { animation-play-state: paused }' +
+        '</style></head><body><div id="t">TARGET</div>' +
+        '<p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  var y = document.getElementById("t").offsetTop - 100;' +
+        '  window.scrollTo(0, y);' +
+        '  var vt = document.startViewTransition();' +
+        '  vt.ready.then(function () {' +
+        '    var vt = getComputedStyle(document.documentElement, "::view-transition");' +
+        '    document.getElementById("out").textContent = [' +
+        '      vt.position, window.scrollY,' +
+        '      Math.round(parseFloat(vt.width)), Math.round(parseFloat(vt.height)),' +
+        '      window.innerWidth, window.innerHeight' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+      { pane: 300 },
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [position, scrollY, width, height, iw, ih] = out.split('|');
+    assert.equal(position, 'static', out);
+    assert.ok(Number(scrollY) > 400, `scrolled: ${out}`);
+    // sized to the snapshot containing block (the viewport), not the
+    // document — width/height 100% against that block
+    assert.equal(width, iw, `width: ${out}`);
+    assert.equal(height, ih, `height: ${out}`);
+  },
+);
+
+metric(
   'a view transition captures an inline element by its fragments: its group is as large as they are, its image is it alone, and the block around it is captured without it',
   async () => {
     // CSS View Transitions 1, 7.4: an element's border box, which an inline
