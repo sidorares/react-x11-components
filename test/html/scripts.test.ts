@@ -9560,7 +9560,8 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       '  r.push("asked " + (inBefore !== undefined));' +
       '  await loaded;' +
       '  r.push(await inBefore, (await Promise.all(inHide)).join(","), count);' +
-      // what the window had is gone with the document it was of
+      // the window and its `navigation` are the frame's across documents
+      // (HTML 7.4.1), so a navigate after the next one is in still commits
       '  r.push(await refused(nav.navigate("#y")), i.contentWindow.location.search);' +
       // taken out, the frame's document goes as the task ends
       '  var w2 = i.contentWindow, nav2 = w2.navigation;' +
@@ -9595,7 +9596,7 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       'InvalidStateError',
       'InvalidStateError,InvalidStateError,SyntaxError,DataCloneError',
       '1',
-      'InvalidStateError',
+      'committed',
       '?1',
       'removed',
       'out: pagehide',
@@ -17431,6 +17432,74 @@ test("a frame's window has its page's storage, as a frame of its origin has", as
       (t) => t !== '',
     ),
     'local|session|true',
+  );
+});
+
+test("a frame's session history spans the documents it shows", async () => {
+  // HTML 7.4.1: a frame's navigations are one history, so
+  // `navigation.entries()` after a cross-document push is length 2 and
+  // `navigation.activation` remembers how it got there.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '      /a\\.html$/.test(n.entries()[0].url),' +
+      '      /b\\.html$/.test(n.entries()[1].url),' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p><script></script>',
+      'b.html': '<!doctype html><p>b</p><script></script>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0|true|true',
+  );
+});
+
+test('a frame without scripts keeps one session across the documents it shows', async () => {
+  // WPT's /common/blank.html has no script, so the frame stays the page
+  // realm's: its window and `navigation` are still one history across
+  // navigations (HTML 7.4.1), not a fresh list a document.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0',
   );
 });
 
