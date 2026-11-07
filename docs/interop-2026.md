@@ -140,7 +140,7 @@ PR's run, which the last column names.
 | indexeddb                        | 24    | 0.0%  | 100%  | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869), transferred buffers (#917), service workers (#918)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | media-pseudo-classes             | 5     | 0.0%  | 100%  | `:muted` and `:volume-locked` (#861), `:playing` and `:paused` (#891), `canPlayType` (#904), a source loaded where there is a network (#916, #920)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| navigation                       | 439   | 0.0%  | 58.1% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902), and a back-forward cache, with the windows a test opens ([#1049]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| navigation                       | 439   | 0.0%  | 78.0% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902), a back-forward cache with the windows a test opens ([#1049]), and `NavigateEvent` `focusReset` after an intercepted transition                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | scoped-custom-element-registries | 29    | 0.2%  | 87.0% | scoped registries, `setHTMLUnsafe` (#863), clonable shadow roots (#887), `getHTML()` (#925), a registry fixed where an element is made (#926)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | scroll-driven-animations         | 146   | 4.9%  | 71.8% | the timeline properties (#885), `ScrollTimeline` and `ViewTimeline` over Web Animations' model (#892), their grammars (#893), CSS's `animation-timeline` (#894), `animation-range` (#899), `CSSAnimation`s (#906), `timeline-scope` (#907), timeline offsets (#908)                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -332,7 +332,7 @@ as WPT's does, not against WPT's own.
 where the page has a network (#916), from its first byte (#920), and
 `:seeking`, `:buffering` and `:stalled` follow the load.
 
-**navigation (58.1%).** A document a navigation leaves hears
+**navigation (78.0%).** A document a navigation leaves hears
 `beforeunload`, `pagehide`, `visibilitychange` and `unload`, and the
 methods of a document that has gone reject ([#973]). A tab's documents are
 one session history that a host hands each of them, over which
@@ -345,13 +345,19 @@ a `traverse`, its entries re-read and those that went disposed ([#1049]):
 in [#1049]'s run the area went from 279 of 518 subtests to 284, five
 `*-after-bfcache` tests from timeouts to passes, and the sixth,
 `entries-after-bfcache-in-iframe.html`, stops before the cache, at a
-frame's `navigation`. What is left: the `navigate` event in another window
-— a link or a form aimed at a frame, a `window.open` — where a frame
-without scripts has no navigation of its own; a frame's history inside its
-tab's; restoring a document's scroll when it is shown again;
-`navigator.sendBeacon`, which still answers false; a page in a background
-tab, which stays `visible`; and a `beforeunload` for an `iframe.src` its
-parent assigns, told late, as the frame goes.
+frame's `navigation`. An intercepted same-document navigation resets
+focus after its handlers settle — `focusReset: "after-transition"` by
+default, skipped for `"manual"` or where the page moved focus during the
+transition — before `navigatesuccess` / `navigateerror`, and an invalid
+`focusReset` is a TypeError: 390 of 518 subtests to 401 (77.5% to 78.0%),
+eleven of the `focus-reset/` area, with `autofocus.html` still open.
+What is left: the `navigate` event in another window — a link or a form
+aimed at a frame, a `window.open` — where a frame without scripts has no
+navigation of its own; a frame's history inside its tab's; restoring a
+document's scroll when it is shown again; `navigator.sendBeacon`, which
+still answers false; a page in a background tab, which stays `visible`;
+and a `beforeunload` for an `iframe.src` its parent assigns, told late,
+as the frame goes.
 
 The runner hands each test a session now, and loads what the test's
 document navigates to — `location`, `navigation.navigate()`, `reload()`,
