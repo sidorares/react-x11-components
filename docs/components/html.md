@@ -2010,9 +2010,16 @@ again where the page plays it. It tells `animationstart`,
 `AnimationEvent` on the clock's timeline and on a scroll's alike — on a
 scroll's, its elapsed time is of a timeline a hundred seconds long, as in
 Blink, and the end of its scroller's scroll is in the active phase of one
-that ends there. What a style does to one the page holds — an
-`animation-play-state` that pauses it, say — shows in its `playState`
-once `getAnimations()` lists it again, and it is never pending for that.
+that ends there. What a style does to one the page holds is its own at once, where the
+page asks it anything (CSS Animations 2, 4.2): new, it is play-pending
+until the paint that first shows it, with no start time; an
+`animation-play-state` that pauses it or plays it again makes it
+pause-pending or play-pending, with a new `ready` promise, as `pause()`
+and `play()` would; and a style that takes it away — `animation-name:
+none`, `display: none` — cancels it, its `finished` rejected. A page's
+`play()`, `pause()`, `reverse()` or start time stands over its
+`animation-play-state` from then on, where a seek does not; and once a
+page replaces its effect or its timeline it follows the page alone.
 Its effect's `getTiming()` and `getComputedTiming()` read the cascade as
 it stands, a style changed since included, with an easing of `linear`,
 since `animation-timing-function` eases each keyframe; and what a page's

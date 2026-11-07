@@ -100,8 +100,9 @@ export interface Running {
   /** Where it waits for a trigger (`animation-trigger`): what the
    *  triggers it hears have made of it. */
   trig?: TriggerRun;
-  /** Whether a page's script paused it (`CSSAnimation.pause()`), which
-   *  holds it whatever `animation-play-state` says. */
+  /** Whether a page's script paused it (`CSSAnimation.pause()`) or
+   *  played it, which holds it or runs it whatever `animation-play-state`
+   *  says from then on; undefined while the style decides. */
   pagePaused?: boolean;
   /** Whether a page's script cancelled it (`CSSAnimation.cancel()`): it
    *  draws nothing while `animation-name` still names it. */
@@ -418,7 +419,7 @@ export class AnimationTimeline {
         const live = p
           ? (p.at - (s.start ?? (s.rate < 0 ? to : from))) * s.rate
           : null;
-        if (playStates[i % playStates.length] === 'paused' || run.pagePaused) {
+        if (run.pagePaused ?? playStates[i % playStates.length] === 'paused') {
           s.hold ??= live;
         } else if (s.hold !== null) {
           // played again, it is aligned to its range again
@@ -524,8 +525,7 @@ export class AnimationTimeline {
         );
       }
       const paused =
-        playStates[i % playStates.length] === 'paused' ||
-        !!run.pagePaused ||
+        (run.pagePaused ?? playStates[i % playStates.length] === 'paused') ||
         (!!trig && trig.state !== 'playing');
       // paused, it holds where it is whatever paints; it waits for none
       if (paused) run.pending = false;
@@ -1619,6 +1619,7 @@ export class AnimationTimeline {
     key: number,
     currentTime: number,
     paused = false,
+    overrides = true,
   ): object | null {
     for (const [el, targets] of this._targets) {
       for (const target of targets.values()) {
@@ -1626,9 +1627,18 @@ export class AnimationTimeline {
           if (!run || RUN_KEYS.get(run) !== key) continue;
           // played again after a cancel, it starts over from there
           run.pageCancelled = false;
-          run.pagePaused = paused;
-          if (paused || run.hold !== null) run.hold = currentTime;
-          else run.start = this.now - (run.trig?.rate ?? 1) * currentTime;
+          // a page's `play()`, `pause()`, `reverse()` or start time stands
+          // over its `animation-play-state` from then on, and a seek does
+          // not (CSS Animations 2, 4.2)
+          if (overrides) run.pagePaused = paused;
+          // and a time the page gave it starts one that waited for its paint
+          const waited = run.pending;
+          run.pending = false;
+          if (paused || (run.hold !== null && !waited)) run.hold = currentTime;
+          else {
+            run.hold = null;
+            run.start = this.now - (run.trig?.rate ?? 1) * currentTime;
+          }
           target.next = 0;
           return el;
         }
@@ -1693,6 +1703,7 @@ export class AnimationTimeline {
     mode: 'align' | 'start' | 'hold',
     time: number | null,
     rate: number,
+    overrides = true,
   ): object | null {
     for (const [el, targets] of this._targets) {
       for (const target of targets.values()) {
@@ -1700,7 +1711,8 @@ export class AnimationTimeline {
           if (!run || RUN_KEYS.get(run) !== key) continue;
           this._sought.add(el);
           run.pageCancelled = false;
-          run.pagePaused = mode === 'hold';
+          // as `seekAnimation` has it: only what overrides the play state
+          if (overrides) run.pagePaused = mode === 'hold';
           run.scroll = {
             hold: mode === 'hold' ? time : null,
             start: mode === 'start' ? time : null,

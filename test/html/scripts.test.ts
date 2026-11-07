@@ -16964,6 +16964,42 @@ test('a named timeline an ::after declares has its element for its source', asyn
   );
 });
 
+test("a CSS animation a page holds follows its style's play state, pending as pause() and play() are, until the page's own call stands over it, and a style that takes it away cancels it", async () => {
+  const doc = await hosted(
+    '<style>@keyframes anim { from { opacity: 0 } to { opacity: 1 } }</style>' +
+      '<div id="d" style="animation: anim 1000s"></div><p id="out"></p><script>' +
+      'var d = document.getElementById("d"), r = [];' +
+      'var a = d.getAnimations()[0];' +
+      'a.ready.then(function () {' +
+      '  var first = a.ready;' +
+      // the style pauses it: pause-pending, with a ready promise of its own
+      '  d.style.animationPlayState = "paused";' +
+      '  r.push(a.playState, a.pending, a.ready !== first);' +
+      '  return a.ready;' +
+      '}).then(function () {' +
+      '  r.push(a.playState, a.pending);' +
+      // the page plays it, which stands over the style from then on
+      '  a.play();' +
+      '  d.style.animationPlayState = "running"; getComputedStyle(d).opacity;' +
+      '  d.style.animationPlayState = "paused"; getComputedStyle(d).opacity;' +
+      '  return a.ready;' +
+      '}).then(function () {' +
+      '  r.push(a.playState);' +
+      // and a style that names no animation takes it away
+      '  var f = a.finished;' +
+      '  d.style.animationName = "none";' +
+      '  r.push(a.playState);' +
+      '  return f.then(function () { r.push("finished"); }, function (e) { r.push(e.name); });' +
+      '}).then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'paused|true|true|paused|false|running|idle|AbortError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +

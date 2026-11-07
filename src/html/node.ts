@@ -10999,10 +10999,15 @@ export class HtmlViewNode extends Node {
 
   /** A page set where a CSS animation's time is, the same way, and held
    *  it there where it paused it. */
-  seekAnimation(key: number, currentTime: number, paused: boolean): void {
+  seekAnimation(
+    key: number,
+    currentTime: number,
+    paused: boolean,
+    overrides = true,
+  ): void {
     if (!this._animating()) return;
     this._timeline.now = animationClock.now();
-    if (this._timeline.seekAnimation(key, currentTime, paused)) {
+    if (this._timeline.seekAnimation(key, currentTime, paused, overrides)) {
       this._scheduleFrame();
       return;
     }
@@ -11104,10 +11109,11 @@ export class HtmlViewNode extends Node {
     mode: 'align' | 'start' | 'hold',
     time: number | null,
     rate: number,
+    overrides = true,
   ): void {
     if (!this._animating()) return;
     this._timeline.now = animationClock.now();
-    if (this._timeline.seekScrolled(key, mode, time, rate)) {
+    if (this._timeline.seekScrolled(key, mode, time, rate, overrides)) {
       this._scheduleFrame();
     }
   }
@@ -14761,7 +14767,10 @@ export class HtmlViewNode extends Node {
         direction: timing.direction,
         fill: timing.fill,
         easing: easingText(at(lists.easings)),
-        paused: at(lists.playStates) === 'paused' || !!a.run.pagePaused,
+        paused: a.run.pagePaused ?? at(lists.playStates) === 'paused',
+        stylePaused: at(lists.playStates) === 'paused',
+        ...(a.run.pagePaused !== undefined ? { pageSet: true } : null),
+        ...(a.run.pending ? { waiting: true } : null),
         ...(a.run.pageCancelled ? { cancelled: true } : null),
         currentTime: a.run.hold ?? now - a.run.start,
         // on a scroll's, where the scroll has it
@@ -17653,6 +17662,15 @@ export interface CssAnimationInfo {
   fill: string;
   easing: string;
   paused: boolean;
+  /** Whether its `animation-play-state` pauses it, whatever the page did,
+   *  which a page's object follows as `pause()` and `play()` would. */
+  stylePaused: boolean;
+  /** Whether a page's `play()`, `pause()`, `reverse()` or start time has
+   *  stood over its `animation-play-state` (`Running.pagePaused`). */
+  pageSet?: boolean;
+  /** Whether it is new and waits, held at its start, for the paint that
+   *  first shows it (`Running.pending`): play-pending, to a page. */
+  waiting?: boolean;
   /** Whether the page cancelled it (`CSSAnimation.cancel()`), which
    *  `getAnimations()` lists no longer. */
   cancelled?: boolean;
