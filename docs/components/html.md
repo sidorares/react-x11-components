@@ -2041,7 +2041,10 @@ the `animation` shorthand, which is `''` where a timeline or a range is not
 the initial one, and an `auto` duration as `0s` on the document's timeline
 and `auto` where it may be a scroll's. `el.style.animation` is kept as its
 longhands, the timeline and the range set back with them, and read back
-from them. A `@keyframes` rule is a `CSSKeyframesRule`, dropped from its
+from them; and each `animation-*` longhand, `animation-composition` and
+`animation-range-start` and `-end` take only a list of what they take, as
+the cascade reads them, a value that is none leaving the declaration as it
+was. A `@keyframes` rule is a `CSSKeyframesRule`, dropped from its
 sheet where its name is `none`, `default`, a CSS-wide keyword or no
 identifier or string. Its `cssRules` are `CSSKeyframeRule`s, a keyframe
 dropped where a selector is outside 0% to 100% and `keyText` read as `0%`
