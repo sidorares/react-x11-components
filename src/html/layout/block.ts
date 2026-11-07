@@ -4290,6 +4290,16 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     moveTo(frame, box.contentX, box.contentY + box.contentHeight);
   } else moveTo(frame, box.contentX + room, box.contentY);
   if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+  // top-layer siblings left on the root outside the frame (`makeFrame`):
+  // a `::view-transition` is against the viewport in the page's axes
+  for (const child of box.children) {
+    if (child === frame || (!child.outOfFlow && !child.topLayer)) continue;
+    placeStatic(child, box, box.contentX, box.contentWidth, box.contentY);
+    ctx.positioned.push({
+      box: child,
+      containing: containingBlockFor(child) ?? box,
+    });
+  }
 }
 
 /** Lay a frame out at its corner at an inline size, a percentage height in

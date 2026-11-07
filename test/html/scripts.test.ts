@@ -15191,6 +15191,75 @@ metric(
 );
 
 metric(
+  "a view transition group's writing-mode, text-orientation and color-scheme come from the element it captures",
+  async () => {
+    // CSS View Transitions 1, 7.4 / 7.8 / WPT pseudo-get-computed-style,
+    // *-root-vertical-writing-mode: the group takes the element's writing
+    // mode (so UA `inline-size` / `block-size` on the images follow it),
+    // text-orientation and color-scheme, not the root's defaults.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' :root { view-transition-name: none }' +
+        ' #t { width: 40px; height: 80px; background: rgb(0, 128, 0);' +
+        '   writing-mode: vertical-lr; text-orientation: upright;' +
+        '   color-scheme: dark light; view-transition-name: target }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        '</style></head><body><div id="t"></div><p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  document.startViewTransition().ready.then(function () {' +
+        '    var g = getComputedStyle(document.documentElement,' +
+        '      "::view-transition-group(target)");' +
+        '    document.getElementById("out").textContent = [' +
+        '      g.writingMode, g.textOrientation, g.colorScheme' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    assert.equal(out, 'vertical-lr|upright|dark light');
+  },
+);
+
+metric(
+  "a ::view-transition on a vertical root keeps the group's size in the page's axes",
+  async () => {
+    // The root's orthogonal frame must not swallow the top-layer
+    // transition tree or swap the group's width/height: a 40×80 box under
+    // `html { writing-mode: vertical-lr }` still makes a 40×80 group.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' html { writing-mode: vertical-lr }' +
+        ' :root { view-transition-name: none }' +
+        ' #t { width: 40px; height: 80px; background: rgb(0, 128, 0);' +
+        '   view-transition-name: target }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        '</style></head><body><div id="t"></div><p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  var r = document.getElementById("t").getBoundingClientRect();' +
+        '  document.startViewTransition().ready.then(function () {' +
+        '    var g = getComputedStyle(document.documentElement,' +
+        '      "::view-transition-group(target)");' +
+        '    document.getElementById("out").textContent = [' +
+        '      Math.round(r.width), Math.round(r.height),' +
+        '      Math.round(parseFloat(g.width)), Math.round(parseFloat(g.height)),' +
+        '      g.writingMode' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [rw, rh, gw, gh, wm] = out.split('|');
+    assert.equal(wm, 'vertical-lr', out);
+    assert.equal(gw, rw, `group width: ${out}`);
+    assert.equal(gh, rh, `group height: ${out}`);
+    assert.equal(rw, '40', out);
+    assert.equal(rh, '80', out);
+  },
+);
+
+metric(
   'a view transition captures an inline element by its fragments: its group is as large as they are, its image is it alone, and the block around it is captured without it',
   async () => {
     // CSS View Transitions 1, 7.4: an element's border box, which an inline
