@@ -8,7 +8,14 @@
 import { positionAreaText } from './anchor.js';
 import { serializeMath } from './calc-tree.js';
 import { CALC_SIZE, calcSizeSpecified } from './calc-size.js';
-import { animationItemText, animationLonghandsOf } from './animation.js';
+import {
+  ANIMATION_LONGHANDS,
+  NO_ANIMATIONS,
+  animationItemText,
+  animationLonghand,
+  animationLonghandsOf,
+} from './animation.js';
+import { parseEdges } from './triggers.js';
 import { parseShapeFunction } from './shape-function.js';
 import { specifiedColorText } from './color.js';
 import { parseZoom, splitValue } from './values.js';
@@ -97,6 +104,28 @@ export function specifiedValue(
     const word = value.trim();
     if (CSS_WIDE.test(word.toLowerCase())) return undefined;
     return timeline(word);
+  }
+  // an `animation-*` longhand, a list of what it takes (CSS Animations 1,
+  // 3 and 2, 4), as the cascade reads it (`animationLonghand`)
+  const animationKey = ANIMATION_LONGHANDS[name];
+  if (animationKey) {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return animationLonghand(NO_ANIMATIONS, animationKey, word) ? word : null;
+  }
+  if (name === 'animation-composition') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return listOf(word, (item) =>
+      /^(replace|add|accumulate)$/i.test(item) ? item.toLowerCase() : null,
+    );
+  }
+  if (name === 'animation-range-start' || name === 'animation-range-end') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return parseEdges(word, name === 'animation-range-end', CHECK)
+      ? word
+      : null;
   }
   // the `animation` shorthand, which takes no timeline and no range (CSS
   // Animations 2, 4)
