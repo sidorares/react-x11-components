@@ -3802,6 +3802,10 @@ export function installDom(
       asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
+  /** Whether the page's document has its rendering suppressed for a view
+   *  transition: its old state captured and its update not yet done. */
+  const renderingSuppressed = (): boolean =>
+    activeTransition?._suppressed === true;
   /** Whether an element's `blocking` attribute names `render`. */
   const blocksRender = (el: Any): boolean =>
     /(?:^|\s)render(?:\s|$)/i.test(str(el?.getAttribute?.('blocking') ?? ''));
@@ -3948,7 +3952,10 @@ export function installDom(
     // render-blocking resources hold every rendering opportunity —
     // including animation frame callbacks — until they settle
     // (html/dom/render-blocking/)
-    if (renderOpportunitiesBlocked()) {
+    // and so does a view transition's update, from the capture of the old
+    // state until the new one is captured (CSS View Transitions 1, 7.4:
+    // "rendering suppression for view transitions")
+    if (renderOpportunitiesBlocked() || renderingSuppressed()) {
       frameTimer = 0;
       wantFrame();
       return;
@@ -19457,6 +19464,9 @@ export function installDom(
     /** Whether `callUpdate` has already run (7.5), or a cross-document
      *  transition that has no update callback to call. */
     _called = false;
+    /** Whether its document's rendering is suppressed for it (7.4): from
+     *  the capture of its old state until it is activated or skipped. */
+    _suppressed = false;
     _types = new ViewTransitionTypeSet();
     _done: Any;
     _ready: Any;
@@ -19567,6 +19577,7 @@ export function installDom(
    *  share a name, and otherwise ready, and over once the animations of
    *  its pseudo-elements are (7.9). */
   const activateTransition = (vt: Any): void => {
+    vt._suppressed = false;
     if (vt._phase === 'done') return;
     const shared = str(transitionOp(vt, 'vtNew'));
     if (shared) {
@@ -19661,6 +19672,7 @@ export function installDom(
    *  is still called, `ready` is rejected, and `finished` settles as the
    *  update does. */
   const skipTransition = (vt: Any, reason: Any): void => {
+    vt._suppressed = false;
     if (vt._phase === 'done') return;
     leaveActive(vt);
     const called = vt._called;
@@ -19897,42 +19909,43 @@ export function installDom(
     if (doc === document) activeTransition = vt;
     else frameTransitions.set(doc, vt);
     tellActive(doc, vt);
-    // the old state is captured at the next frame, once the updates of the
-    // transitions skipped before it have run, so that it is the state they
-    // leave; and the update is called in a task after it, once what those
-    // updates settled has been heard (7.4, "setup view transition")
-    setTimer(
-      () => {
-        if (vt._phase === 'done') return;
-        flushUpdates(doc);
-        // an update the flush called may have skipped it
-        if ((vt as Any)._phase === 'done') return;
-        const shared = str(transitionOp(vt, 'vtOld'));
-        if (shared) {
-          skipTransition(
-            vt,
-            new DOMException(
-              `Unexpected duplicate view-transition-name: ${shared}`,
-              'InvalidStateError',
-            ),
-          );
-          return;
-        }
-        setTimer(
-          () => {
-            if (vt._phase === 'done') return;
-            queueUpdate(vt);
-            flushUpdates(doc);
-          },
-          0,
-          [],
-          false,
+    // the old state is captured at the next frame, after its callbacks, as
+    // "perform pending transition operations" is, and before what they
+    // changed is painted; once the updates of the transitions skipped
+    // before it have run, so that it is the state they leave; and the
+    // update is called in a task after it, once what those updates settled
+    // has been heard (7.4, "setup view transition")
+    afterNextFrame(() => {
+      if (vt._phase === 'done') return;
+      flushUpdates(doc);
+      // an update the flush called may have skipped it
+      if ((vt as Any)._phase === 'done') return;
+      const shared = str(transitionOp(vt, 'vtOld'));
+      if (shared) {
+        skipTransition(
+          vt,
+          new DOMException(
+            `Unexpected duplicate view-transition-name: ${shared}`,
+            'InvalidStateError',
+          ),
         );
-      },
-      16,
-      [],
-      false,
-    );
+        return;
+      }
+      // nothing of the document is rendered from here until the update
+      // is done: no frame, no animation, no paint, and a press is the
+      // root element's (7.4)
+      vt._suppressed = true;
+      setTimer(
+        () => {
+          if (vt._phase === 'done') return;
+          queueUpdate(vt);
+          flushUpdates(doc);
+        },
+        0,
+        [],
+        false,
+      );
+    });
     return vt;
   };
 

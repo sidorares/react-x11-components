@@ -2165,7 +2165,10 @@ until its animations are over, when it is finished.
   across. The old image draws its picture; the new image draws its element
   as it is now, at every paint, at its size or stretched to the image's.
   The element itself is a hole where it is laid out, and with the root
-  captured, the canvas is too.
+  captured, the canvas is too. The old and new images are added to each
+  other (`plus-lighter`), so at any point of their fade they come to the
+  element; and the tree is styled again as the root element's attributes
+  change, a class a page sets on it among them.
 - **Timing.** The tree's animations run on a timeline of their own, and the
   transition is finished once they are all over, which one paused or
   without end never is. A page's own animation of a pseudo-element —
@@ -2177,6 +2180,13 @@ until its animations are over, when it is finished.
   is active, and `:active-view-transition-type()` while it is of one of the
   types named, as its `types` change; a type named `none` or starting
   `-ua-` makes the selector none.
+- **Rendering held while the update runs.** The old state is captured at
+  the frame after `startViewTransition()`, once its animation frame
+  callbacks have run and before what they changed is drawn. From there
+  until the new state is captured, the document's rendering is suppressed:
+  no animation frame callback runs, what `<Html>` draws is the whole
+  document as the old state was captured, an animation made in the update
+  does not start until then, and a press anywhere is the root element's.
 - **Skipping.** `updateCallbackDone`, `ready` and `finished` settle in the
   specification's order. A transition is skipped by one started while it is
   active, by two elements sharing a name, by an update that throws or never
@@ -2191,8 +2201,7 @@ until its animations are over, when it is finished.
   The tree's CSS animations are `CSSAnimation`s in `getAnimations()`, with
   their pseudo-element. A frame's document's transition is its own and is
   drawn by the frame's view.
-- **Not yet.** Rendering held while the update runs, and transitions across
-  documents.
+- **Not yet.** Transitions scoped to an element, and nested groups.
 
 **A list is live, as the DOM has it.** `childNodes`, `children`,
 `getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
@@ -4927,7 +4936,12 @@ drawn through a transform. A box with a backdrop filter is never lifted
 onto a layer of its own — `isolation` — `isolate` makes a box a stacking context, positioned
 or not, painted whole among the positioned boxes as one under full
 opacity is, so a box in it with a negative `z-index` goes over its
-background and under its text (CSS Compositing 1, 3.2) — `will-change` —
+background and under its text (CSS Compositing 1, 3.2), and is painted
+as a group where a box in it blends — `mix-blend-mode` — `plus-lighter`
+adds what the box draws to what is under it inside the box that isolates
+it, which is how a view transition's old and new images come to the
+element at every point of their fade; every other mode draws as `normal`
+— `will-change` —
 a property named in it makes the box what a value of the property other
 than its initial one would (CSS Will Change 1, 2): a stacking context for
 `opacity`, a transform, a filter, a mask, a `clip-path`, `isolation`,

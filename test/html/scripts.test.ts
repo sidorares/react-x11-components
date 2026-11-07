@@ -15350,6 +15350,98 @@ metric(
   },
 );
 
+metric(
+  "a view transition's update runs with the document's rendering suppressed: no frame, no animation starts, the old state is what is drawn, and a press is the root's",
+  async () => {
+    // CSS View Transitions 1, 7.4: from the capture of the old state until
+    // the update is done
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { width: 40px; height: 40px; background: rgb(0, 128, 0) }' +
+        ' @keyframes k { to { opacity: 0.5 } } #a.on { animation: k 50ms }' +
+        '</style></head><body><div id="a"></div><p id="out"></p><script>' +
+        'var a = document.getElementById("a"), out = document.getElementById("out");' +
+        'var frames = 0, ends = 0, hit = "", done, t;' +
+        'function tick() { frames++; requestAnimationFrame(tick); }' +
+        'a.onanimationend = function () { ends++; };' +
+        'requestAnimationFrame(function () {' +
+        '  requestAnimationFrame(tick);' +
+        '  t = document.startViewTransition(function () {' +
+        '    a.style.background = "rgb(0, 0, 255)"; a.className = "on";' +
+        '    var at = frames; out.textContent = "updating";' +
+        '    return new Promise(function (ok) { done = function () {' +
+        '      out.textContent = "held " + (frames - at) + " " + ends + " " + hit; ok(); }; });' +
+        '  });' +
+        '  t.ready.then(function () { t.skipTransition(); });' +
+        '});' +
+        'document.addEventListener("click", function (e) { hit = e.target.localName; });' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'updating');
+    await settle(200);
+    const { abs } = doc.view as unknown as DrawnNode;
+    assert.equal(
+      await colourAt(doc, abs.x + 10, abs.y + 10),
+      '#008000',
+      'the document as its old state was captured',
+    );
+    // a press on #a, which the root element takes
+    const node = doc.view as unknown as DrawnNode;
+    await act(async () => {
+      const dx = 10 - node.abs.width / 2;
+      const dy = 10 - node.abs.height / 2;
+      fireEvent.mouseDown(node, { dx, dy });
+      fireEvent.mouseUp(node, { dx, dy });
+    });
+    await settle();
+    doc.run('done();');
+    assert.equal(
+      await settled(doc, 'out', (t) => t.startsWith('held')),
+      'held 0 0 html',
+      doc.logs.join('\n'),
+    );
+    await settle(100);
+    assert.equal(
+      await colourAt(doc, abs.x + 10, abs.y + 10),
+      '#0000ff',
+      'and the document as it is, once the transition is over',
+    );
+  },
+);
+
+metric(
+  "a class a page sets on the root while a view transition's tree is drawn styles the tree again",
+  async () => {
+    // its pseudo-elements are the root element's, and no rule the document
+    // reaches reads the class: the tree kept the style it was built with
+    // for as long as nothing else built it
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { position: absolute; top: 0; left: 0; width: 40px; height: 40px;' +
+        '   background: rgb(0, 128, 0); view-transition-name: a }' +
+        ' html::view-transition { background: rgb(255, 0, 0) }' +
+        ' html.on::view-transition { background: rgb(0, 0, 255) }' +
+        ' html::view-transition-group(*) { animation-duration: 300s }' +
+        ' html::view-transition-group(root) { animation: unset; opacity: 0 }' +
+        '</style></head><body><div id="a"></div><p id="out" style="margin-top: 100px"></p><script>' +
+        'requestAnimationFrame(function () {' +
+        '  var t = document.startViewTransition();' +
+        '  t.ready.then(function () { requestAnimationFrame(function () {' +
+        '    document.getElementById("out").textContent = "ready"; }); });' +
+        '});' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'ready');
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = () => colourAt(doc, abs.x + 110, abs.y + 10);
+    assert.equal(await at(), '#ff0000', "the tree's ground");
+    doc.run('document.documentElement.className = "on";');
+    await settle(60);
+    assert.equal(await at(), '#0000ff', 'styled again by the class');
+  },
+);
+
 test("a view transition's pseudo-elements answer getComputedStyle and getAnimations, and a CSS animation lists its keyframes", async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>' +

@@ -86,6 +86,10 @@ export class ViewTransitionRun {
       dynamic: readonly Declaration[];
     }
   >();
+  /** The document in the viewport as its old state was captured, all of
+   *  it: what is drawn while its rendering is suppressed (7.4), until its
+   *  new state is captured. */
+  held: SurfaceLike | null = null;
   /** When its tree was first drawn, on the clock, which its animations
    *  start from. */
   started = 0;
@@ -93,7 +97,14 @@ export class ViewTransitionRun {
    *  `Infinity` while one is paused or never ends. */
   endsAt = 0;
 
+  /** Its rendering suppressed no more: the picture held goes. */
+  release(): void {
+    this.held?.destroy?.();
+    this.held = null;
+  }
+
   dispose(): void {
+    this.release();
     for (const entry of this.entries.values()) {
       entry.old?.surface?.destroy?.();
     }
