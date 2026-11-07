@@ -293,6 +293,7 @@ export function installDom(
     'svgLength',
     'atViewport',
     'scrollMoves',
+    'scrollInsets',
     'geometry',
     'offset',
     'computed',
@@ -1057,6 +1058,23 @@ export function installDom(
       super(type, init);
       this.oldState = String(init.oldState ?? '');
       this.newState = String(init.newState ?? '');
+    }
+  }
+  /** A snap container's `scrollsnapchange` and `scrollsnapchanging` (CSS
+   *  Scroll Snap 2, 6.1): the elements it is snapped to, or about to be, in
+   *  its block axis and its inline axis. */
+  class SnapEvent extends Event {
+    readonly snapTargetBlock: Any;
+    readonly snapTargetInline: Any;
+    constructor(type: Any, init: Any = {}) {
+      if (arguments.length < 1) {
+        throw new TypeError(
+          "Failed to construct 'SnapEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      super(type, init);
+      this.snapTargetBlock = init?.snapTargetBlock ?? null;
+      this.snapTargetInline = init?.snapTargetInline ?? null;
     }
   }
   /** A media query list's `change` (CSSOM View 4.2): its query, and what
@@ -3612,7 +3630,7 @@ export function installDom(
     }
     override _time(): number | null {
       const v = this._view();
-      if (!v || !(v.max > 0)) return null;
+      if (!v) return null;
       const [from, to] = v.cover;
       if (!(to - from > 0)) return null;
       return ((v.at - from) / (to - from)) * 100;
@@ -4449,6 +4467,7 @@ export function installDom(
     }
     set rangeStart(v: Any) {
       this._rangeStart = rangeEdgeOf(v, false);
+      this._rangeSet(false);
       this._effectChanged();
     }
     get rangeEnd(): Any {
@@ -4456,8 +4475,12 @@ export function installDom(
     }
     set rangeEnd(v: Any) {
       this._rangeEnd = rangeEdgeOf(v, true);
+      this._rangeSet(true);
       this._effectChanged();
     }
+    /** A page set an end of its range: a CSS animation's stands over its
+     *  `animation-range` from then on (`CSSAnimation._rangeSet`). */
+    _rangeSet(_end: boolean): void {}
 
     // -- the procedures
 
@@ -5020,6 +5043,41 @@ export function installDom(
     get animationName(): string {
       return this._name;
     }
+    override _rangeSet(end: boolean): void {
+      const edge = end ? this._rangeEnd : this._rangeStart;
+      if (edge === 'normal') {
+        call('rangeAnimation', this._key, end, '"normal"');
+        return;
+      }
+      // its offset as a percentage and pixels added to it, which is how a
+      // range's offset is linear in what it is a percentage of
+      const px = offsetPx(edge.offset, 0);
+      const pct = offsetPx(edge.offset, 100) - px;
+      call(
+        'rangeAnimation',
+        this._key,
+        end,
+        JSON.stringify({ name: edge.name ?? null, pct, px }),
+      );
+    }
+    /** Where it starts and what its time is, as the cascade has it now: on
+     *  a scroll's timeline its range and its timing may be a style's that
+     *  changed since `getAnimations()` listed it, and a start time its
+     *  range aligns moves with them (`refreshCss`). */
+    override get startTime(): Any {
+      refreshCss(this);
+      return super.startTime;
+    }
+    override set startTime(v: Any) {
+      super.startTime = v;
+    }
+    override get currentTime(): Any {
+      refreshCss(this);
+      return super.currentTime;
+    }
+    override set currentTime(v: Any) {
+      super.currentTime = v;
+    }
     /** What a page's `updateTiming()` set on its effect — of its duration,
      *  delay, iterations, direction and fill — stands over the
      *  `animation-*` longhand it names from then on, in what is drawn as
@@ -5187,7 +5245,27 @@ export function installDom(
     const raw = call('cssAnimations', target._id, false);
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     const info = list.find((i: Any) => i.key === a._key);
-    if (info) effect._timing = cssTimingOf(info, effect);
+    if (!info) return;
+    effect._timing = cssTimingOf(info, effect);
+    a._rangeStart = rangeEdgeOf(info.rangeStart, false);
+    a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+  };
+  /** A CSS animation on a scroll's timeline, its timing and its range read
+   *  again as the cascade has them, and a start time its range aligns
+   *  aligned again (`CSSAnimation.startTime`). */
+  const refreshCss = (a: Any): void => {
+    if (!a._effect || !a._finite()) return;
+    const was = [a._rangeStart, a._rangeEnd, a._effect._timing];
+    refreshCssTiming(a._effect);
+    // where a style moved what it is aligned to: aligned again, and its
+    // finished state with it, as at a frame
+    const moved =
+      JSON.stringify(was) !==
+      JSON.stringify([a._rangeStart, a._rangeEnd, a._effect._timing]);
+    if (moved && a._autoAlign) {
+      a._autoAlignStart();
+      a._updateFinished(false, false);
+    }
   };
   /** The CSS animations under way on `target`, or on what it holds, or in
    *  the document for null, in tree order and then their order in
@@ -7360,7 +7438,13 @@ export function installDom(
       const s = scrollStateOf(this);
       if (s) return Math.round(s[3]);
       if (this._viewport()) {
-        return Math.max(viewport().height, Math.round(docRect(this)?.[3] ?? 0));
+        // as far down as the viewport's scrollable overflow reaches, what
+        // is positioned out of the flow below the root included
+        const d = documentSize();
+        return Math.max(
+          viewport().height,
+          Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
+        );
       }
       return this.clientHeight;
     }
@@ -7484,6 +7568,14 @@ export function installDom(
         }
         return top;
       };
+      // what is lined up: the element's border box outset by its
+      // `scroll-margin`, in the scrollport inset by the container's
+      // `scroll-padding` (CSS Scroll Snap 1, 6.1 and 6.2), each read once
+      // there is a container to scroll
+      const insets = (port: Any): number[] =>
+        String(call('scrollInsets', this._id, port ? port._id : undefined))
+          .split(',')
+          .map(Number);
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === document.documentElement) break;
         const s = scrollStateOf(at);
@@ -7491,8 +7583,19 @@ export function installDom(
         const me = docRect(this);
         const port = docRect(at);
         if (!me || !port) return;
-        const byX = place(inline, me[0] - (port[0] + s[7]), me[2], s[4]);
-        const byY = place(block, me[1] - (port[1] + s[6]), me[3], s[5]);
+        const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(at);
+        const byX = place(
+          inline,
+          me[0] - ml - (port[0] + s[7] + pl),
+          me[2] + ml + mr,
+          s[4] - pl - pr,
+        );
+        const byY = place(
+          block,
+          me[1] - mt - (port[1] + s[6] + pt),
+          me[3] + mt + mb,
+          s[5] - pt - pb,
+        );
         if (quiet && !byX && !byY) continue;
         call(
           'scrollElement',
@@ -7506,8 +7609,19 @@ export function installDom(
       const r = docRect(this);
       if (!r) return;
       const v = viewport();
-      const byX = place(inline, r[0] - v.scrollX, r[2], v.width);
-      const byY = place(block, r[1] - v.scrollY, r[3], v.height);
+      const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(null);
+      const byX = place(
+        inline,
+        r[0] - ml - (v.scrollX + pl),
+        r[2] + ml + mr,
+        v.width - pl - pr,
+      );
+      const byY = place(
+        block,
+        r[1] - mt - (v.scrollY + pt),
+        r[3] + mt + mb,
+        v.height - pt - pb,
+      );
       if (quiet && !byX && !byY) return;
       call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
     }
@@ -7775,6 +7889,16 @@ export function installDom(
     focus(options?: Any): void {
       const had = document.activeElement === this;
       call('focus', this._id);
+      // a focus that moved during an intercepted navigation keeps the
+      // page's choice at the end (HTML, "focus changed during ongoing
+      // navigation")
+      if (
+        !had &&
+        document.activeElement === this &&
+        pageSession.session.ongoing
+      ) {
+        pageSession.session.focusChanged = true;
+      }
       // an editing host focused takes the caret, at its start, where the
       // selection was anywhere else: what a command then edits, as Chromium
       // and Firefox have it. One focused already keeps what it has, none
@@ -7797,7 +7921,12 @@ export function installDom(
       }
     }
     blur(): void {
-      if (document.activeElement === this) call('blur');
+      if (document.activeElement === this) {
+        call('blur');
+        if (pageSession.session.ongoing) {
+          pageSession.session.focusChanged = true;
+        }
+      }
     }
     click(): void {
       if (isDisabled(this)) return;
@@ -10395,6 +10524,13 @@ export function installDom(
       // the document the session is of, which its initial `about:blank`'s
       // hands on to the frame's first (`frameWindowOf`)
       const owner = { doc };
+      // filled once `makeSession` returns, which `go` / `reload` /
+      // `traverseAway` close over; `pending` is how the next document
+      // arrived, set as `away` is asked, for the handoff in `frameWindowOf`
+      const slot: {
+        session?: Any;
+        pending: 'push' | 'replace' | null;
+      } = { pending: null };
       made = makeSession({
         owner: () => owner.doc,
         // in the document while its document is the frame's (HTML 7.3.3,
@@ -10410,22 +10546,56 @@ export function installDom(
         // `about:blank` keeps its session too (`frameWindowOf`)
         doc: () => frameDocumentOf(frame) ?? doc,
         target,
-        away: (url, _replace, referrerPolicy) =>
-          void call('frameNavigate', frame._id, url, referrerPolicy ?? ''),
-        tellsFragments: false,
-        reload: () => {
-          if (unloadAllowed(owner.doc, target)) {
-            call('frameNavigate', frame._id, at());
-          }
+        away: (url, replace, referrerPolicy) => {
+          slot.pending = replace ? 'replace' : 'push';
+          call('frameNavigate', frame._id, url, referrerPolicy ?? '');
         },
+        tellsFragments: false,
+        reload: (navState) => {
+          if (!unloadAllowed(owner.doc, target)) return;
+          const s = slot.session;
+          if (s) {
+            const from = s.entries[s.index];
+            s.arrived = {
+              type: 'reload',
+              fromIndex: s.index,
+              from,
+            };
+            s.activation = null;
+            if (navState !== undefined && from) from.navState = navState;
+          }
+          call('frameNavigate', frame._id, at());
+        },
+        // past this frame's own entries there is nowhere: a frame is not
+        // joint with its tab's history yet
         go: () => {},
+        // a step to another of this frame's documents: the entry is already
+        // in the list, and the document it names is loaded in the frame
+        traverseAway: (delta) => {
+          const s = slot.session;
+          if (!s) return;
+          const fromIndex = s.index;
+          const to = fromIndex + Math.trunc(delta);
+          const targetEntry = s.entries[to];
+          if (!targetEntry) return;
+          s.index = to;
+          s.arrived = {
+            type: 'traverse',
+            fromIndex,
+            from: s.entries[fromIndex],
+          };
+          s.activation = null;
+          call('frameNavigate', frame._id, targetEntry.url);
+        },
         // a frame's scroll is its own document's, which no entry keeps
         scroll: () => [0, 0],
         scrollTo: () => {},
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
       });
+      slot.session = made.session;
       made.owner = owner;
+      made.slot = slot;
       frameSessions.set(doc, made);
     }
     return made;
@@ -10453,29 +10623,87 @@ export function installDom(
   const frameWindowOf = (doc: Any, frame: Any): Any => {
     let win = frameWindows.get(doc);
     if (win) return win;
-    // the first document a frame loads after its initial `about:blank`
-    // keeps that one's window, and with it what the page set on it — a
-    // handler on its `navigation` among them (HTML 7.4.6.2, "initialize the
-    // document object")
+    // a same-origin document the frame shows next keeps the window of the
+    // one before it, and with it the session and what the page set on the
+    // window — a handler on its `navigation` among them (HTML 7.4.6.2,
+    // "initialize the document object"). The first after the initial
+    // `about:blank` replaces that blank's empty history; every later one
+    // keeps the entries `navigateTo` already wrote, or pushes where the
+    // navigation came from outside that (a parent setting `src`).
     const last = keptFrameWindows.get(frame);
-    if (last?.initial && last.doc !== doc) {
+    if (last && last.doc !== doc) {
+      const wasInitial = last.initial;
+      const previous = last.doc;
       last.setDoc(doc);
       last.initial = call('frameInitialBlank', frame._id) === true;
-      const made = frameSessions.get(last.doc);
+      const made = frameSessions.get(previous);
       if (made) {
-        made.session.entries = [
-          sessionEntry(String(call('frameLocation', frame._id))),
-        ];
-        made.session.index = 0;
-        // a navigation from the initial `about:blank` replaces it (HTML
-        // 7.4.2.2), so the document it shows came by a replace from no entry
-        // the API showed
-        made.session.arrived = { type: 'replace', fromIndex: -1, from: null };
-        made.session.activation = null;
+        const at = String(call('frameLocation', frame._id));
+        if (wasInitial) {
+          made.session.entries = [sessionEntry(at, undefined, 0)];
+          made.session.index = 0;
+          // a navigation from the initial `about:blank` replaces it (HTML
+          // 7.4.2.2), so the document it shows came by a replace from no
+          // entry the API showed
+          made.session.arrived = {
+            type: 'replace',
+            fromIndex: -1,
+            from: null,
+          };
+          made.session.activation = null;
+        } else {
+          const bare = (u: string) => u.split('#')[0];
+          const known = made.session.entries.findIndex(
+            (e: Any) => bare(e.url) === bare(at),
+          );
+          const slot = made.slot as {
+            pending: 'push' | 'replace' | null;
+          } | null;
+          const pending = slot?.pending ?? null;
+          if (slot) slot.pending = null;
+          const from = made.session.entries[made.session.index] ?? null;
+          const fromIndex = made.session.index;
+          if (pending === 'push' || (pending === null && known < 0)) {
+            // a cross-document `navigateTo` plans the host session only
+            // (`planAway`); a frame's own entries still need the push here
+            // — including a push to the URL it is already at — and a
+            // parent setting `src`/`srcdoc` to a new address is a push
+            if (from) from.scroll = made.session.ctx.scroll();
+            const entry = sessionEntry(at, undefined, (from?.doc ?? 0) + 1);
+            made.session.entries.splice(made.session.index + 1);
+            made.session.entries.push(entry);
+            made.session.index = made.session.entries.length - 1;
+            made.session.arrived = { type: 'push', fromIndex, from };
+            made.session.activation = null;
+          } else if (pending === 'replace') {
+            if (from) from.scroll = made.session.ctx.scroll();
+            // a replace across documents is still another document's entry
+            const entry = sessionEntry(at, from?.key, (from?.doc ?? 0) + 1);
+            made.session.entries[made.session.index] = entry;
+            made.session.arrived = {
+              type: 'replace',
+              fromIndex,
+              from,
+            };
+            made.session.activation = null;
+          } else if (known >= 0) {
+            // a traversal or a reload: the entry is already in the list
+            // (`traverseAway` / `reload`), and may only need its final URL
+            made.session.index = known;
+            made.session.entries[known].url = at;
+          }
+        }
         made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
-      frameTargets.set(doc, frameTargets.get(last.doc));
+      // a new document on a kept window hears none of the last one's
+      // listeners (HTML 7.4.1): `onbeforeunload` and the rest go with it
+      const target = frameTargets.get(previous);
+      if (target) {
+        target._handlers = Object.create(null);
+        target._listeners = Object.create(null);
+      }
+      frameTargets.set(doc, target);
       // shown once it is the frame's, which it is only once it is in
       if (!last.initial) doc._pageShowing = true;
       last.doc = doc;
@@ -10968,8 +11196,22 @@ export function installDom(
       return String(call('frameLocation', frame._id));
     };
     const go = (url: Any, replace = false): void => {
-      const href = String(call('resolve', str(url)));
+      // against the frame's address, not the page's: `?1` on a blank
+      // frame is that blank's query, as a browser resolves a frame's
+      // `location`
+      let href: string;
+      try {
+        href = new URL(str(url), at()).href;
+      } catch {
+        href = String(call('resolve', str(url)));
+      }
       const doc = frameDocumentOf(frame);
+      // the frame's session, made as its window's `navigation` is — so a
+      // `location` assignment before anything read `navigation` still
+      // pushes an entry of the history the next document keeps
+      if (doc && !frameSessions.get(doc)) {
+        void frameWindowOf(doc, frame).navigation;
+      }
       const made = doc && frameSessions.get(doc);
       if (made) {
         navigateTo(
@@ -19581,6 +19823,8 @@ export function installDom(
     'toggle',
     'scroll',
     'scrollend',
+    'scrollsnapchange',
+    'scrollsnapchanging',
     'resize',
     'contextmenu',
     'wheel',
@@ -29713,6 +29957,11 @@ export function installDom(
     other?: boolean;
     /** Its URL's origin, worked out once. */
     origin?: string;
+    /** Which document of a frame's session this entry is of: same-document
+     *  navigations share a number, and a cross-document push gets a new
+     *  one — what `sameDocument` reads for a frame that keeps one history
+     *  across the documents it shows. */
+    doc?: number;
   }
   /** What a window's session history stands on. */
   interface SessionContext {
@@ -29800,6 +30049,10 @@ export function installDom(
     /** `history.scrollRestoration`: whether a traversal restores where the
      *  entry it goes to was scrolled to. */
     restoration: 'auto' | 'manual';
+    /** Whether focus moved while a navigation was under way (HTML,
+     *  "focus changed during ongoing navigation"): an intercepted end
+     *  then leaves the focus where it is. */
+    focusChanged: boolean;
     /** Whether the entries are the host's session's, the documents' before
      *  and after this one among them (`HtmlSessionHistory`), rather than
      *  this document's alone. */
@@ -29812,13 +30065,18 @@ export function installDom(
       from: SessionEntry | null;
     } | null;
   }
-  const sessionEntry = (url: string, key?: string): SessionEntry => ({
+  const sessionEntry = (
+    url: string,
+    key?: string,
+    doc?: number,
+  ): SessionEntry => ({
     url,
     key: key ?? CRYPTO.uuid(),
     id: CRYPTO.uuid(),
     state: null,
     navState: undefined,
     api: null,
+    doc,
   });
   const currentOf = (s: Session): SessionEntry => s.entries[s.index];
   /** HTML 7.2.6.1, "has entries and events disabled": a document that is
@@ -30007,7 +30265,14 @@ export function installDom(
       return navEntriesOf(this._session).indexOf(this._entry);
     }
     get sameDocument(): boolean {
-      return !this._gone && !this._entry.other && this.index >= 0;
+      if (this._gone || this._entry.other || this.index < 0) return false;
+      const cur = currentOf(this._session);
+      // a frame's session across documents: only entries of the document
+      // shown now are same-document (HTML, `NavigationHistoryEntry`)
+      if (this._entry.doc !== undefined && cur.doc !== undefined) {
+        return this._entry.doc === cur.doc;
+      }
+      return true;
     }
     getState(): Any {
       const state = this._entry.navState;
@@ -30085,6 +30350,10 @@ export function installDom(
     _dispatching = false;
     /** `intercept()`'s `scroll`: after the handlers, or the page's. */
     _scrollBehavior: 'after-transition' | 'manual' = 'after-transition';
+    /** `intercept()`'s `focusReset`: after the handlers, or the page's.
+     *  Null until set — treated as `after-transition` when finishing
+     *  (HTML 7.2.6.9). */
+    _focusReset: 'after-transition' | 'manual' | null = null;
     /** Where the navigation is (HTML 7.2.6.9, "interception state"): what
      *  `scroll()` may do, and whether the end scrolls. */
     _state: 'none' | 'intercepted' | 'committed' | 'scrolled' | 'finished' =
@@ -30123,6 +30392,20 @@ export function installDom(
           name,
         );
       };
+      // WebIDL converts `NavigationInterceptOptions` before the method
+      // steps: an invalid `focusReset` is a TypeError and nothing of the
+      // call runs (WPT `focus-reset/basic.html`).
+      if (
+        options != null &&
+        Object.prototype.hasOwnProperty.call(options, 'focusReset') &&
+        options.focusReset !== undefined &&
+        options.focusReset !== 'manual' &&
+        options.focusReset !== 'after-transition'
+      ) {
+        throw new TypeError(
+          "Failed to execute 'intercept' on 'NavigateEvent': Failed to read the 'focusReset' property from 'NavigationInterceptOptions': The provided value is not a valid enum value of type NavigationFocusReset.",
+        );
+      }
       if (!this.isTrusted) fail('The event is not trusted.', 'SecurityError');
       if (!this._dispatching) {
         fail('The event is not being dispatched.', 'InvalidStateError');
@@ -30152,6 +30435,14 @@ export function installDom(
           );
         }
         this._precommits.push(options.precommitHandler);
+      }
+      if (
+        options != null &&
+        Object.prototype.hasOwnProperty.call(options, 'focusReset') &&
+        (options.focusReset === 'manual' ||
+          options.focusReset === 'after-transition')
+      ) {
+        this._focusReset = options.focusReset;
       }
       if (
         options?.scroll === 'manual' ||
@@ -30364,12 +30655,42 @@ export function installDom(
     return new NavigationActivation(TOKEN, entry, from, arrived.type);
   };
 
+  /** HTML 7.2.6.10.5, "potentially reset the focus": after an intercepted
+   *  navigation, focus the body (or an autofocus delegate) unless the page
+   *  moved focus during it or asked for `manual`. */
+  const potentiallyResetFocus = (s: Session, event: Any): void => {
+    const changed = s.focusChanged;
+    s.focusChanged = false;
+    if (changed) return;
+    if (event._focusReset === 'manual') return;
+    const doc = s.ctx.doc();
+    // autofocus delegate first (HTML); without one, the body, then the
+    // document element — `autofocus.html` is the next step of that
+    const target = doc.body ?? doc.documentElement;
+    const active = doc.activeElement;
+    // already there (a focused control removed, focus fixup to the body)
+    // needs no focusing steps: body's `focus` would fire and fail WPT's
+    // `change-focus-then-remove-during-intercept`
+    if (!target || active === target) return;
+    // the body is not a focusable widget here, so `body.focus()` leaves
+    // the control lit; blur the active one so `activeElement` falls back
+    // to the body, as the focusing steps for the viewport do
+    if (active && typeof active.blur === 'function') {
+      call('blur');
+    } else if (typeof target.focus === 'function') {
+      target.focus({ preventScroll: true });
+    }
+    // our own reset is not a page-driven focus change
+    s.focusChanged = false;
+  };
+
   /** End a session's ongoing navigation as aborted: its signal,
    *  `navigateerror`, and its promises rejected. */
   const abortOngoing = (s: Session, ...error: Any[]): void => {
     const running = s.ongoing;
     if (!running) return;
     s.ongoing = null;
+    s.focusChanged = false;
     // an event still being dispatched is canceled with it (HTML 7.2.6.10,
     // "abort the ongoing navigation"), which its listeners read
     if (running.event._dispatching) running.event._canceled = true;
@@ -30446,6 +30767,9 @@ export function installDom(
     historyApi?: boolean;
     /** A POST form submission's entry list (`NavigateEvent.formData`). */
     formData?: Any;
+    /** A download hyperlink's filename (HTML, "fire a download request
+     *  `navigate` event"), or null where it is not a download. */
+    downloadRequest?: string | null;
   }
 
   /**
@@ -30463,7 +30787,7 @@ export function installDom(
      *  the handlers have been called. `params` is read as it runs, which a
      *  precommit handler's `redirect()` may have changed. */
     apply: (intercepted: boolean) => (() => void) | void,
-  ): 'same' | 'canceled' | 'other' => {
+  ): 'same' | 'canceled' | 'other' | 'download' => {
     // a document whose navigations go untold: done, with no event, and
     // nothing settled of what a method handed back
     if (s.ctx.disabled?.()) {
@@ -30518,10 +30842,13 @@ export function installDom(
         userInitiated: !!params.userInitiated,
         sourceElement: params.sourceElement ?? null,
         formData: params.formData ?? null,
+        downloadRequest:
+          params.downloadRequest !== undefined ? params.downloadRequest : null,
       }),
     );
     const tracker = params.tracker ?? null;
     s.ongoing = { controller, tracker, event, transition: null };
+    s.focusChanged = false;
     noteBusy(s);
     event._dispatching = true;
     const go = dispatch(s.navigation, event);
@@ -30531,7 +30858,15 @@ export function installDom(
       abortOngoing(s);
       return 'canceled';
     }
-    if (!event._intercepted && !params.sameDocument) {
+    // a download request: not intercepted → the caller saves the file and
+    // aborts this ongoing one (HTML, "download the hyperlink"); intercepted
+    // → the handlers own it as a same-document push
+    if (
+      params.downloadRequest !== undefined &&
+      params.downloadRequest !== null
+    ) {
+      if (!event._intercepted) return 'download';
+    } else if (!event._intercepted && !params.sameDocument) {
       // another document: the host's. The ongoing navigation stays until
       // that document loads, `window.stop()` aborts it, or the next
       // navigation does — so `event.signal` and the method's promises are
@@ -30595,9 +30930,11 @@ export function installDom(
         results,
         () => {
           if (s.ongoing?.event !== event) return;
-          s.ongoing = null;
-          // what it scrolls to, unless the page scrolled it or said it would
-          // (HTML 7.2.6.9, "potentially process scroll behavior")
+          // finish given true: focus, then scroll, then done
+          // (HTML 7.2.6.10.5); `navigatesuccess` after both
+          if (event._state === 'committed' || event._state === 'scrolled') {
+            potentiallyResetFocus(s, event);
+          }
           if (
             event._state === 'committed' &&
             event._scrollBehavior === 'after-transition'
@@ -30606,6 +30943,7 @@ export function installDom(
             event._scroller?.();
           }
           event._state = 'finished';
+          s.ongoing = null;
           // `navigatesuccess` while the transition is still the
           // navigation's, then the method's promise with the entry, then the
           // transition's with nothing
@@ -30616,6 +30954,11 @@ export function installDom(
         },
         (error: Any) => {
           if (s.ongoing?.event !== event) return;
+          // finish given false, then abort (HTML, handler failure): focus
+          // reset before `navigateerror`
+          if (event._state === 'committed' || event._state === 'scrolled') {
+            potentiallyResetFocus(s, event);
+          }
           event._state = 'finished';
           abortOngoing(s, error);
         },
@@ -30728,7 +31071,11 @@ export function installDom(
     const from = apiEntryOf(s, old);
     // where the document is scrolled to is the entry's it leaves
     old.scroll = s.ctx.scroll();
-    const entry = sessionEntry(url, mode === 'replace' ? old.key : undefined);
+    const entry = sessionEntry(
+      url,
+      mode === 'replace' ? old.key : undefined,
+      old.doc,
+    );
     entry.state = state;
     entry.navState = navState;
     let dropped: SessionEntry[];
@@ -30820,8 +31167,10 @@ export function installDom(
       /** A form's submission: another document whatever its URL, with
        *  what a POST sends. */
       form?: { formData: Any };
+      /** A download hyperlink's filename (`NavigateEvent.downloadRequest`). */
+      downloadRequest?: string;
     } = {},
-  ): 'same' | 'canceled' | 'other' => {
+  ): 'same' | 'canceled' | 'other' | 'download' => {
     // a document that is unloading, or gone, goes nowhere, and tells no
     // `navigate` of it (HTML 7.4.2.2, "navigate")
     if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'canceled';
@@ -30830,11 +31179,17 @@ export function installDom(
     // a fragment is a fragment navigation as a link's is (HTML 7.4.2.2,
     // "navigate": no document resource); a POST is another document
     const fragment = !options.form?.formData && fragmentOf(from, url);
+    // a download is never a same-document navigation (HTML, "fire a
+    // download request `navigate` event")
+    const downloading = options.downloadRequest !== undefined;
     // a fragment navigation no `navigate()` started — `location`'s, a
     // link's — keeps the Navigation API state the entry it leaves has
     // (HTML 7.4.2.2, "navigate": a null state is the active entry's)
     const navState =
-      fragment && !options.tracker && options.navState === undefined
+      fragment &&
+      !downloading &&
+      !options.tracker &&
+      options.navState === undefined
         ? currentOf(s).navState
         : options.navState;
     // what the navigation is, which a precommit handler's `redirect()` may
@@ -30847,8 +31202,9 @@ export function installDom(
       tracker: options.tracker,
       userInitiated: options.userInitiated,
       sourceElement: options.sourceElement,
-      sameDocument: fragment,
+      sameDocument: downloading ? false : fragment,
       formData: options.form?.formData,
+      downloadRequest: downloading ? options.downloadRequest! : null,
     };
     const went = navigateWith(s, params, (intercepted) => {
       const to = params.url;
@@ -30856,15 +31212,22 @@ export function installDom(
       commitEntry(s, to, how, null, params.navState, how);
       // a page's handler has it, which scrolls where it ends, and an
       // intercepted navigation is no fragment's to tell `hashchange` of
-      if (fragment && !intercepted) {
+      if (fragment && !downloading && !intercepted) {
         scrollToFragment(s.ctx.doc(), to);
         queueHashChange(s, from, to);
       }
       // the host hears of a fragment as it did, once it is the document's
-      if (fragment && fragmentOf(from, to) && s.ctx.tellsFragments) {
+      if (
+        fragment &&
+        !downloading &&
+        fragmentOf(from, to) &&
+        s.ctx.tellsFragments
+      ) {
         return () => s.ctx.away(to, how === 'replace');
       }
     });
+    // a download the page did not intercept: the caller saves it
+    if (went === 'download') return 'download';
     // another document unloads this one, which is asked first, after its
     // `navigate` (HTML 7.4.2.2, "navigate"), and may stay where a prompt
     // says so
@@ -30925,14 +31288,43 @@ export function installDom(
     return str(link.getAttribute('referrerpolicy') ?? '');
   };
 
+  /** The session of the document an element is in: a frame's own, or the
+   *  page's. A click the parent fires on a frame's link still navigates
+   *  that frame (HTML, "follow the hyperlink"). */
+  const sessionOfElement = (el: Any): Session => {
+    const doc = el?.ownerDocument;
+    if (doc && doc !== document) {
+      const made = frameSessions.get(doc);
+      if (made?.session) return made.session as Session;
+    }
+    return pageSession.session;
+  };
+
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
     if (!anchor.hasAttribute('href')) return true;
-    if (anchor.hasAttribute('download')) return !downloadLink(anchor);
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
         ? new URL((anchor as Any).href.baseVal, str(document.baseURI)).href
         : anchor.href;
+    // a download fires `navigate` with `downloadRequest` first (HTML,
+    // "download the hyperlink"); only then, where the page did not keep
+    // it, the host saves the file and the ongoing navigation is aborted
+    if (anchor.hasAttribute('download')) {
+      const s = sessionOfElement(anchor);
+      const href = address();
+      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+        userInitiated,
+        sourceElement: anchor,
+        downloadRequest: str(anchor.getAttribute('download') ?? ''),
+      });
+      if (went === 'download') {
+        // inform the navigation API about aborting, then save
+        abortOngoing(s);
+        downloadLink(anchor);
+      }
+      return false;
+    }
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
@@ -30960,12 +31352,12 @@ export function installDom(
       );
       return false;
     }
-    const s = pageSession.session;
+    const s = sessionOfElement(anchor);
     const href = address();
     const went = navigateTo(s, href, pushOrReplace(s, href, false), {
       userInitiated,
       sourceElement: anchor,
-      hostFollows: true,
+      hostFollows: s === pageSession.session,
     });
     return went === 'other';
   };
@@ -31610,10 +32002,11 @@ export function installDom(
   ): { session: Session; history: Any; navigation: Any } => {
     const s: Session = {
       ctx,
-      entries: [sessionEntry(ctx.url())],
+      entries: [sessionEntry(ctx.url(), undefined, 0)],
       index: 0,
       ongoing: null,
       restoration: 'auto',
+      focusChanged: false,
       transition: null,
       activation: null,
       navigation: null,
@@ -35181,6 +35574,7 @@ export function installDom(
     NavigationActivation,
     NavigationPrecommitController,
     ToggleEvent,
+    SnapEvent,
     AnimationPlaybackEvent,
     AnimationEffect,
     KeyframeEffect,
@@ -37045,6 +37439,11 @@ export function installDom(
           trusted(new Event('reset', { bubbles: true, cancelable: true })),
         );
       case 'focusin': {
+        // a press or a widget that moved the focus during a navigation
+        // (HTML's focus update steps set the flag)
+        if (pageSession.session.ongoing) {
+          pageSession.session.focusChanged = true;
+        }
         dispatch(
           target,
           trusted(new FocusEvent('focus', { relatedTarget: related })),
@@ -37703,6 +38102,38 @@ export function installDom(
     else doc._unloaded = true;
     return true;
   });
+  // a frame's document the host put in with no realm of its own: make its
+  // window and session now, so a navigation that replaces it — a parent
+  // setting `src`, before any script read `contentWindow` — keeps the
+  // entries of the history the next document shows
+  entry('__ensureFrameSession', () => {
+    const [id] = input();
+    const frame = wrap(id);
+    if (!frame) return false;
+    const doc = frameDocumentOf(frame);
+    if (!doc) return false;
+    void frameWindowOf(doc, frame).navigation;
+    return true;
+  });
+  // the frame went to another origin: drop the window and session this
+  // realm kept, so a later same-origin document is not contiguous with
+  // the entries from before the gap (HTML, `navigation.entries()`). The
+  // WindowProxy stays — it is the frame element's for as long as the
+  // element is (HTML 7.2.3), including across origins.
+  entry('__forgetFrameWindow', () => {
+    const [id] = input();
+    const frame = wrap(id);
+    if (!frame) return false;
+    const last = keptFrameWindows.get(frame);
+    if (last) {
+      frameWindows.delete(last.doc);
+      frameSessions.delete(last.doc);
+      frameTargets.delete(last.doc);
+      keptFrameWindows.delete(frame);
+    }
+    frameLocations.delete(frame);
+    return true;
+  });
 
   // a script of a frame's document, the page's own origin's: run here, in
   // the page's realm, with the frame's window and document for the names a
@@ -38127,6 +38558,22 @@ export function installDom(
       if (frameCallbacks.size || renderingOwed) wantFrame();
     }
     const ev = new Event(String(type));
+    ev.isTrusted = true;
+    return dispatch(target, ev);
+  });
+
+  // a snap container's snap targets changed, or are about to (CSS Scroll
+  // Snap 2, 6.1): at the element, and the viewport's at the document,
+  // which alone bubbles; neither is cancelable
+  entry('__snapEvent', () => {
+    const [id, type, block, inline] = input();
+    const target = id ? wrap(id) : document;
+    if (!target) return false;
+    const ev = new SnapEvent(String(type), {
+      bubbles: target === document,
+      snapTargetBlock: block ? wrap(block) : null,
+      snapTargetInline: inline ? wrap(inline) : null,
+    });
     ev.isTrusted = true;
     return dispatch(target, ev);
   });

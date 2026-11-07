@@ -52,6 +52,11 @@ export interface Snapped {
   y: number;
   targetX: Box | null;
   targetY: Box | null;
+  /** Every area that lined up on each axis where one was chosen, which a
+   *  re-snap after a layout chooses among again: the one focused since,
+   *  say. */
+  alignedX?: readonly Box[];
+  alignedY?: readonly Box[];
 }
 
 /**
@@ -386,9 +391,11 @@ function snapEach(
     if (axis === 'x') {
       out.x = tie.at;
       out.targetX = lists.x![0];
+      out.alignedX = tie.boxes;
     } else {
       out.y = tie.at;
       out.targetY = lists.y![0];
+      out.alignedY = tie.boxes;
     }
   }
   return out;
@@ -550,6 +557,25 @@ export function lineUp(
   return out;
 }
 
+/** Every area that lines up at `at` on an axis, shown in the snapport
+ *  across it at `across`: what a re-snap that lands there chooses among
+ *  the next time. */
+function alignedAt(
+  c: SnapContainer,
+  axis: Axis,
+  at: number,
+  across: number,
+): Box[] {
+  const out: Box[] = [];
+  for (const area of c.areas) {
+    const place = placeOf(c, area, axis);
+    if (!place || place.to > place.at) continue;
+    if (Math.abs(place.at - at) > 0.5) continue;
+    if (visibleAcross(c, area, axis, across)) out.push(area.box);
+  }
+  return out;
+}
+
 /**
  * Where a container that was snapped to an area comes to rest after a
  * layout ("re-snapping after layout changes"): lined up with that area
@@ -566,39 +592,84 @@ export function resnap(
   c: SnapContainer,
   x: number,
   y: number,
-  targets: { x: Box | null; y: Box | null },
+  targets: {
+    x: Box | null;
+    y: Box | null;
+    /** Every area that lined up on each axis with the one chosen, of
+     *  which the re-snap keeps the one a snap prefers now. */
+    xs?: readonly Box[];
+    ys?: readonly Box[];
+    /** Whether the focus moved since it was snapped: only then does the
+     *  focused area win over the one it was snapped to. */
+    focusMoved?: boolean;
+  },
 ): Snapped {
   const fresh = snapTo(c, x, y);
   const out: Snapped = { ...fresh };
   const kept: { x: SnapArea | null; y: SnapArea | null } = { x: null, y: null };
+  const lists: Partial<Record<Axis, Box[]>> = {};
   for (const axis of AXES) {
     if (!snapsOn(c.style, axis)) continue;
-    const target = axis === 'x' ? targets.x : targets.y;
-    const area = target && c.areas.find((a) => a.box === target);
-    // one the snapport no longer shows across the axis is none
-    if (!area || !visibleAcross(c, area, axis, axis === 'x' ? y : x)) continue;
-    const place = placeOf(c, area, axis);
-    if (!place) continue;
     const here = axis === 'x' ? x : y;
-    // a covering area another now intrudes on where the container is no
-    // longer holds it there: it comes to rest where a snap would
-    if (
-      place.to > place.at &&
-      here > place.at - 0.5 &&
-      here < place.to + 0.5 &&
-      Math.abs(nearestCovering(c, area, place, axis, here, c.areas) - here) >
-        0.5
-    ) {
-      continue;
-    }
+    // of the areas that lined up, those still areas there, the snapport
+    // showing them across the axis, which a covering area another now
+    // intrudes on where the container is is not: it comes to rest where a
+    // snap would
+    const valid = (box: Box | null): boolean => {
+      const area = box && c.areas.find((a) => a.box === box);
+      if (!area || !visibleAcross(c, area, axis, axis === 'x' ? y : x)) {
+        return false;
+      }
+      const place = placeOf(c, area, axis);
+      if (!place) return false;
+      return !(
+        place.to > place.at &&
+        here > place.at - 0.5 &&
+        here < place.to + 0.5 &&
+        Math.abs(nearestCovering(c, area, place, axis, here, c.areas) - here) >
+          0.5
+      );
+    };
+    const one = axis === 'x' ? targets.x : targets.y;
+    const all = (axis === 'x' ? targets.xs : targets.ys) ?? [one];
+    const still = all.filter((b): b is Box => valid(b));
+    if (still.length) lists[axis] = still;
+  }
+  // the ones a snap prefers among them as they are now — the focused one
+  // where the focus moved to another since (CSS Scroll Snap 1,
+  // "re-snapping after layout changes") — and of those, one both axes
+  // share, as `snapEach` chooses; else the one it chose before
+  for (const axis of AXES) {
+    const list = lists[axis];
+    if (!list || list.length < 2) continue;
+    const one = axis === 'x' ? targets.x : targets.y;
+    const moved =
+      (targets.focusMoved !== false && c.focused && list.some(c.focused)) ||
+      (c.targeted && list.some(c.targeted));
+    lists[axis] =
+      moved || !one || !list.includes(one) ? preferred(c, list) : [one];
+  }
+  if (lists.x && lists.y && lists.x[0] !== lists.y[0]) {
+    const both = lists.x.filter((b) => lists.y!.includes(b));
+    if (both.length) lists.x = lists.y = both;
+  }
+  for (const axis of AXES) {
+    const target = lists[axis]?.[0] ?? null;
+    const area = target && c.areas.find((a) => a.box === target);
+    if (!area) continue;
+    const here = axis === 'x' ? x : y;
+    const place = placeOf(c, area, axis)!;
     kept[axis] = area;
     const at = nearestIn(here, place);
+    // and what lined up with it, for the next
     if (axis === 'x') {
       out.x = at;
       out.targetX = target;
+      out.alignedX = alignedAt(c, 'x', at, y);
     } else {
       out.y = at;
       out.targetY = target;
+      out.alignedY = alignedAt(c, 'y', at, x);
     }
   }
   const kx = kept.x;

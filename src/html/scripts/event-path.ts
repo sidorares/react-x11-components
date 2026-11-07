@@ -35,7 +35,7 @@ export function shadowIncludingHolds(
 }
 
 /** DOM 4.2.2.2, "retarget `a` against `b`". */
-function retarget(a: AnyNode | null, b: AnyNode): AnyNode | null {
+export function retarget(a: AnyNode | null, b: AnyNode): AnyNode | null {
   let at = a;
   while (at) {
     const root = rootOf(at);

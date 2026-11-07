@@ -2057,6 +2057,10 @@ export function layoutDocument(
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
   let bottom = Math.max(flowBottom, reach);
+  // and how far across a positioned box no box clips reaches, which the
+  // ink of a box that clips what it holds leaves out where it is
+  // positioned against something outside that box
+  let positionedRight = -Infinity;
   let fixed: Box[] | null = null;
   // and the ones in the blocks it kept, which no box fixed to the viewport
   // is among (`reuseBlockers`)
@@ -2070,6 +2074,7 @@ export function layoutDocument(
       continue;
     }
     if (clipsFor(box, root).length) continue;
+    positionedRight = Math.max(positionedRight, box.x + box.width);
     // and what it holds, where it does not clip it: a page set in an
     // absolute wrapper 497px tall runs on below it, and the document with
     // it — design 094 was a window tall and no taller, its text past the
@@ -2091,8 +2096,8 @@ export function layoutDocument(
   // and the document is as wide as the window and what spills past its left
   const width = viewportStartsRight(root)
     ? viewportWidth + spill
-    : inkRight > viewportWidth + 0.5
-      ? Math.max(viewportWidth, viewportReach(root).right)
+    : inkRight > viewportWidth + 0.5 || positionedRight > viewportWidth + 0.5
+      ? Math.max(viewportWidth, viewportReach(root).right, positionedRight)
       : viewportWidth;
   return {
     width,
@@ -4285,6 +4290,16 @@ function layoutFramed(box: Box, frame: Box, ctx: LayoutContext): void {
     moveTo(frame, box.contentX, box.contentY + box.contentHeight);
   } else moveTo(frame, box.contentX + room, box.contentY);
   if (reflects(mode)) reflectFrame(frame, room, translate, moveLine);
+  // top-layer siblings left on the root outside the frame (`makeFrame`):
+  // a `::view-transition` is against the viewport in the page's axes
+  for (const child of box.children) {
+    if (child === frame || (!child.outOfFlow && !child.topLayer)) continue;
+    placeStatic(child, box, box.contentX, box.contentWidth, box.contentY);
+    ctx.positioned.push({
+      box: child,
+      containing: containingBlockFor(child) ?? box,
+    });
+  }
 }
 
 /** Lay a frame out at its corner at an inline size, a percentage height in

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.39.0](https://github.com/sidorares/react-x11-components/compare/v0.38.0...v0.39.0) (2026-11-06)
+
+
+### Features
+
+* **html:** a snap container tells scrollsnapchanging and scrollsnapchange with the areas it snaps to ([#1369](https://github.com/sidorares/react-x11-components/issues/1369)) ([b740243](https://github.com/sidorares/react-x11-components/commit/b74024351f09334b54f527a60565e1c705a0f60d))
+
+
+### Bug Fixes
+
+* **html:** a multicol container in a vertical writing mode sets its columns in its frame ([#1370](https://github.com/sidorares/react-x11-components/issues/1370)) ([fe99884](https://github.com/sidorares/react-x11-components/commit/fe998848b93b37429fa5934176700d5016c94043))
+* **html:** a named timeline is never one a removed element declared ([#1352](https://github.com/sidorares/react-x11-components/issues/1352)) ([8406e21](https://github.com/sidorares/react-x11-components/commit/8406e21d84a5609e26d93710cdd1ff73b7940525))
+* **html:** a page reads the viewport where its scroll asked it to go before the pane takes it, and the viewport reaches as far as what is positioned out of the flow ([#1364](https://github.com/sidorares/react-x11-components/issues/1364)) ([ffade0f](https://github.com/sidorares/react-x11-components/commit/ffade0f36e0ed44e0123be05500447affd073d62))
+* **html:** a page's rangeStart and rangeEnd on a CSS animation stand over its animation-range, and a held one reads its range and timing as the cascade has them, where both changed only the realm's copy ([#1367](https://github.com/sidorares/react-x11-components/issues/1367)) ([e7e7783](https://github.com/sidorares/react-x11-components/commit/e7e7783addca0f7226019ea270b91d0f790ac007))
+* **html:** a positioned box whose containing block is in a multicol container's columns is laid out unbroken and cut into them, and sees its anchor there unbroken ([#1353](https://github.com/sidorares/react-x11-components/issues/1353)) ([d6c134f](https://github.com/sidorares/react-x11-components/commit/d6c134f80b9d9b2ada893a0eb8da60c047dd286a))
+* **html:** a pseudo-element's own scroll() and view() are from its box, a named timeline one declares is found, and a view timeline is active in a scroller that scrolls nothing its way ([#1365](https://github.com/sidorares/react-x11-components/issues/1365)) ([5d6a715](https://github.com/sidorares/react-x11-components/commit/5d6a715b76b65707a36fd9c90d4606658604ef34))
+* **html:** a re-snap after a layout keeps every area that lined up, and the focused one where the focus moved to it since ([#1372](https://github.com/sidorares/react-x11-components/issues/1372)) ([7d11f49](https://github.com/sidorares/react-x11-components/commit/7d11f49ee6b175b470becfba66ebd47155894d60))
+* **html:** a scroll into view lines up the element outset by its scroll-margin in the scrollport inset by scroll-padding ([#1359](https://github.com/sidorares/react-x11-components/issues/1359)) ([ec28446](https://github.com/sidorares/react-x11-components/commit/ec284464b17ccf2d8591f5733498cea1952e9ffc))
+* **html:** a snap container lines an area up at the start of its own flow, block and inline by its writing mode, and an area in a vertical frame where the page draws it ([#1357](https://github.com/sidorares/react-x11-components/issues/1357)) ([3932419](https://github.com/sidorares/react-x11-components/commit/39324196748d7ab565a6099a97bbcacf8d1cae84))
+* **html:** a view timeline on an inline box is where its fragments are, and a sticky inline box around its subject holds it ([#1361](https://github.com/sidorares/react-x11-components/issues/1361)) ([fd416de](https://github.com/sidorares/react-x11-components/commit/fd416de42fc6b627648a4577128dcaf7b1ab1be6))
+* **html:** a view timeline places its subject where layout put it, with no transform on it or between it and its scroller, where a translate moved its range ([#1354](https://github.com/sidorares/react-x11-components/issues/1354)) ([e45275b](https://github.com/sidorares/react-x11-components/commit/e45275b7839c5507d3a2181fa8f8eb7ab98c6cad))
+* **html:** a view timeline's ranges follow its subject as the sticky boxes it is in hold it and let it go, where they took in the most a box could hold it ([#1360](https://github.com/sidorares/react-x11-components/issues/1360)) ([d5b5306](https://github.com/sidorares/react-x11-components/commit/d5b5306557887c334d27183bb7d30fb3c1555c10))
+* **html:** a view transition captures an inline element by its fragments and alone, where it took the line's box and left the element in the block around it ([#1373](https://github.com/sidorares/react-x11-components/issues/1373)) ([ba8ba15](https://github.com/sidorares/react-x11-components/commit/ba8ba157097fb644e41406722dc51f5dfc2ba45f))
+* **html:** an anonymous scroll() or view() is a timeline of the nearest scroll container in its subject's containing block chain ([#1363](https://github.com/sidorares/react-x11-components/issues/1363)) ([d56824f](https://github.com/sidorares/react-x11-components/commit/d56824f0617dad1df7d2b7fc010f9436275b422b))
+* **html:** an area larger than the snapport is no snap position where another area intrudes at the snapport's start ([#1366](https://github.com/sidorares/react-x11-components/issues/1366)) ([2631d55](https://github.com/sidorares/react-x11-components/commit/2631d556c09bb2be3031e8681f3fa6a0fd9f0910))
+* **html:** anchor-valid hides what refers to a missing default anchor, no-overflow needs no anchor, match-parent, and anchors scoped by display: contents or inside an inline containing block ([#1362](https://github.com/sidorares/react-x11-components/issues/1362)) ([0b8b148](https://github.com/sidorares/react-x11-components/commit/0b8b148d3075f360dcf465f2bfeff4063522e5a3))
+* **html:** anchored() queries match where a position-area is on the page, with any ([#1374](https://github.com/sidorares/react-x11-components/issues/1374)) ([875f94b](https://github.com/sidorares/react-x11-components/commit/875f94bb21300c3fe5f4a5baffa0a879f7dfd672))
+* **html:** display runs with allow-discrete as an element goes to none, and a ::backdrop's computed style is read ([#1371](https://github.com/sidorares/react-x11-components/issues/1371)) ([e342cec](https://github.com/sidorares/react-x11-components/commit/e342cecdc85c2dc7f9bc37c06d3891981d9c666a))
+* **html:** el.style takes scroll snapping's values as their grammars do, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin ([#1356](https://github.com/sidorares/react-x11-components/issues/1356)) ([e2436b3](https://github.com/sidorares/react-x11-components/commit/e2436b37f3d20c1144a77dbb3fa8f9c589b89b74))
+* **html:** scroll compensation by axis, and a scroll container in a vertical writing mode scrolled in the page's axes ([#1368](https://github.com/sidorares/react-x11-components/issues/1368)) ([d5e25fc](https://github.com/sidorares/react-x11-components/commit/d5e25fca175c0a97f0e55ee6656ada90d4cdede1))
+* **html:** what a page reads back of an anchored box — position-visibility's names, auto insets an area places, insets in columns, a disabled sheet, a shadow root's sheets ([#1358](https://github.com/sidorares/react-x11-components/issues/1358)) ([5c0e8f6](https://github.com/sidorares/react-x11-components/commit/5c0e8f6a72b787c72f505c7fe45b9ecdfa53f2ed))
+
 ## [0.38.0](https://github.com/sidorares/react-x11-components/compare/v0.37.0...v0.38.0) (2026-11-06)
 
 

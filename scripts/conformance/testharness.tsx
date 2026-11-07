@@ -31,7 +31,7 @@
 //   `history` past its document's entries, `reload()` — load into the place
 //   the test was shown, each document the next of one session history a
 //   test (`HtmlSessionHistory`), as a browser's tab holds them. A frame's
-//   are the engine's, and a link or a form activated in the test's window
+//   documents share one session of their own across loads, and a link or a form activated in the test's window
 //   goes nowhere, as before: a test that left its own window would end its
 //   harness, and a script's `a.click()` in a frame's document reaches
 //   `onLink` with no point to tell it by.

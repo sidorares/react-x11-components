@@ -133,7 +133,7 @@ import {
   transitionSelectorValid,
   withoutHighlights,
 } from '../css/specified.js';
-import { eventPath, shadowIncludingHolds } from './event-path.js';
+import { eventPath, retarget, shadowIncludingHolds } from './event-path.js';
 import { NO_MODIFIERS } from '../dom-events.js';
 import {
   Cascade,
@@ -676,6 +676,9 @@ export interface HandleInternals {
   /** And its timing, as a page's `updateTiming()` set it on its effect: a
    *  JSON object of what it set (`HtmlViewNode.timeAnimation`). */
   timeAnimation(key: number, timing: string): void;
+  /** And an end of its range, as a page's `rangeStart` or `rangeEnd` set
+   *  it (`HtmlViewNode.rangeAnimation`). */
+  rangeAnimation(key: number, end: boolean, edge: string): void;
   /** And one on a scroll's timeline, held, run from a start time or
    *  aligned to its range (`HtmlViewNode.seekScrolled`). */
   seekScrolled(
@@ -773,6 +776,17 @@ export interface HandleInternals {
    *  element, or a box between them, is positioned against something
    *  outside it (`HtmlViewNode.scrollMoves`). */
   scrollMoves(scroller: Element, element: Element): boolean;
+  /** A snap container's snap targets, the viewport's for null, where they
+   *  are other than its `kind` of snap event last told
+   *  (`HtmlViewNode.snapChanged`). */
+  snapChanged?(
+    element: Element | null,
+    kind: 'change' | 'changing',
+  ): { block: Element | null; inline: Element | null } | null;
+  /** An element's `scroll-margin` and a scroll container's
+   *  `scroll-padding`, the viewport's for null, top first, in CSS pixels
+   *  (`HtmlViewNode.scrollInsets`). */
+  scrollInsets?(element: Element, scroller: Element | null): number[];
   /** What a page's `MediaSource` came to, for its element's player to
    *  play, or null for none any more: a file of a clip (`clips.ts`), or the
    *  URL of a feed (`feeds.ts`), whose player says what it does
@@ -2916,8 +2930,34 @@ export class DomHost {
   elementsScrolled(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'changing');
       this.entries.call('__fire', [this.idOf(el), 'scroll']);
     }
+  }
+
+  /**
+   * A snap container's `scrollsnapchanging`, as it scrolls, or its
+   * `scrollsnapchange`, before its `scrollend` (CSS Scroll Snap 2, 6.1),
+   * where its snap targets are other than that event last told: at the
+   * element, and the viewport's, for null, at the document.
+   */
+  snapEvent(el: Element | null, kind: 'change' | 'changing'): void {
+    if (this._disposed || !this.entries) return;
+    const told = this._seams.handle.snapChanged?.(el, kind);
+    if (!told) return;
+    // a target in a shadow tree the container is not in is told as the
+    // host it is in, as an event's target is retargeted (DOM 4.2.2.2)
+    const at = el ?? this.document;
+    const idOf = (t: Element | null) => {
+      const node = t && retarget(t, at);
+      return node ? this.idOf(node) : 0;
+    };
+    this.entries.call('__snapEvent', [
+      el ? this.idOf(el) : 0,
+      kind === 'change' ? 'scrollsnapchange' : 'scrollsnapchanging',
+      idOf(told.block),
+      idOf(told.inline),
+    ]);
   }
 
   /** The document's CSS transitions owe these events: `transitionrun`,
@@ -2970,6 +3010,7 @@ export class DomHost {
   elementsScrolledEnd(elements: Iterable<Element>): void {
     if (this._disposed || !this.entries) return;
     for (const el of elements) {
+      this.snapEvent(el, 'change');
       this.entries.call('__fire', [this.idOf(el), 'scrollend']);
     }
   }
@@ -5086,6 +5127,14 @@ export class DomHost {
       // whether a scroll container's scroll moves an element, which it
       // does not for one positioned against something outside it
       // (`scrollIntoView`)
+      case 'scrollInsets':
+        this.flush();
+        return (
+          this._seams.handle.scrollInsets?.(
+            this._element(a),
+            typeof b === 'number' ? this._element(b) : null,
+          ) ?? [0, 0, 0, 0, 0, 0, 0, 0]
+        ).join(',');
       case 'scrollMoves':
         this.flush();
         return (
@@ -5546,6 +5595,10 @@ export class DomHost {
       // a page's `updateTiming()` on a CSS animation's effect
       case 'timeAnimation':
         this._seams.handle.timeAnimation?.(Number(a), String(b));
+        return null;
+      // and its `rangeStart` or `rangeEnd`
+      case 'rangeAnimation':
+        this._seams.handle.rangeAnimation?.(Number(a), b === true, String(c));
         return null;
       case 'seekAnimation':
         this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
@@ -7698,6 +7751,13 @@ export class DomHost {
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
     const foreign = !!src && !blob && !this._sameOrigin(src);
+    // a cross-origin document breaks the contiguous same-origin joint the
+    // Navigation API shows: forget the window and session this realm kept
+    // for the frame, so a later same-origin document starts a history of
+    // its own rather than pushing past the gap
+    if (foreign && navigated && this.entries) {
+      this.entries.call('__forgetFrameWindow', [this.idOf(frame)]);
+    }
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
@@ -7711,6 +7771,11 @@ export class DomHost {
         this._unloadFrameDocument(frame);
         if (src) this._frameAt.set(frame, src);
         else this._blankFrame(frame);
+        // the navigated blank's session, as a fetched document's is: a
+        // push onto the frame's history where one was already showing
+        if (!src && this.entries && this._loadsFrame(frame)) {
+          this.entries.call('__ensureFrameSession', [this.idOf(frame)]);
+        }
         loaded();
       }, 0);
       return;
@@ -8036,6 +8101,11 @@ export class DomHost {
       // told as the realm is linked to this one, an entry of the page's
       if (scripted) this._goLive(doc);
       return;
+    }
+    // its window and session, before any script reads `contentWindow`, so
+    // a parent setting `src` next still pushes onto this document's history
+    if (this.entries && this._loadsFrame(frame)) {
+      this.entries.call('__ensureFrameSession', [this.idOf(frame)]);
     }
     if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {

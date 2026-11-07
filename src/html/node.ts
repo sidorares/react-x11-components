@@ -181,6 +181,7 @@ import {
   viewEdgeAt,
 } from './css/triggers.js';
 import type {
+  RangeEdge,
   RangeName,
   StickyLimit,
   TimelineTrigger,
@@ -307,14 +308,18 @@ import {
 } from './layout/block.js';
 import type { PlacedTransition } from './layout/block.js';
 import {
+  FRAME_ROOTS,
+  FRAMES,
   frameModeOf,
   frameOf as frameOfBox,
+  frameRectOf,
   onPage,
   pageMargins,
   pageSides,
 } from './layout/writing.js';
 import {
   endOrigins,
+  escapes,
   isScroller,
   scrollBarHit,
   scrollBarsOf,
@@ -6420,7 +6425,6 @@ export class HtmlViewNode extends Node {
     if (want <= reaches + 0.5) return;
     this._heldScrollX = want / pane.scale;
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = false;
     this.invalidate(false, this, 'paint');
   }
 
@@ -6472,19 +6476,27 @@ export class HtmlViewNode extends Node {
    *  scrolled by something else — the wheel, a smooth scroll core runs —
    *  and the hold is over (`heldScrollX`). */
   private _heldFrom = 0;
-  /** Whether the scroll held is the viewport's origin, which a page reads
-   *  as where the pane is (`pageScrollX`); a page's own `scrollTo` held is
-   *  read where the pane is until it takes it. */
-  private _heldOrigin = false;
 
   /**
-   * `heldScrollX` where what is held is the viewport's scroll origin, a page
-   * starting there or kept there as what spills past its left grows: a page
-   * reads the pane there, and has its rectangles measured from there, from
-   * its first script, as a browser starts it there. Null otherwise.
+   * `heldScrollX`, read by a page: the viewport's scroll origin, a page
+   * starting there or kept there as what spills past its left grows, and a
+   * page's own `scrollTo` across that the pane cannot take yet — where a
+   * browser has the viewport already, so a page reads it there and has its
+   * rectangles measured from there. Null where none is held.
    */
   pageScrollX(): number | null {
-    return this._heldOrigin ? this.heldScrollX() : null;
+    return this.heldScrollX();
+  }
+
+  /**
+   * Where the pane is down, in device pixels, where a page's scroll down is
+   * held for the pane's next pass (`oweScrollDown`): where it is about to
+   * be, which a browser has it at already, so a page that scrolls the
+   * viewport as it loads reads back where it went, and not the top. Null
+   * where none is held.
+   */
+  pageScrollY(): number | null {
+    return this._heldDown();
   }
 
   /** Hand the pane the scroll across a page asked for before it reached
@@ -6539,7 +6551,6 @@ export class HtmlViewNode extends Node {
     const from = pane.scrollX - was;
     this._heldScrollX = (from + origin) / (pane.scale || 1);
     this._heldFrom = pane.scrollX;
-    this._heldOrigin = true;
     this.invalidate(false, this, 'paint');
   }
 
@@ -8058,9 +8069,15 @@ export class HtmlViewNode extends Node {
       // an element's in the top layer, before its box: placed by a position
       // option, it has the option's style (CSS Anchor Positioning 1, 6.2)
       const backdrop = this._backdropOf(tree, element);
-      if (!backdrop) return null;
-      const read = this._placedStyle(backdrop) ?? backdrop.style;
-      return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
+      if (backdrop) {
+        const read = this._placedStyle(backdrop) ?? backdrop.style;
+        return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
+      }
+      // and one of an element in no top layer has the style it would be
+      // made with all the same, inheriting from its element, as Chrome
+      // answers for it: a page reads an `attr()` the element sets through it
+      const own = cascade.backdropStyleFor(element, style);
+      return cssomStyle(own, this._scale, null, computed, true);
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);
@@ -11044,6 +11061,41 @@ export class HtmlViewNode extends Node {
     if (this._timeline.timeAnimation(key, over)) this._scheduleFrame();
   }
 
+  /**
+   * A page's `rangeStart` or `rangeEnd` on a CSS animation (CSS Animations
+   * 2, 4.2): it stands over that end of its `animation-range` from then on
+   * (`AnimationTimeline.rangeAnimation`). `json` is the edge as the page
+   * has it — `"normal"`, or a range's name, null for none, and its offset
+   * as a percentage and CSS pixels added to it.
+   */
+  rangeAnimation(key: number, end: boolean, json: string): void {
+    if (!this._animating()) return;
+    let given: unknown;
+    try {
+      given = JSON.parse(json);
+    } catch {
+      return;
+    }
+    let edge: RangeEdge;
+    if (given === 'normal') edge = end ? RANGE_END : RANGE_START;
+    else if (given && typeof given === 'object') {
+      const { name, pct, px } = given as {
+        name?: unknown;
+        pct?: unknown;
+        px?: unknown;
+      };
+      const p = typeof pct === 'number' && Number.isFinite(pct) ? pct : 0;
+      const x =
+        typeof px === 'number' && Number.isFinite(px) ? px * this._scale : 0;
+      edge = {
+        name: typeof name === 'string' ? (name as RangeName) : null,
+        offset: p ? (x ? { pct: p, px: x } : { pct: p }) : x,
+      };
+    } else return;
+    this._timeline.now = animationClock.now();
+    if (this._timeline.rangeAnimation(key, end, edge)) this._scheduleFrame();
+  }
+
   /** And one on a scroll's timeline, whose time is a percentage of it:
    *  held at `time`, running from the start time `time`, or aligned to its
    *  range again, at `rate` (`AnimationTimeline.seekScrolled`). */
@@ -11074,7 +11126,7 @@ export class HtmlViewNode extends Node {
    */
   private _timelineProgress = (
     el: object,
-    _pseudo: string,
+    pseudo: string,
     ref: TimelineRef,
   ): ScrollProgress | null => {
     const tree = this._tree;
@@ -11083,6 +11135,10 @@ export class HtmlViewNode extends Node {
     let view: boolean;
     let axis: string;
     let scrollerKind: 'nearest' | 'root' | 'self' = 'nearest';
+    // the pseudo-element whose box it is from: the one animated, for its
+    // own `scroll()` and `view()`, or the one declaring a named one
+    let declaredBy: 'before' | 'after' | undefined =
+      pseudo === 'before' || pseudo === 'after' ? pseudo : undefined;
     let inset: readonly [Len, Len] = ['auto', 'auto'];
     if (ref.kind === 'scroll') {
       view = false;
@@ -11098,21 +11154,30 @@ export class HtmlViewNode extends Node {
         subject,
         ref.name,
         this._source.document,
+        this._pseudoStyleOf,
       );
       if (!named) return null;
       subject = named.el;
+      declaredBy = named.pseudo;
       view = named.view;
       axis = named.axis;
       inset = named.inset;
       scrollerKind = view ? 'nearest' : 'self';
     } else return null;
-    const box = this._firstBoxesOf(tree).get(subject);
+    // a `::before`'s or an `::after`'s own timeline is from its box, which
+    // is in the element's: `scroll(nearest)` on one in a scroll container
+    // is the container's
+    const box = declaredBy
+      ? this._pseudoBoxOf(tree, subject, declaredBy)
+      : this._firstBoxesOf(tree).get(subject);
     if (!box) return null;
     const source = this._timelineSource(box, scrollerKind, axis);
     if (!source) return null;
     const { scroller, down, reversed } = source;
     const port = this._scrollportOf(scroller, down);
-    if (!(port.max > 0)) return null;
+    // a scroll timeline of a scroller that scrolls nothing that way is
+    // inactive; a view timeline's subject still has a place in it
+    if (!view && !(port.max > 0)) return null;
     const edge = port.offset <= 0 || port.offset >= port.max - 1e-6;
     if (!view) {
       return {
@@ -11142,6 +11207,14 @@ export class HtmlViewNode extends Node {
       edgeAt: (e) => ((viewEdgeAt(e, place) - from) / (to - from)) * 100,
       view: true,
     };
+  };
+
+  /** An element's `::before`'s or `::after`'s style, where it has a box
+   *  (`namedTimeline`'s pseudo-elements). */
+  private _pseudoStyleOf: PseudoStyleOf = (el, which) => {
+    const tree = this._tree;
+    const box = tree ? this._pseudoBoxOf(tree, el, which) : null;
+    return box ? generatedStyle(box) : null;
   };
 
   /**
@@ -14141,6 +14214,63 @@ export class HtmlViewNode extends Node {
    * element before it scrolls it. False for an element with no box, and
    * for one that is no scroll container.
    */
+  /**
+   * What a scroll that brings an element into view lines up (CSSOM View 4,
+   * "determine the scroll-into-view position", by CSS Scroll Snap 1, 6): the
+   * element's border box outset by its `scroll-margin`, top, right, bottom
+   * and left, and the scrollport of `scroller` — the viewport where it is
+   * null — inset by its `scroll-padding`, `auto` being none, in CSS pixels.
+   */
+  scrollInsets(element: Element, scroller: Element | null): number[] {
+    this._prepare(this.abs.width || 1);
+    const s = this._scale;
+    const tree = this._tree;
+    const box = tree ? this._boxOf(tree, element) : null;
+    const st = box?.style ?? null;
+    const margins = st
+      ? [
+          st.scrollMarginTop,
+          st.scrollMarginRight,
+          st.scrollMarginBottom,
+          st.scrollMarginLeft,
+        ]
+      : [0, 0, 0, 0];
+    let port: Box | null = null;
+    let width = 0;
+    let height = 0;
+    if (scroller) {
+      port = this._scrollerOf(scroller);
+      if (port) {
+        const state = scrollStateOf(port);
+        width = state.clientWidth;
+        height = state.clientHeight;
+      }
+    } else {
+      port = this._rootBox();
+      const view = this._viewport();
+      width = view?.width ?? 0;
+      height = view?.height ?? 0;
+    }
+    // a box stuck in the container moves with its scroll, so no scroll
+    // takes it clear of the padding: it is lined up in the whole scrollport,
+    // as Chrome has it
+    for (let at = box; at && at !== port; at = at.parent) {
+      const stuck = at.style.position === 'sticky' ? STUCK.get(at) : null;
+      if (stuck && (stuck[0] || stuck[1]))
+        return [...margins, 0, 0, 0, 0].map((v) => v / s);
+    }
+    const ps = port?.style;
+    const pad = (len: Len | undefined, of: number) =>
+      len === undefined || len === AUTO ? 0 : Math.max(0, resolveLen(len, of));
+    const paddings = [
+      pad(ps?.scrollPaddingTop, height),
+      pad(ps?.scrollPaddingRight, width),
+      pad(ps?.scrollPaddingBottom, height),
+      pad(ps?.scrollPaddingLeft, width),
+    ];
+    return [...margins, ...paddings].map((v) => v / s);
+  }
+
   scrollMoves(scroller: Element, element: Element): boolean {
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
@@ -14220,10 +14350,7 @@ export class HtmlViewNode extends Node {
     const snap = box.style.scrollSnapType && this._snapContainerOf(box);
     if (snap && box.el) {
       const at = aim ? lineUp(snap, aim, x, y) : snapTo(snap, x, y, scroll);
-      this._snapped.set(box.el, {
-        x: snapKey(at.targetX),
-        y: snapKey(at.targetY),
-      });
+      this._snapped.set(box.el, snapKeysOf(at, this._focus.element ?? null));
       return at;
     }
     const lone = aim && this._snapContainerOf(box, aim);
@@ -14254,10 +14381,7 @@ export class HtmlViewNode extends Node {
 
   /** The area each snap container was last snapped to on each axis, by
    *  the container's element, and the viewport's by the document. */
-  private _snapped = new Map<
-    Element | Document,
-    { x: SnapKey | null; y: SnapKey | null }
-  >();
+  private _snapped = new Map<Element | Document, SnapKeys>();
 
   /** A scroll container's snap container: its snap areas, where each is
    *  at no scroll from its scrollport's corner, and its scrollport. With
@@ -14604,7 +14728,13 @@ export class HtmlViewNode extends Node {
           inset: ref.inset.map((v) => (v === 'auto' ? 'auto' : lenText(v))),
         };
       } else if (ref.kind === 'name') {
-        const named = namedTimeline(tree, el, ref.name, this._source.document);
+        const named = namedTimeline(
+          tree,
+          el,
+          ref.name,
+          this._source.document,
+          this._pseudoStyleOf,
+        );
         timeline = !named
           ? { kind: 'none' }
           : named.view
@@ -14646,11 +14776,13 @@ export class HtmlViewNode extends Node {
           : null),
         timeline,
         rangeStart: edgeText(
-          style.animationRangeStart[i % style.animationRangeStart.length],
+          a.run.range?.start ??
+            style.animationRangeStart[i % style.animationRangeStart.length],
           false,
         ),
         rangeEnd: edgeText(
-          style.animationRangeEnd[i % style.animationRangeEnd.length],
+          a.run.range?.end ??
+            style.animationRangeEnd[i % style.animationRangeEnd.length],
           true,
         ),
       });
@@ -14757,12 +14889,79 @@ export class HtmlViewNode extends Node {
     return lone ? lineUp(lone, aim, x, y) : { x, y };
   }
 
+  /**
+   * What a snap container's `scrollsnapchange` and `scrollsnapchanging` last
+   * told a page it was snapped to (CSS Scroll Snap 2, 6.1), by the
+   * container's element and the viewport's by the document: what it
+   * snapped to as it was first laid out where it was not told at all, so a
+   * scroll that comes back to it tells nothing.
+   */
+  private _snapTold = new Map<
+    Element | Document,
+    { change: string; changing: string }
+  >();
+
+  /** A container's snap targets as an event tells them, the block axis's
+   *  element and the inline axis's — the area's element for a
+   *  pseudo-element's — and their key, which `_snapTold` compares. */
+  private _snapTargets(of: Element | Document): {
+    block: Element | null;
+    inline: Element | null;
+    key: string;
+  } {
+    const keys = this._snapped.get(of);
+    const style =
+      of === this._source.document
+        ? this._rootBox()?.style
+        : this._scrollerOf(of as Element)?.style;
+    const vertical = !!style && style.writingMode !== 'horizontal-tb';
+    const block = (vertical ? keys?.x : keys?.y)?.el ?? null;
+    const inline = (vertical ? keys?.y : keys?.x)?.el ?? null;
+    const id = (el: Element | null) => (el ? this._snapIds.get(el) : 0);
+    for (const el of [block, inline]) {
+      if (el && !this._snapIds.has(el)) {
+        this._snapIds.set(el, ++this._snapIdNext);
+      }
+    }
+    return { block, inline, key: `${id(block)},${id(inline)}` };
+  }
+  /** A number for each element a snap event has named, for its key. */
+  private _snapIds = new WeakMap<Element, number>();
+  private _snapIdNext = 0;
+
+  /** Note a container's snap as told, where nothing was: the snap a layout
+   *  made of one no script had scrolled. */
+  private _seedSnapTold(of: Element | Document): void {
+    if (this._snapTold.has(of)) return;
+    const { key } = this._snapTargets(of);
+    this._snapTold.set(of, { change: key, changing: key });
+  }
+
+  /**
+   * Whether a snap container's targets are other than its `kind` of event
+   * last told — the element's, or the viewport's for null — and so what to
+   * tell now: the block axis's element and the inline axis's. Notes them as
+   * told. Null where they are what was told.
+   */
+  snapChanged(
+    element: Element | null,
+    kind: 'change' | 'changing',
+  ): { block: Element | null; inline: Element | null } | null {
+    const of = element ?? this._source.document;
+    if (!this._snapped.has(of)) return null;
+    const now = this._snapTargets(of);
+    const told = this._snapTold.get(of) ?? { change: '0,0', changing: '0,0' };
+    if (told[kind] === now.key) return null;
+    this._snapTold.set(of, { ...told, [kind]: now.key });
+    return { block: now.block, inline: now.inline };
+  }
+
   /** What the viewport was snapped to, as `_snapped` keeps it. */
   private _noteViewportSnap(at: Snapped): void {
-    this._snapped.set(this._source.document, {
-      x: snapKey(at.targetX),
-      y: snapKey(at.targetY),
-    });
+    this._snapped.set(
+      this._source.document,
+      snapKeysOf(at, this._focus.element ?? null),
+    );
   }
 
   /** After a layout: each snap container snapped to an area lined up with
@@ -14795,10 +14994,12 @@ export class HtmlViewNode extends Node {
           continue;
         }
         // the pane's offsets are device pixels, as the boxes are
-        const at = resnap(snap, pane.scrollX, pane.scrollY, {
-          x: snapBox(snap, keys.x),
-          y: snapBox(snap, keys.y),
-        });
+        const at = resnap(
+          snap,
+          pane.scrollX,
+          pane.scrollY,
+          snapBoxes(snap, keys, this._focus.element ?? null),
+        );
         this._noteViewportSnap(at);
         this._scrollPaneTo(pane, at.x, at.y);
         continue;
@@ -14808,11 +15009,13 @@ export class HtmlViewNode extends Node {
       if (!box || !snap) continue;
       const state = scrollStateOf(box);
       if (lostOnly && !lost(snap, keys, state.x, state.y)) continue;
-      const at = resnap(snap, state.x, state.y, {
-        x: snapBox(snap, keys.x),
-        y: snapBox(snap, keys.y),
-      });
-      this._snapped.set(el, { x: snapKey(at.targetX), y: snapKey(at.targetY) });
+      const at = resnap(
+        snap,
+        state.x,
+        state.y,
+        snapBoxes(snap, keys, this._focus.element ?? null),
+      );
+      this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
         this._scrollBox(box, at.x / s, at.y / s);
       }
@@ -14826,6 +15029,7 @@ export class HtmlViewNode extends Node {
     if (viewport && pane) {
       const at = snapTo(viewport, pane.scrollX, pane.scrollY);
       this._noteViewportSnap(at);
+      this._seedSnapTold(doc);
       this._scrollPaneTo(pane, at.x, at.y);
     }
     for (const box of snapContainersIn(tree.root)) {
@@ -14837,7 +15041,8 @@ export class HtmlViewNode extends Node {
       if (!snap) continue;
       const state = scrollStateOf(box);
       const at = snapTo(snap, state.x, state.y);
-      this._snapped.set(el, { x: snapKey(at.targetX), y: snapKey(at.targetY) });
+      this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
+      this._seedSnapTold(el);
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
         this._scrollBox(box, at.x / s, at.y / s);
       }
@@ -15937,7 +16142,10 @@ export class HtmlViewNode extends Node {
       height: viewport.height,
       matrix: [1, 0, 0, 1, 0, 0],
       direction: box.style.direction,
+      writingMode: box.style.writingMode,
+      textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
+      colorScheme: box.style.colorSchemeKeywords,
     };
   }
 
@@ -15945,11 +16153,18 @@ export class HtmlViewNode extends Node {
    * Where a box's border box is from the viewport's corner, as the matrix
    * from its own corner, in device pixels (7.4): the place layout gave it,
    * its transform and those of the boxes around it, and the scroll that
-   * moves it — none for one fixed to the viewport.
+   * moves it — none for one fixed to the viewport. A box in a vertical
+   * writing mode's frame is reported in the page's axes (`onPage`): the
+   * transition tree sits outside that frame, so a frame-local size would
+   * swap its group's width and height.
    */
   private _placementOf(box: Box): Placement {
-    let m: Matrix = [1, 0, 0, 1, box.x, box.y];
+    const laid = this._borderRect(box);
+    const own = this._tree?.vertical ? onPage(box, laid) : laid;
+    let m: Matrix = [1, 0, 0, 1, own.x, own.y];
     for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+      // the frame's turn is already in `own` via `onPage`
+      if (FRAMES.has(at) || FRAME_ROOTS.has(at)) continue;
       const placed = placedMatrix(at);
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
     }
@@ -15961,12 +16176,29 @@ export class HtmlViewNode extends Node {
       );
     }
     return {
-      width: box.width,
-      height: box.height,
+      width: own.width,
+      height: own.height,
       matrix: m,
       direction: box.style.direction,
+      writingMode: box.style.writingMode,
+      textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
+      colorScheme: box.style.colorSchemeKeywords,
     };
+  }
+
+  /**
+   * An element's border box as a view transition captures it (7.4), in the
+   * document's layout pixels (a vertical frame's, where it is in one): a
+   * box's own, and an inline box's the box around its fragments, which its
+   * rect does not say (`_fragmentsOf`). Placement maps it to the page
+   * (`_placementOf`); capture paints in these coordinates.
+   */
+  private _borderRect(box: Box): Rect {
+    const tree = this._tree;
+    const all =
+      box.kind === 'inline' && tree ? this._fragmentsOf(tree, box)?.all : null;
+    return all ?? { x: box.x, y: box.y, width: box.width, height: box.height };
   }
 
   /**
@@ -16024,31 +16256,60 @@ export class HtmlViewNode extends Node {
     const fixed = drawnAtViewport(box);
     const vx = fixed ? 0 : viewport.x - this.abs.x;
     const vy = fixed ? 0 : viewport.y - this.abs.y;
-    const inkX = Math.min(box.boundsX, box.x);
-    const inkY = Math.min(box.boundsY, box.y);
-    const inkW =
-      Math.max(box.boundsX + box.boundsWidth, box.x + box.width) - inkX;
-    const inkH =
-      Math.max(box.boundsY + box.boundsHeight, box.y + box.height) - inkY;
-    const clip = captureClipRect(
-      { x: inkX, y: inkY, width: inkW, height: inkH },
-      { x: vx, y: vy, width: viewport.width, height: viewport.height },
-    );
+    const own = this._borderRect(box);
+    // an inline box's bounds are its lines', which it shares
+    const inline = box.kind === 'inline';
+    const inkX = inline ? own.x : Math.min(box.boundsX, own.x);
+    const inkY = inline ? own.y : Math.min(box.boundsY, own.y);
+    const inkW = inline
+      ? own.width
+      : Math.max(box.boundsX + box.boundsWidth, own.x + own.width) - inkX;
+    const inkH = inline
+      ? own.height
+      : Math.max(box.boundsY + box.boundsHeight, own.y + own.height) - inkY;
+    // clip against the viewport in the page's axes: a vertical frame's
+    // layout rect is not the viewport's (`onPage`), and the transition
+    // places the capture in the page's
+    const laidInk = { x: inkX, y: inkY, width: inkW, height: inkH };
+    const pageInk = tree.vertical ? onPage(box, laidInk) : laidInk;
+    const pageOwn = tree.vertical ? onPage(box, own) : own;
+    const clip = captureClipRect(pageInk, {
+      x: vx,
+      y: vy,
+      width: viewport.width,
+      height: viewport.height,
+    });
     if (!clip) return null;
     const { x0, y0, x1, y1 } = clip;
     const w = x1 - x0;
     const h = y1 - y0;
     if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;
+    // paint in layout coordinates: undo the page mapping for the clip
+    let paintX = x0;
+    let paintY = y0;
+    if (tree.vertical) {
+      const frame = frameOfBox(box);
+      const mode = frame ? FRAME_ROOTS.get(frame)?.style.writingMode : null;
+      if (frame && mode) {
+        const laid = frameRectOf(
+          frame,
+          { x: x0, y: y0, width: w, height: h },
+          mode,
+        );
+        paintX = laid.x;
+        paintY = laid.y;
+      }
+    }
     const surface = this._surface(w, h);
     if (!surface) return null;
     paintCapture(surface.getContext('2d') as PaintContext, tree, box, {
       ...base,
-      originX: -x0,
-      originY: -y0,
+      originX: -paintX,
+      originY: -paintY,
       canvas: undefined,
       viewport: {
-        x: -x0,
-        y: -y0,
+        x: -paintX,
+        y: -paintY,
         width: viewport.width,
         height: viewport.height,
       },
@@ -16058,8 +16319,8 @@ export class HtmlViewNode extends Node {
     });
     return {
       surface,
-      inkX: x0 - box.x,
-      inkY: y0 - box.y,
+      inkX: x0 - pageOwn.x,
+      inkY: y0 - pageOwn.y,
       inkWidth: w,
       inkHeight: h,
     };
@@ -16129,7 +16390,10 @@ export class HtmlViewNode extends Node {
         declarations(
           `width: ${cssPx(at.width, s)}; height: ${cssPx(at.height, s)}; ` +
             `transform: ${groupTransform(at.matrix, at.width, at.height, s)}; ` +
-            `direction: ${at.direction}; mix-blend-mode: ${at.mixBlendMode}` +
+            `writing-mode: ${at.writingMode}; direction: ${at.direction}; ` +
+            `text-orientation: ${at.textOrientation}; ` +
+            `mix-blend-mode: ${at.mixBlendMode}; ` +
+            `color-scheme: ${at.colorScheme}` +
             (both && entry.anim ? `; animation-name: ${entry.anim}` : ''),
         ),
       );
@@ -16214,7 +16478,7 @@ export class HtmlViewNode extends Node {
           if (top.pseudo === 'view-transition') others.add(top);
         }
       }
-      const size = root ? this._viewportPlacement(own) : own;
+      const size = root ? this._viewportPlacement(own) : this._borderRect(own);
       // drawn at its size, as it is: straight onto the context, as the
       // document would draw it there
       if (Math.abs(w - size.width) < 1e-6 && Math.abs(h - size.height) < 1e-6) {
@@ -16272,8 +16536,9 @@ export class HtmlViewNode extends Node {
       });
       return;
     }
-    const originX = x - box.x;
-    const originY = y - box.y;
+    const own = this._borderRect(box);
+    const originX = x - own.x;
+    const originY = y - own.y;
     paintCapture(ctx, tree, box, {
       ...base,
       originX,
@@ -17451,26 +17716,37 @@ function namedTimeline(
   el: Element,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   for (let at: Element | null = el; at;) {
     const style = tree.styles.get(at)?.style;
     if (style) {
       const own = declaredTimeline(at, style, name);
       if (own) return own;
-      if (scopes(style, name)) return scopedTimeline(tree, at, name, doc);
+      if (scopes(style, name))
+        return scopedTimeline(tree, at, name, doc, pseudoOf);
     }
     const parent = flatParentOf(at);
     at = parent && isElement(parent) ? parent : null;
   }
-  return scopedTimeline(tree, null, name, doc);
+  return scopedTimeline(tree, null, name, doc, pseudoOf);
 }
 
 interface NamedTimeline {
   el: Element;
+  /** Where its `::before` or its `::after` declares it, whose box is the
+   *  scroller or the subject; the element is still what a page reads. */
+  pseudo?: 'before' | 'after';
   view: boolean;
   axis: string;
   inset: readonly [Len, Len];
 }
+
+/** The style of an element's `::before` or `::after`, where it has one. */
+type PseudoStyleOf = (
+  el: Element,
+  which: 'before' | 'after',
+) => ComputedStyle | null;
 
 /** Whether a style's `timeline-scope` takes a name. */
 function scopes(style: ComputedStyle, name: string): boolean {
@@ -17482,6 +17758,24 @@ function scopes(style: ComputedStyle, name: string): boolean {
 
 /** The timeline an element declares by a name, a scroll's before a view's
  *  and a later place in a list before an earlier (4.3). */
+/** What `declaredTimeline` finds in a style, or in a pseudo-element's of
+ *  `el`, passing over the many that declare no timeline at all. */
+function declaredIn(
+  el: Element,
+  style: ComputedStyle | null,
+  name: string,
+  pseudo?: 'before' | 'after',
+): NamedTimeline | null {
+  if (
+    !style ||
+    (style.scrollTimelineName === 'none' && style.viewTimelineName === 'none')
+  ) {
+    return null;
+  }
+  const timeline = declaredTimeline(el, style, name);
+  return timeline && pseudo ? { ...timeline, pseudo } : timeline;
+}
+
 function declaredTimeline(
   at: Element,
   style: ComputedStyle,
@@ -17520,19 +17814,18 @@ function scopedTimeline(
   scope: Element | null,
   name: string,
   doc: Document,
+  pseudoOf?: PseudoStyleOf,
 ): NamedTimeline | null {
   let found: NamedTimeline | null = null;
   for (const [el, entry] of tree.styles) {
     if (el === scope) continue;
-    const style = entry.style;
-    // most elements declare no timeline, and are passed over cheaply
-    if (
-      style.scrollTimelineName === 'none' &&
-      style.viewTimelineName === 'none'
-    ) {
-      continue;
-    }
-    const timeline = declaredTimeline(el, style, name);
+    // the element's own, and its `::before`'s and `::after`'s after it
+    const timeline =
+      declaredIn(el, entry.style, name) ??
+      (pseudoOf && GENERATED_ON.has(el)
+        ? (declaredIn(el, pseudoOf(el, 'after'), name, 'after') ??
+          declaredIn(el, pseudoOf(el, 'before'), name, 'before'))
+        : null);
     if (!timeline) continue;
     // the tree is the last build's, and may hold an element a page's script
     // has taken out since: what it declared is no timeline now
@@ -17698,11 +17991,23 @@ function stickyBlockOf(box: Box): Box | null {
   return cb;
 }
 
-/** The scroll container a box is scrolled by: the nearest one around it,
- *  or null for the pane the document is in. */
+/** The scroll container a box is scrolled by: the nearest one around it
+ *  in its containing block chain, or null for the pane the document is in.
+ *  One a box positioned out of the flow on the way escapes (`escapes`),
+ *  its containing block outside it, scrolls none of it. */
 function nearestScroller(box: Box): Box | null {
-  for (let at = box.parent; at; at = at.parent) {
-    if (isScroller(at)) return at;
+  const apart: Box[] = [];
+  for (let at: Box | null = box; at;) {
+    if (at.outOfFlow) apart.push(at);
+    const parent: Box | null = at.parent;
+    if (
+      parent &&
+      isScroller(parent) &&
+      !apart.some((b) => escapes(b, parent))
+    ) {
+      return parent;
+    }
+    at = parent;
   }
   return null;
 }
@@ -21336,6 +21641,56 @@ function snapKey(box: Box | null): SnapKey | null {
   if (!box) return null;
   const el = box.el ?? GENERATED_FROM.get(box);
   return el ? { el, pseudo: box.pseudo } : null;
+}
+
+/** What a container was snapped to on each axis, and every area that lined
+ *  up with it there (`Snapped.alignedX`). */
+interface SnapKeys {
+  x: SnapKey | null;
+  y: SnapKey | null;
+  xs?: SnapKey[];
+  ys?: SnapKey[];
+  /** The focused element when it was snapped: a re-snap prefers the
+   *  focused area among those that lined up only where the focus moved
+   *  since. */
+  focus?: Element | null;
+}
+
+function snapKeysOf(at: Snapped, focus: Element | null = null): SnapKeys {
+  const keys = (boxes: readonly Box[] | undefined) =>
+    boxes && boxes.length > 1
+      ? boxes.map(snapKey).filter((k): k is SnapKey => !!k)
+      : undefined;
+  return {
+    x: snapKey(at.targetX),
+    y: snapKey(at.targetY),
+    xs: keys(at.alignedX),
+    ys: keys(at.alignedY),
+    focus,
+  };
+}
+
+/** The areas of a container the keys name, where they are areas now. */
+function snapBoxes(
+  c: SnapContainer,
+  keys: SnapKeys,
+  focus: Element | null,
+): {
+  x: Box | null;
+  y: Box | null;
+  xs?: Box[];
+  ys?: Box[];
+  focusMoved: boolean;
+} {
+  const boxes = (list: SnapKey[] | undefined) =>
+    list?.map((k) => snapBox(c, k)).filter((b): b is Box => !!b);
+  return {
+    x: snapBox(c, keys.x),
+    y: snapBox(c, keys.y),
+    xs: boxes(keys.xs),
+    ys: boxes(keys.ys),
+    focusMoved: (keys.focus ?? null) !== focus,
+  };
 }
 
 /** The area of a container a key names, or null where it is none now. */

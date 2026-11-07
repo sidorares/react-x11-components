@@ -133,7 +133,7 @@ import {
   GRID_TRACKS,
   PAINT_ORDER,
   INLINE_OFFSETS,
-  isOffset,
+  laidApart,
   MOVED_OFF_LINES,
   SHADOWED_TEXT,
   SHAPE_STYLES,
@@ -8883,7 +8883,9 @@ export function layered(parent: Box, child: Box): boolean {
  * of the line (`LinesApart`) and drawn at its turn (`paintApart`). A box
  * with every inset `auto` is in its paragraph's layout, moves nowhere, and
  * stays on its line: laid out apart, joshwcomeau.com's hundreds of them
- * would each take a paragraph off the one layout it is. Nor is one in a
+ * would each take a paragraph off the one layout it is. One with a
+ * `view-transition-name` is laid out apart too (`laidApart`): a transition
+ * captures it alone, and leaves it out of what it is in. Nor is one in a
  * faded inline box a layer: its fade is in the colours of its text, and
  * the fading box is a group it would be faded in a second time. One that
  * names the fade in `will-change` counts, which one in transition or
@@ -8892,7 +8894,7 @@ export function layered(parent: Box, child: Box): boolean {
  * neither its lines nor its layer.
  */
 export function paintsApart(box: Box): boolean {
-  if (box.kind !== 'inline' || !isOffset(box.style)) return false;
+  if (box.kind !== 'inline' || !laidApart(box.style)) return false;
   for (let at = box.parent; at?.kind === 'inline'; at = at.parent) {
     if (at.style.opacity < 1 || at.style.willChange & WILL_STACK) return false;
   }
@@ -9682,13 +9684,11 @@ export function stacksLayers(box: Box): boolean {
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (style.isolation === 'isolate' && box.kind !== 'inline') return true;
   // and a view transition's name, which a transition captures it by with
-  // all it holds (CSS View Transitions 1, 3.5) — but on the root element,
-  // which the user agent names and which is the root of them all already
-  if (
-    style.viewTransitionName !== 'none' &&
-    box.kind !== 'inline' &&
-    !!box.parent?.parent
-  ) {
+  // all it holds (CSS View Transitions 1, 3.5) — an inline box's too, which
+  // is laid out and painted apart from its lines for it (`laidApart`) — but
+  // on the root element, which the user agent names and which is the root
+  // of them all already
+  if (style.viewTransitionName !== 'none' && !!box.parent?.parent) {
     return true;
   }
   // and a transform (CSS Transforms 1, 3), on a box one applies to: what it

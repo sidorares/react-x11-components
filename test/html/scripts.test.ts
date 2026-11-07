@@ -9046,6 +9046,35 @@ test('navigation is the page’s entries, and navigate() fires navigate, which a
   );
 });
 
+test('a download link fires navigate with downloadRequest, and without intercept neither success nor a host navigation', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><a id="a" href="file.bin" download="name.bin">d</a><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  navigation.onnavigate = function (e) {' +
+      '    r.push(e.downloadRequest, e.destination.sameDocument, e.canIntercept,' +
+      '      e.sourceElement && e.sourceElement.id, e.destination.key);' +
+      '    e.preventDefault();' +
+      '  };' +
+      '  document.getElementById("a").click();' +
+      // without preventDefault, navigate fires and nothing of success/error
+      // is told when the page does not intercept
+      '  navigation.onnavigate = function (e) { r.push("go " + e.downloadRequest); };' +
+      '  navigation.onnavigatesuccess = function () { r.push("success"); };' +
+      '  navigation.onnavigateerror = function () { r.push("error"); };' +
+      '  document.getElementById("a").download = "";' +
+      '  document.getElementById("a").click();' +
+      "  setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 20);" +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'name.bin|false|true|a||go |error',
+  );
+  assert.deepStrictEqual(doc.links, [], 'the host followed no download');
+});
+
 test('a frame’s initial about:blank has no entries and tells no navigation, and a push from it is refused', async () => {
   // HTML 7.2.6.1, "has entries and events disabled"
   const doc = await hosted(
@@ -9361,6 +9390,59 @@ test('an intercepted navigation scrolls where it ends, a traversal restores wher
   );
 });
 
+test('an intercepted navigation resets focus after the transition, unless focusReset is manual or focus moved during it', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><button id="a">a</button><button id="b">b</button><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  var a = document.getElementById("a"); var b = document.getElementById("b");' +
+      // invalid focusReset is a TypeError and intercepts nothing
+      '  navigation.onnavigate = function (e) {' +
+      '    try { e.intercept({ focusReset: "invalid" }); r.push("no"); }' +
+      '    catch (err) { r.push(err.name); }' +
+      '  };' +
+      '  await navigation.navigate("#bad").finished.catch(function () {});' +
+      // default: focus stays through committed, then body before success
+      // (a macrotask handler, as WPT's, so committed is observed first)
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { setTimeout(ok, 0); }); } });' +
+      '  };' +
+      '  navigation.onnavigatesuccess = function () { r.push(document.activeElement === document.body ? "body" : "x"); };' +
+      '  var res = navigation.navigate("#1"); await res.committed;' +
+      '  r.push(document.activeElement === a ? "a" : "x");' +
+      '  await res.finished;' +
+      // manual keeps the button
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) { e.intercept({ focusReset: "manual" }); };' +
+      '  navigation.onnavigatesuccess = null;' +
+      '  await navigation.navigate("#2").finished;' +
+      '  r.push(document.activeElement === a ? "kept" : "x");' +
+      // a focus move during the transition keeps what the page chose
+      '  a.focus();' +
+      '  var go; navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { go = ok; }); } });' +
+      '  };' +
+      '  var mid = navigation.navigate("#3");' +
+      '  b.focus(); go(); await mid.finished;' +
+      '  r.push(document.activeElement === b ? "moved" : "x");' +
+      // a rejected handler still resets before navigateerror
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return Promise.reject(); }, focusReset: "after-transition" });' +
+      '  };' +
+      '  navigation.onnavigateerror = function () { r.push(document.activeElement === document.body ? "err" : "x"); };' +
+      '  await navigation.navigate("#4").finished.catch(function () {});' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TypeError|a|body|kept|moved|err',
+  );
+});
+
 test('a document is shown after its load, and as it goes hears beforeunload, pagehide, visibilitychange to hidden and unload, and runs nothing after', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -9507,7 +9589,8 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       '  r.push("asked " + (inBefore !== undefined));' +
       '  await loaded;' +
       '  r.push(await inBefore, (await Promise.all(inHide)).join(","), count);' +
-      // what the window had is gone with the document it was of
+      // the window and its `navigation` are the frame's across documents
+      // (HTML 7.4.1), so a navigate after the next one is in still commits
       '  r.push(await refused(nav.navigate("#y")), i.contentWindow.location.search);' +
       // taken out, the frame's document goes as the task ends
       '  var w2 = i.contentWindow, nav2 = w2.navigation;' +
@@ -9542,7 +9625,7 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       'InvalidStateError',
       'InvalidStateError,InvalidStateError,SyntaxError,DataCloneError',
       '1',
-      'InvalidStateError',
+      'committed',
       '?1',
       'removed',
       'out: pagehide',
@@ -15056,6 +15139,176 @@ metric(
   },
 );
 
+metric(
+  'a static ::view-transition is sized against the snapshot containing block while scrolled',
+  async () => {
+    // CSS View Transitions 1, 3.4 / WPT snapshot-containing-block-static:
+    // position: static still uses the viewport (snapshot containing block)
+    // for size and place, so a 100%×100% lime cover fills the scrolled
+    // viewport rather than the initial containing block at the document's
+    // top (which would leave the root's red inset showing).
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' :root { view-transition-name: none; background: rgb(255, 0, 0);' +
+        '   box-shadow: 0 0 0 10px inset rgb(255, 0, 0) }' +
+        ' body { height: 400vh; margin: 0 }' +
+        ' #t { position: absolute; left: 200px; top: 600px; width: 100px;' +
+        '   height: 100px; background: rgb(143, 188, 143);' +
+        '   view-transition-name: target }' +
+        ' ::view-transition { position: static; display: block;' +
+        '   height: 100%; width: 100%; background: rgb(50, 205, 50) }' +
+        ' ::view-transition-group(target),' +
+        ' ::view-transition-image-pair(target),' +
+        ' ::view-transition-old(target),' +
+        ' ::view-transition-new(target) { animation-play-state: paused }' +
+        '</style></head><body><div id="t">TARGET</div>' +
+        '<p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  var y = document.getElementById("t").offsetTop - 100;' +
+        '  window.scrollTo(0, y);' +
+        '  var vt = document.startViewTransition();' +
+        '  vt.ready.then(function () {' +
+        '    var vt = getComputedStyle(document.documentElement, "::view-transition");' +
+        '    document.getElementById("out").textContent = [' +
+        '      vt.position, window.scrollY,' +
+        '      Math.round(parseFloat(vt.width)), Math.round(parseFloat(vt.height)),' +
+        '      window.innerWidth, window.innerHeight' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+      { pane: 300 },
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [position, scrollY, width, height, iw, ih] = out.split('|');
+    assert.equal(position, 'static', out);
+    assert.ok(Number(scrollY) > 400, `scrolled: ${out}`);
+    // sized to the snapshot containing block (the viewport), not the
+    // document — width/height 100% against that block
+    assert.equal(width, iw, `width: ${out}`);
+    assert.equal(height, ih, `height: ${out}`);
+  },
+);
+
+metric(
+  "a view transition group's writing-mode, text-orientation and color-scheme come from the element it captures",
+  async () => {
+    // CSS View Transitions 1, 7.4 / 7.8 / WPT pseudo-get-computed-style,
+    // *-root-vertical-writing-mode: the group takes the element's writing
+    // mode (so UA `inline-size` / `block-size` on the images follow it),
+    // text-orientation and color-scheme, not the root's defaults.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' :root { view-transition-name: none }' +
+        ' #t { width: 40px; height: 80px; background: rgb(0, 128, 0);' +
+        '   writing-mode: vertical-lr; text-orientation: upright;' +
+        '   color-scheme: dark light; view-transition-name: target }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        '</style></head><body><div id="t"></div><p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  document.startViewTransition().ready.then(function () {' +
+        '    var g = getComputedStyle(document.documentElement,' +
+        '      "::view-transition-group(target)");' +
+        '    document.getElementById("out").textContent = [' +
+        '      g.writingMode, g.textOrientation, g.colorScheme' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    assert.equal(out, 'vertical-lr|upright|dark light');
+  },
+);
+
+metric(
+  "a ::view-transition on a vertical root keeps the group's size in the page's axes",
+  async () => {
+    // The root's orthogonal frame must not swallow the top-layer
+    // transition tree or swap the group's width/height: a 40×80 box under
+    // `html { writing-mode: vertical-lr }` still makes a 40×80 group.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' html { writing-mode: vertical-lr }' +
+        ' :root { view-transition-name: none }' +
+        ' #t { width: 40px; height: 80px; background: rgb(0, 128, 0);' +
+        '   view-transition-name: target }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        '</style></head><body><div id="t"></div><p id="out"></p><script>' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  var r = document.getElementById("t").getBoundingClientRect();' +
+        '  document.startViewTransition().ready.then(function () {' +
+        '    var g = getComputedStyle(document.documentElement,' +
+        '      "::view-transition-group(target)");' +
+        '    document.getElementById("out").textContent = [' +
+        '      Math.round(r.width), Math.round(r.height),' +
+        '      Math.round(parseFloat(g.width)), Math.round(parseFloat(g.height)),' +
+        '      g.writingMode' +
+        '    ].join("|");' +
+        '  });' +
+        '}); });' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [rw, rh, gw, gh, wm] = out.split('|');
+    assert.equal(wm, 'vertical-lr', out);
+    assert.equal(gw, rw, `group width: ${out}`);
+    assert.equal(gh, rh, `group height: ${out}`);
+    assert.equal(rw, '40', out);
+    assert.equal(rh, '80', out);
+  },
+);
+
+metric(
+  'a view transition captures an inline element by its fragments: its group is as large as they are, its image is it alone, and the block around it is captured without it',
+  async () => {
+    // CSS View Transitions 1, 7.4: an element's border box, which an inline
+    // element's fragments make; its text was on its block's lines, which the
+    // block's image held and the element's held none of
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' :root { view-transition-name: none }' +
+        ' #c { width: 200px; height: 40px; background: rgb(128, 128, 128);' +
+        '   view-transition-name: c; line-height: 40px }' +
+        ' span { background: rgb(0, 128, 0); padding: 0 10px }' +
+        ' #s { view-transition-name: s } #h { view-transition-name: h }' +
+        ' .on { background: rgb(0, 0, 255) }' +
+        ' html::view-transition-group(*) { animation-play-state: paused }' +
+        ' html::view-transition-old(c) { animation: unset; opacity: 1 }' +
+        ' html::view-transition-new(c) { animation: unset; opacity: 0 }' +
+        ' html::view-transition-old(*) { animation: unset; opacity: 0 }' +
+        ' html::view-transition-new(s) { animation: unset; opacity: 1 }' +
+        ' html::view-transition-new(h) { animation: unset; opacity: 0 }' +
+        '</style></head><body><div id="c">ab <span id="s">x</span> cd' +
+        ' <span id="h">y</span></div><p id="out"></p><script>' +
+        'var s = document.getElementById("s"), h = document.getElementById("h"), t;' +
+        'var r = s.getBoundingClientRect(), q = h.getBoundingClientRect();' +
+        'function near(a, b) { return Math.abs(parseFloat(a) - b) < 0.01; }' +
+        'requestAnimationFrame(function () {' +
+        '  t = document.startViewTransition(function () { s.className = h.className = "on"; });' +
+        '  t.ready.then(function () { requestAnimationFrame(function () {' +
+        '    var g = getComputedStyle(document.documentElement, "::view-transition-group(s)");' +
+        '    document.getElementById("out").textContent = [r.left, r.top, q.left, q.top,' +
+        '      near(g.width, r.width), near(g.height, r.height)].join(" "); }); });' +
+        '});' +
+        '</script></body></html>',
+    );
+    const out = await settled(doc, 'out', (t) => t !== '');
+    const [sx, sy, hx, hy, width, height] = out.split(' ');
+    assert.deepEqual([width, height], ['true', 'true'], out);
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = (x: string, y: string) =>
+      colourAt(doc, abs.x + Number(x) + 3, abs.y + Number(y) + 3);
+    assert.equal(await at(sx, sy), '#0000ff', "a span's new image");
+    assert.equal(
+      await at(hx, hy),
+      '#808080',
+      "the block's old image, without the span in it",
+    );
+  },
+);
+
 test("a view transition's pseudo-elements answer getComputedStyle and getAnimations, and a CSS animation lists its keyframes", async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>' +
@@ -15450,6 +15703,89 @@ test("el.style keeps scroll snapping's values as their grammars take them, and g
   );
 });
 
+test('a snap container tells scrollsnapchanging as it scrolls to another area and scrollsnapchange before its scrollend, with the area it snaps to', async () => {
+  const doc = await hosted(
+    '<style>#s { height: 100px; overflow: scroll; scroll-snap-type: y mandatory }' +
+      ' .a { height: 100px; scroll-snap-align: start }</style>' +
+      '<div id="s"><div class="a" id="a1"></div><div class="a" id="a2"></div><div class="a"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [];' +
+      'function note(e) { r.push(e.type + ":" + (e.snapTargetBlock && e.snapTargetBlock.id) + ":" +' +
+      ' e.snapTargetInline + ":" + e.bubbles + ":" + (e instanceof SnapEvent)); }' +
+      's.addEventListener("scrollsnapchanging", note); s.onscrollsnapchange = note;' +
+      's.addEventListener("scrollend", function () { r.push("end"); if (r.length > 3) done(); else again(); });' +
+      'function again() { s.scrollTo(0, 10); }' +
+      'function done() { document.getElementById("out").textContent = r.join("|"); }' +
+      'requestAnimationFrame(function () { s.scrollTo(0, 120); });' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'scrollsnapchanging:a2:null:false:true|scrollsnapchange:a2:null:false:true|end|' +
+      'scrollsnapchanging:a1:null:false:true|scrollsnapchange:a1:null:false:true|end',
+    doc.logs.join('\n'),
+  );
+});
+
+test('scrollIntoView lines up the element outset by its scroll-margin in the scrollport inset by scroll-padding, in a container and in the viewport', async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html style="scroll-padding-top: 30px"><body style="margin: 0">' +
+      '<div id="s" style="height: 100px; overflow: scroll; scroll-padding: 20px 0 10px">' +
+      '<div style="height: 300px"></div><div id="a" style="height: 10px; scroll-margin: 5px 0 15px"></div>' +
+      '<div style="height: 300px"></div></div>' +
+      '<div style="height: 1000px"></div><div id="b" style="height: 10px; scroll-margin-top: 12px"></div>' +
+      '<div style="height: 1000px"></div><p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [];' +
+      'document.getElementById("a").scrollIntoView(); r.push(s.scrollTop);' +
+      'document.getElementById("a").scrollIntoView(false); r.push(s.scrollTop);' +
+      'document.getElementById("b").scrollIntoView();' +
+      'requestAnimationFrame(function () { r.push(scrollY); document.getElementById("out").textContent = r.join("|"); });' +
+      '</script></body></html>',
+    { pane: 300 },
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '275|235|1058',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a page that scrolls the viewport as it loads reads back where it went, before the pane takes it, and the viewport reaches as far as what is positioned out of the flow', async () => {
+  // the default seams, in a pane of core's, which holds a scroll its extent
+  // cannot take yet for its next pass
+  const logs: string[] = [];
+  await renderX11(
+    h(
+      'box',
+      { style: { width: 400, height: 300, overflow: 'scroll' } },
+      h(Html, {
+        source:
+          '<!DOCTYPE html><html><body style="margin: 0; overflow: scroll">' +
+          '<div style="position: absolute; left: 3000px; top: 0; width: 10px; height: 10px"></div>' +
+          '<div style="height: 2000px"></div>' +
+          '<div style="position: absolute; top: 4000px; width: 10px; height: 10px"></div>' +
+          '<script>var v = document.scrollingElement;' +
+          'v.scrollTo(1000, 3000);' +
+          'console.log("at " + [v.scrollWidth, v.scrollHeight, v.scrollLeft, v.scrollTop, scrollX, scrollY].join(","));' +
+          '</script></body></html>',
+        scripts: {
+          log: (_level: string, text: string) => void logs.push(text),
+        },
+      }),
+    ),
+    FONTS ? { width: 440, height: 400, fonts: FONTS } : { backend: 'mock' },
+  );
+  const end = Date.now() + 5000;
+  while (!logs.some((l) => l.startsWith('at ')) && Date.now() < end) {
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+  }
+  assert.strictEqual(
+    logs.find((l) => l.startsWith('at ')),
+    'at 3010,4010,1000,3000,1000,3000',
+    logs.join('\n'),
+  );
+});
+
 test('a snap container lines an area up at the start of its own flow: the right in a right-to-left line and in vertical-rl, where the block axis runs across', async () => {
   const doc = await hosted(
     '<style>.s { width: 100px; height: 100px; overflow: scroll; scroll-snap-type: both mandatory }' +
@@ -15467,6 +15803,31 @@ test('a snap container lines an area up at the start of its own flow: the right 
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
     '-350,200|-350,200|200,180',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a re-snap after a layout keeps the area it was snapped to among those that lined up with it, unless the focus moved to another since', async () => {
+  // CSS Scroll Snap 1, "re-snapping after layout changes": two areas share a
+  // row, and a narrower container puts each on a row of its own
+  const doc = await hosted(
+    '<style>#s { width: 200px; height: 100px; overflow: hidden; scroll-snap-type: block mandatory }' +
+      ' .c { width: 100px; height: 100px; float: left } .f { scroll-snap-align: center }</style>' +
+      '<div id="s"><div class="c"></div><div class="c"></div><div class="c f" id="one" tabindex="-1"></div>' +
+      '<div class="c f" id="two" tabindex="-1"></div><div class="c"></div><div class="c"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), r = [s.scrollTop];' +
+      // the focus moves to the second after the snap: it is the one kept
+      'document.getElementById("two").focus(); s.style.width = "100px"; r.push(s.scrollTop);' +
+      's.style.width = "200px"; r.push(s.scrollTop);' +
+      // and with the focus where it was, the one snapped to is
+      's.style.width = "100px"; r.push(s.scrollTop);' +
+      'document.getElementById("out").textContent = r.join("|");' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    '100|300|100|300',
     doc.logs.join('\n'),
   );
 });
@@ -16543,6 +16904,66 @@ test('a named timeline is never one a removed element declared, while the docume
   );
 });
 
+test("a page's rangeStart and rangeEnd on a CSS animation stand over its animation-range, and its start time follows a style changed since it was listed", async () => {
+  const doc = await hosted(
+    '<style>#s { overflow-y: scroll; width: 300px; height: 200px }' +
+      ' #t { margin: 800px 0; width: 100px; height: 100px;' +
+      ' animation: m auto linear; view-timeline: --v; animation-timeline: --v;' +
+      ' animation-range: entry 0% entry 100% }' +
+      ' @keyframes m { from { margin-left: 0 } to { margin-left: 100px } }</style>' +
+      '<div id="s"><div id="t"></div></div>' +
+      '<p id="out"></p><script>' +
+      'var s = document.getElementById("s"), t = document.getElementById("t"), r = [];' +
+      'var pct = function (v) { return v === null ? "null" : Math.round(v.value * 100) / 100; };' +
+      'var a = t.getAnimations()[0];' +
+      'a.ready.then(function () {' +
+      '  s.scrollTop = 650;' +
+      '  requestAnimationFrame(function () {' +
+      // the page's end, and a start the style moves
+      '    a.rangeEnd = "contain 100%"; t.style.animationRangeStart = "entry 50%";' +
+      '    requestAnimationFrame(function () {' +
+      '      r.push(pct(a.startTime), pct(a.currentTime), pct(a.effect.getComputedTiming().duration));' +
+      // a style's end changes nothing the page set
+      '      t.style.animationRangeEnd = "entry 100%";' +
+      '      requestAnimationFrame(function () {' +
+      '        r.push(pct(a.effect.getComputedTiming().duration), getComputedStyle(t).marginLeft);' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '});' +
+      '</script>',
+  );
+  // cover runs from 600 to 900: entry 50% is at 650, contain 100% at 800
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '16.67|0|50|50|0px',
+    doc.logs.join('\n'),
+  );
+});
+
+test('a named timeline an ::after declares has its element for its source', async () => {
+  const doc = await hosted(
+    '<style>.cb { timeline-scope: --p }' +
+      ' #c::after { content: "x"; display: block; width: 40px; height: 100px;' +
+      ' overflow: scroll; scroll-timeline: --p }' +
+      ' #t { width: 10px; height: 10px; animation: a linear; animation-timeline: --p }' +
+      ' @keyframes a { to { opacity: 0 } }</style>' +
+      '<div class="cb"><div id="t"></div><div id="c"></div></div>' +
+      '<p id="out"></p><script>' +
+      'requestAnimationFrame(function () {' +
+      '  var tl = document.getElementById("t").getAnimations()[0].timeline;' +
+      '  document.getElementById("out").textContent = tl ? String(tl.source && tl.source.id) : "none";' +
+      '});' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'c',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a view timeline is its subject crossing its scroller, from cover 0% to 100%, and an attachment range narrows what an animation runs over', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 200px }' +
@@ -17160,6 +17581,74 @@ test("a frame's window has its page's storage, as a frame of its origin has", as
       (t) => t !== '',
     ),
     'local|session|true',
+  );
+});
+
+test("a frame's session history spans the documents it shows", async () => {
+  // HTML 7.4.1: a frame's navigations are one history, so
+  // `navigation.entries()` after a cross-document push is length 2 and
+  // `navigation.activation` remembers how it got there.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '      /a\\.html$/.test(n.entries()[0].url),' +
+      '      /b\\.html$/.test(n.entries()[1].url),' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p><script></script>',
+      'b.html': '<!doctype html><p>b</p><script></script>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0|true|true',
+  );
+});
+
+test('a frame without scripts keeps one session across the documents it shows', async () => {
+  // WPT's /common/blank.html has no script, so the frame stays the page
+  // realm's: its window and `navigation` are still one history across
+  // navigations (HTML 7.4.1), not a fresh list a document.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0',
   );
 });
 

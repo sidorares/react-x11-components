@@ -1111,8 +1111,10 @@ export interface TransitionImageBox {
 export const TRANSITION_KEYS = new WeakMap<Box, string>();
 
 /** The style a box of a view transition's tree has, where the box is laid
- *  out by another: `::view-transition`, absolute against the snapshot
- *  containing block, which is the viewport's, and so laid out fixed. */
+ *  out by another: `::view-transition`, against the snapshot containing
+ *  block (absolute, static or relative), which is the viewport's, and so
+ *  laid out fixed — the author's `position` stays here for
+ *  `getComputedStyle`. */
 export const TRANSITION_STYLES = new WeakMap<Box, ComputedStyle>();
 
 /** The box of a view transition's old or new image, by what it shows. */
@@ -4856,13 +4858,19 @@ class Builder {
       if (namesImages(style)) this._backgrounds.push(box);
       return box;
     };
-    // absolute against the snapshot containing block (CSS View Transitions
-    // 1, 3.4), the viewport's whatever the scroll: laid out fixed
-    const fixed =
-      tree.style.position === 'absolute' ? copyStyle(tree.style) : null;
-    if (fixed) fixed.position = 'fixed';
-    const root = make(fixed ?? tree.style, into, 'view-transition');
-    if (fixed) TRANSITION_STYLES.set(root, tree.style);
+    // against the snapshot containing block (CSS View Transitions 1, 3.4),
+    // the viewport's whatever the scroll: laid out fixed. Absolute is the
+    // UA default (`inset: 0`); static and relative still use that block for
+    // size and place (`snapshot-containing-block-static`), and
+    // `getComputedStyle` still answers the author's position
+    // (`TRANSITION_STYLES`).
+    const pos = tree.style.position;
+    const againstSnapshot =
+      pos === 'absolute' || pos === 'static' || pos === 'relative';
+    const laid = againstSnapshot ? copyStyle(tree.style) : null;
+    if (laid) laid.position = 'fixed';
+    const root = make(laid ?? tree.style, into, 'view-transition');
+    if (laid) TRANSITION_STYLES.set(root, tree.style);
     root.topLayer = true;
     for (const g of tree.groups) {
       if (g.group.display === 'none') continue;
@@ -7064,6 +7072,14 @@ export function isOffset(style: ComputedStyle): boolean {
     style.bottom !== AUTO ||
     style.left !== AUTO
   );
+}
+
+/** Whether an inline box's text is laid out apart from the text around it,
+ *  and painted at its own turn among the layers (`paintsApart`): one an
+ *  inset moves, and one a view transition may capture by a name, whose
+ *  image is it alone (CSS View Transitions 1, 7.4). */
+export function laidApart(style: ComputedStyle): boolean {
+  return isOffset(style) || style.viewTransitionName !== 'none';
 }
 
 /** Whether a style may put its box under its stacking context's flow: a

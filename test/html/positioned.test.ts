@@ -3780,6 +3780,20 @@ test("a box placed by a position option reads the option's insets, where both si
   assert.strictEqual(el.computedStyle(b)?.left, '300px');
 });
 
+test("a box placed by a position option reads the option's insets, where both sides of an axis are lengths", async () => {
+  const { node } = await render(
+    '<!doctype html><html><head><style>@position-try --pt{left:300px}' +
+      '#b{position:fixed;width:100px;height:100px;inset:0;left:9999px;' +
+      'position-try-fallbacks:--pt}</style></head>' +
+      '<body><div id="b"></div></body></html>',
+    800,
+  );
+  const el = view(node);
+  const b = findById(el.document, 'b')!;
+  assert.strictEqual(el.elementRect(b)?.x, 300);
+  assert.strictEqual(el.computedStyle(b)?.left, '300px');
+});
+
 test('unset in a @position-try rule takes an inset back with its anchor(), and position-try-order sorts the base style with the options', async () => {
   const doc = (order: string) =>
     '<!doctype html><html><head><style>body{margin:0}' +
