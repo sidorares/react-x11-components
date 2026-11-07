@@ -1408,6 +1408,65 @@ test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the pr
   ]);
 });
 
+test('a @keyframes rule is a CSSKeyframesRule of CSSKeyframeRules, with a name it took and what a keyframe takes, which a page edits and the document animates by', async () => {
+  // WPT css-animations/parsing: a name that is no identifier, or a
+  // reserved one, drops the rule; a selector outside 0% to 100% drops its
+  // keyframe; a keyframe keeps of the animation properties only its
+  // timing function, whatever a shorthand after it says. Edited, the rule
+  // is written again in its sheet, and the element animates by it
+  const doc = await hosted(
+    '<style>@keyframes none { from { color: red } }' +
+      '@keyframes k { from { margin-left: 10px; animation-timing-function: ease;' +
+      '  animation-duration: 1s; animation: x 2s linear } -10% { margin-left: 1px }' +
+      '  entry 10%, TO { margin-left: 10px } }' +
+      '#e { animation: k 100s paused }</style>' +
+      '<p id="out">-</p><div id="e"></div><script>' +
+      'var r = [], sheet = document.styleSheets[0], k = sheet.cssRules[0];' +
+      'var e = document.getElementById("e"), at = function () { return getComputedStyle(e).marginLeft; };' +
+      'r.push(sheet.cssRules.length, k instanceof CSSKeyframesRule, k.type, k.name, k.cssRules.length);' +
+      'var from = k.cssRules[0];' +
+      'r.push(from instanceof CSSKeyframeRule, from.type, from.keyText, from.parentRule === k,' +
+      '  from.style.length, from.style.animationTimingFunction, k.cssRules[1].keyText);' +
+      'r.push(at()); k.findRule("0%").style.marginLeft = "30px"; r.push(at());' +
+      'k.deleteRule("from"); r.push(k.cssRules.length, at());' +
+      'k.appendRule("0% { margin-left: 50px }"); r.push(k.length, k.findRule("from").style.marginLeft, at());' +
+      'try { k.appendRule("120% { color: red }"); r.push("no throw"); } catch (x) { r.push(x.name); }' +
+      'k.cssRules[1].keyText = "from"; r.push(k.cssRules[1].keyText);' +
+      'try { k.cssRules[0].keyText = "nope"; r.push("no throw"); } catch (x) { r.push(x.name); }' +
+      'k.name = "j"; r.push(k.name, sheet.cssRules[0] === k, at());' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    2,
+    true,
+    7,
+    'k',
+    2,
+    true,
+    8,
+    '0%',
+    true,
+    2,
+    'ease',
+    'entry 10%, 100%',
+    '10px',
+    '30px',
+    // no keyframe at 0%: what is under the animation
+    1,
+    '0px',
+    2,
+    '50px',
+    '50px',
+    'SyntaxError',
+    '0%',
+    'SyntaxError',
+    'j',
+    true,
+    // named otherwise, it is no rule of the element's animation
+    '0px',
+  ]);
+});
+
 test("PageSwapEvent and PageRevealEvent construct, and a link's, a script's and a style's blocking and relList support their tokens", async () => {
   const doc = await hosted(
     '<p id="out">-</p><script>' +

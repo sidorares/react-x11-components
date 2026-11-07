@@ -15677,12 +15677,201 @@ export function installDom(
       this.style.cssText = v;
     }
   }
+  /** A `@keyframes` rule (CSS Animations 1, 6.2): its name and its
+   *  keyframes, which a page reads, adds to and takes from, each edit
+   *  rewriting the rule's text in its sheet, as the cascade reads it. */
   class CSSKeyframesRule extends CSSRule {
     override _type = 7;
+    /** Its keyframes' texts, as its block holds them. */
+    _frames(): string[] {
+      return (
+        JSON.parse(String(call('cssRules', blockOf(this._text)))) as string[]
+      )
+        .filter((text) => !droppedKeyframe(text))
+        .map(keyframeOnly);
+    }
+    /** Its text again, from its name and its keyframes' texts. */
+    _write(frames: string[]): void {
+      const at = /^@(?:-[a-z]+-)?keyframes/i.exec(this._text)?.[0];
+      replaceRule(
+        this,
+        `${at ?? '@keyframes'} ${conditionOf(this._text)} { ${frames.join(' ')} }`,
+      );
+    }
     get name(): string {
-      return conditionOf(this._text).replace(/^["']|["']$/g, '');
+      const raw = conditionOf(this._text);
+      return /^["']/.test(raw) ? raw.slice(1, -1) : raw;
+    }
+    set name(v: Any) {
+      const name = String(v);
+      const at = /^@(?:-[a-z]+-)?keyframes/i.exec(this._text)?.[0];
+      const written = keyframesNameValid(name) ? name : JSON.stringify(name);
+      replaceRule(
+        this,
+        `${at ?? '@keyframes'} ${written} {${blockOf(this._text)}}`,
+      );
+    }
+    get cssRules(): Any {
+      const rules = this._frames().map((text, i) => {
+        const rule = ruleOf(text, this.parentStyleSheet, this);
+        rule._index = i;
+        return rule;
+      });
+      return listMade(CSSRuleList, rules, null, false, null);
+    }
+    get length(): number {
+      return this._frames().length;
+    }
+    /** The last keyframe whose selector is `key`, as `keyText` reads it. */
+    findRule(key: Any): Any {
+      const want = keyframeKeyText(String(key));
+      if (want === null) return null;
+      const rules = this.cssRules;
+      for (let i = rules.length - 1; i >= 0; i -= 1) {
+        if (rules[i].keyText === want) return rules[i];
+      }
+      return null;
+    }
+    appendRule(text: Any): void {
+      const frames = JSON.parse(
+        String(call('cssRules', String(text), true)),
+      ) as string[];
+      if (frames.length !== 1 || droppedKeyframe(frames[0])) {
+        throw new DOMException(
+          `Failed to execute 'appendRule' on 'CSSKeyframesRule': Failed to parse the keyframe rule '${text}'.`,
+          'SyntaxError',
+        );
+      }
+      this._write([...this._frames(), frames[0]]);
+    }
+    deleteRule(key: Any): void {
+      const want = keyframeKeyText(String(key));
+      if (want === null) return;
+      const frames = this._frames();
+      for (let i = frames.length - 1; i >= 0; i -= 1) {
+        if (keyframeKeyText(preludeOf(frames[i])) !== want) continue;
+        frames.splice(i, 1);
+        this._write(frames);
+        return;
+      }
     }
   }
+  /** A keyframe in a `@keyframes` rule (CSS Animations 1, 6.1): its
+   *  selector and its declarations, an edit to either rewriting the rule
+   *  it is in. */
+  class CSSKeyframeRule extends CSSRule {
+    override _type = 8;
+    _index = 0;
+    get keyText(): string {
+      return keyframeKeyText(preludeOf(this._text)) ?? preludeOf(this._text);
+    }
+    set keyText(v: Any) {
+      const key = keyframeKeyText(String(v));
+      if (key === null) {
+        throw new DOMException(
+          `Failed to set the 'keyText' property on 'CSSKeyframeRule': The key '${v}' is invalid and cannot be parsed`,
+          'SyntaxError',
+        );
+      }
+      this._replace(`${key} {${blockOf(this._text)}}`);
+    }
+    _style: Any = null;
+    get style(): Any {
+      return (this._style ??= writableStyle({
+        value: (name) =>
+          String(call('blockValue', blockOf(this._text), name) ?? ''),
+        priority: (name) =>
+          String(call('blockPriority', blockOf(this._text), name) ?? ''),
+        set: (name, value, priority) => {
+          const next = call(
+            'blockSet',
+            blockOf(this._text),
+            name,
+            value,
+            priority,
+          );
+          if (typeof next === 'string') {
+            this._replace(
+              `${preludeOf(this._text)} { ${next ? `${next} ` : ''}}`,
+            );
+          }
+        },
+        names: () =>
+          String(call('blockNames', blockOf(this._text)) ?? '')
+            .split(',')
+            .filter(Boolean),
+        text: () => String(call('blockText', blockOf(this._text)) ?? ''),
+        setText: (text) =>
+          this._replace(
+            `${preludeOf(this._text)} { ${String(call('blockText', text) ?? '')} }`,
+          ),
+        rule: this,
+      }));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
+    }
+    /** Its text, and the rule it is in with it. */
+    _replace(text: string): void {
+      this._text = text;
+      const parent = this.parentRule;
+      if (!(parent instanceof CSSKeyframesRule)) return;
+      const frames = parent._frames();
+      if (this._index < frames.length) frames[this._index] = text;
+      parent._write(frames);
+    }
+  }
+  /** What `@keyframes` takes for a name (CSS Animations 1, 3): an
+   *  identifier other than `none`, `default` and the CSS-wide keywords,
+   *  or a string with something in it. */
+  const keyframesNameValid = (prelude: string): boolean => {
+    const v = prelude.trim();
+    if (/^(["'])[\s\S]*\1$/.test(v)) return v.length > 2;
+    if (!/^(?:--|-?[A-Za-z_\u0080-\uffff])[\w\u0080-\uffff-]*$/.test(v)) {
+      return false;
+    }
+    return !/^(?:none|default|initial|inherit|unset|revert|revert-layer)$/i.test(
+      v,
+    );
+  };
+  /** A keyframe selector as `keyText` reads it (CSS Animations 1, 3;
+   *  Scroll-driven Animations 1, 4.4): each item a percentage from 0% to
+   *  100% — `from` and `to` among them — a timeline range's name and a
+   *  percentage, or a math function; null where an item is none. */
+  const keyframeKeyText = (selector: string): string | null => {
+    const items = selector.split(',').map((item) => item.trim());
+    const out: string[] = [];
+    for (const item of items) {
+      const lower = item.toLowerCase();
+      if (lower === 'from') out.push('0%');
+      else if (lower === 'to') out.push('100%');
+      else {
+        const m =
+          /^(?:(cover|contain|entry|exit|entry-crossing|exit-crossing)\s+)?([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%|calc\([\s\S]*\))$/i.exec(
+            item,
+          );
+        if (!m) return null;
+        const pct = m[2];
+        if (!/^calc\(/i.test(pct)) {
+          const n = parseFloat(pct);
+          if (!m[1] && (n < 0 || n > 100)) return null;
+        }
+        out.push(m[1] ? `${m[1].toLowerCase()} ${pct}` : pct);
+      }
+    }
+    return out.length ? out.join(', ') : null;
+  };
+  /** A keyframe's text without what no keyframe takes: the animation
+   *  properties but `animation-timing-function` and
+   *  `animation-composition` (CSS Animations 1, 3; CSS Animations 2, 4). */
+  const keyframeOnly = (text: string): string => {
+    const body = String(call('keyframeBlock', blockOf(text)) ?? '');
+    return `${preludeOf(text)} { ${body ? `${body} ` : ''}}`;
+  };
+  /** Whether a rule in a `@keyframes` block is no keyframe, and is dropped
+   *  as a parser drops it. */
+  const droppedKeyframe = (text: string): boolean =>
+    /^@/.test(text) || keyframeKeyText(preludeOf(text)) === null;
   /** What a `@position-try` rule takes (CSS Anchor Positioning 1, 4.4,
    *  the accepted `@position-try` properties), in the order its
    *  descriptors' interface lists them (8.1): the margins, the insets,
@@ -16144,7 +16333,10 @@ export function installDom(
     // a `@position-try` names one dashed ident (CSS Anchor Positioning 1,
     // 4.2), or is no rule
     (/^@position-try(?![\w-])/i.test(text) &&
-      !/^--\S+$/.test(preludeOf(text).slice('@position-try'.length).trim()));
+      !/^--\S+$/.test(preludeOf(text).slice('@position-try'.length).trim())) ||
+    // a `@keyframes` names an identifier or a string (CSS Animations 1, 3)
+    (/^@(?:-[a-z]+-)?keyframes(?![\w-])/i.test(text) &&
+      !keyframesNameValid(conditionOf(text)));
   /** `@layer name { … }` as a grouping rule so nested `@view-transition`
    *  (and the rest) are in `cssRules` (CSS Cascade 5, 3.1). A statement
    *  `@layer a, b;` has no block and an empty list. */
@@ -16172,6 +16364,12 @@ export function installDom(
     namespace: 10,
   };
   const ruleOf = (text: string, sheet: Any, parent: Any = null): Any => {
+    // what a `@keyframes` holds is keyframes
+    if (parent instanceof CSSKeyframesRule) {
+      const rule = new CSSKeyframeRule(text, sheet);
+      rule.parentRule = parent;
+      return rule;
+    }
     const at = /^@(?:-[a-z]+-)?([a-z-]+)/i.exec(text);
     const kind = at ? at[1].toLowerCase() : '';
     const Rule = RULE_CLASSES[kind] ?? (at ? CSSRule : CSSStyleRule);
@@ -16207,6 +16405,11 @@ export function installDom(
     _rules: string[] | null = [];
     /** The host's edit of a `<style>`'s rules `_list` is. */
     _version: Any = null;
+    /** Where each rule of `cssRules` is in the host's list of the sheet's
+     *  rules, which holds as well the rules CSS drops (`droppedRule`), and
+     *  how many that list holds: an index a page edits by is the first. */
+    _hostAt: number[] = [];
+    _hostCount = 0;
     _list: Any = null;
     _media = '';
     _disabled = false;
@@ -16283,7 +16486,13 @@ export function installDom(
       if (answer) {
         const cut = answer.indexOf('\u0000');
         this._version = Number(answer.slice(0, cut));
-        this._list = ruleList(JSON.parse(answer.slice(cut + 1)), this, null);
+        const texts = JSON.parse(answer.slice(cut + 1)) as string[];
+        this._list = ruleList(texts, this, null);
+        this._hostAt = [];
+        texts.forEach((text, i) => {
+          if (!droppedRule(text)) this._hostAt.push(i);
+        });
+        this._hostCount = texts.length;
       }
       return this._list;
     }
@@ -16307,8 +16516,25 @@ export function installDom(
         return at;
       }
       // a rule the host would keep and CSS drops (`droppedRule`)
-      if (/^\s*@(?:view-transition|position-try)/i.test(text)) oneRule(text);
-      const answer = String(call('sheetInsert', this._owner._id, text, at));
+      if (
+        /^\s*@(?:view-transition|position-try|(?:-[a-z]+-)?keyframes)/i.test(
+          text,
+        )
+      ) {
+        oneRule(text);
+      }
+      const map = this._hostMap();
+      if (at > map.length) {
+        throw new DOMException(
+          `The index provided (${at}) is larger than the maximum index (${map.length}).`,
+          'IndexSizeError',
+        );
+      }
+      const hostAt = at < map.length ? map[at] : this._hostCount;
+      const answer = String(call('sheetInsert', this._owner._id, text, hostAt));
+      for (let i = 0; i < map.length; i += 1) if (map[i] >= hostAt) map[i] += 1;
+      map.splice(at, 0, hostAt);
+      this._hostCount += 1;
       const first = answer.indexOf('\u0000');
       const second = answer.indexOf('\u0000', first + 1);
       // the list kept, edited as the host's rules were, where it was the
@@ -16324,6 +16550,11 @@ export function installDom(
       }
       return at;
     }
+    /** `_hostAt`, read where the host's rules moved since. */
+    _hostMap(): number[] {
+      if (this._owner) this.cssRules;
+      return this._hostAt;
+    }
     deleteRule(index: Any): void {
       const at = Number(index) >>> 0;
       if (this._rules) {
@@ -16338,7 +16569,18 @@ export function installDom(
         if (!this._owner) readopt(this);
         return;
       }
-      const answer = String(call('sheetDelete', this._owner._id, at));
+      const map = this._hostMap();
+      if (at >= map.length) {
+        throw new DOMException(
+          `The index provided (${at}) is outside the range [0, ${map.length}).`,
+          'IndexSizeError',
+        );
+      }
+      const hostAt = map[at];
+      const answer = String(call('sheetDelete', this._owner._id, hostAt));
+      map.splice(at, 1);
+      for (let i = 0; i < map.length; i += 1) if (map[i] > hostAt) map[i] -= 1;
+      this._hostCount -= 1;
       const cut = answer.indexOf('\u0000');
       if (this._list && this._version === Number(answer.slice(0, cut))) {
         this._list[LIST].items.splice(at, 1);
@@ -36177,6 +36419,7 @@ export function installDom(
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
+    CSSKeyframeRule,
     CSSViewTransitionRule,
     CSSPositionTryRule,
     CSSPositionTryDescriptors,
