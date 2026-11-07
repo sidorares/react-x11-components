@@ -140,7 +140,7 @@ PR's run, which the last column names.
 | indexeddb                        | 24    | 0.0%  | 100%  | `getAllRecords` and `getAll` options (#853), `importScripts` (#858), `SharedWorker` (#869), transferred buffers (#917), service workers (#918)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | jspi-for-wasm                    | 6     | 2.5%  | 100%  | JSPI where Node has it behind a flag (#855)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | media-pseudo-classes             | 5     | 0.0%  | 100%  | `:muted` and `:volume-locked` (#861), `:playing` and `:paused` (#891), `canPlayType` (#904), a source loaded where there is a network (#916, #920)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| navigation                       | 439   | 0.0%  | 79.3% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902), a back-forward cache with the windows a test opens ([#1049]), and `<a download>` / `<area download>` firing `navigate` with `downloadRequest`                                                                                                                                                                                                                                                                                                                                                                                                          |
+| navigation                       | 439   | 0.0%  | 82.8% | session history and the Navigation API (#864, #867, #874, #875), form submissions (#886), navigations aimed at a frame (#902), a back-forward cache with the windows a test opens ([#1049]), a frame's session history across the documents it shows ([#1377]), whose run of the area this is, `NavigateEvent` `focusReset` after an intercepted transition ([#1378]), and `<a download>` / `<area download>` firing `navigate` with `downloadRequest` ([#1379])                                                                                                                                                                                                                    |
 | scoped-custom-element-registries | 29    | 0.2%  | 87.0% | scoped registries, `setHTMLUnsafe` (#863), clonable shadow roots (#887), `getHTML()` (#925), a registry fixed where an element is made (#926)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | scroll-driven-animations         | 146   | 4.9%  | 71.8% | the timeline properties (#885), `ScrollTimeline` and `ViewTimeline` over Web Animations' model (#892), their grammars (#893), CSS's `animation-timeline` (#894), `animation-range` (#899), `CSSAnimation`s (#906), `timeline-scope` (#907), timeline offsets (#908)                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -332,7 +332,7 @@ as WPT's does, not against WPT's own.
 where the page has a network (#916), from its first byte (#920), and
 `:seeking`, `:buffering` and `:stalled` follow the load.
 
-**navigation (79.3%).** A document a navigation leaves hears
+**navigation (82.8%).** A document a navigation leaves hears
 `beforeunload`, `pagehide`, `visibilitychange` and `unload`, and the
 methods of a document that has gone reject ([#973]). A tab's documents are
 one session history that a host hands each of them, over which
@@ -341,50 +341,33 @@ share its origin, and a document hears `pageswap` and `pagereveal`
 ([#980]). A session keeps the documents a tab left in a back-forward cache
 where the host gives it one, and a step back or forward shows one again as
 it was, with `pageshow` and `pagehide` `persisted`, `navigation.activation`
-a `traverse`, its entries re-read and those that went disposed ([#1049]):
-in [#1049]'s run the area went from 279 of 518 subtests to 284, five
-`*-after-bfcache` tests from timeouts to passes, and the sixth,
-`entries-after-bfcache-in-iframe.html`, stops before the cache, at a
-frame's `navigation`. An `<a download>` or `<area download>` fires
-`navigate` with `downloadRequest` set to the attribute (HTML, "download
-the hyperlink") before the host saves the file; a click in a frame uses
-that frame's session, an intercept owns the navigation as a push, and a
-non-intercepted one aborts the ongoing navigation without
-`navigatesuccess`: 390 of 518 subtests to 401 (77.5% to 79.3%), eight
-download files. What is left: the `navigate` event in another window —
-a link or a form aimed at a frame, a `window.open` — where a frame
-without scripts has no navigation of its own; a frame's history inside its
-tab's; restoring a document's scroll when it is shown again;
+a `traverse`, its entries re-read and those that went disposed ([#1049]).
+A frame's documents are one history of their own across the loads that
+frame shows — scripted frames over `HtmlSessionHistory`, blank and
+`srcdoc` ones over the page-realm window that is kept from one document
+to the next — so `navigation.entries()` after a cross-document push is
+length 2, `sameDocument` follows the document, and a cross-origin gap
+starts a joint of its own ([#1377]): in [#1377]'s run the area went from
+390 of 518 subtests (77.5%) to 414 (82.8%), twenty-four files newly
+fully passing and none lower. An intercepted same-document navigation
+resets focus after its handlers settle — `focusReset: "after-transition"`
+by default, skipped for `"manual"` or where the page moved focus during
+the transition — before `navigatesuccess` / `navigateerror`, and an
+invalid `focusReset` is a TypeError ([#1378]): eleven of the
+`focus-reset/` area on top of that baseline, with `autofocus.html` still
+open. An `<a download>` or `<area download>` fires `navigate` with
+`downloadRequest` set to the attribute (HTML, "download the hyperlink")
+before the host saves the file; a click in a frame uses that frame's
+session, an intercept owns the navigation as a push, and a non-intercepted
+one aborts the ongoing navigation without `navigatesuccess` ([#1379]):
+eight download files on top of that baseline. What is left: the `navigate`
+event in another window — a link or a form aimed at a frame, a
+`window.open`, cross-origin and same-origin-domain — and traversals that
+step several frames or go back across a document the frame showed before;
+restoring a document's scroll when it is shown again;
 `navigator.sendBeacon`, which still answers false; a page in a background
 tab, which stays `visible`; and a `beforeunload` for an `iframe.src` its
 parent assigns, told late, as the frame goes.
-
-The runner hands each test a session now, and loads what the test's
-document navigates to — `location`, `navigation.navigate()`, `reload()`,
-`history` past its own entries — into the place it was shown, the next
-document of that history. That moved nothing, and measuring it showed why.
-The area run at `afe6d61`, on a Mac against WPT's server with four jobs,
-passed 279 of 518 subtests for 57.0% before the change, and 279 of 518 for
-57.0% after it, the same as the twelfth run: three of the 439 tests
-changed shape, below, and none changed score. No test in the label leaves its own
-window, since that would end its harness, and the cross-document
-navigations that time
-out are a **frame's**: `i.contentWindow.location.reload()`,
-`i.contentWindow.navigation.back()` to a document the frame showed before,
-and `navigation.entries()` read in the frame after it loaded another
-document (28 tests fail on `expected 2 but got 1` alone). The engine keeps
-a frame's history per document, so each document a frame loads starts a
-history of its own. The 122 tests in the label that load an `<iframe>` and
-do not pass hold back 27.4 of the area's 43 missing points; a frame's own
-`HtmlSessionHistory`, kept by the frame across the documents it shows and
-joined to its tab's, is where the area's score is. What the wiring did
-reach is three tests whose top-level navigation the engine should have
-stopped and now loads, so they end as harness timeouts where a subtest
-timed out before: `window.stop()` in a `navigate` handler aborts nothing
-(`signal-abort-window-stop-in-onnavigate.html`), `location.reload()` fires
-no `navigate` for a handler to intercept
-(`navigate-destination-getState-reload.html`), and `navigate()` to a
-`file:` URL from an `http:` page is not refused (`navigate-file-url.html`).
 
 **scoped-custom-element-registries (87.0%).** `initialize()` upgrades
 what its registry defines wherever the element is ([#933]), `upgrade()`

@@ -9390,6 +9390,59 @@ test('an intercepted navigation scrolls where it ends, a traversal restores wher
   );
 });
 
+test('an intercepted navigation resets focus after the transition, unless focusReset is manual or focus moved during it', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><button id="a">a</button><button id="b">b</button><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  var a = document.getElementById("a"); var b = document.getElementById("b");' +
+      // invalid focusReset is a TypeError and intercepts nothing
+      '  navigation.onnavigate = function (e) {' +
+      '    try { e.intercept({ focusReset: "invalid" }); r.push("no"); }' +
+      '    catch (err) { r.push(err.name); }' +
+      '  };' +
+      '  await navigation.navigate("#bad").finished.catch(function () {});' +
+      // default: focus stays through committed, then body before success
+      // (a macrotask handler, as WPT's, so committed is observed first)
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { setTimeout(ok, 0); }); } });' +
+      '  };' +
+      '  navigation.onnavigatesuccess = function () { r.push(document.activeElement === document.body ? "body" : "x"); };' +
+      '  var res = navigation.navigate("#1"); await res.committed;' +
+      '  r.push(document.activeElement === a ? "a" : "x");' +
+      '  await res.finished;' +
+      // manual keeps the button
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) { e.intercept({ focusReset: "manual" }); };' +
+      '  navigation.onnavigatesuccess = null;' +
+      '  await navigation.navigate("#2").finished;' +
+      '  r.push(document.activeElement === a ? "kept" : "x");' +
+      // a focus move during the transition keeps what the page chose
+      '  a.focus();' +
+      '  var go; navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { go = ok; }); } });' +
+      '  };' +
+      '  var mid = navigation.navigate("#3");' +
+      '  b.focus(); go(); await mid.finished;' +
+      '  r.push(document.activeElement === b ? "moved" : "x");' +
+      // a rejected handler still resets before navigateerror
+      '  a.focus();' +
+      '  navigation.onnavigate = function (e) {' +
+      '    e.intercept({ handler: function () { return Promise.reject(); }, focusReset: "after-transition" });' +
+      '  };' +
+      '  navigation.onnavigateerror = function () { r.push(document.activeElement === document.body ? "err" : "x"); };' +
+      '  await navigation.navigate("#4").finished.catch(function () {});' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'TypeError|a|body|kept|moved|err',
+  );
+});
+
 test('a document is shown after its load, and as it goes hears beforeunload, pagehide, visibilitychange to hidden and unload, and runs nothing after', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -9536,7 +9589,8 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       '  r.push("asked " + (inBefore !== undefined));' +
       '  await loaded;' +
       '  r.push(await inBefore, (await Promise.all(inHide)).join(","), count);' +
-      // what the window had is gone with the document it was of
+      // the window and its `navigation` are the frame's across documents
+      // (HTML 7.4.1), so a navigate after the next one is in still commits
       '  r.push(await refused(nav.navigate("#y")), i.contentWindow.location.search);' +
       // taken out, the frame's document goes as the task ends
       '  var w2 = i.contentWindow, nav2 = w2.navigation;' +
@@ -9571,7 +9625,7 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       'InvalidStateError',
       'InvalidStateError,InvalidStateError,SyntaxError,DataCloneError',
       '1',
-      'InvalidStateError',
+      'committed',
       '?1',
       'removed',
       'out: pagehide',
@@ -17407,6 +17461,74 @@ test("a frame's window has its page's storage, as a frame of its origin has", as
       (t) => t !== '',
     ),
     'local|session|true',
+  );
+});
+
+test("a frame's session history spans the documents it shows", async () => {
+  // HTML 7.4.1: a frame's navigations are one history, so
+  // `navigation.entries()` after a cross-document push is length 2 and
+  // `navigation.activation` remembers how it got there.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '      /a\\.html$/.test(n.entries()[0].url),' +
+      '      /b\\.html$/.test(n.entries()[1].url),' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p><script></script>',
+      'b.html': '<!doctype html><p>b</p><script></script>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0|true|true',
+  );
+});
+
+test('a frame without scripts keeps one session across the documents it shows', async () => {
+  // WPT's /common/blank.html has no script, so the frame stays the page
+  // realm's: its window and `navigation` are still one history across
+  // navigations (HTML 7.4.1), not a fresh list a document.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0',
   );
 });
 
