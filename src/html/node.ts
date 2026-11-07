@@ -8066,9 +8066,15 @@ export class HtmlViewNode extends Node {
       // an element's in the top layer, before its box: placed by a position
       // option, it has the option's style (CSS Anchor Positioning 1, 6.2)
       const backdrop = this._backdropOf(tree, element);
-      if (!backdrop) return null;
-      const read = this._placedStyle(backdrop) ?? backdrop.style;
-      return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
+      if (backdrop) {
+        const read = this._placedStyle(backdrop) ?? backdrop.style;
+        return cssomStyle(read, this._scale, this._usedBox(backdrop, read));
+      }
+      // and one of an element in no top layer has the style it would be
+      // made with all the same, inheriting from its element, as Chrome
+      // answers for it: a page reads an `attr()` the element sets through it
+      const own = cascade.backdropStyleFor(element, style);
+      return cssomStyle(own, this._scale, null, computed, true);
     }
     if (pseudo && pseudo !== 'file-selector-button') return null;
     const box = this._ownBoxOf(tree, element);

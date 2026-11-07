@@ -460,6 +460,32 @@ test("a modal dialog's ::backdrop is the page's to style, and inherits from its 
   assert.deepStrictEqual([edge.x, edge.y, edge.w], [0, 0, 400]);
 });
 
+test("an element in no top layer still reads a ::backdrop's computed style, inheriting what an attr() sets on it", async () => {
+  const { node } = await render(
+    '<style>#d::backdrop{background-color:rgb(1,2,3)}</style>' +
+      '<section id="s"><div id="d" data-size="150%" ' +
+      'style="font-size:attr(data-size type(<percentage>))">x</div></section>',
+  );
+  const el = view(node);
+  const d = findById(el.document, 'd')!;
+  const own = el.computedStyle(d)!;
+  const backdrop = el.computedStyle(d, 'backdrop');
+  assert.ok(backdrop, 'a style, though no box is built for it');
+  const size = (style: Record<string, string>) => style['font-size']!;
+  assert.strictEqual(size(backdrop), size(own), 'inherited from it');
+  const parent = parseFloat(
+    size(el.computedStyle(findById(el.document, 's')!)!),
+  );
+  assert.ok(parent > 0);
+  assert.strictEqual(parseFloat(size(own)), parent * 1.5, 'the attr() read');
+  assert.strictEqual(
+    backdrop['background-color'],
+    'rgb(1, 2, 3)',
+    'its own rule',
+  );
+  assert.strictEqual(backdrop.position, 'fixed', "and the UA sheet's");
+});
+
 test('a modal dialog blocks the rest of the document: its controls get no widget, and none of it takes the focus', async () => {
   const { node } = await render(
     '<p><input id="page"> <a id="link" href="#x">link</a></p>' +
