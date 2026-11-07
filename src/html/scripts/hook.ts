@@ -419,10 +419,11 @@ export function useScripts(
   const start = useCallback((loaded: ScriptRuntime, document: Document) => {
     const link = linked.current;
     // the next of the host's session, where it keeps one across the
-    // documents it shows here — a page's, and never a frame's — which
-    // tells the document shown before it where it goes as it goes, in
-    // this `<Html>` or one the host mounted in its place (`arriveAt`); one
-    // shown with no session hears only where
+    // documents it shows here — a page's tab — which tells the document
+    // shown before it where it goes as it goes, in this `<Html>` or one
+    // the host mounted in its place (`arriveAt`); a frame's session is
+    // taken in `bindFrame` instead, so the seat is made with the arrival;
+    // one shown with no session hears only where
     const session = link ? null : (latest.current.session ?? null);
     const arrival = session ? arriveAt(session, address.current) : null;
     release({});

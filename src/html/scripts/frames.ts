@@ -40,9 +40,23 @@ import {
   SB_PROPAGATES,
   SB_TOP_GESTURE,
 } from './sandbox.js';
+import { HtmlSessionHistory } from './session.js';
 import { linkOpener, linkTarget, navigableFor } from './target.js';
 
 const h = React.createElement;
+
+/** Each frame's session history across the documents it shows, kept on
+ *  the frame so every view of it — drawn or held — shares one history. */
+const FRAME_SESSIONS = new WeakMap<Element, HtmlSessionHistory>();
+
+function sessionOf(frame: Element): HtmlSessionHistory {
+  let session = FRAME_SESSIONS.get(frame);
+  if (!session) {
+    session = new HtmlSessionHistory();
+    FRAME_SESSIONS.set(frame, session);
+  }
+  return session;
+}
 
 /** What a frame takes of the page's `<Html>`: how its documents look and
  *  move, and where their resources come from. */
@@ -211,6 +225,9 @@ function FrameDocument({
   const scroller = useRef<ScrollableNode | null>(null);
   const host = context.parent.host;
   const outer = context.seams;
+  // the frame's own history across the documents it shows, shared by every
+  // view of this frame (`bindFrame` takes each document as the next of it)
+  const session = sessionOf(frame);
   /** What the document's sandbox takes from it, which only the host knows. */
   const sandbox = host.shared.sandboxes.get(document) ?? 0;
   const seams: ScriptsOptions = {
@@ -252,7 +269,16 @@ function FrameDocument({
       }
       host.navigateFrame(frame, to, post ?? null);
     },
-    reload: () => host.navigateFrame(frame, url, null),
+    reload: () => {
+      session.reload();
+      host.navigateFrame(frame, session.current?.url ?? url, null);
+    },
+    // a step past this document's own entries loads the entry's document
+    // into the frame; one among them the engine traverses itself
+    go: (delta) => {
+      const to = session.go(delta);
+      if (to) host.navigateFrame(frame, to.url, null);
+    },
     // nothing of the window it is in is a frame's
     popup: null,
     close: undefined,
@@ -262,8 +288,7 @@ function FrameDocument({
     // the frame's, and refused
     fetch: (request, signal) =>
       outer.fetch({ ...request, client: request.client ?? url }, signal),
-    // the page's session is the page's: a frame's history is its own
-    session: null,
+    session,
     title: () => {},
     log: (level, text) => outer.log(level, `[frame ${url}] ${text}`),
     drawsFrames: true,
@@ -286,6 +311,17 @@ function FrameDocument({
       if (drawn.get(document) === handle) drawn.delete(document);
     };
   }, [realm, host, document, handle]);
+  // a navigated `about:blank` or `srcdoc` has no realm of its own, so
+  // nothing calls `arriveAt` for it: the frame's session takes it here.
+  // The frame's first `about:blank` is skipped — it is not an entry the
+  // Navigation API shows (HTML 7.4.1).
+  const shownBare = useRef(false);
+  useEffect(() => {
+    if (realm || shownBare.current) return;
+    if (session.entries.length === 0) return;
+    shownBare.current = true;
+    session.show(url);
+  }, [realm, session, url]);
   // a frame in this frame is a frame of this frame's realm, and in a document
   // with no realm of its own one of the page's, which loads it
   // (`DomHost._holdsFrames`)

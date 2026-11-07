@@ -7751,6 +7751,13 @@ export class DomHost {
     // as one window of another origin reaches another; elsewhere nothing of
     // it is
     const foreign = !!src && !blob && !this._sameOrigin(src);
+    // a cross-origin document breaks the contiguous same-origin joint the
+    // Navigation API shows: forget the window and session this realm kept
+    // for the frame, so a later same-origin document starts a history of
+    // its own rather than pushing past the gap
+    if (foreign && navigated && this.entries) {
+      this.entries.call('__forgetFrameWindow', [this.idOf(frame)]);
+    }
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
         if (src) this._frameAt.set(frame, src);
@@ -7764,6 +7771,11 @@ export class DomHost {
         this._unloadFrameDocument(frame);
         if (src) this._frameAt.set(frame, src);
         else this._blankFrame(frame);
+        // the navigated blank's session, as a fetched document's is: a
+        // push onto the frame's history where one was already showing
+        if (!src && this.entries && this._loadsFrame(frame)) {
+          this.entries.call('__ensureFrameSession', [this.idOf(frame)]);
+        }
         loaded();
       }, 0);
       return;
@@ -8089,6 +8101,11 @@ export class DomHost {
       // told as the realm is linked to this one, an entry of the page's
       if (scripted) this._goLive(doc);
       return;
+    }
+    // its window and session, before any script reads `contentWindow`, so
+    // a parent setting `src` next still pushes onto this document's history
+    if (this.entries && this._loadsFrame(frame)) {
+      this.entries.call('__ensureFrameSession', [this.idOf(frame)]);
     }
     if (this._loadsFrame(frame)) this._framesShown.add(frame);
     if (scripts) {

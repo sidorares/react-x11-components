@@ -17381,6 +17381,74 @@ test("a frame's window has its page's storage, as a frame of its origin has", as
   );
 });
 
+test("a frame's session history spans the documents it shows", async () => {
+  // HTML 7.4.1: a frame's navigations are one history, so
+  // `navigation.entries()` after a cross-document push is length 2 and
+  // `navigation.activation` remembers how it got there.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '      /a\\.html$/.test(n.entries()[0].url),' +
+      '      /b\\.html$/.test(n.entries()[1].url),' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p><script></script>',
+      'b.html': '<!doctype html><p>b</p><script></script>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0|true|true',
+  );
+});
+
+test('a frame without scripts keeps one session across the documents it shows', async () => {
+  // WPT's /common/blank.html has no script, so the frame stays the page
+  // realm's: its window and `navigation` are still one history across
+  // navigations (HTML 7.4.1), not a fresh list a document.
+  const { text } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var f = document.getElementById("f"), w = f.contentWindow;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.entries().length, n.currentEntry.index,' +
+      '      n.activation.navigationType,' +
+      '      n.activation.from && n.activation.from.index,' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  w.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    '2|1|push|0',
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
