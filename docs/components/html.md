@@ -7086,8 +7086,11 @@ plural ones it had first as them. A page reads an `auto` inset that a
 by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
 multicol container's columns has its insets read where the strip had it.
 `getComputedStyle` reads a `::backdrop`'s style, and the option's where a
-position option placed it; a box an option placed reads the option's insets
-where both sides of an axis are lengths.
+position option placed it; one of an element in no top layer, which has no
+box, reads the style it would be made with, inheriting from its element, as
+Chrome answers for it, so an `attr()` the element sets reaches it. A box an
+option placed reads the option's insets where both sides of an axis are
+lengths.
 A `<style>`'s or a `<link>`'s sheet a script disables (`sheet.disabled`)
 is out of the cascade until it is let be. `anchor-valid` hides a box that
 refers to its default anchor — an `anchor()` or an `anchor-size()` that
