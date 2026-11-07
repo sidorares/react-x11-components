@@ -108,7 +108,7 @@ const metric = SCRIPTS_CONTAINED ? fontMetric : nodeTest.skip;
 const PAGE = 'https://example.test/dir/page.html';
 
 interface Hosted {
-  handle: HtmlHandle;
+  handle: ReturnType<typeof useHtmlHandle>;
   view: HtmlViewNode;
   logs: string[];
   links: string[];
@@ -216,9 +216,10 @@ async function hosted(
     scrollTo: (x, y) => {
       // as `useScriptedHtml` does: hold a scroll across until the reach
       // marker mounts (`oweScrollReach`), and one down for the next pass
-      const node = (
-        out.handle?.ref as { current?: HtmlViewNode | null } | undefined
-      )?.current;
+      const node = out.handle?.ref
+        ? ((out.handle.ref as { current?: HtmlViewNode | null }).current ??
+          null)
+        : null;
       node?.oweScrollReach?.(x);
       out.pane?.scrollTo?.({ x, y });
       node?.oweScrollDown?.(y);
