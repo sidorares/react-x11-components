@@ -213,7 +213,16 @@ async function hosted(
       left: 0,
       top: 0,
     }),
-    scrollTo: (x, y) => out.pane?.scrollTo({ x, y }),
+    scrollTo: (x, y) => {
+      // as `useScriptedHtml` does: hold a scroll across until the reach
+      // marker mounts (`oweScrollReach`), and one down for the next pass
+      const node = (
+        out.handle?.ref as { current?: HtmlViewNode | null } | undefined
+      )?.current;
+      node?.oweScrollReach?.(x);
+      out.pane?.scrollTo?.({ x, y });
+      node?.oweScrollDown?.(y);
+    },
     navigate: (url) => void out.links.push(url),
     reload: () => {},
     go: () => {},
@@ -15256,6 +15265,37 @@ metric(
     assert.equal(gh, rh, `group height: ${out}`);
     assert.equal(rw, '40', out);
     assert.equal(rh, '80', out);
+  },
+);
+
+metric(
+  'scrollIntoView under vertical-lr scrolls across once the document width is known',
+  async () => {
+    // A scroll across before the first layout that finds the width (an
+    // end-of-body scrollIntoView on a vertical-lr page) was dropped; the
+    // reach marker never saw it, and WPT massive-element-left-of-viewport-*
+    // compared a scrolled capture to an unscrolled ref.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' html { writing-mode: vertical-lr }' +
+        ' .t { inline-size: 100px; block-size: 40000px }' +
+        ' .b { inline-size: 100%; block-size: 100px }' +
+        '</style></head><body>' +
+        '<div class="t"><div style="inline-size:100%;block-size:39900px"></div>' +
+        '<div id="b" class="b"></div></div>' +
+        '<p id="out"></p><script>' +
+        'b.scrollIntoView();' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  document.getElementById("out").textContent =' +
+        '    Math.round(scrollX) + "|" + Math.round(b.getBoundingClientRect().x);' +
+        '}); });' +
+        '</script></body></html>',
+      { pane: 300 },
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [sx, bx] = out.split('|').map(Number);
+    assert.ok(sx > 1000, `scrollX after scrollIntoView: ${out}`);
+    assert.ok(bx < 400, `blue in view: ${out}`);
   },
 );
 

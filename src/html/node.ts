@@ -316,6 +316,7 @@ import {
   onPage,
   pageMargins,
   pageSides,
+  turnsUp,
 } from './layout/writing.js';
 import {
   endOrigins,
@@ -6417,7 +6418,16 @@ export class HtmlViewNode extends Node {
     const pane = this._pane() as
       (ScrollPane & { contentWidth?: number }) | null;
     this._heldScrollX = null;
-    if (!pane || this._documentWidth <= this._laidOutWidth + 0.5) return;
+    if (!pane) return;
+    // a scroll across before the first layout that finds how wide the
+    // document is (an end-of-body `scrollIntoView` on a `vertical-lr`
+    // page, WPT `massive-element-left-of-viewport-*`): keep it until that
+    // width lands, then hold it for the reach marker as below
+    if (this._documentWidth <= this._laidOutWidth + 0.5) {
+      this._owedScrollX = x;
+      return;
+    }
+    this._owedScrollX = null;
     const reaches = (pane.contentWidth ?? 0) - pane.abs.width;
     // no further than the document reaches, as the pane will clamp it
     const most = Math.max(0, this._documentWidth - pane.abs.width);
@@ -6476,6 +6486,9 @@ export class HtmlViewNode extends Node {
    *  scrolled by something else — the wheel, a smooth scroll core runs —
    *  and the hold is over (`heldScrollX`). */
   private _heldFrom = 0;
+  /** A scroll across asked before the document's width was known, in the
+   *  pane's logical pixels: replayed once `_reportReach` finds the width. */
+  private _owedScrollX: number | null = null;
 
   /**
    * `heldScrollX`, read by a page: the viewport's scroll origin, a page
@@ -6503,6 +6516,14 @@ export class HtmlViewNode extends Node {
    *  that far, once it does — or as far as it reaches, once it reaches as
    *  far as the document. */
   private _releaseHeldScroll(): void {
+    // a scroll across owed before the document's width was known, replayed
+    // once the width is in (`_reportReach`) — and again here where a paint
+    // runs before that report's setState has mounted the reach marker
+    if (this._owedScrollX !== null && this._documentWidth > 0) {
+      const owed = this._owedScrollX;
+      this._owedScrollX = null;
+      this.oweScrollReach(owed);
+    }
     const x = this.heldScrollX() === null ? null : this._heldScrollX;
     const pane = this._pane() as
       (ScrollPane & { contentWidth?: number }) | null;
@@ -6511,9 +6532,9 @@ export class HtmlViewNode extends Node {
     const marked = (pane.contentWidth ?? 0) + 0.5 >= this._documentWidth;
     if (x * pane.scale > reaches + 0.5 && !marked) return;
     this._heldScrollX = null;
-    void Promise.resolve().then(() => {
-      if (!this.destroyed) pane.scrollTo({ x });
-    });
+    // sync: a microtask let a reftest's screenshot land on the unscrolled
+    // frame before the pane moved (WPT `massive-element-left-of-viewport-*`)
+    if (!this.destroyed) pane.scrollTo({ x });
   }
 
   /**
@@ -6567,12 +6588,26 @@ export class HtmlViewNode extends Node {
         ? this._documentWidth / s
         : 0;
     const reach = partial ? Math.max(right, this._scrollReach) : right;
-    if (Math.abs(reach - this._scrollReach) < 0.5) return;
+    if (Math.abs(reach - this._scrollReach) < 0.5) {
+      // width unchanged, but a scroll across may have been owed before any
+      // width was known
+      if (this._owedScrollX !== null && right > 0) {
+        const x = this._owedScrollX;
+        this._owedScrollX = null;
+        this.oweScrollReach(x);
+      }
+      return;
+    }
     this._scrollReach = reach;
     // how far it draws past its box moved with it (`paintOverhang`), which
     // core reads only where the element says it changed
     this.invalidate(false, this, 'paint');
     this._props().onScrollReach?.(reach);
+    if (this._owedScrollX !== null && right > 0) {
+      const x = this._owedScrollX;
+      this._owedScrollX = null;
+      this.oweScrollReach(x);
+    }
   }
 
   private _reportViewport(): void {
@@ -16288,9 +16323,16 @@ export class HtmlViewNode extends Node {
     const w = x1 - x0;
     const h = y1 - y0;
     if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;
-    // paint in layout coordinates: undo the page mapping for the clip
+    // paint in the frame's layout axes (where the box is drawn), then turn
+    // the picture onto a page-sized surface: the transition places captures
+    // in the page's axes (`_placementOf`), and a layout-sized paint into a
+    // page-sized buffer leaves the ink unrotated (`massive-element-*-of-
+    // viewport-*` under `vertical-lr`)
     let paintX = x0;
     let paintY = y0;
+    let paintW = w;
+    let paintH = h;
+    let turn: ComputedStyle['writingMode'] | null = null;
     if (tree.vertical) {
       const frame = frameOfBox(box);
       const mode = frame ? FRAME_ROOTS.get(frame)?.style.writingMode : null;
@@ -16302,11 +16344,15 @@ export class HtmlViewNode extends Node {
         );
         paintX = laid.x;
         paintY = laid.y;
+        paintW = laid.width;
+        paintH = laid.height;
+        turn = mode;
       }
     }
-    const surface = this._surface(w, h);
-    if (!surface) return null;
-    paintCapture(surface.getContext('2d') as PaintContext, tree, box, {
+    if (paintW * paintH > CAPTURE_LIMIT) return null;
+    const painted = this._surface(paintW, paintH);
+    if (!painted) return null;
+    paintCapture(painted.getContext('2d') as PaintContext, tree, box, {
       ...base,
       originX: -paintX,
       originY: -paintY,
@@ -16317,10 +16363,34 @@ export class HtmlViewNode extends Node {
         width: viewport.width,
         height: viewport.height,
       },
-      damage: { x: 0, y: 0, width: w, height: h },
+      damage: { x: 0, y: 0, width: paintW, height: paintH },
       selection: null,
       captured: others,
     });
+    let surface = painted;
+    if (turn && (paintW !== w || paintH !== h)) {
+      const page = this._surface(w, h);
+      if (!page) {
+        painted.destroy?.();
+        return null;
+      }
+      const ctx = page.getContext('2d') as PaintContext;
+      if (ctx.drawImage && ctx.setTransform) {
+        // the frame's own quarter turn (`makeFrame`): layout (sx, sy) onto
+        // the page surface so its bottom-left lands at the page's top-left
+        // for a clockwise frame, and its top-left for one that turns up
+        if (turnsUp(turn)) ctx.setTransform(0, -1, 1, 0, 0, paintW);
+        else ctx.setTransform(0, 1, -1, 0, paintH, 0);
+        ctx.drawImage(painted, 0, 0);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      } else {
+        page.destroy?.();
+        painted.destroy?.();
+        return null;
+      }
+      painted.destroy?.();
+      surface = page;
+    }
     return {
       surface,
       inkX: x0 - pageOwn.x,
@@ -16482,10 +16552,16 @@ export class HtmlViewNode extends Node {
           if (top.pseudo === 'view-transition') others.add(top);
         }
       }
-      const size = root ? this._viewportPlacement(own) : this._borderRect(own);
-      // drawn at its size, as it is: straight onto the context, as the
-      // document would draw it there
-      if (Math.abs(w - size.width) < 1e-6 && Math.abs(h - size.height) < 1e-6) {
+      // page axes, as the group's width/height (`_placementOf`): a layout
+      // border box would scale a page-oriented capture by the frame's swap
+      const size = root ? this._viewportPlacement(own) : this._placementOf(own);
+      // live paint is layout-oriented; a box in a vertical frame must go
+      // through `_captureSurface`, which turns the picture onto the page
+      const live =
+        !frameOfBox(own) &&
+        Math.abs(w - size.width) < 1e-6 &&
+        Math.abs(h - size.height) < 1e-6;
+      if (live) {
         this._paintLive(ctx, tree, root ? null : own, x, y, damage, others);
         return;
       }
