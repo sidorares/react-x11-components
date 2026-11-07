@@ -2041,7 +2041,10 @@ the `animation` shorthand, which is `''` where a timeline or a range is not
 the initial one, and an `auto` duration as `0s` on the document's timeline
 and `auto` where it may be a scroll's. `el.style.animation` is kept as its
 longhands, the timeline and the range set back with them, and read back
-from them.
+from them; and each `animation-*` longhand, `animation-composition` and
+`animation-range-start` and `-end` take only a list of what they take, as
+the cascade reads them, a value that is none leaving the declaration as it
+was.
 
 **An animation is the spec's model, procedure by procedure.** Its start
 time, hold time, playback rate and pending playback rate, its pending play
