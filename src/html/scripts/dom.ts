@@ -7892,7 +7892,11 @@ export function installDom(
       // a focus that moved during an intercepted navigation keeps the
       // page's choice at the end (HTML, "focus changed during ongoing
       // navigation")
-      if (!had && document.activeElement === this && pageSession.session.ongoing) {
+      if (
+        !had &&
+        document.activeElement === this &&
+        pageSession.session.ongoing
+      ) {
         pageSession.session.focusChanged = true;
       }
       // an editing host focused takes the caret, at its start, where the
@@ -30915,10 +30919,7 @@ export function installDom(
           if (s.ongoing?.event !== event) return;
           // finish given true: focus, then scroll, then done
           // (HTML 7.2.6.10.5); `navigatesuccess` after both
-          if (
-            event._state === 'committed' ||
-            event._state === 'scrolled'
-          ) {
+          if (event._state === 'committed' || event._state === 'scrolled') {
             potentiallyResetFocus(s, event);
           }
           if (
@@ -30942,10 +30943,7 @@ export function installDom(
           if (s.ongoing?.event !== event) return;
           // finish given false, then abort (HTML, handler failure): focus
           // reset before `navigateerror`
-          if (
-            event._state === 'committed' ||
-            event._state === 'scrolled'
-          ) {
+          if (event._state === 'committed' || event._state === 'scrolled') {
             potentiallyResetFocus(s, event);
           }
           event._state = 'finished';
