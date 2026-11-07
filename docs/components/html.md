@@ -2041,7 +2041,16 @@ the `animation` shorthand, which is `''` where a timeline or a range is not
 the initial one, and an `auto` duration as `0s` on the document's timeline
 and `auto` where it may be a scroll's. `el.style.animation` is kept as its
 longhands, the timeline and the range set back with them, and read back
-from them.
+from them. A `@keyframes` rule is a `CSSKeyframesRule`, dropped from its
+sheet where its name is `none`, `default`, a CSS-wide keyword or no
+identifier or string. Its `cssRules` are `CSSKeyframeRule`s, a keyframe
+dropped where a selector is outside 0% to 100% and `keyText` read as `0%`
+for `from` and `100%` for `to`, and a keyframe's `style` holds none of the
+animation properties but `animation-timing-function` and
+`animation-composition`, whatever a shorthand after them says. A page
+renames it, edits a keyframe's selector or style, and adds, finds and
+removes keyframes (`appendRule`, `findRule`, `deleteRule`), and the rule is
+written again in its sheet, which what runs it animates by.
 
 **An animation is the spec's model, procedure by procedure.** Its start
 time, hold time, playback rate and pending playback rate, its pending play

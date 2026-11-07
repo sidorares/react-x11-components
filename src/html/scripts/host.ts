@@ -3940,6 +3940,18 @@ export class DomHost {
         return declarationText(text(a));
       case 'blockSet':
         return withDeclaration(text(a), text(b), text(c), d);
+      // a keyframe's block, without what no keyframe takes: the animation
+      // properties but its timing function and its composition (CSS
+      // Animations 1, 3; CSS Animations 2, 4), dropped as they are read,
+      // so a shorthand takes nothing it did not declare
+      case 'keyframeBlock':
+        return serializeDeclarations(
+          declarationsIn(text(a)).filter(
+            (x) =>
+              !/^animation(?:-|$)/.test(x.prop) ||
+              /^animation-(?:timing-function|composition)$/.test(x.prop),
+          ),
+        );
 
       // --- shadow trees, which `<Html>` draws: one attached builds the
       // document again at the next flush, as a new tree to draw
