@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.39.1](https://github.com/sidorares/react-x11-components/compare/v0.39.0...v0.39.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **html:** &lt;a download&gt; fires navigate with downloadRequest ([#1379](https://github.com/sidorares/react-x11-components/issues/1379)) ([303bae7](https://github.com/sidorares/react-x11-components/commit/303bae74549d4ba6d0e7a89488a3e2b7a943719b))
+* **html:** a ::backdrop of an element in no top layer reads the style it would be made with, so an attr() reaches it ([#1375](https://github.com/sidorares/react-x11-components/issues/1375)) ([6348d14](https://github.com/sidorares/react-x11-components/commit/6348d147698d9373fd103af62bc8f2228fe9555e))
+* **html:** a frame's session history spans the documents it shows ([#1377](https://github.com/sidorares/react-x11-components/issues/1377)) ([d39c5c8](https://github.com/sidorares/react-x11-components/commit/d39c5c80c99f004137783b5739c08f9dc7daebb5))
+* **html:** NavigateEvent focusReset after an intercepted transition ([#1378](https://github.com/sidorares/react-x11-components/issues/1378)) ([88f6be4](https://github.com/sidorares/react-x11-components/commit/88f6be44c1fc0a9620ef77869b7c0a6f6025ef9f))
+* **html:** static ::view-transition uses the snapshot containing block ([#1380](https://github.com/sidorares/react-x11-components/issues/1380)) ([ebbded0](https://github.com/sidorares/react-x11-components/commit/ebbded034d533b9f35a10207ad262c1fd942a67f))
+
 ## [0.39.0](https://github.com/sidorares/react-x11-components/compare/v0.38.0...v0.39.0) (2026-11-06)
 
 
