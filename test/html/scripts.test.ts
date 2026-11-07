@@ -9507,7 +9507,8 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       '  r.push("asked " + (inBefore !== undefined));' +
       '  await loaded;' +
       '  r.push(await inBefore, (await Promise.all(inHide)).join(","), count);' +
-      // what the window had is gone with the document it was of
+      // the window and its `navigation` are the frame's across documents
+      // (HTML 7.4.1), so a navigate after the next one is in still commits
       '  r.push(await refused(nav.navigate("#y")), i.contentWindow.location.search);' +
       // taken out, the frame's document goes as the task ends
       '  var w2 = i.contentWindow, nav2 = w2.navigation;' +
@@ -9542,7 +9543,7 @@ test('a frame’s document a navigation leaves is asked as it starts and unloade
       'InvalidStateError',
       'InvalidStateError,InvalidStateError,SyntaxError,DataCloneError',
       '1',
-      'InvalidStateError',
+      'committed',
       '?1',
       'removed',
       'out: pagehide',

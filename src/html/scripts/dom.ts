@@ -10681,7 +10681,14 @@ export function installDom(
         made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
-      frameTargets.set(doc, frameTargets.get(previous));
+      // a new document on a kept window hears none of the last one's
+      // listeners (HTML 7.4.1): `onbeforeunload` and the rest go with it
+      const target = frameTargets.get(previous);
+      if (target) {
+        target._handlers = Object.create(null);
+        target._listeners = Object.create(null);
+      }
+      frameTargets.set(doc, target);
       // shown once it is the frame's, which it is only once it is in
       if (!last.initial) doc._pageShowing = true;
       last.doc = doc;
@@ -37962,7 +37969,9 @@ export function installDom(
   });
   // the frame went to another origin: drop the window and session this
   // realm kept, so a later same-origin document is not contiguous with
-  // the entries from before the gap (HTML, `navigation.entries()`)
+  // the entries from before the gap (HTML, `navigation.entries()`). The
+  // WindowProxy stays — it is the frame element's for as long as the
+  // element is (HTML 7.2.3), including across origins.
   entry('__forgetFrameWindow', () => {
     const [id] = input();
     const frame = wrap(id);
@@ -37975,7 +37984,6 @@ export function installDom(
       keptFrameWindows.delete(frame);
     }
     frameLocations.delete(frame);
-    frameProxies.delete(frame);
     return true;
   });
 
