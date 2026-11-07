@@ -9373,6 +9373,28 @@ function whiteSpacePart(
  * `border-top-left-radius: var(--borderRadius-medium)` and the same at the
  * bottom left, and its top corner was square.
  */
+/** One inset of `from`'s on `style`: its length, and its anchor function
+ *  and `anchor-size()` where it has them. */
+function insetPart(
+  style: ComputedStyle,
+  from: ComputedStyle,
+  side: InsetSide,
+): void {
+  style[side] = from[side];
+  const inset = from.anchorInsets?.[side];
+  if (inset) style.anchorInsets = { ...style.anchorInsets, [side]: inset };
+  else if (style.anchorInsets?.[side]) {
+    const { [side]: _gone, ...rest } = style.anchorInsets;
+    style.anchorInsets = Object.keys(rest).length ? rest : null;
+  }
+  const size = from.anchorSizes?.[side];
+  if (size) style.anchorSizes = { ...style.anchorSizes, [side]: size };
+  else if (style.anchorSizes?.[side]) {
+    const { [side]: _gone, ...rest } = style.anchorSizes;
+    style.anchorSizes = Object.keys(rest).length ? rest : null;
+  }
+}
+
 const FIELD_PARTS = new Map<string, FieldPart>([
   ...CORNERS.map((name, i): [string, FieldPart] => [
     name,
@@ -9404,6 +9426,15 @@ const FIELD_PARTS = new Map<string, FieldPart>([
   ...ruleParts('color'),
   ...ruleParts('break'),
   ...ruleParts('inset'),
+  // an inset, with what of it an `anchor()` or an `anchor-size()` holds
+  // (`anchorInsets`, `anchorSizes`): `unset` in a `@position-try` rule took
+  // the length back and left the base style's `anchor()` on the side
+  ...(['top', 'right', 'bottom', 'left'] as const).map(
+    (side): [string, FieldPart] => [
+      side,
+      (style, from) => insetPart(style, from, side),
+    ],
+  ),
   ['timeline-trigger-name', partOf('timelineTriggers', 'names')],
   ['timeline-trigger-source', partOf('timelineTriggers', 'sources')],
   [

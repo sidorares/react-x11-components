@@ -3779,3 +3779,23 @@ test("a box placed by a position option reads the option's insets, where both si
   assert.strictEqual(el.elementRect(b)?.x, 300);
   assert.strictEqual(el.computedStyle(b)?.left, '300px');
 });
+
+test('unset in a @position-try rule takes an inset back with its anchor(), and position-try-order sorts the base style with the options', async () => {
+  const doc = (order: string) =>
+    '<!doctype html><html><head><style>body{margin:0}' +
+    '#a{anchor-name:--a;position:absolute;top:44px;width:100px;height:50px}' +
+    '@position-try --below{top:anchor(bottom);bottom:unset}' +
+    '#i{position:fixed;position-anchor:--a;width:100px;height:50px;' +
+    `bottom:anchor(top);position-try:${order} --below}` +
+    '</style></head><body><div id="a"></div><div id="i"></div></body></html>';
+  for (const order of ['normal', 'most-height']) {
+    const { node } = await render(doc(order), 800);
+    const el = view(node);
+    // above the anchor is 44 tall, which the box's 50 do not fit in
+    assert.strictEqual(
+      el.elementRect(findById(el.document, 'i')!)?.y,
+      94,
+      `${order}: below the anchor`,
+    );
+  }
+});

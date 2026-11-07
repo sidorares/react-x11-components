@@ -7068,6 +7068,9 @@ plural ones it had first as them. A page reads an `auto` inset that a
 `position-area` or `anchor-center` places a box against its default anchor
 by as `0px`, as the box is placed (3.1, 4.2), and a box cut into a
 multicol container's columns has its insets read where the strip had it.
+A CSS-wide keyword in a `@position-try` rule takes an inset back whole,
+the `anchor()` in it with it, and `position-try-order` sorts the base style
+with the options, the last successful one alone kept ahead of them.
 `getComputedStyle` reads a `::backdrop`'s style, and the option's where a
 position option placed it; a box an option placed reads the option's insets
 where both sides of an axis are lengths.
