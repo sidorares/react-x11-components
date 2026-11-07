@@ -30767,6 +30767,9 @@ export function installDom(
     historyApi?: boolean;
     /** A POST form submission's entry list (`NavigateEvent.formData`). */
     formData?: Any;
+    /** A download hyperlink's filename (HTML, "fire a download request
+     *  `navigate` event"), or null where it is not a download. */
+    downloadRequest?: string | null;
   }
 
   /**
@@ -30784,7 +30787,7 @@ export function installDom(
      *  the handlers have been called. `params` is read as it runs, which a
      *  precommit handler's `redirect()` may have changed. */
     apply: (intercepted: boolean) => (() => void) | void,
-  ): 'same' | 'canceled' | 'other' => {
+  ): 'same' | 'canceled' | 'other' | 'download' => {
     // a document whose navigations go untold: done, with no event, and
     // nothing settled of what a method handed back
     if (s.ctx.disabled?.()) {
@@ -30839,6 +30842,8 @@ export function installDom(
         userInitiated: !!params.userInitiated,
         sourceElement: params.sourceElement ?? null,
         formData: params.formData ?? null,
+        downloadRequest:
+          params.downloadRequest !== undefined ? params.downloadRequest : null,
       }),
     );
     const tracker = params.tracker ?? null;
@@ -30853,7 +30858,15 @@ export function installDom(
       abortOngoing(s);
       return 'canceled';
     }
-    if (!event._intercepted && !params.sameDocument) {
+    // a download request: not intercepted → the caller saves the file and
+    // aborts this ongoing one (HTML, "download the hyperlink"); intercepted
+    // → the handlers own it as a same-document push
+    if (
+      params.downloadRequest !== undefined &&
+      params.downloadRequest !== null
+    ) {
+      if (!event._intercepted) return 'download';
+    } else if (!event._intercepted && !params.sameDocument) {
       // another document: the host's. The ongoing navigation stays until
       // that document loads, `window.stop()` aborts it, or the next
       // navigation does — so `event.signal` and the method's promises are
@@ -31154,8 +31167,10 @@ export function installDom(
       /** A form's submission: another document whatever its URL, with
        *  what a POST sends. */
       form?: { formData: Any };
+      /** A download hyperlink's filename (`NavigateEvent.downloadRequest`). */
+      downloadRequest?: string;
     } = {},
-  ): 'same' | 'canceled' | 'other' => {
+  ): 'same' | 'canceled' | 'other' | 'download' => {
     // a document that is unloading, or gone, goes nowhere, and tells no
     // `navigate` of it (HTML 7.4.2.2, "navigate")
     if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'canceled';
@@ -31164,11 +31179,17 @@ export function installDom(
     // a fragment is a fragment navigation as a link's is (HTML 7.4.2.2,
     // "navigate": no document resource); a POST is another document
     const fragment = !options.form?.formData && fragmentOf(from, url);
+    // a download is never a same-document navigation (HTML, "fire a
+    // download request `navigate` event")
+    const downloading = options.downloadRequest !== undefined;
     // a fragment navigation no `navigate()` started — `location`'s, a
     // link's — keeps the Navigation API state the entry it leaves has
     // (HTML 7.4.2.2, "navigate": a null state is the active entry's)
     const navState =
-      fragment && !options.tracker && options.navState === undefined
+      fragment &&
+      !downloading &&
+      !options.tracker &&
+      options.navState === undefined
         ? currentOf(s).navState
         : options.navState;
     // what the navigation is, which a precommit handler's `redirect()` may
@@ -31181,8 +31202,9 @@ export function installDom(
       tracker: options.tracker,
       userInitiated: options.userInitiated,
       sourceElement: options.sourceElement,
-      sameDocument: fragment,
+      sameDocument: downloading ? false : fragment,
       formData: options.form?.formData,
+      downloadRequest: downloading ? options.downloadRequest! : null,
     };
     const went = navigateWith(s, params, (intercepted) => {
       const to = params.url;
@@ -31190,15 +31212,22 @@ export function installDom(
       commitEntry(s, to, how, null, params.navState, how);
       // a page's handler has it, which scrolls where it ends, and an
       // intercepted navigation is no fragment's to tell `hashchange` of
-      if (fragment && !intercepted) {
+      if (fragment && !downloading && !intercepted) {
         scrollToFragment(s.ctx.doc(), to);
         queueHashChange(s, from, to);
       }
       // the host hears of a fragment as it did, once it is the document's
-      if (fragment && fragmentOf(from, to) && s.ctx.tellsFragments) {
+      if (
+        fragment &&
+        !downloading &&
+        fragmentOf(from, to) &&
+        s.ctx.tellsFragments
+      ) {
         return () => s.ctx.away(to, how === 'replace');
       }
     });
+    // a download the page did not intercept: the caller saves it
+    if (went === 'download') return 'download';
     // another document unloads this one, which is asked first, after its
     // `navigate` (HTML 7.4.2.2, "navigate"), and may stay where a prompt
     // says so
@@ -31259,14 +31288,43 @@ export function installDom(
     return str(link.getAttribute('referrerpolicy') ?? '');
   };
 
+  /** The session of the document an element is in: a frame's own, or the
+   *  page's. A click the parent fires on a frame's link still navigates
+   *  that frame (HTML, "follow the hyperlink"). */
+  const sessionOfElement = (el: Any): Session => {
+    const doc = el?.ownerDocument;
+    if (doc && doc !== document) {
+      const made = frameSessions.get(doc);
+      if (made?.session) return made.session as Session;
+    }
+    return pageSession.session;
+  };
+
   const followLink = (anchor: Any, userInitiated: boolean): boolean => {
     if (!anchor.hasAttribute('href')) return true;
-    if (anchor.hasAttribute('download')) return !downloadLink(anchor);
     // an `<a>` in a drawing has its `href` as an animated string
     const address = (): string =>
       anchor instanceof SVGAElement
         ? new URL((anchor as Any).href.baseVal, str(document.baseURI)).href
         : anchor.href;
+    // a download fires `navigate` with `downloadRequest` first (HTML,
+    // "download the hyperlink"); only then, where the page did not keep
+    // it, the host saves the file and the ongoing navigation is aborted
+    if (anchor.hasAttribute('download')) {
+      const s = sessionOfElement(anchor);
+      const href = address();
+      const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+        userInitiated,
+        sourceElement: anchor,
+        downloadRequest: str(anchor.getAttribute('download') ?? ''),
+      });
+      if (went === 'download') {
+        // inform the navigation API about aborting, then save
+        abortOngoing(s);
+        downloadLink(anchor);
+      }
+      return false;
+    }
     const target = anchor.getAttribute('target') ?? '';
     if (!/^(|_self)$/i.test(target)) {
       // a frame of this document's that the target names hears it as its
@@ -31294,12 +31352,12 @@ export function installDom(
       );
       return false;
     }
-    const s = pageSession.session;
+    const s = sessionOfElement(anchor);
     const href = address();
     const went = navigateTo(s, href, pushOrReplace(s, href, false), {
       userInitiated,
       sourceElement: anchor,
-      hostFollows: true,
+      hostFollows: s === pageSession.session,
     });
     return went === 'other';
   };

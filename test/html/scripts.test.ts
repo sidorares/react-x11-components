@@ -9046,6 +9046,35 @@ test('navigation is the page’s entries, and navigate() fires navigate, which a
   );
 });
 
+test('a download link fires navigate with downloadRequest, and without intercept neither success nor a host navigation', async () => {
+  const doc = await hosted(
+    '<p id="out"></p><a id="a" href="file.bin" download="name.bin">d</a><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  navigation.onnavigate = function (e) {' +
+      '    r.push(e.downloadRequest, e.destination.sameDocument, e.canIntercept,' +
+      '      e.sourceElement && e.sourceElement.id, e.destination.key);' +
+      '    e.preventDefault();' +
+      '  };' +
+      '  document.getElementById("a").click();' +
+      // without preventDefault, navigate fires and nothing of success/error
+      // is told when the page does not intercept
+      '  navigation.onnavigate = function (e) { r.push("go " + e.downloadRequest); };' +
+      '  navigation.onnavigatesuccess = function () { r.push("success"); };' +
+      '  navigation.onnavigateerror = function () { r.push("error"); };' +
+      '  document.getElementById("a").download = "";' +
+      '  document.getElementById("a").click();' +
+      "  setTimeout(function () { document.getElementById('out').textContent = r.join('|'); }, 20);" +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'name.bin|false|true|a||go |error',
+  );
+  assert.deepStrictEqual(doc.links, [], 'the host followed no download');
+});
+
 test('a frame’s initial about:blank has no entries and tells no navigation, and a push from it is refused', async () => {
   // HTML 7.2.6.1, "has entries and events disabled"
   const doc = await hosted(
