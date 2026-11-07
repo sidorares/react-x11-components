@@ -7379,7 +7379,9 @@ is not at rest. An RTL container scrolls as an LTR one does, from its left.
 a scroll its extent cannot take yet for its next pass, which is where a
 page that scrolls as it loads leaves it: such a scroll is read back from
 the hold, across as well as down, so `scrollTo(0, 900)` reads `900` on
-the next line, as in a browser, and not the top. And the viewport reaches
+the next line, as in a browser, and not the top. So is the scroll a re-snap
+makes, so a root given a `scroll-snap-type` reads the place it snapped to
+straight after. And the viewport reaches
 as far as a box positioned out of the flow that nothing clips reaches,
 down and across, whatever box that clips what it holds is around it in the
 tree: absolute boxes under a `body { overflow: scroll }` positioned against
