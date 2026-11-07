@@ -449,12 +449,15 @@ Cross-document: where `@view-transition { navigation: auto }` opts in
 (including nested in `@layer` / `@media`, and by layer _order_ among
 competing rules), `pageswap` and `pagereveal` carry a `ViewTransition`
 ([#980]'s events), and `pageswap` runs before the old state is captured
-so a listener can still set names. Still not there: handing that capture
-into the new document's first paint when the view remounts; the snapshot
-containing block for a `position: static` `::view-transition` while
-scrolled (`snapshot-containing-block-static`); a transition in a frame;
-and a transition's vertical axes, which [#975] leaves, though
-`writing-mode` and `text-orientation` are in `getComputedStyle()` now.
+so a listener can still set names. A `::view-transition` with
+`position: static` (or `relative`) is still sized and placed against the
+snapshot containing block — the viewport, whatever the scroll — as
+absolute already was (`snapshot-containing-block-static`). Still not
+there: handing the outbound capture into the new document's first paint
+when the view remounts; a transition in a frame (the static snapshot
+containing block in an iframe among them); and a transition's vertical
+axes, which [#975] leaves, though `writing-mode` and `text-orientation`
+are in `getComputedStyle()` now.
 
 **webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user
