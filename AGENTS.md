@@ -4483,12 +4483,33 @@ closes a way out a DOM binding opens by accident:
   `waitForNextFrame` asks for frames until the time moves, and a clock
   read live answered it with no frame at all. A frame runs the resize
   steps, the scroll steps and the media queries' changes
-  (`renderingSteps`), updates the scroll-driven animations, then runs
+  (`renderingSteps`), updates the scroll-driven animations, sends the CSS
+  animations' and transitions' events each document owes, then runs
   `requestAnimationFrame`'s callbacks in a task after its microtasks, which
   is where a browser's checkpoint puts a finished promise. **Anything new
   that reads the document's time reads `taskNow`**, and anything a frame
   must do before the page's callbacks goes in `runFrame`'s first half, in
   the order HTML's "update the rendering" has it.
+- **What a frame tells, it takes from the host at that step.** The scroll
+  steps take the targets that scrolled — each scroll container in a
+  document the realm runs, and a scriptless frame's document whose pane
+  did — from `DomHost.scrollPending`'s list, whole, before any is told, so
+  what a `scroll` listener scrolls is told at the next frame; and "send
+  events" takes each view's CSS events (`takeCssEvents`), the page's and
+  then its frames' in tree order (`_inDocOrder`). Both ops are asked at
+  every frame. Told on timers of their own, a scroll container's `scroll`
+  came after the media queries' `change`, a scroll a listener made came
+  before the next frame's `resize`, and a `transitionrun` before or after
+  the frame it belonged to, by however busy the thread was — WPT's
+  `new-scroll-event-dispatched-at-next-updating-rendering-time`, the last
+  of the webcompat area. **Anything new that tells a page of a scroll goes
+  through `scrollPending`, and a view never pushes its CSS events**: it
+  says it owes them (`onCssEventsOwed`), at once, from inside the pass that
+  made them, and only so that a frame comes where none is coming
+  (`__cssOwed`, `__scrollsOwed`). A frame document with no realm of its
+  own says so to the page's runner, as its events and its scroll
+  containers' do; a view whose events reached a realm it does not have was
+  why its `transitionrun` reached no one.
 - **Each document a realm runs has a viewport of its own.** The page's is
   its pane; a frame's document with no realm of its own has its frame's
   content box (`viewportFor`), which its window's `innerWidth`,
@@ -6620,7 +6641,8 @@ whatever reads its times — the lifts, `getAnimations()` — finds one only
 just begun, and the paint makes it once more and lets it go. And where a
 page listens (`holdsEnds`), a run that ends is
 drawn at its end, as though it filled forwards, until its `animationend`
-is told (`releaseEnds`, in `_oweCssEvents`, just before the telling): a
+is taken (`releaseEnds`, in `takeCssEvents`, which the page's rendering
+update calls and dispatches what it takes in the same task): a
 browser tells it before the frame that draws the element as the animation
 leaves it, and Radix keeps a menu that faded out at its end from the
 listener, so told a frame late the menu was drawn whole between its fade
@@ -6629,7 +6651,10 @@ document's clock is made in `sample`, and a transition in `transition`
 through `_made`**, or it starts as its style is worked out. And **no
 page code runs from a frame**: `_frame` is also called from core's
 `spritesLifted`, inside the presenter's pass, which is why an end is held
-until the events' own tick rather than told before the frame.
+until the page's rendering update takes its event rather than told before
+the frame. A transition owes its `transitionrun` while it waits for its
+paint, as one that goes from idle to pending does (CSS Transitions 2, 5.1,
+`_seenPending`), and nothing more until it begins.
 
 **A transition runs on the same timeline, from the style the document
 draws.** `AnimationTimeline.transition` is asked of every style the cascade

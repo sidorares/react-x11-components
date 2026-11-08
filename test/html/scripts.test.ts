@@ -310,7 +310,7 @@ async function hosted(
       ...scripts,
       // as `useScriptedHtml` hands them to `<Html>`, internal props
       ...({
-        _onCssEvents: scripts.cssEvents,
+        _onCssEventsOwed: scripts.cssEventsOwed,
         _onPaint: scripts.painted,
       } as object),
     });
@@ -16788,12 +16788,21 @@ test('an animation that runs out is drawn at its end until the page hears of it,
   );
   const kept: number[] = [];
   const left: number[] = [];
-  for (let i = 0; i < 12; i += 1) {
+  const draw = async () => {
     await frames(clock, 1);
     kept.push(drawnStyle(doc, 'm').opacity);
     left.push(drawnStyle(doc, 'n').opacity);
-  }
-  assert.equal(doc.text('out'), 'out', 'the page heard the end');
+  };
+  for (let i = 0; i < 12; i += 1) await draw();
+  // the page hears it at its next rendering update, which the wall clock
+  // brings and not the animations' held one; and both stay at their ends
+  // until then
+  assert.equal(
+    await settled(doc, 'out', (t) => t === 'out'),
+    'out',
+    'the page heard the end',
+  );
+  for (let i = 0; i < 3; i += 1) await draw();
   // faded out, and never drawn whole again
   const faded = kept.findIndex((o) => o < 0.5);
   assert.ok(faded >= 0, `it fades: ${kept.join(' ')}`);
@@ -18823,6 +18832,45 @@ test("a frame's document that declares a refresh is sent where it says once its 
   );
 });
 
+test("a frame running its own realm tells its document's readystatechange, its frame's load before its pageshow, and its own cross-document navigate() never settles", async () => {
+  // every browser tells a frame's `load` between its window's `load` and its
+  // `pageshow`; `document.onreadystatechange` is a handler like any; and the
+  // navigation that takes the document to the next keeps its promises as
+  // they are (WPT's ordering-and-transition/*-event-order-with-pagehide)
+  const frame =
+    '<!doctype html><script>if (parent.started) parent.started();</script><p>x</p>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), second = false;' +
+      'window.onload = function () {' +
+      '  window.started = function () {' +
+      '    var doc = f.contentDocument;' +
+      '    doc.onreadystatechange = function () { r.push(doc.readyState); };' +
+      '    doc.addEventListener("DOMContentLoaded", function () { r.push("dcl"); });' +
+      '    f.contentWindow.onpageshow = function () { r.push("pageshow"); };' +
+      '  };' +
+      '  f.contentWindow.onpagehide = function () { r.push("pagehide"); };' +
+      '  f.onload = function () {' +
+      '    r.push("load");' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 100);' +
+      '  };' +
+      '  f.contentWindow.navigation.navigate("b.html").committed.then(' +
+      '    function () { r.push("fulfilled"); }, function () { r.push("rejected"); });' +
+      '};' +
+      '</script>',
+    { 'a.html': frame, 'b.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'pagehide|interactive|dcl|complete|load|pageshow',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
@@ -19248,6 +19296,87 @@ test("a page reads the layout of a scriptless frame's document from the frame's 
     (t) => t !== '',
   );
   assert.equal(page, '108|b2|50|scroll|end|50|b2|null|#|true', logs.join('\n'));
+});
+
+test("a scriptless frame's scroll containers are told their scroll in the rendering update's scroll steps, what a scroll listener scrolls at the next, and its transitions' events before the animation frame callbacks", async () => {
+  // HTML 8.1.7.3, as WPT's new-scroll-event-dispatched-at-next-updating-
+  // rendering-time has it: the resize steps, the scroll steps, the media
+  // queries, "update animations and send events", then the callbacks. A
+  // scroll container's `scroll` went out on a timer of its own, a scroll
+  // listener's scroll with it, and a scriptless frame's `transitionrun`
+  // reached no one: its view's events went to a realm it does not have
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" width="300" height="300"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var w = f.contentWindow, d = f.contentDocument, r = [];' +
+      '  var mql = w.matchMedia("(max-width: 300px)"), s = d.querySelectorAll(".s");' +
+      '  var once = { once: true };' +
+      '  w.addEventListener("resize", function () { r.push("resize0"); }, once);' +
+      '  mql.addEventListener("change", function () { r.push("mqlchange"); }, once);' +
+      '  s[1].addEventListener("scroll", function () { r.push("scroll1"); }, once);' +
+      '  d.documentElement.addEventListener("transitionrun", function () { r.push("transitionrun"); }, once);' +
+      '  s[0].addEventListener("scroll", function () { r.push("scroll0"); s[1].scrollTop = 10; }, once);' +
+      '  s[0].scrollTop = 10;' +
+      '  f.width = "400";' +
+      '  d.documentElement.style.color = "blue";' +
+      '  getComputedStyle(d.documentElement).color;' +
+      '  w.requestAnimationFrame(function () {' +
+      '    r.push("raf0");' +
+      '    w.addEventListener("resize", function () { r.push("resize1"); }, once);' +
+      '    f.width = "500"; f.getBoundingClientRect();' +
+      '    w.requestAnimationFrame(function () {' +
+      '      r.push("raf1"); document.getElementById("out").textContent = r.join("|");' +
+      '    });' +
+      '  });' +
+      '}, 50); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<style>html { transition: color 1s step-start }' +
+        ' .s { overflow: auto; width: 100%; height: 100px } .s div { height: 500px }</style>' +
+        '<div class="s"><div></div></div><div class="s"><div></div></div>',
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(
+    page,
+    'resize0|scroll0|mqlchange|transitionrun|raf0|resize1|scroll1|raf1',
+    logs.join('\n'),
+  );
+});
+
+test("a scriptless frame's window hears its own scroll, from its document, and its scrollend", async () => {
+  // the frame's pane scrolled and told a runner the document has none of
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="width: 300px; height: 100px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var w = f.contentWindow, d = f.contentDocument, r = [];' +
+      '  d.addEventListener("scroll", function (e) { r.push("doc " + e.bubbles); });' +
+      '  w.addEventListener("scroll", function (e) { r.push("win " + (e.target === d)); });' +
+      '  addEventListener("scroll", function () { r.push("page"); });' +
+      '  w.addEventListener("scrollend", function () {' +
+      '    r.push("end " + w.scrollY); document.getElementById("out").textContent = r.join("|");' +
+      '  });' +
+      '  w.scrollTo(0, 40);' +
+      '}, 50); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<style>html, body { margin: 0 }</style><div style="height: 400px"></div>',
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, 'doc true|win true|end 40', logs.join('\n'));
 });
 
 test('a scriptless frame is scrolled to its fragment, its scroll-margin taken off, after the page hears its load', async () => {

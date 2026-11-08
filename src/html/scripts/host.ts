@@ -802,6 +802,9 @@ export interface HandleInternals {
     element: Element | null,
     kind: 'change' | 'changing',
   ): { block: Element | null; inline: Element | null } | null;
+  /** The CSS events the document owes, in the order a page hears them,
+   *  and the ends held for them let go (`HtmlViewNode.takeCssEvents`). */
+  takeCssEvents?(): CssEventInfo[];
   /** An element's `scroll-margin` and a scroll container's
    *  `scroll-padding`, the viewport's for null, top first, in CSS pixels
    *  (`HtmlViewNode.scrollInsets`). */
@@ -3021,14 +3024,87 @@ export class DomHost {
     );
   }
 
-  /** Scroll containers in the document scrolled: each one's `scroll`,
-   *  which does not bubble (CSSOM View, "run the scroll steps"). */
-  elementsScrolled(elements: Iterable<Element>): void {
-    if (this._disposed || !this.entries) return;
-    for (const el of elements) {
-      this.snapEvent(el, 'changing');
-      this.entries.call('__fire', [this.idOf(el), 'scroll']);
+  /**
+   * The targets the realm's next scroll steps tell, in the order they
+   * scrolled, each once (CSSOM View, "pending scroll event targets"): a
+   * scroll container in a document this realm runs, or the document of a
+   * frame with no realm of its own, whose pane scrolled. Taken whole by the
+   * `scrolls` op, so a scroll made as they are told waits for the steps of
+   * the rendering update after.
+   */
+  private _scrollsPending: (Element | Document)[] = [];
+  scrollPending(target: Element | Document): void {
+    if (!this._scrollsPending.includes(target)) {
+      this._scrollsPending.push(target);
     }
+  }
+  /** The targets whose `scroll` the realm has told (`scrolls`), whose
+   *  `scrollend` the runner owes a frame on. */
+  onScrollsTold: ((told: (Element | Document)[]) => void) | null = null;
+
+  /** The documents this realm runs that owe CSS events (`cssOwed`), which
+   *  the `cssEvents` op takes. */
+  private _cssOwing = new Set<Document>();
+  cssOwed(document: Document): void {
+    this._cssOwing.add(document);
+  }
+  /** Whether a document this realm runs owes CSS events. */
+  get cssOwing(): boolean {
+    return this._cssOwing.size > 0;
+  }
+  /** Whether the CSS events wait for the scripts the parser met, which a
+   *  browser runs before its first rendering update: `<Html>` draws a
+   *  document, and starts its animations, before any of them
+   *  (`ScriptRunner.parsed`). */
+  cssHeld = true;
+
+  /**
+   * Documents in the order HTML's rendering update walks them (8.1.7.3,
+   * "docs"): this realm's own first, then each frame's by its frame
+   * element's place in the tree, a frame's before the frames in it.
+   */
+  private _inDocOrder<T extends { document: Document }>(items: T[]): T[] {
+    const chain = (doc: Document): Element[] => {
+      const out: Element[] = [];
+      for (let at: Document | undefined = doc; at && at !== this.document;) {
+        const frame = this._frameOf.get(at);
+        if (!frame || out.includes(frame)) break;
+        out.unshift(frame);
+        let root: AnyNode = frame;
+        while (root.parent) root = root.parent;
+        at = root instanceof Document ? root : undefined;
+      }
+      return out;
+    };
+    const chains = new Map(items.map((i) => [i.document, chain(i.document)]));
+    const order = (a: T, b: T): number => {
+      if (a.document === b.document) return 0;
+      if (a.document === this.document) return -1;
+      if (b.document === this.document) return 1;
+      const x = chains.get(a.document)!;
+      const y = chains.get(b.document)!;
+      for (let i = 0; i < Math.min(x.length, y.length); i += 1) {
+        if (x[i] === y[i]) continue;
+        return DomUtils.compareDocumentPosition(x[i], y[i]) & 4 ? -1 : 1;
+      }
+      return x.length - y.length;
+    };
+    // stable: what a document owes stays in the order it came
+    return items
+      .map((item, at) => ({ item, at }))
+      .sort((a, b) => order(a.item, b.item) || a.at - b.at)
+      .map((e) => e.item);
+  }
+
+  /** The root a node is in: its document, through any shadow roots. */
+  private _rootDocument(node: AnyNode): Document | null {
+    let at: AnyNode = node;
+    for (;;) {
+      if (at.parent) at = at.parent;
+      else if (at instanceof ShadowRoot) at = at.host;
+      else break;
+    }
+    return at instanceof Document ? at : null;
   }
 
   /**
@@ -3056,18 +3132,6 @@ export class DomHost {
       kind === 'change' ? 'scrollsnapchange' : 'scrollsnapchanging',
       idOf(told.block),
       idOf(told.inline),
-    ]);
-  }
-
-  /** The document's CSS transitions owe these events: `transitionrun`,
-   *  `transitionstart`, `transitionend` and `transitioncancel`, which
-   *  bubble (CSS Transitions 2, 6.1). */
-  cssEvents(events: CssEventInfo[]): void {
-    if (this._disposed || !this.entries) return;
-    this.entries.call('__cssEvents', [
-      JSON.stringify(
-        events.map((e) => ({ ...e, element: this.idOf(e.element) })),
-      ),
     ]);
   }
 
@@ -3105,12 +3169,18 @@ export class DomHost {
     return !!plays?.('application/vnd.apple.mpegurl') && !!plays('video/mp4');
   }
 
-  /** And each one's `scrollend`, a frame after its last `scroll`. */
-  elementsScrolledEnd(elements: Iterable<Element>): void {
+  /** And each one's `scrollend`, a frame after its last `scroll`: a frame's
+   *  document's bubbles to its window, as the page's does (CSSOM View
+   *  13.1). */
+  elementsScrolledEnd(targets: Iterable<Element | Document>): void {
     if (this._disposed || !this.entries) return;
-    for (const el of elements) {
-      this.snapEvent(el, 'change');
-      this.entries.call('__fire', [this.idOf(el), 'scrollend']);
+    for (const target of targets) {
+      if (target instanceof Element) this.snapEvent(target, 'change');
+      this.entries.call('__fire', [
+        this.idOf(target),
+        'scrollend',
+        target instanceof Document,
+      ]);
     }
   }
 
@@ -5106,6 +5176,14 @@ export class DomHost {
         this._loadFrame(frame, true);
         return null;
       }
+      // whether the document goes for the next one its window shows, rather
+      // than with its frame taken out of the page: a top-level one always
+      case 'replacedInPlace': {
+        const parent = this.frameParent;
+        if (!parent) return true;
+        const frame = parent._frameOf.get(this.document);
+        return !!frame && documentHolding(frame) !== null;
+      }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
       // `frameDocument` hands a page a document by
@@ -5152,6 +5230,70 @@ export class DomHost {
         this._viewports = new Map(ids.map((id, i) => [id, keys[i]]));
         this._viewportsWoken = false;
         return keys.join('\n');
+      }
+      // the rendering update's scroll steps: the targets that scrolled
+      // since the last, this document's first and then each frame's, in the
+      // order each scrolled (CSSOM View, "run the scroll steps") — each with
+      // the snap targets its `scrollsnapchanging` tells first, where they
+      // are other than it last told (CSS Scroll Snap 2, 6.1). What scrolls
+      // as these are told waits for the next.
+      case 'scrolls': {
+        const pending = this._scrollsPending;
+        this._scrollsPending = [];
+        const told = this._inDocOrder(
+          pending
+            .map((target) => ({
+              target,
+              document:
+                target instanceof Document
+                  ? target
+                  : this._rootDocument(target),
+            }))
+            .filter(
+              (t): t is { target: Element | Document; document: Document } =>
+                !!t.document,
+            ),
+        ).map((t) => t.target);
+        if (!told.length) return '';
+        const out = told.map((target) => {
+          if (!(target instanceof Element)) return [this.idOf(target)];
+          const view = this._drawing(target) as
+            (HtmlHandle & Partial<HandleInternals>) | null;
+          const snap = view?.snapChanged?.(target, 'changing');
+          if (!snap) return [this.idOf(target)];
+          // a target in a shadow tree the container is not in is told as
+          // the host it is in (`snapEvent`)
+          const idOf = (t: Element | null) => {
+            const node = t && retarget(t, target);
+            return node ? this.idOf(node) : 0;
+          };
+          return [this.idOf(target), idOf(snap.block), idOf(snap.inline)];
+        });
+        this.onScrollsTold?.(told);
+        return JSON.stringify(out);
+      }
+      // the rendering update's "update animations and send events": the CSS
+      // events each document this realm runs owes, its own first and then
+      // each frame's (HTML 8.1.7.3), in the order each view has them, and
+      // the ends held for them let go (`HtmlViewNode.takeCssEvents`)
+      case 'cssEvents': {
+        if (!this._cssOwing.size || this.cssHeld) return '';
+        const owing = this._inDocOrder(
+          [...this._cssOwing].map((document) => ({ document })),
+        );
+        this._cssOwing.clear();
+        const events: unknown[] = [];
+        for (const { document } of owing) {
+          const view = (
+            document === this.document
+              ? this._seams.handle
+              : this._s.drawn.get(document)
+          ) as (HtmlHandle & Partial<HandleInternals>) | null | undefined;
+          for (const e of view?.takeCssEvents?.() ?? []) {
+            events.push({ ...e, element: this.idOf(e.element) });
+          }
+        }
+        return events.length ? JSON.stringify(events) : '';
       }
 
       // --- the document

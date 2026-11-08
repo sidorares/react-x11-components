@@ -1514,7 +1514,7 @@ function HtmlDocument(props: InternalHtmlProps): ReactElement {
     onPaint: props._onPaint,
     embedderScheme: props._embedderScheme,
     frameElement: props._frameElement,
-    onCssEvents: props._onCssEvents,
+    onCssEventsOwed: props._onCssEventsOwed,
     onImage: props._onImage ?? (onDomEvent ? handleSheet : undefined),
     canvasImage: props.canvasImage,
     canvasOpaque: props.canvasOpaque,
@@ -1748,6 +1748,7 @@ export function makeHtmlHandle(
       nodeRef.current?.atViewport(element) ?? false,
     snapChanged: (element: Element | null, kind: 'change' | 'changing') =>
       nodeRef.current?.snapChanged(element, kind) ?? null,
+    takeCssEvents: () => nodeRef.current?.takeCssEvents() ?? [],
     scrollInsets: (element: Element, scroller: Element | null) =>
       nodeRef.current?.scrollInsets(element, scroller) ?? [
         0, 0, 0, 0, 0, 0, 0, 0,
