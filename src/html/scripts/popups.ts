@@ -244,7 +244,10 @@ export class WindowSlot {
       // the place of the one it was opened at, where it was opened at an
       // address, is that window. One opened at `about:blank` has finished
       // opening, and whatever it goes to next is another window.
-      if (this.popup?.openedAt !== 'about:blank' && sameOrigin(was, runner)) {
+      if (
+        !/^about:blank(?:[?#]|$)/i.test(this.popup?.openedAt ?? '') &&
+        sameOrigin(was, runner)
+      ) {
         runner.engine.reuseWindow(was.engine);
       }
       was.dispose(null, true);
@@ -685,7 +688,13 @@ function startWindow(
   // opened it lets it out (`allow-popups-to-escape-sandbox`)
   slot.sandbox = flags;
   slot.group.shared.documents.add(document);
-  const blank = make(document, 'about:blank', popup.seams(seams));
+  // at the address it was opened at where that is `about:blank` with a
+  // query or a fragment, which no navigation goes to: the URL and history
+  // update steps give the document that address (HTML, "window open steps")
+  const at = /^about:blank(?:[?#]|$)/i.test(popup.openedAt)
+    ? popup.openedAt
+    : 'about:blank';
+  const blank = make(document, at, popup.seams(seams));
   popup.initial = blank;
   blank.openerPolicy = policy;
   slot.active = { value: policy, origin: blank.host.origin };

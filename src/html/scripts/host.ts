@@ -2629,6 +2629,30 @@ export class DomHost {
     return '';
   }
 
+  /** The base URL of a document this realm holds (HTML 2.4.1, "document
+   *  base URL"): the first `<base href>` in it, resolved against its
+   *  address, and else its address — or this document's base, for one
+   *  whose address is `about:blank` or `about:srcdoc`, or that no frame
+   *  shows, which take their creator's. */
+  private _documentBase(doc: Document): string {
+    const own = this._handle.base ?? this.url;
+    if (doc === this.document) return own;
+    const at = this._documentUrl(doc);
+    const fallback =
+      !at || /^about:(?:blank|srcdoc)(?:[?#]|$)/i.test(at) ? own : at;
+    const base = DomUtils.findOne(
+      (el) =>
+        el.name === 'base' && el.attribs.href !== undefined && !isForeign(el),
+      doc.children,
+    );
+    if (!base) return fallback;
+    try {
+      return new URL(base.attribs.href.trim(), fallback).href;
+    } catch {
+      return fallback;
+    }
+  }
+
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
@@ -6219,8 +6243,12 @@ export class DomHost {
         const answer = this._seams.canPlayType?.(text(a)) ?? '';
         return answer === 'probably' || answer === 'maybe' ? answer : '';
       }
+      // a node's base URL, its document's (HTML 2.4.1): this realm's own, or
+      // another document's of it — a frame's — by the `<base>` it has
       case 'base':
-        return this._handle.base ?? this.url;
+        return a
+          ? this._documentBase(this._node(a) as Document)
+          : (this._handle.base ?? this.url);
       case 'location':
         return this.url;
       // the document's address changed by its own history. Never to another

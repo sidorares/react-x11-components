@@ -9605,6 +9605,30 @@ test("an intercepted navigation's focus reset goes to the document's autofocus d
   );
 });
 
+test("a traversal asked for in another's navigate waits for that one's hashchange", async () => {
+  // HTML's session history traversal queue runs them one after another, so
+  // the first one's `hashchange` reads its own entry (WPT's
+  // navigate-event/navigate-history-traversal-during-onnavigate)
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var r = [];' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  for (var i = 0; i < 3; i++) await navigation.navigate("#" + i).finished;' +
+      '  await new Promise(function (ok) { setTimeout(ok, 0); });' +
+      '  var key = navigation.entries()[navigation.currentEntry.index - 3].key;' +
+      '  navigation.onnavigate = function () { navigation.onnavigate = null; navigation.traverseTo(key); };' +
+      '  onhashchange = function () {' +
+      '    r.push(navigation.currentEntry.index + location.hash);' +
+      "    if (r.length === 2) document.getElementById('out').textContent = r.join('|');" +
+      '  };' +
+      '  history.back();' +
+      '}, 0); };' +
+      '</script>',
+  );
+  const start = await settled(doc, 'out', (t) => t !== '');
+  assert.strictEqual(start, '2#1|0');
+});
+
 test('a document is shown after its load, and as it goes hears beforeunload, pagehide, visibilitychange to hidden and unload, and runs nothing after', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -18746,6 +18770,67 @@ test('a javascript: URL runs in a frame only where the frame is of one origin-do
   // nothing else comes after it
   await settle(100);
   assert.equal(text('page', 'out'), 'ran self');
+});
+
+test("a frame's document has its own base URL, which its navigate() resolves against", async () => {
+  // HTML 2.4.1: a node's base URL is its document's, a frame's `<base>`
+  // and all, where `baseURI` answered the page's for every document (WPT's
+  // navigation-methods/navigate-base-url)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="sub/a.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var r = [f.contentDocument.baseURI, f.contentDocument.body.baseURI, document.baseURI];' +
+      '  f.onload = function () {' +
+      '    r.push(f.contentWindow.navigation.currentEntry.url);' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  };' +
+      '  f.contentWindow.navigation.navigate("b.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><base href="/elsewhere/"><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    `https://example.test/elsewhere/|https://example.test/elsewhere/|${PAGE}|https://example.test/elsewhere/b.html`,
+    logs.join('\n'),
+  );
+});
+
+test("a frame's window has every on-handler the page's has: its onhashchange and onpopstate run", async () => {
+  // a scriptless frame's window had eleven, so `onhashchange` and
+  // `onpopstate` were properties nothing called (WPT's
+  // navigate-event/navigate-form-traverse)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var w = f.contentWindow;' +
+      '  w.onhashchange = function (e) { r.push("hashchange " + new URL(e.newURL).hash); w.history.back(); };' +
+      '  w.onpopstate = function () {' +
+      '    r.push("popstate " + w.location.hash, typeof w.onfocus, typeof w.onclick);' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 0);' +
+      '  };' +
+      '  w.location.hash = "#1";' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'hashchange #1|popstate |object|object',
+    logs.join('\n'),
+  );
 });
 
 async function hostedFrames(
