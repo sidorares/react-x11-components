@@ -277,12 +277,14 @@ export type {
 } from './rtc.js';
 export { NO_MEDIA_DEVICES, idleSource, mediaError } from './media-devices.js';
 export type {
+  EchoCancellationMode,
   HtmlMediaDevices,
   MediaAudioData,
   MediaDeviceCapabilities,
   MediaDeviceDescription,
   MediaDeviceKind,
   MediaErrorName,
+  MediaMode,
   MediaPermission,
   MediaPermissionRequest,
   MediaRange,

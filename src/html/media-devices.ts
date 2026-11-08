@@ -47,9 +47,27 @@ export interface MediaDeviceCapabilities {
   sampleSize?: MediaRange;
   channelCount?: MediaRange;
   latency?: MediaRange;
-  echoCancellation?: boolean[];
+  /** `true` and `false`, and the modes of it it has: `'all'` (whatever
+   *  the system plays) and `'remote-only'` (what it receives from a peer). */
+  echoCancellation?: (boolean | EchoCancellationMode)[];
   autoGainControl?: boolean[];
   noiseSuppression?: boolean[];
+  /** Media Capture Extensions' voice isolation. */
+  voiceIsolation?: boolean[];
+}
+
+/** The modes of echo cancellation a page may ask for by name. */
+export type EchoCancellationMode = 'all' | 'remote-only';
+
+/**
+ * A mode a camera runs at natively: what `resizeMode: 'none'` holds a
+ * track to. Anything smaller, or slower, it is cropped, scaled or decimated
+ * to (`'crop-and-scale'`).
+ */
+export interface MediaMode {
+  width: number;
+  height: number;
+  frameRate: number;
 }
 
 /** The settings a source runs at: `MediaTrackSettings`, less the device's
@@ -65,9 +83,10 @@ export interface MediaSettings {
   sampleSize?: number;
   channelCount?: number;
   latency?: number;
-  echoCancellation?: boolean;
+  echoCancellation?: boolean | EchoCancellationMode;
   autoGainControl?: boolean;
   noiseSuppression?: boolean;
+  voiceIsolation?: boolean;
 }
 
 /** A device, as the host has it. */
@@ -86,6 +105,11 @@ export interface MediaDeviceDescription {
   /** What a track of it runs at where the page's constraints leave a
    *  setting open. */
   defaults: MediaSettings;
+  /**
+   * A camera's native modes, the first its default. Absent, its one mode is
+   * its `defaults`' size and rate.
+   */
+  modes?: MediaMode[];
 }
 
 /** Whether a page may have a kind of device: the Permissions API's

@@ -64,10 +64,21 @@ const MICROPHONE_CAPABILITIES: MediaDeviceCapabilities = {
   sampleSize: { min: 16, max: 16 },
   channelCount: { min: 1, max: 2 },
   latency: { min: 0.01, max: 0.01 },
-  echoCancellation: [true, false],
+  echoCancellation: [true, false, 'remote-only', 'all'],
   autoGainControl: [true, false],
   noiseSuppression: [true, false],
+  voiceIsolation: [true, false],
 };
+
+/** The camera's native modes, a webcam's usual four: a `resizeMode:
+ *  'none'` track runs at one of these, and anything smaller or slower is
+ *  cropped, scaled or decimated from one. */
+const CAMERA_MODES = [
+  { width: 640, height: 480, frameRate: 30 },
+  { width: 320, height: 240, frameRate: 30 },
+  { width: 1280, height: 720, frameRate: 30 },
+  { width: 1920, height: 1080, frameRate: 30 },
+];
 
 /** Bars across, as a television's test card has them, in Y, Cb, Cr: white,
  *  yellow, cyan, green, magenta, red, blue, black. */
@@ -324,6 +335,7 @@ export function fakeMediaDevices(
         facingMode: 'user',
         resizeMode: 'none',
       },
+      modes: CAMERA_MODES,
     });
   }
   if (options.microphone ?? true) {
@@ -342,6 +354,7 @@ export function fakeMediaDevices(
           echoCancellation: true,
           autoGainControl: true,
           noiseSuppression: true,
+          voiceIsolation: false,
         },
       },
       {
