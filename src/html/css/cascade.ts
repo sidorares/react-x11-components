@@ -138,6 +138,7 @@ import {
   settleOutline,
   settleClamp,
   copyStyle,
+  CONTAIN_LAYOUT,
   decorate,
   inherit,
   zoomedBy,
@@ -4214,6 +4215,11 @@ export class Cascade {
    *  from where its element was to where it is (CSS View Transitions 1,
    *  7.8), found before any sheet's. */
   transitionKeyframes: ReadonlyMap<string, KeyframesRule> | null = null;
+  /** The elements a view transition was started on (CSS View Transitions
+   *  2, 2.2.1, step 5): each has layout containment and
+   *  `view-transition-scope: all` for the transition's length, over what its
+   *  rules give it, and a style of its own. */
+  transitionScopes: ReadonlySet<Element> | null = null;
   /** The author's rules that could style a shape in a drawing: the ones
    *  that declare a property a shape has (`shapes.ts`) and whose subject
    *  is no element of HTML's alone. They are in `_index` too, for the
@@ -7421,6 +7427,26 @@ export class Cascade {
    * does after the cascade, and `rootStyle` does not go through here.
    */
   sharedStyleFor(
+    el: Element,
+    parentStyle: ComputedStyle,
+    parentKey: number,
+    inFlexContainer: boolean,
+  ): SharedStyle {
+    const shared = this._sharedStyleFor(
+      el,
+      parentStyle,
+      parentKey,
+      inFlexContainer,
+    );
+    if (!this.transitionScopes?.has(el)) return shared;
+    // a transition's scope: its own style, and a key nothing else has
+    const style = copyStyle(shared.style);
+    style.viewTransitionScope = 'all';
+    style.contain |= CONTAIN_LAYOUT;
+    return { style, key: this._nextShareKey++ };
+  }
+
+  private _sharedStyleFor(
     el: Element,
     parentStyle: ComputedStyle,
     parentKey: number,

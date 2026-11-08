@@ -7804,6 +7804,20 @@ capture. **Anything new that starts an animation, runs a frame's steps or
 hit-tests asks whether rendering is suppressed**, or the update's changes
 reach the page before the transition is ready.
 
+**A transition is of a scope, and there is one run per scope**
+(`HtmlViewNode._vt` for the document's, `_scopedVts` by element for those
+an element started, CSS View Transitions 2). Each op the realm asks
+carries the scope's node, or none, and the node answers it with that run:
+its names are the scope's (`inTransitionScope`), its tree hangs off the
+scope's box and is no top layer's, and a group is placed from the scope's
+padding box (`_placementOf`'s `scope`). A scope's style comes out with
+`view-transition-scope: all` and layout containment while its run is live
+(`Cascade.transitionScopes`, in `sharedStyleFor`, so it shares no style).
+**Anything new a run keeps, or an op asks, goes through `_runOf` or
+`_runOfElement`**, never `_vt` alone, or the document's transition answers
+for an element's; and anything that walks every live run goes through
+`_runs()`.
+
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
 moves each container's lines and boxes by the offset its element is

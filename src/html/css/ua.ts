@@ -493,26 +493,27 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
 /* a view transition's tree (CSS View Transitions 1, 3.4 and 7.8): the
    root is captured as any named element is, and the tree over everything
    holds a group for each name, sized and placed by the transition, with
-   its images faded across in it */
+   its images faded across in it; any element's, since a transition may be
+   started on one (CSS View Transitions 2, 2.2) */
 :root { view-transition-name: root; }
-:root::view-transition { position: absolute; inset: 0; }
-:root::view-transition-group(*) {
+::view-transition { position: absolute; inset: 0; }
+::view-transition-group(*) {
   position: absolute;
   top: 0;
   left: 0;
   animation-duration: 0.25s;
   animation-fill-mode: both;
 }
-:root::view-transition-image-pair(*) { position: absolute; inset: 0; }
-:root::view-transition-old(*), :root::view-transition-new(*) {
+::view-transition-image-pair(*) { position: absolute; inset: 0; }
+::view-transition-old(*), ::view-transition-new(*) {
   position: absolute;
   inset-block-start: 0;
   inline-size: 100%;
   block-size: auto;
 }
-:root::view-transition-image-pair(*),
-:root::view-transition-old(*),
-:root::view-transition-new(*) {
+::view-transition-image-pair(*),
+::view-transition-old(*),
+::view-transition-new(*) {
   animation-duration: inherit;
   animation-fill-mode: inherit;
   animation-delay: inherit;
@@ -521,8 +522,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
   animation-direction: inherit;
   animation-play-state: inherit;
 }
-:root::view-transition-old(*) { animation-name: -ua-view-transition-fade-out; }
-:root::view-transition-new(*) { animation-name: -ua-view-transition-fade-in; }
+::view-transition-old(*) { animation-name: -ua-view-transition-fade-out; }
+::view-transition-new(*) { animation-name: -ua-view-transition-fade-in; }
 @keyframes -ua-view-transition-fade-out { to { opacity: 0; } }
 @keyframes -ua-view-transition-fade-in { from { opacity: 0; } }
 @keyframes -ua-mix-blend-mode-plus-lighter {

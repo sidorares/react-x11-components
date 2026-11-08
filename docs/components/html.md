@@ -2210,7 +2210,22 @@ until its animations are over, when it is finished.
   The tree's CSS animations are `CSSAnimation`s in `getAnimations()`, with
   their pseudo-element. A frame's document's transition is its own and is
   drawn by the frame's view.
-- **Not yet.** Transitions scoped to an element, and nested groups.
+- **Scoped to an element** (CSS View Transitions 2).
+  `element.startViewTransition()` runs a transition of what the element
+  holds: its names are found inside it, its `::view-transition` hangs off
+  the element and covers its padding box, styled by `#scope::view-transition`,
+  and its groups are placed from the padding box's corner. The element is
+  the transition's `transitionRoot` and has it as its
+  `activeViewTransition`; for its length it computes
+  `view-transition-scope: all` and lays out with layout containment. Each
+  element has a transition of its own, beside the document's and any
+  other element's, and one started on the root element is the document's.
+  One started on an element with no box that can hold the tree — none, an
+  inline box, `display: contents` — is skipped with `InvalidStateError`.
+  What it does not do yet: hold the element's rendering while its update
+  runs, keep the element at the size it had while its children change,
+  and hit-test through its captured parts.
+- **Not yet.** Nested groups.
 
 **A list is live, as the DOM has it.** `childNodes`, `children`,
 `getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a

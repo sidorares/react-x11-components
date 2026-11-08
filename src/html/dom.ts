@@ -1063,7 +1063,9 @@ export function isModal(el: Element): boolean {
 
 /** Each document's active view transition, by its types (CSS View
  *  Transitions 1, 3.3): what `:active-view-transition` and
- *  `:active-view-transition-type()` match its root element by. */
+ *  `:active-view-transition-type()` match its root element by; and each
+ *  element's a transition was started on, which they match it by (CSS View
+ *  Transitions 2, 2.2). */
 const ACTIVE_TRANSITIONS = new WeakMap<AnyNode, ReadonlySet<string>>();
 
 /** A document's active view transition begun, its types changed — or, for
@@ -1090,9 +1092,12 @@ export function inActiveTransition(
   types: readonly string[] | null = null,
 ): boolean {
   const doc = el.parent;
-  if (!doc || doc.parent || doc.type !== 'root') return false;
-  if (doc instanceof ShadowRoot) return false;
-  const active = ACTIVE_TRANSITIONS.get(doc);
+  let active = ACTIVE_TRANSITIONS.get(el);
+  if (!active) {
+    if (!doc || doc.parent || doc.type !== 'root') return false;
+    if (doc instanceof ShadowRoot) return false;
+    active = ACTIVE_TRANSITIONS.get(doc);
+  }
   if (!active) return false;
   return !types || types.some((t) => active.has(t));
 }

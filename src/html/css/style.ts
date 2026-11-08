@@ -1179,6 +1179,11 @@ export interface ComputedStyle {
    *  as written. What a transition captures the element by. */
   viewTransitionName: string;
   viewTransitionClass: string;
+  /** `view-transition-scope` (CSS View Transitions 2, 4): `all` keeps the
+   *  names in the element out of a transition started outside it; an
+   *  element a transition is started on has it for the transition's
+   *  length. */
+  viewTransitionScope: 'none' | 'all';
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down, and a
    *  depth toward the viewer in device pixels, 0 where none is written;
@@ -1937,6 +1942,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     willChangeNames: 'auto',
     viewTransitionName: 'none',
     viewTransitionClass: 'none',
+    viewTransitionScope: 'none',
     willChange: 0,
     translate: null,
     rotate: null,
@@ -3251,6 +3257,11 @@ export function applyDeclaration(
     case 'view-transition-class': {
       const names = viewTransitionClass(value);
       if (names !== null) style.viewTransitionClass = names;
+      return;
+    }
+    case 'view-transition-scope': {
+      const v = value.trim().toLowerCase();
+      if (v === 'none' || v === 'all') style.viewTransitionScope = v;
       return;
     }
     case 'animation-timeline': {
@@ -9117,6 +9128,7 @@ const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'willChangeNames',
   'viewTransitionName',
   'viewTransitionClass',
+  'viewTransitionScope',
   'animations',
   'transitions',
   'mask',
@@ -9930,6 +9942,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'will-change': ['willChange', 'willChangeNames'],
   'view-transition-name': ['viewTransitionName'],
   'view-transition-class': ['viewTransitionClass'],
+  'view-transition-scope': ['viewTransitionScope'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],
