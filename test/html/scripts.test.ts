@@ -18757,6 +18757,49 @@ test('a javascript: URL runs in a frame only where the frame is of one origin-do
   assert.equal(text('page', 'out'), 'ran self');
 });
 
+test('a frame that went to another origin and came back steps back to the entries from before, which its navigation shows none of across the gap', async () => {
+  // HTML 7.4.1: the frame's entries are still the joint history's while it
+  // shows another origin's document, so `history.go(-2)` from the page
+  // loads its first document again; the Navigation API shows the same-origin
+  // run around the current entry alone (WPT's
+  // navigation-activation/activation-traverse-not-in-entries)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function next(go, then) { f.onload = function () { setTimeout(then, 0); }; go(); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  next(function () { f.contentWindow.location = "https://other.test/x.html"; }, function () {' +
+      '    next(function () { f.contentWindow.location = "' +
+      PAGE.replace(/[^/]*$/, '') +
+      'b.html"; }, function () {' +
+      '      r.push(f.contentWindow.navigation.entries().length, history.length);' +
+      '      next(function () { history.go(-2); }, function () {' +
+      '        var n = f.contentWindow.navigation;' +
+      '        r.push(/a\\.html$/.test(f.contentWindow.location.href), n.entries().length,' +
+      '          n.currentEntry.index, n.activation.navigationType, String(n.activation.from));' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'x.html': '<!doctype html><p>x</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|3|true|1|0|traverse|null',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
