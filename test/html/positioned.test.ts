@@ -39,6 +39,7 @@ import {
   rebuilt,
   render,
   render2x,
+  paneOf,
   renderScrolled,
   snapshot,
   treeLines,
@@ -2164,6 +2165,55 @@ metric(
     assert.strictEqual(apart(), 4, 'narrower');
     await resize(200, 400);
     assert.strictEqual(apart(), 4, 'and back');
+  },
+);
+
+metric(
+  'under a vertical-rl root a fixed box is placed in the viewport as the pane has it scrolled, and takes the option that fits there',
+  async () => {
+    // WPT's anchor-scroll-position-try-007 at a 400 by 300 viewport: the
+    // root element's frame is no containing block of a fixed box, the
+    // viewport is (CSS 2.1 9.6.1), and a scroll of the pane lays the
+    // document out again
+    const { el } = await renderScrolled(
+      '<html style="writing-mode: vertical-rl"><style>body{margin:0;' +
+        'width:800px;height:600px}#a{anchor-name:--a;width:100px;' +
+        'height:100px;margin-block-start:400px;margin-inline-start:300px}' +
+        '#f{position:fixed;width:100px;height:100px;position-anchor:--a;' +
+        'position-try-fallbacks:--p1,--p2,--p3;' +
+        'inset-block-start:anchor(end);inset-inline-start:anchor(end)}' +
+        '@position-try --p1{inset:auto;inset-block-end:anchor(start);' +
+        'inset-inline-start:anchor(end)}' +
+        '@position-try --p2{inset:auto;inset-block-start:anchor(end);' +
+        'inset-inline-end:anchor(start)}' +
+        '@position-try --p3{inset:auto;inset-block-end:anchor(start);' +
+        'inset-inline-end:anchor(start)}</style>' +
+        '<div id="a"></div><div id="f"></div></html>',
+      300,
+    );
+    await act();
+    await act();
+    const at = (id: string) => el.elementRect(findById(el.document, id)!)!;
+    const where = () => {
+      const a = at('a');
+      const f = at('f');
+      return [
+        f.y + f.height === a.y
+          ? 'top'
+          : f.y === a.y + a.height
+            ? 'bottom'
+            : '?',
+        f.x === a.x + a.width ? 'right' : f.x + f.width === a.x ? 'left' : '?',
+      ].join(' ');
+    };
+    assert.strictEqual(where(), 'top right', 'the last option, at first');
+    type Pane = { scrollTo(to: { x?: number; y?: number }): void };
+    const pane = paneOf(el) as unknown as Pane;
+    // enough room below the anchor, and not to its left
+    await act(() => pane.scrollTo({ x: el.scrollOriginX() - 150, y: 201 }));
+    await act();
+    await act();
+    assert.strictEqual(where(), 'bottom right', 'the second, once scrolled');
   },
 );
 

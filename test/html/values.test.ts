@@ -79,6 +79,31 @@ test('lengths resolve the units a computed style can, and keep the ones it canno
   assert.strictEqual(parseLength('1.5', ctx), null);
 });
 
+test('vi and vb are the element’s own inline and block axes: the width and the height across, the other way round in a vertical writing mode', async () => {
+  // CSS Values 4, 6.1.2
+  const across = { em: 16, rem: 16, vw: 1000, vh: 500, scale: 1 };
+  assert.strictEqual(parseLength('10vi', across), 100);
+  assert.strictEqual(parseLength('10vb', across), 50);
+  const down = { ...across, vertical: () => true };
+  assert.strictEqual(parseLength('10vi', down), 50);
+  assert.strictEqual(parseLength('10vb', down), 100);
+  assert.strictEqual(parseLength('10svb', down), 100);
+  assert.strictEqual(parseLength('10vw', down), 100, 'a vw is the width');
+  // and in a style, by the element's computed writing mode
+  const { node } = await render(
+    '<div id="v" style="writing-mode: vertical-rl; margin-block-start: 10vb;' +
+      ' margin-inline-start: 10vi">x</div>',
+  );
+  const style = (boxOf(view(node), 'v') as unknown as { style: ComputedStyle })
+    .style;
+  const width = view(node).abs.width;
+  assert.ok(width > 0);
+  assert.ok(
+    Math.abs((style.marginRight as number) - width / 10) < 0.5,
+    'block: width',
+  );
+});
+
 test('at a display scale of 2 the absolute units are two device pixels each', () => {
   // `em`, `rem` and the viewport arrive device already (react-x11's
   // docs/scale.md), so only the CSS-pixel units carry the factor.

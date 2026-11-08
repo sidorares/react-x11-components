@@ -1363,6 +1363,10 @@ export interface AnchorScroll {
   /** 1 where the pane scrolls the anchor and not the box, -1 where it
    *  scrolls the box and not the anchor, 0 where it scrolls both. */
   pane: number;
+  /** How the pane's scroll moves the anchor in the axes the box is laid
+   *  out in, where those are a vertical writing mode's frame's and not the
+   *  page's (`ScrollMap`). */
+  paneMap?: ScrollMap | null;
   /** The axes the box follows its anchor on. */
   x: boolean;
   y: boolean;
@@ -1453,6 +1457,7 @@ export function displacementOf(
     scrollers: readonly Box[];
     maps?: readonly (ScrollMap | null)[];
     pane: number;
+    paneMap?: ScrollMap | null;
   },
   viewport: { x: number; y: number } | null,
   offsetOf: (scroller: Box) => ScrollOffset = scrolledFromOrigin,
@@ -1472,8 +1477,9 @@ export function displacementOf(
     y += dy;
   });
   if (context.pane && viewport) {
-    x += context.pane * viewport.x;
-    y += context.pane * viewport.y;
+    const [vx, vy] = mapped(context.paneMap, viewport.x, viewport.y);
+    x += context.pane * vx;
+    y += context.pane * vy;
   }
   return [x, y];
 }
@@ -1579,8 +1585,11 @@ export function followPane(
   let moved: Box[] | null = null;
   for (const [box, state] of map) {
     if (!state.pane) continue;
-    const wantX = state.x && viewport ? -state.pane * viewport.x : 0;
-    const wantY = state.y && viewport ? -state.pane * viewport.y : 0;
+    const [vx, vy] = viewport
+      ? mapped(state.paneMap, viewport.x, viewport.y)
+      : [0, 0];
+    const wantX = state.x ? -state.pane * vx : 0;
+    const wantY = state.y ? -state.pane * vy : 0;
     const [hadX, hadY] = PANE_SHIFT.get(box) ?? [0, 0];
     if (wantX === hadX && wantY === hadY) continue;
     const dx = wantX - hadX;
