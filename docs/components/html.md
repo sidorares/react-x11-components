@@ -7508,7 +7508,10 @@ rule is a `CSSPositionTryRule`, its `name` as written and its `style` a
 takes, in order, an attribute for each by its name and in camel case and
 none for any other, which a page sets — with `setProperty`, by attribute
 or by `cssText` — and the rule is written again in its sheet, which the
-document is styled by.
+document is styled by. The descriptors are a `CSSStyleDeclaration`, its
+members inherited, and neither interface can be constructed by a page:
+each attribute is named, enumerable and refuses what is not an instance,
+as Web IDL has it.
 
 `@import` goes through the resource seam, its media queries kept as the
 conditions of what it imports, and a `<link>`'s or a `<style>`'s `media`

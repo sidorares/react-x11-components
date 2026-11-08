@@ -1378,6 +1378,13 @@ test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the pr
       'r.push(rule.style.length, rule.style.marginBlock, rule.cssText);' +
       'var escaped = new CSSStyleSheet(); escaped.replaceSync("@position-try --\\\\{ {}");' +
       'r.push(escaped.cssRules[0].name, escaped.cssRules[0].cssText);' +
+      // WPT css-anchor-position/idlharness: a style declaration, which no
+      // page constructs, its attributes named, enumerable and checked
+      'var idl = function (f) { try { f(); return "none"; } catch (e) { return e.constructor.name; } };' +
+      'var d = Object.getOwnPropertyDescriptor(CSSPositionTryDescriptors.prototype, "marginTop");' +
+      'r.push(rule.style instanceof CSSStyleDeclaration, CSSPositionTryDescriptors.length,' +
+      '  idl(function () { new CSSPositionTryDescriptors(); }), idl(function () { new CSSPositionTryRule(); }),' +
+      '  d.get.name, d.enumerable, idl(function () { return CSSPositionTryRule.prototype.style; }));' +
       'document.getElementById("out").textContent = JSON.stringify(r);</script>',
   );
   assert.deepEqual(JSON.parse(doc.text('out')), [
@@ -1405,6 +1412,13 @@ test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the pr
     '@position-try --pf { margin-block: unset; }',
     '--\\{',
     '@position-try --\\{ { }',
+    true,
+    0,
+    'TypeError',
+    'TypeError',
+    'get marginTop',
+    true,
+    'TypeError',
   ]);
 });
 
