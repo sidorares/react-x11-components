@@ -496,7 +496,11 @@ function unshifted<V extends { x: number }>(v: V | null, by: number): V | null {
  *  principal writing mode, the root's, starts across at the right — `rtl`
  *  in a horizontal one, and `vertical-rl` and `sideways-rl`. */
 function viewportStartsRight(root: Box): boolean {
-  const style = root.style;
+  // the root element's, where the tree's root box is an anonymous one
+  // around it — as it is where the root element's writing mode is vertical,
+  // a frame turned inside the box that stands for the viewport
+  const style = (root.el ? root : (root.children.find((c) => c.el) ?? root))
+    .style;
   return style.writingMode === 'horizontal-tb'
     ? style.direction === 'rtl'
     : style.writingMode.endsWith('-rl');
@@ -7848,6 +7852,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     ? {
         ...ownContext,
         maps: ownContext.scrollers.map((s) => scrollMapOf(s, box)),
+        paneMap: ownContext.pane ? paneMapOf(box) : null,
       }
     : lead;
   const [sx, sy] = context
@@ -8004,6 +8009,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     scrollers: context.scrollers,
     maps: context.maps,
     pane: context.pane,
+    paneMap: 'paneMap' in context ? context.paneMap : null,
     x: on.x,
     y: on.y,
     rx: sx,
@@ -8054,6 +8060,21 @@ function scrollMapOf(scroller: Box, box: Box): ScrollMap | null {
     near(map[3], 1)
     ? null
     : map;
+}
+
+/** How the pane's scroll, in the page's axes, moves a box's anchor in the
+ *  axes the box is laid out in: those of the frame of a vertical writing
+ *  mode it is in, turned (`frameRectOf`); null in the page's own. */
+function paneMapOf(box: Box): ScrollMap | null {
+  const frame = framed.any ? frameOf(box) : null;
+  if (!frame) return null;
+  const mode = FRAME_ROOTS.get(frame)!.style.writingMode;
+  const at = (x: number, y: number) =>
+    frameRectOf(frame, { x, y, width: 0, height: 0 }, mode);
+  const o = at(0, 0);
+  const ax = at(1, 0);
+  const dn = at(0, 1);
+  return [ax.x - o.x, ax.y - o.y, dn.x - o.x, dn.y - o.y];
 }
 
 /** The anchored box placed in another scroll context than its default
@@ -10038,9 +10059,22 @@ function paddingRectOf(
   // itself is only as tall as what is in it, which the page has as wide
   const root = turned ? FRAME_ROOTS.get(containing) : undefined;
   if (root) {
+    // — but the root element's, which nothing positions, stands for the
+    // initial containing block, which the document's writing mode turns
+    // and no transform makes: a `vertical-rl` page's fixed and absolute
+    // boxes are placed in the viewport, as in a browser
+    const initial =
+      root.parent?.parent === null &&
+      root.style.position === 'static' &&
+      !containsOutOfFlow(root, true);
     return frameRectOf(
       containing,
-      paddingRectOf(root, viewportWidth, viewportHeight, false),
+      paddingRectOf(
+        initial ? root.parent! : root,
+        viewportWidth,
+        viewportHeight,
+        false,
+      ),
       root.style.writingMode,
     );
   }

@@ -110,6 +110,10 @@ export interface UnitContext {
    *  a sheet that only mentions one, in a rule nothing matches, holds
    *  none (`Cascade.readsViewportWidth`). */
   viewport?: (unit: 'vw' | 'vh' | 'vmin' | 'vmax') => void;
+  /** Whether the element's writing mode is vertical, where `vi` is the
+   *  viewport's height and `vb` its width (`viewportUnit`). Absent, it is
+   *  horizontal. */
+  vertical?: () => boolean;
   /** Told as a length in `rem` is resolved, so the cascade knows a style
    *  holds one, which a change of the root's `font-size` reaches wherever
    *  the element is (`Cascade._remRead`). */
@@ -179,21 +183,25 @@ const LENGTH_RE = new RegExp(
  * or null for another unit. The small, large and dynamic viewports —
  * `svh`, `lvh`, `dvh` and their kin — are the one viewport here, as they
  * are on a desktop, where no toolbar comes and goes over the page; and the
- * inline and block axes, `vi` and `vb`, are the width and the height of
- * the horizontal writing mode every document here is laid out in.
+ * inline and block axes, `vi` and `vb`, are the element's own (CSS Values
+ * 4, 6.1.2): the width and the height in a horizontal writing mode, and
+ * the other way round in a vertical one.
  */
 export function viewportUnit(
   unit: string,
+  vertical = false,
 ): 'vw' | 'vh' | 'vmin' | 'vmax' | null {
   const u = unit.toLowerCase();
   const bare = /^[sld]v/.test(u) ? u.slice(1) : u;
   switch (bare) {
     case 'vw':
-    case 'vi':
       return 'vw';
+    case 'vi':
+      return vertical ? 'vh' : 'vw';
     case 'vh':
-    case 'vb':
       return 'vh';
+    case 'vb':
+      return vertical ? 'vw' : 'vh';
     case 'vmin':
     case 'vmax':
       return bare;
@@ -237,7 +245,10 @@ export function parseLength(
     });
   }
   const n = Number(m[1]);
-  const unit = m[2] && (viewportUnit(m[2]) ?? m[2]);
+  const unit =
+    m[2] &&
+    (viewportUnit(m[2], /^[sld]?v[ib]$/.test(m[2]) && !!ctx.vertical?.()) ??
+      m[2]);
   // a zero needs no unit however it is written — `-0`, `+0`, `0.0`
   if (!unit) return n === 0 ? 0 : bareIsPx ? n * ctx.scale : null;
   if (unit === '%') return { pct: n };

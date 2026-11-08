@@ -208,6 +208,25 @@ metric(
 );
 
 metric(
+  'a vertical-rl document, its root box an anonymous one around the frame the root element turns, starts the pane at its scroll origin, at its right',
+  async () => {
+    // the principal writing mode is the root element's, under the anonymous
+    // box that stands for the viewport (CSS Writing Modes 4, 8)
+    const { el: node } = await renderScrolled(
+      '<html style="writing-mode: vertical-rl"><style>body{margin:0}' +
+        '#wide{width:1000px;height:10px;background:#0000ff}</style>' +
+        '<div id="wide"></div></html>',
+      300,
+    );
+    await act();
+    await act();
+    const pane = paneOf(node) as unknown as { scrollX: number };
+    assert.ok(node.scrollOriginX() > 0, 'what spills past the left scrolls');
+    assert.equal(pane.scrollX, node.scrollOriginX(), 'started at the origin');
+  },
+);
+
+metric(
   'an rtl document that spills past its left starts the pane at its scroll origin, at its right, and scrolls left into the spill',
   async () => {
     // CSS Overflow 3, 2.3: the viewport's scroll origin is at its right in

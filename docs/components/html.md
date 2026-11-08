@@ -6457,7 +6457,9 @@ a text field's hint its colour and its opacity, which its widget draws:
 see [Forms](#forms).
 
 **Lengths:** `px`, `em`, `rem`, `ex`, `ch`, `lh`, `rlh`, `vw`, `vh`,
-`vi`, `vb`, `vmin`, `vmax` — and the small, large and dynamic viewports'
+`vi`, `vb` (the element's own inline and block axes, so the height and
+the width in a vertical writing mode), `vmin`, `vmax` — and the small,
+large and dynamic viewports'
 `svh`, `lvw`, `dvmin` and the rest, which on a desktop are the one
 viewport — and the absolute units, and `calc()`, `min()`, `max()` and
 `clamp()` over them (CSS Values 4). An `ex` is the font's x-height and a
@@ -7335,8 +7337,13 @@ finds it, so the document holds its start at the origin for it until then:
 a page reads the pane there from its first script, and what is anchored
 across the scroll is placed there. A page's own `scrollTo` past what the
 pane reaches yet is held too, and read where the pane is until the pane
-takes it. Not yet for a page whose root is in a vertical writing mode,
-which the viewport takes no writing mode from.
+takes it. A page whose root element is `vertical-rl` or `sideways-rl`
+starts at the right the same way, and its fixed boxes, and its absolute
+boxes nothing positions, are placed in the viewport, turned with the
+root's frame. Not yet for such a page: its vertical scroll origin at the
+bottom under `direction: rtl`, and a fixed box that holds still while the
+viewport scrolls under it, which scrolls with the frame it is in, so what
+anchors it to the document does not follow the scroll either.
 
 **A document wider than its window scrolls the pane around it across**, as
 far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):

@@ -9009,6 +9009,7 @@ export class Cascade {
       codeFamily: () => (authored ? null : this._codeFamily),
       vw: this.viewportWidth * zoom,
       vh: this.viewportHeight * zoom,
+      vertical: () => style.writingMode !== 'horizontal-tb',
       viewport: this._viewportRead,
       cq: (axis) => this._containerUnit(el, !own, axis),
       scale: this.scale * zoom,
