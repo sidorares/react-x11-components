@@ -812,7 +812,8 @@ type PseudoElement =
   | 'slider-track'
   | 'file-selector-button'
   | 'backdrop'
-  | 'details-content';
+  | 'details-content'
+  | 'column';
 
 /** The pseudo-elements a widget is told of, and not a box of the document's
  *  (`Cascade.partStyle`). */
@@ -838,7 +839,7 @@ interface KeptPart {
  *  `::-webkit-slider-runnable-track` are a range's, which only Chrome's and
  *  Safari's names reach, and every page that draws one writes. */
 const PSEUDO_ELEMENT =
-  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|details-content|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
+  /::?(before|after|first-letter|first-line)$|::(marker|selection|placeholder|file-selector-button|backdrop|details-content|column|target-text|spelling-error|grammar-error|-webkit-input-placeholder|-webkit-file-upload-button|-webkit-scrollbar|-webkit-slider-thumb|-webkit-slider-runnable-track)$|::highlight\(\s*((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f]|[^\s()\\])+)\s*\)$/i;
 
 /** The pseudo-elements WebKit named, under what their rules are kept by. */
 const VENDOR_PSEUDO_ELEMENTS: Readonly<Record<string, PseudoElement>> = {
@@ -4218,6 +4219,7 @@ export class Cascade {
     'file-selector-button': new RuleIndex(true),
     backdrop: new RuleIndex(true),
     'details-content': new RuleIndex(true),
+    column: new RuleIndex(true),
   };
   /** The rules for each custom highlight's `::highlight()`, by its name
    *  (CSS Highlight API 1, 3): a document with none asks nothing. */
@@ -8001,6 +8003,35 @@ export class Cascade {
       false,
       'details-content',
     );
+  }
+
+  /** Whether any rule styles a `::column`: what a snap container asks
+   *  before it looks for columns among its areas. */
+  get styledColumns(): boolean {
+    return this._pseudo.column.size > 0;
+  }
+
+  /**
+   * A multicol container's `::column` style (CSS Overflow 5, 5.1): what its
+   * columns take, of which only the scroll snapping properties do anything
+   * here, a column a snap area where its `scroll-snap-align` says. Null
+   * where no rule styles one.
+   */
+  columnStyleFor(
+    el: Element,
+    elementStyle: ComputedStyle,
+  ): ComputedStyle | null {
+    const index = this._pseudo.column;
+    const candidates: Candidate[] = [];
+    if (index.size > 0 && index.reaches(el)) {
+      this._matchInto(index, el, candidates);
+    }
+    if (this._scoped && this._scopedPseudos.has('column')) {
+      this._scopedInto(el, 'column', candidates);
+    }
+    if (!candidates.length) return null;
+    candidates.sort(byCascade);
+    return this._computeStyle(el, elementStyle, false, candidates, false, null);
   }
 
   backdropStyleFor(el: Element, elementStyle: ComputedStyle): ComputedStyle {

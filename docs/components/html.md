@@ -7717,7 +7717,11 @@ the right in a right-to-left line, and in `vertical-rl`, where the block
 axis runs across (CSS Scroll Snap 1, 6.2). The viewport's are the
 document's principal writing mode's, the body's `writing-mode` and
 `direction`, which a browser hands the viewport (CSS Writing Modes 4, 8),
-with the root's `scroll-snap-type`. An area in a vertical writing
+with the root's `scroll-snap-type`. A multicol scroll container's
+columns are snap areas where its `::column` has a `scroll-snap-align` (CSS
+Overflow 5, 5.1): each column box its layout set, in any writing mode; the
+only properties `::column` takes here are scroll snapping's, and a snap to a
+column names no element to a snap event. An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
