@@ -18790,6 +18790,45 @@ test("a document's performance has its navigation entry, which says how it came 
   );
 });
 
+test("a frame running its own realm tells its document's readystatechange, its frame's load before its pageshow, and its own cross-document navigate() never settles", async () => {
+  // every browser tells a frame's `load` between its window's `load` and its
+  // `pageshow`; `document.onreadystatechange` is a handler like any; and the
+  // navigation that takes the document to the next keeps its promises as
+  // they are (WPT's ordering-and-transition/*-event-order-with-pagehide)
+  const frame =
+    '<!doctype html><script>if (parent.started) parent.started();</script><p>x</p>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), second = false;' +
+      'window.onload = function () {' +
+      '  window.started = function () {' +
+      '    var doc = f.contentDocument;' +
+      '    doc.onreadystatechange = function () { r.push(doc.readyState); };' +
+      '    doc.addEventListener("DOMContentLoaded", function () { r.push("dcl"); });' +
+      '    f.contentWindow.onpageshow = function () { r.push("pageshow"); };' +
+      '  };' +
+      '  f.contentWindow.onpagehide = function () { r.push("pagehide"); };' +
+      '  f.onload = function () {' +
+      '    r.push("load");' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 100);' +
+      '  };' +
+      '  f.contentWindow.navigation.navigate("b.html").committed.then(' +
+      '    function () { r.push("fulfilled"); }, function () { r.push("rejected"); });' +
+      '};' +
+      '</script>',
+    { 'a.html': frame, 'b.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'pagehide|interactive|dcl|complete|load|pageshow',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
