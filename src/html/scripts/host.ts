@@ -123,8 +123,6 @@ import {
   typeNameOf,
   setSheetDisabled,
   xmlTree,
-  isQuirksMode,
-  setQuirksMode,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -1544,7 +1542,6 @@ function listOf(value: string | null, fold = true): Set<string> {
 /** The ops whose first argument is a node, whose layout the view that
  *  draws its document answers (`DomHost._op`). */
 const NODE_READS = new Set([
-  'documentSize',
   'active',
   'blur',
   'viewScroll',
@@ -5097,9 +5094,6 @@ export class DomHost {
         return null;
       }
       // a frame document's viewport, its window's `innerWidth`
-      // a document's mode (HTML 13.2.6.4.1), as its parser left it
-      case 'quirks':
-        return isQuirksMode(this._node(a));
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
         return `${size.width} ${size.height}`;
@@ -8602,7 +8596,6 @@ export class DomHost {
    *  `write` and `close`'s. */
   private _fill(doc: Document, markup: string): void {
     this._replaceAll(doc, this._htmlTree(markup));
-    setQuirksMode(doc, this._parsedQuirks);
   }
 
   /**
@@ -8627,9 +8620,6 @@ export class DomHost {
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
    *  and made a document's tree; its scripts never run where it goes. */
-  /** Whether the last markup `_htmlTree` read was in quirks mode. */
-  private _parsedQuirks = false;
-
   private _htmlTree(
     markup: string,
     live = false,
@@ -8641,8 +8631,6 @@ export class DomHost {
     source.setScripting(declarative);
     source.setDocument(true, declarative);
     source.setSource(markup, true);
-    // the mode its parser put it in, which the document it goes into takes
-    this._parsedQuirks = isQuirksMode(source.document);
     const kids = source.document.children.slice();
     for (const kid of kids) DomUtils.removeElement(kid);
     // a frame's document the browser runs keeps its scripts, which its own
@@ -9008,7 +8996,6 @@ export class DomHost {
     // which attaches no shadow root a template declares
     const tree = this._htmlTree(markup, document && live, document);
     const doc = new Document([]);
-    setQuirksMode(doc, this._parsedQuirks);
     for (const kid of tree) DomUtils.appendChild(doc, kid);
     this._documents.add(doc);
     return doc;

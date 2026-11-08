@@ -16103,6 +16103,48 @@ test("a key typed in a field scrolled out of sight brings it into view inside it
   assert.strictEqual(doc.text('out'), '40', doc.logs.join('\n'));
 });
 
+test('scrollIntoView() lines up what the inner scroll containers show of an element in the outer ones, and nearest aligns the far edge of an element larger than the scrollport', async () => {
+  // Chromium clips the rect it scrolls an outer container to by the inner
+  // ones' scrollports, and CSSOM View 7.1's nearest aligns an element
+  // larger than the scrollport by its other edge (WPT
+  // scroll-margin-overflow-ancestor, scroll-target-margin-006)
+  const doc = await hosted(
+    '<p id="out"></p><style>.s { overflow: auto; position: relative; height: 200px; width: 100px }' +
+      ' .gap { height: 2000px }</style>' +
+      '<div class="s" id="outer"><div style="position: relative; top: 1000px; height: 150px" class="s" id="inner">' +
+      '<div id="t" style="position: relative; top: -20px; height: 40px; scroll-margin-top: 40px"></div>' +
+      '<div class="gap"></div></div><div class="gap"></div></div>' +
+      '<div class="s" id="wide" style="height: 40px; width: 40px"><div style="width: 2000px; height: 10px"></div>' +
+      '<div id="w" style="margin-left: 1000px; width: 200px; height: 10px; scroll-margin-left: 20px"></div></div>' +
+      '<script>' +
+      'document.getElementById("t").scrollIntoView();' +
+      'var r = [document.getElementById("inner").scrollTop, document.getElementById("outer").scrollTop];' +
+      'document.getElementById("w").scrollIntoView();' +
+      'r.push(document.getElementById("wide").scrollLeft);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '0|960|980', doc.logs.join('\n'));
+});
+
+test("focus() of a text field brings its selection into view, the line its end is on, and not the field's edge", async () => {
+  // WPT html/interaction/focus/processing-model/textarea-scroll-selection
+  const doc = await hosted(
+    '<p id="out"></p><div id="s" style="overflow: auto; height: 100px">' +
+      '<textarea id="t" style="overflow: hidden; height: 300px; line-height: 20px; font-size: 16px"></textarea></div>' +
+      '<script>' +
+      'var t = document.getElementById("t");' +
+      't.value = Array.from({ length: 12 }, function (_, i) { return "line " + i; }).join("\\n");' +
+      'var at = t.value.indexOf("line 5") + 6; t.setSelectionRange(at, at); t.focus();' +
+      "document.getElementById('out').textContent = document.getElementById('s').scrollTop;" +
+      '</script>',
+  );
+  // the sixth line, 100px to 120px down past the field's top border and
+  // padding, is out of sight, and is centred
+  const top = Number(doc.text('out'));
+  assert.ok(top > 55 && top < 70, `${top}\n${doc.logs.join('\n')}`);
+});
+
 test("el.style keeps scroll snapping's values as their grammars take them, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin by the element's writing mode", async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="e"></div>' +
@@ -19094,37 +19136,6 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
   assert.equal(page, '0|80|80', logs.join('\n'));
 });
 
-test('a document with no doctype is in quirks mode, where its body is the scrolling element and scrolls its viewport, and its root scrolls nothing', async () => {
-  // HTML 13.2.6.4.1 and CSSOM View 7 (WPT
-  // cssom-view/scrolling-quirks-vs-nonquirks)
-  const page = (doctype: string) =>
-    '<iframe id="f" srcdoc="' +
-    doctype +
-    '<body style=&quot;margin: 0&quot;><div style=&quot;height: 400px&quot;></div>"' +
-    ' style="width: 300px; height: 150px"></iframe>' +
-    '<p id="out"></p><script>' +
-    'var f = document.getElementById("f");' +
-    'f.onload = function () { setTimeout(function () {' +
-    '  var d = f.contentDocument, r = [d.compatMode, d.scrollingElement.localName];' +
-    '  d.documentElement.scrollTop = 30; r.push(d.documentElement.scrollTop, f.contentWindow.scrollY);' +
-    '  d.body.scrollTop = 40; r.push(d.body.scrollTop, f.contentWindow.scrollY);' +
-    '  r.push(new DOMParser().parseFromString("<p>x", "text/html").compatMode,' +
-    '    new DOMParser().parseFromString("<!doctype html><p>x", "text/html").compatMode);' +
-    '  document.getElementById("out").textContent = r.join("|"); }, 200); };' +
-    '</script>';
-  for (const [doctype, want] of [
-    ['', 'BackCompat|body|0|0|40|40|BackCompat|CSS1Compat'],
-    ['<!doctype html>', 'CSS1Compat|html|30|30|0|30|BackCompat|CSS1Compat'],
-  ] as const) {
-    const { text, logs } = await hostedFrames(page(doctype), {});
-    const out = await until(
-      () => text('page', 'out'),
-      (t) => t !== '',
-    );
-    assert.equal(out, want, logs.join('\n'));
-  }
-});
-
 test("a scriptless frame's root scrolls as its frame's viewport, which starts at its scroll-initial-target", async () => {
   // CSSOM View 7: the root's scrollTop is its viewport's, and for a frame's
   // document of the page realm that is the frame's view (CSS Scroll Snap
@@ -19142,7 +19153,7 @@ test("a scriptless frame's root scrolls as its frame's viewport, which starts at
       '</script>',
     {
       'frame.html':
-        '<!doctype html><style>body { margin: 0 } div { height: 100px }</style>' +
+        '<style>body { margin: 0 } div { height: 100px }</style>' +
         '<div style="height: 200px"></div>' +
         '<div style="scroll-initial-target: nearest"></div>' +
         '<div style="height: 400px"></div>',

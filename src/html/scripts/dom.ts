@@ -7188,10 +7188,8 @@ export function installDom(
    *  none (`HtmlHandle.scrollState`). */
   /** How far the viewport's scrollable overflow reaches, across and down,
    *  or null where the host cannot say. */
-  /** How far a document's viewport scrolls over, asked of the view that
-   *  draws it: the page's, or a frame's of this realm's. */
-  const documentSize = (doc?: Any): number[] | null => {
-    const r = call('documentSize', doc?._id);
+  const documentSize = (): number[] | null => {
+    const r = call('documentSize');
     return typeof r === 'string' && r ? r.split(',').map(Number) : null;
   };
   const scrollStateOf = (el: Any): number[] | null => {
@@ -7765,7 +7763,7 @@ export function installDom(
       if (s) return Math.round(s[2]);
       if (this._viewport()) {
         // the viewport's scrollable overflow, where the host can say it
-        const d = documentSize(this.ownerDocument);
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
           this._ownViewport().width,
           Math.round(d ? d[0] : (docRect(this)?.[2] ?? 0)),
@@ -7779,7 +7777,7 @@ export function installDom(
       if (this._viewport()) {
         // as far down as the viewport's scrollable overflow reaches, what
         // is positioned out of the flow below the root included
-        const d = documentSize(this.ownerDocument);
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
           this._ownViewport().height,
           Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
@@ -7803,12 +7801,13 @@ export function installDom(
     }
     /** Whether this element's scrolling is the viewport's: the root's. */
     _viewport(): boolean {
-      // the page's document, or a frame's document of this realm's, which
-      // its frame's view draws and scrolls (CSSOM View 7: its scrolling
-      // element's scrolling is its viewport's)
+      if (this === document.documentElement) return true;
+      // a frame's document of this realm's, which its frame's view draws
+      // and scrolls (CSSOM View 7: its root's scrolling is its viewport's)
       const own = this.ownerDocument;
-      if (own !== document && !own?.defaultView) return false;
-      return this === scrollingRootOf(own);
+      return (
+        own !== document && !!own?.defaultView && this === own.documentElement
+      );
     }
     /** The viewport this root's scrolling is: the page's, or its frame's. */
     _ownViewport(fresh = false): ReturnType<typeof viewport> {
@@ -7930,10 +7929,16 @@ export function installDom(
           how = 'nearest';
         }
         if (how === 'end') return top - (port - height);
+        // CSSOM View 7.1, "scroll an element into view", for `nearest`:
+        // nothing where it is shown whole or covers the scrollport, and
+        // otherwise the edge it is past, or, where it is larger than the
+        // scrollport, the other one
         if (how === 'nearest') {
-          if (top < 0) return top;
-          if (top + height > port) return top + height - port;
-          return 0;
+          const bottom = top + height;
+          if ((top >= 0 && bottom <= port) || (top <= 0 && bottom >= port)) {
+            return 0;
+          }
+          return top < 0 === height <= port ? top : bottom - port;
         }
         return top;
       };
@@ -7945,13 +7950,65 @@ export function installDom(
         String(call('scrollInsets', this._id, port ? port._id : undefined))
           .split(',')
           .map(Number);
+      // what a container further out lines up is the element as the scroll
+      // containers it has come through show it, their scrollports clipping
+      // its border box, as Chromium has it — the whole of it where they
+      // show none of it
+      const passed: Any[] = [];
+      const shown = (r: number[] | null): number[] | null => {
+        if (!r) return null;
+        let [x, y] = r;
+        let x2 = r[0] + r[2];
+        let y2 = r[1] + r[3];
+        for (const c of passed) {
+          const cr = docRect(c);
+          const cs = scrollStateOf(c);
+          if (!cr || !cs) continue;
+          const cx = cr[0] + cs[7];
+          const cy = cr[1] + cs[6];
+          x = Math.max(x, cx);
+          y = Math.max(y, cy);
+          x2 = Math.min(x2, cx + cs[4]);
+          y2 = Math.min(y2, cy + cs[5]);
+        }
+        return x2 > x && y2 > y ? [x, y, x2 - x, y2 - y] : r;
+      };
+      // what a focus brings into view of a text field is its selection, as
+      // browsers have it: the line its end is on, from the line breaks
+      // before it and the field's line height, kept inside the field
+      const field =
+        quiet &&
+        (this.localName === 'textarea' ||
+          (this.localName === 'input' &&
+            typeof (this as Any).selectionEnd === 'number'));
+      const target = (): number[] | null => {
+        const r = docRect(this);
+        if (!r || !field) return r;
+        const end = Number((this as Any).selectionEnd ?? 0);
+        const lines =
+          String((this as Any).value ?? '')
+            .slice(0, end)
+            .split('\n').length - 1;
+        if (!lines) return r;
+        const cs = getComputedStyle(this);
+        const size = parseFloat(cs.fontSize) || 16;
+        const lh = parseFloat(cs.lineHeight) || size * 1.2;
+        const top =
+          (parseFloat(cs.borderTopWidth) || 0) +
+          (parseFloat(cs.paddingTop) || 0) +
+          lines * lh -
+          (Number((this as Any).scrollTop) || 0);
+        const y = Math.min(Math.max(r[1] + top, r[1]), r[1] + r[3] - lh);
+        return [r[0], y, r[2], Math.min(lh, r[3])];
+      };
       // up to its own document's root, whose scroll is its viewport's
       const root = this.ownerDocument.documentElement;
       for (let at = this.parentElement; at; at = at.parentElement) {
         if (at === root) break;
         const s = scrollStateOf(at);
         if (!s || call('scrollMoves', at._id, this._id) !== true) continue;
-        const me = docRect(this);
+        const me = shown(target());
+        passed.push(at);
         const port = docRect(at);
         if (!me || !port) return;
         const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(at);
@@ -7977,7 +8034,7 @@ export function installDom(
         );
       }
       if (call('atViewport', this._id) === true) return;
-      const r = docRect(this);
+      const r = shown(target());
       if (!r) return;
       // the viewport of the document it is in: a frame's of this realm's,
       // which its own view scrolls, where it is not this one's
@@ -18426,7 +18483,7 @@ export function installDom(
       return this.characterSet;
     }
     get compatMode(): string {
-      return quirksMode(this) ? 'BackCompat' : 'CSS1Compat';
+      return 'CSS1Compat';
     }
     get visibilityState(): string {
       return this._hidden ? 'hidden' : 'visible';
@@ -18463,7 +18520,7 @@ export function installDom(
       return wrap(Number(call('active', id))) ?? this.body;
     }
     get scrollingElement(): Any {
-      return scrollingRootOf(this);
+      return this.documentElement;
     }
     get forms(): Any {
       return heldList(this, 'forms', () =>
@@ -21646,26 +21703,6 @@ export function installDom(
   };
   /** The viewport of a frame's document of this realm's, which has no realm
    *  of its own: its frame's content box, scrolled as its view has it. */
-  /** Whether a document is in quirks mode, as its parser left it (HTML
-   *  13.2.6.4.1); asked once a document, since nothing changes it after
-   *  its doctype is read. */
-  const QUIRKS = new WeakMap<object, boolean>();
-  const quirksMode = (doc: Any): boolean => {
-    let on = QUIRKS.get(doc);
-    if (on === undefined) {
-      on = call('quirks', doc._id) === true;
-      QUIRKS.set(doc, on);
-    }
-    return on;
-  };
-  /** A document's scrolling element (CSSOM View 7): its root, or in quirks
-   *  mode its body, whose scroll is then the viewport's and the root's is
-   *  none. */
-  const scrollingRootOf = (doc: Any): Any => {
-    if (!quirksMode(doc)) return doc.documentElement;
-    const body = doc.body;
-    return body && body.localName === 'body' ? body : null;
-  };
   const frameViewport = (
     doc: Any,
   ): {

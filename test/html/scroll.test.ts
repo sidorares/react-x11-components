@@ -375,6 +375,57 @@ test('a scroll container is first scrolled to its scroll-initial-target, lined u
   assert.deepEqual(at(), [0, 0], 'a script scrolled it');
 });
 
+test('a snap on both axes rests at the nearest pair of places that shows both areas, a scroll stops short of an always area it would show, and an area of no width shows at the edge', async () => {
+  // CSS Scroll Snap 1, "scoping valid snap positions to visible boxes" and
+  // scroll-snap-stop (WPT snap-to-combination-of-two-elements-2,
+  // scroll-snap-stop-002-nested, snap-to-visible-areas-unreachable)
+  const { el: node } = await renderScrolled(
+    '<style>#b div, #st div, #z div { position: absolute }' +
+      '#b { position: relative; width: 600px; height: 600px; overflow: hidden; scroll-snap-type: both mandatory }' +
+      '#b .space { width: 2000px; height: 2000px }' +
+      '#lt { left: 200px; top: 200px; width: 450px; height: 450px; scroll-snap-align: start start }' +
+      '#rb { left: 600px; top: 800px; width: 50px; height: 50px; scroll-snap-align: end end }' +
+      '#st { position: relative; width: 400px; height: 100px; overflow: scroll; scroll-snap-type: x mandatory }' +
+      '#st .space { width: 2100px; height: 50px }' +
+      '#st .t { top: 0; height: 50px; width: 50px; scroll-snap-align: start }' +
+      '#z { position: relative; width: 300px; height: 300px; overflow: scroll; scroll-snap-type: y mandatory }' +
+      '#z .space { width: 600px; height: 1200px }' +
+      '#z .t { width: 100px; height: 100px; scroll-snap-align: start }</style>' +
+      '<div id="b"><div class="space"></div><div id="lt"></div><div id="rb"></div></div>' +
+      '<div id="st"><div class="space"></div><div class="t" style="left: 0"></div>' +
+      '<div class="t" style="left: 400px; width: 900px"></div>' +
+      '<div class="t" style="left: 900px; scroll-snap-stop: always"></div></div>' +
+      '<div id="z"><div class="space"></div><div class="t" style="left: 600px; top: 0; width: 0"></div>' +
+      '<div class="t" style="left: 400px; top: 600px"></div></div>',
+    600,
+    800,
+  );
+  const both = el(node, 'b');
+  assert.deepEqual(node.scrollElementTo(both, { x: 100, y: 150 }), {
+    x: 200,
+    y: 200,
+  });
+  assert.deepEqual(node.scrollElementTo(both, { x: 0, y: 0 }), {
+    x: 50,
+    y: 250,
+  });
+  const stop = el(node, 'st');
+  assert.equal(
+    node.scrollElementTo(stop, { x: 600 }, true)?.x,
+    500,
+    'short of it',
+  );
+  node.scrollElementTo(stop, { x: 0 });
+  assert.equal(node.scrollElementTo(stop, { x: 800 }, true)?.x, 900, 'at it');
+  const zero = el(node, 'z');
+  node.scrollElementTo(zero, { x: 300, y: 0 });
+  assert.equal(
+    node.scrollElementTo(zero, { x: 300, y: 280 })?.y,
+    0,
+    'at the edge',
+  );
+});
+
 test('in an area larger than the snapport a snap rests where it covers the snapport, but not where another area intrudes at its start', async () => {
   // CSS Scroll Snap 1, "snapping boxes that overflow the scrollport": a
   // long area holds small ones, and a scroll across one of them lines it
