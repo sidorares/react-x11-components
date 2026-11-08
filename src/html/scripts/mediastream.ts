@@ -13,11 +13,16 @@
 // those through `internals`). Its frames stay host-side. What the page holds — the tracks, the streams, the device
 // lists, every rejection — is made here, of the page's own classes.
 //
-// This is the first slice of docs/prd-webrtc.md's workstream 2: enough for
-// a peer connection's tracks and for `getUserMedia` over the fake devices.
-// Constraints are read as far as a number or an `exact`, `ideal`, `min` or
-// `max` of one; fitness distance, `applyConstraints` and `getDisplayMedia`
-// come with the rest of it.
+// Constraints are the host's to fit (`constraints.ts`, SelectSettings): a
+// page's are handed over as JSON, and what comes back is the settings they
+// came to or the name of the one nothing could meet, which is an
+// `OverconstrainedError` here.
+//
+// A track handed to another realm (`transfer`, `adopt`) keeps its source
+// where it was: the track made of it reaches the source through a port back
+// to the realm that opened it, which serves it (`serve`), so a frame's or a
+// worker's track stops, clones and is constrained over that port, and hears
+// its source mute and end over it.
 
 /** What `installDom` hands this. */
 export interface MediaStreamsDeps {

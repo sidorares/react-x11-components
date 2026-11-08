@@ -5223,6 +5223,19 @@ list.
   worker can ask of a channel is a `ChannelRelay` op**, done in
   `PagePeers.fromWorker`, or the worker's channel has a member that does
   nothing.
+- **A track's constraints are fitted on the host, in one place**
+  (`constraints.ts`, Media Capture's SelectSettings): `getUserMedia` and
+  `applyConstraints` hand over the page's constraints as JSON, and what comes
+  back is the settings or the name of the one nothing met. Which required
+  constraint failed is the first, in `ORDER`, to leave no candidate, so a
+  device is narrowed to a mode before a mode to a size. **What
+  `enumerateDevices` shows a document is what it captured**
+  (`PageSources._exposes`), never what it may do, and a group id is the
+  document's own. **A track handed to another realm keeps its source where
+  it was**: the track made of it reaches it over a port back (`serve`,
+  `homeOf` in `mediastream.ts`), whatever thread it is on. So anything new a
+  track asks of its source goes through `retain`, `release` or its home's
+  port, never `call` with its source's number, which is another host's.
 - **Web Audio is the whole API, and silent** (`webaudio.ts`). A page that
   finds `AudioContext` uses all of it, so every node Web Audio 1 has a
   factory for is there with its parameters, automation and errors, where
