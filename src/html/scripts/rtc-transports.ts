@@ -90,75 +90,140 @@ export function installRtcTransports(
 
   // --- candidates ---------------------------------------------------------------
 
-  /** A candidate attribute's fields (RFC 8839, 5.1), or null where it is
-   *  not one. */
+  /** A candidate attribute's fields (RFC 8839, 5.1, with RFC 6544's
+   *  `tcptype`), or null where it is not one or a field is no value its
+   *  attribute can hold, which leaves every parsed attribute null (WebRTC
+   *  1.0, "create an RTCIceCandidate"). The SDP framing's `a=` is let
+   *  through, as every browser lets it. The ufrag extension is `ufrag`,
+   *  which only the stack's own candidates are read for. */
   const parseCandidate = (text: string): Any => {
-    let line = text.trim();
+    let line = text.replace(/\r?\n$/, '');
     if (line.startsWith('a=')) line = line.slice(2);
     if (!line.startsWith('candidate:')) return null;
-    const t = line.slice('candidate:'.length).split(/\s+/);
-    if (t.length < 8 || t[6] !== 'typ') return null;
-    const port = Number(t[5]);
-    const priority = Number(t[3]);
-    if (!Number.isInteger(port) || !Number.isFinite(priority)) return null;
-    const out: Any = {
-      foundation: t[0],
-      component: t[1] === '1' ? 'rtp' : t[1] === '2' ? 'rtcp' : null,
-      protocol:
-        t[2].toLowerCase() === 'tcp'
-          ? 'tcp'
-          : t[2].toLowerCase() === 'udp'
-            ? 'udp'
-            : null,
-      priority,
-      address: t[4],
-      port,
-      type: ['host', 'srflx', 'prflx', 'relay'].includes(t[7]) ? t[7] : null,
-      tcpType: null,
-      relatedAddress: null,
-      relatedPort: null,
-      ufrag: null,
-    };
-    for (let i = 8; i + 1 < t.length; i += 2) {
-      const key = t[i];
-      const value = t[i + 1];
-      if (key === 'raddr') out.relatedAddress = value;
-      else if (key === 'rport') out.relatedPort = Number(value);
-      else if (key === 'tcptype') {
-        out.tcpType = ['active', 'passive', 'so'].includes(value)
-          ? value
-          : null;
-      } else if (key === 'ufrag') out.ufrag = value;
+    const t = line.slice('candidate:'.length).split(' ');
+    if (t.length < 8 || t.some((x: string) => x === '')) return null;
+    const [foundation, componentId, transport, priorityText, address] = t;
+    // foundation = 1*32 ice-char, ice-char = ALPHA / DIGIT / "+" / "/"
+    if (!/^[A-Za-z0-9+/]{1,32}$/.test(foundation)) return null;
+    // component-id = 1*3 DIGIT, 1 to 256 by RFC 8445's prose; RTP's or
+    // RTCP's, as RTCIceComponent has them
+    if (!/^[0-9]{1,3}$/.test(componentId)) return null;
+    const component = Number(componentId);
+    if (component !== 1 && component !== 2) return null;
+    const protocol = transport.toLowerCase();
+    if (protocol !== 'udp' && protocol !== 'tcp') return null;
+    // priority = 1*10 DIGIT, 1 to 2^31 - 1
+    if (!/^[0-9]{1,10}$/.test(priorityText)) return null;
+    const priority = Number(priorityText);
+    if (priority < 1 || priority > 2147483647) return null;
+    const portOf = (value: string | undefined): number | null =>
+      value !== undefined &&
+      /^[0-9]{1,5}$/.test(value) &&
+      Number(value) <= 65535
+        ? Number(value)
+        : null;
+    const port = portOf(t[5]);
+    if (port === null || t[6].toLowerCase() !== 'typ') return null;
+    const type = t[7].toLowerCase();
+    if (!['host', 'srflx', 'prflx', 'relay'].includes(type)) return null;
+    let i = 8;
+    let relatedAddress: string | null = null;
+    let relatedPort: number | null = null;
+    if (t[i]?.toLowerCase() === 'raddr') {
+      if (t[i + 1] === undefined) return null;
+      relatedAddress = t[i + 1];
+      i += 2;
     }
-    return out;
+    if (t[i]?.toLowerCase() === 'rport') {
+      relatedPort = portOf(t[i + 1]);
+      if (relatedPort === null) return null;
+      i += 2;
+    }
+    // what is not a host is reached from a related address (RFC 8839, 5.1)
+    if (type !== 'host' && (relatedAddress === null || relatedPort === null))
+      return null;
+    // a TCP candidate says its type first (RFC 6544, 4.5)
+    let tcpType: string | null = null;
+    if (t[i]?.toLowerCase() === 'tcptype') {
+      tcpType = t[i + 1]?.toLowerCase() ?? '';
+      if (!['active', 'passive', 'so'].includes(tcpType)) return null;
+      i += 2;
+    } else if (protocol === 'tcp' && type !== 'relay') return null;
+    let ufrag: string | null = null;
+    // extension-att-name SP extension-att-value, in pairs
+    if ((t.length - i) % 2 !== 0) return null;
+    for (; i < t.length; i += 2) if (t[i] === 'ufrag') ufrag = t[i + 1];
+    return {
+      foundation,
+      component: component === 1 ? 'rtp' : 'rtcp',
+      protocol,
+      priority,
+      address,
+      port,
+      type,
+      tcpType,
+      relatedAddress,
+      relatedPort,
+      ufrag,
+    };
   };
 
-  /** An `RTCIceCandidateInit` as Web IDL converts it: each member read
-   *  once, in their order. */
-  const iceInitOf = (value: Any): Any => {
+  /** Web IDL's `unsigned short`, with no `[EnforceRange]`. */
+  const unsignedShort = (value: Any): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) & 0xffff : 0;
+  };
+  const RELAY_PROTOCOLS = ['udp', 'tcp', 'tls'];
+
+  /** An `RTCIceCandidateInit` as Web IDL converts it: an inherited
+   *  dictionary's members first, each dictionary's in their order. With
+   *  `local`, `RTCLocalIceCandidateInit`'s `relayProtocol` and `url`. */
+  const iceInitOf = (value: Any, local = false): Any => {
     const i = dictionary(value, 'RTCIceCandidateInit');
     const candidate = i.candidate;
     const sdpMLineIndex = i.sdpMLineIndex;
     const sdpMid = i.sdpMid;
     const usernameFragment = i.usernameFragment;
-    return {
-      candidate:
-        candidate === undefined || candidate === null ? '' : String(candidate),
+    const out: Any = {
+      // a `DOMString`, not nullable: null is "null"
+      candidate: candidate === undefined ? '' : String(candidate),
       sdpMLineIndex:
         sdpMLineIndex === undefined || sdpMLineIndex === null
           ? null
-          : enforce(sdpMLineIndex, 65535, 'sdpMLineIndex'),
+          : unsignedShort(sdpMLineIndex),
       sdpMid: sdpMid === undefined || sdpMid === null ? null : String(sdpMid),
       usernameFragment:
         usernameFragment === undefined || usernameFragment === null
           ? null
           : String(usernameFragment),
+      relayProtocol: null,
+      url: null,
     };
+    if (local) {
+      const relayProtocol = i.relayProtocol;
+      const url = i.url;
+      if (relayProtocol !== undefined && relayProtocol !== null) {
+        out.relayProtocol = String(relayProtocol);
+        if (!RELAY_PROTOCOLS.includes(out.relayProtocol)) {
+          throw typeError(
+            `The provided value '${out.relayProtocol}' is not a valid enum value of type RTCIceServerTransportProtocol.`,
+          );
+        }
+      }
+      if (url !== undefined && url !== null) {
+        // a `USVString`: a lone surrogate is U+FFFD
+        out.url = String(url).replace(
+          /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+          '\uFFFD',
+        );
+      }
+    }
+    return out;
   };
 
   class RTCIceCandidate {
     constructor(init: Any = {}) {
-      const i = iceInitOf(init);
+      const i = iceInitOf(init, true);
       const candidate: string = i.candidate;
       const sdpMid: string | null = i.sdpMid;
       const sdpMLineIndex: number | null = i.sdpMLineIndex;
@@ -167,8 +232,8 @@ export function installRtcTransports(
           "Failed to construct 'RTCIceCandidate': sdpMid and sdpMLineIndex are both null.",
         );
       }
-      const fields = parseCandidate(candidate);
-      const usernameFragment = i.usernameFragment ?? fields?.ufrag ?? null;
+      const fields = candidate === '' ? null : parseCandidate(candidate);
+      const usernameFragment = i.usernameFragment;
       apply(wmSet, slots, [
         this,
         {
@@ -178,8 +243,8 @@ export function installRtcTransports(
           sdpMLineIndex,
           usernameFragment,
           fields,
-          relayProtocol: null,
-          url: null,
+          relayProtocol: i.relayProtocol,
+          url: i.url,
         },
       ]);
     }
@@ -244,13 +309,30 @@ export function installRtcTransports(
 
   class RTCPeerConnectionIceEvent extends Event {
     constructor(type: string, init: Any = {}) {
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to construct 'RTCPeerConnectionIceEvent': 1 argument required, but only 0 present.",
+        );
+      }
       const i = dictionary(init, 'RTCPeerConnectionIceEventInit');
+      const candidate = i.candidate ?? null;
+      if (
+        candidate !== null &&
+        !(
+          typeof candidate === 'object' &&
+          apply(wmGet, slots, [candidate])?.iceCandidate
+        )
+      ) {
+        throw typeError(
+          "Failed to construct 'RTCPeerConnectionIceEvent': candidate is not of type 'RTCIceCandidate'.",
+        );
+      }
       super(type, i);
       apply(wmSet, slots, [
         this,
         {
           iceEvent: true,
-          candidate: i.candidate ?? null,
+          candidate,
           url: i.url === undefined || i.url === null ? null : String(i.url),
         },
       ]);
@@ -466,6 +548,21 @@ export function installRtcTransports(
         heard.add(candidateKey(slotOf(c, 'iceCandidate').candidate));
       }
     }
+    // with `max-bundle` every m-section rides the first one's transport,
+    // which alone gathers, so the others list no candidates (RFC 8843, 7.1.2)
+    if (s.config?.bundlePolicy === 'max-bundle') {
+      const parts = sdp.split(/(?=^m=)/m);
+      sdp = parts
+        .map((part, i) =>
+          i < 2
+            ? part
+            : part.replace(
+                /^a=(candidate:|end-of-candidates)[^\r\n]*(\r?\n)?/gm,
+                '',
+              ),
+        )
+        .join('');
+    }
     return sdp
       .replace(
         /^a=candidate:([^\r\n]*)(\r?\n)?/gm,
@@ -477,12 +574,15 @@ export function installRtcTransports(
       );
   };
 
+  /** A candidate of the stack's: its ufrag where the stack gave none is
+   *  the one its string names. */
   const candidateFrom = (c: Any): Any =>
     new RTCIceCandidate({
       candidate: c.candidate,
       sdpMid: c.sdpMid ?? '0',
       sdpMLineIndex: c.sdpMLineIndex,
-      usernameFragment: c.usernameFragment,
+      usernameFragment:
+        c.usernameFragment ?? parseCandidate(c.candidate)?.ufrag ?? null,
     });
 
   // --- stats ----------------------------------------------------------------------
@@ -659,12 +759,7 @@ export function installRtcTransports(
     const [pcId, id, c] = input() as [number, number, Any];
     const s = connections.get(pcId);
     if (!s || s.closed) return null;
-    const candidate = new RTCIceCandidate({
-      candidate: c.candidate,
-      sdpMid: c.sdpMid ?? '0',
-      sdpMLineIndex: c.sdpMLineIndex,
-      usernameFragment: c.usernameFragment,
-    });
+    const candidate = candidateFrom(c);
     const t = transportOf(s, id);
     apply(wmGet, slots, [t.ice]).local.push(candidate);
     fire(s.self, new RTCPeerConnectionIceEvent('icecandidate', { candidate }));

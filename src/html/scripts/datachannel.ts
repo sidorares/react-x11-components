@@ -461,6 +461,12 @@ export function installDataChannels(
   });
 
   const PRIORITIES = ['very-low', 'low', 'medium', 'high'];
+  /** Web IDL's `USVString`: each lone surrogate U+FFFD. */
+  const wellFormed = (text: string): string =>
+    text.replace(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+      '\uFFFD',
+    );
 
   const interfaces = { RTCDataChannel, RTCDataChannelEvent, RTCSctpTransport };
   idl(interfaces);
@@ -477,11 +483,13 @@ export function installDataChannels(
                   "Failed to execute 'createDataChannel': parameter 2 is not of type 'RTCDataChannelInit'.",
                 );
               })();
-      const name = label === undefined ? '' : String(label);
+      // both `USVString`s: a lone surrogate is U+FFFD
+      const name = wellFormed(String(label));
       if (utf8Length(name) > 65535) {
         throw typeError('The label is longer than 65535 bytes.');
       }
-      const protocol = i.protocol === undefined ? '' : String(i.protocol);
+      const protocol =
+        i.protocol === undefined ? '' : wellFormed(String(i.protocol));
       if (utf8Length(protocol) > 65535) {
         throw typeError('The protocol is longer than 65535 bytes.');
       }
@@ -542,6 +550,11 @@ export function installDataChannels(
         priority,
       };
       const host = Number(call('rtcChannel', pc.id, stringify(normal)));
+      // one made once the association is up has its id as it is made
+      if (normal.id === null) {
+        const id = call('rtcChannelId', host);
+        if (typeof id === 'number') normal.id = id;
+      }
       return make(pc, host, normal, 'connecting');
     },
     remote(pc: Any, host: number, init: Any) {

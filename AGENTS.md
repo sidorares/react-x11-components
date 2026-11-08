@@ -5247,7 +5247,15 @@ list.
   back the same way, held until the worker has made its own. **Anything new a
   worker can ask of a channel is a `ChannelRelay` op**, done in
   `PagePeers.fromWorker`, or the worker's channel has a member that does
-  nothing.
+  nothing. **An `RTCCertificate` is `[Serializable]`, and its origin is the
+  host's to hold**: it clones as its host's number, expiry, fingerprints and
+  origin, and is turned down in a worker, which has no `RTCCertificate`
+  (`certificatesOf`, null after `__becomeWorker`). A realm has two clone
+  walkers, `structuredCopy` for a message within it and `serializeClone` for
+  one that crosses, so **anything new that is serializable joins both**. The
+  realm refuses another origin's certificate first, as the specification
+  has it, and `PagePeers` leaves it out of what a connection is made with
+  (`CERTIFICATE_ORIGINS`), since a page can talk its realm round.
 - **A track's constraints are fitted on the host, in one place**
   (`constraints.ts`, Media Capture's SelectSettings): `getUserMedia` and
   `applyConstraints` hand over the page's constraints as JSON, and what comes
@@ -8817,6 +8825,7 @@ npm run examples:tray-host   # X11 only, and no other tray on that display
 npm run examples:three       # a GL context: see docs/components/three.md
 npm run examples:tree -- <dir>  # defaults to cwd
 npm run examples:browser -- [url]  # and a network; BROWSER_DEBUG=1 logs requests
+npm run examples:browser:app -- [url]  # macOS: as an app of its own, for the camera
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
 npm run examples:flow-stress    # the measured pan loop, with an X-traffic HUD
 ```

@@ -9250,7 +9250,9 @@ test('a History method acts on the history it is called on, whichever window it 
       '1',
       '#two',
       '2',
-      '1',
+      // the frame's `length` is the page's: one history, as a browser's
+      // top-level traversable keeps it
+      '2',
       // attributes and methods are the interface's, not the object's
       '0',
       'true',
@@ -9533,6 +9535,73 @@ test('an intercepted navigation resets focus after the transition, unless focusR
   assert.strictEqual(
     await settled(doc, 'out', (t) => t !== ''),
     'TypeError|a|body|kept|moved|err',
+  );
+});
+
+test('the first element put in with autofocus takes the focus at a rendering step, whatever it is, and nothing put in after it does', async () => {
+  // HTML 6.6.5, "flush autofocus candidates": a button is no form widget,
+  // so only the document's own flush gives it the focus (WPT's
+  // focus-reset/autofocus, whose setup waits two frames for it); the
+  // document is done with autofocus once one has, and a disabled one is
+  // passed over
+  const doc = await hosted(
+    '<p id="out"></p><button id="off" autofocus disabled>off</button>' +
+      '<button id="first" autofocus>first</button><button id="second" autofocus>second</button><script>' +
+      'var r = [];' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  r.push(document.activeElement.id);' +
+      '  document.getElementById("first").remove();' +
+      '  r.push(document.activeElement === document.body);' +
+      '  var late = document.createElement("button");' +
+      '  late.id = "late"; late.autofocus = true; document.body.append(late);' +
+      '  requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '    r.push(document.activeElement === document.body);' +
+      "    document.getElementById('out').textContent = r.join('|');" +
+      '  }); });' +
+      '}); });' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'first|true|true',
+  );
+});
+
+test("an intercepted navigation's focus reset goes to the document's autofocus delegate as it stands at the end", async () => {
+  // HTML, "potentially reset the focus": the first element with `autofocus`
+  // that can take the focus then, else the body — not one disabled since,
+  // nor one that lost its attribute (WPT's focus-reset/autofocus)
+  const doc = await hosted(
+    '<p id="out"></p><button id="decoy">decoy</button><script>' +
+      'var r = [], decoy = document.getElementById("decoy");' +
+      'function add(id) { var b = document.createElement("button"); b.id = id; b.autofocus = true; document.body.append(b); return b; }' +
+      'function step(change) {' +
+      '  decoy.focus();' +
+      '  var go;' +
+      '  navigation.addEventListener("navigate", function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { go = ok; }); } });' +
+      '  }, { once: true });' +
+      '  var res = navigation.navigate("#" + r.length);' +
+      '  return res.committed.then(function () {' +
+      '    r.push(document.activeElement.id);' +
+      '    change(); go(); return res.finished;' +
+      '  }).then(function () { r.push(document.activeElement === document.body ? "body" : document.activeElement.id); });' +
+      '}' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var one = add("one"), two = add("two");' +
+      '  step(function () {}).then(function () {' +
+      '    return step(function () { one.disabled = true; });' +
+      '  }).then(function () {' +
+      '    return step(function () { two.autofocus = false; });' +
+      '  }).then(function () {' +
+      "    document.getElementById('out').textContent = r.join('|');" +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'decoy|one|decoy|two|decoy|body',
   );
 });
 
@@ -16101,6 +16170,48 @@ test("a key typed in a field scrolled out of sight brings it into view inside it
   assert.strictEqual(doc.text('out'), '40', doc.logs.join('\n'));
 });
 
+test('scrollIntoView() lines up what the inner scroll containers show of an element in the outer ones, and nearest aligns the far edge of an element larger than the scrollport', async () => {
+  // Chromium clips the rect it scrolls an outer container to by the inner
+  // ones' scrollports, and CSSOM View 7.1's nearest aligns an element
+  // larger than the scrollport by its other edge (WPT
+  // scroll-margin-overflow-ancestor, scroll-target-margin-006)
+  const doc = await hosted(
+    '<p id="out"></p><style>.s { overflow: auto; position: relative; height: 200px; width: 100px }' +
+      ' .gap { height: 2000px }</style>' +
+      '<div class="s" id="outer"><div style="position: relative; top: 1000px; height: 150px" class="s" id="inner">' +
+      '<div id="t" style="position: relative; top: -20px; height: 40px; scroll-margin-top: 40px"></div>' +
+      '<div class="gap"></div></div><div class="gap"></div></div>' +
+      '<div class="s" id="wide" style="height: 40px; width: 40px"><div style="width: 2000px; height: 10px"></div>' +
+      '<div id="w" style="margin-left: 1000px; width: 200px; height: 10px; scroll-margin-left: 20px"></div></div>' +
+      '<script>' +
+      'document.getElementById("t").scrollIntoView();' +
+      'var r = [document.getElementById("inner").scrollTop, document.getElementById("outer").scrollTop];' +
+      'document.getElementById("w").scrollIntoView();' +
+      'r.push(document.getElementById("wide").scrollLeft);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '0|960|980', doc.logs.join('\n'));
+});
+
+test("focus() of a text field brings its selection into view, the line its end is on, and not the field's edge", async () => {
+  // WPT html/interaction/focus/processing-model/textarea-scroll-selection
+  const doc = await hosted(
+    '<p id="out"></p><div id="s" style="overflow: auto; height: 100px">' +
+      '<textarea id="t" style="overflow: hidden; height: 300px; line-height: 20px; font-size: 16px"></textarea></div>' +
+      '<script>' +
+      'var t = document.getElementById("t");' +
+      't.value = Array.from({ length: 12 }, function (_, i) { return "line " + i; }).join("\\n");' +
+      'var at = t.value.indexOf("line 5") + 6; t.setSelectionRange(at, at); t.focus();' +
+      "document.getElementById('out').textContent = document.getElementById('s').scrollTop;" +
+      '</script>',
+  );
+  // the sixth line, 100px to 120px down past the field's top border and
+  // padding, is out of sight, and is centred
+  const top = Number(doc.text('out'));
+  assert.ok(top > 55 && top < 70, `${top}\n${doc.logs.join('\n')}`);
+});
+
 test("el.style keeps scroll snapping's values as their grammars take them, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin by the element's writing mode", async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="e"></div>' +
@@ -18156,6 +18267,54 @@ test('a frame without scripts reloads and steps back across its documents by loa
   );
 });
 
+test("a frame's entries of a document fetched under no-referrer or origin have no URL for the documents after it, and have it again once it is shown", async () => {
+  // HTML 7.2.6.5, the `url` getter: the policy is the document's as it is
+  // left — its response's, a `<meta>` in its markup, one written after it
+  // loaded — and read again each time it is left (WPT's
+  // no-referrer-*-url-censored)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function then(go, next) { f.onload = function () { setTimeout(next, 0); }; go(); }' +
+      'function name(e) { return e.url === null ? "null" : e.url.split("/").pop(); }' +
+      'function seen() { r.push(n().entries().map(name).join(",") + " " + name(n().activation.from)); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  n().navigate("#1").committed.then(function () {' +
+      '    then(function () { n().navigate("b.html"); }, function () {' +
+      '      seen();' +
+      '      then(function () { n().back(); }, function () {' +
+      '        seen();' +
+      '        f.contentDocument.head.innerHTML = \'<meta name="referrer" content="same-origin">\';' +
+      '        then(function () { n().forward(); }, function () {' +
+      '          seen();' +
+      '          document.getElementById("out").textContent = r.join("|");' +
+      '        });' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html':
+        '<!doctype html><meta name="referrer" content="origin"><p>b</p>',
+    },
+    false,
+    {},
+    { 'a.html': [['referrer-policy', 'no-referrer']] },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'null,null,b.html null|a.html,a.html#1,null null|a.html,a.html#1,b.html a.html#1',
+    logs.join('\n'),
+  );
+});
+
 test("a frame's next document starts its navigation API afresh: what the last one left under way is no navigation for it to abort, and a step that loads nothing moves nothing", async () => {
   // the frame's window is kept across its documents, and with it the
   // session: the cross-document `navigate()` the last one started never
@@ -18271,6 +18430,324 @@ test('a frame of another origin that the page sends back to its own comes by the
   );
 });
 
+test("the page's history is one with its frames: a frame's push is a step `history.length` counts, and a step back from any window moves whichever windows the step was theirs", async () => {
+  // HTML's joint session history (WPT's back-forward-multiple-frames): the
+  // frame's own `back()` steps the frame alone where nothing else moved
+  // since, the page's steps both where the step it goes to has both, and
+  // `history.back()` goes one step, wherever it was asked
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function at() { return [navigation.currentEntry.index, n().currentEntry.index, history.length, f.contentWindow.history.length].join(","); }' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await navigation.navigate("#top").committed;' +
+      '  await n().navigate("#f").committed;' +
+      '  r.push(at());' +
+      '  await n().back().finished;' +
+      '  r.push(at());' +
+      '  await n().forward().finished;' +
+      '  var pops = 0; f.contentWindow.onpopstate = function () { pops++; };' +
+      '  await navigation.back().finished;' +
+      '  r.push(at(), pops);' +
+      '  await n().forward().finished;' +
+      '  r.push(at());' +
+      '  var popped = new Promise(function (go) { f.contentWindow.onpopstate = go; });' +
+      '  history.back();' +
+      '  await popped;' +
+      '  r.push(at());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '1,1,3,3|1,0,3,3|0,0,3,3|1|1,1,3,3|1,0,3,3',
+    logs.join('\n'),
+  );
+});
+
+test("a frame's push clears the page's forward entries, each disposed, and the page's `navigate` cancels a step that would move it, for the frame that asked as much", async () => {
+  // WPT's dispose-for-navigation-in-child and
+  // navigation-traverseTo-in-iframe-same-document-preventDefault: only the
+  // top-level traversable's `navigate` may cancel a traversal, and it
+  // cancels the whole step, the frame's promises with it, before the frame
+  // hears `navigate`
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function at() { return [navigation.currentEntry.index, n().currentEntry.index, history.length].join(","); }' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await n().navigate("#a").committed;' +
+      '  await navigation.navigate("#1").committed;' +
+      '  await navigation.navigate("#2").committed;' +
+      '  await n().back().finished;' +
+      '  r.push(at());' +
+      '  var disposed = 0;' +
+      '  navigation.entries().slice(1).forEach(function (e) { e.ondispose = function () { disposed++; }; });' +
+      '  await n().navigate("#b").committed;' +
+      '  r.push(at(), disposed, navigation.entries().length);' +
+      '  await navigation.navigate("#3").committed;' +
+      '  navigation.onnavigate = function (e) { e.preventDefault(); };' +
+      '  var errors = 0; navigation.onnavigateerror = function () { errors++; };' +
+      '  var heard = 0; n().onnavigate = function () { heard++; };' +
+      '  var why = await n().traverseTo(n().entries()[0].key).finished.then(' +
+      '    function () { return "done"; }, function (e) { return e.name; });' +
+      '  r.push(why, errors, heard, at());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '0,0,4|0,1,2|2|1|AbortError|1|0|1,1,3',
+    logs.join('\n'),
+  );
+});
+
+test('a frame the page sends from a document of another origin to one of its own by a push is one more step of the history, and a step back loads the document it left', async () => {
+  // WPT's traverseTo-with-cross-origin-in-history and
+  // cross-document-away-and-back: the page cannot see the frame's history
+  // while it is another origin's, and the push it asked for is a step all
+  // the same; then the frame goes on to another document of its own, and
+  // the page's `history.back()` brings the one before it back, its state
+  // and all
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/x.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    r.push(history.length, n().entries().length);' +
+      '    n().updateCurrentEntry({ state: "kept" });' +
+      '    f.onload = function () { setTimeout(function () {' +
+      '      r.push(history.length, n().entries().length);' +
+      '      f.onload = function () { setTimeout(function () {' +
+      '        r.push(history.length, n().currentEntry.index, n().currentEntry.getState());' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      }, 0); };' +
+      '      history.back();' +
+      '    }, 0); };' +
+      '    n().navigate("c.html");' +
+      '  }, 0); };' +
+      '  f.contentWindow.location = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'x.html': '<!doctype html><p>x</p>',
+      'b.html': '<!doctype html><p>b</p>',
+      'c.html': '<!doctype html><p>c</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '2|1|3|2|3|0|kept',
+    logs.join('\n'),
+  );
+});
+
+test("a frame that goes on from a document of the page's origin to another origin's by a push is a step the page still counts", async () => {
+  // the page forgets the frame's window and session as it goes to a
+  // document it cannot see (`__forgetFrameWindow`), and the steps they held
+  // are the tree's all the same, with the one the push took
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var before = history.length;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    document.getElementById("out").textContent = [before, history.length].join("|");' +
+      '  }, 0); };' +
+      '  f.contentWindow.navigation.navigate("https://other.test/x.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'x.html': '<!doctype html><p>x</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '1|2',
+    logs.join('\n'),
+  );
+});
+
+test("a traversal a `navigate` listener asks for is taken after the one it heard, once that one's `hashchange` is told", async () => {
+  // the session history traversal queue (WPT's
+  // navigate-history-traversal-during-onnavigate): the second step was a
+  // task queued before the first one's `hashchange`, which then told of an
+  // entry two steps on
+  const { text, logs } = await hostedFrames(
+    '<p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await navigation.navigate("#0").finished;' +
+      '  await navigation.navigate("#1").finished;' +
+      '  await navigation.navigate("#2").finished;' +
+      '  await new Promise(function (go) { setTimeout(go, 50); });' +
+      '  var key = navigation.entries()[1].key, seen = [];' +
+      '  navigation.onnavigate = function () { navigation.onnavigate = null; navigation.traverseTo(key); };' +
+      '  onhashchange = function () {' +
+      '    seen.push(navigation.currentEntry.index + location.hash);' +
+      '    if (seen.length === 2) document.getElementById("out").textContent = seen.join("|");' +
+      '  };' +
+      '  history.back();' +
+      '}, 0); };' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '2#1|1#0',
+    logs.join('\n'),
+  );
+});
+
+test("a frame sent to a javascript: URL fires no navigate, runs it in the frame's document, and a string it comes to is a document in place of the frame's entry", async () => {
+  // HTML, "navigate to a `javascript:` URL": no `navigate` event, a replace
+  // whatever asked, and the document the string makes is at the address of
+  // the one it replaces, under its entry's key with a new id (WPT's
+  // entries-after-javascript-url-navigation and navigate-to-javascript)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var before = n().currentEntry;' +
+      '    n().onnavigate = function () { r.push("navigate"); };' +
+      '    navigation.onnavigate = function () { r.push("page navigate"); };' +
+      "    f.contentWindow.location.href = \"javascript:void (document.title = 'ran in ' + document.querySelector('p').textContent)\";" +
+      '    setTimeout(function () {' +
+      '      r.push(f.contentDocument.title, n().entries().length);' +
+      '      f.onload = function () {' +
+      '        var now = n().currentEntry;' +
+      '        r.push(n().entries().length, now.index, now.key === before.key, now.id !== before.id,' +
+      '          /b\\.html$/.test(now.url), f.contentDocument.getElementById("x").textContent);' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      };' +
+      '      f.src = "javascript:\'<p id=x>new</p>\'";' +
+      '    }, 50);' +
+      '  }, 0); };' +
+      '  n().navigate("b.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'ran in b|2|2|1|true|true|true|new',
+    logs.join('\n'),
+  );
+});
+
+test("navigate() refuses a javascript: URL whatever its history, and a page's javascript: link runs in the page and goes nowhere", async () => {
+  // HTML 7.2.6.4, `navigate()`: a `NotSupportedError` before anything else,
+  // and no `navigate`; a link's runs as the page's own script (WPT's
+  // return-value/navigate-javascript-url)
+  const { text, logs } = await hostedFrames(
+    '<a id="a" href="javascript:void (window.ran = (window.ran || 0) + 1)"></a>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'navigation.onnavigate = function () { r.push("navigate"); };' +
+      'function names(p) { return p.then(function () { return "ok"; }, function (e) { return e.name; }); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var a = navigation.navigate("javascript:void 0", { history: "replace" });' +
+      '  var b = navigation.navigate("javascript:\'x\'");' +
+      '  Promise.all([names(a.committed), names(a.finished), names(b.committed)]).then(function (got) {' +
+      '    r.push(got.join(","));' +
+      '    document.getElementById("a").click();' +
+      '    setTimeout(function () {' +
+      '      r.push(window.ran, location.href);' +
+      '      document.getElementById("out").textContent = r.join("|");' +
+      '    }, 50);' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    `NotSupportedError,NotSupportedError,NotSupportedError|1|${PAGE}`,
+    logs.join('\n'),
+  );
+});
+
+test('a javascript: URL runs in a frame only where the frame is of one origin-domain with the page that sends it', async () => {
+  // a frame that set `document.domain` is of another origin-domain than the
+  // page that did not, so neither the page's `src` nor its `location`
+  // runs a script there, while the frame's own does (WPT's
+  // javascript-url-security-check-failure, "cross-origin-domain but
+  // same-origin")
+  const frame =
+    '<!DOCTYPE html><script>' +
+    'document.domain = document.domain;' +
+    'addEventListener("message", function (e) {' +
+    '  if (e.data === "self") location.href = "javascript:void parent.postMessage(\'ran self\', \'*\')";' +
+    '});' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="d.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'addEventListener("message", function (e) {' +
+      '  r.push(e.data);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      'window.onload = function () { setTimeout(function () {' +
+      "  f.src = \"javascript:void parent.postMessage('ran src', '*')\";" +
+      "  f.contentWindow.location.href = \"javascript:void parent.postMessage('ran location', '*')\";" +
+      '  setTimeout(function () { f.contentWindow.postMessage("self", "*"); }, 100);' +
+      '}, 0); };' +
+      '</script>',
+    { 'd.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'ran self',
+    logs.join('\n'),
+  );
+  // nothing else comes after it
+  await settle(100);
+  assert.equal(text('page', 'out'), 'ran self');
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
@@ -18280,6 +18757,8 @@ async function hostedFrames(
   /** The status each request for a file is answered with, in turn: 200
    *  once they are spent, and a 204 with no body. */
   statuses: Record<string, number[]> = {},
+  /** Headers a file is answered with besides its type. */
+  headers: Record<string, [string, string][]> = {},
 ): Promise<{
   text: (where: string, id: string) => string;
   logs: string[];
@@ -18334,7 +18813,7 @@ async function hostedFrames(
         status,
         statusText: status === 200 ? 'OK' : '',
         redirected: false,
-        headers: [['content-type', 'text/html']],
+        headers: [['content-type', 'text/html'], ...(headers[file] ?? [])],
         body: status === 204 ? '' : body,
       };
     },
@@ -18724,37 +19203,6 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
   assert.equal(page, '0|80|80', logs.join('\n'));
 });
 
-test('a document with no doctype is in quirks mode, where its body is the scrolling element and scrolls its viewport, and its root scrolls nothing', async () => {
-  // HTML 13.2.6.4.1 and CSSOM View 7 (WPT
-  // cssom-view/scrolling-quirks-vs-nonquirks)
-  const page = (doctype: string) =>
-    '<iframe id="f" srcdoc="' +
-    doctype +
-    '<body style=&quot;margin: 0&quot;><div style=&quot;height: 400px&quot;></div>"' +
-    ' style="width: 300px; height: 150px"></iframe>' +
-    '<p id="out"></p><script>' +
-    'var f = document.getElementById("f");' +
-    'f.onload = function () { setTimeout(function () {' +
-    '  var d = f.contentDocument, r = [d.compatMode, d.scrollingElement.localName];' +
-    '  d.documentElement.scrollTop = 30; r.push(d.documentElement.scrollTop, f.contentWindow.scrollY);' +
-    '  d.body.scrollTop = 40; r.push(d.body.scrollTop, f.contentWindow.scrollY);' +
-    '  r.push(new DOMParser().parseFromString("<p>x", "text/html").compatMode,' +
-    '    new DOMParser().parseFromString("<!doctype html><p>x", "text/html").compatMode);' +
-    '  document.getElementById("out").textContent = r.join("|"); }, 200); };' +
-    '</script>';
-  for (const [doctype, want] of [
-    ['', 'BackCompat|body|0|0|40|40|BackCompat|CSS1Compat'],
-    ['<!doctype html>', 'CSS1Compat|html|30|30|0|30|BackCompat|CSS1Compat'],
-  ] as const) {
-    const { text, logs } = await hostedFrames(page(doctype), {});
-    const out = await until(
-      () => text('page', 'out'),
-      (t) => t !== '',
-    );
-    assert.equal(out, want, logs.join('\n'));
-  }
-});
-
 test("a scriptless frame's root scrolls as its frame's viewport, which starts at its scroll-initial-target", async () => {
   // CSSOM View 7: the root's scrollTop is its viewport's, and for a frame's
   // document of the page realm that is the frame's view (CSS Scroll Snap
@@ -18772,7 +19220,7 @@ test("a scriptless frame's root scrolls as its frame's viewport, which starts at
       '</script>',
     {
       'frame.html':
-        '<!doctype html><style>body { margin: 0 } div { height: 100px }</style>' +
+        '<style>body { margin: 0 } div { height: 100px }</style>' +
         '<div style="height: 200px"></div>' +
         '<div style="scroll-initial-target: nearest"></div>' +
         '<div style="height: 400px"></div>',

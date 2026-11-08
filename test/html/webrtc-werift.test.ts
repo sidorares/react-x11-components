@@ -181,6 +181,142 @@ test('two peers in one page offer, answer, trickle their candidates and connect'
   assert.equal(line('done'), 'done|closed|closed');
 });
 
+test('with max-bundle only the first m-section lists candidates, and an audio sender can send DTMF once connected', async () => {
+  const logs = await run(`
+    var pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
+    pc.addTransceiver('audio');
+    pc.addTransceiver('audio');
+    pc.addTransceiver('video');
+    pc.createDataChannel('channel');
+    await pc.setLocalDescription();
+    while (pc.iceGatheringState !== 'complete') await new Promise(function (r) { setTimeout(r, 20); });
+    var sections = pc.localDescription.sdp.split(/\\r\\nm=/).slice(1);
+    log('candidates', sections.map(function (m) { return (m.match(/a=candidate:/g) || []).length > 0; }).join(','));
+    pc.close();
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = function (e) { if (e.candidate) b.addIceCandidate(e.candidate); };
+    b.onicecandidate = function (e) { if (e.candidate) a.addIceCandidate(e.candidate); };
+    // a sender with no track sends no DTMF
+    var dest = new AudioContext().createMediaStreamDestination();
+    var dtmf = a.addTrack(dest.stream.getAudioTracks()[0], dest.stream).dtmf;
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription();
+    await a.setRemoteDescription(b.localDescription);
+    var end = Date.now() + 10000;
+    while (!dtmf.canInsertDTMF && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    log('dtmf', a.connectionState, dtmf.canInsertDTMF);
+    a.close(); b.close();
+    log('done');
+  `);
+  assert.ok(
+    !logs.some((l) => l.startsWith('failed')),
+    `a step failed: ${logs.join('\n')}`,
+  );
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(line('candidates'), 'candidates|true,false,false,false');
+  assert.equal(line('dtmf'), 'dtmf|connected|true');
+});
+
+test('a message the far side sends from its datachannel handler, ahead of its ACK, opens the channel and arrives', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    pc2.ondatachannel = function (e) { e.channel.send('meow'); };
+    var dc1 = pc1.createDataChannel('fire-me!');
+    var order = [];
+    dc1.onopen = function () { order.push('open'); };
+    var got = new Promise(function (r) { dc1.onmessage = function (e) { order.push(e.data); r(); }; });
+    await pc1.setLocalDescription(); await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription(); await pc1.setRemoteDescription(pc2.localDescription);
+    await Promise.race([got, new Promise(function (r) { setTimeout(r, 8000); })]);
+    log('heard', order.join(','));
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(line('heard'), 'heard|open,meow');
+});
+
+test('a transport checks nothing before it has one of the peer’s candidates, and checks once it is handed one', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var sender = pc1.addTransceiver('audio').sender;
+    var first = new Promise(function (r) { pc2.onicecandidate = function (e) { if (e.candidate) r(e.candidate); }; });
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription({ type: 'offer', sdp: pc1.localDescription.sdp.replace(/a=candidate:[^\\r\\n]*\\r\\n/g, '') });
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription({ type: 'answer', sdp: pc2.localDescription.sdp.replace(/a=candidate:[^\\r\\n]*\\r\\n/g, '') });
+    await new Promise(function (r) { setTimeout(r, 300); });
+    var ice = sender.transport.iceTransport;
+    log('answered', ice.state);
+    var states = [];
+    ice.onstatechange = function () { states.push(ice.state); };
+    await pc1.addIceCandidate(await first);
+    var end = Date.now() + 8000;
+    while (!states.length && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    log('handed', states[0]);
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(line('answered'), 'answered|new');
+  assert.equal(line('handed'), 'handed|checking');
+});
+
+test('a channel the far side closes in its datachannel handler opens on neither side, and a channel has its id from the association up', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    var opened = [];
+    pc2.ondatachannel = function (e) {
+      var d = e.channel;
+      d.onopen = function () { opened.push('far'); };
+      d.close();
+    };
+    var dc1 = pc1.createDataChannel('fire-me!');
+    await pc1.setLocalDescription(); await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription(); await pc1.setRemoteDescription(pc2.localDescription);
+    while (pc1.sctp.state !== 'connected') await new Promise(function (r) { pc1.sctp.addEventListener('statechange', r, { once: true }); });
+    var dc2 = pc1.createDataChannel('another');
+    log('ids', typeof dc1.id, typeof dc2.id, dc1.id !== dc2.id, dc1.id % 2 === dc2.id % 2);
+    await new Promise(function (r) { setTimeout(r, 500); });
+    log('opened', opened.join(',') || 'none');
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(line('ids'), 'ids|number|number|true|true');
+  assert.equal(line('opened'), 'opened|none');
+});
+
+test('a transport that only hears the peer’s checks finds it peer-reflexive and checks before it connects', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc1.addTransceiver('audio');
+    var states = [pc1.iceConnectionState];
+    pc1.oniceconnectionstatechange = function () { states.push(pc1.iceConnectionState); };
+    await pc1.setLocalDescription(); await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription({ type: 'answer', sdp: pc2.localDescription.sdp.replace(/a=candidate:[^\\r\\n]*\\r\\n/g, '') });
+    var end = Date.now() + 8000;
+    while (pc1.iceConnectionState !== 'connected' && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    log('states', states.join(','));
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.match(line('states'), /^states\|new,checking,connected/);
+});
+
 test('data channels: a close delivers what was queued, a negotiated channel opens late, and a lost peer is an sctp-failure', async () => {
   const logs = await run(`
     function wait(ms) { return new Promise(function (r) { setTimeout(r, ms || 0); }); }

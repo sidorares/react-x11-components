@@ -116,8 +116,11 @@ export class FakeTransceiver implements RTCTransceiverLike {
     return [];
   }
   setJitterBufferTarget(): void {}
-  sendTone(): boolean {
-    return false;
+  /** The tones sent, each with its duration, in the order sent. */
+  readonly tones: string[] = [];
+  sendTone(tone: string, duration: number): boolean {
+    this.tones.push(`${tone}:${duration}`);
+    return this.kind === 'audio';
   }
   stats() {
     return Promise.resolve([]);
@@ -208,7 +211,7 @@ export class FakeConnection implements RTCConnectionLike {
       `a=ice-ufrag:${this._ufrag}`,
       'a=ice-pwd:fakefakefakefakefakefake',
     );
-    lines.push('a=ice-options:trickle');
+    lines.push('a=ice-options:trickle', 'a=msid-semantic: WMS');
     let n = this._mid;
     for (const { s, t } of order) {
       if (!t) continue;
@@ -221,7 +224,8 @@ export class FakeConnection implements RTCConnectionLike {
           : t.direction;
       lines.push(`a=${t.stopping ? 'inactive' : direction}`);
       if (sends(direction)) {
-        for (const stream of t.streams) {
+        // a track in no stream is `-`'s, as a browser writes it
+        for (const stream of t.streams.length ? t.streams : ['-']) {
           lines.push(`a=msid:${stream} ${t.trackId ?? 'track'}`);
         }
       }
@@ -275,6 +279,16 @@ export class FakeConnection implements RTCConnectionLike {
                       channels: 2,
                       sdpFmtpLine: 'minptime=10;useinbandfec=1',
                     },
+                    // DTMF's, which a browser negotiates beside its voice
+                    ...(t.kind === 'audio'
+                      ? [
+                          {
+                            payloadType: 126,
+                            mimeType: 'audio/telephone-event',
+                            clockRate: 8000,
+                          },
+                        ]
+                      : []),
                   ]
                 : [],
             headerExtensions: [],

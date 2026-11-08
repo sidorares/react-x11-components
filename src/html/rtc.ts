@@ -325,6 +325,9 @@ export interface RTCDataChannelEvents {
 
 /** One data channel of a connection, either side's. */
 export interface RTCDataChannelLike {
+  /** The stream id the stack gave it, where it has one yet: a channel made
+   *  once the association is up has one as it is made (WebRTC 1.0, 6.1). */
+  readonly id?: number | null;
   /** Starts telling its events; what happened before is kept. */
   listen(events: RTCDataChannelEvents): void;
   /** Sends a message, already checked against the transport's
@@ -648,6 +651,9 @@ class DeferredChannel implements RTCDataChannelLike {
   private _real: RTCDataChannelLike | null = null;
   private _queue: ((c: RTCDataChannelLike) => void)[] = [];
 
+  get id(): number | null {
+    return this._real?.id ?? null;
+  }
   attach(real: RTCDataChannelLike): void {
     this._real = real;
     for (const run of this._queue.splice(0)) run(real);

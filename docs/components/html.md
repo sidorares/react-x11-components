@@ -1444,7 +1444,13 @@ before it, and a lost peer an `sctp-failure`; handed to a dedicated
 worker in the task that made it (`postMessage(…, [channel])`), after
 which it is the worker's and a `DataCloneError` elsewhere — the SCTP
 transport with its state and
-`maxChannels`, a connection's transport stats, `RTCError`, and
+`maxChannels`, a connection's transport stats, `RTCError`, an audio
+sender's `RTCDTMFSender` — its tones told as they start, at the times
+WebRTC 1.0 gives them, once the connection is up and `telephone-event`
+negotiated, and handed to the seam a tone at a time — an `RTCCertificate`
+that clones to a frame with its origin, which another origin's connection
+refuses, and an `RTCIceCandidate` whose fields are RFC 8839's grammar, all
+null where any part is not, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
 gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
@@ -1800,9 +1806,60 @@ where the page is of its origin (HTML 7.4.2.2, "navigate"); a POST is
 loaded as it was. Not yet: `document.domain`, which would make two origins'
 documents reach each other's windows, so a page and a frame that both set
 it are still two origins here. With no `session`, the host's own entries
-before and after the page's are not in `navigation.entries()`, and a
-frame's entries are not the page's: `history.length` counts the page's,
-and its `history.back()` steps the page's alone.
+before and after the page's are not in `navigation.entries()`.
+A `javascript:` URL is no navigation `navigate` hears of (HTML 7.4.2.2,
+"navigate"): `navigation.navigate()` refuses one with a
+`NotSupportedError` before anything else, and a link, `location` or a
+frame's `src` that goes to one runs its script a task later, in the window
+of the document shown — the page's in its global scope, a frame without a
+realm of its own with the frame's window and document for its globals, as
+a script of the frame's runs — and loads nothing. Where the script comes
+to a string, a frame's document is made of it as HTML, at the address of
+the one it replaces and in that one's entry, under its key with a new id,
+and its `load` is told; nothing asks the one it replaces first, so no
+`beforeunload`. The page's own document, and a frame's that runs in a
+realm of its own, are not replaced by one yet, since no host seam takes a
+document of HTML in their place: the script runs and the string goes. It
+runs only where the document shown is of one origin-domain with the one
+that sent it, so a frame that set `document.domain` runs none of a page's
+that did not. A frame's first `src`, as it goes into the document, still
+shows `about:blank` and runs nothing.
+
+**The page's history and its frames' are one** (HTML 7.4.1, a top-level
+traversable's joint session history). Each entry of the page's and of each
+frame's is at a step, the place in time the navigation that made it took: a
+push anywhere — the page's, a frame's `pushState` or fragment, another
+document loaded in a frame — takes the step after the current one and clears
+every window's entries past it, the page's forward entries among them, each
+told `dispose`, and a replace keeps its entry's step. `history.length` is how
+many steps there are, read from the page or from any frame, and
+`history.back()`, `forward()` and `go()` go that many steps from whichever
+window asks. A step shows, in each window, the entry with the greatest step at
+or before it, so it moves every window whose entry there is not the one it
+shows: the page first, whose `navigate` is the only one a listener may
+cancel, and canceling it cancels the whole step — what a frame that asked was
+handed back rejects with an `AbortError`, and no frame hears `navigate` —
+then each frame in tree order, one going to another of its documents loading
+it, and the frames inside a document that goes going with it. A window's own
+`back()`, `forward()` and `traverseTo()` go to the step nearest the current
+one at which the window shows the entry, as browsers step them: a frame's
+`back()` steps the frame alone where nothing else moved since, and as far
+back as the step its entry was made at where the page moved in between.
+Traversals are taken one at a time, so one a `navigate` listener asks for
+waits for the `popstate` and `hashchange` of the step it heard. A document
+shown again from the back-forward cache finds its frames' entries past the
+step it was left at cleared, told `dispose` after its `pageshow`.
+
+What is in it is what the page's realm runs: the page and the frames whose
+documents it runs, those with no script, as WPT's `/common/blank.html` is. A
+frame whose document runs in a realm of its own keeps a history of its own
+still: its steps are not the page's, its `history.length` counts its own
+entries, and a step of the page's does not move it. Of a frame of another
+origin's, the page knows the documents it sent the frame to, each a step as
+it asked, a push or a replace, and not those the frame went to by itself. A
+document shown again from the host's entries, which no back-forward cache
+kept, has its frames' histories start afresh; and the host's own Back and
+Forward (`session.go(delta)`) step the page's entries, not the tree's.
 
 **A tab's documents are one history where the host hands them one
 session** (HTML 7.4.1). A host makes an `HtmlSessionHistory` for each place
@@ -1851,7 +1908,13 @@ to another document's entry is that document shown at the entry, asked
 first with `beforeunload` and then told as a `navigate` — a traversal,
 neither cancelable nor one a handler can take, and none at all for an
 entry of another origin — whose promises never settle, since the document
-they are of goes. Past the ends is nowhere, as in a browser.
+they are of goes. Past the ends is nowhere, as in a browser. An entry of
+another document whose referrer policy was `no-referrer` or `origin` as it
+was left — its response's `Referrer-Policy`, or a `<meta name="referrer">`
+in it, one written after it loaded included — has a `url` of null, in
+`navigation.entries()` and in `activation.from` (HTML 7.2.6.5), and has it
+again once its document is shown; the policy is read each time the
+document is left, in a tab's history and in a frame's alike.
 
 The entries a document's own navigations make share a document number
 (`HtmlSessionEntry.document`), so a document shown again at one of them, a
@@ -1877,7 +1940,8 @@ them rather than off the site. A document shown with no scripts running
 in it — JavaScript off for its site — never reaches an engine, so the host
 says it was shown: `session.show(url)` makes it the next of the history as
 an engine would, by the navigation planned for it or as a push, and
-answers its entry; `session.fragment(url)` adds an entry of its own for a
+answers its entry, and `session.show(url, () => policy)` reads its
+referrer policy as it is left, which no engine is there to read; `session.fragment(url)` adds an entry of its own for a
 fragment followed in it, as a fragment navigation does; and
 `session.go()` to one of its entries moves there at once and answers null,
 for the host to scroll. A host that keeps the history somewhere that
@@ -3210,7 +3274,15 @@ press on a `<label>` is one on its control: a box is toggled, a radio
 checked, a button pressed and a field focused. The first control with
 `autofocus` is focused once the document is up — where nothing else in the
 window holds the focus, since a page never takes the keyboard from the
-application around it.
+application around it. Where the document's scripts run, a top-level
+document does what HTML 6.6.5 has it do: each element put in with
+`autofocus`, by the parser or a script, is a candidate, and at a rendering
+step the first that can take the focus, a button or a link as much as a
+field, takes it. A disabled one is passed over. After that the document is
+done with autofocus, and so it is where something had the focus first or
+its address names an element. An intercepted navigation that resets the
+focus gives it to the document's autofocus delegate as it stands then, the
+first element with `autofocus` that can take the focus, before the body.
 
 **A form that breaks its own constraints does not submit, and says why.**
 `required`, `minlength`, `maxlength`, `pattern`, `min`, `max`, and an email
@@ -7545,16 +7617,28 @@ a place within a snapport of where it began before any farther, so that it
 skips no area, and goes farther only where none is that near; Home and End
 go to the place nearest the end. None of them passes over a place of an area
 whose `scroll-snap-stop` is `always`: such a scroll rests at the first it
-reaches, however much nearer where it was going another is. On a container
-that snaps on one axis, only an area the snapport shows across it is a snap
-position, so one pushed out to the side is passed over. Where several areas
+reaches, however much nearer where it was going another is; resting inside
+an area larger than the snapport, it stops short of where such an area out
+of the snapport would come into it, unless that area's own place is nearer.
+On a container that snaps on one axis, only an area the snapport shows
+across it is a snap position, so one pushed out to the side is passed over;
+an area of no width shows where it touches the snapport. On both axes a
+scroll with no direction rests at the nearest pair of places, one on each,
+at which the snapport shows both areas, which may be one area's place on
+one axis and another's on the other. Where several areas
 line up at that place, the one snapped to is the focused element or the one
 that holds it, then the URL's target or the one that holds it, then the
 innermost, then one that lines up on both axes, then the first in tree
 order. A scroll that brings an element into view — `scrollIntoView`, the
 URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
-asked, in a container that snaps and in one that does not; `focus()` of an
+asked, in a container that snaps and in one that does not; A scroll container further out lines up the
+element as the containers it has come through show it, clipped by their
+scrollports, as Chromium does; and `nearest` aligns an element larger than
+the scrollport by its far edge, as CSSOM View 7.1 has it. What `focus()` brings
+into view of a `<textarea>` or a text `<input>` is its selection: the line
+the selection ends on, from the line breaks before it and the field's
+`line-height`, kept inside the field. `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
 what each was snapped to; one they show in part is brought to its nearest
 edge, and one out of sight is centred, as Chromium brings a focused
@@ -7650,16 +7734,6 @@ them, the out-of-flow boxes positioned against it by their border boxes,
 and nothing a box inside it clips. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
-
-**A document with no doctype, or an old one, is in quirks mode** (HTML
-13.2.6.4.1), as its parser decides it, and `document.compatMode` reads
-`BackCompat` for it: a frame's, a `srcdoc`'s, `DOMParser`'s and a
-document written with `open` and `close` take the mode of what they were
-parsed from. In quirks mode the body is the scrolling element (CSSOM View
-7): its `scrollTop`, `scrollLeft`, `clientWidth` and their kin are the
-viewport's, and the root's are its own box's, which scrolls nothing. Beyond
-that and the parser's own `<p><table>`, the mode changes nothing: the
-layout quirks (CSS Quirks) are not applied.
 
 **A page reads the viewport where it asked it to go.** Core's pane holds
 a scroll its extent cannot take yet for its next pass, which is where a
@@ -9246,6 +9320,23 @@ its network, its history, its title and its chords. Its network is
 two seconds is stopped and the page goes on, and the bubble says so. A tab
 keeps the last six pages it left whose scripts ran, frozen, and Back and
 Forward show one again as it was left, what was typed into it included.
+
+```bash
+npm run examples:browser:app -- [url]
+```
+
+The same browser on a Mac as an app of its own, for a page that wants the
+camera. macOS answers a camera request for the app that started the
+process, and refuses it without a prompt where that app declares no camera
+use: run from a terminal or an editor that does not, the page hears
+`NotAllowedError`. So this builds `react-x11 browser.app` in
+`~/Library/Caches/react-x11-browser/`, a copy of the node that runs it with
+an Info.plist that declares the camera, the microphone and other
+applications' sound, and starts the browser in it through `open`, which
+asks about the camera for that app alone. Its tabs need nothing of their
+own: a pane asks the browser to open a device for it. The bundle is built
+again only when the node or the Info.plist changes, so an answer given once
+holds.
 
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils

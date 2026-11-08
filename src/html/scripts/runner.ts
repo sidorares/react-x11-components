@@ -298,6 +298,11 @@ export class ScriptRunner {
       _link?.parent.host.top,
     );
     this.host.arrival = arrival;
+    // what the session reads of the document as it is left: its entries'
+    // URLs are none of the next document's where this says no path
+    if (arrival) {
+      arrival.referrerPolicy = () => this.host.documentReferrerPolicy();
+    }
     // before its realm is made, which asks what context it is as it starts
     if (popup && slot?.auxiliary && url === 'about:blank') {
       this.host.creator = popup.creator;

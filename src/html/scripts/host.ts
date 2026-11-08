@@ -123,8 +123,6 @@ import {
   typeNameOf,
   setSheetDisabled,
   xmlTree,
-  isQuirksMode,
-  setQuirksMode,
 } from '../dom.js';
 import {
   canonicalHighlights,
@@ -182,7 +180,7 @@ import { drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
 import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
-import { focusableElement } from '../focus.js';
+import { focusableElement, isInert } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { serializeXml } from './xml.js';
 import { XAttr, compileXPath, evaluateXPath, prefixesIn } from './xpath.js';
@@ -228,6 +226,7 @@ import {
 import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
+  SB_AUTOMATIC,
   SB_DOWNLOADS,
   SB_FORMS,
   SB_ORIGIN,
@@ -613,6 +612,9 @@ export interface HandleInternals {
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** Whether something of the window around the document has core's focus:
+   *  the application's own field, which autofocus leaves it in. */
+  focusOutside(): boolean;
   /** What is selected in the document, as it is drawn: what a copy of it
    *  puts on the clipboard. */
   selectedText(): string;
@@ -1544,7 +1546,6 @@ function listOf(value: string | null, fold = true): Set<string> {
 /** The ops whose first argument is a node, whose layout the view that
  *  draws its document answers (`DomHost._op`). */
 const NODE_READS = new Set([
-  'documentSize',
   'active',
   'blur',
   'viewScroll',
@@ -1962,6 +1963,9 @@ export interface Entries {
    *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
    *  it ran to its end. */
   exec?(code: string, url: string, script: number): boolean;
+  /** Whether this realm's code is running (`ScriptEngine.running`): where
+   *  it is not, what calls into it is another realm's. */
+  readonly running?: boolean;
 }
 
 /**
@@ -1986,6 +1990,11 @@ function documentHolding(element: Element): Document | null {
 
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** The domain each document set its `document.domain` to, where it set
+   *  one (HTML 7.5.2): two documents of one origin are of one origin-domain
+   *  only where neither did, or both set the same. Nothing else reads it
+   *  yet but whether a `javascript:` URL may run (`javascriptAllowed`). */
+  readonly domains = new WeakMap<Document, string>();
   /** Each document's encoding where its bytes came through here, by its
    *  name. One a host handed over is the host's to say (`charset`). */
   readonly encodings = new WeakMap<Document, string>();
@@ -2683,6 +2692,7 @@ export class DomHost {
    */
   parserInserted(): { body: boolean } | null {
     const made = this._seams.handle.parserMade?.();
+    this._noteAutofocus(made ?? [], false);
     if (!made?.length || this._disposed) return null;
     const fresh = this._custom || this._scoped ? new Set<AnyNode>(made) : null;
     let body = false;
@@ -4994,6 +5004,15 @@ export class DomHost {
         const doc = this._frameDocument(this._element(a));
         return doc ? this.idOf(doc) : 0;
       }
+      // the referrer policy of a document of this tree's, which a frame's
+      // session reads of the one it leaves (HTML 7.2.6.5): one the realm
+      // holds already, whose `<meta>` it could read itself
+      case 'referrerPolicyOf': {
+        const doc = this._node(a);
+        return doc instanceof Document
+          ? this.referrerPolicyOfDocument(doc)
+          : '';
+      }
       case 'frameElement': {
         const doc = this._node(a) as Document;
         const frame = this._frameOf.get(doc);
@@ -5018,10 +5037,13 @@ export class DomHost {
       }
       case 'frameNavigate': {
         const frame = this._element(a);
-        // only its own origin may send it a `javascript:` URL (`maySend`)
+        // only its own origin-domain may send it a `javascript:` URL
+        // (`maySend`)
+        const shown = this._frames.get(frame);
         if (
           /^javascript:/i.test(this._resolve(text(b))) &&
-          !this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank')
+          (!this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank') ||
+            (shown && !this._sameOriginDomain(this.document, shown)))
         ) {
           return null;
         }
@@ -5032,6 +5054,45 @@ export class DomHost {
           this.navigateFrame(frame, text(b), null, text(c), how);
         } else this.navigateFrameFrom(frame, text(b), null, text(c));
         return null;
+      }
+      // `document.domain` set (HTML 7.5.2), which makes the document of
+      // another origin-domain than the documents of its origin that did not
+      case 'setDomain':
+        this._s.domains.set(this._node(a) as Document, text(b).toLowerCase());
+        return null;
+      // whether a `javascript:` URL may run in a document of this realm's
+      // (HTML, "navigate to a `javascript:` URL"): where it is of one
+      // origin-domain with the document that asked — the one given, else
+      // this realm's while its code runs, and the window around it while
+      // another realm's code reaches into it
+      case 'javascriptAllowed': {
+        const target = this._node(a) as Document;
+        const from = b
+          ? (this._node(b) as Document)
+          : this.entries?.running === false && this.frameParent
+            ? this.frameParent.document
+            : this.document;
+        return this._sameOriginDomain(from, target);
+      }
+      // the document a `javascript:` URL's string makes, in the place of the
+      // one a frame of this realm's shows (`navigateToJavascript`)
+      case 'frameJavascriptDocument':
+        this._javascriptFrame(this._element(a), text(b));
+        return null;
+      // HTML 6.6.5, the candidates flushed at a rendering step
+      case 'autofocusFlush':
+        return this._autofocusFlush();
+      // a document's autofocus delegate (HTML, "autofocus delegate"): the
+      // first element in it with `autofocus` that is a focusable area, or 0
+      case 'autofocusDelegate': {
+        const found = DomUtils.findOne(
+          (el) =>
+            el.attribs.autofocus !== undefined &&
+            focusableElement(el) &&
+            !isInert(el),
+          (this._node(a) as Document).children,
+        );
+        return found ? this.idOf(found) : 0;
       }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
@@ -5053,9 +5114,6 @@ export class DomHost {
         return null;
       }
       // a frame document's viewport, its window's `innerWidth`
-      // a document's mode (HTML 13.2.6.4.1), as its parser left it
-      case 'quirks':
-        return isQuirksMode(this._node(a));
       case 'frameSize': {
         const size = this._frameSize(this._node(a) as Document);
         return `${size.width} ${size.height}`;
@@ -7797,6 +7855,12 @@ export class DomHost {
     how: '' | 'reload' | 'traverse' = '',
   ): void {
     if (!this._loadsFrame(frame)) return;
+    // a `javascript:` URL loads nothing: its script runs in the document the
+    // frame shows
+    if (/^javascript:/i.test(url)) {
+      this._javascriptSent(frame, url);
+      return;
+    }
     // to a fragment of the document a frame of this realm's shows, with no
     // realm of its own: the same document, at its new address, which the
     // view that draws it takes its `:target` and its scroll from (HTML
@@ -7852,6 +7916,56 @@ export class DomHost {
           : undefined;
       if (said !== 'done') this.navigateFrame(frame, url, post, referrerPolicy);
     }, 0);
+  }
+
+  /** Whether two documents of one origin are of one origin-domain (HTML
+   *  7.1.1): neither set `document.domain`, or both set it the same. */
+  private _sameOriginDomain(a: Document, b: Document): boolean {
+    return (
+      a === b ||
+      (this._s.domains.get(a) ?? null) === (this._s.domains.get(b) ?? null)
+    );
+  }
+
+  /** The documents `javascript:` URLs' strings made, each for the frame
+   *  that shows it next, with the address it is at (`_loadFrame`). */
+  private _frameWritten = new Map<Element, { html: string; url: string }>();
+
+  /**
+   * A frame of this realm's sent to a `javascript:` URL — by its `src`, or
+   * by this document's `location`, link or form: the URL's script runs in
+   * the document the frame shows, where it is of one origin-domain with the
+   * one around the frame (HTML, "navigate to a `javascript:` URL"), a task
+   * later — in this realm where that document has none of its own, and in
+   * its own where it has. Nothing is loaded for it.
+   */
+  private _javascriptSent(frame: Element, url: string): void {
+    const doc = this._frames.get(frame);
+    const holder = documentHolding(frame);
+    if (!doc || !this._reaches(frame)) return;
+    if (holder && !this._sameOriginDomain(holder, doc)) return;
+    const realm = this._s.realms.has(doc);
+    // never from inside the op that sent it
+    setTimeout(() => {
+      if (this._disposed || this._frames.get(frame) !== doc) return;
+      if (realm) this.windows?.navigateFrame(this.idOf(frame), url, false);
+      else this.entries?.call('__javascriptUrl', [this.idOf(frame), url]);
+    }, 0);
+  }
+
+  /**
+   * The document a `javascript:` URL's string makes (HTML, "evaluate a
+   * `javascript:` URL"), put in the place of the one a frame of this realm's
+   * shows: HTML, at that one's address, a task later as any document is
+   * put in, its `load` told.
+   */
+  private _javascriptFrame(frame: Element, html: string): void {
+    if (!this._loadsFrame(frame)) return;
+    this._frameWritten.set(frame, {
+      html,
+      url: this._frameAt.get(frame) ?? 'about:blank',
+    });
+    this._loadFrame(frame, true);
   }
 
   /** A frame's document, made where it has none: null where it is another
@@ -8009,6 +8123,38 @@ export class DomHost {
         }, 0);
       }
     };
+    // a document a `javascript:` URL's string made, at the address of the
+    // document it takes the place of (HTML, "evaluate a `javascript:` URL")
+    const written = this._frameWritten.get(frame);
+    if (written) {
+      this._frameWritten.delete(frame);
+      setTimeout(() => {
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox = this._frameSandbox(frame);
+        this._frameLoaded(
+          frame,
+          this._documentOf(written.html, true, !!this._seams.drawsFrames),
+          written.url,
+          'text/html',
+          !(sandbox & (SB_SCRIPTS | SB_ORIGIN)),
+          loaded,
+          sandbox,
+        );
+      }, 0);
+      return;
+    }
+    // a frame sent to a `javascript:` URL by its `src` runs the URL's script
+    // in the document it shows, which stays where it comes to nothing
+    // (HTML 7.4.2.2, "navigate"); its first one is still `about:blank`
+    const raw = this._frameSent.has(frame)
+      ? null
+      : ((frame.name === 'object' ? frame.attribs.data : frame.attribs.src) ??
+        '');
+    if (navigated && raw !== null && /^javascript:/i.test(raw.trim())) {
+      this._frameDone(frame);
+      this._javascriptSent(frame, this._resolve(raw.trim()));
+      return;
+    }
     // an `<iframe srcdoc>` shows the document its attribute holds, before
     // any `src` (HTML 4.8.5), until something sends it elsewhere
     const srcdoc =
@@ -8192,6 +8338,12 @@ export class DomHost {
           scripts = false;
         }
         this._s.encodings.set(doc, encoding);
+        // its own policy, which a frame's document with no realm of its own
+        // has only from here
+        this._responseReferrers.set(
+          doc,
+          referrerPolicyOfHeaders(response.headers),
+        );
         // another origin's scripts never run in this realm, where it was
         // asked for or where it sent the frame, and a sandbox's, of an origin
         // of their own or none to run, no more than they
@@ -8464,7 +8616,6 @@ export class DomHost {
    *  `write` and `close`'s. */
   private _fill(doc: Document, markup: string): void {
     this._replaceAll(doc, this._htmlTree(markup));
-    setQuirksMode(doc, this._parsedQuirks);
   }
 
   /**
@@ -8489,9 +8640,6 @@ export class DomHost {
 
   /** Markup read as a document is, by the parser `<Html>` reads one with,
    *  and made a document's tree; its scripts never run where it goes. */
-  /** Whether the last markup `_htmlTree` read was in quirks mode. */
-  private _parsedQuirks = false;
-
   private _htmlTree(
     markup: string,
     live = false,
@@ -8503,8 +8651,6 @@ export class DomHost {
     source.setScripting(declarative);
     source.setDocument(true, declarative);
     source.setSource(markup, true);
-    // the mode its parser put it in, which the document it goes into takes
-    this._parsedQuirks = isQuirksMode(source.document);
     const kids = source.document.children.slice();
     for (const kid of kids) DomUtils.removeElement(kid);
     // a frame's document the browser runs keeps its scripts, which its own
@@ -8582,6 +8728,7 @@ export class DomHost {
    *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
    *  once a page read its `contentWindow`, and was an empty box. */
   private _connected(nodes: readonly AnyNode[]): void {
+    this._noteAutofocus(nodes, true);
     const found = DomUtils.findAll(
       (el) =>
         el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
@@ -8593,6 +8740,109 @@ export class DomHost {
       else if (el.name === 'link') this._preloadLink(el);
       else this._frameIn(el);
     }
+  }
+
+  /** The elements with `autofocus` put into the document, in the order
+   *  they went in, until one takes the focus (HTML 6.6.5, "autofocus
+   *  candidates"): what a scan finds the first time it is asked, the
+   *  parser's elements from before anything was told of what it makes
+   *  among them, and then what the parser and the page's scripts put in.
+   *  The document's own, and only where it is top-level. */
+  private _autofocus: Element[] | null = null;
+  /** The document's autofocus processed flag (HTML 6.6.5): one element
+   *  took the focus by it, or something had it first, and no other will. */
+  private _autofocused = false;
+
+  /** The candidates, scanned for the first time they are asked. */
+  private _autofocusList(): Element[] {
+    if (!this._autofocus) {
+      this._autofocus = DomUtils.findAll(
+        (el) => el.attribs.autofocus !== undefined,
+        this.document.children,
+      );
+      if (this._autofocus.length) this._wakeForAutofocus();
+    }
+    return this._autofocus;
+  }
+
+  /** Elements put into the document, the ones with `autofocus` among them
+   *  candidates now, at the end — again there, where `moved` says a
+   *  script's insertion may be of one that went in before. */
+  private _noteAutofocus(nodes: readonly AnyNode[], moved: boolean): void {
+    if (this._autofocused || this.frameParent || this._disposed) return;
+    const scanned = this._autofocus !== null;
+    const list = this._autofocusList();
+    // a scan made now found them where they are
+    if (!scanned || !nodes.length) return;
+    let added = false;
+    for (const el of DomUtils.findAll(
+      (e) => e.attribs.autofocus !== undefined,
+      nodes as AnyNode[],
+    )) {
+      if (documentHolding(el) !== this.document) continue;
+      const at = list.indexOf(el);
+      if (at >= 0) {
+        if (!moved) continue;
+        list.splice(at, 1);
+      }
+      list.push(el);
+      added = true;
+    }
+    if (added) this._wakeForAutofocus();
+  }
+
+  /** A rendering step, which flushes the candidates (`autofocusFlush`),
+   *  where nothing else would ask for one: never from inside an op. */
+  private _wakeForAutofocus(): void {
+    setTimeout(() => {
+      if (!this._disposed && !this._autofocused) {
+        this.entries?.call('__rendering', null);
+      }
+    }, 0);
+  }
+
+  /**
+   * HTML 6.6.5, "flush autofocus candidates", at a rendering step of a
+   * top-level document: the first candidate still in it that is a
+   * focusable area, now done with, as all of them are where something has
+   * the focus already — the document's or the application's — or its
+   * address names an element. The element to focus, 0 for none yet, and -1
+   * once none ever will be.
+   */
+  private _autofocusFlush(): number {
+    if (this._autofocused || this.frameParent) return -1;
+    const done = (): void => {
+      this._autofocused = true;
+      this._autofocus = [];
+    };
+    // what happens by itself, which such a sandbox has none of
+    if (this.sandbox & SB_AUTOMATIC) {
+      done();
+      return -1;
+    }
+    const list = this._autofocusList();
+    if (!list.length) return 0;
+    let fragment = '';
+    try {
+      fragment = new URL(this.url).hash.slice(1);
+    } catch {}
+    if (
+      this._handle.activeElement ||
+      this._focusing ||
+      this._handle.focusOutside?.() ||
+      indicatedElement(this.document, fragment)
+    ) {
+      done();
+      return -1;
+    }
+    while (list.length) {
+      const el = list.shift()!;
+      if (documentHolding(el) !== this.document) continue;
+      if (!focusableElement(el) || isInert(el)) continue;
+      done();
+      return this.idOf(el);
+    }
+    return 0;
   }
 
   /**
@@ -8870,7 +9120,6 @@ export class DomHost {
     // which attaches no shadow root a template declares
     const tree = this._htmlTree(markup, document && live, document);
     const doc = new Document([]);
-    setQuirksMode(doc, this._parsedQuirks);
     for (const kid of tree) DomUtils.appendChild(doc, kid);
     this._documents.add(doc);
     return doc;
@@ -9194,9 +9443,11 @@ export class DomHost {
   }
 
   /** The policy the last `<meta name="referrer">` that said one brought,
-   *  and the elements already heard (HTML 4.2.5.3, the `referrer` name):
-   *  one that goes leaves its policy behind. */
-  private _metaReferrer: ReferrerPolicy = '';
+   *  by the document it is in, and the elements already heard (HTML
+   *  4.2.5.3, the `referrer` name): one that goes leaves its policy behind.
+   *  A frame's document this realm holds has a `<meta>` of its own, which
+   *  is no policy of this document's. */
+  private _metaReferrers = new WeakMap<AnyNode, ReferrerPolicy>();
   private _referrerMetas = new WeakSet<AnyNode>();
   private _noteReferrer(node: AnyNode): void {
     if (
@@ -9209,18 +9460,31 @@ export class DomHost {
     }
     this._referrerMetas.add(node);
     const policy = referrerPolicyOfMeta(node.attribs.content ?? '');
-    if (policy) this._metaReferrer = policy;
+    let doc: AnyNode = node;
+    while (doc.parent) doc = doc.parent;
+    if (policy) this._metaReferrers.set(doc, policy);
   }
+  /** What `Referrer-Policy` said of each frame's document this realm
+   *  loaded with no realm of its own (`_loadFrame`), whose policy it is
+   *  until a `<meta>` says otherwise. */
+  private _responseReferrers = new WeakMap<Document, ReferrerPolicy>();
   /** The document's referrer policy: what its response said, unless a
    *  `<meta>` in its head said otherwise since. */
   documentReferrerPolicy(): ReferrerPolicy {
-    const head = DomUtils.findOne(
-      (e) => e.name === 'head',
-      this.document.children,
-      true,
-    );
+    return this.referrerPolicyOfDocument(this.document);
+  }
+  /** The referrer policy of this document or of a frame's this realm
+   *  holds, as `documentReferrerPolicy` says it: what a navigation away
+   *  from it reads as it leaves (HTML 7.2.6.5, the `url` getter). */
+  referrerPolicyOfDocument(doc: Document): ReferrerPolicy {
+    const head = DomUtils.findOne((e) => e.name === 'head', doc.children, true);
     for (const child of head?.children ?? []) this._noteReferrer(child);
-    return this._metaReferrer || this.referrerPolicy;
+    return (
+      this._metaReferrers.get(doc) ||
+      (doc === this.document
+        ? this.referrerPolicy
+        : (this._responseReferrers.get(doc) ?? ''))
+    );
   }
   /** The policy a frame's next navigation is made under, where something
    *  sent it there (`navigateFrame`): the link's, '' for the document's. */

@@ -123,6 +123,18 @@ function errorOf(error: unknown): unknown {
   };
 }
 
+/**
+ * The origin each certificate was made for, by the seam that made it: the
+ * host's record, since what a page's realm keeps of a certificate's origin
+ * is the page's to change. A certificate of another origin, or of an opaque
+ * one, is no certificate of a connection's (WebRTC 1.0, 4.4.1.1); the realm
+ * refuses it first, and a realm talked round has it left out here.
+ */
+const CERTIFICATE_ORIGINS = new WeakMap<
+  object,
+  Map<number, { origin: string; owner: PagePeers }>
+>();
+
 export class PagePeers {
   private readonly _peers = new Map<number, Peer>();
   private readonly _transceivers = new Map<number, Transceiver>();
@@ -244,6 +256,11 @@ export class PagePeers {
         t.transceiver.setTrack(source, source ? text(c) || null : null);
         return null;
       }
+      case 'rtcTone':
+        this._transceivers
+          .get(Number(a))
+          ?.transceiver.sendTone(text(b), Number(c));
+        return null;
       case 'rtcJitter': {
         const ms = b === null || b === undefined ? null : Number(b);
         this._transceivers
@@ -326,11 +343,24 @@ export class PagePeers {
       case 'rtcCertificate': {
         const seam = this._seams.webRTC() ?? NO_WEBRTC;
         const keygen = json(b) as never;
-        this._settle(Number(a), seam.generateCertificate(keygen, Number(c)));
+        const origin = this._seams.origin();
+        this._settle(
+          Number(a),
+          seam.generateCertificate(keygen, Number(c)).then((made) => {
+            let byId = CERTIFICATE_ORIGINS.get(seam);
+            if (!byId) CERTIFICATE_ORIGINS.set(seam, (byId = new Map()));
+            byId.set(made.id, { origin, owner: this });
+            return made;
+          }),
+        );
         return null;
       }
       case 'rtcChannel':
         return this._createChannel(Number(a), json(b));
+      case 'rtcChannelId': {
+        const id = this._channels.get(Number(a))?.channel.id;
+        return typeof id === 'number' ? id : null;
+      }
       case 'rtcSend': {
         const ch = this._channels.get(Number(a));
         if (!ch) return null;
@@ -462,7 +492,16 @@ export class PagePeers {
       bundlePolicy: request?.bundlePolicy ?? 'balanced',
       rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: request?.iceCandidatePoolSize ?? 0,
-      certificates: request?.certificates ?? [],
+      // a certificate this origin made, and no other's
+      certificates: (request?.certificates ?? []).filter((id) => {
+        const made = CERTIFICATE_ORIGINS.get(seam)?.get(id);
+        const origin = this._seams.origin();
+        return (
+          made !== undefined &&
+          (made.owner === this ||
+            (made.origin !== 'null' && made.origin === origin))
+        );
+      }),
       origin: this._seams.origin(),
     };
     const peer = {

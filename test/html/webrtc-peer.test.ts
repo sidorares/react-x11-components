@@ -74,10 +74,23 @@ test('the constructor takes a configuration and refuses one as WebRTC 1.0 does',
   const logs = await run(`
     var pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.example.net' }, { urls: ['turn:turn.example.net?transport=udp'], username: 'u', credential: 'c' }] });
     var c = pc.getConfiguration();
-    log('config', c.bundlePolicy, c.rtcpMuxPolicy, c.iceTransportPolicy, c.iceCandidatePoolSize, c.iceServers.length, c.iceServers[0].urls, c.iceServers[1].urls.join(','));
+    log('config', c.bundlePolicy, c.rtcpMuxPolicy, c.iceTransportPolicy, c.iceCandidatePoolSize, c.iceServers.length, Array.isArray(c.iceServers[0].urls), c.iceServers[0].urls.join(','), c.iceServers[1].urls.join(','));
     function refused(config) {
       try { new RTCPeerConnection(config); return 'made'; } catch (e) { return e.name; }
     }
+    // a URL is a scheme, a host and a port, and a TURN server's credential
+    // is not empty, though its username may be
+    var turn = { username: 'u', credential: 'c' };
+    var urls = ['stun:', 'stun::8191', 'turn:', 'stun:example.org:131071', 'turn:2001:4860:4860::8888',
+      'stun:example.org#frag', 'stun:user@example.org', 'turn:example.org/', 'stun:example.org\\\\', 'turn:example.org/path',
+      'stun:example.org\\\\path', 'turn:example.org?transport=', 'turn:example.org?transport=datachannel'];
+    log('urls', urls.map(function (u) { return refused({ iceServers: [Object.assign({ urls: u }, turn)] }); }).join(','));
+    log('hosts', ['stun:[::1]:3478', 'stun:stun.l.google.com:19302', 'turns:turn.example.org?transport=tcp'].map(function (u) {
+      return refused({ iceServers: [Object.assign({ urls: u }, turn)] });
+    }).join(','));
+    log('credentials',
+      refused({ iceServers: [{ urls: 'turn:turn.example.net', username: 'u', credential: '' }] }),
+      refused({ iceServers: [{ urls: 'turn:turn.example.net', username: '', credential: 'c' }] }));
     log('refused',
       refused({ bundlePolicy: 'sideways' }),
       refused({ iceServers: [{ urls: 'turn:turn.example.net' }] }),
@@ -93,8 +106,19 @@ test('the constructor takes a configuration and refuses one as WebRTC 1.0 does',
   `);
   assert.ok(
     logs.includes(
-      'config|balanced|require|all|0|2|stun:stun.example.net|turn:turn.example.net?transport=udp',
+      'config|balanced|require|all|0|2|true|stun:stun.example.net|turn:turn.example.net?transport=udp',
     ),
+    logs.join('\n'),
+  );
+  assert.ok(
+    logs.includes(
+      'urls|SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError',
+    ),
+    logs.join('\n'),
+  );
+  assert.ok(logs.includes('hosts|made,made,made'), logs.join('\n'));
+  assert.ok(
+    logs.includes('credentials|InvalidAccessError|made'),
     logs.join('\n'),
   );
   assert.ok(
@@ -209,6 +233,67 @@ test('negotiationneeded is fired once a change needs it, and not again until it 
   }
 });
 
+test('a flag raised before an answer and still raised after it is told again, once the connection is stable', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    await new Promise(function (r) { a.onnegotiationneeded = r; });
+    await a.setLocalDescription();
+    var fired = 0;
+    a.onnegotiationneeded = function () { fired++; };
+    a.createDataChannel('test');
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription();
+    await a.setRemoteDescription(b.localDescription);
+    await undefined;
+    var early = fired;
+    await until(function () { return fired > 0; });
+    await wait(20);
+    log('again', early, fired, a.signalingState);
+    // and an answer that leaves nothing to negotiate tells nothing
+    var c = new RTCPeerConnection(), d = new RTCPeerConnection();
+    c.addTransceiver('audio');
+    await new Promise(function (r) { c.onnegotiationneeded = r; });
+    var more = 0;
+    c.onnegotiationneeded = function () { more++; };
+    await negotiate(c, d);
+    await wait(20);
+    log('done', more);
+    a.close(); b.close(); c.close(); d.close();
+  `);
+  for (const line of ['again|0|1|stable', 'done|0']) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('restartIce asks for negotiation only where a local description has credentials to replace', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    var count = 0;
+    a.onnegotiationneeded = function () { count++; };
+    a.restartIce();
+    await wait(20);
+    log('before any', count);
+    a.addTransceiver('audio');
+    await until(function () { return count === 1; });
+    a.restartIce();
+    await wait(20);
+    log('before the first offer', count);
+    await negotiate(a, b);
+    await wait(20);
+    var settled = count;
+    a.restartIce();
+    await until(function () { return count > settled; });
+    log('after', count - settled);
+    a.close(); b.close();
+  `);
+  for (const line of ['before any|0', 'before the first offer|1', 'after|1']) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
 test('candidates are told after the description, then the end of a transport’s and of all of them', async () => {
   const logs = await run(`
     ${NEGOTIATE}
@@ -239,7 +324,8 @@ test('candidates are told after the description, then the end of a transport’s
   );
   assert.ok(
     logs.includes(
-      'fields|1|rtp|udp|2122260223|192.0.2.1|40000|host|abcd|{"candidate":"candidate:1 1 udp 2122260223 192.0.2.1 40000 typ host ufrag abcd","sdpMid":"0","sdpMLineIndex":null,"usernameFragment":"abcd"}',
+      // the ufrag is the dictionary's alone, whatever the string names
+      'fields|1|rtp|udp|2122260223|192.0.2.1|40000|host||{"candidate":"candidate:1 1 udp 2122260223 192.0.2.1 40000 typ host ufrag abcd","sdpMid":"0","sdpMLineIndex":null,"usernameFragment":null}',
     ),
     logs.join('\n'),
   );
@@ -339,6 +425,272 @@ test('a track from the fake devices is sent: addTrack, and the stream it names i
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
+});
+
+test('a candidate’s fields are RFC 8839’s grammar, all null where any is not, and its ufrag is the dictionary’s', async () => {
+  const logs = await run(`
+    function fields(text) {
+      var c = new RTCIceCandidate({ candidate: text, sdpMid: '0' });
+      return [c.foundation, c.component, c.protocol, c.priority, c.address, c.port, c.type, c.tcpType, c.relatedAddress, c.relatedPort].join(' ');
+    }
+    log('host', fields('candidate:1905690388 1 udp 2113937151 192.168.0.1 58041 typ host generation 0 ufrag thC8 network-cost 50'));
+    log('tcp', fields('candidate:435653019 2 TCP 1845501695 192.168.0.196 4444 typ SRFLX raddr www.example.com rport 22222 tcptype ACTIVE'));
+    log('framed', fields('a=candidate:1 1 udp 100 1.2.3.4 5678 typ host'));
+    var bad = [
+      'candidate:1 0 udp 100 1.2.3.4 5678 typ host',
+      'candidate:1 257 udp 100 1.2.3.4 5678 typ host',
+      'candidate:1 1 udp 0 1.2.3.4 5678 typ host',
+      'candidate:1 1 udp 2147483648 1.2.3.4 5678 typ host',
+      'candidate:' + 'a'.repeat(33) + ' 1 udp 100 1.2.3.4 5678 typ host',
+      'candidate:foo-bar 1 udp 100 1.2.3.4 5678 typ host',
+      'candidate:1 1 udp 100 1.2.3.4 5678 typ srflx',
+      'candidate:1 1 udp 100 1.2.3.4 5678 typ srflx raddr 5.6.7.8',
+      'candidate:1 1 udp 100 1.2.3.4 5678 typ srflx raddr 5.6.7.8 rport 9012abc',
+      'candidate:1 1 tcp 100 1.2.3.4 5678 typ host',
+      'candidate:1 1 tcp 100 1.2.3.4 5678 typ host tcptype',
+      'candidate:1 1 tcp 100 1.2.3.4 5678 typ host generation 0 tcptype active',
+      'candidate:1 1 dccp 100 1.2.3.4 5678 typ host',
+      ' candidate:1 1 udp 100 1.2.3.4 5678 typ host',
+      'candidate: 1 1 udp 100 1.2.3.4 5678 typ host',
+    ];
+    log('bad', bad.filter(function (b) { return fields(b) !== '         '; }).join(';'));
+    var c = new RTCIceCandidate({ candidate: 'candidate:1 1 udp 100 1.2.3.4 5678 typ host ufrag thC8', sdpMid: '0' });
+    log('ufrag', c.usernameFragment);
+    log('null', new RTCIceCandidate({ candidate: null, sdpMLineIndex: 65537 }).candidate, new RTCIceCandidate({ sdpMLineIndex: 65537 }).sdpMLineIndex);
+    var local = new RTCIceCandidate({ sdpMid: '0', relayProtocol: 'tls', url: 'turn:turn.example.net' });
+    var copy = new RTCIceCandidate(local), signaled = new RTCIceCandidate(JSON.parse(JSON.stringify(local)));
+    log('relay', local.relayProtocol, local.url, copy.relayProtocol, copy.url, signaled.relayProtocol, signaled.url);
+    try { new RTCIceCandidate({ sdpMid: '0', relayProtocol: 'quic' }); } catch (e) { log('relayProtocol', e.name); }
+    function threw(f) { try { f(); return 'made'; } catch (e) { return e.name; } }
+    log('ice event',
+      threw(function () { new RTCPeerConnectionIceEvent(); }),
+      threw(function () { new RTCPeerConnectionIceEvent('icecandidate', { candidate: { candidate: '', sdpMid: '0' } }); }),
+      threw(function () { new RTCPeerConnectionIceEvent('icecandidate', { candidate: local }); }),
+      new RTCPeerConnectionIceEvent('icecandidate').candidate);
+    log('capabilities', RTCRtpSender.getCapabilities('dummy'), RTCRtpReceiver.getCapabilities('dummy'));
+    var expiry = await Promise.all([-1, 'invalid'].map(function (expires) {
+      return RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256', expires: expires })
+        .then(function () { return 'made'; }, function (e) { return e.name; });
+    }));
+    log('expires', expiry.join(','));
+  `);
+  for (const line of [
+    'host|1905690388 rtp udp 2113937151 192.168.0.1 58041 host   ',
+    'tcp|435653019 rtcp tcp 1845501695 192.168.0.196 4444 srflx active www.example.com 22222',
+    'framed|1 rtp udp 100 1.2.3.4 5678 host   ',
+    'bad|',
+    'ufrag|',
+    'null|null|1',
+    'relay|tls|turn:turn.example.net|tls|turn:turn.example.net||',
+    'relayProtocol|TypeError',
+    'ice event|TypeError|TypeError|made|',
+    'capabilities||',
+    'expires|TypeError,TypeError',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('the API converts and times what WebRTC 1.0 says: a channel’s label, stopped, a sender’s encodings, its transport and replaceTrack', async () => {
+  const logs = await run(
+    `
+    ${NEGOTIATE}
+    var pc = new RTCPeerConnection();
+    log('createDataChannel', pc.createDataChannel.length, pc.createDataChannel(undefined).label,
+      pc.createDataChannel('\\uD800', { protocol: '\\uD800' }).label === '\\uFFFD');
+    try { pc.createDataChannel(); } catch (e) { log('no label', e.name); }
+    var encodings = [];
+    for (var i = 0; i < 1000; i++) encodings.push({ rid: 'r' + i });
+    var v = pc.addTransceiver('video', { sendEncodings: encodings });
+    var scales = v.sender.getParameters().encodings.map(function (e) { return e.scaleResolutionDownBy; });
+    log('encodings', scales.length, scales.join(','));
+    var t = pc.addTransceiver('audio');
+    log('stopped', t.stopped);
+    t.stop();
+    log('stopping', t.stopped);
+    pc.close();
+    // a remote offer sets no transport; the answer that follows does
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    var u = b.getTransceivers()[0];
+    log('remote offer', u.sender.transport, u.receiver.transport);
+    await b.setLocalDescription();
+    log('answer', !!u.sender.transport, u.sender.transport === u.receiver.transport);
+    a.close(); b.close();
+    // replaceTrack sets the track in a task of its own
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    var other = (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks()[0];
+    var c = new RTCPeerConnection();
+    var sender = c.addTrack(stream.getTracks()[0], stream);
+    var p = sender.replaceTrack(other);
+    var now = sender.track === other;
+    c.removeTrack(sender);
+    await p;
+    log('replaceTrack', now, sender.track === other);
+    c.close();
+  `,
+    { webRTC: new FakeWebRTC(), mediaDevices: fakeMediaDevices() },
+  );
+  for (const line of [
+    'createDataChannel|1|undefined|true',
+    'no label|TypeError',
+    'encodings|4|8,4,2,1',
+    'stopped|false',
+    'stopping|false',
+    'remote offer||',
+    'answer|true|true',
+    'replaceTrack|false|true',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('a remote track’s streams are its msid’s, a source’s where the section has none, and the default one where nothing names one', async () => {
+  const logs = await run(`
+    var base = 'v=0\\r\\no=- 1 2 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\na=msid-semantic:WMS *\\r\\n' +
+      'm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=ice-ufrag:someufrag\\r\\n' +
+      'a=ice-pwd:somelongpwdwithenoughrandomness\\r\\na=fingerprint:sha-256 ' + new Array(33).join('00:').slice(0, -1) + '\\r\\n' +
+      'a=setup:actpass\\r\\na=mid:0\\r\\na=sendrecv\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\n';
+    async function streams(extra) {
+      var pc = new RTCPeerConnection();
+      var heard = new Promise(function (r) { pc.ontrack = r; });
+      await pc.setRemoteDescription({ type: 'offer', sdp: base + extra });
+      var e = await heard;
+      pc.close();
+      return e.streams.map(function (s) { return s.id; }).join('+') || 'none';
+    }
+    log('none', await streams(''));
+    log('source', await streams('a=ssrc:3 cname:4\\r\\na=ssrc:3 msid:1 2\\r\\n'));
+    log('media first', await streams('a=msid:1 2\\r\\na=ssrc:3 cname:4\\r\\na=ssrc:3 msid:3 2\\r\\n'));
+    log('dash', await streams('a=msid:-\\r\\n'));
+    log('twice', await streams('a=msid:1 2\\r\\na=msid:1 2\\r\\n'));
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.addTransceiver('audio');
+    var other = new Promise(function (r) { b.ontrack = r; });
+    await a.setLocalDescription();
+    await b.setRemoteDescription(a.localDescription);
+    log('no stream', (await other).streams.length);
+    a.close(); b.close();
+  `);
+  for (const line of [
+    'none|default',
+    'source|1',
+    'media first|1',
+    'dash|none',
+    'twice|1',
+    'no stream|0',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('streams a sender is given anew reach the far side as a second track event, of the same track', async () => {
+  const logs = await run(`
+    ${NEGOTIATE}
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    var heard = [];
+    b.ontrack = function (e) { heard.push(e); };
+    var t = a.addTransceiver('audio', { direction: 'sendrecv' });
+    await negotiate(a, b);
+    var s1 = new MediaStream(), s2 = new MediaStream();
+    t.sender.setStreams(s1, s2);
+    await negotiate(a, b);
+    var last = heard[heard.length - 1];
+    log('events', heard.length, heard[0].streams.length, last.streams.map(function (s) { return s.id === s1.id || s.id === s2.id; }).join(','),
+      last.track === heard[0].track, last.streams[0].getTracks()[0] === last.track);
+    a.close(); b.close();
+  `);
+  assert.ok(logs.includes('events|2|0|true,true|true|true'), logs.join('\n'));
+});
+
+test('a certificate clones with its expiry, fingerprints and origin, and a worker cannot take one', async () => {
+  const logs = await run(`
+    var cert = await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' });
+    var copy = structuredClone(cert);
+    log('copy', copy instanceof RTCCertificate, copy !== cert, copy.expires === cert.expires, copy.getFingerprints()[0].value);
+    var pc = new RTCPeerConnection({ certificates: [copy] });
+    log('same origin', pc.getConfiguration().certificates.length);
+    pc.close();
+    var src = 'onmessage = function () { postMessage("message"); };' +
+      'onmessageerror = function () { postMessage("messageerror"); };';
+    var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    var heard = new Promise(function (ok) { w.onmessage = function (e) { ok(e.data); }; });
+    w.postMessage(cert);
+    log('worker', await heard);
+    w.terminate();
+  `);
+  for (const line of [
+    'copy|true|true|true|ab:cd:ef',
+    'same origin|1',
+    'worker|messageerror',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('an audio sender’s DTMF sender plays its tones in turn once connected, each told as it starts and the seam handed it', async () => {
+  const webRTC = new FakeWebRTC();
+  const logs = await run(
+    `
+    ${NEGOTIATE}
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var sender = pc1.addTrack(stream.getTracks()[0], stream);
+    var video = pc1.addTransceiver('video').sender;
+    var dtmf = sender.dtmf;
+    log('made', dtmf instanceof RTCDTMFSender, dtmf === sender.dtmf, video.dtmf, dtmf.canInsertDTMF, dtmf.toneBuffer === '');
+    try { new RTCDTMFSender(); } catch (e) { log('constructor', e.name); }
+    try { dtmf.insertDTMF(''); } catch (e) { log('unconnected', e.name); }
+    await negotiate(pc1, pc2);
+    await until(function () { return dtmf.canInsertDTMF; });
+    log('connected', pc1.connectionState, dtmf.canInsertDTMF);
+    try { dtmf.insertDTMF('12E'); } catch (e) { log('unrecognized', e.name, dtmf.toneBuffer === ''); }
+    dtmf.insertDTMF('ab#*');
+    log('buffer', dtmf.toneBuffer);
+    var heard = [], start = Date.now(), last = start, gaps = [];
+    dtmf.ontonechange = function (e) {
+      heard.push(e.tone === '' ? '-' : e.tone);
+      gaps.push(Date.now() - last);
+      last = Date.now();
+    };
+    // a later call replaces the buffer and the times; the one queued task
+    // plays it
+    dtmf.insertDTMF('12', 10, 10);
+    log('replaced', dtmf.toneBuffer);
+    await until(function () { return heard.length === 3; });
+    log('tones', heard.join(','), gaps[1] >= 69, gaps[2] >= 69, dtmf.toneBuffer === '');
+    // a stopped transceiver plays no more
+    heard = [];
+    dtmf.addEventListener('tonechange', function (e) {
+      if (e.tone === '4') pc1.getTransceivers()[0].stop();
+    });
+    dtmf.insertDTMF('345', 40, 30);
+    await wait(400);
+    log('stopped', heard.join(','), dtmf.canInsertDTMF);
+    try { dtmf.insertDTMF('6'); } catch (e) { log('after stop', e.name); }
+    pc1.close(); pc2.close();
+  `,
+    { webRTC, mediaDevices: fakeMediaDevices() },
+  );
+  for (const line of [
+    'made|true|true||false|true',
+    'constructor|TypeError',
+    'unconnected|InvalidStateError',
+    'connected|connected|true',
+    'unrecognized|InvalidCharacterError|true',
+    'buffer|AB#*',
+    'replaced|12',
+    'tones|1,2,-|true|true|true',
+    'stopped|3,4|false',
+    'after stop|InvalidStateError',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+  // the seam was handed each tone at the clamped duration, and no ','
+  const tones = webRTC.connections[0]!.transceivers[0]!.tones;
+  assert.deepEqual(tones, ['1:40', '2:40', '3:40', '4:40']);
 });
 
 test('a channel queues 16 MiB at most, and the page’s own close announces no closing', async () => {

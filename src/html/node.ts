@@ -847,6 +847,9 @@ export interface DocumentInteraction {
   settleFocus(): void;
   blur(): void;
   activeElement(): Element | null;
+  /** Whether core's focus is somewhere in the window outside the document:
+   *  the application's own, which autofocus does not take. */
+  focusOutside(): boolean;
   activate(el: Element): boolean;
   submit(form: Element, submitter: Element | null): void;
   reportValidity(
