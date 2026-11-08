@@ -19,6 +19,15 @@ updates:
       # released in lockstep with eslint, so holding one holds both
       - dependency-name: '@eslint/js'
         update-types: ['version-update:semver-major']
+      # linebreak 2 has a named export where 1 had a default, and breaks by
+      # UAX #14 revision 45's LB22 and Unicode 15's classes. ntk and
+      # react-x11 still break every line with 1.1.0, and `text-wrap: pretty`
+      # reads its break points from linebreak so that they are the engines'
+      # (src/html/layout/pretty.ts): on 2 they would not be, and every app
+      # would install both. Lift once ntk and react-x11 have moved, in that
+      # order, and change the import and src/html/linebreak.d.ts with it.
+      - dependency-name: linebreak
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
