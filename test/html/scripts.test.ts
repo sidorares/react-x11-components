@@ -18114,12 +18114,172 @@ test('a frame without scripts keeps one session across the documents it shows', 
   );
 });
 
+test('a frame without scripts reloads and steps back across its documents by loading each again', async () => {
+  // WPT's /common/blank.html once more: a reload at a fragment is the
+  // document again, and not a fragment of the one it replaces, and a step
+  // back to an entry of the document before loads that document, its index
+  // and its state the entry's, where the host had moved the address alone
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f"), loads = 0;' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function then(go, next) { f.onload = function () { loads++; setTimeout(next, 0); }; go(); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  n().navigate("#1", { state: "one" }).committed.then(function () {' +
+      '    then(function () { n().reload(); }, function () {' +
+      '      r.push(loads, n().entries().length, n().currentEntry.getState());' +
+      '      then(function () { n().navigate("b.html"); }, function () {' +
+      '        r.push(loads, n().entries().length, n().currentEntry.index);' +
+      '        then(function () { n().back(); }, function () {' +
+      '          var e = n().currentEntry;' +
+      '          r.push(loads, e.index, e.getState(), /#1$/.test(e.url), n().activation.navigationType);' +
+      '          document.getElementById("out").textContent = r.join("|");' +
+      '        });' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|2|one|2|3|2|3|1|one|true|traverse',
+    logs.join('\n'),
+  );
+});
+
+test("a frame's next document starts its navigation API afresh: what the last one left under way is no navigation for it to abort, and a step that loads nothing moves nothing", async () => {
+  // the frame's window is kept across its documents, and with it the
+  // session: the cross-document `navigate()` the last one started never
+  // settled, and the next navigation aborted it, telling `navigateerror`
+  // to a document that never started it. A step to an answer of no
+  // content shows what was shown, at its own entry.
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    n().onnavigateerror = function () { r.push("error"); };' +
+      '    f.onload = function () { r.push("loaded"); };' +
+      '    n().back();' +
+      '    setTimeout(function () {' +
+      '      r.push(n().currentEntry.index, n().entries().length, /b\\.html$/.test(f.contentWindow.location.href));' +
+      '      document.getElementById("out").textContent = r.join("|");' +
+      '    }, 300);' +
+      '  }, 0); };' +
+      '  n().navigate("b.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+    false,
+    // the frame's first visit is a page, and its second, the step back,
+    // no content
+    { 'a.html': [200, 204] },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|2|true',
+    logs.join('\n'),
+  );
+});
+
+test("a page that sends a frame of another origin to a fragment of it is heard by the frame's own navigate, and one that sends it to another document is not", async () => {
+  // the frame runs in a realm of its own (`DomHost.navigateFrameFrom`): a
+  // link, `location` and `window.open()` aimed at it reached nothing, or
+  // loaded the whole document again for a fragment of it (WPT's
+  // navigate-event/cross-window)
+  const frame =
+    '<!DOCTYPE html><script>' +
+    'navigation.onnavigate = function (e) {' +
+    '  parent.postMessage([e.navigationType, e.hashChange, e.destination.sameDocument, e.cancelable, e.userInitiated, new URL(e.destination.url).hash].join(" "), "*");' +
+    '};' +
+    'onload = function () { if (/done/.test(location.search)) parent.postMessage("loaded " + location.search, "*"); };' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" name="w" src="https://other.test/frame.html"></iframe>' +
+      '<a id="hash" target="w" href="https://other.test/frame.html#foo"></a>' +
+      '<a id="away" target="w" href="https://other.test/frame.html?done"></a>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'addEventListener("message", function (e) {' +
+      '  r.push(e.data);' +
+      '  if (r.length === 1) window.open("https://other.test/frame.html#bar", "w");' +
+      '  else if (r.length === 2) document.getElementById("away").click();' +
+      '  else document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      'window.onload = function () { setTimeout(function () { document.getElementById("hash").click(); }, 0); };' +
+      '</script>',
+    { 'frame.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'push true true true false #foo|push true true true false #bar|loaded ?done',
+    logs.join('\n'),
+  );
+});
+
+test('a frame of another origin that the page sends back to its own comes by the replace or the push it asked for, from no entry it can see', async () => {
+  // the page cannot see the frame's history while it is another origin's,
+  // so the next document it can see came from nowhere: by `replace()` a
+  // replace, where it had been taken for a push (WPT's
+  // activation-replace-cross-origin)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/x.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var n = f.contentWindow.navigation;' +
+      '    document.getElementById("out").textContent = [' +
+      '      n.activation.navigationType, String(n.activation.from), n.entries().length,' +
+      '    ].join("|");' +
+      '  }, 0); };' +
+      '  f.contentWindow.location.replace("b.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'x.html': '<!doctype html><p>x</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    'replace|null|1',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
   /** Whether a frame's `load` waits for the view the page mounts over it,
    *  as a browser that draws frames has it (`framesFollowed`). */
   followed = false,
+  /** The status each request for a file is answered with, in turn: 200
+   *  once they are spent, and a 204 with no body. */
+  statuses: Record<string, number[]> = {},
 ): Promise<{
   text: (where: string, id: string) => string;
   logs: string[];
@@ -18164,15 +18324,18 @@ async function hostedFrames(
           body: from === PAGE ? 'page' : from,
         };
       }
-      const body = files[name];
+      // by its name, or by its path where it has a query or a fragment
+      const file = name in files ? name : name.replace(/[?#].*$/, '');
+      const body = files[file];
       if (body === undefined) throw new Error('no answer');
+      const status = statuses[file]?.shift() ?? 200;
       return {
         url: request.url,
-        status: 200,
-        statusText: 'OK',
+        status,
+        statusText: status === 200 ? 'OK' : '',
         redirected: false,
         headers: [['content-type', 'text/html']],
-        body,
+        body: status === 204 ? '' : body,
       };
     },
     load: async () => null,

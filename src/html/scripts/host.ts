@@ -289,7 +289,7 @@ import type { HtmlWebSocket } from '../socket.js';
 import { chosenFiles, formEncoding, urlencoded } from '../form.js';
 import type { HtmlSyncNetwork } from '../network.js';
 import { fetchSync } from './sync-fetch.js';
-import type { HtmlDownloadRequest } from '../download.js';
+import { dispositionOf, type HtmlDownloadRequest } from '../download.js';
 import type { HtmlFile } from '../files.js';
 import { clipboardOfWire, clipboardWire } from '../clipboard.js';
 import type { HtmlClipboard } from '../clipboard.js';
@@ -5022,7 +5022,12 @@ export class DomHost {
         ) {
           return null;
         }
-        this.navigateFrame(frame, text(b), null, text(c));
+        const how = text(d);
+        // a reload or a step of a frame whose document is this realm's;
+        // anything else this document asks of a frame, whatever runs there
+        if (how === 'reload' || how === 'traverse') {
+          this.navigateFrame(frame, text(b), null, text(c), how);
+        } else this.navigateFrameFrom(frame, text(b), null, text(c));
         return null;
       }
       // a frame's address changed by its own history, with no navigation:
@@ -6373,7 +6378,7 @@ export class DomHost {
             this.navigationSource(),
           );
         } else if (to === 'tab') this._openTab(text(a), text(b), false);
-        else this.navigateFrame(to, text(a), null);
+        else this.navigateFrameFrom(to, text(a), null);
         return null;
       }
       case 'reload':
@@ -7779,6 +7784,11 @@ export class DomHost {
     /** The referrer policy of the link that sent it there, where one did:
      *  the navigation is made under it rather than the frame's own. */
     referrerPolicy = '',
+    /** A reload, or a step to an entry of another of the frame's
+     *  documents: that document loaded, whatever fragment its address has
+     *  (HTML 7.4.2.2, "navigate to a fragment" is neither's). '' for a
+     *  navigation to an address. */
+    how: '' | 'reload' | 'traverse' = '',
   ): void {
     if (!this._loadsFrame(frame)) return;
     // to a fragment of the document a frame of this realm's shows, with no
@@ -7788,6 +7798,7 @@ export class DomHost {
     const doc = this._frames.get(frame);
     const at = this._frameAt.get(frame);
     if (
+      !how &&
       !post &&
       doc &&
       at &&
@@ -7803,6 +7814,38 @@ export class DomHost {
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);
     this._loadFrame(frame, true, post);
+  }
+
+  /**
+   * A frame sent to an address by this document — its `location`, a link or
+   * a form whose target names it, `window.open()` — rather than by its own.
+   * Where the frame's document runs in a realm of its own, that realm hears
+   * it first, a task later, as a navigation of its window that a document of
+   * this one's origin asked for (HTML 7.4.2.2, "navigate"): a fragment is its
+   * own to go to, and `navigate` is told of another document only where this
+   * one is of its origin. What it lets go on is loaded as any address is.
+   */
+  navigateFrameFrom(
+    frame: Element,
+    url: string,
+    post: FramePost | null,
+    referrerPolicy = '',
+  ): void {
+    const doc = this._frames.get(frame);
+    if (!doc || !this._s.realms.has(doc) || !this.windows) {
+      this.navigateFrame(frame, url, post, referrerPolicy);
+      return;
+    }
+    setTimeout(() => {
+      if (this._disposed) return;
+      // a frame that has gone on to another document since is sent there
+      // as an address
+      const said =
+        this._frames.get(frame) === doc && this._loadsFrame(frame)
+          ? this.windows?.navigateFrame(this.idOf(frame), url, !!post)
+          : undefined;
+      if (said !== 'done') this.navigateFrame(frame, url, post, referrerPolicy);
+    }, 0);
   }
 
   /** A frame's document, made where it has none: null where it is another
@@ -8059,6 +8102,23 @@ export class DomHost {
         // showing what it was, and hears no `load`
         if (response.status === 204 || response.status === 205) {
           release(response);
+          this._frameDone(frame);
+          return;
+        }
+        // nor is an attachment: a download, which the host's to save where
+        // it saves anything (HTML 7.4.2.3.3, "handle as a download"), and the
+        // frame goes on showing what it was
+        const disposition = dispositionOf(
+          headerOf(response.headers, 'content-disposition'),
+        );
+        if (disposition.attachment) {
+          release(response);
+          if (!(this._frameSandbox(frame) & SB_DOWNLOADS)) {
+            this._handle.download?.({
+              url: response.url || src!,
+              filename: disposition.filename ?? '',
+            });
+          }
           this._frameDone(frame);
           return;
         }
