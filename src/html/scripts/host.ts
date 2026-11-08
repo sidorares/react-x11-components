@@ -229,6 +229,7 @@ import {
   SB_AUTOMATIC,
   SB_DOWNLOADS,
   SB_FORMS,
+  SB_NAVIGATION,
   SB_ORIGIN,
   SB_POPUPS,
   SB_PROPAGATES,
@@ -5163,6 +5164,36 @@ export class DomHost {
           (this._node(a) as Document).children,
         );
         return found ? this.idOf(found) : 0;
+      }
+      // whether a step to one of this frame's entries is its to take (HTML,
+      // "apply the traverse history step": whether the window that asked is
+      // "allowed by sandboxing to navigate" each it moves), where the page's
+      // realm, which keeps the joint history, says what the step moves: a
+      // sandboxed frame may move itself, and the top window only where its
+      // flags let it navigate the top — and no other window
+      case 'stepAllowed': {
+        const parent = this.frameParent;
+        const frame = parent?._frameOf.get(this.document);
+        if (!this.sandbox || !parent?.entries || !frame) return true;
+        if (parent.frameParent) return true;
+        const said = parent.entries.call('__stepChanges', [
+          parent.idOf(frame),
+          text(a),
+        ]);
+        if (typeof said !== 'string' || !said) return true;
+        const self = parent.idOf(frame);
+        const gesture = b === true;
+        for (const moved of JSON.parse(said) as (string | number)[]) {
+          if (moved === 'top') {
+            const may =
+              !(this.sandbox & SB_TOP) ||
+              (gesture && !(this.sandbox & SB_TOP_GESTURE));
+            if (!may) return false;
+          } else if (moved !== self && this.sandbox & SB_NAVIGATION) {
+            return false;
+          }
+        }
+        return true;
       }
       // whether the document goes for the next one its window shows, rather
       // than with its frame taken out of the page: a top-level one always
