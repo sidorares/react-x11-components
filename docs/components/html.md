@@ -1466,11 +1466,26 @@ as WPT's tests make them, and to another peer the host can reach.
   `NotSupportedError` naming the seam; nothing is gathered or sent.
 - **`scripts.mediaDevices`, an `HtmlMediaDevices`**, is the devices and
   their frames. A page's `getUserMedia` picks a device and the settings
-  its constraints come to — a number, or an `exact`, `ideal`, `min` or
-  `max` of one, so far — and asks `request` before it opens one; the page
-  sees a device's id digested with its origin, and its label only once it
-  is allowed the kind. **With none**, a page lists no device, as on a
-  machine with none. A secure context's only, as `[SecureContext]` has it.
+  its constraints come to, and asks `request` before it opens one. The
+  constraints are fitted as Media Capture's SelectSettings fits them
+  (`src/html/scripts/constraints.ts`): every constrainable property, `min`,
+  `max`, `exact`, `ideal` and `advanced`, a camera's native `modes` at
+  `resizeMode: 'none'` and anything smaller or slower at
+  `'crop-and-scale'`. What nothing can meet is an `OverconstrainedError`
+  naming the constraint, and `applyConstraints` sets a track's source the
+  same way. The page sees a device's id digested with its origin and a
+  group id that is the document's own, and `enumerateDevices` shows a kind
+  of device in full only once the document has captured one of it: before
+  that, one entry a kind with no id, no group and no label, and no
+  speaker, as Firefox and Safari have it whatever the page is allowed.
+  **With none**, a page lists no device, as on a machine with none. A
+  secure context's only, as `[SecureContext]` has it.
+- **A track is transferable** (Media Capture Extensions): to a frame of
+  the page's agent cluster, to a dedicated worker, or to itself with
+  `structuredClone`, where the track made of it reaches its source back
+  through a port to the realm that opened it, so the source stays that
+  realm's. A shared worker, a service worker or a window of another site
+  hears a `messageerror`.
 - **A track is a source** (`MediaSourceLike`), whoever makes its frames:
   a device, a screen, a canvas, a Web Audio stream destination, or a peer
   connection's receiver. Video is I420 and audio 10 ms of planar floats,
@@ -1558,12 +1573,14 @@ page's host candidates name the machine's addresses, as no mDNS name
 stands in for them yet. `webRTC: false` makes none.
 
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
-down them and its frame's number along the bottom, a microphone that plays
-a 440 Hz tone, a speaker to list and a 1280×720 screen, every one allowed
-until `setPermission` says otherwise — what WPT's runner hands each test,
-as wptrunner runs a browser with fake devices, and what an application can
-hand a page to show a call working with no camera. A source makes frames
-only while something listens, and its timer keeps no process alive.
+down them and its frame's number along the bottom, natively at 640×480,
+320×240, 1280×720 and 1920×1080, a microphone that plays a 440 Hz tone and
+offers every echo cancellation mode and voice isolation, a speaker to list
+and a 1280×720 screen, every one allowed until `setPermission` says
+otherwise — what WPT's runner hands each test, as wptrunner runs a browser
+with fake devices, and what an application can hand a page to show a call
+working with no camera. A source makes frames only while something
+listens, and its timer keeps no process alive.
 
 **A service worker answers what its pages ask for** (Service Workers 1),
 where a secure page has `serviceWorkers`. A worker outlives the document that
@@ -7499,6 +7516,21 @@ owning element, and a host for what is in a shadow tree the container is
 not in — at the element, and the viewport's at the document, which alone
 bubbles. What a container snapped to as it was first laid out is what it
 was last told, so a scroll that comes back to it tells nothing.
+
+**A scroll container starts at its initial target** (CSS Scroll Snap 2,
+3.1): the first box in tree order with `scroll-initial-target: nearest` of
+those whose nearest scroll container it is, and the viewport's where none
+is around it. The container is scrolled to line it up as its
+`scroll-snap-align` says, at the start of its flow on an axis where that is
+`none`, with its `scroll-margin` and the container's `scroll-padding`, and a
+snap container snaps from there. Each layout does it again, so a target
+that moves, comes back from `display: none` or lines up otherwise takes the
+container with it, until a script or the user scrolls the container: from
+then on it stays where it was put. A fragment's scroll is a script's here.
+An inline box has no rectangle of its own, and is no initial target. A
+frame's document that runs no scripts has its root's `scrollTop`,
+`scrollLeft`, `clientHeight` and their kin read and set as its frame's
+viewport, as the page's root has the page's.
 
 **A page reads scroll snapping's properties as a browser keeps them.**
 `el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,

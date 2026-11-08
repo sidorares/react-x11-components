@@ -355,7 +355,13 @@ import type {
   ElementScroll,
   Viewport,
 } from './layout/scroll.js';
-import { lineUp, linesUp, resnap, snapTo } from './layout/snap.js';
+import {
+  initialPlace,
+  lineUp,
+  linesUp,
+  resnap,
+  snapTo,
+} from './layout/snap.js';
 import type {
   SnapArea,
   SnapContainer,
@@ -3776,6 +3782,16 @@ export class HtmlViewNode extends Node {
    */
   private _notePlaced(): void {
     this._releaseHeldScroll();
+    // the viewport an initial target waited for is known once a pass has
+    // placed the pane, and is scrolled once that pass is over
+    if (this._initialOwed) {
+      this._initialOwed = false;
+      const owed = () => {
+        if (!this.destroyed) this._toInitialTargets();
+      };
+      if (timers.queueMicrotask) timers.queueMicrotask(owed);
+      else void Promise.resolve().then(owed);
+    }
     const pane = this._pane();
     if (!pane) {
       this._placedAt = null;
@@ -5140,7 +5156,10 @@ export class HtmlViewNode extends Node {
         this._layoutReadsViewport = result.readsViewportHeight;
         // and a snap container at rest where it was snapped to, the
         // viewport as far as the document reaches now
-        if (!question && !result.partial) this._resnap();
+        if (!question && !result.partial) {
+          this._toInitialTargets();
+          this._resnap();
+        }
         this._sizes.delete(target);
         this._sizes.set(target, { width: result.width, height: result.height });
         if (this._sizes.size > SIZES_KEPT) {
@@ -10359,6 +10378,7 @@ export class HtmlViewNode extends Node {
     // a snap area's alignment, or its container's type, that changed
     // without a layout: what a container was snapped to may be no snap
     // position now (CSS Scroll Snap 1, 5.4)
+    if (cascade.initialTargets) this._toInitialTargets();
     if (cascade.snaps) this._resnap(!snapTyped);
     return true;
   }
@@ -14441,6 +14461,7 @@ export class HtmlViewNode extends Node {
     this._settle();
     const box = this._scrollerOf(element);
     if (!box) return null;
+    this._scrolledBy.add(element);
     const state = scrollStateOf(box);
     const s = this._scale;
     // `to` is from its scroll origin, as `scrollLeft` is, and in the
@@ -14529,7 +14550,11 @@ export class HtmlViewNode extends Node {
    *  `only`, a container of that box's area alone, whether or not it
    *  snaps — what lines a scroll's target up where it does not — or null
    *  where the box is no area of the container's. */
-  private _snapContainerOf(box: Box, only?: Box): SnapContainer | null {
+  private _snapContainerOf(
+    box: Box,
+    only?: Box,
+    initial = false,
+  ): SnapContainer | null {
     if (!only && !box.style.scrollSnapType) return null;
     const state = scrollStateOf(box);
     const left = box.x + box.borderLeft;
@@ -14538,7 +14563,7 @@ export class HtmlViewNode extends Node {
       scrollMoves(box, child)
         ? { x: rect.x - left + state.x, y: rect.y - top + state.y }
         : null;
-    const areas = only ? areaIn(box, only, at) : snapAreasIn(box, at);
+    const areas = only ? areaIn(box, only, at, initial) : snapAreasIn(box, at);
     if (!areas) return null;
     return {
       style: box.style,
@@ -14585,7 +14610,7 @@ export class HtmlViewNode extends Node {
    *  the document; null where the root's snaps on no axis or nothing
    *  scrolls the document. With `only`, that box's area alone, as
    *  `_snapContainerOf` makes it. */
-  private _viewportSnap(only?: Box): SnapContainer | null {
+  private _viewportSnap(only?: Box, initial = false): SnapContainer | null {
     const tree = this._tree;
     const root = tree?.root;
     const style = this._rootBox()?.style;
@@ -14594,7 +14619,9 @@ export class HtmlViewNode extends Node {
     if (!only && !style.scrollSnapType) return null;
     const at = (child: Box, rect: SnapRect) =>
       fixedToViewport(child) ? null : { x: rect.x, y: rect.y };
-    const areas = only ? areaIn(root, only, at) : snapAreasIn(root, at);
+    const areas = only
+      ? areaIn(root, only, at, initial)
+      : snapAreasIn(root, at);
     if (!areas) return null;
     return {
       style,
@@ -15059,6 +15086,7 @@ export class HtmlViewNode extends Node {
     relative = false,
   ): { x: number; y: number } {
     this._prepare(this.abs.width || 1);
+    this._scrolledBy.add(this._source.document);
     const s = this._scale;
     const pane = relative ? this._pane() : null;
     const at = this._snapViewportAt(
@@ -15163,6 +15191,114 @@ export class HtmlViewNode extends Node {
     );
   }
 
+  /** The scroll containers a user or a script has scrolled, by element,
+   *  and the viewport by the document: what an initial target no longer
+   *  moves (CSS Scroll Snap 2, 3.1). */
+  private _scrolledBy = new WeakSet<Element | Document>();
+  /** Whether the scroll under way is a layout's, which `_scrollBox` notes
+   *  as no one's. */
+  private _layoutScrolling = false;
+  /** Where the viewport was last put for its initial target: a pane
+   *  somewhere else since was scrolled by the user, which core does where
+   *  this element hears nothing of it. */
+  private _initialViewport: { x: number; y: number } | null = null;
+  /** Whether the viewport has an initial target it could not be scrolled
+   *  to, having no size yet: the next pass's (`_notePlaced`). */
+  private _initialOwed = false;
+
+  /** `_scrollBox` for a layout's own scroll. */
+  private _layoutScroll(box: Box, x: number, y: number): void {
+    this._layoutScrolling = true;
+    try {
+      this._scrollBox(box, x, y);
+    } finally {
+      this._layoutScrolling = false;
+    }
+  }
+
+  /**
+   * After a layout, or a restyle: each scroll container that neither a user
+   * nor a script has scrolled is scrolled to its initial target (CSS Scroll
+   * Snap 2, 3.1) — the first box in tree order whose `scroll-initial-target`
+   * is `nearest` of those whose nearest scroll container it is — lined up as
+   * its `scroll-snap-align` says, at its start where that is `none`, and
+   * snapped from there where the container snaps. Each layout does it again,
+   * so a target that moves, comes back or lines up otherwise takes the
+   * container with it, until something else scrolls it.
+   */
+  private _toInitialTargets(): void {
+    const tree = this._tree;
+    if (!tree || !this._cascade?.initialTargets) return;
+    const doc = this._source.document;
+    const firsts = new Map<Box | null, Box>();
+    const walk = (b: Box): void => {
+      for (const c of b.children) {
+        if (
+          c.el &&
+          c.style.scrollInitialTarget === 'nearest' &&
+          c.kind !== 'text' &&
+          hasRect(c)
+        ) {
+          let scroller: Box | null = null;
+          for (let a = c.parent; a; a = a.parent) {
+            if (isScroller(a) && scrollMoves(a, c)) {
+              scroller = a;
+              break;
+            }
+          }
+          if (!firsts.has(scroller)) firsts.set(scroller, c);
+        }
+        walk(c);
+      }
+    };
+    walk(tree.root);
+    const s = this._scale;
+    for (const [scroller, target] of firsts) {
+      if (!scroller) {
+        const pane = this._pane();
+        if (!pane || this._scrolledBy.has(doc)) continue;
+        const was = this._initialViewport;
+        if (
+          was &&
+          (Math.abs(was.x - pane.scrollX) > 1 ||
+            Math.abs(was.y - pane.scrollY) > 1)
+        ) {
+          this._scrolledBy.add(doc);
+          continue;
+        }
+        if (fixedToViewport(target)) continue;
+        if (!this._viewport()) {
+          this._initialOwed = true;
+          continue;
+        }
+        const lone = this._viewportSnap(target, true);
+        const area = lone?.areas[0];
+        if (!lone || !area) continue;
+        const place = initialPlace(lone, area);
+        const at = this._snapViewportAt(place.x, place.y, {});
+        this._scrollPaneTo(pane, at.x, at.y);
+        // a place the pane cannot reach yet is held for its next pass, and
+        // is no place a user's scroll would be told from
+        const reached =
+          Math.abs(at.x - pane.scrollX) < 0.5 &&
+          Math.abs(at.y - pane.scrollY) < 0.5;
+        this._initialViewport = reached ? { x: at.x, y: at.y } : null;
+        continue;
+      }
+      const el = scroller.el;
+      if (!el || this._scrolledBy.has(el)) continue;
+      const lone = this._snapContainerOf(scroller, target, true);
+      const area = lone?.areas[0];
+      if (!lone || !area) continue;
+      const place = initialPlace(lone, area);
+      const at = this._snapScroll(scroller, place.x, place.y, {});
+      const state = scrollStateOf(scroller);
+      if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
+        this._layoutScroll(scroller, at.x / s, at.y / s);
+      }
+    }
+  }
+
   /** After a layout: each snap container snapped to an area lined up with
    *  it again where the layout moved it, and a `mandatory` one no script
    *  has scrolled snapped where it is. */
@@ -15216,7 +15352,7 @@ export class HtmlViewNode extends Node {
       );
       this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
-        this._scrollBox(box, at.x / s, at.y / s);
+        this._layoutScroll(box, at.x / s, at.y / s);
       }
     }
     // a mandatory container must be at rest at a snap position, whether or
@@ -15243,7 +15379,7 @@ export class HtmlViewNode extends Node {
       this._snapped.set(el, snapKeysOf(at, this._focus.element ?? null));
       this._seedSnapTold(el);
       if (Math.abs(at.x - state.x) >= 0.5 || Math.abs(at.y - state.y) >= 0.5) {
-        this._scrollBox(box, at.x / s, at.y / s);
+        this._layoutScroll(box, at.x / s, at.y / s);
       }
     }
   }
@@ -15362,6 +15498,7 @@ export class HtmlViewNode extends Node {
   /** The wheel's scroll of the viewport `_viewportWheel` let it have, by
    *  logical pixels: the pane moved, to snap once the wheel rests. */
   private _wheelViewport(by: { x?: number; y?: number }): void {
+    this._scrolledBy.add(this._source.document);
     const pane = this._pane();
     if (!pane || !this._viewportWheel(by.x ?? 0, by.y ?? 0)) return;
     const s = this._scale;
@@ -15567,6 +15704,9 @@ export class HtmlViewNode extends Node {
    */
   private _scrollBox(box: Box, x: number, y: number): ScrollOffset {
     this._geometry += 1;
+    // a scroll that is no layout's is the user's or a script's, which a
+    // container's initial target no longer moves
+    if (!this._layoutScrolling && box.el) this._scrolledBy.add(box.el);
     const s = this._scale;
     const was = scrollStateOf(box);
     // what is anchored to something it scrolls moves with it, and may be
@@ -22328,8 +22468,15 @@ function snapAreasIn(container: Box, at: SnapPlace): SnapArea[] {
 
 /** The one snap area a box is under a container, as `snapAreasIn` would
  *  find it, or null where it is none of the container's. */
-function areaIn(container: Box, box: Box, at: SnapPlace): SnapArea[] | null {
-  if (!canBeArea(box)) return null;
+function areaIn(
+  container: Box,
+  box: Box,
+  at: SnapPlace,
+  /** Whatever its `scroll-snap-align`: an initial target's, which is
+   *  lined up at its start where that is `none`. */
+  anyAlign = false,
+): SnapArea[] | null {
+  if (!canBeArea(box, anyAlign)) return null;
   let a = box.parent;
   while (a && a !== container) a = a.parent;
   if (!a || !holdsArea(container, box)) return null;
@@ -22341,9 +22488,9 @@ function areaIn(container: Box, box: Box, at: SnapPlace): SnapArea[] | null {
  *  and not the text, nor an anonymous box, which takes its parent's
  *  `scroll-snap-align` with the rest of its style and is no area of its
  *  own. */
-function canBeArea(box: Box): boolean {
+function canBeArea(box: Box, anyAlign = false): boolean {
   return (
-    box.style.scrollSnapAlign !== NO_SNAP_ALIGN &&
+    (anyAlign || box.style.scrollSnapAlign !== NO_SNAP_ALIGN) &&
     box.kind !== 'text' &&
     (box.el !== null || box.pseudo !== null) &&
     hasRect(box)

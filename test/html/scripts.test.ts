@@ -2222,6 +2222,30 @@ test('navigator.platform is the one the user agent names, in a worker as on the 
   );
 });
 
+test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
+  // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
+  // its page's origin, and runs opaque; WebRTC's encoded-transform tests make
+  // every worker so, and each one was a SecurityError
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "onmessage = function (e) { postMessage([e.data, self.origin, isSecureContext, location.protocol].join(\' \')); };";' +
+      'var w = new Worker("data:text/javascript," + encodeURIComponent(src));' +
+      'var b = new Worker("data:text/javascript;base64," + btoa(src));' +
+      'var got = [];' +
+      'function heard(e) { got.push(e.data); if (got.length === 2) document.getElementById("out").textContent = got.sort().join("|"); }' +
+      'w.onmessage = b.onmessage = heard;' +
+      'w.onerror = b.onerror = function (e) { document.getElementById("out").textContent = "error " + e.message; };' +
+      'w.postMessage("plain"); b.postMessage("base64");' +
+      '</script>',
+  );
+  const secure = new URL(PAGE).protocol === 'https:';
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    `base64 null ${secure} data:|plain null ${secure} data:`,
+    doc.logs.join('\n'),
+  );
+});
+
 test('a worker’s imported script is a script of its own: a strict one’s declarations are the worker’s, and what one throws is thrown to its caller', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
@@ -18492,6 +18516,36 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
     (t) => t !== '',
   );
   assert.equal(page, '0|80|80', logs.join('\n'));
+});
+
+test("a scriptless frame's root scrolls as its frame's viewport, which starts at its scroll-initial-target", async () => {
+  // CSSOM View 7: the root's scrollTop is its viewport's, and for a frame's
+  // document of the page realm that is the frame's view (CSS Scroll Snap
+  // 2, 3.1: first scrolled to its initial target)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="width: 300px; height: 150px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var d = f.contentDocument, root = d.documentElement, r = [];' +
+      '  r.push(root.scrollTop, d.scrollingElement.scrollTop, root.clientHeight);' +
+      '  root.scrollTop = 30;' +
+      '  r.push(root.scrollTop, f.contentWindow.scrollY);' +
+      '  document.getElementById("out").textContent = r.join("|"); }, 200); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<style>body { margin: 0 } div { height: 100px }</style>' +
+        '<div style="height: 200px"></div>' +
+        '<div style="scroll-initial-target: nearest"></div>' +
+        '<div style="height: 400px"></div>',
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, '200|200|150|30|30', logs.join('\n'));
 });
 
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {

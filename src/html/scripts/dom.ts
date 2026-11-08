@@ -7741,13 +7741,13 @@ export function installDom(
     get clientWidth(): number {
       const s = scrollStateOf(this);
       if (s) return Math.round(s[4]);
-      if (this._viewport()) return viewport().width;
+      if (this._viewport()) return this._ownViewport().width;
       return Math.round(clientBoxOf(this)?.[0] ?? 0);
     }
     get clientHeight(): number {
       const s = scrollStateOf(this);
       if (s) return Math.round(s[5]);
-      if (this._viewport()) return viewport().height;
+      if (this._viewport()) return this._ownViewport().height;
       return Math.round(clientBoxOf(this)?.[1] ?? 0);
     }
     get clientTop(): number {
@@ -7763,9 +7763,9 @@ export function installDom(
       if (s) return Math.round(s[2]);
       if (this._viewport()) {
         // the viewport's scrollable overflow, where the host can say it
-        const d = documentSize();
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
-          viewport().width,
+          this._ownViewport().width,
           Math.round(d ? d[0] : (docRect(this)?.[2] ?? 0)),
         );
       }
@@ -7777,23 +7777,23 @@ export function installDom(
       if (this._viewport()) {
         // as far down as the viewport's scrollable overflow reaches, what
         // is positioned out of the flow below the root included
-        const d = documentSize();
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
-          viewport().height,
+          this._ownViewport().height,
           Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
         );
       }
       return this.clientHeight;
     }
     get scrollTop(): number {
-      if (this._viewport()) return pageScrollY(viewport(true));
+      if (this._viewport()) return pageScrollY(this._ownViewport(true));
       return scrollStateOf(this)?.[1] ?? 0;
     }
     set scrollTop(v: Any) {
       this._scrollTo(undefined, Number(v));
     }
     get scrollLeft(): number {
-      if (this._viewport()) return pageScrollX(viewport(true));
+      if (this._viewport()) return pageScrollX(this._ownViewport(true));
       return scrollStateOf(this)?.[0] ?? 0;
     }
     set scrollLeft(v: Any) {
@@ -7801,7 +7801,20 @@ export function installDom(
     }
     /** Whether this element's scrolling is the viewport's: the root's. */
     _viewport(): boolean {
-      return this === document.documentElement;
+      if (this === document.documentElement) return true;
+      // a frame's document of this realm's, which its frame's view draws
+      // and scrolls (CSSOM View 7: its root's scrolling is its viewport's)
+      const own = this.ownerDocument;
+      return (
+        own !== document && !!own?.defaultView && this === own.documentElement
+      );
+    }
+    /** The viewport this root's scrolling is: the page's, or its frame's. */
+    _ownViewport(fresh = false): ReturnType<typeof viewport> {
+      const own = this.ownerDocument;
+      return own === document
+        ? viewport(fresh)
+        : { ...viewport(fresh), ...frameViewport(own) };
     }
     /** Scroll this element, an axis left where it is where it is not a
      *  number: the viewport for the root. */
@@ -7814,6 +7827,15 @@ export function installDom(
         v !== undefined && Number.isFinite(v);
       // what a scroll-driven animation draws follows at the next frame
       nudgeFrames();
+      if (this._viewport() && this.ownerDocument !== document) {
+        const v = frameViewport(this.ownerDocument);
+        call(
+          'viewScrollTo',
+          this.ownerDocument._id,
+          `${ok(x) ? x : v.scrollX},${ok(y) ? y : v.scrollY},${relative ? 1 : 0}`,
+        );
+        return;
+      }
       if (this._viewport()) {
         const v = viewport();
         call(
@@ -11274,6 +11296,7 @@ export function installDom(
       'load',
       'error',
       'message',
+      'messageerror',
       'resize',
       'beforeunload',
       'pagehide',
@@ -11367,16 +11390,40 @@ export function installDom(
       // the origin a message is meant for is the window's it is posted to
       // (HTML 9.4.3), which another origin's frame is not this one's
       const allowed = originAllowed(options, str(global.__origin()));
-      // the ports alone: a canvas or a bitmap is no other realm's to make
-      const moving = transfersOf(
+      // the ports and the tracks: a canvas or a bitmap is no other realm's
+      // to make
+      const listed = transfersOf(
         transferListOf(
           options !== null && typeof options === 'object' ? options : transfer,
         ),
-      ).filter((item) => item instanceof MessagePort);
+      );
+      const moving = listed.filter((item) => item instanceof MessagePort);
       if (!allowed) return;
       const named = moving.map(() => `${WIRE_REALM}.${++wireSeq}`);
-      global.__message(message, location.origin, from, moving, named);
+      // a track goes over as what it is, and a port back to its source
+      const tracks = listed.filter(isTrack);
+      const outs = tracks.map((track) => mediaTransfer.transfer(track));
+      const trackWires = tracks.map(() => `${WIRE_REALM}.${++wireSeq}`);
+      try {
+        global.__message(
+          message,
+          location.origin,
+          from,
+          moving,
+          named,
+          tracks,
+          outs.map((out) => out.data),
+          trackWires,
+        );
+      } catch (error) {
+        for (const out of outs) out.abort();
+        throw error;
+      }
       const across = realmAcross(name);
+      outs.forEach((out, i) => {
+        out.commit();
+        movePort(out.port, wireEnd(across, trackWires[i]));
+      });
       moving.forEach((port, i) => {
         const end = wireEnd(across, named[i]);
         for (const [data, ports] of movePort(port, end)) {
@@ -25095,14 +25142,18 @@ export function installDom(
             ? 'OffscreenCanvas'
             : item instanceof ImageBitmap
               ? 'ImageBitmap'
-              : null;
+              : isTrack(item)
+                ? 'MediaStreamTrack'
+                : null;
       if (!name) return;
       if (
         item instanceof MessagePort
           ? item._detached
           : item instanceof OffscreenCanvas
             ? item._detached
-            : !item._data
+            : isTrack(item)
+              ? mediaTransfer.detached(item)
+              : !item._data
       ) {
         throw new DOMException(
           `${name} at index ${i} is already detached.`,
@@ -25151,22 +25202,36 @@ export function installDom(
     list: Any[],
   ): { data: Any; ports: Any[]; moved: Any[] } => {
     const moving = transfersOf(list);
-    const moved = moving.map((item) =>
-      item instanceof MessagePort
-        ? new MessagePort()
-        : item instanceof OffscreenCanvas
-          ? new OffscreenCanvas(0, 0)
-          : makeBitmap(item._width, item._height, item._data),
-    );
-    const data = structuredCopy(
-      message,
-      new Map(moving.map((item, i) => [item, moved[i]])),
-    );
+    // a track is made again here over a port back to where it was, which
+    // serves its source once nothing has thrown
+    const tracks = new Map<Any, Any>();
+    const moved = moving.map((item) => {
+      if (item instanceof MessagePort) return new MessagePort();
+      if (item instanceof OffscreenCanvas) return new OffscreenCanvas(0, 0);
+      if (isTrack(item)) {
+        const out = mediaTransfer.transfer(item);
+        tracks.set(item, out);
+        return mediaTransfer.adopt(out.data, out.port);
+      }
+      return makeBitmap(item._width, item._height, item._data);
+    });
+    let data: Any;
+    try {
+      data = structuredCopy(
+        message,
+        new Map(moving.map((item, i) => [item, moved[i]])),
+      );
+    } catch (error) {
+      for (const out of tracks.values()) out.abort();
+      throw error;
+    }
     moving.forEach((item, i) => {
       if (item instanceof MessagePort) {
         moved[i]._waiting.push(...movePort(item, moved[i]));
       } else if (item instanceof OffscreenCanvas) {
         moveOffscreen(item, moved[i]);
+      } else if (tracks.has(item)) {
+        tracks.get(item).commit();
       } else {
         detachBitmap(item);
       }
@@ -25226,6 +25291,12 @@ export function installDom(
     try {
       made = deserializeWith(str(wrapper.d), across);
     } catch {
+      // what could not be made again is the port's `messageerror`
+      if (to instanceof MessagePort && !to._closed) {
+        const ev = new MessageEvent('messageerror', {});
+        ev.isTrusted = true;
+        dispatch(to, ev);
+      }
       return true;
     }
     to._deliver(made.data, made.ports);
@@ -25285,6 +25356,29 @@ export function installDom(
   /** `datachannel.ts`'s internals, once the WebRTC block below has made
    *  them: what a message to a worker carries a data channel by. */
   let dataChannelsOf: Any = null;
+  /** `mediastream.ts`'s internals, once the block below has made them: what
+   *  a message carries a `MediaStreamTrack` it transfers by. */
+  let mediaTransfer: Any = null;
+  const isTrack = (item: Any): boolean => !!mediaTransfer?.isTrack(item);
+  /**
+   * The agent cluster a track handed over is of, by what this realm can
+   * tell of it: a window's is its site, scheme and the last two labels of
+   * its host, as `plainSite` has one; a dedicated worker's is its owner's,
+   * which every thread it is reached over is; a shared or a service
+   * worker's is its own, which nothing else is (HTML 8.1.2).
+   */
+  const agentCluster = (): string => {
+    if (sharedRealm || SW.inWorker()) return 'x';
+    if (workerLocation) return 'd';
+    try {
+      const at = new URL(str(location.href));
+      const host = at.hostname.toLowerCase();
+      const ip = host.startsWith('[') || /^\d+\.\d+\.\d+\.\d+$/.test(host);
+      return `${at.protocol}//${ip ? host : host.split('.').slice(-2).join('.')}`;
+    } catch {
+      return 'x';
+    }
+  };
 
   /**
    * The data channels a `postMessage` to a worker transfers (WebRTC 1.0,
@@ -25334,6 +25428,18 @@ export function installDom(
       if (item instanceof MessagePort) {
         wireOf.set(item, `${WIRE_REALM}.${++wireSeq}`);
       }
+    }
+    // a track crosses as what it is and a port back to its source, whose
+    // wire is listed apart (`q`): no message event lists it
+    const trackOut = new Map<Any, Any>();
+    const trackWires: string[] = [];
+    for (const item of moving) {
+      if (!isTrack(item) || !transfer) continue;
+      const out = mediaTransfer.transfer(item);
+      const wire = `${WIRE_REALM}.${++wireSeq}`;
+      trackOut.set(item, out);
+      wireOf.set(out.port, wire);
+      trackWires.push(wire);
     }
     /** The token each canvas the value holds crossed with. */
     const tokens = new Map<Any, string>();
@@ -25390,6 +25496,16 @@ export function installDom(
       }
       const wire = wireOf.get(v);
       if (wire !== undefined) return { i: index, t: 'Q', w: wire };
+      const track = trackOut.get(v);
+      if (track) {
+        return {
+          i: index,
+          t: 'T',
+          d: track.data,
+          w: wireOf.get(track.port),
+          c: agentCluster(),
+        };
+      }
       if (v instanceof OffscreenCanvas && moving.includes(v)) {
         // a token only where it shows somewhere, which a frame needs
         let token: string | null = null;
@@ -25481,7 +25597,14 @@ export function installDom(
       for (const key of Object.keys(v)) e.push([key, walk(v[key])]);
       return { i: index, t: 'O', e };
     };
-    const body = walk(value);
+    let body: Any;
+    try {
+      body = walk(value);
+    } catch (error) {
+      for (const out of trackOut.values()) out.abort();
+      throw error;
+    }
+    for (const out of trackOut.values()) out.commit();
     // nothing threw, so the canvases and the bitmaps are given up: a
     // canvas that shows somewhere is shown from over there, its frames
     // coming back across with its token
@@ -25511,7 +25634,12 @@ export function installDom(
         for (const [data, ports] of queued) end._deliver(data, ports);
       });
     }
-    return JSON.stringify({ p: [...wireOf.values()], v: body });
+    const exposed = [...wireOf.values()].filter((w) => !trackWires.includes(w));
+    return JSON.stringify(
+      trackWires.length
+        ? { p: exposed, q: trackWires, v: body }
+        : { p: exposed, v: body },
+    );
   };
   /** A message made again here, and the ports it transferred (`p`), each
    *  a port here at the end of its wire across `across`. */
@@ -25534,10 +25662,15 @@ export function installDom(
         port._other._other = port;
         byWire.set(str(wire), port);
       }
-      return {
-        data: remake(parsed.v, byWire, across),
-        ports: [...byWire.values()],
-      };
+      const ports = [...byWire.values()];
+      // a track's port back to its source, which is its and no event's
+      for (const wire of Array.isArray(parsed.q) ? parsed.q : []) {
+        const port = new MessagePort();
+        port._other = wireEnd(across, str(wire));
+        port._other._other = port;
+        byWire.set(str(wire), port);
+      }
+      return { data: remake(parsed.v, byWire, across), ports };
     }
     return { data: remake(parsed, byWire, across), ports: [] };
   };
@@ -25607,6 +25740,31 @@ export function installDom(
           // host's same number
           out = dataChannelsOf ? dataChannelsOf.adopt(v.h, v.a) : null;
           break;
+        case 'T': {
+          // a track handed over (Media Capture Extensions, the transfer-
+          // receiving steps), made here only in its agent cluster: a
+          // dedicated worker's is its owner's, another origin's window is
+          // of its site's, and a shared or a service worker's is its own.
+          // Elsewhere it is a `DataCloneError`, a `messageerror` to whoever
+          // listens, and its hold on its source is let go
+          const port = byWire.get(str(v.w)) ?? null;
+          const mine = agentCluster();
+          const ours =
+            !!across &&
+            !!port &&
+            !!mediaTransfer &&
+            mine !== 'x' &&
+            (across.key.startsWith('r') ? str(v.c) === mine : str(v.c) !== 'x');
+          if (!ours) {
+            port?.postMessage({ op: 'stop' });
+            throw new DOMException(
+              'A MediaStreamTrack cannot be received outside its agent cluster.',
+              'DataCloneError',
+            );
+          }
+          out = mediaTransfer.adopt(v.d, port);
+          break;
+        }
         case 'D':
           out = new Date(v.v);
           break;
@@ -25746,6 +25904,9 @@ export function installDom(
       this.port2._other = this.port1;
     }
   }
+  // what could not be made again here (HTML 9.4.5): a track from another
+  // agent cluster, say. Unlike `onmessage`, setting it starts nothing
+  handlerProperty(MessagePort.prototype, 'messageerror');
 
   /** A `PluginArray` or a `MimeTypeArray` with nothing in it, its methods
    *  on its prototype, so a page that enumerates it meets none of them. */
@@ -26100,6 +26261,9 @@ export function installDom(
       };
     }
     const resolved = new URL(href, location.href).href;
+    // a `data:` script is any document's, and runs at an origin of none
+    // (HTML 10.2.5.1, "fetch a classic worker script")
+    if (/^data:/i.test(resolved)) return { resolved, source: null };
     if (new URL(resolved).origin !== location.origin) {
       throw new DOMException(
         `Failed to construct '${made}': Script at '${resolved}' cannot be accessed from origin '${location.origin}'.`,
@@ -37697,6 +37861,7 @@ export function installDom(
     'unload',
     'beforeunload',
     'message',
+    'messageerror',
     'focus',
     'blur',
     'keydown',
@@ -37911,8 +38076,10 @@ export function installDom(
       Event,
       fire: trusted,
       secure,
+      MessageChannel,
     });
     canvasCapture = media.internals.captureCanvas;
+    mediaTransfer = media.internals;
     const audio = webaudio({
       call: call as Any,
       DOMException,
@@ -37972,8 +38139,15 @@ export function installDom(
     }
     for (const name of Object.getOwnPropertyNames(rtc)) define(name, rtc[name]);
     if (media.mediaDevices) {
-      Object.defineProperty(navigator, 'mediaDevices', {
-        get: () => media.mediaDevices,
+      // an attribute of `Navigator`'s, as Web IDL has one: on its prototype,
+      // and called on anything but this navigator a `TypeError`
+      const get = function (this: Any) {
+        if (this !== navigator) throw new TypeError('Illegal invocation');
+        return media.mediaDevices;
+      };
+      Object.defineProperty(get, 'name', { value: 'get mediaDevices' });
+      Object.defineProperty(Object.getPrototypeOf(navigator), 'mediaDevices', {
+        get,
         enumerable: true,
         configurable: true,
       });
@@ -38706,6 +38880,15 @@ export function installDom(
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();
     for (const key of Object.getOwnPropertyNames(G)) {
+      // a track and what its `applyConstraints` rejects with are a dedicated
+      // worker's too (Media Capture Extensions), since one can be handed it
+      if (
+        !shared &&
+        !service &&
+        (key === 'MediaStreamTrack' || key === 'OverconstrainedError')
+      ) {
+        continue;
+      }
       if (
         /^(HTML|SVG)/.test(key) ||
         WINDOW_ONLY.has(key) ||
@@ -39518,6 +39701,7 @@ export function installDom(
     origin: string,
     from: number,
     ports: Any[],
+    type = 'message',
   ): void => {
     const source =
       from < 0
@@ -39527,7 +39711,7 @@ export function installDom(
           : frameProxyOf(wrap(from));
     setTimer(
       () => {
-        const ev = new MessageEvent('message', { data, origin, source, ports });
+        const ev = new MessageEvent(type, { data, origin, source, ports });
         ev.isTrusted = true;
         dispatch(windowTarget, ev);
       },
@@ -39541,7 +39725,15 @@ export function installDom(
   // here, the ports in it each at the end of a wire back to that realm
   entry('__messageAcross', () => {
     const [text, origin, from] = input();
-    const made = deserializeWith(str(text), realmAcross(Number(from)));
+    let made: Any;
+    try {
+      made = deserializeWith(str(text), realmAcross(Number(from)));
+    } catch {
+      // HTML 9.3.3, "window post message steps": what could not be made
+      // again here is the window's `messageerror`, from where it came
+      tellMessage(null, str(origin), Number(from), [], 'messageerror');
+      return true;
+    }
     tellMessage(made.data, str(origin), Number(from), made.ports);
     return true;
   });
@@ -39571,6 +39763,9 @@ export function installDom(
       from: Any,
       moving?: Any,
       named?: Any,
+      tracks?: Any,
+      trackData?: Any,
+      trackWires?: Any,
     ) => {
       const across = realmAcross(Number(from));
       const seen = new Map<Any, Any>();
@@ -39582,6 +39777,21 @@ export function installDom(
           port._other._other = port;
           seen.set(foreign, port);
           ports.push(port);
+        });
+      }
+      // a track it transfers, made here over a port back to its source: a
+      // page's realms of one origin are one agent cluster
+      if (
+        mediaTransfer &&
+        Array.isArray(tracks) &&
+        Array.isArray(trackData) &&
+        Array.isArray(trackWires)
+      ) {
+        tracks.forEach((foreign: Any, i: number) => {
+          const port = new MessagePort();
+          port._other = wireEnd(across, str(trackWires[i]));
+          port._other._other = port;
+          seen.set(foreign, mediaTransfer.adopt(trackData[i], port));
         });
       }
       tellMessage(structuredCopy(message, seen), str(origin), from, ports);

@@ -9010,6 +9010,7 @@ export class DomHost {
         devices: () => this._seams.mediaDevices,
         origin: () => this._origin(),
         originless: () => this.originless,
+        allowed: (name) => this._featureAllowed(name),
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
         },
@@ -9690,10 +9691,11 @@ export class DomHost {
    */
   private _workerAllowed(url: string, given: boolean): boolean {
     const origin = this._origin();
+    // a `data:` script is any document's, and runs at an origin of none
+    if (/^data:/i.test(url)) return true;
     if (origin !== 'null') return originOf(url) === origin;
     // a blob it made is `blob:null`, whatever a page's own `String` wrote
     if (/^blob:/i.test(url)) return given && originOf(url) === 'null';
-    if (/^data:/i.test(url)) return true;
     return !this.originless && /^file:/i.test(url) && /^file:/i.test(this.url);
   }
 
