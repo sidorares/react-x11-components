@@ -9698,11 +9698,7 @@ function positionedIn(
                 false,
               ) + box.marginTop
             : at?.mirror !== undefined
-              ? at.from.y +
-                at.mirror -
-                at.y -
-                box.height -
-                box.marginBottom
+              ? at.from.y + at.mirror - at.y - box.height - box.marginBottom
               : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
