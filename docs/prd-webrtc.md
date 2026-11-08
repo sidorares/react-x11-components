@@ -413,6 +413,12 @@ where it is werift's to fix, as quico's three behaviours were
   microphone is the host's to supply, and the host's permission to ask.
   `canvas.captureStream` comes in tier C, from the page realm's canvas
   pixels.
+- **Constraints.** `getUserMedia` and `applyConstraints` fit a page's
+  constraints on the host with Media Capture's SelectSettings
+  (`src/html/scripts/constraints.ts`), over a camera's native `modes` and
+  what `'crop-and-scale'` makes of them. What a document's
+  `enumerateDevices` shows it is what it has captured, as Firefox and Safari
+  have it, not what it is allowed.
 - **Sending.** A track's frames are encoded by libav.js, VP8 or Opus, on a
   worker thread of the host's so a frame's encode never holds the page.
   They are packetized and sent by werift's RTP sender.
@@ -435,6 +441,14 @@ where it is werift's to fix, as quico's three behaviours were
 transform in a worker. Both cross the thread as a worker's WebTransport
 sessions do, over the thread's channel, tagged `{ kind: 'rtc' }`, to a
 relay in the page process that drives the page's own seam.
+
+A `MediaStreamTrack` is transferable too (Media Capture Extensions), and
+crosses differently. Its source stays with the realm that opened it, and the
+track made of it reaches the source over a port back, which the page's own
+`MessagePort` wires carry across a thread. That keeps the host out of it,
+but it also means a transferred track has no source number where it lands,
+so its frames reach nothing there until workstream 4 gives such a track a
+way to its source's frames.
 
 ## Threat model
 

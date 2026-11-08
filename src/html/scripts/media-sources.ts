@@ -95,7 +95,10 @@ export class PageSources {
    *  `getUserMedia` of them succeeded. */
   private readonly _exposed = { audio: false, video: false };
   /** What each source a `getUserMedia` opened is, as its constraints are
-   *  fitted to it: what `applyConstraints` sets it with. */
+   *  fitted to it: what `applyConstraints` sets it with. A source with
+   *  none is held to what it runs at (`fixed`); one that can be set
+   *  otherwise — a screen, say — has a view of its own, with no device
+   *  id. */
   private readonly _views = new Map<number, Constrainable>();
   /** What makes this document's group ids its own. */
   private readonly _salt = `${Date.now()}.${Math.random()}`;
@@ -246,7 +249,10 @@ export class PageSources {
   private _exposes(kind: 'audio' | 'video'): boolean {
     if (this._exposed[kind]) return true;
     for (const id of this._held.keys()) {
-      if (this._views.get(id)?.kind === kind) return true;
+      const view = this._views.get(id);
+      // a device's: a screen's view has no device id, and says nothing of
+      // the cameras
+      if (view?.kind === kind && view.deviceId !== undefined) return true;
     }
     return false;
   }
@@ -473,9 +479,10 @@ export class PageSources {
           ...settings
         } = selected.settings;
         if (device) await source.reconfigure(settings);
-        const ids = device
-          ? { deviceId: device.deviceId, groupId: device.groupId }
-          : {};
+        const ids =
+          device?.deviceId !== undefined
+            ? { deviceId: device.deviceId, groupId: device.groupId }
+            : {};
         this._tell('__mdSettled', [
           req,
           true,
