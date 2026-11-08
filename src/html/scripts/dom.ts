@@ -25536,6 +25536,12 @@ export function installDom(
       seen.set(value, out);
       return out;
     }
+    // a certificate, which is `[Serializable]` (WebRTC 1.0, 4.9)
+    if (certificatesOf?.is(value)) {
+      out = certificatesOf.from(certificatesOf.data(value));
+      seen.set(value, out);
+      return out;
+    }
     // a node, a window's object, an event: the platform's, and none of
     // them is serializable
     if (value instanceof EventTarget || value instanceof Event) {
@@ -25855,6 +25861,9 @@ export function installDom(
    *  a message carries a `MediaStreamTrack` it transfers by. */
   let mediaTransfer: Any = null;
   const isTrack = (item: Any): boolean => !!mediaTransfer?.isTrack(item);
+  /** `webrtc.ts`'s, once the block below has made it: what a message
+   *  carries an `RTCCertificate` by, which only a window's realm has. */
+  let certificatesOf: Any = null;
   /**
    * The agent cluster a track handed over is of, by what this realm can
    * tell of it: a window's is its site, scheme and the last two labels of
@@ -26026,6 +26035,9 @@ export function installDom(
             new Uint8Array(v._data.buffer, v._data.byteOffset, v._data.length),
           ),
         };
+      }
+      if (certificatesOf?.is(v)) {
+        return { i: index, t: 'X', d: certificatesOf.data(v) };
       }
       if (v instanceof EventTarget || v instanceof Event) {
         throw new DOMException(
@@ -26260,6 +26272,17 @@ export function installDom(
           out = mediaTransfer.adopt(v.d, port);
           break;
         }
+        case 'X':
+          // a certificate, which a window's realm alone can make again
+          // (`[Exposed=Window]`): in a worker a `messageerror`
+          if (!certificatesOf) {
+            throw new DOMException(
+              'An RTCCertificate cannot be received here.',
+              'DataCloneError',
+            );
+          }
+          out = certificatesOf.from(v.d);
+          break;
         case 'D':
           out = new Date(v.v);
           break;
@@ -26630,6 +26653,8 @@ export function installDom(
     'RTCStatsReport',
     'RTCSctpTransport',
     'RTCDataChannelEvent',
+    'RTCDTMFSender',
+    'RTCDTMFToneChangeEvent',
     'MediaStream',
     'MediaStreamTrack',
     'MediaStreamTrackEvent',
@@ -38764,6 +38789,9 @@ export function installDom(
       media: media.internals,
       channels,
       transports: rtcTransports,
+      certificates: (internals: Any) => {
+        certificatesOf = internals;
+      },
     });
     for (const name of Object.getOwnPropertyNames(media.interfaces)) {
       define(name, media.interfaces[name]);
@@ -39510,6 +39538,8 @@ export function installDom(
     // a worker's navigator has no container of the page's
     delete (navigator as Any).serviceWorker;
     GEOMETRY.worker();
+    // nor an `RTCCertificate`, which a message to it is a `messageerror` for
+    certificatesOf = null;
     for (const key of Object.getOwnPropertyNames(G)) {
       // a track and what its `applyConstraints` rejects with are a dedicated
       // worker's too (Media Capture Extensions), since one can be handed it

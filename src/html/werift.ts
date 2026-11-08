@@ -394,6 +394,40 @@ function restoreUnknown(sdp: string, lines: Map<string, string>): string {
   return parts.join('');
 }
 
+/** What a browser writes for a track it sends in no stream: werift writes
+ *  no `msid` at all, which a far side reads as the default stream (RFC
+ *  8829, 5.10). werift never writes it bare. */
+const NO_STREAM = 'a=msid:-';
+
+/** A description with `a=msid:-` in each m-section werift sends a track in
+ *  that names no stream, as a browser writes it. */
+function namingNoStream(sdp: string): string {
+  const parts = sdp.split(/(?=\r\nm=)/);
+  for (let i = 1; i < parts.length; i++) {
+    const mline = /^\r\nm=(audio|video) (\d+)/.exec(parts[i]);
+    if (!mline || mline[2] === '0' || /\r\na=msid:/.test(parts[i])) continue;
+    const direction =
+      /\r\na=(sendrecv|sendonly|recvonly|inactive)(?=\r\n|$)/.exec(
+        parts[i],
+      )?.[1] ?? 'sendrecv';
+    if (direction !== 'sendrecv' && direction !== 'sendonly') continue;
+    const mid = /\r\na=mid:[^\r\n]*/.exec(parts[i]);
+    parts[i] = mid
+      ? parts[i].slice(0, mid.index + mid[0].length) +
+        '\r\n' +
+        NO_STREAM +
+        parts[i].slice(mid.index + mid[0].length)
+      : parts[i] + '\r\n' + NO_STREAM;
+  }
+  return parts.join('');
+}
+
+/** A local description as werift wrote it: `namingNoStream` taken back,
+ *  since werift applies only the text it made. */
+function withoutNoStream(sdp: string): string {
+  return sdp.replace(/\r\na=msid:-(?=\r\n)/g, '');
+}
+
 /** What werift threw, as the error the page's realm makes its own. */
 function asRtcError(error: unknown): Error {
   const name = String((error as Error)?.name ?? '');
@@ -786,6 +820,7 @@ class WeriftConnection implements RTCConnectionLike {
       // werift's splits on CRLF alone: a description that mixes the two —
       // WPT writes its own so — ran its lines together
       let text = sdp.replace(/\r?\n/g, '\r\n');
+      if (side === 'local') text = withoutNoStream(text);
       if (type !== 'rollback') {
         // a kind werift does not read throws in its parser: it is handed a
         // rejected audio m-section in that one's place, and the answer
@@ -859,7 +894,7 @@ class WeriftConnection implements RTCConnectionLike {
         await this._pc.createOffer({ iceRestart: options.iceRestart })
       ).sdp;
       this._offered = true;
-      return offer;
+      return namingNoStream(offer);
     } catch (error) {
       throw asRtcError(error);
     }
@@ -868,7 +903,9 @@ class WeriftConnection implements RTCConnectionLike {
   async createAnswer(): Promise<string> {
     for (const w of this._wrapped.values()) w.flushStop();
     try {
-      return restoreUnknown((await this._pc.createAnswer()).sdp, this._unknown);
+      return namingNoStream(
+        restoreUnknown((await this._pc.createAnswer()).sdp, this._unknown),
+      );
     } catch (error) {
       throw asRtcError(error);
     }
@@ -903,6 +940,8 @@ class WeriftConnection implements RTCConnectionLike {
     } catch (error) {
       throw asRtcError(error);
     }
+    // a transport held at new for want of a candidate checks now
+    this._net.tell();
   }
 
   restartIce(): void {
@@ -923,9 +962,11 @@ class WeriftConnection implements RTCConnectionLike {
     const pc = this._pc;
     const as = (d: WDescription | null | undefined): string | null =>
       d ? restoreUnknown(d.sdp, this._unknown) : null;
+    const local = (d: WDescription | null | undefined): string | null =>
+      d ? namingNoStream(as(d)!) : null;
     return {
-      currentLocal: as(pc.currentLocalDescription),
-      pendingLocal: as(pc.pendingLocalDescription),
+      currentLocal: local(pc.currentLocalDescription),
+      pendingLocal: local(pc.pendingLocalDescription),
       currentRemote: as(pc.currentRemoteDescription),
       pendingRemote: as(pc.pendingRemoteDescription),
     };

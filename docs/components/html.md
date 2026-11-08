@@ -1444,7 +1444,13 @@ before it, and a lost peer an `sctp-failure`; handed to a dedicated
 worker in the task that made it (`postMessage(…, [channel])`), after
 which it is the worker's and a `DataCloneError` elsewhere — the SCTP
 transport with its state and
-`maxChannels`, a connection's transport stats, `RTCError`, and
+`maxChannels`, a connection's transport stats, `RTCError`, an audio
+sender's `RTCDTMFSender` — its tones told as they start, at the times
+WebRTC 1.0 gives them, once the connection is up and `telephone-event`
+negotiated, and handed to the seam a tone at a time — an `RTCCertificate`
+that clones to a frame with its origin, which another origin's connection
+refuses, and an `RTCIceCandidate` whose fields are RFC 8839's grammar, all
+null where any part is not, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
 gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
