@@ -7822,6 +7822,17 @@ capture. **Anything new that starts an animation, runs a frame's steps or
 hit-tests asks whether rendering is suppressed**, or the update's changes
 reach the page before the transition is ready.
 
+**A transition's promises are the page's to leave unhandled.** `ready` and
+`updateCallbackDone` are never marked handled, and `finished` follows a
+private copy of the update's outcome (`_outcome`), never `updateCallbackDone`
+itself, whose reaction would handle it: Chromium tells a page all three as
+`unhandledrejection`s, and WPT holds it to that. **Anything new inside the
+realm that waits on a transition's promise waits on `_outcome`**, or a page's
+rejection goes unreported. And the window's size is checked where the
+specification checks it, as the new state is captured and at each frame
+(`sizeMoved`): a `resizeTo()` tells `resize` at the next frame, not at once,
+and skipping there settled `ready` before the update did.
+
 **A transition is of a scope, and there is one run per scope**
 (`HtmlViewNode._vt` for the document's, `_scopedVts` by element for those
 an element started, CSS View Transitions 2). Each op the realm asks
