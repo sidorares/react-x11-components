@@ -2014,7 +2014,13 @@ leaves, which `handle.beforeUnload()` asks the rest of; and a frame's
 history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
-hears `pageshow` after its `load`. A navigation to another document that
+hears `pageshow` after its `load`, and a frame's after its frame's `load`
+in the page too, as every browser tells the three. `readystatechange` is
+told at the document at each change of `readyState`, to `onreadystatechange`
+as to any listener. A `navigate()` that takes a document to another keeps
+its promises as they are once that one is shown, never to settle. One still
+under way as a frame running a realm of its own is taken out of the page is
+aborted, its promises rejected. A navigation to another document that
 the page starts — a link, a form, `location`, `navigation`, `history` past
 its own entries, `reload()` — asks it first, after its `navigate`:
 `beforeunload` at its window and at its frames', and the navigation stops
@@ -2236,9 +2242,14 @@ serialized as CSS has it. `document.timeline.currentTime` is read once a
 task, as a browser updates it once a frame, so a page that waits until it
 moves waits for a frame. A frame runs the resize steps, the scroll steps
 and the media queries' changes of each document the realm runs, updates the
-scroll-driven animations and the finished state, then runs
+scroll-driven animations and the finished state, dispatches the CSS
+animations' and transitions' events each document owes, then runs
 `requestAnimationFrame`'s callbacks in a task after that one's microtasks
-and events — the page's, then each frame's in tree order.
+and events — the page's, then each frame's in tree order. The scroll steps
+tell each scroll container that scrolled since the last frame, in the order
+they scrolled, and what a `scroll` listener scrolls is told at the frame
+after, as browsers do; a transition's `transitionrun` comes at the first
+frame after the change that made it, before its paint has started it.
 
 **A scroll timeline is how far its source is scrolled** (Scroll Animations
 1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
@@ -4132,10 +4143,12 @@ with no script in it, its initial `about:blank`, one a script writes into.
 A page that lays the frame's box out again is the frame's `resize`, and a
 `change` at each of its media query lists whose answer moved; a frame with
 no realm of its own has animation frame callbacks of its own, which run
-after the page's in tree order, as each document's do in a browser. Not
-yet: such a frame's document scrolls nothing (`scrollX` is 0, `scrollTo`
-does nothing, and nothing tells its `scroll`), and a realm of its own runs
-its frames on its own clock, apart from the page's. A frame whose
+after the page's in tree order, as each document's do in a browser, and a
+frame with no realm of its own tells its `scroll` at the page's scroll
+steps, at its document, bubbling to its window, and its `scrollend` a frame
+on; its CSS animations' and transitions' events come at the page's frames.
+Not yet: a frame in a realm of its own runs its frames on its own clock,
+apart from the page's. A frame whose
 `scrolling` is `no`, `off` or `noscroll` shows no scroll bars, whatever its
 document's `overflow` (HTML 15.4.4).
 
@@ -6762,7 +6775,10 @@ inherited (CSS Writing Modes 4). A block container whose writing mode is
 vertical in a parent whose writing mode is horizontal is the root of an
 orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
-run up the page in `sideways-lr`. An inline element in a writing mode its
+run up the page in `sideways-lr`. An absolute box at its static position in
+`vertical-lr` starts at the left, where the flow it would have been in
+starts: laid out after the flow, which is laid out as `vertical-rl`'s and
+put back across, it is put back by its own size once it has one. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
@@ -7672,7 +7688,10 @@ parent's `scroll-snap-align` with the rest of its style, and is none.
 `scroll-snap-align`, are the snap container's axes, as its writing mode
 puts them, and an area's `start` is the end the container's flow starts at:
 the right in a right-to-left line, and in `vertical-rl`, where the block
-axis runs across (CSS Scroll Snap 1, 6.2). A multicol scroll container's
+axis runs across (CSS Scroll Snap 1, 6.2). The viewport's are the
+document's principal writing mode's, the body's `writing-mode` and
+`direction`, which a browser hands the viewport (CSS Writing Modes 4, 8),
+with the root's `scroll-snap-type`. A multicol scroll container's
 columns are snap areas where its `::column` has a `scroll-snap-align` (CSS
 Overflow 5, 5.1): each column box its layout set, in any writing mode; the
 only properties `::column` takes here are scroll snapping's, and a snap to a

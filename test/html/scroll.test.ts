@@ -426,6 +426,41 @@ test('a snap on both axes rests at the nearest pair of places that shows both ar
   );
 });
 
+test('an absolute box at its static position in a vertical-lr scroll container starts at its left', async () => {
+  // a vertical-lr flow is laid out as vertical-rl and put back across;
+  // what is out of the flow goes back by its own size once it is laid out.
+  // And the viewport's axes are the document's principal writing mode's,
+  // the body's (CSS Writing Modes 4, 8; WPT snap-inline-block,
+  // scroll-snap-type-on-root-element)
+  const { el: node } = await renderScrolled(
+    '<style>#s div { position: absolute; margin: 0 }' +
+      '#s { position: relative; width: 400px; height: 350px; overflow: scroll; writing-mode: vertical-lr }' +
+      '#space { width: 1000px; height: 1000px }</style>' +
+      '<div id="s"><div id="space"></div></div>',
+    600,
+    800,
+  );
+  const s = el(node, 's');
+  assert.equal(
+    node.scrollStateOf(s)?.width,
+    1000,
+    'the box reaches 1000px across',
+  );
+  assert.equal(node.elementRect(el(node, 'space'))?.x, node.elementRect(s)?.x);
+});
+
+test("the viewport snaps on the axes of the body's writing mode, the document's principal one", async () => {
+  const { el: root } = await renderScrolled(
+    '<!doctype html><style>html { scroll-snap-type: inline mandatory } body { margin: 0; height: 3000px; width: 2000px; writing-mode: vertical-lr }' +
+      '#t { position: absolute; left: 100px; top: 1000px; width: 1000px; height: 100px; scroll-snap-align: none start }</style>' +
+      '<div id="t"></div>',
+    300,
+    400,
+  );
+  // the inline axis is down the page, and the block axis across is not snapped
+  assert.deepEqual(root.snapViewport(200, 900), { x: 200, y: 1000 });
+});
+
 test("a multicol scroll container's columns are snap areas where its ::column has a scroll-snap-align, left to right and right to left", async () => {
   // CSS Overflow 5, 5.1 (WPT snap-to-column-scroll-origin)
   const page = (dir: string) =>

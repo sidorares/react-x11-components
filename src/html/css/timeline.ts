@@ -1248,8 +1248,10 @@ export class AnimationTimeline {
     let inherits = false;
     let willChange = 0;
     for (const [field, run] of running) {
-      // waiting for its paint it has not begun, and owes nothing yet
+      // waiting for its paint it has not begun, and owes its
+      // `transitionrun` alone (`_seenPending`)
       if (!run.pending) this._seenAt(el, pseudo, run, now);
+      else this._seenPending(el, pseudo, run);
       if (now >= run.start + run.duration) {
         running.delete(field);
         completed.set(field, run.to);
@@ -1399,6 +1401,30 @@ export class AnimationTimeline {
         owe('transitionend', begin, now);
       } else owe('transitionend', begin, now);
     }
+  }
+
+  /**
+   * A transition seen while it waits for the paint that starts it
+   * (`startsAtPaint`): `transitionrun`, as it is first seen, which CSS
+   * Transitions 2 owes as one goes from idle to pending (5.1, 6.1), and
+   * nothing more until it begins. It is taken for one in its before phase
+   * from then on, so `_seenAt` owes its `transitionstart` once it begins,
+   * and `_cancelled` a `transitioncancel` where it never does.
+   */
+  private _seenPending(el: object, pseudo: string, run: Transit): void {
+    if (this._phases.has(run)) return;
+    this._phases.set(run, 'before');
+    const delay = run.start - run.created;
+    this._cssEvents.push({
+      el,
+      pseudo,
+      type: 'transitionrun',
+      name: run.property,
+      elapsed: Math.max(Math.min(-delay, run.duration), 0),
+      key: transitKey(run),
+      at: run.created,
+    });
+    this.onCssEvent?.();
   }
 
   /** A transition cancelled before its end: `transitioncancel`, with the
@@ -1798,6 +1824,12 @@ export class AnimationTimeline {
         for (const [field, run] of state.running) {
           if (TRANSIT_KEYS.get(run) !== key) continue;
           const created = this.now - currentTime;
+          // the `transitionrun` it owes still, from when it was seen
+          // pending (`_seenPending`), is due where the seek made it, so
+          // it comes before the `transitionstart` the seek owes
+          for (const e of this._cssEvents) {
+            if (e.key === key && e.type === 'transitionrun') e.at = created;
+          }
           const moved: Transit = {
             ...run,
             created,

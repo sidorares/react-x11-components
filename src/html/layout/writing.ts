@@ -494,6 +494,14 @@ export function reflectFrame(
           move(child, 0, top + bottom - 2 * child.y - child.height);
         }
       }
+      // an out-of-flow box is laid out after, from where it would have
+      // been in this flow, which is put back across by its own size then
+      for (const child of box.children) {
+        const at = child.outOfFlow ? child.staticPosition : null;
+        if (at && at.from === box && !at.inside) {
+          at.mirror = top + bottom - 2 * box.y;
+        }
+      }
     }
     for (const child of box.children) {
       if (

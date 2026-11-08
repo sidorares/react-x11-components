@@ -20,7 +20,6 @@ import type {
   HtmlHandle,
   ScriptRequest,
 } from '../index.js';
-import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
 import type { FramePost } from './host.js';
 import type {
@@ -81,8 +80,8 @@ interface Early {
   blocked: Element | null;
   parsed: boolean;
   loaded: boolean;
-  /** The CSS events the document owed before the engine was here. */
-  css: CssEventInfo[];
+  /** Whether the document owed CSS events before the engine was here. */
+  css: boolean;
   /** What the document's images came to before the engine was here, which
    *  an `onload` in their markup is still to hear. */
   images: [Element, 'load' | 'error'][];
@@ -126,8 +125,9 @@ export interface ScriptProps {
   painted?: () => void;
   /** `<Html>`'s `onElementScroll`: a scroll container's `scroll`. */
   onElementScroll?: (element: Element) => void;
-  /** The document's CSS transition events, which the page hears. */
-  cssEvents?: (events: CssEventInfo[]) => void;
+  /** The document owes CSS events, which the page takes at its next
+   *  rendering update. `<Html>`'s `onCssEventsOwed`. */
+  cssEventsOwed?: () => void;
   /** What an `<img>` came to, which the page hears at the element.
    *  `<Html>`'s `onImage`. */
   imageSettled?: (element: Element, outcome: 'load' | 'error') => void;
@@ -235,7 +235,7 @@ export function useScripts(
     blocked: null,
     parsed: false,
     loaded: false,
-    css: [],
+    css: false,
     images: [],
   });
 
@@ -489,7 +489,7 @@ export function useScripts(
         blocked: null,
         parsed: false,
         loaded: false,
-        css: [],
+        css: false,
         images: [],
       };
     }
@@ -534,9 +534,9 @@ export function useScripts(
     (element: Element) => runner.current?.elementScrolled(element),
     [],
   );
-  const cssEvents = useCallback((events: CssEventInfo[]) => {
-    if (runner.current) runner.current.cssEvents(events);
-    else if (early.current.document) early.current.css.push(...events);
+  const cssEventsOwed = useCallback(() => {
+    if (runner.current) runner.current.cssEventsOwed(null);
+    else if (early.current.document) early.current.css = true;
   }, []);
   const imageSettled = useCallback(
     (element: Element, outcome: 'load' | 'error') => {
@@ -572,13 +572,13 @@ export function useScripts(
           blocked: null,
           parsed: false,
           loaded: false,
-          css: [],
+          css: false,
           images: [],
         };
         if (!loaded.SCRIPTS_CONTAINED || !kept.document) return;
         start(loaded, kept.document);
         for (const request of kept.scripts) runner.current?.add(request);
-        if (kept.css.length) runner.current?.cssEvents(kept.css);
+        if (kept.css) runner.current?.cssEventsOwed(null);
         for (const [element, outcome] of kept.images) {
           imageSettled(element, outcome);
         }
@@ -637,7 +637,7 @@ export function useScripts(
     scrolled,
     painted,
     onElementScroll,
-    cssEvents,
+    cssEventsOwed,
     imageSettled,
     mediaEvent,
     canvasImage,

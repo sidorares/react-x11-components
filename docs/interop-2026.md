@@ -146,7 +146,7 @@ PR's run, which the last column names.
 | scroll-snap                      | 39    | 7.6%  | 59.4% | scroll snapping (#876), after the wheel, a key and `focus()` (#890), the root's snap type (#905), the innermost area (#919)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | shape                            | 24    | 41.6% | 95.8% | `circle()`, `ellipse()`, `path()`, `shape()` and `url()` clip paths (#860), `CSSAnimation`s and `CSSTransition`s (#906, #928)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | view-transitions                 | 389   | 3.4%  | 60.7% | `startViewTransition()`, drawn as no transition, and its properties and selectors (#884), the pseudo-element tree (#909), `:active-view-transition` (#911), `CSSViewTransitionRule` (#914), animation events (#929), offscreen and massive-element capture from the near edge (`massive-element-*-offscreen`, `far-away-capture`)                                                                                                                                                                                                                                                                                                                                                   |
-| webcompat                        | 9     | 22.2% | 88.8% | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| webcompat                        | 9     | 22.2% | 100%  | the helpers running (#850), `user-select` (#861), the page's selection (#870), `Selection.modify()` (#880), and since the eleventh run a field's selection in its widget ([#972]) on react-x11 2.55.0, and a frame's scroll and CSS events in the rendering update's order ([#1424]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                                                 |
 | webrtc                           | 91    | 0.2%  | 57.0% | `RTCPeerConnection` over werift, its transceivers, transports and data channels, `MediaStream` and fake devices ([#1030])                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | webtransport                     | 58    | 0.0%  | 100%  | WebTransport over quico and the page's streams to the standard ([#1019]), its workers' sessions carried over the page's seam ([#1020]), its sessions held to the document's `connect-src` ([#1021]), quico 0.8.0, which retired the adapter's workarounds ([#1046]), and a back-forward cache ([#1049]), whose run of the area this is                                                                                                                                                                                                                                                                                                                                              |
 | zoom                             | 33    | 21.2% | 93.9% | CSS `zoom` (#865), inherited SVG strokes (#924)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -466,17 +466,20 @@ the group; and the last of a vertical root's shared-element geometry
 (`*-root-vertical-writing-mode`, `massive-element-*-of-viewport-*` under
 `vertical-lr`).
 
-**webcompat (88.8%).** A page's `select()` and `setSelectionRange()` reach
+**webcompat (100%).** A page's `select()` and `setSelectionRange()` reach
 the field's widget, the getters read the user's caret, and text the user
 selects is told as `select` ([#972]), on react-x11 2.55.0, which carries
-[react-x11#1006]: `user-select-none-on-input.html` passes whole in a run of
-the area on it, made on a Mac, which is the number here. A frame's window answers for its own viewport
-and hears its `resize` and its media queries' `change` in HTML's order
-([#977]). What is left is the order of a frame's `scroll` events against
-its animation frames: a frame in the page's realm scrolls nothing —
-`scrollX` is 0 and `scrollTo()` does nothing — and a scroll container's
-`scroll` and the CSS animation and transition events are still told by
-timers of their own.
+[react-x11#1006]. A frame's window answers for its own viewport and hears
+its `resize` and its media queries' `change` in HTML's order ([#977]). The
+last test, `new-scroll-event-dispatched-at-next-updating-rendering-time`,
+passes since [#1424]: a scroll container's `scroll` is told at the
+rendering update's scroll steps, between the resize steps and the media
+queries, and what a `scroll` listener scrolls at the update after; a
+document's CSS animation and transition events are dispatched at "update
+animations and send events", before the animation frame callbacks, a
+transition's `transitionrun` as it goes pending; and a frame with no realm
+of its own has both, where its events reached no one. All four browsers
+pass the area's nine tests.
 
 **webrtc (57.0%).** A page's `RTCPeerConnection` goes through a seam the
 host answers, as its `fetch` and `WebTransport` do: `HtmlNetwork.webRTC`
@@ -562,6 +565,7 @@ Across areas, three things recurred, and each now has its first slice:
 [#935]: https://github.com/sidorares/react-x11-components/pull/935
 [#971]: https://github.com/sidorares/react-x11-components/pull/971
 [#972]: https://github.com/sidorares/react-x11-components/pull/972
+[#1424]: https://github.com/sidorares/react-x11-components/pull/1424
 [#973]: https://github.com/sidorares/react-x11-components/pull/973
 [#975]: https://github.com/sidorares/react-x11-components/pull/975
 [#976]: https://github.com/sidorares/react-x11-components/pull/976
