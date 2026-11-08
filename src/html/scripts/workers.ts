@@ -12,6 +12,7 @@
 // on a shared word (`Atomics.wait`) while this side fetches, then reads the
 // answer off the port (`receiveMessageOnPort`). The thread blocks; the page
 // does not.
+import { readDataUrl } from '../network.js';
 import { referrerPolicyOfHeaders } from '../referrer.js';
 import type { FetchMode } from '../fetch-metadata.js';
 import { nodeModule, threadEntry } from './platform.js';
@@ -44,6 +45,7 @@ import type {
 import type { ChannelRelay } from './peers.js';
 import type { HtmlCacheAnswer, HtmlCacheAsk } from '../cache-storage.js';
 
+declare const TextDecoder: new () => { decode(bytes: Uint8Array): string };
 declare const URL: UrlClass;
 declare const AbortController: AbortControllerClass;
 type AbortController = InstanceType<AbortControllerClass>;
@@ -541,6 +543,13 @@ export class PageWorkers implements PageWorkersLike {
     mode: FetchMode = 'no-cors',
     own = false,
   ): Promise<string | null | { source: string | null; policy: string }> {
+    // a `data:` script is read here, whatever the mode: Fetch hands a data:
+    // URL to its scheme fetch before it asks whose it is (4.1, "main fetch")
+    if (/^data:/i.test(url)) {
+      const read = readDataUrl(url);
+      const source = read ? new TextDecoder().decode(read.bytes) : null;
+      return own ? { source, policy: '' } : source;
+    }
     try {
       const response = await this._seams.fetch(
         { url, method: 'GET', headers: [], body: null, mode, destination },

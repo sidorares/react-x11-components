@@ -26,7 +26,9 @@
 //   test's fake devices answer.
 // - **Media devices are fake**, as wptrunner runs a browser with fake
 //   devices: a camera drawing a test pattern, a microphone playing a tone
-//   and a screen, all allowed (`fakeMediaDevices`), a fresh set a test.
+//   and a screen (`fakeMediaDevices`), a fresh set a test. Their permission
+//   is a `prompt` answered yes, as wptrunner's fake UI answers it, until
+//   `set_permission` says otherwise.
 // - **A test's own navigations** — `location`, `navigation.navigate()`,
 //   `history` past its document's entries, `reload()` — load into the place
 //   the test was shown, each document the next of one session history a
@@ -1233,7 +1235,9 @@ async function render(
     errors: [],
     loaded: false,
     cookies,
-    media: fakeMediaDevices(),
+    // a prompt the automation answers yes, as wptrunner's fake UI does,
+    // until `set_permission` says otherwise
+    media: fakeMediaDevices({ permission: 'prompt' }),
     permissions: {},
     watchers: new Set(),
     notifications: memoryNotifications(),
@@ -1441,7 +1445,9 @@ async function runTestharness(test: string, source: string): Promise<Outcome> {
     errors: [],
     loaded: false,
     cookies,
-    media: fakeMediaDevices(),
+    // a prompt the automation answers yes, as wptrunner's fake UI does,
+    // until `set_permission` says otherwise
+    media: fakeMediaDevices({ permission: 'prompt' }),
     permissions: {},
     watchers: new Set(),
     notifications: memoryNotifications(),
