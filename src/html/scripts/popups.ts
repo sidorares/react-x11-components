@@ -94,6 +94,18 @@ export interface WindowOps {
   post(name: number, text: string, targetOrigin: string): void;
   /** A port's message to another realm. */
   wire(name: number, text: string): void;
+  /**
+   * A frame of this document, by its id here, sent to an address by this
+   * document where the frame's own runs in a realm of its own: told to that
+   * realm as a navigation from this document's origin. 'done' where the
+   * realm kept it — a fragment, or one its page canceled — 'load' where the
+   * address is the host's to load, and undefined where no realm has it.
+   */
+  navigateFrame(
+    id: number,
+    url: string,
+    post: boolean,
+  ): 'done' | 'load' | undefined;
   /** A window's opener's number. */
   openerOf(id: number): number;
   /** How many frames a window has. */
@@ -904,6 +916,17 @@ export function windowOps(
     wire(name, text) {
       const to = realmAt(name);
       to?.runner.engine.call('__wireAcross', [text, to.from]);
+    },
+    navigateFrame(id, url, post) {
+      const there = runner.frameRealm(id);
+      if (!there) return undefined;
+      // who asks is the host's to say, not this realm's
+      const said = there.engine.call('__navigatedFrom', [
+        url,
+        sameOrigin(runner, there),
+        post,
+      ]);
+      return said === 'done' ? 'done' : 'load';
     },
     openerOf: (id) => slotById(id)?.opener?.id ?? 0,
     lengthOf: (id) => slotById(id)?.runner?.host.frames().length ?? 0,

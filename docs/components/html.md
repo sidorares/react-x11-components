@@ -1777,9 +1777,25 @@ document has no realm of its own hears this yet. A `file:` page's origin
 reads as opaque here too,
 and keeps its history, as browsers keep it. A fragment a frame with a
 realm of its own goes to loads nothing; the document is at it already.
-Not yet: a frame of another origin, which runs in a realm of its own, hears
-nothing of the page's navigations of it. With no `session`, the host's own
-entries before and after the page's are not in `navigation.entries()`.
+A frame's history spans the documents it shows: a reload loads its
+document again, whatever fragment it is at, and a step to an entry of
+another of its documents loads that one, which comes to it at the entry,
+with its state, as a `traverse`; what the document before left under way
+goes with it, so the next navigation aborts nothing of it, and a reload or
+a step that loads nothing — a 204, a download — moves no entry.
+A page's navigation of a frame whose document runs in a realm of its own
+— a frame of another origin's, or one with a script — is told to that
+realm a task later, as one of its own window's from the page's origin: a
+link, a form, `location` or `window.open()` that goes to a fragment of the
+frame's document is the frame's `navigate`, a push the page did not
+initiate, and one that goes to another document is told to the frame only
+where the page is of its origin (HTML 7.4.2.2, "navigate"); a POST is
+loaded as it was. Not yet: `document.domain`, which would make two origins'
+documents reach each other's windows, so a page and a frame that both set
+it are still two origins here. With no `session`, the host's own entries
+before and after the page's are not in `navigation.entries()`, and a
+frame's entries are not the page's: `history.length` counts the page's,
+and its `history.back()` steps the page's alone.
 
 **A tab's documents are one history where the host hands them one
 session** (HTML 7.4.1). A host makes an `HtmlSessionHistory` for each place
@@ -3441,6 +3457,10 @@ the response's `disposition`, `dispositionOf` reads it, and `size` and `whole`
 are there to save it with; `downloadSource(response, '')` makes the source. What
 to do about it is the host's: the example browser saves what says `attachment`
 and what is of a type it cannot show, and the tab stays on what it was showing.
+A frame's navigation answered with `attachment` is a download in the same way:
+the frame goes on showing what it showed, hears no `load`, and the URL is handed
+to `onDownload` with the name the response gave, unless the frame's sandbox
+saves no file. A traversal to one, or to a 204 or a 205, moves no entry.
 
 A source's `hold()` is for a host that will not read it yet, as one asking its
 user where to save it will not: the clock on a stalled response runs from the

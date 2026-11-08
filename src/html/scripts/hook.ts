@@ -524,7 +524,8 @@ export function useScripts(
       to: string,
       post: FramePost | null,
       referrerPolicy?: string,
-    ) => runner.current?.host.navigateFrame(frame, to, post, referrerPolicy),
+    ) =>
+      runner.current?.host.navigateFrameFrom(frame, to, post, referrerPolicy),
     [],
   );
   const scrolled = useCallback(() => runner.current?.scrolled(), []);
