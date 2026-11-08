@@ -7897,6 +7897,15 @@ export function installDom(
         port: number,
       ) => {
         if (how === 'center') return top - (port - height) / 2;
+        // the focus's: nothing where it shows whole, its nearest edge
+        // where it shows in part, and centred where it does not show at
+        // all, as Chromium brings a focused element into view
+        if (how === 'center-if-needed') {
+          if (top + height <= 0 || top >= port) {
+            return top - (port - height) / 2;
+          }
+          how = 'nearest';
+        }
         if (how === 'end') return top - (port - height);
         if (how === 'nearest') {
           if (top < 0) return top;
@@ -8277,10 +8286,11 @@ export function installDom(
       }
       // the focusing steps bring it into view, through the scroll
       // containers around it, where something else had it before (HTML
-      // 6.6.3, unless `preventScroll`): as little as shows it, and where a
-      // container snaps, at a snap position
+      // 6.6.3, unless `preventScroll`): not at all where it shows, to its
+      // nearest edge where it shows in part, centred where it is out of
+      // sight, and where a container snaps, at a snap position
       if (!options?.preventScroll && doc.activeElement === this) {
-        this._intoView('nearest', 'nearest', true);
+        this._intoView('center-if-needed', 'center-if-needed', true);
       }
     }
     blur(): void {
@@ -36385,6 +36395,10 @@ export function installDom(
     }
     if (!textInput(field, typed.inputType, typed.data)) return false;
     fieldTyping = typed;
+    // what is typed is brought into view, through every scroll container
+    // around the field, as little as shows it inside their scroll-padding,
+    // as a browser reveals the selection it edits
+    field._intoView('nearest', 'nearest', true);
     return true;
   };
   const editForKey = (target: Any, e: Any): boolean => {

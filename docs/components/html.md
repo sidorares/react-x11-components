@@ -7441,7 +7441,13 @@ URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
 asked, in a container that snaps and in one that does not; `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
-what each was snapped to. Whether or not a container snaps, what such
+what each was snapped to; one they show in part is brought to its nearest
+edge, and one out of sight is centred, as Chromium brings a focused
+element into view. A key typed in a field brings the field into view the
+same way as little as shows it, inside each container's `scroll-padding`.
+A container scrolls as far as its `scrollHeight` less its `clientHeight`,
+each on the pixel grid, so content that ends a fraction of a pixel down
+leaves `scrollTop` a whole pixel at the end. Whether or not a container snaps, what such
 a scroll lines up is the element's border box outset by its
 `scroll-margin`, in the scrollport inset by the container's
 `scroll-padding`, the viewport's by the root's (CSS Scroll Snap 1, 6.1
