@@ -149,6 +149,13 @@ export interface StaticPosition {
   right: number;
   y: number;
   /**
+   * Where `vertical-lr` put its parent's flow back across (`reflectFrame`):
+   * the parent's content top and bottom added, less twice its corner, so
+   * that the box, laid out after, goes where its static position is
+   * mirrored, by its own block size, as the in-flow boxes beside it were.
+   */
+  mirror?: number;
+  /**
    * For a flex box's or a grid's child, the box it is where it would be as
    * the one item in — `from`'s content box or its padding box, whose size
    * is read once its layout is done — and how far along the free room in

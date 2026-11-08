@@ -14652,6 +14652,31 @@ export class HtmlViewNode extends Node {
     return false;
   };
 
+  /**
+   * The viewport's style as a snap container reads it: the root's
+   * `scroll-snap-type` and `scroll-padding`, and the document's principal
+   * writing mode — the body's `writing-mode` and `direction`, which a
+   * browser hands the viewport (CSS Writing Modes 4, 8) — for which axis
+   * is its block axis and which end each starts at.
+   */
+  private _viewportStyle(): ComputedStyle | null {
+    const root = this._rootBox();
+    const style = root?.style;
+    if (!root || !style) return null;
+    const body = root.children.find((c) => c.el?.name === 'body')?.style;
+    if (
+      !body ||
+      (body.writingMode === style.writingMode &&
+        body.direction === style.direction)
+    ) {
+      return style;
+    }
+    return Object.assign(Object.create(style) as ComputedStyle, {
+      writingMode: body.writingMode,
+      direction: body.direction,
+    });
+  }
+
   /** The root element's box, under the tree's anonymous root, where the
    *  root's style is the viewport's `scroll-snap-type` and
    *  `scroll-padding`. */
@@ -14672,7 +14697,7 @@ export class HtmlViewNode extends Node {
   private _viewportSnap(only?: Box, initial = false): SnapContainer | null {
     const tree = this._tree;
     const root = tree?.root;
-    const style = this._rootBox()?.style;
+    const style = this._viewportStyle();
     const port = this._viewport();
     if (!tree || !root || !style || !port) return null;
     if (!only && !style.scrollSnapType) return null;
@@ -15198,7 +15223,7 @@ export class HtmlViewNode extends Node {
     const keys = this._snapped.get(of);
     const style =
       of === this._source.document
-        ? this._rootBox()?.style
+        ? this._viewportStyle()
         : this._scrollerOf(of as Element)?.style;
     const vertical = !!style && style.writingMode !== 'horizontal-tb';
     const block = (vertical ? keys?.x : keys?.y)?.el ?? null;
