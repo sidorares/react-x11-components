@@ -68,7 +68,6 @@ import type { HtmlNavigationSource, HtmlPopup, HtmlPopups } from '../popups.js';
 import type { HtmlPermissions } from '../permissions.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
 import type { HtmlStorage } from '../storage.js';
-import type { CssEventInfo } from '../node.js';
 import type { MediaEventHandler } from '../media.js';
 import { throughWorker, useScripts } from './hook.js';
 import type { DocumentHop } from './coop.js';
@@ -458,8 +457,8 @@ export interface InternalHtmlProps extends HtmlProps {
   _embedderScheme?: 'light' | 'dark';
   /** The `<iframe>` a frame's document is drawn in (`Cascade.frameElement`). */
   _frameElement?: Element;
-  /** The CSS transition events the document owes (`HtmlViewProps`). */
-  _onCssEvents?: (events: CssEventInfo[]) => void;
+  /** The document owes CSS events (`HtmlViewProps.onCssEventsOwed`). */
+  _onCssEventsOwed?: () => void;
   /** What an `<img>` came to (`HtmlViewProps`). */
   _onImage?: (element: Element, outcome: 'load' | 'error') => void;
   /** What a player with no picture said, for the page that played it
@@ -1016,7 +1015,7 @@ export function useScriptedHtml(
       frames && scripts.scripting ? renderEmbedded : props.renderEmbedded,
     _onViewportScroll: scripts.scrolled,
     _onPaint: scripts.painted,
-    _onCssEvents: scripts.cssEvents,
+    _onCssEventsOwed: scripts.cssEventsOwed,
     ...(scripts.imageSettled && { _onImage: onImage }),
     _onMediaEvent: scripts.mediaEvent,
     _unloadCheck: unloadCheck,

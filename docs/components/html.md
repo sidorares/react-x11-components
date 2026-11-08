@@ -2236,9 +2236,14 @@ serialized as CSS has it. `document.timeline.currentTime` is read once a
 task, as a browser updates it once a frame, so a page that waits until it
 moves waits for a frame. A frame runs the resize steps, the scroll steps
 and the media queries' changes of each document the realm runs, updates the
-scroll-driven animations and the finished state, then runs
+scroll-driven animations and the finished state, dispatches the CSS
+animations' and transitions' events each document owes, then runs
 `requestAnimationFrame`'s callbacks in a task after that one's microtasks
-and events — the page's, then each frame's in tree order.
+and events — the page's, then each frame's in tree order. The scroll steps
+tell each scroll container that scrolled since the last frame, in the order
+they scrolled, and what a `scroll` listener scrolls is told at the frame
+after, as browsers do; a transition's `transitionrun` comes at the first
+frame after the change that made it, before its paint has started it.
 
 **A scroll timeline is how far its source is scrolled** (Scroll Animations
 1): `ScrollTimeline` along its axis, and `ViewTimeline` as its subject
@@ -4132,10 +4137,12 @@ with no script in it, its initial `about:blank`, one a script writes into.
 A page that lays the frame's box out again is the frame's `resize`, and a
 `change` at each of its media query lists whose answer moved; a frame with
 no realm of its own has animation frame callbacks of its own, which run
-after the page's in tree order, as each document's do in a browser. Not
-yet: such a frame's document scrolls nothing (`scrollX` is 0, `scrollTo`
-does nothing, and nothing tells its `scroll`), and a realm of its own runs
-its frames on its own clock, apart from the page's. A frame whose
+after the page's in tree order, as each document's do in a browser, and a
+frame with no realm of its own tells its `scroll` at the page's scroll
+steps, at its document, bubbling to its window, and its `scrollend` a frame
+on; its CSS animations' and transitions' events come at the page's frames.
+Not yet: a frame in a realm of its own runs its frames on its own clock,
+apart from the page's. A frame whose
 `scrolling` is `no`, `off` or `noscroll` shows no scroll bars, whatever its
 document's `overflow` (HTML 15.4.4).
 

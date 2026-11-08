@@ -333,6 +333,8 @@ export function installDom(
     'observed',
     'takeRecords',
     'rendering',
+    'scrolls',
+    'cssEvents',
     'intersections',
     'fontFaces',
     'fontMatch',
@@ -1559,6 +1561,9 @@ export function installDom(
    *  runs through its document to the window, but for a `load`: the rest is
    *  the host's, which sees the slots and the hosts in one answer
    *  (`event-path.ts`). */
+  /** Where a frame document's window hears its events, once it has one
+   *  (`frameTargets`, made further down). */
+  let frameTargetOf = (_doc: Any): Any => null;
   const pathOf = (target: Any, event: Any): [PathStep[], boolean] => {
     const related = event._related ?? null;
     if (!(target instanceof Node)) {
@@ -1591,11 +1596,22 @@ export function installDom(
         flags: n[i + 3],
       });
     }
+    // a document's parent is its window, for any event but `load` (DOM
+    // 2.7, "get the parent"): the page's, and a frame's whose document this
+    // realm runs, which its window hears as itself (`frameTargets`)
     const last = path[path.length - 1];
-    if (last.at === document && event._type !== 'load') {
+    const owner =
+      event._type === 'load'
+        ? null
+        : last.at === document
+          ? windowTarget
+          : last.at instanceof Document
+            ? frameTargetOf(last.at)
+            : null;
+    if (owner) {
       path.push({
-        at: windowTarget,
-        seen: G,
+        at: owner,
+        seen: listenedAs(owner),
         adjusted: null,
         target: adjusted,
         related: rel,
@@ -3743,6 +3759,16 @@ export function installDom(
   /** Whether the host said a viewport moved since the last frame, which
    *  the next one comes for (`__rendering`). */
   let renderingOwed = false;
+  /** Whether a document this realm runs owes CSS events, which the next
+   *  frame takes from the host and dispatches before its callbacks
+   *  (`__cssOwed`). */
+  let cssOwed = false;
+  /** Whether scroll targets wait for the next frame's scroll steps
+   *  (`__scrollsOwed`, `tellScrolls`). */
+  let scrollsOwed = false;
+  /** Dispatch the CSS events the host handed over (made with the event
+   *  interfaces, further down). */
+  let dispatchCssEvents: (raw: unknown) => void = () => {};
   /** Animations whose timeline is a scroll's, which a frame updates. */
   const scrollLinked = new Set<Any>();
   const wantFrame = (): void => {
@@ -4023,6 +4049,19 @@ export function installDom(
       if (animation._frame()) moved = true;
     }
     quietFrames = moved ? 0 : quietFrames + 1;
+    // and the CSS animations' and transitions' events each document owes,
+    // this one's and then its frames', dispatched here: "update animations
+    // and send events" comes after the media queries' changes and before
+    // the animation frame callbacks (HTML 8.1.7.3)
+    // — asked at every frame, since a document says it owes them from
+    // inside the pass that made them, and the frame that comes first takes
+    // them (`__cssOwed` only brings a frame where none is coming)
+    cssOwed = false;
+    try {
+      dispatchCssEvents(call('cssEvents'));
+    } catch (error) {
+      report(error);
+    }
     // the callbacks in a task of their own, after this one's microtasks —
     // a finished promise, a ready one — and the events it queued: "update
     // animations and send events" checkpoints before them (Web Animations
@@ -4073,7 +4112,14 @@ export function installDom(
   /** The next frame, where something waits for one. */
   const nextFrame = (): void => {
     if (frameTimer) return;
-    if (frameCallbacks.size || renderingOwed || scrollOwed || framesWaiting()) {
+    if (
+      frameCallbacks.size ||
+      renderingOwed ||
+      scrollOwed ||
+      scrollsOwed ||
+      cssOwed ||
+      framesWaiting()
+    ) {
       wantFrame();
     } else if (scrollLinked.size) {
       frameTimer = setTimer(runFrame, quietFrames > 30 ? 100 : 16, [], false);
@@ -10988,6 +11034,7 @@ export function installDom(
    *  `on…` handlers and listeners are kept on, which a navigation that
    *  leaves the document tells (`documentTree`). */
   const frameTargets = new WeakMap<object, Any>();
+  frameTargetOf = (doc) => frameTargets.get(doc) ?? null;
   const frameSessionOf = (frame: Any, doc: Any, target: Any): Any => {
     let made = frameSessions.get(doc);
     if (!made) {
@@ -21915,6 +21962,35 @@ export function installDom(
     ev.isTrusted = true;
     return dispatch(document, ev);
   };
+  /**
+   * The scroll steps' targets (CSSOM View, "run the scroll steps"): each
+   * scroll container that scrolled since the last, and the document of a
+   * frame whose pane did, in the order they scrolled, this document's first
+   * and then its frames' (`DomHost`'s `scrolls` op). Each has its
+   * `scrollsnapchanging` first where its snap targets moved, then its
+   * `scroll`, which bubbles from a document to its window and not from an
+   * element. The host hands them over and forgets them before any is told,
+   * so what a `scroll` listener scrolls is told at the next rendering
+   * update, after its resize steps, as browsers have it (csswg-drafts#13772
+   * leaves it open). Asked at every frame: a scroll a script made in an op
+   * is pending at once, and the frame that comes first tells it
+   * (`__scrollsOwed` only brings a frame where none is coming).
+   */
+  const tellScrolls = (): void => {
+    scrollsOwed = false;
+    const raw = call('scrolls');
+    if (typeof raw !== 'string' || !raw) return;
+    for (const [id, block, inline] of JSON.parse(raw) as number[][]) {
+      const target = wrap(id);
+      if (!target) continue;
+      if (block !== undefined) {
+        fireSnapEvent(id, 'scrollsnapchanging', block, inline);
+      }
+      const ev = new Event('scroll', { bubbles: target instanceof Document });
+      ev.isTrusted = true;
+      dispatch(target, ev);
+    }
+  };
   /** A trusted event of a type and nothing else at a target. */
   const fireTrusted = (target: Any, type: string): void => {
     const ev = new Event(type);
@@ -21962,6 +22038,7 @@ export function installDom(
       }
     });
     if (scrollOwed) tellScroll();
+    tellScrolls();
     shown.forEach((v, i) => {
       const line = lines[i] ?? '';
       if (line === v.media) return;
@@ -41016,9 +41093,10 @@ export function installDom(
     return blob instanceof Blob ? str(blob.type) : null;
   });
 
-  // a plain event at an element: a script's `load` or `error`
+  // a plain event at an element: a script's `load` or `error`; and at a
+  // frame's document its `scrollend`, which bubbles to its window
   entry('__fire', () => {
-    const [id, type] = input();
+    const [id, type, bubbles] = input();
     const target = wrap(id);
     if (!target) return false;
     // a scroll container scrolled: the timelines on it move at the next
@@ -41030,7 +41108,7 @@ export function installDom(
       target._resourceSettled = true;
       if (frameCallbacks.size || renderingOwed) wantFrame();
     }
-    const ev = new Event(String(type));
+    const ev = new Event(String(type), { bubbles: bubbles === true });
     ev.isTrusted = true;
     return dispatch(target, ev);
   });
@@ -41047,23 +41125,32 @@ export function installDom(
   // a snap container's snap targets changed, or are about to (CSS Scroll
   // Snap 2, 6.1): at the element, and the viewport's at the document,
   // which alone bubbles; neither is cancelable
-  entry('__snapEvent', () => {
-    const [id, type, block, inline] = input();
+  const fireSnapEvent = (
+    id: number,
+    type: string,
+    block: number,
+    inline: number,
+  ): boolean => {
     const target = id ? wrap(id) : document;
     if (!target) return false;
-    const ev = new SnapEvent(String(type), {
+    const ev = new SnapEvent(type, {
       bubbles: target === document,
       snapTargetBlock: block ? wrap(block) : null,
       snapTargetInline: inline ? wrap(inline) : null,
     });
     ev.isTrusted = true;
     return dispatch(target, ev);
+  };
+  entry('__snapEvent', () => {
+    const [id, type, block, inline] = input();
+    return fireSnapEvent(id, String(type), block, inline);
   });
 
-  // the document's CSS transition events, in the order they came about,
-  // each at its element, bubbling (CSS Transitions 2, 6.1)
-  entry('__cssEvents', () => {
-    const [raw] = input();
+  // the documents' CSS animation and transition events, in the order they
+  // came about, each at its element, bubbling (CSS Transitions 2, 6.1; CSS
+  // Animations 1, 4.2): what the rendering update's "update animations and
+  // send events" takes from the host (`sendCssEvents`)
+  dispatchCssEvents = (raw: unknown): void => {
     const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
     for (const e of list) {
       const target = wrap(e.element);
@@ -41098,6 +41185,21 @@ export function installDom(
       ev.isTrusted = true;
       dispatch(target, ev);
     }
+  };
+  // a document this realm runs owes CSS events, which its next rendering
+  // update takes (`ScriptRunner.cssEventsOwed`)
+  entry('__cssOwed', () => {
+    cssOwed = true;
+    wantFrame();
+    return true;
+  });
+  // and a scroll container scrolled, or a frame's pane, which its next
+  // scroll steps tell (`ScriptRunner.elementScrolled`); the timelines on it
+  // move at the next frame
+  entry('__scrollsOwed', () => {
+    scrollsOwed = true;
+    nudgeFrames();
+    wantFrame();
     return true;
   });
 

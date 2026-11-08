@@ -679,10 +679,13 @@ export interface HtmlViewProps {
    *  `scrollElementTo` — told after it is drawn where it went: what a page
    *  hears as the element's `scroll`. */
   onElementScroll?: (element: Element) => void;
-  /** The CSS transition events the document's transitions owe since the
-   *  last were told, in order (`AnimationTimeline.takeCssEvents`):
-   *  what a page hears as `transitionrun` and its kin. */
-  onCssEvents?: (events: CssEventInfo[]) => void;
+  /** The document's animations and transitions owe CSS events, which
+   *  `takeCssEvents` hands over: what a page hears as `transitionrun` and
+   *  its kin at its next rendering update. Told once until they are taken,
+   *  and a host that gives it is one that hears them, so an animation that
+   *  ends is held at its end until its `animationend` is taken
+   *  (`holdsEnds`). */
+  onCssEventsOwed?: () => void;
   /** What an `<img>` came to, for the image it asks for now (`askImage`):
    *  what a page hears as the element's `load` or `error`. An image told
    *  of is watched, one in no document with the rest, and a host with no
@@ -891,7 +894,7 @@ export function registerHtmlView(): void {
       'watchStops',
       'onViewportScroll',
       'onPaint',
-      'onCssEvents',
+      'onCssEventsOwed',
       'onImage',
       // what the caret is drawn by, which repaints the caret alone
       'caretBlink',
@@ -11048,7 +11051,7 @@ export class HtmlViewNode extends Node {
     // that runs out waits at its end for the page to hear of it, where a
     // page hears (`_oweCssEvents`)
     timeline.startsAtPaint = true;
-    timeline.holdsEnds = !!this._props().onCssEvents;
+    timeline.holdsEnds = !!this._props().onCssEventsOwed;
     return timeline;
   }
 
@@ -11106,41 +11109,45 @@ export class HtmlViewNode extends Node {
 
   /** Whether the transition events of a pass are to be told. */
   private _cssEventsOwed = false;
-  /** Tell the transition events owed, once the pass that owes them has
-   *  run: on a timer of its own, so a page hears them outside the layout
-   *  that made them. */
+  /** Say the CSS events are owed, once until they are taken
+   *  (`takeCssEvents`), which the page's next rendering update does: at
+   *  once, from inside the pass that owes them, since saying so dispatches
+   *  nothing, and a rendering update that comes before a timer would have
+   *  left them to the one after. */
   private _oweCssEvents(): void {
-    if (this._cssEventsOwed || !this._props().onCssEvents) {
-      return;
-    }
+    const owed = this._props().onCssEventsOwed;
+    if (this._cssEventsOwed || !owed) return;
     this._cssEventsOwed = true;
-    animationClock.arm(() => {
-      this._cssEventsOwed = false;
-      // the document's, a view transition's tree's, and what one that
-      // ended still owed
-      const events = [
-        ...this._timeline.takeCssEvents(),
-        ...this._anchoredTimeline.takeCssEvents(),
-        ...this._runs().flatMap((run) => run.timeline.takeCssEvents()),
-        ...this._cssEventsLeft.splice(0),
-      ];
-      // the ends held for these are let go as they are told, and the next
-      // frame draws each as its animation leaves it — or as the listeners
-      // keep it, which they do now, before any paint (`holdsEnds`)
-      if (this._timeline.releaseEnds()) this._scheduleFrame();
-      const tell = this._props().onCssEvents;
-      if (!events.length || !tell) return;
-      tell(
-        this._cssEventOrder(events).map((e) => ({
-          element: e.el as Element,
-          pseudo: e.pseudo ? `::${e.pseudo}` : '',
-          type: e.type,
-          name: e.name,
-          elapsedTime: e.elapsed / 1000,
-          key: e.key,
-        })),
-      );
-    }, 0);
+    owed();
+  }
+
+  /**
+   * The CSS events the document's animations and transitions owe, in the
+   * order a page hears them: the document's, a view transition's tree's,
+   * and what one that ended still owed. What the page's rendering update
+   * dispatches at "update animations and send events" (HTML 8.1.7.3), after
+   * its media queries and before its animation frame callbacks. The ends
+   * held for these are let go as they are taken, and the next frame draws
+   * each as its animation leaves it — or as the listeners keep it, which
+   * they do in the same task, before any paint (`holdsEnds`).
+   */
+  takeCssEvents(): CssEventInfo[] {
+    this._cssEventsOwed = false;
+    const events = [
+      ...this._timeline.takeCssEvents(),
+      ...this._anchoredTimeline.takeCssEvents(),
+      ...this._runs().flatMap((run) => run.timeline.takeCssEvents()),
+      ...this._cssEventsLeft.splice(0),
+    ];
+    if (this._timeline.releaseEnds()) this._scheduleFrame();
+    return this._cssEventOrder(events).map((e) => ({
+      element: e.el as Element,
+      pseudo: e.pseudo ? `::${e.pseudo}` : '',
+      type: e.type,
+      name: e.name,
+      elapsedTime: e.elapsed / 1000,
+      key: e.key,
+    }));
   }
 
   /** What a view transition's timeline still owed as the transition
@@ -16593,6 +16600,7 @@ export class HtmlViewNode extends Node {
     if (scope) this._scopedVts.delete(scope);
     else this._vt = null;
     this._cssEventsLeft.push(...run.timeline.takeCssEvents());
+    if (this._cssEventsLeft.length) this._oweCssEvents();
     if (run.timer !== null) {
       animationClock.disarm(run.timer);
       run.timer = null;
@@ -18476,7 +18484,7 @@ export interface CssAnimationInfo {
 
 /** A CSS transition event a page hears (CSS Transitions 2, 6.1): its
  *  target and pseudo-element, its type, the longhand and the elapsed time
- *  in seconds (`onCssEvents`). */
+ *  in seconds (`takeCssEvents`). */
 export interface CssEventInfo {
   element: Element;
   pseudo: string;

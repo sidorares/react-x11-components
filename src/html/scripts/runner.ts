@@ -42,7 +42,6 @@ import type {
 } from '../index.js';
 import { blocksParser, isClassicScriptType } from '../dom.js';
 import { holdAnimationClock, releaseAnimationClock } from '../node.js';
-import type { CssEventInfo } from '../node.js';
 import type { MediaEventKind } from '../media.js';
 import type { ResourceAsker, ResourceCors } from '../resources.js';
 import { ScriptEngine } from './engine.js';
@@ -238,10 +237,12 @@ export class ScriptRunner {
   /** A `scroll` owed the page, told once a frame however often the pane
    *  moved in it, as a browser runs the scroll steps once a frame. */
   private _scrollOwed: ReturnType<typeof setTimeout> | null = null;
-  /** The scroll containers in the document that scrolled since their
-   *  `scroll` was last told, told once a frame as the pane's is. */
-  private _scrolledElements = new Set<Element>();
-  private _elementScrollOwed: ReturnType<typeof setTimeout> | null = null;
+  /** The realm is told that scrolls wait for its scroll steps
+   *  (`elementScrolled`), a turn later, however many came in the turn. */
+  private _scrollsWake: ReturnType<typeof setTimeout> | null = null;
+  /** And that CSS events wait for its next rendering update
+   *  (`cssEventsOwed`). */
+  private _cssWake: ReturnType<typeof setTimeout> | null = null;
   /** The runners of the frames' documents in this one (`FrameSeat`). */
   private _seats = new Map<Document, FrameSeat>();
   /** The window this document is shown in, where it has one of a group
@@ -303,6 +304,7 @@ export class ScriptRunner {
     if (arrival) {
       arrival.referrerPolicy = () => this.host.documentReferrerPolicy();
     }
+    this.host.onScrollsTold = this._scrollsTold;
     // before its realm is made, which asks what context it is as it starts
     if (popup && slot?.auxiliary && url === 'about:blank') {
       this.host.creator = popup.creator;
@@ -924,27 +926,30 @@ export class ScriptRunner {
     this._advance('interactive');
     // and the CSS events the document owed meanwhile, which a page's
     // listeners hear at the next rendering update after its scripts ran
-    if (this._heldCss.length) {
-      const held = this._heldCss;
-      this._heldCss = [];
-      setTimeout(() => {
-        if (!this._disposed) this.host.cssEvents(held);
-      }, 0);
-    }
+    this.host.cssHeld = false;
+    if (this.host.cssOwing) this._wakeCss();
     if (this._loaded) this._complete();
   }
 
-  /** The CSS events the document owed before the scripts its parser met
-   *  had run (`cssEvents`). */
-  private _heldCss: CssEventInfo[] = [];
-
-  /** The document's CSS animations and transitions owe these events:
-   *  told now, or once the parse's scripts have run, which a browser runs
-   *  before its first rendering update. */
-  cssEvents(events: CssEventInfo[]): void {
+  /**
+   * A document this realm runs owes CSS events: its own (null), or a
+   * frame's with no realm of its own. The realm takes them at its next
+   * rendering update, after its media queries and before its animation
+   * frame callbacks (`DomHost`'s `cssEvents` op), which every rendering
+   * update asks; this wakes one where none is coming. Told from inside the
+   * pass that owes them, and so from inside an op. Held until the scripts
+   * its parser met have run (`DomHost.cssHeld`).
+   */
+  cssEventsOwed(document: Document | null): void {
     if (this._disposed) return;
-    if (this._ready === 'loading') this._heldCss.push(...events);
-    else this.host.cssEvents(events);
+    this.host.cssOwed(document ?? this.host.document);
+    if (this._ready !== 'loading') this._wakeCss();
+  }
+  private _wakeCss(): void {
+    this._cssWake ??= setTimeout(() => {
+      this._cssWake = null;
+      if (!this._disposed) this.engine.call('__cssOwed', null);
+    }, 0);
   }
 
   /** What a player with no picture said (`HtmlViewProps.onMediaEvent`),
@@ -1049,37 +1054,59 @@ export class ScriptRunner {
   private _underSoon: ReturnType<typeof setTimeout> | null = null;
   private _scrolledAt = 0;
   /** Each scroll container's `scrollend`, owed a frame after its last
-   *  `scroll` (`elementScrolled`). */
+   *  `scroll` was told (`scrollsTold`), and a frame's document's. */
   private _elementScrollEnds = new Map<
-    Element,
+    Element | Document,
     ReturnType<typeof setTimeout>
   >();
 
-  /** A scroll container in the document scrolled (`onElementScroll`). */
+  /**
+   * A scroll container in a document this realm runs scrolled
+   * (`onElementScroll`): one of the targets its next scroll steps tell
+   * (CSSOM View, "run the scroll steps"), in the order they scrolled, which
+   * the realm takes from the host there (`DomHost`'s `scrolls` op). A scroll
+   * made while they are told is told at the rendering update after it.
+   */
   elementScrolled(element: Element): void {
+    this._scrollPending(element);
+  }
+
+  /** The pane a frame's document with no realm of its own is shown in
+   *  scrolled: its document's `scroll`, which bubbles to its window, among
+   *  the same targets. */
+  frameScrolled(document: Document): void {
+    this._scrollPending(document);
+  }
+
+  private _scrollPending(target: Element | Document): void {
     if (this._disposed) return;
     this._scrolledAt = Date.now();
-    this._scrolledElements.add(element);
-    const owed = this._elementScrollEnds.get(element);
+    const owed = this._elementScrollEnds.get(target);
     if (owed) clearTimeout(owed);
-    this._elementScrollEnds.delete(element);
-    this._elementScrollOwed ??= setTimeout(() => {
-      this._elementScrollOwed = null;
-      const scrolled = [...this._scrolledElements];
-      this._scrolledElements.clear();
-      if (this._disposed) return;
-      this.host.elementsScrolled(scrolled);
-      for (const el of scrolled) {
-        this._elementScrollEnds.set(
-          el,
-          setTimeout(() => {
-            this._elementScrollEnds.delete(el);
-            if (!this._disposed) this.host.elementsScrolledEnd([el]);
-          }, FRAME_MS),
-        );
-      }
-    }, FRAME_MS);
+    this._elementScrollEnds.delete(target);
+    this.host.scrollPending(target);
+    // a turn later, since a script's scroll is told from inside its op
+    this._scrollsWake ??= setTimeout(() => {
+      this._scrollsWake = null;
+      if (!this._disposed) this.engine.call('__scrollsOwed', null);
+    }, 0);
   }
+
+  /** The realm told these targets' `scroll`: each one's `scrollend` a frame
+   *  on, where it does not scroll again (CSSOM View 13.1). */
+  private readonly _scrollsTold = (told: (Element | Document)[]): void => {
+    for (const target of told) {
+      const owed = this._elementScrollEnds.get(target);
+      if (owed) clearTimeout(owed);
+      this._elementScrollEnds.set(
+        target,
+        setTimeout(() => {
+          this._elementScrollEnds.delete(target);
+          if (!this._disposed) this.host.elementsScrolledEnd([target]);
+        }, FRAME_MS),
+      );
+    }
+  };
 
   /**
    * Whether the document may be left, asked before the host goes to
@@ -1235,7 +1262,8 @@ export class ScriptRunner {
     if (this._disposed) return;
     this.slot?.left(this);
     this._unlive?.();
-    if (this._elementScrollOwed) clearTimeout(this._elementScrollOwed);
+    if (this._scrollsWake) clearTimeout(this._scrollsWake);
+    if (this._cssWake) clearTimeout(this._cssWake);
     if (this._scrollEndOwed) clearTimeout(this._scrollEndOwed);
     if (this._paintSeen) clearTimeout(this._paintSeen);
     for (const owed of this._elementScrollEnds.values()) clearTimeout(owed);
