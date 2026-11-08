@@ -1419,10 +1419,13 @@ export class ScriptRunner {
   private _advance(state: 'interactive' | 'complete'): void {
     if (this._disposed) return;
     this._ready = state;
-    this.engine.call('__ready', [state]);
-    // a frame's document loaded: the frame's `load`, in the page
-    if (state === 'complete' && this._link) {
+    const framed = state === 'complete' && !!this._link;
+    this.engine.call('__ready', [state, framed]);
+    // a frame's document loaded: the frame's `load`, in the page, and then
+    // the document's `pageshow`, as every browser tells the two
+    if (framed && this._link) {
       this._link.parent.host.frameLoaded(this._link.frame);
+      if (!this._disposed) this.engine.call('__shown', null);
     }
   }
 }

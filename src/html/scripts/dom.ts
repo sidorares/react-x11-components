@@ -21592,6 +21592,7 @@ export function installDom(
   for (const name of ['pointerLockElement', 'exitPointerLock']) {
     Object.defineProperty(Document.prototype, name, { enumerable: true });
   }
+  handlerProperty(Document.prototype, 'readystatechange');
   handlerProperty(Document.prototype, 'pointerlockchange');
   handlerProperty(Document.prototype, 'pointerlockerror');
   Object.defineProperty(Document.prototype, 'onvisibilitychange', {
@@ -31988,6 +31989,9 @@ export function installDom(
       /** What settles `navigation.transition`'s promises, where the
        *  navigation made one: the method's tracker, or one of its own. */
       transition: Tracker | null;
+      /** Whether it went on to another document, whose arrival leaves its
+       *  promises as they are (`__unload`). */
+      away?: boolean;
     } | null;
     transition: Any;
     /** What a same-document navigation under way commits as its entry
@@ -33071,6 +33075,7 @@ export function installDom(
       // that document loads, `window.stop()` aborts it, or the next
       // navigation does — so `event.signal` and the method's promises are
       // still the ongoing one's (HTML 7.2.6.10, "ongoing navigation")
+      if (s.ongoing) s.ongoing.away = true;
       return 'other';
     }
     const ongoing = s.ongoing!;
@@ -40447,7 +40452,7 @@ export function installDom(
 
   // where the document has got to: `DOMContentLoaded`, then `load`
   entry('__ready', () => {
-    const [state] = input();
+    const [state, framed] = input();
     document._ready = state;
     // the size the first resize steps compare with, where no frame took it
     if (state === 'interactive') watchViewport(ownViewport);
@@ -40481,23 +40486,32 @@ export function installDom(
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
       completelyLoaded = true;
-      // and shown, after its `load` (HTML 8.4, "the end")
-      if (!document._pageShowing && !document._unloaded) {
-        document._pageShowing = true;
-        dispatch(
-          windowTarget,
-          asTrusted(
-            new PageTransitionEvent('pageshow', {
-              persisted: false,
-              bubbles: true,
-              cancelable: true,
-            }),
-          ),
-        );
-      }
+      // and shown, after its `load` (HTML 8.4, "the end"): a frame's after
+      // its frame's `load` too, as every browser has it (`__shown`)
+      if (!framed) pageShown();
     }
     return true;
   });
+  // a frame's document shown, once the page heard its frame's `load`
+  entry('__shown', () => {
+    pageShown();
+    return true;
+  });
+  /** `pageshow`, not persisted, where the document is not shown yet. */
+  const pageShown = (): void => {
+    if (document._pageShowing || document._unloaded) return;
+    document._pageShowing = true;
+    dispatch(
+      windowTarget,
+      asTrusted(
+        new PageTransitionEvent('pageshow', {
+          persisted: false,
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+  };
 
   // the host is about to leave the document: whether it may
   // (`ScriptRunner.beforeUnload`)
@@ -40509,9 +40523,14 @@ export function installDom(
     // the document shown in its place, where there is one: what its
     // `pageswap` is told
     const [swap] = input() ?? [];
-    // a cross-document navigation still ongoing ends with the document:
-    // its promises reject, as a discarded document's do
-    abortOngoing(pageSession.session);
+    // the navigation that took the document to the one shown in its place
+    // leaves its promises as they are, never to settle; anything else still
+    // under way as the document goes — its frame taken out of the page —
+    // is aborted, its promises rejected (HTML, "inform the navigation API
+    // about child navigable destruction")
+    const s = pageSession.session;
+    if (s.ongoing?.away && call('replacedInPlace') === true) s.ongoing = null;
+    else abortOngoing(s);
     unloadTree(
       document,
       windowTarget,
