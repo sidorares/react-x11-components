@@ -18518,6 +18518,37 @@ test('a scriptless frame is scrolled to its fragment, its scroll-margin taken of
   assert.equal(page, '0|80|80', logs.join('\n'));
 });
 
+test('a document with no doctype is in quirks mode, where its body is the scrolling element and scrolls its viewport, and its root scrolls nothing', async () => {
+  // HTML 13.2.6.4.1 and CSSOM View 7 (WPT
+  // cssom-view/scrolling-quirks-vs-nonquirks)
+  const page = (doctype: string) =>
+    '<iframe id="f" srcdoc="' +
+    doctype +
+    '<body style=&quot;margin: 0&quot;><div style=&quot;height: 400px&quot;></div>"' +
+    ' style="width: 300px; height: 150px"></iframe>' +
+    '<p id="out"></p><script>' +
+    'var f = document.getElementById("f");' +
+    'f.onload = function () { setTimeout(function () {' +
+    '  var d = f.contentDocument, r = [d.compatMode, d.scrollingElement.localName];' +
+    '  d.documentElement.scrollTop = 30; r.push(d.documentElement.scrollTop, f.contentWindow.scrollY);' +
+    '  d.body.scrollTop = 40; r.push(d.body.scrollTop, f.contentWindow.scrollY);' +
+    '  r.push(new DOMParser().parseFromString("<p>x", "text/html").compatMode,' +
+    '    new DOMParser().parseFromString("<!doctype html><p>x", "text/html").compatMode);' +
+    '  document.getElementById("out").textContent = r.join("|"); }, 200); };' +
+    '</script>';
+  for (const [doctype, want] of [
+    ['', 'BackCompat|body|0|0|40|40|BackCompat|CSS1Compat'],
+    ['<!doctype html>', 'CSS1Compat|html|30|30|0|30|BackCompat|CSS1Compat'],
+  ] as const) {
+    const { text, logs } = await hostedFrames(page(doctype), {});
+    const out = await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    );
+    assert.equal(out, want, logs.join('\n'));
+  }
+});
+
 test("a scriptless frame's root scrolls as its frame's viewport, which starts at its scroll-initial-target", async () => {
   // CSSOM View 7: the root's scrollTop is its viewport's, and for a frame's
   // document of the page realm that is the frame's view (CSS Scroll Snap
@@ -18535,7 +18566,7 @@ test("a scriptless frame's root scrolls as its frame's viewport, which starts at
       '</script>',
     {
       'frame.html':
-        '<style>body { margin: 0 } div { height: 100px }</style>' +
+        '<!doctype html><style>body { margin: 0 } div { height: 100px }</style>' +
         '<div style="height: 200px"></div>' +
         '<div style="scroll-initial-target: nearest"></div>' +
         '<div style="height: 400px"></div>',
