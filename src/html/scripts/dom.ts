@@ -11094,7 +11094,7 @@ export function installDom(
           const fromIndex = s.index;
           const to = fromIndex + Math.trunc(delta);
           const targetEntry = s.entries[to];
-          if (!targetEntry) return;
+          if (!targetEntry?.url) return;
           slot.pending = 'traverse';
           slot.to = targetEntry;
           call('frameNavigate', frame._id, targetEntry.url, '', 'traverse');
@@ -11148,6 +11148,23 @@ export function installDom(
         first.step = unseen?.length
           ? unseen[unseen.length - 1]
           : childStartStep(frame);
+      }
+      // the entries it had before it went to another origin, and the one
+      // standing for that origin's document, before this document's: what
+      // a step back finds, of other documents, and that the API does not
+      // show across the gap. A replace took the last one's place.
+      const before = forgottenEntries.get(frame);
+      if (before && jointOn) {
+        forgottenEntries.delete(frame);
+        unseenSteps.delete(frame);
+        const kept =
+          arrival === 'replace' && before.length ? before.slice(0, -1) : before;
+        first.doc = kept.reduce((most, e) => Math.max(most, e.doc ?? 0), 0) + 1;
+        made.session.entries = [...kept, first];
+        made.session.index = kept.length;
+        if (made.session.arrived) {
+          made.session.arrived.fromIndex = kept.length - 1;
+        }
       }
       made.owner = owner;
       made.slot = slot;
@@ -11324,6 +11341,9 @@ export function installDom(
               entry.navState = reloadState;
             }
             entry.url = at;
+            // the document it stands for is the one shown now, one of this
+            // session's where it was kept from before another origin's
+            entry.other = false;
             made.session.index = stepIndex;
             made.session.arrived = {
               type: pending,
@@ -32216,7 +32236,9 @@ export function installDom(
    * documents before and after it of its origin, up to one that is not.
    */
   const navEntriesOf = (s: Session): SessionEntry[] => {
-    if (!s.host) return s.entries;
+    // a frame's holds entries of another origin's too, from before it went
+    // there and came back (`forgottenEntries`)
+    if (!s.host && !s.entries.some((e) => e.other)) return s.entries;
     const origin = entryOrigin(currentOf(s));
     let lo = s.index;
     let hi = s.index;
@@ -32276,6 +32298,13 @@ export function installDom(
    *  another origin's, and that document's — by frame: steps still the
    *  tree's, which `history.length` counts and a push clears. */
   const unseenSteps = new WeakMap<object, number[]>();
+  /** The entries a frame's session had as it went to a document of another
+   *  origin's, with one standing for that document where it went by a push,
+   *  by frame: the next session this realm keeps for the frame, once it is
+   *  back at this origin, holds them again as other documents' — what a
+   *  step through the history finds to load, and what the Navigation API
+   *  shows none of across the gap (`navEntriesOf`). */
+  const forgottenEntries = new WeakMap<object, SessionEntry[]>();
 
   /** The navigables of the joint history in tree order, the page's first:
    *  each frame this realm keeps a session for, with its document, and each
@@ -40814,7 +40843,9 @@ export function installDom(
   // WindowProxy stays — it is the frame element's for as long as the
   // element is (HTML 7.2.3), including across origins.
   entry('__forgetFrameWindow', () => {
-    const [id] = input();
+    // and the address it went to, which only a step back to that document's
+    // entry reads, to load it again: no API shows another origin's entry
+    const [id, went] = input();
     const frame = wrap(id);
     if (!frame) return false;
     const last = keptFrameWindows.get(frame);
@@ -40832,11 +40863,27 @@ export function installDom(
           .filter((step): step is number => step !== undefined);
         jointFrames = true;
         unseenSteps.set(frame, steps);
+        // as other documents', with none of the `NavigationHistoryEntry`s the
+        // session going made of them, which are of that session
+        const left: SessionEntry[] = kept.map((e) => ({
+          ...e,
+          other: true,
+          api: null,
+        }));
         if (how === 'push') {
           s.entries.splice(s.index + 1);
           jointPush(s, null, true);
           unseenSteps.set(frame, [...steps, jointStep]);
+          // the document of another origin's: an entry of an origin that
+          // matches none, so no API shows it
+          left.push({
+            ...sessionEntry(str(went ?? ''), undefined, -1),
+            other: true,
+            origin: 'null',
+            step: jointStep,
+          });
         }
+        forgottenEntries.set(frame, left);
       }
       frameWindows.delete(last.doc);
       frameSessions.delete(last.doc);

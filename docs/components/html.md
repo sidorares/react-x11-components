@@ -1868,6 +1868,11 @@ still: its steps are not the page's, its `history.length` counts its own
 entries, and a step of the page's does not move it. Of a frame of another
 origin's, the page knows the documents it sent the frame to, each a step as
 it asked, a push or a replace, and not those the frame went to by itself. A
+frame that goes to another origin and comes back keeps its entries from before
+the gap, and the entry of the document it went to: a step to one of them loads
+that document again, and its `navigation` shows the entries of its origin
+around the current one and none across the gap, so `activation.from` is null
+for a step that came from the other side of it. A
 document shown again from the host's entries, which no back-forward cache
 kept, has its frames' histories start afresh; and the host's own Back and
 Forward (`session.go(delta)`) step the page's entries, not the tree's.

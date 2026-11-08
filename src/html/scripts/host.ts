@@ -8340,7 +8340,7 @@ export class DomHost {
     // for the frame, so a later same-origin document starts a history of
     // its own rather than pushing past the gap
     if (foreign && navigated && this.entries) {
-      this.entries.call('__forgetFrameWindow', [this.idOf(frame)]);
+      this.entries.call('__forgetFrameWindow', [this.idOf(frame), src]);
     }
     if (!src || (foreign && !(this._seams.drawsFrames && this._framed(src)))) {
       if (!navigated) {
