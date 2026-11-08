@@ -10983,6 +10983,18 @@ export function installDom(
         scrollTo: () => {},
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
+        // a `javascript:` URL's script, with the frame's window and document
+        // for its globals, as a script of the frame's runs here
+        evaluate: (source) => {
+          const current = frameDocumentOf(frame);
+          return current ? runInFrame(current, source) : undefined;
+        },
+        // the document its string makes, in place of the frame's entry
+        replaceWith: (html) => {
+          slot.pending = 'replace';
+          slot.to = undefined;
+          call('frameJavascriptDocument', frame._id, html);
+        },
       });
       slot.session = made.session;
       // the first document of this origin's after one of another's, which
@@ -10997,6 +11009,50 @@ export function installDom(
       frameSessions.set(doc, made);
     }
     return made;
+  };
+  /** The window's own methods a frame's script calls by name, which answer
+   *  for the frame's viewport and not the page's (`__frameScript`). */
+  const FRAME_OWN = [
+    'matchMedia',
+    'requestAnimationFrame',
+    'cancelAnimationFrame',
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+  ];
+  /** A script run here with a frame's window and document for the names it
+   *  reaches them by, as `__frameScript` runs one, and its completion value
+   *  handed back: what a `javascript:` URL in the frame comes to. Undefined
+   *  where it threw, which is reported. */
+  const runInFrame = (doc: Any, code: string): Any => {
+    const win = windowOfDocument(doc);
+    if (!win) return undefined;
+    try {
+      return new Function(
+        'window',
+        'self',
+        'document',
+        'parent',
+        'top',
+        'frames',
+        ...FRAME_OWN,
+        // a direct `eval`, which hands back what the script came to
+        `return eval(arguments[${6 + FRAME_OWN.length}]);`,
+      ).call(
+        win,
+        win,
+        win,
+        doc,
+        win.parent,
+        win.top,
+        win,
+        ...FRAME_OWN.map((name) => win[name]),
+        code,
+      );
+    } catch (error) {
+      report(error);
+      return undefined;
+    }
   };
   /** The window that sent each frame where it is, by the frame's name. */
   const frameOpeners = new WeakMap<object, Any>();
@@ -18294,7 +18350,7 @@ export function installDom(
     // what a tag manager sets to share a document with its frames, which
     // here are all the page's origin's or nothing of the page's; a sandbox
     // may not, whatever it allows (HTML 7.5.2, the domain setter)
-    set domain(_v: Any) {
+    set domain(v: Any) {
       if (
         documentOrigin() === 'null' ||
         (this === document && call('sandboxed') === true)
@@ -18304,6 +18360,9 @@ export function installDom(
           'SecurityError',
         );
       }
+      // which makes it of another origin-domain than its origin's documents
+      // that set none, a `javascript:` URL's to ask (`javascriptAllowed`)
+      call('setDomain', this._id, str(v));
     }
     // the host's jar, where it has one, for this document's address: a
     // document that is not on the web, or one a page made of its own, is
@@ -31695,6 +31754,15 @@ export function installDom(
      *  (HTML 7.3.3): in the document, and not left for another. */
     owner(): Any;
     active(): boolean;
+    /** A `javascript:` URL's script run in the document's window (HTML,
+     *  "evaluate a `javascript:` URL"): its completion value, or undefined
+     *  where it threw, which is reported as any script's error is. */
+    evaluate?(source: string): Any;
+    /** The document a `javascript:` URL's string makes, put in the place of
+     *  this one at its address, as a replace. Absent where nothing here can
+     *  put a document of HTML in the place of this one: the string is then
+     *  dropped. */
+    replaceWith?(html: string): void;
   }
   /** A navigation an API method started, and the two promises it hands
    *  back (HTML 7.2.6.10, "navigation API method tracker"). */
@@ -32859,6 +32927,53 @@ export function installDom(
   ): 'push' | 'replace' =>
     replace || url === currentOf(s).url ? 'replace' : 'push';
 
+  /** A resolved URL whose scheme is `javascript`. */
+  const JAVASCRIPT_URL = /^javascript:/i;
+  /** The script a serialized `javascript:` URL holds: what follows its
+   *  scheme, percent-decoded and read as UTF-8 (HTML, "evaluate a
+   *  `javascript:` URL"). */
+  const javascriptSource = (url: string): string =>
+    new TextDecoder().decode(
+      percentDecodedBytes(url.replace(JAVASCRIPT_URL, '')),
+    );
+  /**
+   * A navigation to a `javascript:` URL (HTML 7.4.2.2, "navigate", and
+   * "navigate to a `javascript:` URL"): never a `navigate` event, and a
+   * replace whatever asked for it. A task later, while the document is
+   * still the one shown, its script runs in the document's window, and a
+   * string it comes to is a document of HTML put in this one's place at
+   * its address, with this one's entry's key and a new id. Anything else it
+   * comes to changes nothing.
+   */
+  const navigateToJavascript = (
+    s: Session,
+    url: string,
+    initiator?: Any,
+  ): void => {
+    const owner = s.ctx.owner();
+    // only a document of one origin-domain with it may run its script
+    // there, as it asks
+    if (call('javascriptAllowed', owner._id, initiator?._id ?? 0) !== true) {
+      return;
+    }
+    setTimer(
+      () => {
+        if (!s.ctx.active() || s.ctx.owner() !== owner) return;
+        const value = s.ctx.evaluate?.(javascriptSource(url));
+        if (typeof value === 'string' && s.ctx.active() && s.ctx.replaceWith) {
+          // the documents it unloads are not asked first: no `beforeunload`
+          for (const [d] of documentTree(owner, s.ctx.target)) {
+            d._leaveChecked = true;
+          }
+          s.ctx.replaceWith(value);
+        }
+      },
+      0,
+      [],
+      false,
+    );
+  };
+
   /** A navigation to a URL — `location`'s, `navigate()`'s: a fragment of
    *  the document is the window's, an intercepted one too, and anything else
    *  the host's once `navigate` lets it go (HTML 7.4.2.2, "navigate"). */
@@ -32880,11 +32995,21 @@ export function installDom(
       form?: { formData: Any };
       /** A download hyperlink's filename (`NavigateEvent.downloadRequest`). */
       downloadRequest?: string;
+      /** The document that asked, where the caller knows it: a link's, a
+       *  frame's for its `src`. Absent, the one the code running says
+       *  (`javascriptAllowed`). */
+      initiator?: Any;
     } = {},
   ): 'same' | 'canceled' | 'other' | 'download' => {
     // a document that is unloading, or gone, goes nowhere, and tells no
     // `navigate` of it (HTML 7.4.2.2, "navigate")
     if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'canceled';
+    // a `javascript:` URL is no navigation `navigate` hears of: its script
+    // runs in the document a task later, which nothing of this stays for
+    if (JAVASCRIPT_URL.test(url)) {
+      navigateToJavascript(s, url, options.initiator);
+      return 'same';
+    }
     const from = currentOf(s).url;
     // a GET form's submission has no body, and to the document's URL but for
     // a fragment is a fragment navigation as a link's is (HTML 7.4.2.2,
@@ -33073,6 +33198,7 @@ export function installDom(
           userInitiated,
           sourceElement: anchor,
           hostFollows: false,
+          initiator: anchor.ownerDocument,
         },
       );
       return false;
@@ -33083,6 +33209,7 @@ export function installDom(
       userInitiated,
       sourceElement: anchor,
       hostFollows: s === pageSession.session,
+      initiator: anchor.ownerDocument,
     });
     return went === 'other';
   };
@@ -33423,6 +33550,16 @@ export function installDom(
           ),
         );
       }
+      // nor to a `javascript:` URL, whatever the history says, before
+      // anything else is read (HTML 7.2.6.4, `navigate()`)
+      if (JAVASCRIPT_URL.test(href)) {
+        return earlyError(
+          new DOMException(
+            "Failed to execute 'navigate' on 'Navigation': A javascript: URL cannot be navigated to.",
+            'NotSupportedError',
+          ),
+        );
+      }
       let navState: string | undefined;
       if (options?.state !== undefined) {
         try {
@@ -33442,14 +33579,6 @@ export function installDom(
         return earlyError(
           new DOMException(
             "Failed to execute 'navigate' on 'Navigation': A push navigation must be a replace here.",
-            'NotSupportedError',
-          ),
-        );
-      }
-      if (historyMode === 'push' && /^javascript:/i.test(href)) {
-        return earlyError(
-          new DOMException(
-            "Failed to execute 'navigate' on 'Navigation': A javascript: URL cannot be pushed.",
             'NotSupportedError',
           ),
         );
@@ -33802,6 +33931,17 @@ export function installDom(
       },
       away: (url, replace) => void call('navigate', url, replace),
       tellsFragments: true,
+      // a `javascript:` URL's script, in the global scope as a classic
+      // script is; a string it comes to is no document here yet, since no
+      // host seam takes one in place of the page's
+      evaluate: (source) => {
+        try {
+          return (0, eval)(source);
+        } catch (error) {
+          report(error);
+          return undefined;
+        }
+      },
       // each of them another document, which unloads this one
       reload: (navState) => {
         if (!unloadAllowed(document, windowTarget)) return;
@@ -39913,6 +40053,22 @@ export function installDom(
     });
     return went === 'other' ? 'load' : 'done';
   });
+  // a frame of this realm's whose `src` became a `javascript:` URL: its
+  // script runs in the frame's document, as a navigation to it does
+  // (`navigateToJavascript`)
+  entry('__javascriptUrl', () => {
+    const [id, url] = input();
+    const frame = wrap(id);
+    const doc = frame && frameDocumentOf(frame);
+    if (!doc) return false;
+    void frameWindowOf(doc, frame).navigation;
+    const made = frameSessions.get(doc);
+    if (!made) return false;
+    navigateTo(made.session, str(url), 'replace', {
+      initiator: frame.ownerDocument,
+    });
+    return true;
+  });
   // the frame went to another origin: drop the window and session this
   // realm kept, so a later same-origin document is not contiguous with
   // the entries from before the gap (HTML, `navigation.entries()`). The
@@ -39947,14 +40103,7 @@ export function installDom(
     if (!doc) return false;
     const win = windowOfDocument(doc);
     if (!win) return false;
-    const own = [
-      'matchMedia',
-      'requestAnimationFrame',
-      'cancelAnimationFrame',
-      'addEventListener',
-      'removeEventListener',
-      'dispatchEvent',
-    ];
+    const own = FRAME_OWN;
     try {
       new Function(
         'window',

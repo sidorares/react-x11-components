@@ -1803,6 +1803,23 @@ it are still two origins here. With no `session`, the host's own entries
 before and after the page's are not in `navigation.entries()`, and a
 frame's entries are not the page's: `history.length` counts the page's,
 and its `history.back()` steps the page's alone.
+A `javascript:` URL is no navigation `navigate` hears of (HTML 7.4.2.2,
+"navigate"): `navigation.navigate()` refuses one with a
+`NotSupportedError` before anything else, and a link, `location` or a
+frame's `src` that goes to one runs its script a task later, in the window
+of the document shown — the page's in its global scope, a frame without a
+realm of its own with the frame's window and document for its globals, as
+a script of the frame's runs — and loads nothing. Where the script comes
+to a string, a frame's document is made of it as HTML, at the address of
+the one it replaces and in that one's entry, under its key with a new id,
+and its `load` is told; nothing asks the one it replaces first, so no
+`beforeunload`. The page's own document, and a frame's that runs in a
+realm of its own, are not replaced by one yet, since no host seam takes a
+document of HTML in their place: the script runs and the string goes. It
+runs only where the document shown is of one origin-domain with the one
+that sent it, so a frame that set `document.domain` runs none of a page's
+that did not. A frame's first `src`, as it goes into the document, still
+shows `about:blank` and runs nothing.
 
 **A tab's documents are one history where the host hands them one
 session** (HTML 7.4.1). A host makes an `HtmlSessionHistory` for each place

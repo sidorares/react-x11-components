@@ -18319,6 +18319,128 @@ test('a frame of another origin that the page sends back to its own comes by the
   );
 });
 
+test("a frame sent to a javascript: URL fires no navigate, runs it in the frame's document, and a string it comes to is a document in place of the frame's entry", async () => {
+  // HTML, "navigate to a `javascript:` URL": no `navigate` event, a replace
+  // whatever asked, and the document the string makes is at the address of
+  // the one it replaces, under its entry's key with a new id (WPT's
+  // entries-after-javascript-url-navigation and navigate-to-javascript)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    var before = n().currentEntry;' +
+      '    n().onnavigate = function () { r.push("navigate"); };' +
+      '    navigation.onnavigate = function () { r.push("page navigate"); };' +
+      "    f.contentWindow.location.href = \"javascript:void (document.title = 'ran in ' + document.querySelector('p').textContent)\";" +
+      '    setTimeout(function () {' +
+      '      r.push(f.contentDocument.title, n().entries().length);' +
+      '      f.onload = function () {' +
+      '        var now = n().currentEntry;' +
+      '        r.push(n().entries().length, now.index, now.key === before.key, now.id !== before.id,' +
+      '          /b\\.html$/.test(now.url), f.contentDocument.getElementById("x").textContent);' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      };' +
+      '      f.src = "javascript:\'<p id=x>new</p>\'";' +
+      '    }, 50);' +
+      '  }, 0); };' +
+      '  n().navigate("b.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'ran in b|2|2|1|true|true|true|new',
+    logs.join('\n'),
+  );
+});
+
+test("navigate() refuses a javascript: URL whatever its history, and a page's javascript: link runs in the page and goes nowhere", async () => {
+  // HTML 7.2.6.4, `navigate()`: a `NotSupportedError` before anything else,
+  // and no `navigate`; a link's runs as the page's own script (WPT's
+  // return-value/navigate-javascript-url)
+  const { text, logs } = await hostedFrames(
+    '<a id="a" href="javascript:void (window.ran = (window.ran || 0) + 1)"></a>' +
+      '<p id="out"></p><script>' +
+      'var r = [];' +
+      'navigation.onnavigate = function () { r.push("navigate"); };' +
+      'function names(p) { return p.then(function () { return "ok"; }, function (e) { return e.name; }); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var a = navigation.navigate("javascript:void 0", { history: "replace" });' +
+      '  var b = navigation.navigate("javascript:\'x\'");' +
+      '  Promise.all([names(a.committed), names(a.finished), names(b.committed)]).then(function (got) {' +
+      '    r.push(got.join(","));' +
+      '    document.getElementById("a").click();' +
+      '    setTimeout(function () {' +
+      '      r.push(window.ran, location.href);' +
+      '      document.getElementById("out").textContent = r.join("|");' +
+      '    }, 50);' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+    ),
+    `NotSupportedError,NotSupportedError,NotSupportedError|1|${PAGE}`,
+    logs.join('\n'),
+  );
+});
+
+test('a javascript: URL runs in a frame only where the frame is of one origin-domain with the page that sends it', async () => {
+  // a frame that set `document.domain` is of another origin-domain than the
+  // page that did not, so neither the page's `src` nor its `location`
+  // runs a script there, while the frame's own does (WPT's
+  // javascript-url-security-check-failure, "cross-origin-domain but
+  // same-origin")
+  const frame =
+    '<!DOCTYPE html><script>' +
+    'document.domain = document.domain;' +
+    'addEventListener("message", function (e) {' +
+    '  if (e.data === "self") location.href = "javascript:void parent.postMessage(\'ran self\', \'*\')";' +
+    '});' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="d.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'addEventListener("message", function (e) {' +
+      '  r.push(e.data);' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      'window.onload = function () { setTimeout(function () {' +
+      "  f.src = \"javascript:void parent.postMessage('ran src', '*')\";" +
+      "  f.contentWindow.location.href = \"javascript:void parent.postMessage('ran location', '*')\";" +
+      '  setTimeout(function () { f.contentWindow.postMessage("self", "*"); }, 100);' +
+      '}, 0); };' +
+      '</script>',
+    { 'd.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'ran self',
+    logs.join('\n'),
+  );
+  // nothing else comes after it
+  await settle(100);
+  assert.equal(text('page', 'out'), 'ran self');
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
