@@ -18,6 +18,7 @@ import type {
   RTCTransportStateLike,
 } from './rtc.js';
 
+declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const queueMicrotask: (fn: () => void) => void;
 declare const Buffer: {
   from(bytes: Uint8Array): Uint8Array;
@@ -45,8 +46,12 @@ export interface WIce {
   getSelectedCandidatePair(): { local: WCandidate; remote: WCandidate } | null;
   getLocalParameters(): { usernameFragment: string; password: string };
   getRemoteParameters(): { usernameFragment: string; password: string } | null;
-  /** What gathers for it, and the STUN server it asks. */
-  readonly connection?: { stunServer?: unknown };
+  /** What gathers for it, the STUN server it asks, and the peer's
+   *  candidates it checks, a peer-reflexive one among them, which
+   *  `getRemoteCandidates()` leaves out. */
+  readonly connection?: { stunServer?: unknown; remoteCandidates?: unknown[] };
+  /** The peer's candidates it has, but those it found as peer-reflexive. */
+  getRemoteCandidates?(): unknown[];
 }
 
 export interface WDtls {
@@ -165,6 +170,8 @@ class WeriftChannel implements RTCDataChannelLike {
   private _idTold = false;
   /** The page closed it. */
   private _closing = false;
+  /** What arrived before anything listened. */
+  private readonly _early: (string | Uint8Array)[] = [];
 
   constructor(
     private readonly _ch: WChannel,
@@ -175,9 +182,18 @@ class WeriftChannel implements RTCDataChannelLike {
   ) {
     _ch.stateChanged.subscribe((state) => this._state(state));
     _ch.onMessage.subscribe((data) => {
-      this._events?.message(
-        typeof data === 'string' ? data : new Uint8Array(data),
-      );
+      const message = typeof data === 'string' ? data : new Uint8Array(data);
+      // what comes before the page listens, which a channel the far side
+      // opened is told a microtask late, is held for it
+      if (!this._events) {
+        this._early.push(message);
+        return;
+      }
+      // a message that comes before the peer's DATA_CHANNEL_ACK is the
+      // ACK (RFC 8832, 6): werift hands it on while its channel still says
+      // connecting, and a page drops what reaches a channel not yet open
+      if (this._told === 'connecting') this._state('open');
+      this._events.message(message);
     });
     _ch.error.subscribe((error) =>
       this._events?.error({
@@ -188,13 +204,23 @@ class WeriftChannel implements RTCDataChannelLike {
     );
   }
 
+  get id(): number | null {
+    return typeof this._ch.id === 'number' ? this._ch.id : null;
+  }
+
+  /** Tells the page the id werift gave the channel, once it has one. */
+  tellId(): void {
+    if (!this._events || this._idTold || typeof this._ch.id !== 'number') {
+      return;
+    }
+    this._idTold = true;
+    this._events.id(this._ch.id);
+  }
+
   private _state(state: string): void {
     const events = this._events;
     if (!events) return;
-    if (!this._idTold && typeof this._ch.id === 'number') {
-      this._idTold = true;
-      events.id(this._ch.id);
-    }
+    this.tellId();
     if (state === this._told) return;
     // a channel that was open and closed with no closing was closed by its
     // association going, not by either side's close: an error, then the
@@ -217,6 +243,9 @@ class WeriftChannel implements RTCDataChannelLike {
   listen(events: RTCDataChannelEvents): void {
     this._events = events;
     this._state(this._ch.readyState);
+    const early = this._early.splice(0);
+    if (early.length && this._told === 'connecting') this._state('open');
+    for (const message of early) events.message(message);
   }
   send(data: string | Uint8Array): void {
     if (data.length === 0) {
@@ -258,6 +287,13 @@ class WeriftChannel implements RTCDataChannelLike {
    *  holds no close up. */
   private _unacknowledged(): boolean {
     if (this._ch.bufferedAmount > 0) return true;
+    // the DCEP ACK of a channel the far side opened waits there too, and a
+    // close that reset the stream ahead of it left the opener an ACK for a
+    // channel it no longer had, which werift throws for where nothing
+    // catches it
+    for (const [channel] of this._sctp()?.dataChannelQueue ?? []) {
+      if (channel === this._ch) return true;
+    }
     const sctp = this._sctp()?.sctp;
     return (
       holds(sctp?.outboundQueue, this._ch.id) ||
@@ -362,20 +398,13 @@ export class WeriftTransports {
       if (transport !== null) this._events.candidate(transport, candidateOf(c));
     });
     pc.onDataChannel.subscribe((ch) => {
-      if (this._closed()) return;
-      this._events.dataChannel(
-        new WeriftChannel(ch, this._sctpUp, this._sctp),
-        {
-          label: ch.label,
-          ordered: ch.ordered,
-          maxPacketLifeTime: ch.maxPacketLifeTime ?? null,
-          maxRetransmits: ch.maxRetransmits ?? null,
-          protocol: ch.protocol,
-          negotiated: ch.negotiated,
-          id: typeof ch.id === 'number' ? ch.id : 0,
-          priority: 'low',
-        },
-      );
+      // werift announces a channel before it opens it and queues its DCEP
+      // ACK, and a page's handler runs inside what tells it: one that
+      // closed the channel there reset the stream ahead of the ACK, and the
+      // opener threw for an ACK of a channel it no longer had, where nothing
+      // catches it. So the page hears of it once werift's own steps are done
+      const channel = new WeriftChannel(ch, this._sctpUp, this._sctp);
+      queueMicrotask(() => this._announce(ch, channel));
     });
     const changed = () => {
       if (this._closed()) return;
@@ -387,10 +416,30 @@ export class WeriftTransports {
     pc.connectionStateChange.subscribe(changed);
   }
 
+  /** A channel the far side opened, told to the page. */
+  private _announce(ch: WChannel, channel: WeriftChannel): void {
+    if (this._closed()) return;
+    this._events.dataChannel(channel, {
+      label: ch.label,
+      ordered: ch.ordered,
+      maxPacketLifeTime: ch.maxPacketLifeTime ?? null,
+      maxRetransmits: ch.maxRetransmits ?? null,
+      protocol: ch.protocol,
+      negotiated: ch.negotiated,
+      id: typeof ch.id === 'number' ? ch.id : 0,
+      priority: 'low',
+    });
+  }
+
   /** A data channel the page made. */
   channel(init: RTCDataChannelInitLike): RTCDataChannelLike {
     const ch = this._pc.createDataChannel(init.label, channelOptions(init));
-    return new WeriftChannel(ch, this._sctpUp, this._sctp);
+    const channel = new WeriftChannel(ch, this._sctpUp, this._sctp);
+    // one made before the association is up has no id until it is
+    if (this._association?.associationState !== ESTABLISHED) {
+      this._made.add(channel);
+    }
+    return channel;
   }
 
   /** Each transport is numbered as it is first seen, and watched, and so
@@ -415,20 +464,46 @@ export class WeriftTransports {
    * and makes another for another transport, so the one in use is looked
    * for each time and watched once found.
    */
+  private _held: unknown = null;
+  /** Looks again, while a transport is held at `new`, for the candidate
+   *  that lets it check. */
+  private _holdNew(): void {
+    if (this._held !== null) return;
+    this._held = setTimeout(() => {
+      this._held = null;
+      if (!this._closed()) this.tell();
+    }, 20);
+  }
+
+  /** The channels the page made before the association was up, which are
+   *  told their ids as it connects. */
+  private readonly _made = new Set<WeriftChannel>();
+
   private _watchAssociation(): void {
     const association = this._pc.sctpTransport?.sctp;
     if (!association || association === this._association) return;
     this._association = association;
     this._sctpTold = 'connecting';
     association.stateChanged.connected.subscribe(() => {
-      if (association === this._association) this._tellSctp('connected');
+      // werift gives each channel its id in its own handler, which runs
+      // before this one
+      if (association === this._association) this._connected();
     });
     association.stateChanged.closed.subscribe(() => {
       if (association === this._association) this._tellSctp('closed');
     });
-    if (association.associationState === ESTABLISHED) {
-      this._tellSctp('connected');
-    }
+    if (association.associationState === ESTABLISHED) this._connected();
+  }
+
+  /** The association is up: each channel made before it is told the id
+   *  werift gave it as it connected, before the transport is told
+   *  connected (WebRTC 1.0, 6.1.1.2). Told with the channel's next state
+   *  instead, the far side heard of a channel whose opener's id was still
+   *  null. */
+  private _connected(): void {
+    for (const channel of this._made) channel.tellId();
+    this._made.clear();
+    this._tellSctp('connected');
   }
 
   /**
@@ -442,9 +517,7 @@ export class WeriftTransports {
 
   private readonly _sctpUp = (): void => {
     this._watchAssociation();
-    if (this._association?.associationState === ESTABLISHED) {
-      this._tellSctp('connected');
-    }
+    if (this._association?.associationState === ESTABLISHED) this._connected();
   };
 
   private _tellSctp(state: 'connected' | 'closed'): void {
@@ -516,6 +589,19 @@ export class WeriftTransports {
       const state = this._snapshot(dtls);
       const was = this._iceTold.get(id) ?? 'new';
       state.iceState = iceStateAfter(was, state.iceState, !!state.selectedPair);
+      // it checks nothing before it has one of the peer's candidates, where
+      // werift's agent checks as an answer is applied (WebRTC 1.0,
+      // RTCIceTransportState)
+      if (
+        was === 'new' &&
+        state.iceState === 'checking' &&
+        !heardOfPeer(dtls.iceTransport)
+      ) {
+        state.iceState = 'new';
+        // a peer-reflexive candidate comes with a check, which changes none
+        // of werift's states, so a transport held is looked at again
+        this._holdNew();
+      }
       // a transport is checking before it is first connected
       if (was === 'new' && CONNECTED.has(state.iceState)) {
         this._send(id, { ...state, iceState: 'checking' });
@@ -582,6 +668,16 @@ export class WeriftTransports {
 }
 
 const CONNECTED = new Set(['connected', 'completed']);
+
+/** Whether a transport has one of the peer's candidates, signalled or found
+ *  as peer-reflexive (WebRTC 1.0, RTCIceTransportState `checking`). One
+ *  that cannot say is taken to have. */
+function heardOfPeer(ice: WIce): boolean {
+  const all = ice.connection?.remoteCandidates;
+  if (Array.isArray(all)) return all.length > 0;
+  const signalled = ice.getRemoteCandidates?.();
+  return !signalled || signalled.length > 0;
+}
 
 /**
  * The ICE state a transport is told in, from the one it was told in last and

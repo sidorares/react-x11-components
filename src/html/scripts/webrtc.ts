@@ -48,6 +48,14 @@ export interface WebRTCDeps {
   /** Installs `rtc-transports.ts`, which this calls with its own helpers,
    *  so that the two share their slots. */
   transports: typeof installRtcTransports;
+  /** Is handed what a message carries an `RTCCertificate` by, which is
+   *  `[Serializable]`: whether a value is one, what it crosses as, and one
+   *  made again from that. */
+  certificates?(internals: {
+    is(value: unknown): boolean;
+    data(value: unknown): unknown;
+    from(data: unknown): unknown;
+  }): void;
 }
 
 export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
@@ -396,6 +404,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     direction: string;
     /** The streams its `msid` lines name. */
     streams: string[];
+    /** Whether it has an `msid`, at the media level or a source's: where
+     *  it has none, its track is in a default stream (RFC 8829, 5.10). */
+    msid: boolean;
+    /** The streams its sources' `msid`s name, which stand in where it has
+     *  no media-level one. */
+    ssrcStreams: string[];
     ufrag: string | null;
     /** The rids its `a=simulcast` receives, the first of each choice and
      *  none paused left out, or null where it has none. */
@@ -418,6 +432,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           port: Number(parts[1]),
           direction: session,
           streams: [],
+          msid: false,
+          ssrcStreams: [],
           ufrag: sessionUfrag,
           simulcastRecv: null,
         };
@@ -453,9 +469,19 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             .filter((rid) => rid !== '');
         }
       } else if (current && name === 'msid') {
+        current.msid = true;
         const stream = value.split(' ')[0];
         if (stream && stream !== '-' && !current.streams.includes(stream)) {
           current.streams.push(stream);
+        }
+      } else if (current && name === 'ssrc') {
+        // `a=ssrc:3 msid:1 2`, a source's own, as Plan B wrote it
+        const m = /^\d+ msid:(\S+)/.exec(value);
+        if (m) {
+          current.msid = true;
+          if (m[1] !== '-' && !current.ssrcStreams.includes(m[1])) {
+            current.ssrcStreams.push(m[1]);
+          }
         }
       }
     }
@@ -495,6 +521,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
   const PRIORITIES = ['very-low', 'low', 'medium', 'high'];
 
   const capabilitiesOf = (kind: string, side: string): Any => {
+    // a kind that is neither has no capabilities (WebRTC 1.0, 5.2)
+    if (kind !== 'audio' && kind !== 'video') return null;
     const text = call('rtcCapabilities', kind, side);
     return typeof text === 'string' ? parse(text) : null;
   };
@@ -505,6 +533,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     (a.channels ?? 1) === (b.channels ?? 1) &&
     (a.sdpFmtpLine ?? '') === (b.sdpFmtpLine ?? '');
 
+  /** The most encodings a sender sends at once, as Chrome's simulcast has
+   *  them. */
+  const MAX_ENCODINGS = 4;
   /** The `sendEncodings` a transceiver is made with, checked and given
    *  their defaults as `addTransceiver` gives them. */
   const encodingsOf = (list: Any, kind: string): Any[] => {
@@ -535,6 +566,9 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     const out: Any[] = [];
     // audio sends one encoding, and what only video has is dropped
     if (kind === 'audio') given.splice(1);
+    // what is past the most a sender sends at once is trimmed from the tail,
+    // once every encoding is checked (WebRTC 1.0, addTransceiver)
+    const kept = Math.min(given.length, MAX_ENCODINGS);
     given.forEach((e: Any, i: number) => {
       if (
         kind === 'video' &&
@@ -581,12 +615,15 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         enc.scaleResolutionDownBy =
           e.scaleResolutionDownBy !== undefined
             ? Number(e.scaleResolutionDownBy)
-            : given.some((x: Any) => x.scaleResolutionDownBy !== undefined)
+            : given
+                  .slice(0, kept)
+                  .some((x: Any) => x.scaleResolutionDownBy !== undefined)
               ? 1
-              : 2 ** (given.length - i - 1);
+              : 2 ** Math.max(0, kept - i - 1);
       }
       out.push(enc);
     });
+    out.splice(kept);
     if (!out.length) {
       out.push(
         kind === 'video'
@@ -624,7 +661,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         : transportOf(s.tx.pc, s.tx.transport).dtls;
     }
     get dtmf(): Any {
-      return null;
+      return slotOf(this, 'sender').dtmf;
     }
     get transform(): Any {
       return null;
@@ -805,16 +842,21 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       return chain(s.tx.pc, () => {
         if (s.tx.stopping)
           return rejected(invalidState('The transceiver is stopped.'));
-        s.track = withTrack;
         call(
           'rtcTrack',
           s.tx.id,
           withTrack ? media.sourceOf(withTrack) : -1,
           withTrack?.id ?? '',
         );
-        // the track is replaced in parallel, and the promise resolved in a
-        // task queued after: the chain holds the operation until then
-        return new P((r: Any) => setTimer(() => r(undefined), 0));
+        // the track is replaced in parallel, and `track` set in a task
+        // queued after, which nothing sees before (WebRTC 1.0, 5.2): the
+        // chain holds the operation until then
+        return new P((r: Any) =>
+          setTimer(() => {
+            if (!s.tx.pc.closed) s.track = withTrack;
+            r(undefined);
+          }, 0),
+        );
       });
     }
     setStreams(...streams: Any[]): void {
@@ -844,6 +886,119 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       return statsOf(s.tx.pc, s.tx, 'sender');
     }
   }
+
+  // --- DTMF (WebRTC 1.0, 7) ------------------------------------------------------------
+
+  /** What a tone may be, after `a` to `d` are made upper case. */
+  const TONES = '0123456789ABCD#*,';
+  /** Web IDL's `unsigned long`, with no `[EnforceRange]`. */
+  const unsignedLong = (value: Any): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) >>> 0 : 0;
+  };
+  /** "Determine if DTMF can be sent" (7.2): an audio sender of a connected
+   *  connection, with a track, negotiated to send, its first encoding
+   *  active and `telephone-event` among what it sends. */
+  const canSendTones = (d: Any): boolean => {
+    const sender = apply(wmGet, slots, [d.sender]);
+    const tx = sender.tx;
+    if (tx.pc.closed || tx.pc.connState !== 'connected') return false;
+    if (tx.stopping || !sender.track) return false;
+    if (
+      tx.currentDirection !== 'sendrecv' &&
+      tx.currentDirection !== 'sendonly'
+    )
+      return false;
+    if (sender.encodings[0]?.active === false) return false;
+    return (sender.parameters?.codecs ?? []).some(
+      (c: Any) => String(c.mimeType).toLowerCase() === 'audio/telephone-event',
+    );
+  };
+  /** The DTMF playout task steps: a tone played, and the next queued for
+   *  when it and the gap after it are over, or two seconds on for a `,`. */
+  const playTones = (d: Any): void => {
+    d.queued = false;
+    if (!canSendTones(d)) return;
+    const self = d.self;
+    if (d.buffer === '') {
+      fire(self, new RTCDTMFToneChangeEvent('tonechange', { tone: '' }));
+      return;
+    }
+    const tone = d.buffer[0];
+    d.buffer = d.buffer.slice(1);
+    d.queued = true;
+    if (tone === ',') {
+      setTimer(() => playTones(d), 2000);
+    } else {
+      // the seam sends RFC 4733's events where `telephone-event` was
+      // negotiated, and the timing is this realm's whatever it says
+      const tx = apply(wmGet, slots, [d.sender]).tx;
+      call('rtcTone', tx.id, tone, d.duration);
+      setTimer(() => playTones(d), d.duration + d.gap);
+    }
+    fire(self, new RTCDTMFToneChangeEvent('tonechange', { tone }));
+  };
+
+  class RTCDTMFSender extends EventTarget {
+    constructor(token: Any = undefined) {
+      if (token !== TOKEN) throw illegalConstructor();
+      super();
+    }
+    get canInsertDTMF(): boolean {
+      return canSendTones(slotOf(this, 'dtmf'));
+    }
+    get toneBuffer(): string {
+      return slotOf(this, 'dtmf').buffer;
+    }
+    insertDTMF(tones: Any, duration: Any = 100, interToneGap: Any = 70): void {
+      const d = slotOf(this, 'dtmf');
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'insertDTMF' on 'RTCDTMFSender': 1 argument required, but only 0 present.",
+        );
+      }
+      const text = String(tones);
+      const ms = duration === undefined ? 100 : unsignedLong(duration);
+      const gap = interToneGap === undefined ? 70 : unsignedLong(interToneGap);
+      if (!canSendTones(d)) {
+        throw invalidState('The RTCDTMFSender cannot send tones.');
+      }
+      const upper = text.replace(/[a-d]/g, (c) => c.toUpperCase());
+      for (const c of upper) {
+        if (!TONES.includes(c)) {
+          throw domError(
+            `The tones contain an unrecognized character '${c}'.`,
+            'InvalidCharacterError',
+          );
+        }
+      }
+      d.buffer = upper;
+      d.duration = Math.min(6000, Math.max(40, ms));
+      d.gap = Math.min(6000, Math.max(30, gap));
+      if (upper === '' || d.queued) return;
+      d.queued = true;
+      setTimer(() => playTones(d), 0);
+    }
+  }
+  handler(RTCDTMFSender.prototype, 'tonechange');
+
+  /** An audio sender's `[[Dtmf]]`, made with it. */
+  const makeDtmf = (sender: Any): Any => {
+    const dtmf = new RTCDTMFSender(TOKEN);
+    apply(wmSet, slots, [
+      dtmf,
+      {
+        dtmf: true,
+        self: dtmf,
+        sender,
+        buffer: '',
+        duration: 100,
+        gap: 70,
+        queued: false,
+      },
+    ]);
+    return dtmf;
+  };
 
   class RTCRtpReceiver {
     constructor(token: Any = undefined) {
@@ -962,6 +1117,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     }
     get currentDirection(): Any {
       return slotOf(this, 'transceiver').currentDirection;
+    }
+    /** Whether a negotiation took it out. WebRTC 1.0 has `stopping` and
+     *  `currentDirection` where this was, but every browser still has it,
+     *  and pages read it. */
+    get stopped(): boolean {
+      return slotOf(this, 'transceiver').stopped;
     }
     stop(): void {
       const s = slotOf(this, 'transceiver');
@@ -1127,6 +1288,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         encodings,
         parameters: null,
         lastReturned: null,
+        dtmf: kind === 'audio' ? makeDtmf(sender) : null,
       },
     ]);
     apply(wmSet, slots, [
@@ -1228,15 +1390,38 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
               'SyntaxError',
             );
           }
-          if (parsed.hash) {
+          // "validate an ICE server URL": an opaque path, which is a host
+          // and a port alone (RFC 7064 and RFC 7065, 3.1)
+          const path = String(parsed.pathname);
+          if (
+            parsed.host !== '' ||
+            path.startsWith('/') ||
+            /[/@\\]/.test(path)
+          ) {
+            throw domError(`'${url}' is not a host and a port.`, 'SyntaxError');
+          }
+          if (parsed.hash || url.includes('#')) {
             throw domError(`'${url}' has a fragment.`, 'SyntaxError');
+          }
+          let hostAndPort: Any;
+          try {
+            hostAndPort = new URLClass('https://' + path);
+          } catch {
+            throw domError(`'${url}' is not a host and a port.`, 'SyntaxError');
+          }
+          if (
+            hostAndPort.username ||
+            hostAndPort.password ||
+            hostAndPort.pathname !== '/' ||
+            hostAndPort.search
+          ) {
+            throw domError(`'${url}' is not a host and a port.`, 'SyntaxError');
           }
           const query = String(parsed.search).slice(1);
           if ((scheme === 'stun' || scheme === 'stuns') && parsed.search) {
             throw domError(`'${url}' has a query.`, 'SyntaxError');
           }
           if (
-            (scheme === 'turn' || scheme === 'turns') &&
             parsed.search &&
             query !== 'transport=udp' &&
             query !== 'transport=tcp'
@@ -1246,9 +1431,13 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
               'SyntaxError',
             );
           }
+          // a TURN server's username may be empty (RFC 8489, 14.3), and
+          // its credential an OpaqueString, which may not (RFC 8265, 4.1)
           if (
             (scheme === 'turn' || scheme === 'turns') &&
-            (username === undefined || credential === undefined)
+            (username === undefined ||
+              credential === undefined ||
+              credential === '')
           ) {
             throw domError(
               `'${url}' is a TURN server, which needs a username and a credential.`,
@@ -1256,9 +1445,8 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             );
           }
         }
-        const kept: Any = {
-          urls: typeof server.urls === 'string' ? server.urls : urls.slice(),
-        };
+        // a string reads back as a list of one, as every browser has it
+        const kept: Any = { urls: urls.slice() };
         if (username !== undefined) kept.username = username;
         if (credential !== undefined) kept.credential = credential;
         servers.push({ kept, urls, username, credential });
@@ -1272,8 +1460,19 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             "Failed to construct 'RTCPeerConnection': a certificate is not an RTCCertificate.",
           );
         }
-        if (apply(wmGet, slots, [cert]).expires <= Date.now()) {
+        const held = apply(wmGet, slots, [cert]);
+        if (held.expires <= Date.now()) {
           throw domError('A certificate has expired.', 'InvalidAccessError');
+        }
+        // one another origin made is no certificate of this one's
+        if (
+          held.realm !== REALM &&
+          (held.origin === 'null' || held.origin !== documentOrigin())
+        ) {
+          throw domError(
+            'A certificate is of another origin.',
+            'InvalidAccessError',
+          );
         }
         certificates.push(cert);
       }
@@ -1434,6 +1633,10 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     return false;
   };
 
+  /** The ICE username fragments a description holds. */
+  const ufragsOf = (sdp: string | null): string[] =>
+    sdp ? [...sdp.matchAll(/^a=ice-ufrag:(\S+)/gm)].map((m: Any) => m[1]) : [];
+
   /** WebRTC 1.0, 4.7.3, "update the negotiation-needed flag". */
   const updateNegotiationNeeded = (s: Any): void => {
     if (s.closed) return;
@@ -1580,8 +1783,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         t.currentDirection = st.currentDirection;
       }
       if (sends(st.currentDirection)) t.sent = true;
-      t.transport =
-        st.sender?.transport ?? st.receiver?.transport ?? t.transport;
+      // a local description sets the transports, and a remote answer, but
+      // a remote offer leaves them as they were (WebRTC 1.0, 4.4.1.6)
+      if (!(remote && type === 'offer')) {
+        t.transport =
+          st.sender?.transport ?? st.receiver?.transport ?? t.transport;
+      }
       if (type === 'answer' || type === 'pranswer') {
         // what a sender sends and a receiver receives is what an answer
         // negotiated, and nothing before one: [[SendCodecs]] and
@@ -1645,18 +1852,28 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           : t.receiving;
       const r = apply(wmGet, slots, [t.receiver]);
       if (remote && receiving) {
-        const ids: string[] = st.receiver?.streams ?? [];
+        // a stream named twice is one stream
+        let ids: string[] = (st.receiver?.streams ?? []).filter(
+          (id: string, i: number, all: string[]) => all.indexOf(id) === i,
+        );
+        // a media-level msid names its streams; where there is none, its
+        // sources' do; and a track no msid names at all is in the one
+        // default stream (RFC 8829, 5.10)
+        const section = ids.length
+          ? null
+          : sectionsOf(sdp).find((m) => m.mid === st.mid);
+        if (section && !section.streams.length) {
+          ids = section.msid ? section.ssrcStreams : ['default'];
+        }
         const streams = ids.map((id) => streamOf(s, id));
         for (const old of t.remoteStreams) {
           if (!streams.includes(old)) removed.push([old, r.track]);
         }
         const fresh = streams.filter((x: Any) => !t.remoteStreams.includes(x));
         t.remoteStreams = streams;
-        if (!t.receiving) {
-          added.push({ tx, streams, fresh });
-        } else {
-          for (const stream of fresh) media.addTrack(stream, r.track);
-        }
+        // a track newly received, or one a stream newly holds, is told
+        // (WebRTC 1.0, 4.4.1.6: the addition of a remote track)
+        if (!t.receiving || fresh.length) added.push({ tx, streams, fresh });
       } else if (!receiving && t.receiving) {
         for (const old of t.remoteStreams) removed.push([old, r.track]);
         t.remoteStreams = [];
@@ -1795,7 +2012,19 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         if (remote && type !== 'rollback') {
           s.canTrickle = /^a=ice-options:.*\btrickle\b/m.test(sdp);
         }
-        if (!remote && type === 'offer' && s.iceRestart) s.iceRestart = false;
+        // the credentials to replace go once a local description that
+        // holds none of them is set, or a remote answer to one
+        if (
+          s.iceRestart &&
+          type !== 'rollback' &&
+          (!remote || type !== 'offer')
+        ) {
+          const local = remote ? descriptionsOf(s).currentLocal : sdp;
+          if (!ufragsOf(local).some((u) => s.iceCredentials.has(u))) {
+            s.iceRestart = false;
+            s.iceCredentials = new Set();
+          }
+        }
         const { added, removed } = applyState(s, state, remote, type, sdp);
         const changed = s.signaling !== next;
         s.signaling = next;
@@ -1814,7 +2043,26 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
             }),
           );
         }
-        if (next === 'stable') updateNegotiationNeeded(s);
+        if (next === 'stable') {
+          // a flag that was raised before this description and still is
+          // after it is told again, in a task of its own, if it holds by
+          // then (WebRTC 1.0, 4.4.1.6): what the offer left out — a
+          // channel made while it was out — is asked for anew
+          const was = s.negotiationNeeded;
+          updateNegotiationNeeded(s);
+          if (was) {
+            setTimer(() => {
+              if (s.closed || !s.negotiationNeeded) return;
+              // the flag is worked out late here, so it is worked out again
+              if (s.signaling !== 'stable') return;
+              if (!negotiationNeeded(s)) {
+                s.negotiationNeeded = false;
+                return;
+              }
+              simple(s.self, 'negotiationneeded');
+            }, 0);
+          }
+        }
         updateStates(s);
       },
     );
@@ -1856,6 +2104,46 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     }
   }
 
+  /** This realm, which a certificate made here keeps: an opaque origin is
+   *  no other's, so a certificate of one is its realm's alone. */
+  const REALM = freeze(Object.create(null));
+  const documentOrigin = (): string => String(call('documentOrigin'));
+  /** A certificate of this realm's, from what it holds: its host's number,
+   *  its expiry and fingerprints, the origin that made it and the realm it
+   *  was made in, null where it came from another. */
+  const certificateOf = (held: Any): Any => {
+    const cert = new RTCCertificate(TOKEN);
+    apply(wmSet, slots, [cert, { certificate: true, ...held }]);
+    return cert;
+  };
+  D.certificates?.({
+    is: (value: Any) => isA(value, 'certificate'),
+    // the serialization steps: its expiry, its certificate and keying
+    // material by the host's handle, and its origin (WebRTC 1.0, 4.9)
+    data: (value: Any) => {
+      const c = apply(wmGet, slots, [value]);
+      return {
+        id: c.id,
+        expires: c.expires,
+        fingerprints: c.fingerprints,
+        origin: c.origin,
+      };
+    },
+    from: (data: Any) =>
+      certificateOf({
+        id: Number(data.id),
+        expires: Number(data.expires),
+        fingerprints: Array.isArray(data.fingerprints)
+          ? data.fingerprints.map((f: Any) => ({
+              algorithm: String(f.algorithm),
+              value: String(f.value),
+            }))
+          : [],
+        origin: String(data.origin),
+        realm: null,
+      }),
+  });
+
   class RTCCertificate {
     constructor(token: Any = undefined) {
       if (token !== TOKEN) throw illegalConstructor();
@@ -1864,8 +2152,11 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       return slotOf(this, 'certificate').expires;
     }
     getFingerprints(): Any[] {
+      // a fingerprint is lower-case hexadecimal (WebRTC 1.0, 4.9.2, after
+      // RFC 4572's syntax), whatever case the stack wrote it in
       return slotOf(this, 'certificate').fingerprints.map((f: Any) => ({
         ...f,
+        value: String(f.value).toLowerCase(),
       }));
     }
   }
@@ -1892,6 +2183,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         transceivers: [] as Any[],
         config,
         iceRestart: false,
+        iceCredentials: new Set<string>(),
         transports: new Map(),
         sctpTransport: null,
         anyChannel: false,
@@ -1946,24 +2238,34 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ),
         );
       }
-      const expires =
-        Date.now() +
-        Math.min(Number(alg.expires ?? 30 * 86400e3), 365 * 86400e3);
+      // `RTCCertificateExpiration`'s `[EnforceRange] unsigned long long`
+      let lifetime = 30 * 86400e3;
+      if (typeof keygen === 'object' && alg.expires !== undefined) {
+        const n = Number(alg.expires);
+        if (
+          !Number.isFinite(n) ||
+          Math.trunc(n) < 0 ||
+          Math.trunc(n) > Number.MAX_SAFE_INTEGER
+        ) {
+          return rejected(
+            typeError(
+              "Failed to execute 'generateCertificate': expires is outside the range of an unsigned long long.",
+            ),
+          );
+        }
+        lifetime = Math.trunc(n);
+      }
+      const expires = Date.now() + Math.min(lifetime, 365 * 86400e3);
       return then(
         ask((req) => call('rtcCertificate', req, stringify(normal), expires)),
-        (made: Any) => {
-          const cert = new RTCCertificate(TOKEN);
-          apply(wmSet, slots, [
-            cert,
-            {
-              certificate: true,
-              id: made.id,
-              expires: made.expires,
-              fingerprints: made.fingerprints,
-            },
-          ]);
-          return cert;
-        },
+        (made: Any) =>
+          certificateOf({
+            id: made.id,
+            expires: made.expires,
+            fingerprints: made.fingerprints,
+            origin: documentOrigin(),
+            realm: REALM,
+          }),
       );
     }
 
@@ -2318,8 +2620,16 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     restartIce(): void {
       const s = slotOf(this, 'pc');
       if (s.closed) return;
-      s.iceRestart = true;
-      call('rtcRestartIce', s.id);
+      // [[LocalIceCredentialsToReplace]]: the credentials of the local
+      // descriptions, which before the first is set are none, and asks for
+      // no negotiation (WebRTC 1.0, 4.4.3.2)
+      const d = descriptionsOf(s);
+      s.iceCredentials = new Set([
+        ...ufragsOf(d.currentLocal),
+        ...ufragsOf(d.pendingLocal),
+      ]);
+      s.iceRestart = s.iceCredentials.size > 0;
+      if (s.iceRestart) call('rtcRestartIce', s.id);
       updateNegotiationNeeded(s);
     }
     getConfiguration(): Any {
@@ -2557,10 +2867,18 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       updateNegotiationNeeded(s);
     }
-    createDataChannel(label: Any, init?: Any): Any {
+    createDataChannel(label: Any, ...rest: Any[]): Any {
       const s = slotOf(this, 'pc');
+      // the label is required, so an undefined one is "undefined"
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'createDataChannel' on 'RTCPeerConnection': 1 argument required, but only 0 present.",
+        );
+      }
+      // converted before anything is checked, as Web IDL converts it
+      const name = `${label}`;
       if (s.closed) throw invalidState();
-      const channel = channels.create(s, label, init);
+      const channel = channels.create(s, name, rest[0]);
       if (!s.anyChannel) {
         s.anyChannel = true;
         updateNegotiationNeeded(s);
@@ -2697,8 +3015,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     }
   };
 
-  /** A tone a DTMF sender played (WebRTC 1.0, 7.3): fired by the sender
-   *  workstream 4 builds, made by a page already. */
+  /** A tone a DTMF sender played (WebRTC 1.0, 7.3). */
   class RTCDTMFToneChangeEvent extends Event {
     constructor(type: string, init: Any = {}) {
       const i = dictionary(init, 'RTCDTMFToneChangeEventInit');
@@ -2730,6 +3047,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     RTCStatsReport,
     RTCError,
     RTCErrorEvent,
+    RTCDTMFSender,
     RTCDTMFToneChangeEvent,
   };
   idl(classes);

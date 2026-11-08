@@ -5247,7 +5247,15 @@ list.
   back the same way, held until the worker has made its own. **Anything new a
   worker can ask of a channel is a `ChannelRelay` op**, done in
   `PagePeers.fromWorker`, or the worker's channel has a member that does
-  nothing.
+  nothing. **An `RTCCertificate` is `[Serializable]`, and its origin is the
+  host's to hold**: it clones as its host's number, expiry, fingerprints and
+  origin, and is turned down in a worker, which has no `RTCCertificate`
+  (`certificatesOf`, null after `__becomeWorker`). A realm has two clone
+  walkers, `structuredCopy` for a message within it and `serializeClone` for
+  one that crosses, so **anything new that is serializable joins both**. The
+  realm refuses another origin's certificate first, as the specification
+  has it, and `PagePeers` leaves it out of what a connection is made with
+  (`CERTIFICATE_ORIGINS`), since a page can talk its realm round.
 - **A track's constraints are fitted on the host, in one place**
   (`constraints.ts`, Media Capture's SelectSettings): `getUserMedia` and
   `applyConstraints` hand over the page's constraints as JSON, and what comes
