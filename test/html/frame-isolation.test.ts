@@ -1515,7 +1515,9 @@ test('a sandbox asks nobody for anything: no permission is by no origin', async 
   assert.equal(await until(s, 'asked'), 'denied');
   assert.equal(await until(s, 'state'), 'denied');
   assert.equal(await until(s, 'camera'), 'NotAllowedError');
-  assert.equal(await until(s, 'devices'), '[""]');
+  // nor is it told of a camera: one is `'self'`'s by default (Permissions
+  // Policy), which an origin of none is no frame's
+  assert.equal(await until(s, 'devices'), '[]');
   assert.deepEqual(asked, []);
 });
 

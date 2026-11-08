@@ -445,8 +445,11 @@ function settle(
       h = fit(w / ia, hr, true);
       if (Math.abs(w / h - ia) > 1e-9) w = fit(h * ia, wr, true);
     } else {
-      w = fit(W, wr, true);
-      h = fit(H, hr, true);
+      // the mode's own size, or as much of it as a limit leaves, its ratio
+      // kept: `width: {max: 30}` is a frame 30 wide, not a strip
+      const scale = Math.min(1, wr[1] / W, hr[1] / H);
+      w = fit(W * scale, wr, true);
+      h = fit(H * scale, hr, true);
     }
     // held to the ratio a required constraint asks for
     if (w / h < alo) {

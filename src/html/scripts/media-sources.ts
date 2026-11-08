@@ -303,7 +303,9 @@ export class PageSources {
    *  that permission was denied (Media Capture's "getUserMedia specific
    *  failure is allowed"). */
   private _specific(kinds: ('audio' | 'video')[]): boolean {
-    const seam = this._seam();
+    // no seam is a machine with no devices, which is no one's refusal
+    const seam = this._seams.devices();
+    if (!seam || seam === NO_MEDIA_DEVICES) return true;
     const origin = this._seams.origin();
     return !kinds.some(
       (kind) =>

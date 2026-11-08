@@ -334,7 +334,7 @@ test('a track from the fake devices is sent: addTrack, and the stream it names i
     'twice|InvalidAccessError',
     'msid|true',
     'removed||recvonly',
-    'devices|videoinput true,audioinput true,audiooutput true',
+    'devices|audioinput true,videoinput true,audiooutput true',
     'stopped|ended,ended',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);

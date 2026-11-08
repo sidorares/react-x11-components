@@ -2222,6 +2222,30 @@ test('navigator.platform is the one the user agent names, in a worker as on the 
   );
 });
 
+test('a data: worker runs on any page, at an origin of none, a secure context where its page is', async () => {
+  // HTML 10.2.5.1: a dedicated worker's `data:` script is fetched whatever
+  // its page's origin, and runs opaque; WebRTC's encoded-transform tests make
+  // every worker so, and each one was a SecurityError
+  const doc = await hosted(
+    '<p id="out"></p><script>' +
+      'var src = "onmessage = function (e) { postMessage([e.data, self.origin, isSecureContext, location.protocol].join(\' \')); };";' +
+      'var w = new Worker("data:text/javascript," + encodeURIComponent(src));' +
+      'var b = new Worker("data:text/javascript;base64," + btoa(src));' +
+      'var got = [];' +
+      'function heard(e) { got.push(e.data); if (got.length === 2) document.getElementById("out").textContent = got.sort().join("|"); }' +
+      'w.onmessage = b.onmessage = heard;' +
+      'w.onerror = b.onerror = function (e) { document.getElementById("out").textContent = "error " + e.message; };' +
+      'w.postMessage("plain"); b.postMessage("base64");' +
+      '</script>',
+  );
+  const secure = new URL(PAGE).protocol === 'https:';
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== '', 15000),
+    `base64 null ${secure} data:|plain null ${secure} data:`,
+    doc.logs.join('\n'),
+  );
+});
+
 test('a worker’s imported script is a script of its own: a strict one’s declarations are the worker’s, and what one throws is thrown to its caller', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +
