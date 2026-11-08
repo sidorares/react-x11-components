@@ -582,6 +582,35 @@ test('a document the host shows with no scripts takes its place in the history, 
   assert.equal(session.go(-1)?.url, `${SITE}a.html#z`);
 });
 
+test('the entries of a document left under no-referrer or origin have no URL for the documents after it, the host saying it of one it showed, and have it again once it is shown', async () => {
+  // HTML 7.2.6.5, the `url` getter, read from the records each document
+  // left: a `<meta>`'s policy in a page whose scripts run, and what the
+  // host says of a document it showed with none
+  const session = new HtmlSessionHistory();
+  session.show(`${SITE}h.html`, () => 'origin');
+  const doc = await tab(
+    {
+      'a.html': `<meta name="referrer" content="no-referrer"><p>a</p>${VIEW}`,
+      'b.html': `<p>b</p>${VIEW}`,
+    },
+    `${SITE}a.html`,
+    { session },
+  );
+  assert.deepEqual(await logged(doc, 'view ', 1), [
+    'a.html 2 null,a.html* 1 push null null',
+  ]);
+  doc.run('history.pushState(null, "", "#one"); location.href = "b.html";');
+  assert.equal(
+    (await logged(doc, 'view ', 2))[1],
+    'b.html 4 null,null,null,b.html* 3 push null null',
+  );
+  doc.run('history.back()');
+  assert.equal(
+    (await logged(doc, 'view ', 3))[2],
+    'a.html#one 4 null,a.html*,a.html#one*,b.html 2 traverse b.html null',
+  );
+});
+
 test('a session a host kept is restored, and the document shown again at its entry has the entries of its document as its own', async () => {
   const session = new HtmlSessionHistory({
     entries: [

@@ -91,6 +91,10 @@ export interface SessionRecord {
   navState: string | null;
   /** Where its document was scrolled to as it left the entry. */
   scroll: [number, number] | null;
+  /** Whether the documents after its own read no URL of it (HTML 7.2.6.5,
+   *  the `url` getter): its document's referrer policy was `no-referrer`
+   *  or `origin` as the document was left (`leave`). */
+  hidesUrl?: boolean;
 }
 
 /** A navigation the page started to another document, which the next
@@ -112,6 +116,10 @@ export interface SessionArrival {
   entry: SessionRecord;
   from: SessionRecord | null;
   doc: number;
+  /** The document's referrer policy, read as it is left: its response's
+   *  `Referrer-Policy`, or a `<meta name="referrer">` since. Absent, the
+   *  default, which hides nothing. */
+  referrerPolicy?: () => string;
 }
 
 /** The entries of a session as the page's realm reads them: each with
@@ -412,9 +420,14 @@ export class HtmlSessionHistory {
    * as a push where none was, and the document shown before it goes.
    * Answers its entry. The host keeps its entries from then on: `go()` to
    * one of them moves there and answers null, and `fragment()` adds one.
+   * `referrerPolicy` reads the document's referrer policy as it is left
+   * — its response's `Referrer-Policy`, or a `<meta name="referrer">` in
+   * it — which no engine is there to read: where it is `no-referrer` or
+   * `origin`, the documents after it read no URL of its entries.
    */
-  show(url: string): HtmlSessionEntry {
+  show(url: string, referrerPolicy?: () => string): HtmlSessionEntry {
     const arrival = arriveAt(this, url);
+    if (referrerPolicy) arrival.referrerPolicy = referrerPolicy;
     const state = stateOf(this);
     state.hosted = arrival;
     state.live = {
@@ -478,6 +491,7 @@ export function arriveAt(
   state.inbound = null;
   const address = withoutFragmentDirective(url);
   const from = state.entries[state.index] ?? null;
+  const left = state.shown;
   let type: HtmlNavigationType = plan?.type ?? 'push';
   let entry: SessionRecord | null = null;
   if (type === 'traverse') {
@@ -514,6 +528,7 @@ export function arriveAt(
     }
     entry = record;
   }
+  leave(state, left, from, entry);
   const arrival: SessionArrival = {
     session,
     type,
@@ -534,6 +549,32 @@ export function arriveAt(
   swapOut(state, leaving, entry, type);
   changed(state);
   return arrival;
+}
+
+/**
+ * The document shown before is left for another: its entries hide their
+ * URLs from the documents after it where its referrer policy, as it stands
+ * as it goes, sends no path (HTML 7.2.6.5) — a `<meta>` written after it
+ * loaded counts, and it is read again each time the document is left. The
+ * entry it left is marked too, which a replace takes out of the list and
+ * the next document's `activation.from` still reads.
+ */
+function leave(
+  state: SessionState,
+  left: SessionArrival | null,
+  from: SessionRecord | null,
+  to: SessionRecord,
+): void {
+  if (!left || left.doc === to.doc) return;
+  let policy = '';
+  try {
+    policy = left.referrerPolicy?.() ?? '';
+  } catch {
+    // a document that cannot say has the default, which hides nothing
+  }
+  const hides = policy === 'no-referrer' || policy === 'origin';
+  for (const e of state.entries) if (e.doc === left.doc) e.hidesUrl = hides;
+  if (from?.doc === left.doc) from.hidesUrl = hides;
 }
 
 /**
@@ -589,6 +630,7 @@ function reactivate(session: HtmlSessionHistory, key: string): void {
   if (!live) return;
   state.kept.delete(entry.doc);
   const from = state.entries[state.index] ?? null;
+  leave(state, state.shown, from, entry);
   state.index = at;
   state.plan = null;
   // the arrival its realm writes through, as it was shown now

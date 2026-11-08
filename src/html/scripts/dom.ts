@@ -11072,6 +11072,22 @@ export function installDom(
           }
           const from = made.session.entries[made.session.index] ?? null;
           const fromIndex = made.session.index;
+          // the document left hides its entries' URLs from the documents
+          // after it where its referrer policy, as it stands now, sends no
+          // path (HTML 7.2.6.5): a `<meta>` written after it loaded counts
+          if (from && from.doc !== undefined) {
+            let policy = '';
+            try {
+              policy = str(call('referrerPolicyOf', previous._id));
+            } catch {
+              // a document the host no longer knows has no policy to read
+            }
+            const hides = policy === 'no-referrer' || policy === 'origin';
+            for (const e of made.session.entries) {
+              if (e.doc === from.doc) e.hidesUrl = hides;
+            }
+            from.hidesUrl = hides;
+          }
           // a number no other document of the frame's has: one after them
           // all, since a step back and a replace would otherwise give the
           // document the number of one ahead of it
@@ -31628,6 +31644,10 @@ export function installDom(
      *  one — what `sameDocument` reads for a frame that keeps one history
      *  across the documents it shows. */
     doc?: number;
+    /** Whether its URL is none of another document's to read (HTML
+     *  7.2.6.5, the `url` getter): its document's referrer policy, as it
+     *  stood when the document was left, is `no-referrer` or `origin`. */
+    hidesUrl?: boolean;
   }
   /** What a window's session history stands on. */
   interface SessionContext {
@@ -31928,7 +31948,16 @@ export function installDom(
       return !fullyActive(this._session);
     }
     get url(): string | null {
-      return this._gone ? '' : this._entry.url;
+      if (this._gone) return '';
+      // another document's, where it was fetched under a policy that sends
+      // no path (HTML 7.2.6.5): its own document reads it again
+      if (
+        this._entry.hidesUrl &&
+        ofAnotherDocument(this._session, this._entry)
+      ) {
+        return null;
+      }
+      return this._entry.url;
     }
     get key(): string {
       return this._gone ? '' : this._entry.key;
@@ -33612,6 +33641,8 @@ export function installDom(
       ? [Number(r.scroll[0]) || 0, Number(r.scroll[1]) || 0]
       : undefined,
     other: !mine,
+    // what the document that left it said of its URL (`HtmlSessionHistory`)
+    hidesUrl: !mine && r.hidesUrl === true,
   });
   const seedEntries = (seed: Any): SessionEntry[] | null => {
     if (!Array.isArray(seed.entries) || !seed.entries.length) return null;
