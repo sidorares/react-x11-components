@@ -45,7 +45,7 @@ export type ScriptPseudo =
 /** A view transition's pseudo-element as an effect names it: the tree's
  *  root, or a part and its name. */
 const TRANSITION_PSEUDO =
-  /^view-transition(?:-(?:group|image-pair|old|new)\([^()\s]+\))?$/;
+  /^view-transition(?:-(?:group-children|group|image-pair|old|new)\([^()\s]+\))?$/;
 
 /** A script animation's effect timing (Web Animations 1, 4.11), checked:
  *  a `fill` of `auto` is `none` for a keyframe effect, and a duration of

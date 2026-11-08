@@ -1093,6 +1093,13 @@ export interface TransitionTree {
   style: ComputedStyle;
   groups: {
     name: string;
+    /** The name whose group-children this group is in, or null for the
+     *  tree's root (CSS View Transitions 2, 3.3). Its container comes
+     *  before it. */
+    parent: string | null;
+    /** Its `::view-transition-group-children()`, where a group nests in
+     *  it. */
+    children: ComputedStyle | null;
     group: ComputedStyle;
     pair: ComputedStyle;
     old: TransitionImageBox | null;
@@ -4881,28 +4888,44 @@ class Builder {
     const root = make(laid ?? tree.style, into, 'view-transition');
     if (laid) TRANSITION_STYLES.set(root, tree.style);
     if (!scoped) root.topLayer = true;
+    // each group in its container's group-children, which comes after
+    // the container's image pair (CSS View Transitions 2, 3.3); none where
+    // its container is not drawn
+    const holders = new Map<string, Box>();
     for (const g of tree.groups) {
-      if (g.group.display === 'none') continue;
-      const group = make(g.group, root, `view-transition-group(${g.name})`);
-      if (g.pair.display === 'none') continue;
-      const pair = make(g.pair, group, `view-transition-image-pair(${g.name})`);
-      for (const which of ['old', 'new'] as const) {
-        const image = g[which];
-        if (!image || image.style.display === 'none') continue;
-        const box = new Box('replaced', null, image.style);
-        box.pseudo = 'view-transition';
-        box.replaced = 'image';
-        box.intrinsic = {
-          width: image.width,
-          height: image.height,
-          missing: 0,
-          ratio: image.height > 0 ? image.width / image.height : 0,
-        };
-        placeInFlow(box, image.style, pair);
-        pair.append(box);
-        GENERATED_FROM.set(box, el);
-        TRANSITION_KEYS.set(box, `view-transition-${which}(${g.name})`);
-        TRANSITION_IMAGES.set(box, { name: g.name, which, scope: el });
+      const into = g.parent === null ? root : holders.get(g.parent);
+      if (!into || g.group.display === 'none') continue;
+      const group = make(g.group, into, `view-transition-group(${g.name})`);
+      if (g.pair.display !== 'none') {
+        const pair = make(
+          g.pair,
+          group,
+          `view-transition-image-pair(${g.name})`,
+        );
+        for (const which of ['old', 'new'] as const) {
+          const image = g[which];
+          if (!image || image.style.display === 'none') continue;
+          const box = new Box('replaced', null, image.style);
+          box.pseudo = 'view-transition';
+          box.replaced = 'image';
+          box.intrinsic = {
+            width: image.width,
+            height: image.height,
+            missing: 0,
+            ratio: image.height > 0 ? image.width / image.height : 0,
+          };
+          placeInFlow(box, image.style, pair);
+          pair.append(box);
+          GENERATED_FROM.set(box, el);
+          TRANSITION_KEYS.set(box, `view-transition-${which}(${g.name})`);
+          TRANSITION_IMAGES.set(box, { name: g.name, which, scope: el });
+        }
+      }
+      if (g.children && g.children.display !== 'none') {
+        holders.set(
+          g.name,
+          make(g.children, group, `view-transition-group-children(${g.name})`),
+        );
       }
     }
   }

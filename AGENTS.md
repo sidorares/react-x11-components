@@ -7836,6 +7836,18 @@ padding box (`_placementOf`'s `scope`). A scope's style comes out with
 for an element's; and anything that walks every live run goes through
 `_runs()`.
 
+**A nested group is placed from its container's group-children, and a
+container comes first** (`containingGroups`, `nestedMatrix`, `parentOf`).
+Each state notes, for each name, the name whose group it nests in, by the
+flat tree and the elements that state captured; the new state's is the
+one the tree is built by. `_transitionTree` orders the groups so a
+container is styled, and built, before what it holds, which inherits from
+its `::view-transition-group-children()`, and the builder hangs each group
+in its container's children box or at the top. **Anything that places a
+group goes through `nestedMatrix`**, its keyframe as much as its style, or
+a nested group is placed twice over: once by its container's transform
+and once by its own from the viewport.
+
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
 moves each container's lines and boxes by the offset its element is

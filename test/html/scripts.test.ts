@@ -15619,6 +15619,60 @@ test("a view transition's names are the document's: a shadow tree's sheet names 
   );
 });
 
+test("view-transition-group nests a group in its container's group-children, placed inside the container's border, which it takes the width and corners of", async () => {
+  // CSS View Transitions 2, 3.3 and 12.5.4: a group of an element in a
+  // `contain` one goes in that one's group-children, its transform from the
+  // children's padding box; `nearest` finds the nearest named element, a
+  // name the one of that name, and `normal` none where nothing contains it
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' body { margin: 0 }' +
+      ' #p { position: absolute; left: 20px; top: 10px; width: 100px; height: 100px;' +
+      '   border: solid; border-width: 4px 0 0 6px; border-radius: 8px;' +
+      '   view-transition-name: p; view-transition-group: contain }' +
+      ' #c { margin: 5px 0 0 7px; width: 10px; height: 10px; view-transition-name: c }' +
+      ' #n { width: 10px; height: 10px; view-transition-name: n; view-transition-group: nearest }' +
+      ' #f { margin: 30px 0 0 3px; width: 10px; height: 10px; view-transition-name: f }' +
+      ' html::view-transition-group(*) { animation-play-state: paused }' +
+      '</style></head><body><div id="p"><div id="c"></div><div id="n"></div></div><div id="f"></div><p id="out"></p><script>' +
+      'var r = [], html = document.documentElement;' +
+      'function cs(p, prop) { return getComputedStyle(html, p)[prop]; }' +
+      'r.push(getComputedStyle(document.getElementById("p")).viewTransitionGroup,' +
+      '  getComputedStyle(document.getElementById("c")).viewTransitionGroup);' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  r.push(cs("::view-transition-group-children(p)", "borderTopWidth"),' +
+      '    cs("::view-transition-group-children(p)", "borderLeftWidth"),' +
+      '    cs("::view-transition-group-children(p)", "borderTopLeftRadius"),' +
+      '    cs("::view-transition-group-children(p)", "position"),' +
+      '    cs("::view-transition-group(c)", "transform"),' +
+      '    cs("::view-transition-group(n)", "transform"),' +
+      '    cs("::view-transition-group(f)", "transform"));' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      'contain',
+      'normal',
+      '4px',
+      '6px',
+      '8px',
+      'absolute',
+      // its margin, from the children's padding box
+      'matrix(1, 0, 0, 1, 7, 5)',
+      // after `c`, in the same container
+      'matrix(1, 0, 0, 1, 0, 15)',
+      // nothing contains it: from the viewport
+      'matrix(1, 0, 0, 1, 3, 30)',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test("a view transition's name is read unescaped, and a shadow tree's top element is no root of it", async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>' +

@@ -1026,14 +1026,20 @@ function splitPseudoElement(rule: StyleRule): {
  * of its parent (`:only-child`, the one pseudo-class it may take).
  */
 export interface TransitionPart {
-  part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
+  part:
+    | 'view-transition'
+    | 'group'
+    | 'group-children'
+    | 'image-pair'
+    | 'old'
+    | 'new';
   name: string | null;
   classes: readonly string[];
   onlyChild: boolean;
 }
 
 const TRANSITION_PART =
-  /::view-transition(?:-(group|image-pair|old|new)\(\s*([^()]*?)\s*\))?(:only-child)?$/i;
+  /::view-transition(?:-(group-children|group|image-pair|old|new)\(\s*([^()]*?)\s*\))?(:only-child)?$/i;
 
 /** What each rule for a view transition's pseudo-element styles, by the
  *  rule for its originating element (`splitTransitionPart`). */

@@ -12,6 +12,7 @@ import { readIdent } from './css/parse.js';
 import { timingAt } from './css/animation.js';
 import type { ComputedStyle } from './css/style.js';
 import type { Declaration, KeyframesRule } from './css/parse.js';
+import { invert, multiply } from './css/transform.js';
 import type { Matrix } from './css/transform.js';
 import type { SurfaceLike } from './surfaces.js';
 
@@ -34,6 +35,14 @@ export interface Placement {
   mixBlendMode: string;
   /** The element's `color-scheme` as written (`colorSchemeKeywords`). */
   colorScheme: string;
+  /** Its used border widths, top, right, bottom and left, in device
+   *  pixels: what a group nested in its group is placed inside, and its
+   *  `::view-transition-group-children()`'s border (CSS View Transitions 2,
+   *  3.3). */
+  borders: readonly [number, number, number, number];
+  /** Its `border-radius` and `corner-shape`, computed, as declarations:
+   *  what its `::view-transition-group-children()` is shaped by. */
+  corners: string;
 }
 
 /** An element as the old state had it: where it was, and a picture of it
@@ -59,6 +68,76 @@ export interface TransitionEntry {
   /** The `@keyframes` its group runs from where its element was, where it
    *  has both (`ViewTransitionRun.keyframes`). */
   anim: string | null;
+  /** The name whose group its group nests in, as each state found it (CSS
+   *  View Transitions 2, 12.5.4.3), or null for the tree's root. */
+  oldParent: string | null;
+  newParent: string | null;
+  /** The `@keyframes` its group-children runs from its element's old
+   *  border and corners, where it holds a group and has both. */
+  childrenAnim: string | null;
+}
+
+/** The name whose group an entry's group nests in: the new state's where it
+ *  has one, as the new capture sets it over the old's (12.5.4.4–5). */
+export function parentOf(entry: TransitionEntry): string | null {
+  return entry.el ? entry.newParent : entry.oldParent;
+}
+
+/**
+ * A group's matrix made relative to the group it nests in (CSS View
+ * Transitions 2, 12.5.4.7): from the corner of the container's
+ * `::view-transition-group-children()`'s padding box — the container's
+ * border box, moved in by its border's left and top — where it was from the
+ * viewport's.
+ */
+export function nestedMatrix(m: Matrix, container: Placement): Matrix | null {
+  const [, , , l] = container.borders;
+  const [top] = container.borders;
+  const inner = multiply(container.matrix, [1, 0, 0, 1, l, top]);
+  const back = invert(inner);
+  return back ? multiply(back, m) : null;
+}
+
+/**
+ * The name whose group each captured element's group nests in (CSS View
+ * Transitions 2, 12.5.4.2–3), by the flat tree: what its
+ * `view-transition-group` asks of the participating elements around it —
+ * the nearest whose own is not `normal` for `normal` and `contain`, the
+ * nearest of all for `nearest`, the one of that name for a name where one
+ * is around it, and none for `none`, as Chromium takes it.
+ */
+export function containingGroups(
+  named: readonly { name: string; el: Element; group: string }[],
+  parentOf: (el: Element) => Element | null,
+): Map<string, string | null> {
+  const by = new Map<Element, { name: string; group: string }>();
+  for (const n of named) by.set(n.el, n);
+  const out = new Map<string, string | null>();
+  for (const { name, el, group } of named) {
+    let nearest: string | null = null;
+    let containing: string | null = null;
+    let named: string | null = null;
+    for (let at = parentOf(el); at; at = parentOf(at)) {
+      const p = by.get(at);
+      if (!p) continue;
+      nearest ??= p.name;
+      if (containing === null && p.group !== 'normal' && p.group !== 'none') {
+        containing = p.name;
+      }
+      if (named === null && p.name === group) named = p.name;
+    }
+    out.set(
+      name,
+      group === 'none'
+        ? null
+        : group === 'nearest'
+          ? nearest
+          : group === 'normal' || group === 'contain'
+            ? containing
+            : (named ?? containing),
+    );
+  }
+  return out;
 }
 
 export class ViewTransitionRun {
@@ -88,7 +167,13 @@ export class ViewTransitionRun {
   readonly styled = new Map<
     string,
     {
-      part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
+      part:
+        | 'view-transition'
+        | 'group'
+        | 'group-children'
+        | 'image-pair'
+        | 'old'
+        | 'new';
       name: string;
       classes: readonly string[];
       onlyChild: boolean;
