@@ -366,6 +366,55 @@ test('the document a navigation leaves hears where it goes in pageswap, after it
   assert.equal(swaps[1], 'true null traverse a.html b.html true true false 1');
 });
 
+test('a cross-document view transition reaches the next document only where the one it left opted in, captured and was not skipped, and never on a reload', async () => {
+  const OPT = '<style>@view-transition { navigation: auto; types: t1 }</style>';
+  const REVEAL =
+    '<script>onpagereveal = function (e) {' +
+    '  var vt = e.viewTransition;' +
+    '  console.log("reveal " + fileOf(location.href) + " " + (vt ? [...vt.types].join(",") || "vt" : "null"));' +
+    '};</script>';
+  const doc = await tab(
+    {
+      // opted in: the next document has a transition
+      'a.html': `${OPT}<p>a</p>${VIEW}${REVEAL}`,
+      // opted in, but its own is skipped as it goes
+      'b.html':
+        `${OPT}<p>b</p>${VIEW}${REVEAL}<script>` +
+        'onpageswap = function (e) { if (e.viewTransition) e.viewTransition.skipTransition(); };' +
+        '</script>',
+      // opted in, but its opt-in is taken out before it goes
+      'c.html': `${OPT.replace('<style>', '<style id="o">')}<p>c</p>${VIEW}${REVEAL}`,
+      // not opted in itself
+      'd.html': `<p>d</p>${VIEW}${REVEAL}`,
+    },
+    `${SITE}a.html`,
+  );
+  await logged(doc, 'reveal ', 1);
+  doc.run('location.href = "b.html";');
+  await logged(doc, 'reveal ', 2);
+  doc.run('location.href = "c.html";');
+  await logged(doc, 'reveal ', 3);
+  // a reload is no transition, opted in or not
+  doc.run('location.reload();');
+  await logged(doc, 'reveal ', 4);
+  doc.run('document.getElementById("o").remove(); location.href = "a.html";');
+  await logged(doc, 'reveal ', 5);
+  doc.run('location.href = "d.html";');
+  const reveals = await logged(doc, 'reveal ', 6);
+  assert.deepEqual(
+    reveals,
+    [
+      'a.html null',
+      'b.html t1',
+      'c.html null',
+      'c.html null',
+      'a.html null',
+      'd.html null',
+    ],
+    doc.logs.join('\n'),
+  );
+});
+
 test('a reload keeps the entry, its key and its state, and a replace takes the entry’s place with its key', async () => {
   const doc = await tab(
     {

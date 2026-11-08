@@ -7833,6 +7833,18 @@ specification checks it, as the new state is captured and at each frame
 (`sizeMoved`): a `resizeTo()` tells `resize` at the next frame, not at once,
 and skipping there settled `ready` before the update did.
 
+**A cross-document transition crosses as a fact on the session, not as
+an object** (`outboundParams`, `inboundParams` in `scripts/session.ts`).
+The two documents are two realms, perhaps two `<Html>`s, so the old one's
+capture tells the session it captured, at what size, for the document
+shown in its place, and the new one's reveal takes it once. `arriveAt`
+clears it, since a navigation that overtakes another must not inherit
+what that one captured. **Anything new the new document needs of the old
+one's transition joins those params**, never a global of either realm. An
+outbound transition's `ready` is marked handled: its realm is torn down
+as it is skipped, and a rejection from a disposed realm reaches the
+host's own `unhandledRejection`.
+
 **A transition is of a scope, and there is one run per scope**
 (`HtmlViewNode._vt` for the document's, `_scopedVts` by element for those
 an element started, CSS View Transitions 2). Each op the realm asks
