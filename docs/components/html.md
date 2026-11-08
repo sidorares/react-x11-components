@@ -1832,12 +1832,23 @@ of its scripts runs, so what a browser draws after the event this draws
 before it. The `viewTransition` of both is null.
 
 Where a document opts in with `@view-transition { navigation: auto }`
-(including inside `@layer` / `@media`, and by layer order among competing
-rules — a later named layer wins, unlayered over any), a same-origin
-navigation's `pageswap` and the next document's `pagereveal` carry a
-`ViewTransition`. `pageswap` runs before the old state is captured, so a
-listener can still set `view-transition-name`. Handing that capture into
-the new document's first paint when the view remounts is not complete yet.
+(including inside `@layer`, and inside `@media` or `@supports` only while
+the condition holds; by layer order among competing rules — a later named
+layer wins, unlayered over any — and the last rule winning whether or not
+it says `navigation`), a same-origin navigation's `pageswap` and the next
+document's `pagereveal` carry a `ViewTransition`, with the winning rule's
+`types` on each side. `pageswap` runs before the old state is captured, so
+a listener can still set `view-transition-name` or skip the transition.
+The next document has one only where the one it left captured its old
+state (CSS View Transitions 2, "inbound view transition params"): that one
+opted in as it went, had been revealed, was not reloading, was not held in
+`pageswap` past four seconds and was not skipped there, and the next is of
+its origin — a sandbox's opaque one is not —, opts in itself, is revealed
+within four seconds of the capture, and has a viewport of the size the old
+one had. A navigation that overtakes another takes nothing of what the
+other captured. What is handed across is only that it captured: the old
+state's pictures are not carried into the new document's tree yet, so the
+transition runs on the new state alone.
 Also not yet: where a document was scrolled to restored when it is shown
 again, and its `history.scrollRestoration`, which are its own; a traversal
 the host starts with `session.go` told as a `navigate` in the document it

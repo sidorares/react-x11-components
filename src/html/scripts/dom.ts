@@ -3785,14 +3785,33 @@ export function installDom(
    * opts in and the navigation that showed this document came from another.
    */
   let revealOwed = false;
+  /** Whether the document has been revealed (HTML), before which it can
+   *  start no outbound view transition (CSS View Transitions 2, "can
+   *  initiate outbound view transition"). */
+  let revealed = false;
   const reveal = (): void => {
     revealOwed = false;
     if (document._unloaded) return;
+    revealed = true;
     let viewTransition: Any = null;
     try {
-      const activation = navigation.activation;
-      if (activation?.from && navigationAutoOptedIn() && !activeOf(document)) {
-        viewTransition = beginCrossDocumentTransition(document, 'inbound');
+      // what the document before it captured, which it has only where
+      // that one opted in, was of its origin, captured in time and was
+      // not skipped first (CSS View Transitions 2, "resolve inbound
+      // cross-document view-transition"); and it opts in itself
+      const params = call('vtInbound');
+      // and only of its own origin, which a sandbox's opaque one is not
+      const types =
+        typeof params === 'string' && navigation.activation?.from
+          ? navigationTypes()
+          : null;
+      if (types && !activeOf(document)) {
+        viewTransition = beginCrossDocumentTransition(
+          document,
+          'inbound',
+          types,
+          params === '0x0' ? null : params,
+        );
       }
     } catch {
       viewTransition = null;
@@ -20241,16 +20260,21 @@ export function installDom(
   };
 
   /**
-   * Whether this document opts into cross-document view transitions
-   * (CSS View Transitions 2, 2.1): the winning `@view-transition` rule's
-   * `navigation` is `auto`. Layers win as the cascade does
-   * (`at-rule-in-layer-cascade`), and within a layer document order;
+   * Whether this document opts into cross-document view transitions, and
+   * with what types (CSS View Transitions 2, "resolve @view-transition
+   * rule"): the winning `@view-transition` rule's `types` where its
+   * `navigation` is `auto`, and null where the document is hidden, has no
+   * rule, or the last says `none` or nothing. Layers win as the cascade
+   * does (`at-rule-in-layer-cascade`), and within a layer document order;
    * unlayered beats every layer. An `@import … layer(name)` carries its
-   * imported `@view-transition` under that name.
+   * imported `@view-transition` under that name, and a rule in a
+   * condition that does not hold is none.
    */
-  const navigationAutoOptedIn = (): boolean => {
+  const navigationTypes = (): string[] | null => {
+    if (document.visibilityState === 'hidden') return null;
     type Cand = {
       navigation: string;
+      types: readonly string[];
       layer: readonly number[] | null;
       order: number;
     };
@@ -20290,10 +20314,27 @@ export function installDom(
         const rule = rules[i];
         if (!rule) continue;
         if (rule instanceof CSSViewTransitionRule) {
-          const nav = str(rule.navigation);
-          if (nav === 'auto' || nav === 'none') {
-            candidates.push({ navigation: nav, layer, order: ordinal++ });
+          // the last rule wins whether or not it says `navigation`, which
+          // is `none` where it does not
+          const nav = str(rule.navigation) === 'auto' ? 'auto' : 'none';
+          {
+            candidates.push({
+              navigation: nav,
+              types: [...(rule.types ?? [])].map(str),
+              layer,
+              order: ordinal++,
+            });
           }
+          continue;
+        }
+        // a rule in a condition that does not hold is none of the
+        // document's (CSS Conditional 3)
+        if (
+          (rule instanceof CSSMediaRule &&
+            !matchMedia(str(rule.media?.mediaText ?? '')).matches) ||
+          (rule instanceof CSSSupportsRule &&
+            call('supports', str(rule.conditionText ?? '')) !== true)
+        ) {
           continue;
         }
         if (rule instanceof CSSLayerBlockRule) {
@@ -20356,14 +20397,18 @@ export function installDom(
         }
       }
     } catch {
-      return false;
+      return null;
     }
-    if (!candidates.length) return false;
+    if (!candidates.length) return null;
     candidates.sort((a, b) => {
       const by = compareVtLayers(a.layer, b.layer);
       return by !== 0 ? by : a.order - b.order;
     });
-    return candidates[candidates.length - 1]!.navigation === 'auto';
+    const won = candidates[candidates.length - 1]!;
+    // a `types` of `none` is no types
+    return won.navigation === 'auto'
+      ? won.types.filter((t) => t !== 'none')
+      : null;
   };
 
   /**
@@ -20378,12 +20423,21 @@ export function installDom(
   const beginCrossDocumentTransition = (
     doc: Any,
     side: 'outbound' | 'inbound',
+    types: readonly string[] = [],
+    size: string | null = null,
   ): Any => {
     const vt = new ViewTransition(null, TRANSITION_KEY);
     vt._doc = doc;
+    for (const t of types) vt._types.add(t);
+    // the old document's snapshot containing block, which a new one of
+    // another size skips the transition for (CSS View Transitions 2)
+    vt._size = size;
     vt._called = true;
     vt._phase = 'update-callback-called';
     vt._resolveDone();
+    // the old document's is skipped as it goes, in a realm that reports
+    // nothing from then on
+    if (side === 'outbound') vt._ready.catch(() => {});
     if (doc === document) activeTransition = vt;
     else frameTransitions.set(doc, vt);
     tellActive(doc, vt);
@@ -20400,10 +20454,16 @@ export function installDom(
     return vt;
   };
 
+  /** How long `pageswap` may hold a document before its outbound view
+   *  transition is skipped: Chromium's four seconds. */
+  const OUTBOUND_TIMEOUT = 4000;
   /** Capture the old document after `pageswap` has run (CSS View
    *  Transitions 2, 3.1): names a listener just set are included. */
   const captureOutboundOld = (vt: Any): void => {
-    if (!vt || vt._phase === 'done') return;
+    if (!vt || vt._phase === 'done') {
+      call('vtOutbound', '');
+      return;
+    }
     const shared = str(transitionOp(vt, 'vtOld'));
     if (shared) {
       skipTransition(
@@ -20413,7 +20473,12 @@ export function installDom(
           'InvalidStateError',
         ),
       );
+      call('vtOutbound', '');
+      return;
     }
+    // what the document shown in its place is handed ("outbound
+    // post-capture steps"): only that this one captured, and at what size
+    call('vtOutbound', snapshotSize(vt) ?? '0x0');
   };
 
   /**
@@ -33431,15 +33496,42 @@ export function installDom(
       }
     }
     let viewTransition: Any = null;
-    if (activation && navigationAutoOptedIn() && !activeOf(document)) {
-      viewTransition = beginCrossDocumentTransition(document, 'outbound');
+    // a reload is never one (CSS View Transitions 2, "can navigation
+    // trigger a cross-document view-transition?")
+    const types =
+      revealed && activation && activation.navigationType !== 'reload'
+        ? navigationTypes()
+        : null;
+    if (types) {
+      // one already running in it is skipped for this one
+      const active = activeOf(document);
+      if (active) {
+        skipTransition(
+          active,
+          new DOMException('Skipped by a navigation', 'AbortError'),
+        );
+      }
+      viewTransition = beginCrossDocumentTransition(
+        document,
+        'outbound',
+        types,
+      );
     }
+    const began = Date.now();
     dispatch(
       windowTarget,
       asTrusted(new PageSwapEvent('pageswap', { activation, viewTransition })),
     );
+    // a listener that held the document past the time a transition may
+    // take has it skipped, as Chromium does
+    if (viewTransition && Date.now() - began > OUTBOUND_TIMEOUT) {
+      skipTransition(
+        viewTransition,
+        new DOMException('The page took too long to swap', 'TimeoutError'),
+      );
+    }
     // after pageswap: capture includes names the listener set
-    if (viewTransition) captureOutboundOld(viewTransition);
+    captureOutboundOld(viewTransition);
   };
 
   // An accessor of a base interface answers for any node, as a browser's

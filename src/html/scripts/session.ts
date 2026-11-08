@@ -178,6 +178,11 @@ interface SessionState {
   cache: number;
   /** Those it keeps, by number, the one left longest ago first. */
   kept: Map<number, Live>;
+  /** What the document that went captured for a cross-document view
+   *  transition into the one shown in its place (CSS View Transitions 2,
+   *  "inbound view transition params"), by that one's number: its snapshot
+   *  containing block's size, and when. */
+  inbound: { doc: number; size: string; at: number } | null;
 }
 
 const STATES = new WeakMap<HtmlSessionHistory, SessionState>();
@@ -197,6 +202,7 @@ function stateOf(session: HtmlSessionHistory): SessionState {
       owed: false,
       cache: 0,
       kept: new Map(),
+      inbound: null,
     };
     STATES.set(session, state);
   }
@@ -468,6 +474,8 @@ export function arriveAt(
   const state = stateOf(session);
   const plan = state.plan;
   state.plan = null;
+  // what a navigation this one overtook captured is none of its own
+  state.inbound = null;
   const address = withoutFragmentDirective(url);
   const from = state.entries[state.index] ?? null;
   let type: HtmlNavigationType = plan?.type ?? 'push';
@@ -694,6 +702,39 @@ export function writeSession(
   state.index = Math.max(0, Math.min(next.length - 1, index));
   changed(state);
 }
+
+/** The document that goes captured its old state for a cross-document view
+ *  transition (CSS View Transitions 2, "outbound post-capture steps"): what
+ *  the document shown in its place finds as it is revealed, or, given
+ *  null, nothing. Only a document no longer the one shown is going. */
+export function outboundParams(
+  arrival: SessionArrival,
+  size: string | null,
+): void {
+  const state = stateOf(arrival.session);
+  const to = state.shown;
+  if (!to || to === arrival) return;
+  state.inbound = size === null ? null : { doc: to.doc, size, at: now() };
+}
+
+/** How long the document shown in its place may take to be revealed and
+ *  still run the transition (CSS View Transitions 2, the "implementation-
+ *  defined duration"): Chromium's four seconds. */
+const INBOUND_TIMEOUT = 4000;
+
+/** What the document that went before this one captured for it, taken
+ *  once (CSS View Transitions 2, "resolve inbound cross-document
+ *  view-transition"): its snapshot containing block's size, or null where
+ *  it captured nothing, nothing in time, or for another document. */
+export function inboundParams(arrival: SessionArrival): string | null {
+  const state = stateOf(arrival.session);
+  const inbound = state.inbound;
+  if (!inbound || inbound.doc !== arrival.doc) return null;
+  state.inbound = null;
+  return now() - inbound.at > INBOUND_TIMEOUT ? null : inbound.size;
+}
+
+const now = (): number => Date.now();
 
 /** The page planned a navigation to another document, which the next one
  *  shown with the session takes. */

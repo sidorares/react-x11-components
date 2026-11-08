@@ -238,7 +238,13 @@ import {
   sandboxOfPolicy,
 } from './sandbox.js';
 import { framingRefused } from './framing.js';
-import { planSession, sessionView, writeSession } from './session.js';
+import {
+  inboundParams,
+  outboundParams,
+  planSession,
+  sessionView,
+  writeSession,
+} from './session.js';
 import type { SessionArrival, SessionRecord } from './session.js';
 import { withoutFragmentDirective } from '../text-fragments.js';
 import {
@@ -6376,6 +6382,17 @@ export class DomHost {
         );
         return null;
       }
+      // a cross-document view transition's old state captured, its
+      // snapshot containing block's size, for the document shown in its
+      // place — or '' for none — and what this one is handed of the one
+      // before it (CSS View Transitions 2, "inbound view transition params")
+      case 'vtOutbound':
+        if (this.arrival) {
+          outboundParams(this.arrival, typeof a === 'string' && a ? a : null);
+        }
+        return null;
+      case 'vtInbound':
+        return this.arrival ? inboundParams(this.arrival) : null;
       case 'sessionPlan': {
         if (!this.arrival) return null;
         const plan = JSON.parse(text(a)) as Record<string, unknown> | null;
