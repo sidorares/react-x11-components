@@ -81,15 +81,23 @@ export interface WAssociation {
   readonly flush?: WEvent<[]>;
   /** What is still to go, and what went and is not acknowledged yet, the
    *  second a private of its own (see `close`). */
-  readonly outboundQueue?: { readonly streamId: number }[];
-  readonly sentQueue?: { readonly streamId: number }[];
+  readonly outboundQueue?: WFifo<{ readonly streamId: number }>;
+  readonly sentQueue?: WFifo<{ readonly streamId: number }>;
+}
+
+/** One of werift's queues: an array to 0.25, and from 0.26 a `FifoQueue`
+ *  of its own, which has none of an array's methods but `push`, and
+ *  iterates from its head. */
+interface WFifo<T> extends Iterable<T> {
+  push(...items: T[]): unknown;
 }
 
 /** What an empty message is queued on: werift's own send queue, a private
  *  of its `RTCSctpTransport`'s (see `sendEmpty`). */
 interface WQueue {
-  dataChannelQueue?: [WChannel, number, Uint8Array][];
-  dataChannelFlush?(): Promise<void>;
+  dataChannelQueue?: WFifo<[WChannel, number, Uint8Array]>;
+  /** Async to 0.25, and from 0.26 one pass that returns nothing. */
+  dataChannelFlush?(): Promise<void> | void;
 }
 
 export interface WSctp extends WQueue {
@@ -236,7 +244,8 @@ class WeriftChannel implements RTCDataChannelLike {
   private _sendEmpty(text: boolean): void {
     const sctp = this._sctp();
     const queue = sctp?.dataChannelQueue;
-    if (!sctp || !Array.isArray(queue) || !sctp.dataChannelFlush) return;
+    if (!sctp || typeof queue?.push !== 'function' || !sctp.dataChannelFlush)
+      return;
     // werift takes what it flushed off the channel's bufferedAmount
     this._ch.addBufferedAmount(1);
     queue.push([this._ch, text ? 56 : 57, new Uint8Array([0])]);
@@ -250,9 +259,10 @@ class WeriftChannel implements RTCDataChannelLike {
   private _unacknowledged(): boolean {
     if (this._ch.bufferedAmount > 0) return true;
     const sctp = this._sctp()?.sctp;
-    const ours = (chunk: { readonly streamId: number }) =>
-      chunk.streamId === this._ch.id;
-    return !!(sctp?.outboundQueue?.some(ours) || sctp?.sentQueue?.some(ours));
+    return (
+      holds(sctp?.outboundQueue, this._ch.id) ||
+      holds(sctp?.sentQueue, this._ch.id)
+    );
   }
 
   /**
@@ -285,6 +295,17 @@ class WeriftChannel implements RTCDataChannelLike {
     this._ch.bufferedAmountLow.subscribe(settled);
     this._sctp()?.sctp?.flush?.subscribe(settled);
   }
+}
+
+/** Whether one of werift's chunk queues holds a chunk of the stream. Walked
+ *  rather than asked, since a `FifoQueue` has no `some`. */
+function holds(
+  queue: Iterable<{ readonly streamId: number }> | undefined,
+  stream: number | null | undefined,
+): boolean {
+  if (!queue) return false;
+  for (const chunk of queue) if (chunk.streamId === stream) return true;
+  return false;
 }
 
 /** What werift is asked for a data channel the page made. */
