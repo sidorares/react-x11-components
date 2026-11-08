@@ -451,6 +451,12 @@ const SET_ASIDE = new WeakMap<
  */
 const VIEWPORT_SHIFT = new WeakMap<BoxTree, number>();
 
+/** The same down: how far each tree's document is moved down for what
+ *  spills past the top of a viewport whose scroll origin is at its bottom
+ *  — a vertical page's under `direction: rtl`, a `sideways-lr` one's under
+ *  `ltr` (`viewportShiftYOf`). */
+const VIEWPORT_SHIFT_Y = new WeakMap<BoxTree, number>();
+
 /**
  * What transitions make of an anchored box's values once it is placed:
  * `after` is the style it was placed by, its `anchor()` insets and
@@ -489,33 +495,58 @@ export function viewportShiftOf(tree: BoxTree): number {
   return VIEWPORT_SHIFT.get(tree) ?? 0;
 }
 
+/** How far `tree`'s document is moved down for its scroll origin
+ *  (`VIEWPORT_SHIFT_Y`), in device pixels. */
+export function viewportShiftYOf(tree: BoxTree): number {
+  return VIEWPORT_SHIFT_Y.get(tree) ?? 0;
+}
+
 /** A viewport in the document's coordinates as the layout has them: the
- *  node hands it over where the document is drawn, moved right by `by`. */
-function unshifted<V extends { x: number }>(v: V | null, by: number): V | null {
-  return v && by ? { ...v, x: v.x - by } : v;
+ *  node hands it over where the document is drawn, moved right by `by`
+ *  and down by `down`. */
+function unshifted<V extends { x: number; y: number }>(
+  v: V | null,
+  by: number,
+  down = 0,
+): V | null {
+  return v && (by || down) ? { ...v, x: v.x - by, y: v.y - down } : v;
+}
+
+/** The style the document's principal writing mode is the root element's
+ *  of, where the tree's root box is an anonymous one around it — as it is
+ *  where the root element's writing mode is vertical, a frame turned inside
+ *  the box that stands for the viewport. */
+function principalStyle(root: Box): ComputedStyle {
+  return (root.el ? root : (root.children.find((c) => c.el) ?? root)).style;
 }
 
 /** Whether a document's viewport has its scroll origin at its right: its
  *  principal writing mode, the root's, starts across at the right — `rtl`
  *  in a horizontal one, and `vertical-rl` and `sideways-rl`. */
 function viewportStartsRight(root: Box): boolean {
-  // the root element's, where the tree's root box is an anonymous one
-  // around it — as it is where the root element's writing mode is vertical,
-  // a frame turned inside the box that stands for the viewport
-  const style = (root.el ? root : (root.children.find((c) => c.el) ?? root))
-    .style;
+  const style = principalStyle(root);
   return style.writingMode === 'horizontal-tb'
     ? style.direction === 'rtl'
     : style.writingMode.endsWith('-rl');
 }
 
-/** Move the document across by `dx`, all but what is fixed to the viewport,
- *  and what a layout that stopped set aside with it. */
-function shiftDocument(tree: BoxTree, dx: number): void {
-  translate(tree.root, dx, 0, fixedToViewport);
+/** Whether a document's viewport has its scroll origin at its bottom: its
+ *  principal writing mode runs its lines up — a vertical one under `rtl`,
+ *  but `sideways-lr`, which is turned the other way, under `ltr`. */
+function viewportStartsBottom(root: Box): boolean {
+  const style = principalStyle(root);
+  if (style.writingMode === 'horizontal-tb') return false;
+  return (style.direction === 'rtl') !== (style.writingMode === 'sideways-lr');
+}
+
+/** Move the document across by `dx` and down by `dy`, all but what is
+ *  fixed to the viewport, and what a layout that stopped set aside with
+ *  it. */
+function shiftDocument(tree: BoxTree, dx: number, dy = 0): void {
+  translate(tree.root, dx, dy, fixedToViewport);
   for (const boxes of SET_ASIDE.get(tree)?.boxes.values() ?? []) {
     for (const box of boxes) {
-      if (!fixedToViewport(box)) translate(box, dx, 0, fixedToViewport);
+      if (!fixedToViewport(box)) translate(box, dx, dy, fixedToViewport);
     }
   }
 }
@@ -1811,9 +1842,11 @@ export function layoutDocument(
   putBack(tree);
   // where the last layout put it, which a layout keeps what it kept of
   const shifted = VIEWPORT_SHIFT.get(tree) ?? 0;
-  if (shifted) {
-    shiftDocument(tree, -shifted);
+  const shiftedDown = VIEWPORT_SHIFT_Y.get(tree) ?? 0;
+  if (shifted || shiftedDown) {
+    shiftDocument(tree, -shifted, -shiftedDown);
     VIEWPORT_SHIFT.delete(tree);
+    VIEWPORT_SHIFT_Y.delete(tree);
   }
   const marks = layerMarks.moved;
   // whether any box's layout asks whether it holds a frame
@@ -1854,7 +1887,7 @@ export function layoutDocument(
     placedTransition: PLACED_TRANSITIONS.get(tree),
     ...(tree.anchors
       ? {
-          viewport: unshifted(viewportOf(tree), shifted),
+          viewport: unshifted(viewportOf(tree), shifted, shiftedDown),
           scrollOf: (box: Box) => wantedScroll(tree, box),
           question: QUESTIONS.has(tree),
         }
@@ -2044,9 +2077,15 @@ export function layoutDocument(
   const spill = viewportStartsRight(root)
     ? Math.round(viewportReach(root).left)
     : 0;
-  if (spill > 0) {
-    shiftDocument(tree, spill);
-    VIEWPORT_SHIFT.set(tree, spill);
+  // and one whose origin is at its bottom what spills past its top, which
+  // the document is moved down by the same way (`VIEWPORT_SHIFT_Y`)
+  const spillDown = viewportStartsBottom(root)
+    ? Math.round(viewportReach(root).top)
+    : 0;
+  if (spill > 0 || spillDown > 0) {
+    shiftDocument(tree, Math.max(0, spill), Math.max(0, spillDown));
+    if (spill > 0) VIEWPORT_SHIFT.set(tree, spill);
+    if (spillDown > 0) VIEWPORT_SHIFT_Y.set(tree, spillDown);
   }
   // the ink of what nothing laid out or moved, where the layout kept
   // blocks, as the walk after the last layout found it
@@ -2065,7 +2104,11 @@ export function layoutDocument(
   // way to it clips it (CSS Overflow 3, 2.2): an absolute box 900px down
   // an `overflow: hidden` card made a page a browser shows 400px tall run
   // on to 980, blank
-  let bottom = Math.max(flowBottom, reach);
+  let bottom = Math.max(flowBottom + Math.max(0, spillDown), reach);
+  // and what the frame a vertical root element turns holds past its foot,
+  // which the root, filling the viewport's height, does not reach
+  if (tree.vertical && !root.el)
+    bottom = Math.max(bottom, viewportReach(root).bottom);
   // and how far across a positioned box no box clips reaches, which the
   // ink of a box that clips what it holds leaves out where it is
   // positioned against something outside that box
@@ -2110,7 +2153,10 @@ export function layoutDocument(
       : viewportWidth;
   return {
     width,
-    height: bottom,
+    // from an origin at the bottom, what spills past the bottom is out of
+    // reach, and the document is as tall as the window and what spills
+    // past its top
+    height: spillDown > 0 ? viewportHeight + spillDown : bottom,
     readsViewportHeight: ctx.under.read,
     partial: (aside?.size ?? 0) > 0,
   };
@@ -2161,7 +2207,8 @@ export function layoutApart(
     asideIn(tree) ||
     was.partial ||
     // what the document is moved right by is no containing block's
-    VIEWPORT_SHIFT.has(tree)
+    VIEWPORT_SHIFT.has(tree) ||
+    VIEWPORT_SHIFT_Y.has(tree)
   ) {
     return null;
   }
@@ -4416,6 +4463,12 @@ function frameInlineSize(box: Box, frame: Box, ctx: LayoutContext): number {
     Math.max(0, base - box.marginTop - box.marginBottom),
   );
   const available = Math.max(0, room - box.verticalExtra);
+  // the root element's is no orthogonal flow in a browser, which hands its
+  // writing mode to the initial containing block: it fills it, as a
+  // horizontal root fills the viewport's width, whatever it holds
+  if (box.el && isRootElement(box.el) && box.parent?.parent === null) {
+    return available;
+  }
   if (frame.intrinsicMaxContent < 0) {
     frame.intrinsicMaxContent = measureIntrinsicWidth(frame, ctx, Infinity);
   }

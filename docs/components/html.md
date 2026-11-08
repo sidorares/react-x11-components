@@ -7475,9 +7475,12 @@ root's frame. A fixed box there is drawn with the frame, which the pane
 scrolls, so where the document has anchors it is placed against the
 viewport as the pane has it at its layout, and a scroll of the pane lays
 the document out again: an anchored one follows its anchor and takes the
-position option that fits where the viewport is now. Not yet for such a
-page: its vertical scroll origin at the bottom under `direction: rtl`, and
-a fixed box in a document with no anchors, which scrolls with the frame.
+position option that fits where the viewport is now. Such a page starts
+at the bottom where its lines run upwards, under `direction: rtl` (or
+`sideways-lr` without it): what spills past the top scrolls, and
+`scrollY` and `scrollTop` count from the bottom, negative into the spill,
+as `scrollX` does from the right. Not yet for such a page: a fixed box in
+a document with no anchors, which scrolls with the frame.
 
 **A document wider than its window scrolls the pane around it across**, as
 far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):

@@ -227,6 +227,26 @@ metric(
 );
 
 metric(
+  'a vertical-rl rtl document starts the pane at its scroll origin, at its bottom',
+  async () => {
+    // CSS Overflow 3, 2.3: the viewport's scroll origin is at its block
+    // start and inline start; a vertical-rl line under rtl runs upwards, so
+    // what spills does so past the top, and the pane starts at the bottom
+    const { el: node } = await renderScrolled(
+      '<html dir="rtl" style="writing-mode: vertical-rl"><style>body{margin:0}' +
+        '#tall{width:10px;height:1000px;background:#0000ff}</style>' +
+        '<div id="tall"></div></html>',
+      300,
+    );
+    await act();
+    await act();
+    const pane = paneOf(node) as unknown as { scrollY: number };
+    assert.ok(node.scrollOriginY() > 0, 'what spills past the top scrolls');
+    assert.equal(pane.scrollY, node.scrollOriginY(), 'started at the origin');
+  },
+);
+
+metric(
   'an rtl document that spills past its left starts the pane at its scroll origin, at its right, and scrolls left into the spill',
   async () => {
     // CSS Overflow 3, 2.3: the viewport's scroll origin is at its right in

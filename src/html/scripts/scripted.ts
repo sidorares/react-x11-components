@@ -119,6 +119,9 @@ export interface ScriptViewport {
    *  its left — an `rtl` page's — and `scrollX` is what is scrolled from
    *  the left of all of it. 0 where it is left out. */
   originX?: number;
+  /** Where `scrollY` counts from, the same way: past 0 where the origin is
+   *  at the bottom of a document that spills past its top. */
+  originY?: number;
   zoom: number;
   dpr: number;
   left: number;
@@ -501,6 +504,7 @@ interface PaneNode {
   oweScrollReach?: (x: number) => void;
   oweScrollDown?: (y: number) => void;
   scrollOriginX?: () => number;
+  scrollOriginY?: () => number;
   pageScrollX?: () => number | null;
   pageScrollY?: () => number | null;
   getClientRects(): { x: number; y: number; width: number; height: number }[];
@@ -539,6 +543,7 @@ function viewportOf(node: PaneNode | null): ScriptViewport {
     scrollX: (node?.pageScrollX?.() ?? pane?.scrollX ?? 0) / dpr,
     scrollY: (node?.pageScrollY?.() ?? pane?.scrollY ?? 0) / dpr,
     originX: (node?.scrollOriginX?.() ?? 0) / dpr,
+    originY: (node?.scrollOriginY?.() ?? 0) / dpr,
     zoom,
     dpr,
     left: box?.x ?? 0,

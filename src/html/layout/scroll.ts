@@ -796,7 +796,12 @@ export function scrollableRect(
  * from the initial containing block's left, `left` how far what is in it
  * spills past that left.
  */
-export function viewportReach(root: Box): { right: number; left: number } {
+export function viewportReach(root: Box): {
+  right: number;
+  left: number;
+  top: number;
+  bottom: number;
+} {
   const reach = reachOf(
     0,
     null,
@@ -814,6 +819,15 @@ export function viewportReach(root: Box): { right: number; left: number } {
       0,
       reach.leftmost === Infinity ? 0 : -reach.leftmost,
       reach.outLeftmost === Infinity ? 0 : -reach.outLeftmost,
+    ),
+    top: Math.max(
+      0,
+      reach.topmost === Infinity ? 0 : -reach.topmost,
+      reach.outTopmost === Infinity ? 0 : -reach.outTopmost,
+    ),
+    bottom: Math.max(
+      reach.bottom === -Infinity ? 0 : reach.bottom,
+      reach.outBottom === -Infinity ? 0 : reach.outBottom,
     ),
   };
 }
