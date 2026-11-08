@@ -128,6 +128,7 @@ import {
   VIEWPORT_WIDTH,
   readsFace,
   highlightKey,
+  UNRENDERED,
 } from './css/cascade.js';
 import type {
   BelowReach,
@@ -1164,15 +1165,23 @@ export class HtmlViewNode extends Node {
    * pseudo-element's: what a transition starts from (`Cascade.previous`).
    * None where the tree was styled by other sheets: a stylesheet arriving
    * is no change to transition through, as a browser that waits for it to
-   * draw shows none.
+   * draw shows none — but for an element new to the tree, which had no
+   * style before whatever the sheets did. `UNRENDERED` where the document
+   * drew none of it — the first build, an element new to the tree, or one
+   * under an element that was `display: none` — which a starting style
+   * stands for.
    */
   private readonly _previousStyle = (
     el: Element,
     pseudo: string,
-  ): ComputedStyle | null => {
+  ): ComputedStyle | typeof UNRENDERED | null => {
     const tree = this._tree;
-    if (!tree || this._styledWith !== this._cascade) return null;
-    if (pseudo === '') return tree.styles.get(el)?.style ?? null;
+    if (!tree) return UNRENDERED;
+    // one new to the tree had no style before whatever the sheets did
+    const kept = tree.styles.get(el)?.style;
+    if (!kept) return UNRENDERED;
+    if (this._styledWith !== this._cascade) return null;
+    if (pseudo === '') return kept;
     if (
       pseudo !== 'before' &&
       pseudo !== 'after' &&
@@ -1180,7 +1189,7 @@ export class HtmlViewNode extends Node {
     ) {
       return null;
     }
-    return generatedStyle(this._pseudoBoxOf(tree, el, pseudo));
+    return generatedStyle(this._pseudoBoxOf(tree, el, pseudo)) ?? UNRENDERED;
   };
   /** What a presenter has on layers of their own, by sprite key, as it
    *  said last (`spritesLifted`): an element or a pseudo-element of one
@@ -8570,9 +8579,15 @@ export class HtmlViewNode extends Node {
       at = parent;
     }
     if (!style) return null;
-    for (let i = chain.length - 1; i >= 0; i -= 1) {
-      style = cascade.styleFor(chain[i], style, false);
-      unboxed.set(chain[i], style);
+    // nothing of it is rendered, so no starting style is asked of it
+    cascade.unrendered = true;
+    try {
+      for (let i = chain.length - 1; i >= 0; i -= 1) {
+        style = cascade.styleFor(chain[i], style, false);
+        unboxed.set(chain[i], style);
+      }
+    } finally {
+      cascade.unrendered = false;
     }
     return style;
   }

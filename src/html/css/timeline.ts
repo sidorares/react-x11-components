@@ -1089,6 +1089,12 @@ export class AnimationTimeline {
     after: ComputedStyle,
     before: () => ComputedStyle | null,
     animated: ReadonlySet<string> | null = null,
+    /** Its after-change style, where that is not `after`: the style from
+     *  its parent's after-change style, under a parent whose inherited
+     *  properties are in transition (CSS Transitions 1, 3). What a change
+     *  runs to is its; what is drawn of a field none runs on is `after`'s,
+     *  which inherits the parent's value as drawn. */
+    target: ComputedStyle = after,
   ): ComputedStyle {
     const fields = transitionFields(after.transitions);
     let states = this._transitions.get(el);
@@ -1122,7 +1128,10 @@ export class AnimationTimeline {
         }
       }
     }
-    const a = sized as unknown as Record<string, unknown>;
+    const a = (target === after ? sized : target) as unknown as Record<
+      string,
+      unknown
+    >;
     const running = state?.running ?? new Map<string, Transit>();
     const completed = state?.completed ?? new Map<string, unknown>();
     // one waiting for the paint that first shows it has only just begun
@@ -1272,6 +1281,9 @@ export class AnimationTimeline {
       }
       return after;
     }
+    // what is drawn of it is in transition, and what holds it inherits
+    // from its after-change style for what a change runs to
+    if (out && inherits) SETTLED.set(out, target);
     if (!state) {
       state = { running, completed, next, inherits };
       if (!states) this._transitions.set(el, (states = new Map()));
@@ -2077,6 +2089,26 @@ export function fieldsAnimatedBy(
  *  transition, comparing it as the style before a change, takes for no
  *  change of the element's (`AnimationTimeline.transition`). */
 const ANIMATED_FIELDS = new WeakMap<ComputedStyle, ReadonlySet<string>>();
+
+/** A style drawn with an inherited property in transition, to its
+ *  after-change style: what the elements it holds have their after-change
+ *  styles from (`settledOf`). */
+const SETTLED = new WeakMap<ComputedStyle, ComputedStyle>();
+
+/** The after-change style of a style drawn, where a transition of an
+ *  inherited property makes the two differ, or one inherited from such a
+ *  style does (`noteSettled`); null where they are one. */
+export function settledOf(style: ComputedStyle): ComputedStyle | null {
+  return SETTLED.get(style) ?? null;
+}
+
+/** Notes that `style` is drawn, and `settled` its after-change style. */
+export function noteSettled(
+  style: ComputedStyle,
+  settled: ComputedStyle,
+): void {
+  if (style !== settled) SETTLED.set(style, settled);
+}
 
 /** That `style` is one in which its animations set `fields`. */
 export function noteAnimated(

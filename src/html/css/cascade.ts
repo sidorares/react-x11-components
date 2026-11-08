@@ -119,6 +119,8 @@ import {
   animatedWillChange,
   fieldsAnimatedBy,
   noteAnimated,
+  noteSettled,
+  settledOf,
   transitionsDisplay,
 } from './timeline.js';
 import { sampleScripts } from './scripted.js';
@@ -462,6 +464,11 @@ interface PartRule {
 
 /** The user agent's rules' tree (`IndexedRule.scope`): every one. */
 const UA_SCOPE = -1;
+
+/** What `Cascade.previous` answers for an element, or a pseudo-element,
+ *  the document did not draw before: new, or under an element that was
+ *  `display: none`. Its starting style stands for the style it had. */
+export const UNRENDERED = Symbol('unrendered');
 
 /** The name a rule for an element is filed under: a type selector's,
  *  lower-cased, which in an XML document leaves the matcher to tell `DIV` from
@@ -4210,6 +4217,14 @@ export class Cascade {
   /** The rules for a view transition's pseudo-elements, by their
    *  originating element, each part's own (`TRANSITION_PARTS`). */
   private _transitionRules = new RuleIndex(true);
+  /** The rules under `@starting-style` (CSS Transitions 2, 3.1), an
+   *  element's own and its `::before`'s and `::after`'s, asked only for a
+   *  starting style (`_startingStyle`): no other style reads them. */
+  private _starting = {
+    '': new RuleIndex(),
+    before: new RuleIndex(true),
+    after: new RuleIndex(true),
+  };
   /** The `@keyframes` a view transition under way makes, each group's
    *  from where its element was to where it is (CSS View Transitions 1,
    *  7.8), found before any sheet's. */
@@ -4333,8 +4348,16 @@ export class Cascade {
    *  pseudo-element's (`pseudo`, '' for the element's own): what a
    *  transition starts from (`AnimationTimeline.transition`). Null where it
    *  has none, which starts none. */
-  previous: ((el: Element, pseudo: string) => ComputedStyle | null) | null =
-    null;
+  previous:
+    | ((
+        el: Element,
+        pseudo: string,
+      ) => ComputedStyle | typeof UNRENDERED | null)
+    | null = null;
+  /** Set while a style is worked out that is not rendered — one of what a
+   *  `display: none` element holds, for a page's `getComputedStyle` — which
+   *  takes no starting style, as it starts no transition. */
+  unrendered = false;
 
   /** The document's timeline, where its animations run, and the time on
    *  it the styles are computed at; null where none runs, and a document
@@ -4896,6 +4919,7 @@ export class Cascade {
     this._pseudo = before._pseudo;
     this._highlights = before._highlights;
     this._transitionRules = before._transitionRules;
+    this._starting = before._starting;
     this._shapes = before._shapes;
     this._filed = before._filed;
     this._restated = before._restated;
@@ -4992,6 +5016,19 @@ export class Cascade {
         this._writing = true;
       }
       const scope = rule.order < 0 ? UA_SCOPE : rules.id;
+      // a starting style's rule, which only a starting style asks — and
+      // none at a tree's edge, which no starting style here is asked of
+      if (rule.starting) {
+        if (SCOPING.test(rule.selector)) continue;
+        const pseudo = splitPseudoElement(rule);
+        if (!pseudo) {
+          this._starting[''].add(rule, rightmostKey(rule.selector), scope);
+        } else if (pseudo.which === 'before' || pseudo.which === 'after') {
+          this._starting[pseudo.which].add(pseudo.rule, undefined, scope);
+          this._restated.push(pseudo.rule, rule);
+        }
+        continue;
+      }
       if (SCOPING.test(rule.selector) && this._addScoped(rule, rules)) {
         if (noted) continue;
         const split = splitPseudoElement(rule);
@@ -8510,6 +8547,42 @@ export class Cascade {
     return style;
   }
 
+  /**
+   * An element's starting style (CSS Transitions 2, 3.1): its style with
+   * the `@starting-style` rules that match it cascaded with the rest, in
+   * their places, from its parent's style after the change, not the
+   * parent's starting style. Null where none matches, where it is not
+   * rendered, or where it comes to `display: none`: none of them starts a
+   * transition.
+   */
+  private _startingStyle(
+    el: Element,
+    pseudo: string,
+    parentStyle: ComputedStyle,
+    inFlexContainer: boolean,
+    candidates: Candidate[],
+    own: boolean,
+  ): ComputedStyle | null {
+    if (this.unrendered) return null;
+    const index =
+      pseudo === '' || pseudo === 'before' || pseudo === 'after'
+        ? this._starting[pseudo]
+        : null;
+    if (!index?.size) return null;
+    const starting: Candidate[] = [];
+    this._matchInto(index, el, starting);
+    if (!starting.length) return null;
+    const all = [...candidates, ...starting].sort(byCascade);
+    const style = this._cascadeStyle(
+      el,
+      parentStyle,
+      inFlexContainer,
+      all,
+      own,
+    );
+    return style.display === 'none' ? null : style;
+  }
+
   /** Whether an element is the root a `rem` and an `rlh` are of. */
   private _isRoot(el: Element): boolean {
     return el === this._documentElement || isRootElement(el);
@@ -8638,17 +8711,49 @@ export class Cascade {
       // — but for `display` itself, where `allow-discrete` runs it, which
       // holds the element as it was until the run is over (CSS Transitions
       // 2, 3.1)
-      if (style.display === 'none' && !transitionsDisplay(style.transitions)) {
+      // — and none for a pseudo-element of an element not displayed
+      if (
+        (style.display === 'none' && !transitionsDisplay(style.transitions)) ||
+        (!own && parentStyle.display === 'none')
+      ) {
         timeline.dropTransitions(el, pseudo);
       } else {
         const settled = style;
+        // under a parent in transition, the after-change style is the one
+        // from the parent's after-change style, and its starting style too
+        const settledParent = settledOf(parentStyle);
+        const target = settledParent
+          ? this._cascadeStyle(
+              el,
+              settledParent,
+              inFlexContainer,
+              candidates,
+              own,
+            )
+          : style;
         style = timeline.transition(
           el,
           pseudo,
           style,
-          () => this.previous?.(el, pseudo) ?? null,
+          () => {
+            const was = this.previous?.(el, pseudo) ?? null;
+            // one not rendered before has none, and its starting style
+            // stands for it (CSS Transitions 2, 3.1)
+            return was === UNRENDERED || was?.display === 'none'
+              ? this._startingStyle(
+                  el,
+                  pseudo,
+                  settledParent ?? parentStyle,
+                  inFlexContainer,
+                  candidates,
+                  own,
+                )
+              : was;
+          },
           animated,
+          target,
         );
+        if (settledParent && !settledOf(style)) noteSettled(style, target);
         if (animated) noteAnimated(style, animated);
         // a `content-visibility` a transition runs brings its own
         // containment, which the cascade settled for the value after

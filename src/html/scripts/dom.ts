@@ -16335,6 +16335,10 @@ export function installDom(
   /** Whether CSS drops a rule as it parses it: an `@view-transition` with
    *  a prelude (CSS View Transitions 2, 2.1). */
   const droppedRule = (text: string): boolean =>
+    // `@starting-style` takes no prelude
+    (/^@starting-style(?![\w-])/i.test(text) &&
+      (preludeOf(text).slice('@starting-style'.length).trim() !== '' ||
+        !/\}\s*$/.test(text))) ||
     (/^@view-transition(?![\w-])/i.test(text) &&
       preludeOf(text).slice('@view-transition'.length).trim() !== '') ||
     // a `@position-try` names one dashed ident (CSS Anchor Positioning 1,
@@ -16354,7 +16358,21 @@ export function installDom(
         .trim();
     }
   }
+  /** `@starting-style { … }` (CSS Transitions 2, 3.1), which holds the
+   *  rules a starting style is cascaded from, and serializes as a grouping
+   *  rule does (CSSOM 6.4.2). */
+  class CSSStartingStyleRule extends CSSGroupingRule {
+    override get cssText(): string {
+      const rules = this.cssRules;
+      let text = '@starting-style {';
+      for (let i = 0; i < rules.length; i += 1) {
+        text += `\n  ${String(rules[i].cssText).replace(/\n/g, '\n  ')}`;
+      }
+      return `${text}\n}`;
+    }
+  }
   const RULE_CLASSES: Record<string, Any> = {
+    'starting-style': CSSStartingStyleRule,
     'view-transition': CSSViewTransitionRule,
     media: CSSMediaRule,
     supports: CSSSupportsRule,
@@ -36429,6 +36447,7 @@ export function installDom(
     CSSSupportsRule,
     CSSContainerRule,
     CSSLayerBlockRule,
+    CSSStartingStyleRule,
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
