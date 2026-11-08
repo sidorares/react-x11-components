@@ -1132,6 +1132,7 @@ function cssomAt(
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
     'view-transition-scope': style.viewTransitionScope,
+    'view-transition-group': style.viewTransitionGroup,
     color: cssomColor(color, style.colorSource, color, style.colorSource),
     'color-scheme': style.colorSchemeKeywords,
     'background-color': cssomColor(

@@ -71,6 +71,11 @@ export function specifiedValue(
         : viewTransitionClass(word);
     return out;
   }
+  if (name === 'view-transition-group') {
+    const word = value.trim();
+    if (CSS_WIDE.test(word.toLowerCase())) return undefined;
+    return viewTransitionGroup(word);
+  }
   if (name === 'view-transition-scope') {
     const word = value.trim().toLowerCase();
     if (CSS_WIDE.test(word)) return undefined;
@@ -242,6 +247,18 @@ export function viewTransitionName(value: string): string | null {
   return customIdent(word) ? word : null;
 }
 
+/** `view-transition-group` (CSS View Transitions 2, 3.3): `normal`,
+ *  `contain`, `nearest` lowercased, or a name as written. `none` is one
+ *  too, as Chromium takes it: no ancestor's group holds it. Null for no
+ *  value of it. */
+export function viewTransitionGroup(value: string): string | null {
+  const word = value.trim();
+  if (/^(?:normal|contain|nearest|none)$/i.test(word)) {
+    return word.toLowerCase();
+  }
+  return customIdent(word) ? word : null;
+}
+
 /** `view-transition-class`: `none`, or names, none of them `none`. */
 export function viewTransitionClass(value: string): string | null {
   const words = value.trim().split(/\s+/);
@@ -256,7 +273,7 @@ export function viewTransitionClass(value: string): string | null {
  *  Transitions 1, 3.2): the tree's root, or one of the four that take a
  *  name. */
 const TRANSITION_PSEUDO =
-  /::view-transition(?:-(group|image-pair|old|new))?(?![\w-])/gi;
+  /::view-transition(?:-(group-children|group|image-pair|old|new))?(?![\w-])/gi;
 const SELECTOR_IDENT =
   /^(?:--|-?(?:[_a-zA-Z\u0080-￿]|\\[^\n]))(?:[\w\u0080-￿-]|\\[^\n])*$/;
 

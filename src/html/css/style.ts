@@ -107,7 +107,11 @@ import {
   parseTriggerScope,
 } from './triggers.js';
 import type { RangeEdge, TimelineTriggers, TriggerScope } from './triggers.js';
-import { viewTransitionClass, viewTransitionName } from './specified.js';
+import {
+  viewTransitionClass,
+  viewTransitionGroup,
+  viewTransitionName,
+} from './specified.js';
 import type { BasicShape } from './basic-shape.js';
 
 /** `writing-mode`'s values (CSS Writing Modes 4, 3.1). */
@@ -1184,6 +1188,10 @@ export interface ComputedStyle {
    *  element a transition is started on has it for the transition's
    *  length. */
   viewTransitionScope: 'none' | 'all';
+  /** `view-transition-group` (CSS View Transitions 2, 3.3): `normal`,
+   *  `contain`, `nearest`, or the name of the ancestor whose group this
+   *  element's nests in, as written. */
+  viewTransitionGroup: string;
   /** Where `translate` moves the box after layout (CSS Transforms 2): a
    *  length or a percentage of its own border box across and down, and a
    *  depth toward the viewer in device pixels, 0 where none is written;
@@ -1943,6 +1951,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     viewTransitionName: 'none',
     viewTransitionClass: 'none',
     viewTransitionScope: 'none',
+    viewTransitionGroup: 'normal',
     willChange: 0,
     translate: null,
     rotate: null,
@@ -3257,6 +3266,11 @@ export function applyDeclaration(
     case 'view-transition-class': {
       const names = viewTransitionClass(value);
       if (names !== null) style.viewTransitionClass = names;
+      return;
+    }
+    case 'view-transition-group': {
+      const group = viewTransitionGroup(value);
+      if (group !== null) style.viewTransitionGroup = group;
       return;
     }
     case 'view-transition-scope': {
@@ -9129,6 +9143,7 @@ const NOT_TRANSITIONABLE: readonly (keyof ComputedStyle)[] = [
   'viewTransitionName',
   'viewTransitionClass',
   'viewTransitionScope',
+  'viewTransitionGroup',
   'animations',
   'transitions',
   'mask',
@@ -9943,6 +9958,7 @@ const INHERIT_TARGETS: Record<string, readonly (keyof ComputedStyle)[]> = {
   'view-transition-name': ['viewTransitionName'],
   'view-transition-class': ['viewTransitionClass'],
   'view-transition-scope': ['viewTransitionScope'],
+  'view-transition-group': ['viewTransitionGroup'],
   translate: ['translate'],
   rotate: ['rotate'],
   scale: ['scale'],

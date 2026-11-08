@@ -1806,6 +1806,7 @@ const PSEUDO_ELEMENTS = new Set([
   // a view transition's (CSS View Transitions 1, 3.2)
   'view-transition',
   'view-transition-group',
+  'view-transition-group-children',
   'view-transition-image-pair',
   'view-transition-old',
   'view-transition-new',

@@ -379,9 +379,12 @@ import {
   captureClasses,
   captureClipRect,
   captureName,
+  containingGroups,
   groupTransform,
+  nestedMatrix,
+  parentOf,
 } from './transition.js';
-import type { OldImage, Placement } from './transition.js';
+import type { OldImage, Placement, TransitionEntry } from './transition.js';
 import { TextLayoutCache } from './layout/cache.js';
 import { fontAxes } from './layout/axes.js';
 import { shapingSafe } from './layout/shaping.js';
@@ -8405,7 +8408,7 @@ export class HtmlViewNode extends Node {
     pseudo: string,
   ): Record<string, string> | null {
     const m =
-      /^view-transition(?:-(group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/.exec(
+      /^view-transition(?:-(group-children|group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/.exec(
         pseudo,
       );
     if (!m) return null;
@@ -8471,7 +8474,9 @@ export class HtmlViewNode extends Node {
     let style = at('view-transition', rootStyle, false);
     if (part) {
       style = at('group', style, (run?.entries.size ?? 1) === 1);
-      if (part !== 'group') {
+      if (part === 'group-children') {
+        style = at('group-children', style, true);
+      } else if (part !== 'group') {
         style = at('image-pair', style, true);
         if (part !== 'image-pair') {
           style = at(part, style, part === 'old' ? !entry?.el : !entry?.old);
@@ -16152,6 +16157,7 @@ export class HtmlViewNode extends Node {
     const named = this._namedElements(tree, scope);
     if (typeof named === 'string') return named;
     const run = new ViewTransitionRun(scope);
+    const parents = containingGroups(named, flatParentOf);
     const boxes = new Set(named.map((n) => n.box));
     for (const { name, el, box, classes } of named) {
       const others = new Set(boxes);
@@ -16176,6 +16182,9 @@ export class HtmlViewNode extends Node {
         el: null,
         now: null,
         anim: null,
+        oldParent: parents.get(name) ?? null,
+        newParent: null,
+        childrenAnim: null,
       });
     }
     // and all of the document as it is now, which is drawn until the new
@@ -16221,12 +16230,24 @@ export class HtmlViewNode extends Node {
       this.transitionEnd(scope);
       return named;
     }
+    const parents = containingGroups(named, flatParentOf);
     for (const { name, el, box, classes } of named) {
       let entry = run.entries.get(name);
       if (!entry) {
-        entry = { name, classes, old: null, el: null, now: null, anim: null };
+        entry = {
+          name,
+          classes,
+          old: null,
+          el: null,
+          now: null,
+          anim: null,
+          oldParent: null,
+          newParent: null,
+          childrenAnim: null,
+        };
         run.entries.set(name, entry);
       }
+      entry.newParent = parents.get(name) ?? null;
       entry.el = el;
       entry.classes = classes;
       entry.now = isRootElement(el)
@@ -16245,15 +16266,41 @@ export class HtmlViewNode extends Node {
       const name = /^[-\w\u0080-\uffff]+$/.test(entry.name)
         ? `-ua-view-transition-group-anim-${entry.name}`
         : `-ua-view-transition-group-anim-${index}`;
+      // in its container's group-children, where it nests, from where the
+      // container was (CSS View Transitions 2, 12.5.4.6)
+      const host = parentOf(entry);
+      const container = host ? run.entries.get(host) : undefined;
+      const at = container?.old ?? container?.now;
+      const matrix = (at && nestedMatrix(old.matrix, at)) ?? old.matrix;
       const from =
         `width: ${cssPx(old.width, s)}; height: ${cssPx(old.height, s)}; ` +
-        `transform: ${groupTransform(old.matrix, old.width, old.height, s)}`;
+        `transform: ${groupTransform(matrix, old.width, old.height, s)}`;
       const rule = parseStylesheet(`@keyframes ${name} { from { ${from} } }`)
         .keyframes?.[0];
       if (rule) {
         // by the name it reads back as, and written as it is read
         run.keyframes.set(rule.name, rule);
         entry.anim = name;
+      }
+      // its group-children, where a group nests in it, from its old border
+      // and corners to its new (CSS View Transitions 2, 3.3)
+      let holds = false;
+      for (const e of run.entries.values()) {
+        if (parentOf(e) === entry.name) holds = true;
+      }
+      if (!holds) continue;
+      const kids = name.replace('-group-anim-', '-group-children-anim-');
+      const [t, r, b, l] = old.borders;
+      const edges =
+        `border-width: ${cssPx(t, s)} ${cssPx(r, s)} ${cssPx(b, s)} ` +
+        `${cssPx(l, s)}` +
+        (old.corners ? `; ${old.corners}` : '');
+      const children = parseStylesheet(
+        `@keyframes ${kids} { from { ${edges} } }`,
+      ).keyframes?.[0];
+      if (children) {
+        run.keyframes.set(children.name, children);
+        entry.childrenAnim = kids;
       }
     }
     run.phase = 'live';
@@ -16350,10 +16397,23 @@ export class HtmlViewNode extends Node {
   private _namedElements(
     tree: BoxTree,
     scope: Element | null = null,
-  ): { name: string; el: Element; box: Box; classes: string[] }[] | string {
+  ):
+    | {
+        name: string;
+        el: Element;
+        box: Box;
+        classes: string[];
+        group: string;
+      }[]
+    | string {
     const boxes = this._firstBoxesOf(tree);
-    const out: { name: string; el: Element; box: Box; classes: string[] }[] =
-      [];
+    const out: {
+      name: string;
+      el: Element;
+      box: Box;
+      classes: string[];
+      group: string;
+    }[] = [];
     const seen = new Set<string>();
     for (const [el, { style }] of tree.styles) {
       const name = captureName(el, style);
@@ -16368,7 +16428,13 @@ export class HtmlViewNode extends Node {
       if (!box || COLUMN_PIECES.has(box)) continue;
       if (seen.has(name)) return name;
       seen.add(name);
-      out.push({ name, el, box, classes: captureClasses(style) });
+      out.push({
+        name,
+        el,
+        box,
+        classes: captureClasses(style),
+        group: style.viewTransitionGroup,
+      });
     }
     return out;
   }
@@ -16409,6 +16475,8 @@ export class HtmlViewNode extends Node {
       textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
       colorScheme: box.style.colorSchemeKeywords,
+      borders: [0, 0, 0, 0],
+      corners: '',
     };
   }
 
@@ -16465,6 +16533,13 @@ export class HtmlViewNode extends Node {
       textOrientation: box.style.textOrientation,
       mixBlendMode: box.style.mixBlendMode,
       colorScheme: box.style.colorSchemeKeywords,
+      borders: [
+        box.borderTop,
+        box.borderRight,
+        box.borderBottom,
+        box.borderLeft,
+      ],
+      corners: cornersOf(box.style, this._scale),
     };
   }
 
@@ -16693,21 +16768,68 @@ export class HtmlViewNode extends Node {
     const style = styled('view-transition', '', [], false, rootStyle, []);
     let end = animationsEnd(style);
     const groups: TransitionTree['groups'] = [];
-    const count = run.entries.size;
+    // the groups nested (CSS View Transitions 2, 12.5.4.6): each in its
+    // container's group-children, which is there where it holds one, and a
+    // container's styled before what it holds, which inherits from it
+    const hosts = new Map<string, string | null>();
+    const held = new Map<string | null, number>();
     for (const entry of run.entries.values()) {
-      const at = entry.now ?? entry.old;
-      if (!at) continue;
+      if (!(entry.now ?? entry.old)) continue;
+      const host = parentOf(entry);
+      const placed = host !== null && run.entries.get(host);
+      const at = placed ? (placed.now ?? placed.old) : null;
+      const parent = at ? host : null;
+      hosts.set(entry.name, parent);
+      held.set(parent, (held.get(parent) ?? 0) + 1);
+    }
+    const order: TransitionEntry[] = [];
+    const done = new Set<string | null>([null]);
+    for (let left = [...run.entries.values()]; left.length;) {
+      const next = left.filter((e) => {
+        if (!hosts.has(e.name)) return false;
+        if (!done.has(hosts.get(e.name)!)) return true;
+        order.push(e);
+        done.add(e.name);
+        return false;
+      });
+      // a container that holds itself, round about, is none
+      if (next.length === left.length) {
+        for (const e of next) hosts.set(e.name, null);
+      }
+      left = next;
+    }
+    const children = new Map<string, ComputedStyle>();
+    for (const entry of order) {
+      const at = entry.now ?? entry.old!;
       const both = !!entry.old && !!entry.el;
       const { name, classes } = entry;
+      const host = hosts.get(name) ?? null;
+      const container = host ? run.entries.get(host) : undefined;
+      // where it is from its container's group-children (12.5.4.7): the
+      // container where it is now, its border where it was — and for one
+      // the new state has not, the container where it was, as Chromium
+      // has it, since its place is the old state's
+      // (`nested-parent-changes-transform`)
+      const placed = entry.el
+        ? (container?.now ?? container?.old)
+        : (container?.old ?? container?.now);
+      const matrix =
+        (placed &&
+          nestedMatrix(at.matrix, {
+            ...placed,
+            borders: (container?.old ?? placed).borders,
+          })) ??
+        at.matrix;
+      const holder = (host && children.get(host)) || style;
       const group = styled(
         'group',
         name,
         classes,
-        count === 1,
-        style,
+        held.get(host) === 1,
+        holder,
         declarations(
           `width: ${cssPx(at.width, s)}; height: ${cssPx(at.height, s)}; ` +
-            `transform: ${groupTransform(at.matrix, at.width, at.height, s)}; ` +
+            `transform: ${groupTransform(matrix, at.width, at.height, s)}; ` +
             `writing-mode: ${at.writingMode}; direction: ${at.direction}; ` +
             `text-orientation: ${at.textOrientation}; ` +
             `mix-blend-mode: ${at.mixBlendMode}; ` +
@@ -16744,8 +16866,33 @@ export class HtmlViewNode extends Node {
         old ? animationsEnd(old) : 0,
         now ? animationsEnd(now) : 0,
       );
+      // its group-children, where a group nests in it, with a transparent
+      // border as wide as its element's was
+      let kids: ComputedStyle | null = null;
+      if (held.has(name)) {
+        const [t, r, b, l] = at.borders;
+        kids = styled(
+          'group-children',
+          name,
+          classes,
+          true,
+          group,
+          declarations(
+            `border-width: ${cssPx(t, s)} ${cssPx(r, s)} ` +
+              `${cssPx(b, s)} ${cssPx(l, s)}` +
+              (at.corners ? `; ${at.corners}` : '') +
+              (both && entry.childrenAnim
+                ? `; animation-name: ${entry.childrenAnim}`
+                : ''),
+          ),
+        );
+        children.set(name, kids);
+        end = Math.max(end, animationsEnd(kids));
+      }
       groups.push({
         name,
+        parent: host,
+        children: kids,
         group,
         pair,
         old:
@@ -17123,6 +17270,20 @@ const CAPTURE_LIMIT = 16 * 1024 * 1024;
  * `view-transition-scope: all`. The root element scopes nothing it holds
  * away from the document's.
  */
+/** A box's corners as a view transition gives them to its group-children:
+ *  `border-radius` and `corner-shape` as they compute. */
+function cornersOf(style: ComputedStyle, scale: number): string {
+  const read = cssomStyle(style, scale, null);
+  const radius = read['border-radius'];
+  const shape = read['corner-shape'];
+  return [
+    radius ? `border-radius: ${radius}` : '',
+    shape ? `corner-shape: ${shape}` : '',
+  ]
+    .filter(Boolean)
+    .join('; ');
+}
+
 function inTransitionScope(
   el: Element,
   scope: Element | null,
