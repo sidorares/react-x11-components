@@ -286,6 +286,9 @@ export interface LayoutContext {
    *  for a box fixed to it anchored in the document, or the other way
    *  round. */
   viewport?: Viewport | null;
+  /** Set where a fixed box was placed against the viewport as the pane has
+   *  it scrolled (`viewportInRootFrame`). */
+  atScroll?: boolean;
   /** How far the layout scrolls a scroll container's content
    *  (`wantedScroll`). */
   scrollOf?: (box: Box) => ScrollOffset;
@@ -2030,6 +2033,8 @@ export function layoutDocument(
   // start; the ones the viewport keeps are the element's to place again
   // where the pane around it is scrolled to (`restickToViewport`)
   const viewportSticky = tree.relative ? restickAll(root, moved) : null;
+  if (ctx.atScroll) PLACED_AT_SCROLL.add(tree);
+  else PLACED_AT_SCROLL.delete(tree);
   if (viewportSticky) VIEWPORT_STICKY.set(tree, viewportSticky);
   else VIEWPORT_STICKY.delete(tree);
   // and a viewport whose scroll origin is at its right scrolls what spills
@@ -9260,7 +9265,9 @@ function positionedContaining(
   const strip = inColumns(box, containing);
   if (strip) return stripPadding(containing, strip);
   const local =
-    gridArea(box, containing, ctx) ?? containingRect(containing, ctx);
+    gridArea(box, containing, ctx) ??
+    viewportInRootFrame(box, containing, ctx) ??
+    containingRect(containing, ctx);
   return isScroller(containing) && defaultAnchorBox(box, box.style, ctx)
     ? scrollableRect(containing, local)
     : local;
@@ -10040,6 +10047,65 @@ function containingRect(containing: Box, ctx: LayoutContext): CbRect {
   return paddingRectOf(containing, ctx.viewportWidth, ctx.viewportHeight);
 }
 
+/**
+ * Whether a frame is the root element's, which nothing positions: one that
+ * stands for the initial containing block, turned by the document's writing
+ * mode and by no transform (`paddingRectOf`).
+ */
+function rootElementFrame(frame: Box): boolean {
+  const root = FRAME_ROOTS.get(frame);
+  return (
+    !!root &&
+    root.parent?.parent === null &&
+    root.style.position === 'static' &&
+    !containsOutOfFlow(root, true)
+  );
+}
+
+/** Per tree, whether a layout placed a fixed box in the root element's
+ *  frame against where the pane had the viewport (`viewportInRootFrame`),
+ *  which a scroll of the pane moves. */
+const PLACED_AT_SCROLL = new WeakSet<BoxTree>();
+
+/** Whether a tree's layout placed a fixed box against the viewport as the
+ *  pane had it scrolled (`viewportInRootFrame`): a scroll of the pane owes
+ *  it a layout. */
+export function placedAtScroll(tree: BoxTree): boolean {
+  return PLACED_AT_SCROLL.has(tree);
+}
+
+/**
+ * A fixed box's containing block where the frame of a root element in a
+ * vertical writing mode holds it: the viewport, as the pane has it now,
+ * turned into the frame's axes (CSS 2.1 9.6.1). Such a box is drawn with
+ * the frame, which the pane scrolls, and not at the viewport, so it is
+ * placed where the viewport is at the scroll of its layout, and a scroll
+ * lays the document out again (`placedAtScroll`), which is where it
+ * follows its anchor and takes its position options. Null for any other
+ * box, and where the layout is told no viewport.
+ */
+function viewportInRootFrame(
+  box: Box,
+  containing: Box,
+  ctx: LayoutContext,
+): CbRect | null {
+  if (!framed.any || box.style.position !== 'fixed') return null;
+  const viewport = ctx.viewport;
+  if (!viewport || !rootElementFrame(containing)) return null;
+  ctx.atScroll = true;
+  ctx.readViewportHeight = true;
+  return frameRectOf(
+    containing,
+    {
+      x: viewport.x,
+      y: viewport.y,
+      width: ctx.viewportWidth,
+      height: ctx.viewportHeight,
+    },
+    FRAME_ROOTS.get(containing)!.style.writingMode,
+  );
+}
+
 /** A box's padding box, where the boxes it positions are placed: the root
  *  box's is the initial containing block, the viewport at the document's
  *  top (CSS 2.1 10.1), not the box of the element the root box stands in
@@ -10063,10 +10129,7 @@ function paddingRectOf(
     // initial containing block, which the document's writing mode turns
     // and no transform makes: a `vertical-rl` page's fixed and absolute
     // boxes are placed in the viewport, as in a browser
-    const initial =
-      root.parent?.parent === null &&
-      root.style.position === 'static' &&
-      !containsOutOfFlow(root, true);
+    const initial = rootElementFrame(containing);
     return frameRectOf(
       containing,
       paddingRectOf(

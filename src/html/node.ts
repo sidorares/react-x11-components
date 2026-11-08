@@ -283,6 +283,7 @@ import {
   layoutApart,
   setPlacedTransitions,
   viewportShiftOf,
+  placedAtScroll,
   layoutDocument,
   noteMoving,
   placedMatrix,
@@ -3980,11 +3981,26 @@ export class HtmlViewNode extends Node {
     this._placeAgainstPane();
   }
 
+  /** Where the pane had the viewport for the last layout handed one
+   *  (`setViewport`), or where a scroll since was last found. */
+  private _laidAtScroll: Viewport | null = null;
+
   /** The boxes `_followViewport` places, without what it tells of the
    *  scroll: all core's pass over what is mounted beside the document needs
    *  (`heldShiftOf`), which asks once a widget. */
   private _placeAgainstPane(): void {
     const tree = this._tree;
+    // a fixed box in the frame a vertical root element turns was placed
+    // against the viewport as its layout had it (`placedAtScroll`), and a
+    // scroll since is a layout owed
+    if (tree && placedAtScroll(tree)) {
+      const at = this._viewportAt();
+      const was = this._laidAtScroll;
+      if (at && (!was || at.x !== was.x || at.y !== was.y)) {
+        this._laidAtScroll = at;
+        void Promise.resolve().then(() => this._invalidate(Stale.Layout));
+      }
+    }
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     // and what is anchored across the pane's scroll: fixed to the viewport
     // and anchored in the document, or the other way round
@@ -4998,7 +5014,9 @@ export class HtmlViewNode extends Node {
         // and where the pane has the viewport, for what is anchored across
         // its scroll, and whether the layout is a question no frame draws
         if (this._tree.anchors) {
-          setViewport(this._tree, this._viewportAt());
+          const viewport = this._viewportAt();
+          setViewport(this._tree, viewport);
+          this._laidAtScroll = viewport;
           layoutAsks(this._tree, question);
         }
         // and what transitions a positioned box's placed values, which a
