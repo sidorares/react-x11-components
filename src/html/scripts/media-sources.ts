@@ -15,14 +15,21 @@
 import { NO_MEDIA_DEVICES, mediaError } from '../media-devices.js';
 import type {
   HtmlMediaDevices,
+  MediaAudioData,
+  MediaDeviceCapabilities,
   MediaDeviceDescription,
   MediaSettings,
   MediaSourceEvents,
   MediaSourceLike,
+  MediaVideoFrame,
+  ShownSource,
 } from '../media-devices.js';
 import type { CanvasPixels } from './host.js';
 import { selectSettings } from './constraints.js';
 import type { Constrainable, ConstraintSet } from './constraints.js';
+import type { BufferClass } from './platform.js';
+
+declare const Buffer: BufferClass;
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -44,6 +51,9 @@ export interface SourceSeams {
   /** The canvas an element's number names, as a `captureStream()` reads
    *  it, or null where it names none. */
   canvas?(element: number): CanvasFeed | null;
+  /** A media element's audio goes to an `audiooutput` device from now on,
+   *  by its host id, or to the default for `''`. */
+  sink?(element: number, deviceId: string): void;
 }
 
 /** A canvas's pixels as the host has them, and when they change. */
@@ -64,6 +74,27 @@ interface Held {
   source: MediaSourceLike;
   /** The page's tracks over it, which stop it as the last of them goes. */
   tracks: number;
+  /** What reads its frames host-side (`read`): a `VideoFrames` sink, an
+   *  audio sink, the size watch. The source is listened to with `video` or
+   *  `audio` only while there is one. */
+  readers: Set<(frame: MediaVideoFrame | MediaAudioData) => void>;
+  /** The page's media elements watching its size (`mdSize`). */
+  sized: number;
+  /** The size the page was last told, as `width x height`, or ''. */
+  size: string;
+  /** The size watch's own reader, while there is one. */
+  unsize: (() => void) | null;
+  /** Its last muted state, which a reader that comes is told of. */
+  muted: boolean;
+  /** Its newest video frame, while something reads its frames: what a
+   *  reader that comes is handed first, since a canvas that is never drawn
+   *  on again gives no other. */
+  last: MediaVideoFrame | null;
+  ended: boolean;
+  /** Video frames it has handed out, and when it was registered: what a
+   *  `<video>`'s `getVideoPlaybackQuality()` counts. */
+  frames: number;
+  since: number;
 }
 
 /** A device's id as one origin sees it: 64 hex digits, as Chrome's are. It
@@ -100,6 +131,9 @@ export class PageSources {
    *  otherwise — a screen, say — has a view of its own, with no device
    *  id. */
   private readonly _views = new Map<number, Constrainable>();
+  /** A display's picture as it was picked, by its source's number: what
+   *  its `applyConstraints` fits a size to, as `getDisplayMedia` did. */
+  private readonly _displays = new Map<number, MediaSettings>();
   /** What makes this document's group ids its own. */
   private readonly _salt = `${Date.now()}.${Math.random()}`;
   /** The `applyConstraints` under way, one after another. */
@@ -109,7 +143,8 @@ export class PageSources {
   constructor(private readonly _seams: SourceSeams) {}
 
   /** A source the page's tracks are over: numbered, and listened to for
-   *  its muted state and its end, once. */
+   *  its muted state and its end, and for its frames while something
+   *  reads them (`read`). */
   register(source: MediaSourceLike): number {
     const known = this._ids.get(source);
     if (known !== undefined) {
@@ -119,18 +154,231 @@ export class PageSources {
     }
     const id = ++this._seq;
     this._ids.set(source, id);
-    this._held.set(id, { source, tracks: 1 });
-    source.listen({
-      muted: (muted) =>
-        this._tell('__mdSource', [id, muted ? 'muted' : 'unmuted']),
-      ended: () => this._tell('__mdSource', [id, 'ended']),
-    });
+    const held: Held = {
+      source,
+      tracks: 1,
+      readers: new Set(),
+      sized: 0,
+      size: '',
+      unsize: null,
+      muted: false,
+      ended: false,
+      last: null,
+      frames: 0,
+      since: Date.now(),
+    };
+    this._held.set(id, held);
+    this._listen(id, held);
     return id;
   }
 
   /** A source by its number, while a track is over it. */
   get(id: number): MediaSourceLike | null {
     return this._held.get(id)?.source ?? null;
+  }
+
+  /**
+   * A source's frames, to `fn`, until the function it answers is called:
+   * one listener on the source however many read it, and frames asked of
+   * it only while any does. Nothing is read of a source no track is over.
+   */
+  read(
+    id: number,
+    fn: (frame: MediaVideoFrame | MediaAudioData) => void,
+  ): () => void {
+    const held = this._held.get(id);
+    if (!held || held.ended) return () => {};
+    held.readers.add(fn);
+    if (held.readers.size === 1) this._listen(id, held);
+    else if (held.last) fn(held.last);
+    return () => {
+      if (!held.readers.delete(fn)) return;
+      if (held.readers.size === 0 && this._held.get(id) === held) {
+        held.last = null;
+        this._listen(id, held);
+      }
+    };
+  }
+
+  /** A source as `<Html>` mounts it over a media element, or null where no
+   *  track is over it any more. */
+  shown(id: number, enabled: boolean): ShownSource | null {
+    const held = this._held.get(id);
+    if (!held) return null;
+    const { source } = held;
+    return {
+      kind: source.kind,
+      id,
+      enabled,
+      present: () => source.present?.() ?? null,
+      read: (fn) => this.read(id, fn),
+      settings: () => source.settings(),
+    };
+  }
+
+  /** What an `AnalyserNode` hears of each audio source, by its number:
+   *  the last samples it gave, a channel's mean, kept while a page asks. */
+  private readonly _taps = new Map<
+    number,
+    {
+      ring: Float32Array;
+      at: number;
+      filled: number;
+      asked: number;
+      off(): void;
+    }
+  >();
+
+  /**
+   * The newest `count` samples an audio source gave, mono, oldest first, as
+   * base64 of their float32s: what a page's `AnalyserNode` reads
+   * (`webaudio.ts`). Its chunks are kept from the first ask, and let go once
+   * no page has asked for three seconds; '' until any has come.
+   */
+  private _samples(id: number, count: number): string {
+    const held = this._held.get(id);
+    if (!held || held.source.kind !== 'audio') return '';
+    const n = Math.max(0, Math.min(32768, Math.floor(count) || 0));
+    let tap = this._taps.get(id);
+    if (!tap) {
+      const made = {
+        ring: new Float32Array(32768),
+        at: 0,
+        filled: 0,
+        asked: Date.now(),
+        off: () => {},
+      };
+      tap = made;
+      this._taps.set(id, made);
+      made.off = this.read(id, (data) => {
+        const chunk = data as MediaAudioData;
+        if (Date.now() - made.asked > 3000) {
+          made.off();
+          this._taps.delete(id);
+          return;
+        }
+        const { ring } = made;
+        const channels = chunk.channels.length || 1;
+        for (let i = 0; i < chunk.frames; i++) {
+          let v = 0;
+          for (const c of chunk.channels) v += c[i] ?? 0;
+          ring[made.at] = v / channels;
+          made.at = (made.at + 1) % ring.length;
+        }
+        made.filled = Math.min(ring.length, made.filled + chunk.frames);
+      });
+    }
+    tap.asked = Date.now();
+    if (!tap.filled || !n) return '';
+    const out = new Float32Array(n);
+    const have = Math.min(n, tap.filled);
+    const { ring } = tap;
+    for (let i = 0; i < have; i++) {
+      out[n - have + i] = ring[(tap.at - have + i + ring.length) % ring.length];
+    }
+    return Buffer.from(out.buffer, 0, out.byteLength).toString('base64');
+  }
+
+  /** What the source is listened to with: its frames handed to every
+   *  reader where there is one. */
+  private _listen(id: number, held: Held): void {
+    const fan = (frame: MediaVideoFrame | MediaAudioData) => {
+      if (held.source.kind === 'video') {
+        held.last = frame as MediaVideoFrame;
+        held.frames += 1;
+      }
+      for (const read of [...held.readers]) read(frame);
+    };
+    const reading = held.readers.size > 0;
+    held.source.listen({
+      muted: (muted) => {
+        if (held.ended || held.muted === muted) return;
+        held.muted = muted;
+        this._tell('__mdSource', [id, muted ? 'muted' : 'unmuted']);
+      },
+      ended: () => {
+        if (held.ended) return;
+        held.ended = true;
+        held.readers.clear();
+        held.last = null;
+        this._tell('__mdSource', [id, 'ended']);
+      },
+      changed: () => this._sizeFrom(id, held, held.source.settings()),
+      ...(reading &&
+        (held.source.kind === 'video'
+          ? { video: fan as (frame: MediaVideoFrame) => void }
+          : { audio: fan as (data: MediaAudioData) => void })),
+    });
+  }
+
+  /**
+   * The page's media elements watch a video source's size (`mdSize`): told
+   * as `__mdSource [id, 'size', width, height]` once it is known and each
+   * time it changes. A source that shows itself (`present`) says its size
+   * in its settings, and its frames are not read for it, since a camera's
+   * would have to cross into JavaScript; any other is read, since a canvas
+   * that is never drawn on has no size to tell.
+   */
+  private _watchSize(id: number, on: boolean): void {
+    const held = this._held.get(id);
+    if (!held || held.source.kind !== 'video') return;
+    held.sized = Math.max(0, held.sized + (on ? 1 : -1));
+    if (held.sized === 0) {
+      held.unsize?.();
+      held.unsize = null;
+      held.size = '';
+      return;
+    }
+    if (held.unsize) {
+      // a watcher that comes is told what the others were, a task later
+      if (held.size) {
+        const [w, h] = held.size.split('x').map(Number);
+        const later = setTimeout(() => {
+          if (this._held.get(id) === held && held.size === `${w}x${h}`) {
+            this._tell('__mdSource', [id, 'size', w, h]);
+          }
+        }, 0);
+        (later as { unref?(): void }).unref?.();
+      }
+      return;
+    }
+    // begun a task later, as anything the page's op asked for is told: the
+    // page is in the middle of the op, and a source may hand a reader its
+    // frame as it is first read
+    let off: (() => void) | null = null;
+    let stopped = false;
+    held.unsize = () => {
+      stopped = true;
+      off?.();
+    };
+    const later = setTimeout(() => {
+      if (stopped || this._held.get(id) !== held) return;
+      // a source that shows itself says its size in its settings, and its
+      // frames are not read for it
+      if (held.source.present?.()) {
+        this._sizeFrom(id, held, held.source.settings(), true);
+        return;
+      }
+      off = this.read(id, (frame) => {
+        this._sizeFrom(id, held, frame as MediaVideoFrame);
+      });
+    }, 0);
+    (later as { unref?(): void }).unref?.();
+  }
+
+  private _sizeFrom(
+    id: number,
+    held: Held,
+    at: { width?: number; height?: number },
+    told = false,
+  ): void {
+    if (!held.unsize) return;
+    const { width, height } = at;
+    if (!(width! > 0 && height! > 0)) return;
+    const size = `${width}x${height}`;
+    if (size === held.size && !told) return;
+    held.size = size;
+    this._tell('__mdSource', [id, 'size', width, height]);
   }
 
   /** An op of the facade's whose name starts with `md`. */
@@ -150,10 +398,31 @@ export class PageSources {
         if (held.tracks <= 0) {
           this._held.delete(id);
           this._views.delete(id);
+          this._displays.delete(id);
           this._ids.delete(held.source);
+          held.readers.clear();
+          held.unsize?.();
+          held.unsize = null;
+          held.last = null;
           held.source.stop();
         }
         return null;
+      }
+      case 'mdSize':
+        this._watchSize(Number(a), b === true);
+        return null;
+      case 'mdSamples':
+        return this._samples(Number(a), Number(b));
+      case 'mdFrames': {
+        // the frames a video source has handed out; one that shows itself
+        // is not read, and has had its rate's worth since it began
+        const held = this._held.get(Number(a));
+        if (!held) return 0;
+        if (held.source.present?.()) {
+          const rate = held.source.settings().frameRate ?? 30;
+          return Math.floor(((Date.now() - held.since) / 1000) * rate);
+        }
+        return held.frames;
       }
       case 'mdCanvas': {
         const feed = this._seams.canvas?.(Number(a)) ?? null;
@@ -190,6 +459,12 @@ export class PageSources {
       case 'mdApply':
         this._apply(Number(a), text(b));
         return null;
+      case 'mdGetDisplayMedia':
+        void this._getDisplayMedia(Number(a), text(b));
+        return null;
+      case 'mdSink':
+        void this._setSink(Number(a), text(b));
+        return null;
       default:
         return null;
     }
@@ -198,6 +473,8 @@ export class PageSources {
   /** The document goes: every source it opened is stopped. */
   dispose(): void {
     this._disposed = true;
+    for (const tap of this._taps.values()) tap.off();
+    this._taps.clear();
     for (const held of this._held.values()) {
       try {
         held.source.stop();
@@ -205,6 +482,7 @@ export class PageSources {
     }
     this._held.clear();
     this._views.clear();
+    this._displays.clear();
     this._ids.clear();
   }
 
@@ -458,6 +736,26 @@ export class PageSources {
           return;
         }
         const source = held.source;
+        // a display is fitted as `getDisplayMedia` fitted it, from what was
+        // picked, its shape kept
+        const native = this._displays.get(id);
+        if (native) {
+          const fitted = displayFit(native, asConstraint(constraints));
+          if (typeof fitted === 'string') {
+            throw mediaError(
+              'OverconstrainedError',
+              `The display cannot meet ${fitted}.`,
+              fitted,
+            );
+          }
+          await source.reconfigure(fitted);
+          this._tell('__mdSettled', [
+            req,
+            true,
+            { settings: { ...displayDefaults(source), ...source.settings() } },
+          ]);
+          return;
+        }
         const device = this._views.get(id);
         const view: Constrainable = device ?? {
           kind: source.kind,
@@ -493,7 +791,273 @@ export class PageSources {
       }
     });
   }
+
+  /**
+   * A media element's `setSinkId` (Audio Output Devices API 2.1): the
+   * output whose id the page was handed, which it sees only once a
+   * microphone is allowed it, as Chrome lists outputs.
+   */
+  private async _setSink(req: number, json: string): Promise<void> {
+    const origin = this._seams.origin();
+    try {
+      const { element, sinkId } = JSON.parse(json) as {
+        element: number;
+        sinkId: string;
+      };
+      if (sinkId === '') {
+        this._seams.sink?.(element, '');
+        this._tell('__mdSettled', [req, true, null]);
+        return;
+      }
+      // outputs are listed to a document that has captured sound, as
+      // `enumerateDevices` lists them
+      const list = this._exposes('audio') ? await this._seam().devices() : [];
+      const device = list.find(
+        (d) =>
+          d.kind === 'audiooutput' && digest(origin, d.deviceId) === sinkId,
+      );
+      if (!device) {
+        throw mediaError('NotFoundError', 'There is no such audio output.');
+      }
+      this._seams.sink?.(element, device.deviceId);
+      this._tell('__mdSettled', [req, true, null]);
+    } catch (error) {
+      this._tell('__mdSettled', [req, false, errorOf(error)]);
+    }
+  }
+
+  /**
+   * `getDisplayMedia` (Screen Capture 5.2), once the page's realm has
+   * checked its activation and its constraints' types: asked of the host
+   * (`request`), then its picker (`display`), and the picture fitted to the
+   * constraints — downscaled to fit their `max`, and to their width or
+   * height precisely, its shape kept — as a browser fits one. A `max` that
+   * nothing could meet rejects with an `OverconstrainedError` naming it.
+   */
+  private async _getDisplayMedia(req: number, json: string): Promise<void> {
+    const origin = this._seams.origin();
+    const fail = (error: unknown) =>
+      this._tell('__mdSettled', [req, false, errorOf(error)]);
+    if (this._seams.originless()) {
+      fail(mediaError('NotAllowedError', 'Permission denied.'));
+      return;
+    }
+    let asked: { video: unknown; audio: unknown; monitors: boolean };
+    try {
+      asked = JSON.parse(json) as typeof asked;
+    } catch {
+      fail(mediaError('AbortError', 'The request could not be read.'));
+      return;
+    }
+    const seam = this._seam();
+    const video = asConstraint(asked.video);
+    const audio = asked.audio
+      ? asConstraint(asked.audio === true ? {} : asked.audio)
+      : null;
+    try {
+      const impossible = displayImpossible(video);
+      if (impossible) {
+        throw mediaError(
+          'OverconstrainedError',
+          `No display can meet ${impossible}.`,
+          impossible,
+        );
+      }
+      if (!seam.display) {
+        throw mediaError('NotFoundError', 'There is no display to capture.');
+      }
+      const ask = {
+        origin,
+        camera: false,
+        microphone: false,
+        display: true,
+      };
+      const allowed = seam.request ? await seam.request(ask) : true;
+      if (!allowed) throw mediaError('NotAllowedError', 'Permission denied.');
+      const surface = stringOf(video.displaySurface);
+      const cursor = stringOf(video.cursor);
+      const got = await seam.display(ask, {
+        ...((surface === 'monitor' ||
+          surface === 'window' ||
+          surface === 'browser') && { displaySurface: surface }),
+        monitors: asked.monitors !== false,
+        ...((cursor === 'always' ||
+          cursor === 'motion' ||
+          cursor === 'never') && { cursor }),
+        audio: !!audio,
+      });
+      if (!got) {
+        throw mediaError('NotAllowedError', 'Nothing was chosen to share.');
+      }
+      const picture = 'kind' in got ? got : got.video;
+      const sound = 'kind' in got ? null : (got.audio ?? null);
+      if (this._disposed) {
+        picture.stop();
+        sound?.stop();
+        return;
+      }
+      const native = picture.settings();
+      const fitted = displayFit(native, video);
+      if (typeof fitted !== 'string') await picture.reconfigure(fitted);
+      const id = this.register(picture);
+      this._displays.set(id, native);
+      // a surface has an id as a device does, the same in its settings and
+      // its capabilities, and digested as theirs are
+      const surfaceId = {
+        deviceId: digest(origin, `display:${picture.label}`),
+      };
+      const tracks: unknown[] = [
+        {
+          source: id,
+          kind: 'video',
+          label: picture.label || 'screen',
+          settings: {
+            ...displayDefaults(picture),
+            ...picture.settings(),
+            ...surfaceId,
+          },
+          capabilities: {
+            ...capabilitiesOf(picture.capabilities()),
+            ...surfaceId,
+          },
+        },
+      ];
+      if (sound && audio) {
+        tracks.push({
+          source: this.register(sound),
+          kind: 'audio',
+          label: sound.label || 'System Audio',
+          settings: {
+            ...sound.settings(),
+            suppressLocalAudioPlayback:
+              booleanOf(audio.suppressLocalAudioPlayback) ?? false,
+            restrictOwnAudio: booleanOf(audio.restrictOwnAudio) ?? false,
+          },
+          capabilities: capabilitiesOf(sound.capabilities()),
+        });
+      } else sound?.stop();
+      this._tell('__mdSettled', [req, true, tracks]);
+    } catch (error) {
+      fail(error);
+    }
+  }
 }
+
+type Constraint = Record<string, unknown>;
+
+/** A constraint as far as the display's fit reads one: its members, or
+ *  none. */
+const asConstraint = (c: unknown): Constraint =>
+  typeof c === 'object' && c ? (c as Constraint) : {};
+
+/** A source's capabilities, as `getCapabilities()` answers them. */
+const capabilitiesOf = (
+  caps: MediaDeviceCapabilities,
+): Record<string, unknown> => ({ ...caps });
+
+/** A display's settings a picker left out: what Chrome's fake desktop
+ *  answers. */
+function displayDefaults(source: MediaSourceLike): MediaSettings {
+  const caps = source.capabilities();
+  return {
+    displaySurface: caps.displaySurface ?? 'monitor',
+    logicalSurface: caps.logicalSurface ?? true,
+    cursor: 'never',
+  };
+}
+
+const DISPLAY_NUMBERS = ['width', 'height', 'frameRate'] as const;
+
+/** A display constraint no picture could meet: a `max` under 1, or a
+ *  `min` over its `max` (the first `applyConstraints` can be handed and
+ *  `getDisplayMedia` cannot, its realm having refused a `min`). */
+export function displayImpossible(c: Constraint): string | null {
+  for (const key of DISPLAY_NUMBERS) {
+    const v = c[key];
+    if (typeof v !== 'object' || !v) continue;
+    const o = v as Record<string, unknown>;
+    const max = typeof o.max === 'number' ? o.max : undefined;
+    const min = typeof o.min === 'number' ? o.min : undefined;
+    if (max !== undefined && max <= 0) return key;
+    if (max !== undefined && min !== undefined && min > max) return key;
+  }
+  return null;
+}
+
+/**
+ * A display's settings for its constraints: a width or a height asked for,
+ * the other from the picture's shape; then downscaled, shape kept, to fit
+ * a `max` of either; a frame rate asked for, held to its `max`. Never
+ * larger than the picture, which a display can only scale down.
+ */
+export function displayFit(
+  native: MediaSettings,
+  c: Constraint,
+): MediaSettings | string {
+  const impossible = displayImpossible(c);
+  if (impossible) return impossible;
+  const W = native.width ?? 0;
+  const H = native.height ?? 0;
+  if (!(W > 0 && H > 0)) return { ...native };
+  const ratio = W / H;
+  const want = (key: string): number | undefined => {
+    const v = c[key];
+    if (typeof v === 'number') return v;
+    if (typeof v !== 'object' || !v) return undefined;
+    const o = v as Record<string, unknown>;
+    return typeof o.exact === 'number'
+      ? o.exact
+      : typeof o.ideal === 'number'
+        ? o.ideal
+        : undefined;
+  };
+  const max = (key: string): number => {
+    const v = c[key];
+    const m =
+      typeof v === 'object' && v ? (v as Record<string, unknown>).max : null;
+    return typeof m === 'number' ? m : Infinity;
+  };
+  let width = W;
+  let height = H;
+  const w = want('width');
+  const h = want('height');
+  if (w !== undefined && w > 0) {
+    width = Math.min(W, w);
+    height = h !== undefined && h > 0 ? Math.min(H, h) : width / ratio;
+  } else if (h !== undefined && h > 0) {
+    height = Math.min(H, h);
+    width = height * ratio;
+  }
+  const scale = Math.min(1, max('width') / width, max('height') / height);
+  width = Math.max(1, Math.round(width * scale));
+  height = Math.max(1, Math.round(height * scale));
+  if (scale < 1) {
+    // rounded up past a max is not under it
+    width = Math.min(width, max('width'));
+    height = Math.min(height, max('height'));
+  }
+  let frameRate = want('frameRate') ?? native.frameRate ?? 30;
+  frameRate = Math.max(1, Math.min(frameRate, max('frameRate')));
+  if (native.frameRate !== undefined)
+    frameRate = Math.min(frameRate, native.frameRate);
+  return { ...native, width, height, frameRate };
+}
+
+const stringOf = (v: unknown): string | undefined => {
+  if (typeof v === 'string') return v;
+  if (typeof v !== 'object' || !v) return undefined;
+  const o = v as Record<string, unknown>;
+  const x = o.exact ?? o.ideal;
+  return typeof x === 'string' ? x : undefined;
+};
+
+const booleanOf = (v: unknown): boolean | undefined => {
+  if (typeof v === 'boolean') return v;
+  if (typeof v !== 'object' || !v) return undefined;
+  const o = v as Record<string, unknown>;
+  const x = o.exact ?? o.ideal;
+  return typeof x === 'boolean' ? x : undefined;
+};
 
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const clearTimeout: (handle: unknown) => void;
@@ -524,6 +1088,7 @@ export function canvasSource(
     if (!events?.video || !pixels || stopped) return;
     last = Date.now();
     events.video({
+      format: 'I420',
       ...i420Of(pixels),
       timestamp: (last - start) * 1000,
     });
@@ -553,11 +1118,14 @@ export function canvasSource(
     kind: 'video',
     label: '',
     listen(next) {
+      const had = !!events?.video;
       events = next;
       if (stopped) return;
       next.muted(false);
-      unwatch = feed.watch(changed);
-      if (events.video) emit();
+      // watched once, whoever listens; a reader that comes is handed the
+      // canvas as it is now
+      unwatch ??= feed.watch(changed);
+      if (events.video && !had) emit();
     },
     settings() {
       const pixels = feed.pixels();

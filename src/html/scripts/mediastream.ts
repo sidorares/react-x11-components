@@ -42,6 +42,11 @@ export interface MediaStreamsDeps {
   /** The realm's `MessageChannel`, whose ports a track handed to another
    *  realm reaches its source back through. */
   MessageChannel: unknown;
+  /** Whether the window has transient activation, which `getDisplayMedia`
+   *  needs (HTML 6.4.1). Absent, it never has. */
+  activated?(): boolean;
+  /** Runs `fn` in a task of its own, which no page can cancel. */
+  later?(fn: () => void): void;
 }
 
 /** What a peer connection's facade makes tracks and streams with. */
@@ -87,6 +92,29 @@ export interface MediaStreamsInternals {
   };
   /** The track a transfer made in this realm, over the port it came with. */
   adopt(data: unknown, port: unknown): unknown;
+  /**
+   * What a media element plays of a stream (Media Capture 6): the first
+   * live track of a kind — its host source, whether it is enabled — or null
+   * where there is none.
+   */
+  firstLive(
+    stream: unknown,
+    kind: 'audio' | 'video',
+  ): { source: number; enabled: boolean } | null;
+  /** Whether a stream has a live track, or a live track of a kind. */
+  active(stream: unknown, kind?: 'audio' | 'video'): boolean;
+  /** `fn` whenever a stream's tracks change — one added, removed, ended
+   *  or enabled — until the function it answers is called. */
+  watch(stream: unknown, fn: () => void): () => void;
+  /** `fn(width, height)` each time a video source's size is known anew,
+   *  until the function it answers is called. */
+  watchSize(
+    source: number,
+    fn: (width: number, height: number) => void,
+  ): () => void;
+  /** A media element's `setSinkId`: settles once the host has the device
+   *  whose id the page was handed, or rejects. */
+  setSink(element: number, sinkId: string): Promise<void>;
   /**
    * `canvas.captureStream(frameRequestRate)`, its rate already checked: a
    * stream of one `CanvasCaptureMediaStreamTrack` over a host source of
@@ -282,7 +310,10 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       return slotOf(this, (s) => s.track).enabled;
     }
     set enabled(on: boolean) {
-      slotOf(this, (s) => s.track).enabled = !!on;
+      const s: TrackSlot = slotOf(this, (x) => x.track);
+      if (s.enabled === !!on) return;
+      s.enabled = !!on;
+      trackChanged(this);
     }
     get muted(): boolean {
       return slotOf(this, (s) => s.track).muted;
@@ -325,6 +356,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       if (s.state === 'ended') return;
       s.state = 'ended';
       release(this, s);
+      trackChanged(this);
     }
     getCapabilities(): Any {
       return { ...slotOf(this, (s) => s.track).capabilities };
@@ -445,6 +477,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       s.home?.tracks.delete(track);
       bySource.get(s.source)?.delete(track);
       fire(track, new Event('ended'));
+      trackChanged(track);
     } else {
       const muted = what === 'muted';
       if (s.muted === muted) return;
@@ -596,9 +629,21 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     return !!s?.track;
   };
 
-  // what becomes of a host source: its tracks' muted state and their end
+  // what becomes of a host source: its tracks' muted state and their end,
+  // and its size, for the media elements that show it
   entry('__mdSource', () => {
-    const [source, what] = input() as [number, string];
+    const [source, what, width, height] = input() as [
+      number,
+      string,
+      number,
+      number,
+    ];
+    if (what === 'size') {
+      for (const fn of [...(sizeWatchers.get(source) ?? [])]) {
+        fn(width, height);
+      }
+      return null;
+    }
     for (const fn of [...(watchers.get(source) ?? [])]) fn(what);
     if (what === 'ended') watchers.delete(source);
     const tracks = bySource.get(source);
@@ -606,6 +651,22 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     for (const track of [...tracks]) tellTrack(track, what);
     return null;
   });
+
+  // what watches a stream's tracks (`internals.watch`), by the stream's
+  // slot, and each source's size (`internals.watchSize`)
+  const streamWatchers = new Map<Any, Set<() => void>>();
+  const sizeWatchers = new Map<number, Set<(w: number, h: number) => void>>();
+  /** A track changed — ended or enabled — and the streams it is in are
+   *  told. */
+  const trackChanged = (track: Any): void => {
+    for (const [slot, fns] of [...streamWatchers]) {
+      if (!slot.tracks.includes(track)) continue;
+      for (const fn of [...fns]) fn();
+    }
+  };
+  const streamChanged = (slot: Any): void => {
+    for (const fn of [...(streamWatchers.get(slot) ?? [])]) fn();
+  };
 
   // --- streams ----------------------------------------------------------------
 
@@ -676,7 +737,9 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
           "Failed to execute 'addTrack' on 'MediaStream': parameter 1 is not of type 'MediaStreamTrack'.",
         );
       }
-      if (!s.tracks.includes(track)) s.tracks.push(track);
+      if (s.tracks.includes(track)) return;
+      s.tracks.push(track);
+      streamChanged(s);
     }
     removeTrack(track: Any): void {
       const s: StreamSlot = slotOf(this, (x) => x.stream);
@@ -686,7 +749,9 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         );
       }
       const at = s.tracks.indexOf(track);
-      if (at >= 0) s.tracks.splice(at, 1);
+      if (at < 0) return;
+      s.tracks.splice(at, 1);
+      streamChanged(s);
     }
     clone(): Any {
       const s: StreamSlot = slotOf(this, (x) => x.stream);
@@ -845,6 +910,12 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         'channelCount',
         'deviceId',
         'groupId',
+        // a display's (Screen Capture 5.4)
+        'displaySurface',
+        'logicalSurface',
+        'cursor',
+        'restrictOwnAudio',
+        'suppressLocalAudioPlayback',
       ]) {
         out[name] = true;
       }
@@ -893,8 +964,214 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         return stream;
       });
     }
+    /**
+     * Screen Capture 5.2: after a user's gesture only, an
+     * `InvalidStateError` otherwise; a `TypeError` for options that are no
+     * `DisplayMediaStreamOptions`, for `video: false`, `advanced`, and a
+     * `min` or an `exact`, since a page may not require a display's size;
+     * then the host's picker, and a stream of a picture and, where asked
+     * and there is one, its sound.
+     */
+    getDisplayMedia(options: Any = undefined): Promise<Any> {
+      let video: Any;
+      let audio: Any;
+      let monitors = true;
+      let controller: Any = null;
+      try {
+        if (!(this instanceof MediaDevices)) throw illegal();
+        const o = options ?? {};
+        if (typeof o !== 'object' && typeof o !== 'function') {
+          throw typeError(
+            "Failed to execute 'getDisplayMedia' on 'MediaDevices': The provided value is not of type 'DisplayMediaStreamOptions'.",
+          );
+        }
+        if (o.controller !== undefined) {
+          const c = o.controller && apply(wmGet, slots, [o.controller]);
+          if (!c?.controller) {
+            throw typeError(
+              "Failed to execute 'getDisplayMedia' on 'MediaDevices': Failed to read the 'controller' property from 'DisplayMediaStreamOptions': Failed to convert value to 'CaptureController'.",
+            );
+          }
+          controller = c;
+        }
+        // the enums, read in the dictionary's order (Web IDL 3.2.17)
+        const enums: [string, string[]][] = [
+          ['audioSelection', ['preferred']],
+          ['monitorTypeSurfaces', ['include', 'exclude']],
+          ['selfBrowserSurface', ['include', 'exclude']],
+          ['surfaceSwitching', ['include', 'exclude']],
+          ['systemAudio', ['include', 'exclude']],
+          ['windowAudio', ['system', 'window', 'exclude']],
+        ];
+        for (const [name, values] of enums) {
+          const v = o[name];
+          if (v === undefined) continue;
+          if (!values.includes(String(v))) {
+            throw typeError(
+              `Failed to execute 'getDisplayMedia' on 'MediaDevices': Failed to read the '${name}' property from 'DisplayMediaStreamOptions': The provided value '${String(v)}' is not a valid enum value of type ${name[0].toUpperCase()}${name.slice(1)}PreferenceEnum.`,
+            );
+          }
+        }
+        video = o.video === undefined ? true : o.video;
+        audio = o.audio === undefined ? false : o.audio;
+        if (video === false) {
+          throw typeError(
+            "Failed to execute 'getDisplayMedia' on 'MediaDevices': video must be requested",
+          );
+        }
+        const checked = (c: Any, kind: string): Any => {
+          if (c === true || c === false || c === null) return c;
+          if (typeof c !== 'object') return !!c;
+          if (c.advanced !== undefined) {
+            throw typeError(
+              `Failed to execute 'getDisplayMedia' on 'MediaDevices': Advanced constraints are not supported for ${kind}.`,
+            );
+          }
+          for (const name of Object.keys(c)) {
+            const v = c[name];
+            if (v && typeof v === 'object' && !Array.isArray(v)) {
+              if (v.min !== undefined || v.exact !== undefined) {
+                throw typeError(
+                  `Failed to execute 'getDisplayMedia' on 'MediaDevices': min and exact constraints are not supported for ${kind}.`,
+                );
+              }
+            }
+          }
+          return JSON.parse(stringify(c));
+        };
+        video = checked(video, 'video');
+        audio = checked(audio, 'audio');
+        monitors = o.monitorTypeSurfaces !== 'exclude';
+        const surface =
+          video && typeof video === 'object'
+            ? typeof video.displaySurface === 'object' && video.displaySurface
+              ? video.displaySurface.ideal
+              : video.displaySurface
+            : undefined;
+        if (!monitors && surface === 'monitor') {
+          throw typeError(
+            "Failed to execute 'getDisplayMedia' on 'MediaDevices': displaySurface 'monitor' contradicts monitorTypeSurfaces 'exclude'.",
+          );
+        }
+      } catch (error) {
+        return P.reject(error);
+      }
+      if (controller?.bound) {
+        return P.reject(
+          domError(
+            "Failed to execute 'getDisplayMedia' on 'MediaDevices': A CaptureController may only be used with a single getDisplayMedia() call.",
+            'InvalidStateError',
+          ),
+        );
+      }
+      if (!deps.activated?.()) {
+        return P.reject(
+          domError(
+            "Failed to execute 'getDisplayMedia' on 'MediaDevices': getDisplayMedia() requires transient activation (user gesture).",
+            'InvalidStateError',
+          ),
+        );
+      }
+      if (controller) controller.bound = true;
+      const capture = ask('mdGetDisplayMedia', {
+        video: video === true ? {} : video,
+        audio: audio === true ? {} : audio || false,
+        monitors,
+      }).then((tracks: Any[]) => {
+        const stream = new MediaStream(TOKEN);
+        const s: StreamSlot = apply(wmGet, slots, [stream]);
+        for (const t of tracks) {
+          const track = makeTrack(t.kind, t.source, t.label, false);
+          const ts: TrackSlot = apply(wmGet, slots, [track]);
+          ts.settings = t.settings ?? {};
+          ts.capabilities = t.capabilities ?? {};
+          const asked = t.kind === 'audio' ? audio : video;
+          ts.constraints = asked && typeof asked === 'object' ? asked : {};
+          s.tracks.push(track);
+        }
+        if (controller) {
+          // the window in which a focus decision may still be made: the
+          // task the promise is resolved in (Screen Capture 5.1.2)
+          controller.track = s.tracks.find((t: Any) => t.kind === 'video');
+          controller.open = true;
+          deps.later?.(() => (controller.open = false));
+        }
+        return stream;
+      });
+      if (controller) {
+        capture.catch(() => {
+          controller.failed = true;
+        });
+      }
+      return capture;
+    }
   }
   handler(MediaDevices.prototype, 'devicechange', (s) => s.devices);
+
+  /** Screen Capture 5.1: what a page holds to steer a capture it starts —
+   *  where the focus goes as it does, here a choice nobody acts on. */
+  const FOCUS_BEHAVIORS = [
+    'focus-capturing-application',
+    'focus-captured-surface',
+    'no-focus-change',
+  ];
+  class CaptureController extends EventTarget {
+    constructor() {
+      super();
+      apply(wmSet, slots, [
+        this,
+        {
+          controller: true,
+          focus: null,
+          bound: false,
+          track: null,
+          open: false,
+          failed: false,
+          decided: false,
+        },
+      ]);
+    }
+    /**
+     * Where the focus goes as a capture starts (5.1.2): before the capture,
+     * while its promise waits, and in the task it resolves in — once, and
+     * only for a window or a tab, since a monitor has no focus to take. The
+     * choice is kept, and nothing here acts on it.
+     */
+    setFocusBehavior(behavior: Any): void {
+      const s = slotOf(this, (x) => x.controller);
+      if (arguments.length === 0) {
+        throw typeError(
+          "Failed to execute 'setFocusBehavior' on 'CaptureController': 1 argument required, but only 0 present.",
+        );
+      }
+      const value = String(behavior);
+      if (!FOCUS_BEHAVIORS.includes(value)) {
+        throw typeError(
+          `Failed to execute 'setFocusBehavior' on 'CaptureController': The provided value '${value}' is not a valid enum value of type CaptureStartFocusBehavior.`,
+        );
+      }
+      const refuse = (why: string) =>
+        domError(
+          `Failed to execute 'setFocusBehavior' on 'CaptureController': ${why}`,
+          'InvalidStateError',
+        );
+      if (s.bound) {
+        if (s.failed) throw refuse('The capture failed.');
+        if (s.decided) throw refuse('The focus behavior was already set.');
+        if (s.track) {
+          const ts = apply(wmGet, slots, [s.track]);
+          if (ts?.state !== 'live') throw refuse('The capture has stopped.');
+          if (!s.open) throw refuse('It is too late to decide the focus.');
+          const surface = ts?.settings?.displaySurface;
+          if (surface !== 'window' && surface !== 'browser') {
+            throw refuse('Only a window or a tab can be focused.');
+          }
+        }
+        s.decided = true;
+      }
+      s.focus = value;
+    }
+  }
   const mediaDevices = new MediaDevices(TOKEN);
   apply(wmSet, slots, [mediaDevices, { devices: true }]);
 
@@ -910,6 +1187,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     interfaces.MediaDevices = MediaDevices;
     interfaces.MediaDeviceInfo = MediaDeviceInfo;
     interfaces.InputDeviceInfo = InputDeviceInfo;
+    interfaces.CaptureController = CaptureController;
   }
   idl({
     MediaStream,
@@ -921,6 +1199,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     MediaDeviceInfo,
     InputDeviceInfo,
     DeviceChangeEvent,
+    CaptureController,
   });
 
   return {
@@ -947,6 +1226,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         const s: StreamSlot = apply(wmGet, slots, [stream]);
         if (!s || s.tracks.includes(track)) return;
         s.tracks.push(track);
+        streamChanged(s);
         fire(stream, new MediaStreamTrackEvent('addtrack', { track }));
       },
       removeTrack: (stream: Any, track: Any) => {
@@ -954,6 +1234,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         const at = s ? s.tracks.indexOf(track) : -1;
         if (at < 0) return;
         s.tracks.splice(at, 1);
+        streamChanged(s);
         fire(stream, new MediaStreamTrackEvent('removetrack', { track }));
       },
       end: (track: Any, told: boolean) => {
@@ -962,6 +1243,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         s.state = 'ended';
         bySource.get(s.source)?.delete(track);
         if (told) fire(track, new Event('ended'));
+        trackChanged(track);
       },
       uuid,
       detached: (track: Any) => {
@@ -1030,6 +1312,49 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         s.capabilities = data?.capabilities ?? {};
         if (s.state === 'ended') home.tracks.delete(track);
         return track;
+      },
+      firstLive: (stream: Any, kind: 'audio' | 'video') => {
+        const s = stream ? apply(wmGet, slots, [stream]) : null;
+        if (!s?.stream) return null;
+        for (const t of s.tracks) {
+          const ts: TrackSlot = apply(wmGet, slots, [t]);
+          if (ts.kind === kind && ts.state === 'live') {
+            return { source: ts.source, enabled: ts.enabled };
+          }
+        }
+        return null;
+      },
+      active: (stream: Any, kind?: 'audio' | 'video') => {
+        const s = stream ? apply(wmGet, slots, [stream]) : null;
+        if (!s?.stream) return false;
+        return s.tracks.some((t: Any) => {
+          const ts: TrackSlot = apply(wmGet, slots, [t]);
+          return ts.state === 'live' && (!kind || ts.kind === kind);
+        });
+      },
+      watch: (stream: Any, fn: () => void) => {
+        const s = stream ? apply(wmGet, slots, [stream]) : null;
+        if (!s?.stream) return () => {};
+        let fns = streamWatchers.get(s);
+        if (!fns) streamWatchers.set(s, (fns = new Set()));
+        fns.add(fn);
+        return () => {
+          fns!.delete(fn);
+          if (!fns!.size) streamWatchers.delete(s);
+        };
+      },
+      setSink: (element: number, sinkId: string) =>
+        ask('mdSink', { element, sinkId }).then(() => undefined),
+      watchSize: (source: number, fn: (w: number, h: number) => void) => {
+        let fns = sizeWatchers.get(source);
+        if (!fns) sizeWatchers.set(source, (fns = new Set()));
+        fns.add(fn);
+        call('mdSize', source, true);
+        return () => {
+          if (!fns!.delete(fn)) return;
+          if (!fns!.size) sizeWatchers.delete(source);
+          call('mdSize', source, false);
+        };
       },
       captureCanvas: (
         canvas: Any,

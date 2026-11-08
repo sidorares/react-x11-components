@@ -15,6 +15,9 @@ import type { HtmlPermissionState } from '../../src/html/index.js';
 export const QUESTIONS: Readonly<Record<string, string>> = {
   notifications: 'show notifications',
   'clipboard-read': 'see what you copied',
+  camera: 'use your camera',
+  microphone: 'use your microphone',
+  'display-capture': 'see your screen',
 };
 
 /** A page's question, waiting for its user. */

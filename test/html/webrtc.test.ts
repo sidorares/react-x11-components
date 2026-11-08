@@ -348,12 +348,25 @@ test('fake display: a 1280×720 screen, or none', async () => {
     microphone: false,
     display: true,
   };
-  const screen = await media.display!(ask);
-  assert.ok(screen);
+  const got = await media.display!(ask);
+  assert.ok(got && 'video' in got);
+  const screen = got.video;
   assert.equal(screen.label, 'Fake screen');
+  assert.equal(got.audio, null, 'no sound unless asked');
   const [frame] = await videoFrames(screen, 1);
   assert.equal(frame.width, 1280);
   assert.equal(frame.height, 720);
+  assert.equal(screen.settings().displaySurface, 'monitor');
+  // the surface a page prefers, and its sound
+  const window = await media.display!(ask, {
+    displaySurface: 'window',
+    monitors: true,
+    audio: true,
+  });
+  assert.ok(window && 'video' in window);
+  assert.equal(window.video.settings().displaySurface, 'window');
+  assert.equal(window.audio?.kind, 'audio');
+  window.audio?.stop();
   assert.equal(fakeMediaDevices({ display: false }).display, undefined);
 });
 

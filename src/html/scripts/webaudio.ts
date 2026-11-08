@@ -52,6 +52,11 @@ export interface WebAudioDeps {
   ): unknown;
   isStream(value: unknown): boolean;
   isTrack(value: unknown): boolean;
+  /** The host source a track is over, or -1 (`mediastream.ts`'s
+   *  internals). */
+  sourceOf?(track: unknown): number;
+  /** Bytes from base64, as the host hands an analyser its samples. */
+  bytesOfBase64?(text: string): Uint8Array;
 }
 
 export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
@@ -76,7 +81,7 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
   const stringify: Any = JSON.stringify;
   const F32: Any = Float32Array;
   const U8: Any = Uint8Array;
-  const { floor, max, min, exp, pow, abs } = Math;
+  const { floor, max, min, exp, pow, abs, cos, sin, log10, PI } = Math;
   const TOKEN = Object.freeze(Object.create(null));
   /** The largest finite float, which an unbounded parameter is held to. */
   const FLT_MAX = 3.4028234663852886e38;
@@ -1757,37 +1762,151 @@ export function installWebAudio(deps: WebAudioDeps): Record<string, unknown> {
       }
       slotOf(this, 'analyser').smoothingTimeConstant = d;
     }
-    // what it hears is silence: no frequency has any energy, and the wave
-    // is flat at its middle
+    // what it hears is what reaches it from a page's media stream through
+    // gains — a microphone a meter shows — and silence from anything else
     getFloatFrequencyData(array: Any): void {
-      slotOf(this, 'analyser');
+      const n = slotOf(this, 'analyser');
       if (!(array instanceof F32))
         throw typeError('The array must be a Float32Array.');
-      const n = min(array.length, this.frequencyBinCount);
-      for (let i = 0; i < n; i++) array[i] = -1 / 0;
+      const db = frequencyData(n);
+      const k = min(array.length, db.length);
+      for (let i = 0; i < k; i++) array[i] = db[i];
     }
     getByteFrequencyData(array: Any): void {
-      slotOf(this, 'analyser');
+      const n = slotOf(this, 'analyser');
       if (!(array instanceof U8))
         throw typeError('The array must be a Uint8Array.');
-      const n = min(array.length, this.frequencyBinCount);
-      for (let i = 0; i < n; i++) array[i] = 0;
+      const db = frequencyData(n);
+      const k = min(array.length, db.length);
+      const range = n.maxDecibels - n.minDecibels;
+      for (let i = 0; i < k; i++) {
+        const v = floor((255 / range) * (db[i] - n.minDecibels));
+        array[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
     }
     getFloatTimeDomainData(array: Any): void {
-      slotOf(this, 'analyser');
+      const n = slotOf(this, 'analyser');
       if (!(array instanceof F32))
         throw typeError('The array must be a Float32Array.');
-      const n = min(array.length, this.fftSize);
-      for (let i = 0; i < n; i++) array[i] = 0;
+      const wave = heardWave(n);
+      const k = min(array.length, wave.length);
+      for (let i = 0; i < k; i++) array[i] = wave[i];
     }
     getByteTimeDomainData(array: Any): void {
-      slotOf(this, 'analyser');
+      const n = slotOf(this, 'analyser');
       if (!(array instanceof U8))
         throw typeError('The array must be a Uint8Array.');
-      const n = min(array.length, this.fftSize);
-      for (let i = 0; i < n; i++) array[i] = 128;
+      const wave = heardWave(n);
+      const k = min(array.length, wave.length);
+      for (let i = 0; i < k; i++) {
+        const v = floor(128 * (1 + wave[i]));
+        array[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
     }
   }
+
+  /** What reaches a node through gains from a page's media streams: each
+   *  stream's first live, enabled audio track's host source, with the gain
+   *  the path multiplies it by. */
+  const streamsInto = (target: Any): { source: number; gain: number }[] => {
+    const out: { source: number; gain: number }[] = [];
+    const t = timeOf(target.context);
+    const walk = (n: Any, gain: number, depth: number): void => {
+      if (depth > 64) return;
+      for (const from of n.inputs) {
+        if (from.streamSource) {
+          const track = from.stream
+            .getAudioTracks()
+            .find((x: Any) => x.readyState === 'live' && x.enabled);
+          const source = track ? (D.sourceOf?.(track) ?? -1) : -1;
+          if (source >= 0) out.push({ source, gain });
+        } else if (from.gainNode) {
+          walk(from, gain * valueAt(paramSlot(from.gain), t), depth + 1);
+        }
+      }
+    };
+    walk(target, 1, 0);
+    return out;
+  };
+  /** An analyser's newest `fftSize` samples, the streams that reach it
+   *  summed: the host's, while its context runs. */
+  const heardWave = (n: Any): Any => {
+    const wave = new F32(n.fftSize);
+    if (n.context.state !== 'running' || !D.bytesOfBase64) return wave;
+    for (const { source, gain } of streamsInto(n)) {
+      const text = call('mdSamples', source, n.fftSize);
+      if (typeof text !== 'string' || !text) continue;
+      const samples = new F32(D.bytesOfBase64(text).slice().buffer);
+      const k = min(samples.length, wave.length);
+      for (let i = 0; i < k; i++) wave[i] += gain * samples[i];
+    }
+    return wave;
+  };
+  /**
+   * Web Audio 1.8.5's frequency data: the newest samples under a Blackman
+   * window, their transform's magnitudes over the size, smoothed over time
+   * by `smoothingTimeConstant`, in decibels.
+   */
+  const frequencyData = (n: Any): Any => {
+    const size = n.fftSize;
+    const half = size / 2;
+    if (!n.smoothed || n.smoothed.length !== half) {
+      n.smoothed = new F32(half);
+    }
+    const wave = heardWave(n);
+    const re = new F32(size);
+    const im = new F32(size);
+    const a0 = 0.42;
+    const a1 = 0.5;
+    const a2 = 0.08;
+    for (let i = 0; i < size; i++) {
+      const w =
+        a0 - a1 * cos((2 * PI * i) / size) + a2 * cos((4 * PI * i) / size);
+      re[i] = wave[i] * w;
+    }
+    // in place, radix 2: the size is a power of two
+    for (let i = 1, j = 0; i < size; i++) {
+      let bit = size >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        const r = re[i];
+        re[i] = re[j];
+        re[j] = r;
+      }
+    }
+    for (let len = 2; len <= size; len <<= 1) {
+      const angle = (-2 * PI) / len;
+      const wr = cos(angle);
+      const wi = sin(angle);
+      for (let i = 0; i < size; i += len) {
+        let cr = 1;
+        let ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const a = i + k;
+          const b = a + len / 2;
+          const tr = re[b] * cr - im[b] * ci;
+          const ti = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - tr;
+          im[b] = im[a] - ti;
+          re[a] += tr;
+          im[a] += ti;
+          const nr = cr * wr - ci * wi;
+          ci = cr * wi + ci * wr;
+          cr = nr;
+        }
+      }
+    }
+    const tau = n.smoothingTimeConstant;
+    const db = new F32(half);
+    for (let k = 0; k < half; k++) {
+      const magnitude = (re[k] * re[k] + im[k] * im[k]) ** 0.5 / size;
+      const smoothed = tau * n.smoothed[k] + (1 - tau) * magnitude;
+      n.smoothed[k] = Number.isFinite(smoothed) ? smoothed : 0;
+      db[k] = n.smoothed[k] > 0 ? 20 * log10(n.smoothed[k]) : -1 / 0;
+    }
+    return db;
+  };
 
   /** `createScriptProcessor`'s node, deprecated in Web Audio and kept by
    *  every browser: it is handed no audio here, so `audioprocess` never
