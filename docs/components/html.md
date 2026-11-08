@@ -7672,7 +7672,11 @@ parent's `scroll-snap-align` with the rest of its style, and is none.
 `scroll-snap-align`, are the snap container's axes, as its writing mode
 puts them, and an area's `start` is the end the container's flow starts at:
 the right in a right-to-left line, and in `vertical-rl`, where the block
-axis runs across (CSS Scroll Snap 1, 6.2). An area in a vertical writing
+axis runs across (CSS Scroll Snap 1, 6.2). A multicol scroll container's
+columns are snap areas where its `::column` has a `scroll-snap-align` (CSS
+Overflow 5, 5.1): each column box its layout set, in any writing mode; the
+only properties `::column` takes here are scroll snapping's, and a snap to a
+column names no element to a snap event. An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
