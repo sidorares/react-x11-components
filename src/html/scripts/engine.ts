@@ -1780,6 +1780,8 @@ const HELD_ONCE = new Set([
   '__rendering',
   '__scrolled',
   '__scrollended',
+  '__scrollsOwed',
+  '__cssOwed',
   '__drain',
 ]);
 
