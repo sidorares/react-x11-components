@@ -18551,25 +18551,35 @@ export function installDom(
     get referrer(): string {
       return this === document ? str(call('referrer')) : '';
     }
+    // the domain it was set to, else its origin's host (HTML 7.5.2)
     get domain(): string {
-      return documentOrigin() === 'null' ? '' : location.hostname;
+      return str(call('domain', this._id));
     }
-    // what a tag manager sets to share a document with its frames, which
-    // here are all the page's origin's or nothing of the page's; a sandbox
-    // may not, whatever it allows (HTML 7.5.2, the domain setter)
+    // what a page sets to share itself with the frames and windows of its
+    // site that set the same: the host checks the value and links the
+    // realms that are of one origin-domain from then on (`_setDomain`); a
+    // sandbox may not, whatever it allows (HTML 7.5.2, the domain setter)
     set domain(v: Any) {
-      if (
-        documentOrigin() === 'null' ||
-        (this === document && call('sandboxed') === true)
-      ) {
-        throw new DOMException(
-          "Failed to set the 'domain' property on 'Document': Assignment is forbidden for sandboxed iframes.",
+      const value = str(v);
+      const refused = (message: string): Any =>
+        new DOMException(
+          `Failed to set the 'domain' property on 'Document': ${message}`,
           'SecurityError',
         );
+      // a document no window shows has no origin to relax
+      if (!windowOfDocument(this)) {
+        throw refused('This document has no browsing context.');
       }
-      // which makes it of another origin-domain than its origin's documents
-      // that set none, a `javascript:` URL's to ask (`javascriptAllowed`)
-      call('setDomain', this._id, str(v));
+      const why = call('setDomain', this._id, value);
+      if (why === 'sandboxed') {
+        throw refused('Assignment is forbidden for sandboxed iframes.');
+      }
+      if (why === 'opaque') {
+        throw refused('Assignment is forbidden for an opaque origin.');
+      }
+      if (why) {
+        throw refused(`'${value}' is not a suffix of '${this.domain}'.`);
+      }
     }
     // the host's jar, where it has one, for this document's address: a
     // document that is not on the web, or one a page made of its own, is
@@ -19025,6 +19035,14 @@ export function installDom(
     }
     open(): Any {
       notXml(this, 'open');
+      // of the origin of the code that called it, which a document of one
+      // origin-domain need not be (HTML 8.4.2, whatwg/html#2282)
+      if (call('openAllowed', this._id) === false) {
+        throw new DOMException(
+          "Failed to execute 'open' on 'Document': Can only call open() on same-origin documents.",
+          'SecurityError',
+        );
+      }
       // `== null`: a wrapper is made without its class's fields
       if (this !== document && this._written == null) {
         this._written = '';
@@ -41228,16 +41246,17 @@ export function installDom(
   // a frame of this page's runs in its own realm: its window here is that
   // realm's global from now on
   entry('__linkFrame', () => {
-    const [id, cross] = input();
+    const [id, cross, again] = input();
     if (cross) {
       linkedFrames.delete(Number(id));
       crossLinked.add(Number(id));
     } else {
       // a document of this origin's that runs in a realm of its own takes
       // over a frame this realm ran the documents of: their entries stay
-      // the joint history's, apart, its own document's among them
+      // the joint history's, apart, its own document's among them. Not one
+      // linked again, as a `document.domain` set relinks it
       const frame = wrap(Number(id));
-      const last = frame && keptFrameWindows.get(frame);
+      const last = !again && frame && keptFrameWindows.get(frame);
       if (last && !last.initial) {
         frameApart(frame, String(call('frameLocation', frame._id)), false);
         frameLocations.delete(frame);

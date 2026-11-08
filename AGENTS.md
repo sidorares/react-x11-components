@@ -4786,10 +4786,16 @@ closes a way out a DOM binding opens by accident:
   compared there can be made to come out the same, and what a table there keeps
   can be read as the facade reads it, so no check in the facade, and no copy of
   a builtin under one, keeps a global from a page. **A page has every object the
-  facade's code touches.** So the host decides, by `host.origin`:
-  `ScriptEngine.link` and `WindowSlot.adopt` hand a global only to a realm of
-  one origin (`sameOrigin`, in which an opaque origin is no other's), and two
-  of different origins have each other by a number. What crosses origins goes
+  facade's code touches.** So the host decides, by `host.origin` and the
+  domain `document.domain` was set to: `ScriptEngine.link` and
+  `WindowSlot.adopt` hand a global only to a realm of one origin-domain
+  (`DomHost.sameOriginDomainWith`, in which an opaque origin is no other's),
+  and two of different ones have each other by a number. Two origins of one
+  site are one origin-domain where both set the same `document.domain`, which
+  is what that setter is for: the host checks the value (`_setDomain`, of its
+  own document or one of its origin alone) and links every realm of the group
+  again at each set (`relinkFrames`, `relinkGroup`), where whether two are one
+  changed. What was handed stays the page's, as in a browser. What crosses origins goes
   through ops on that number: `closed`, `length`, `close`, `focus`, a `location`
   set, and `postMessage` and a port's messages as strings (`postAcross`,
   `realmPost`, `realmWire`), delivered by entering the other realm
@@ -4797,8 +4803,8 @@ closes a way out a DOM binding opens by accident:
   meant for that origin are the host's to say (`post`). Three things are
   load-bearing. **Anything that reaches another document is refused on the host
   by origin**: `frameDocument`, `frameLocation`, `setFrameLocation`,
-  `frameElement` (`foreignParent`) and `takeNode`, whatever the facade checks
-  first, and a `javascript:` URL sent across origins (`maySend`,
+  `frameElement` (`foreignParent`) and `takeNode` (by origin-domain), whatever
+  the facade checks first, and a `javascript:` URL sent across origins (`maySend`,
   `frameNavigate`), of the address as `URL` left it, which ends there with no
   navigation for a host to hear. A facade's check is a courtesy, for the error
   a page should see.

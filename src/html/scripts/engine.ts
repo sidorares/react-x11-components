@@ -1606,20 +1606,28 @@ export class ScriptEngine {
 
   /**
    * Join this realm and another page realm, a frame's and the page it is
-   * in. Of one origin, each is handed the other's global through a data
-   * slot, as a same-origin frame reaches its parent. Of two (`crossOrigin`,
-   * which the host decides), neither is handed anything: each has the other
-   * by a number, and what crosses origins goes through the host (`post`,
-   * `wire` in `./popups.ts`). The facade runs in the page's realm, where a
-   * page can replace what it calls, so a global it was handed is a global the
-   * page has. Told through an entry (`__linkFrame`, `__linkParent`) to make
-   * the window that stands for it there. Nothing of the host's is handed to
-   * either.
+   * in. Of one origin-domain, each is handed the other's global through a
+   * data slot, as a same-origin frame reaches its parent. Of two
+   * (`crossOrigin`, which the host decides), neither is handed anything:
+   * each has the other by a number, and what crosses origins goes through
+   * the host (`post`, `wire` in `./popups.ts`). The facade runs in the
+   * page's realm, where a page can replace what it calls, so a global it was
+   * handed is a global the page has. Told through an entry (`__linkFrame`,
+   * `__linkParent`) to make the window that stands for it there. Nothing of
+   * the host's is handed to either. `again` where the two were linked
+   * already and a `document.domain` set changed which they are of
+   * (`relinkFrames`): what was handed is the page's for good, as it is in a
+   * browser, and what changes is what each window reaches from then on.
    */
-  link(frame: ScriptEngine, frameId: number, crossOrigin = false): void {
+  link(
+    frame: ScriptEngine,
+    frameId: number,
+    crossOrigin = false,
+    again = false,
+  ): void {
     if (this._broken || this._disposed) return;
     if (crossOrigin) {
-      this.call('__linkFrame', [frameId, true]);
+      this.call('__linkFrame', [frameId, true, again]);
       frame.call('__linkParent', [frameId, true]);
       return;
     }
@@ -1627,7 +1635,7 @@ export class ScriptEngine {
       (engine._context as Record<string, unknown>).__handed = value;
     };
     into(this, frame._global);
-    this.call('__linkFrame', [frameId, false]);
+    this.call('__linkFrame', [frameId, false, again]);
     into(frame, this._global);
     frame.call('__linkParent', [frameId, false]);
     this.reached(frame);
