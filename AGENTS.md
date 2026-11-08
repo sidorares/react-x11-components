@@ -8284,6 +8284,22 @@ each leaves on its axis before they are tried (`sortedOptions`,
 `roomOf`). **Anything new that lays a box out by an option goes through
 `triedStyle`**, or the style it reads back is another.
 
+**What a box inherits of an anchored box is lent it as the anchored box is
+placed** (CSS Anchor Positioning 1, 2.1 and 4.1). An `anchor()` and an
+option's declarations are computed values, which only layout comes to, so
+an `inherit` of an inset, a size or a margin is noted on the style
+(`anchorInherited`), and `inheritAnchored` lays each such box out by a
+copy with the parent's lengths in those fields, kept as its placed style
+(`PLACED_STYLE`, `LENT_TO`) for its relative offset and `getComputedStyle`.
+Three things are load-bearing. **A declaration that sets one of those
+fields takes the note back** (`forgetAnchorInherited`, in
+`applyDeclaration`), or a box that set its own height after inheriting
+takes its parent's. **An option with other sizes lays the box out anew**
+(`PLACED_SIZES`, `sizesKey`): what a layout keeps of a box is of the sizes
+it had, and the second option of one layout was laid out at the first's
+height. And **a box placed in a `position-area` reads its insets against
+the cells** (`PLACED_AREA`), which are its containing block.
+
 **An `anchor-size()` is kept by the field it is written in, wherever CSS
 allows one** (CSS Anchor Positioning 1, 5.1): the sizes, the least and the
 greatest ones, the insets and the margins (`setAnchorSize`, the

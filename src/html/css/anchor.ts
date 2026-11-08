@@ -53,7 +53,13 @@ export interface AnchorRef {
   name: string | null;
   side: AnchorSide;
   fallback: Len | null;
+  /** The fallback where it holds calls of its own, `anchor(--a top,
+   *  anchor(--b top))`, which comes to what they do (`nestedValue`). */
+  nested?: NestedFallback | null;
 }
+
+/** A fallback with `anchor()` or `anchor-size()` calls in it, either. */
+export type NestedFallback = AnchorMath<AnchorRef | AnchorSizeRef>;
 
 /** Which of the anchor's sizes an `anchor-size()` reads: a physical one,
  *  or a logical one, which the layout reads against the containing block's
@@ -67,6 +73,7 @@ export interface AnchorSizeRef {
   name: string | null;
   size: AnchorSizeKind;
   fallback: Len | null;
+  nested?: NestedFallback | null;
 }
 
 export type InsetSide = 'top' | 'right' | 'bottom' | 'left';
@@ -77,6 +84,44 @@ function callOf(value: string, fn: string): string[] | null {
   const m = new RegExp(`^${fn}\\(([\\s\\S]*)\\)$`, 'i').exec(value.trim());
   if (!m) return null;
   return splitCommas(m[1]).map((a) => a.trim());
+}
+
+/** An `anchor()`'s or an `anchor-size()`'s fallback, a
+ *  `<length-percentage>`; null for anything else. A unitless 0 is a length
+ *  there, and a math function that comes to one is a number, which is not
+ *  (CSS Values 4, 10.9): `calc(0)` and `min(0, 0)` drop the declaration. */
+function fallbackOf(text: string, ctx: UnitContext): Len | null {
+  const len = parseLength(text, ctx);
+  if (len === null || len === AUTO) return null;
+  if (/^[a-z-]+\(/i.test(text)) {
+    // what is left with the functions' names gone: a length or a
+    // percentage has a unit or a `%` in it, and a number has neither
+    const terms = text.replace(/[a-z-]+\(/gi, '(');
+    if (!/[a-z%]/i.test(terms)) return null;
+  }
+  return len;
+}
+
+/** A call's fallback as it is kept: a length, or the calls it holds of its
+ *  own (`nested`); none where there is none, and null where it is no
+ *  `<length-percentage>`. */
+function fallbackParts(
+  text: string | undefined,
+  ctx: UnitContext,
+  property: 'width' | 'height' | null,
+): { fallback: Len | null; nested: NestedFallback | null } | null {
+  if (text === undefined) return { fallback: null, nested: null };
+  if (readsAnchor(text)) {
+    const nested = parseAnchorMath<AnchorRef | AnchorSizeRef>(
+      text,
+      ctx,
+      property,
+      true,
+    );
+    return nested ? { fallback: null, nested } : null;
+  }
+  const fallback = fallbackOf(text, ctx);
+  return fallback === null ? null : { fallback, nested: null };
 }
 
 /** Whether a value holds an `anchor()` or an `anchor-size()`. */
@@ -110,13 +155,9 @@ export function parseAnchor(value: string, ctx: UnitContext): AnchorRef | null {
     } else return null;
   }
   if (side === null) return null;
-  let fallback: Len | null = null;
-  if (args[1] !== undefined) {
-    const len = parseLength(args[1], ctx);
-    if (len === null || len === AUTO) return null;
-    fallback = len;
-  }
-  return { name, side, fallback };
+  const tail = fallbackParts(args[1], ctx, null);
+  if (!tail) return null;
+  return { name, side, ...tail };
 }
 
 const SIZE_KINDS = new Set<string>([
@@ -147,13 +188,9 @@ export function parseAnchorSize(
       size = lower as AnchorSizeKind;
     } else return null;
   }
-  let fallback: Len | null = null;
-  if (args[1] !== undefined) {
-    const len = parseLength(args[1], ctx);
-    if (len === null || len === AUTO) return null;
-    fallback = len;
-  }
-  return { name, size: size ?? property, fallback };
+  const tail = fallbackParts(args[1], ctx, property);
+  if (!tail) return null;
+  return { name, size: size ?? property, ...tail };
 }
 
 /**
@@ -215,6 +252,8 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
   value: string,
   ctx: UnitContext,
   size: 'width' | 'height' | null,
+  /** Whether it may hold both kinds of call, as a call's fallback may. */
+  either = false,
 ): AnchorMath<R> | null {
   const text = value.trim();
   const re = /(?<![\w-])(anchor-size|anchor)\(/gi;
@@ -224,9 +263,8 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
   let from = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     if (m.index < from) continue;
-    if ((m[1].toLowerCase() === 'anchor-size') !== (size !== null)) {
-      return null;
-    }
+    const sized = m[1].toLowerCase() === 'anchor-size';
+    if (!either && sized !== (size !== null)) return null;
     let depth = 1;
     let end = m.index + m[0].length;
     for (; end < text.length && depth > 0; end += 1) {
@@ -235,8 +273,9 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
     }
     if (depth !== 0) return null;
     const call = text.slice(m.index, end);
-    const read =
-      size === null ? parseAnchor(call, ctx) : parseAnchorSize(call, size, ctx);
+    const read = sized
+      ? parseAnchorSize(call, size ?? 'width', ctx)
+      : parseAnchor(call, ctx);
     if (!read) return null;
     const args = splitCommas(call.slice(m[0].length, -1));
     calls.push(read as R);
@@ -290,19 +329,43 @@ export function parseAnchorMath<R extends AnchorRef | AnchorSizeRef>(
 export function anchorMathValue<R>(
   math: AnchorMath<R>,
   values: readonly (number | null)[],
+  /** What a call in a fallback comes to, where it has calls of its own;
+   *  none where nothing is known of the anchors. */
+  resolve?: (ref: AnchorRef | AnchorSizeRef) => number | null,
 ): Len | null {
   const s = math.units.scale || 1;
   let text = math.between[0];
   for (let i = 0; i < math.calls.length; i += 1) {
     const v = values[i];
     const fallback = math.fallbacks[i];
+    const nested = (math.calls[i] as { nested?: NestedFallback | null }).nested;
     if (v !== null && Number.isFinite(v)) text += `(${v / s}px)`;
-    else if (fallback !== null) text += `(${fallback})`;
+    else if (nested) {
+      const len = nestedValue(nested, resolve);
+      const written = len === null ? null : lengthText(len, s);
+      if (written === null) return null;
+      text += `(${written})`;
+    } else if (fallback !== null) text += `(${fallback})`;
     else return null;
     text += math.between[i + 1];
   }
-  const len = parseLength(text, math.units);
+  // a lone call is in parentheses alone, which only a math function takes
+  const len =
+    parseLength(text, math.units) ?? parseLength(`calc(${text})`, math.units);
   return len === AUTO ? null : len;
+}
+
+/** What a fallback with calls of its own comes to: each call what
+ *  `resolve` says, or its own fallback; null where one has neither. */
+export function nestedValue(
+  nested: NestedFallback,
+  resolve?: (ref: AnchorRef | AnchorSizeRef) => number | null,
+): Len | null {
+  return anchorMathValue(
+    nested,
+    nested.calls.map((ref) => resolve?.(ref) ?? null),
+    resolve,
+  );
 }
 
 /**

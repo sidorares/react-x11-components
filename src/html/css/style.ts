@@ -81,6 +81,7 @@ import { svgPaint } from './shapes.js';
 import { parseBasicShape } from './basic-shape.js';
 import {
   anchorMathValue,
+  nestedValue,
   parseAnchor,
   parseAnchorMath,
   parseAnchorSize,
@@ -986,6 +987,12 @@ export interface ComputedStyle {
    *  an `anchor()`: a size, a least or a greatest one, an inset or a
    *  margin (CSS Anchor Positioning 1, 5.1), by its field. */
   anchorSizes: Readonly<Partial<Record<AnchorSizeField, AnchorSize>>> | null;
+  /** The fields of these an `inherit` took: where the parent is placed
+   *  by an anchor function or a position option, the computed value it
+   *  inherits is what that came to (CSS Anchor Positioning 1, 2.1 and
+   *  4.1), which only layout knows, so layout hands it the parent's as it
+   *  places the parent (`inheritAnchored`). Null where none is. */
+  anchorInherited: readonly AnchorSizeField[] | null;
   /** `position-area`: the cells of the grid its anchor makes of its
    *  containing block that it is placed in; null for `none`. */
   positionArea: PositionArea | null;
@@ -1890,6 +1897,7 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     positionVisibility: 1,
     anchorInsets: null,
     anchorSizes: null,
+    anchorInherited: null,
     positionArea: null,
     positionTryFallbacks: null,
     positionTryStyles: null,
@@ -2591,6 +2599,8 @@ export function applyDeclaration(
     return;
   }
 
+  // what an `inherit` before it took of an anchor function, it sets anew
+  if (style.anchorInherited) forgetAnchorInherited(style, name);
   // CSS-wide keywords, before anything else parses the value.
   const lower = value.toLowerCase();
   if (name === 'all') {
@@ -5375,7 +5385,9 @@ function setInset(
             ref,
             ref.calls.map(() => null),
           ) ?? AUTO)
-        : (ref.fallback ?? AUTO);
+        : (ref.fallback ??
+          (ref.nested ? nestedValue(ref.nested) : null) ??
+          AUTO);
     style.anchorInsets = { ...style.anchorInsets, [side]: ref };
     return;
   }
@@ -5469,7 +5481,7 @@ function setAnchorSize(
           ref,
           ref.calls.map(() => null),
         )
-      : ref.fallback;
+      : (ref.fallback ?? (ref.nested ? nestedValue(ref.nested) : null));
   (style as unknown as Record<string, unknown>)[field] = fallback ?? unset;
   style.anchorSizes = { ...style.anchorSizes, [field]: ref };
   return true;
@@ -9264,6 +9276,7 @@ function inheritOne(
   const part = FIELD_PARTS.get(name);
   if (part) {
     part(style, parent);
+    noteAnchorInherited(style, name);
     return;
   }
   // a bit or a few of one field, so the others stay as they are
@@ -9278,6 +9291,52 @@ function inheritOne(
   // takes the child's own colour (CSS Color 4) — not the parent's colour,
   // which is what CSS 2.1 computed it to.
   copyFields(style, parent, keys);
+  noteAnchorInherited(style, name);
+}
+
+/** The fields an anchor function may stand in, by the property that names
+ *  each (`anchorInherited`). */
+const ANCHOR_INHERITABLE: Readonly<Record<string, AnchorSizeField>> = {
+  top: 'top',
+  right: 'right',
+  bottom: 'bottom',
+  left: 'left',
+  width: 'width',
+  height: 'height',
+  'min-width': 'minWidth',
+  'min-height': 'minHeight',
+  'max-width': 'maxWidth',
+  'max-height': 'maxHeight',
+  'margin-top': 'marginTop',
+  'margin-right': 'marginRight',
+  'margin-bottom': 'marginBottom',
+  'margin-left': 'marginLeft',
+};
+
+/** The fields of `anchorInherited` a property sets, a shorthand's too. */
+const ANCHOR_INHERITABLE_SET: Readonly<Record<string, readonly string[]>> = {
+  inset: ['top', 'right', 'bottom', 'left'],
+  margin: ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'],
+};
+
+/** Take back what `anchorInherited` says of the fields a declaration of
+ *  `name` sets, which `inherit` notes again where that is what it says. */
+function forgetAnchorInherited(style: ComputedStyle, name: string): void {
+  const one = ANCHOR_INHERITABLE[name];
+  const set = one ? [one] : ANCHOR_INHERITABLE_SET[name];
+  if (!set) return;
+  const rest = style.anchorInherited!.filter((f) => !set.includes(f));
+  style.anchorInherited = rest.length ? rest : null;
+}
+
+/** Note that `inherit` took one of the fields an anchored box's placement
+ *  decides (`anchorInherited`): whatever the parent's style says of it, the
+ *  parent may be placed by an anchor function or a position option, which
+ *  only layout knows. */
+function noteAnchorInherited(style: ComputedStyle, name: string): void {
+  const field = ANCHOR_INHERITABLE[name];
+  if (!field || style.anchorInherited?.includes(field)) return;
+  style.anchorInherited = [...(style.anchorInherited ?? []), field];
 }
 
 /** `keys` of `from` into `style`, and the source a colour field keeps

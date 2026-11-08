@@ -957,6 +957,13 @@ function rewriteAnchors(value: string, prop: string): string | null {
   return MATH.test(whole) ? (serializeMath(whole) ?? whole) : whole;
 }
 
+/** Whether a math function comes to a number, which no unit and no `%` in
+ *  it says: `calc(0)` and `min(0, 0)` are no `<length-percentage>`, which a
+ *  bare 0 is (CSS Values 4, 10.9). */
+function numberMath(value: string): boolean {
+  return !/[a-z%]/i.test(value.replace(/[a-z-]+\(/gi, '('));
+}
+
 function anchorCall(fn: string, inner: string, prop: string): string | null {
   const size = fn === 'anchor-size';
   if (
@@ -979,7 +986,7 @@ function anchorCall(fn: string, inner: string, prop: string): string | null {
     given === null &&
     head &&
     splitValue(head).filter(Boolean).length === 1 &&
-    (lengthPercentage(head) || MATH.test(head))
+    (lengthPercentage(head) || (MATH.test(head) && !numberMath(head)))
   ) {
     return `${fn}(${/^[+-]?0*\.?0*$/.test(head) ? '0px' : head})`;
   }
@@ -1014,6 +1021,7 @@ function anchorCall(fn: string, inner: string, prop: string): string | null {
     ) {
       return null;
     }
+    if (MATH.test(read) && numberMath(read)) return null;
     fallback = `, ${/^[+-]?0*\.?0*$/.test(read) ? '0px' : read}`;
   }
   return `${fn}(${[name, word].filter(Boolean).join(' ')}${fallback})`;
