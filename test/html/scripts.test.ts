@@ -17923,6 +17923,9 @@ test('a frame without scripts keeps one session across the documents it shows', 
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
+  /** Whether a frame's `load` waits for the view the page mounts over it,
+   *  as a browser that draws frames has it (`framesFollowed`). */
+  followed = false,
 ): Promise<{
   text: (where: string, id: string) => string;
   logs: string[];
@@ -17981,6 +17984,7 @@ async function hostedFrames(
     load: async () => null,
     onTimeout: () => {},
     drawsFrames: true,
+    framesFollowed: followed,
   };
   let runner: (() => ScriptRunner | null) | undefined;
   function Page() {
@@ -18333,6 +18337,34 @@ test("a page reads the layout of a scriptless frame's document from the frame's 
     (t) => t !== '',
   );
   assert.equal(page, '108|b2|50|scroll|end|50|b2|null|#|true', logs.join('\n'));
+});
+
+test('a scriptless frame is scrolled to its fragment, its scroll-margin taken off, after the page hears its load', async () => {
+  // the page realm, which holds the document, tries to scroll it to its
+  // fragment, as `scrollIntoView` lines an element up, in a task after the
+  // frame's `load`, as Chromium does
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html#t" style="width: 300px; height: 80px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { var w = f.contentWindow, at = w.scrollY;' +
+      '  setTimeout(function () { document.getElementById("out").textContent =' +
+      '    [at, w.scrollY, w.innerHeight].join("|"); }, 50); };' +
+      '</script>',
+    {
+      'frame.html#t':
+        '<style>html, body { margin: 0 } div { height: 20px }' +
+        ' #t { scroll-margin-top: 40px }</style>' +
+        '<div></div><div></div><div></div><div></div><div></div><div></div>' +
+        '<div id="t"></div><div></div><div></div><div></div><div></div><div></div>',
+    },
+    true,
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, '0|80|80', logs.join('\n'));
 });
 
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {

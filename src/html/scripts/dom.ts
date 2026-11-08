@@ -39353,6 +39353,15 @@ export function installDom(
     return dispatch(target, ev);
   });
 
+  // a frame's document of this realm's, with no realm of its own, at the end
+  // of its load: scrolled to its fragment (HTML 13.2.7, "the end")
+  entry('__fragment', () => {
+    const [id, url] = input();
+    const doc = wrap(id);
+    if (doc) scrollToFragment(doc, String(url));
+    return true;
+  });
+
   // a snap container's snap targets changed, or are about to (CSS Scroll
   // Snap 2, 6.1): at the element, and the viewport's at the document,
   // which alone bubbles; neither is cancelable

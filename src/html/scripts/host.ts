@@ -7906,6 +7906,21 @@ export class DomHost {
       if (this._frameLoads.get(frame) !== serial) return;
       this.entries.call('__fire', [this.idOf(frame), 'load']);
       this._frameDone(frame);
+      // a document of this realm's that has no realm of its own is scrolled
+      // to its fragment by this one ("try to scroll to the fragment"), in a
+      // task after its frame's `load`, as Chromium's fragment anchor scrolls
+      // at the rendering update after it: a page that reads the frame in its
+      // `onload` finds it where it was laid out (WPT's
+      // `layout-follows-focused-targeted-block`)
+      const doc = this._frames.get(frame);
+      const at = this._frameAt.get(frame) ?? '';
+      if (doc && !this._s.realms.has(doc) && at.includes('#')) {
+        setTimeout(() => {
+          if (this._disposed || !this.entries) return;
+          if (this._frames.get(frame) !== doc) return;
+          this.entries.call('__fragment', [this.idOf(doc), at]);
+        }, 0);
+      }
     };
     // an `<iframe srcdoc>` shows the document its attribute holds, before
     // any `src` (HTML 4.8.5), until something sends it elsewhere
