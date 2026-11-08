@@ -1398,6 +1398,237 @@ test('another origin is a number: a frame with no script of its own stays out of
   assert.equal(await s.until('attacked'), 'true []');
 });
 
+/** A frame of the page's site, on another host: another origin, which
+ *  `document.domain` can make of one origin-domain with the page. */
+const SUB = 'https://www.app.test/';
+
+test('document.domain: a page and a frame of its site that both set it reach each other, and either reaches nothing where the other did not', async () => {
+  // both set the site's domain: each is the other's to read, a window and a
+  // document and an element (HTML 7.1.1, "same origin-domain")
+  const s = await scene(
+    page(`
+      window.secret = 'page-secret';
+      document.domain = 'app.test';
+      addEventListener('message', () => {
+        const w = document.querySelector('iframe').contentWindow;
+        console.log('page', document.domain, w.secret, w.document.title,
+          w.frameElement === document.querySelector('iframe'));
+      }, { once: true });
+      const f = document.createElement('iframe');
+      f.src = '${SUB}side';
+      document.body.append(f);
+    `),
+    {
+      [`${SUB}side`]: page(`
+        ${VICTIM}
+        document.domain = 'APP.test';
+        console.log('frame', document.domain, parent.secret);
+        parent.postMessage('up', '*');
+      `),
+    },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(
+    await s.until(`[frame ${SUB}side] frame`),
+    'app.test page-secret',
+  );
+  assert.equal(
+    await s.until('page'),
+    'app.test victim-secret victim-title true',
+  );
+});
+
+test('document.domain set by the page alone leaves its frame of the site a number, whatever the page replaces', async () => {
+  // set before the frame's realm starts, and again once it is in: the link
+  // made as it starts and the one made again as the page sets it
+  const s = await scene(
+    page(`
+      document.domain = 'app.test';
+      addEventListener('message', () => {
+        document.domain = 'app.test';
+        ${STEAL("document.querySelector('iframe').contentWindow", 'console.log')}
+      }, { once: true });
+      const f = document.createElement('iframe');
+      f.src = '${SUB}side';
+      document.body.append(f);
+    `),
+    { [`${SUB}side`]: page(`${VICTIM} parent.postMessage('up', '*');`) },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until('attacked'), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('document.domain set by the frame alone leaves its page a number, whatever the frame replaces', async () => {
+  const s = await scene(
+    page(`
+      ${VICTIM}
+      const f = document.createElement('iframe');
+      f.src = '${SUB}side';
+      document.body.append(f);
+    `),
+    {
+      [`${SUB}side`]: page(
+        `document.domain = 'app.test'; ${STEAL('parent', 'console.log')}`,
+      ),
+    },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(await s.until(`[frame ${SUB}side] attacked`), 'true []');
+  assert.ok(!s.logs.some((l) => l.includes('victim-')), s.logs.join('\n'));
+});
+
+test('document.domain set by both hands the frame its page: the search that finds nothing above finds it here', async () => {
+  // the control for the two above: the same search, with the domain set on
+  // both sides, finds the victim, so finding nothing there is the host's doing
+  const s = await scene(
+    page(`
+      ${VICTIM}
+      document.domain = 'app.test';
+      const f = document.createElement('iframe');
+      f.src = '${SUB}side';
+      document.body.append(f);
+    `),
+    {
+      [`${SUB}side`]: page(
+        `document.domain = 'app.test'; ${STEAL('parent', 'console.log')}`,
+      ),
+    },
+    { popups: { unblocked: true } },
+  );
+  const found = await s.until(`[frame ${SUB}side] attacked`);
+  assert.match(found, /^true \[.*plain:global.*\]$/, found);
+});
+
+test('document.domain refuses what is not its host or a registrable suffix of it, whatever the page replaces', async () => {
+  // the host checks the value (HTML 7.1.1, "is a registrable domain suffix
+  // of or is equal to"): a public suffix, another site, a port, a path, an
+  // address and nothing are no domain to relax to, and what the page makes
+  // the facade's string methods answer changes none of it
+  const tried = [
+    'test',
+    '.app.test',
+    'provider.test',
+    'other.app.test',
+    'app.test:443',
+    'app.test/',
+    '127.0.0.1',
+    '',
+  ];
+  const s = await scene(
+    page(`
+      const f = document.createElement('iframe');
+      f.src = '${SUB}side';
+      document.body.append(f);
+    `),
+    {
+      [`${SUB}side`]: page(`
+        String.prototype.endsWith = () => true;
+        String.prototype.toLowerCase = function () { return 'app.test'; };
+        const out = [];
+        for (const value of ${JSON.stringify(tried)}) {
+          try { document.domain = value; out.push(value + ':set'); }
+          catch (e) { out.push(value + ':' + e.name); }
+        }
+        console.log('tried', document.domain, JSON.stringify(out));
+      `),
+    },
+    { popups: { unblocked: true } },
+  );
+  const said = await s.until(`[frame ${SUB}side] tried`);
+  assert.equal(
+    said,
+    `www.app.test ${JSON.stringify(tried.map((v) => `${v}:SecurityError`))}`,
+  );
+});
+
+test('document.domain set by one of two documents of one origin takes back what each reaches from then on, and the other setting it gives it back', async () => {
+  // a WindowProxy's checks are made at each access (HTML 7.2.3): a page that
+  // sets the domain its frame of its own origin did not is of another
+  // origin-domain from then on, and of one again once the frame sets it
+  // too. A document the page took while they were one stays the page's, as
+  // it does in a browser
+  const s = await scene(
+    page(`
+      let held = null;
+      const read = () => {
+        const f = document.querySelector('iframe');
+        try { return f.contentWindow.secret; } catch (error) { return error.name; }
+      };
+      addEventListener('message', (e) => {
+        const f = document.querySelector('iframe');
+        if (e.data === 'up') {
+          held = f.contentDocument;
+          const before = read();
+          document.domain = 'app.test';
+          console.log('apart', before, read(), f.contentDocument, held.title);
+          f.contentWindow.postMessage('join', '*');
+        } else if (e.data === 'joined') {
+          console.log('joined', read(), f.contentDocument === held);
+        }
+      });
+      const f = document.createElement('iframe');
+      f.src = '${APP}side';
+      document.body.append(f);
+    `),
+    {
+      [`${APP}side`]: page(`
+        ${VICTIM}
+        addEventListener('message', () => {
+          document.domain = 'app.test';
+          parent.postMessage('joined', '*');
+        });
+        parent.postMessage('up', '*');
+      `),
+    },
+    { popups: { unblocked: true } },
+  );
+  assert.equal(
+    await s.until('apart'),
+    'victim-secret SecurityError null victim-title',
+  );
+  assert.equal(await s.until('joined'), 'victim-secret true');
+});
+
+test("document.domain set by an opener is its about:blank popup's too, which it writes into as before", async () => {
+  // a window's `about:blank` is of its creator's origin, the domain it set
+  // and all (HTML 7.1.1), so a page that sets the domain and opens a window
+  // to print from still reaches it
+  const s = await scene(
+    pressed(`
+      document.domain = 'app.test';
+      const w = window.open();
+      w.document.body.textContent = 'printed';
+      console.log('blank', w.document.domain, w.document.body.textContent);
+    `),
+    {},
+  );
+  await s.press();
+  assert.equal(await s.until('blank'), 'app.test printed');
+});
+
+test('document.domain set by an opener and its popup of the site hands each the other', async () => {
+  const s = await scene(
+    pressed(`
+      window.secret = 'opener-secret';
+      document.domain = 'app.test';
+      self.w = window.open('${SUB}side');
+      addEventListener('message', () => console.log('opener', self.w.secret), { once: true });
+    `),
+    {
+      [`${SUB}side`]: page(`
+        ${VICTIM}
+        document.domain = 'app.test';
+        console.log('popup', opener.secret);
+        opener.postMessage('up', '*');
+      `),
+    },
+  );
+  await s.press();
+  assert.equal(await s.until('popup'), 'opener-secret');
+  assert.equal(await s.until('opener'), 'victim-secret');
+});
+
 test('a frame sent to another origin by a redirect is of that origin, whatever it asked for', async () => {
   const s = await scene(
     page(`

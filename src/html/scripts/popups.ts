@@ -110,6 +110,10 @@ export interface WindowOps {
   openerOf(id: number): number;
   /** How many frames a window has. */
   lengthOf(id: number): number;
+  /** A document of the page set `document.domain`: every realm of it is
+   *  linked again with those it is now of one origin-domain with, and
+   *  unlinked from those it is no longer (`relinkFrames`). */
+  domainChanged(): void;
 }
 
 /** What a page asked for (`windowOpen`). */
@@ -181,6 +185,9 @@ export class WindowSlot {
   severed = false;
   /** A document of this window has been shown. */
   private _shown = false;
+  /** The windows whose realms this one's is linked with, holding each
+   *  other's globals (`_linkWith`). */
+  private readonly _linked = new Set<WindowSlot>();
 
   constructor(
     readonly group: WindowGroup,
@@ -223,20 +230,7 @@ export class WindowSlot {
     }
     this._shown = true;
     this.active = { value: runner.openerPolicy, origin: runner.host.origin };
-    // a global is handed across only where the host knows the two are of
-    // one origin. What a realm is handed its page has, however the facade
-    // means to keep it, so another origin's window is a number there
-    for (const other of this.group.slots) {
-      const there = other.runner;
-      if (other === this || !there) continue;
-      if (sameOrigin(runner, there)) {
-        runner.engine.linkWindow(other.id, there.engine);
-        there.engine.linkWindow(this.id, runner.engine);
-      } else {
-        runner.engine.unlinkWindow(other.id, false);
-        there.engine.unlinkWindow(this.id, false);
-      }
-    }
+    for (const other of this.group.slots) this._linkWith(other, false);
     if (this.blank && was && was !== runner) {
       this.blank = false;
       if (this.popup) this.popup.initial = null;
@@ -254,10 +248,53 @@ export class WindowSlot {
     }
   }
 
+  /**
+   * Hand this window's realm and another's each other's globals where the
+   * host knows the two are of one origin-domain (`sameOriginDomain`), and
+   * else take the link away. What a realm is handed its page has, however
+   * the facade means to keep it, so another origin-domain's window is a
+   * number there. `changed` relinks only where that answer differs from
+   * what the two were linked as: a `document.domain` set
+   * (`relinkGroup`), where a new document is linked whatever was before.
+   */
+  private _linkWith(other: WindowSlot, changed: boolean): void {
+    const runner = this.runner;
+    const there = other.runner;
+    if (other === this || !runner || !there) return;
+    const same = sameOriginDomain(runner, there);
+    if (changed && same === this._linked.has(other)) return;
+    if (same) {
+      runner.engine.linkWindow(other.id, there.engine);
+      there.engine.linkWindow(this.id, runner.engine);
+      this._linked.add(other);
+      other._linked.add(this);
+    } else {
+      runner.engine.unlinkWindow(other.id, false);
+      there.engine.unlinkWindow(this.id, false);
+      this._linked.delete(other);
+      other._linked.delete(this);
+    }
+  }
+
+  /** Link every two windows of the group again where whether they are of
+   *  one origin-domain changed (`_linkWith`). */
+  relinkGroup(): void {
+    for (const slot of this.group.slots) {
+      for (const other of this.group.slots) slot._linkWith(other, true);
+    }
+  }
+
+  /** It is linked with no window any more. */
+  private _unlinked(): void {
+    for (const other of this._linked) other._linked.delete(this);
+    this._linked.clear();
+  }
+
   /** A document of this window's has gone. */
   left(runner: ScriptRunner): void {
     if (this.runner !== runner) return;
     this.runner = null;
+    this._unlinked();
     for (const other of this.group.slots) {
       if (other !== this) other.runner?.engine.unlinkWindow(this.id, false);
     }
@@ -280,6 +317,7 @@ export class WindowSlot {
     this.closing = true;
     const runner = this.runner;
     this.runner = null;
+    this._unlinked();
     runner?.dispose();
     this.group.slots.delete(this);
     for (const slot of this.group.slots) {
@@ -386,6 +424,33 @@ export class WindowSlot {
   }
 }
 
+/** Whether two documents are of one origin-domain (HTML 7.1.1), as the
+ *  host says (`DomHost.sameOriginDomainWith`): what one realm reaches of
+ *  another, and what `document.domain` relaxes. */
+export function sameOriginDomain(a: ScriptRunner, b: ScriptRunner): boolean {
+  return a.host.sameOriginDomainWith(b.host);
+}
+
+/**
+ * Link each of a document's frames' realms with it again where whether the
+ * two are of one origin-domain changed since they were linked, and theirs
+ * with their frames' in turn: a frame's host knows what it was linked as
+ * (`foreignParent`), and a realm is handed the other's global only where the
+ * host says so (`ScriptEngine.link`).
+ */
+function relinkFrames(parent: ScriptRunner): void {
+  for (const child of parent.frameRealms()) {
+    const from = child.parentRealm?.from;
+    if (from === undefined) continue;
+    const same = sameOriginDomain(parent, child);
+    if (same !== !child.host.foreignParent) {
+      child.host.foreignParent = !same;
+      parent.engine.link(child.engine, from, !same, true);
+    }
+    relinkFrames(child);
+  }
+}
+
 /** Whether two documents are of one origin, one of `about:blank` being the
  *  origin of what made it, and an opaque origin being no other's. */
 function sameOrigin(a: ScriptRunner, b: ScriptRunner): boolean {
@@ -403,7 +468,8 @@ function sameOrigin(a: ScriptRunner, b: ScriptRunner): boolean {
  *  page's realm says it is. */
 function maySend(from: ScriptRunner, to: WindowSlot, url: string): boolean {
   return (
-    !/^javascript:/i.test(url) || (!!to.runner && sameOrigin(from, to.runner))
+    !/^javascript:/i.test(url) ||
+    (!!to.runner && sameOriginDomain(from, to.runner))
   );
 }
 
@@ -544,6 +610,9 @@ export class Popup implements HtmlPopup {
   /** The opaque origin that opened it, where one did: what its first
    *  document is of, which `creator`, an address, does not say. */
   creatorOrigin: object | null = null;
+  /** The document that made it, which its `about:blank` shares an origin
+   *  with, `document.domain` and all (`DomHost.creatorDocument`). */
+  creatorDocument: Document | null = null;
 
   /** The sandboxing flags each document it shows has. */
   get sandbox(): number {
@@ -845,6 +914,7 @@ export function windowOps(
     const from = slotOf(runner);
     const popup = new Popup(ask, runner.host.url, from.group.number(), runner);
     popup.creatorOrigin = runner.host.opaqueOrigin;
+    popup.creatorDocument = runner.host.document;
     if (!popups.open(popup)) return 0;
     const slot = new WindowSlot(from.group, from, popup, popup.id);
     startWindow(
@@ -901,7 +971,7 @@ export function windowOps(
     },
     reached(id) {
       const there = slotById(id)?.runner;
-      if (there && sameOrigin(runner, there)) {
+      if (there && sameOriginDomain(runner, there)) {
         runner.engine.reached(there.engine);
       }
     },
@@ -930,12 +1000,28 @@ export function windowOps(
       const there = runner.frameRealm(id);
       if (!there) return undefined;
       // who asks is the host's to say, not this realm's
+      // a document of another origin-domain tells it nothing of another
+      // document (HTML 7.4.2.2, "navigate")
       const said = there.engine.call('__navigatedFrom', [
         url,
-        sameOrigin(runner, there),
+        sameOriginDomain(runner, there),
         post,
       ]);
       return said === 'done' ? 'done' : 'load';
+    },
+    domainChanged() {
+      // every realm of the page's: the documents its windows show, their
+      // frames, and the windows to each other
+      const top = runner.topmost;
+      const slot = top.slot;
+      if (!slot) {
+        relinkFrames(top);
+        return;
+      }
+      for (const other of slot.group.slots) {
+        if (other.runner) relinkFrames(other.runner);
+      }
+      slot.relinkGroup();
     },
     openerOf: (id) => slotById(id)?.opener?.id ?? 0,
     lengthOf: (id) => slotById(id)?.runner?.host.frames().length ?? 0,

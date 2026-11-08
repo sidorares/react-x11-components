@@ -313,6 +313,7 @@ export class ScriptRunner {
     if (popup && slot?.auxiliary && ABOUT_BLANK.test(url)) {
       this.host.creator = popup.creator;
       this.host.creatorOrigin = popup.creatorOrigin;
+      this.host.creatorDocument = popup.creatorDocument;
     }
     // a window's flags are every document's it shows, and a host says what a
     // document's own response said of itself
@@ -328,13 +329,16 @@ export class ScriptRunner {
     if (_link?.frame) this.host.frameParent = _link.parent.host;
     // the host's to know, and never the facade's: it decides what a realm is
     // handed, and what is refused it
+    // and of another origin-domain where one of the two set
+    // `document.domain` and the other did not (`sameOriginDomainWith`)
     const foreign =
       !!_link &&
-      (this.host.origin === 'null'
+      ((this.host.origin === 'null'
         ? !ABOUT_BLANK.test(url) || !!(this.host.sandbox & SB_ORIGIN)
         : !ABOUT_BLANK.test(url) &&
           (originOf(url) === 'null' ||
-            originOf(url) !== _link.parent.host.origin));
+            originOf(url) !== _link.parent.host.origin)) ||
+        this.host.domain !== _link.parent.host.domain);
     this.host.foreignParent = foreign;
     this.engine = new ScriptEngine(this.host.bridge, {
       timeout: _options.timeout ?? SCRIPT_TIMEOUT_MS,
@@ -478,6 +482,15 @@ export class ScriptRunner {
     return this._link
       ? { runner: this._link.parent, from: this._frameId() }
       : null;
+  }
+
+  /** The realms of this document's frames that run in realms of their own. */
+  frameRealms(): ScriptRunner[] {
+    const out: ScriptRunner[] = [];
+    for (const seat of this._seats.values()) {
+      if (seat.runner) out.push(seat.runner);
+    }
+    return out;
   }
 
   /** The realm of a frame of this document, by its id here. */

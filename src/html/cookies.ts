@@ -890,6 +890,9 @@ interface TldtsModule {
 }
 
 let tldts: Promise<PublicSuffix | null> | null = null;
+/** What `tldts` came to once it was asked for and is in: undefined until
+ *  then, null where it is not installed. */
+let tldtsNow: PublicSuffix | null | undefined;
 
 /**
  * The Public Suffix List, private domains and all, from the optional peer
@@ -909,5 +912,17 @@ export function publicSuffixList(): Promise<PublicSuffix | null> {
     },
     () => null,
   );
+  void tldts.then((list) => (tldtsNow = list));
   return tldts;
+}
+
+/**
+ * The Public Suffix List where it has been loaded (`publicSuffixList`), for
+ * what has to answer at once: undefined while it is on its way or nobody has
+ * asked for it, and null where `tldts` is not installed. A caller that gets
+ * no list goes by a host's last label, as a `CookieJar` with no
+ * `publicSuffix` does.
+ */
+export function publicSuffixNow(): PublicSuffix | null | undefined {
+  return tldtsNow;
 }

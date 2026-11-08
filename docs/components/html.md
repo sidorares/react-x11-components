@@ -1832,11 +1832,30 @@ realm a task later, as one of its own window's from the page's origin: a
 link, a form, `location` or `window.open()` that goes to a fragment of the
 frame's document is the frame's `navigate`, a push the page did not
 initiate, and one that goes to another document is told to the frame only
-where the page is of its origin (HTML 7.4.2.2, "navigate"); a POST is
-loaded as it was. Not yet: `document.domain`, which would make two origins'
-documents reach each other's windows, so a page and a frame that both set
-it are still two origins here. With no `session`, the host's own entries
-before and after the page's are not in `navigation.entries()`.
+where the page is of its origin-domain (HTML 7.4.2.2, "navigate"); a POST
+is loaded as it was. With no `session`, the host's own entries before and
+after the page's are not in `navigation.entries()`.
+**`document.domain` makes two documents of one site one origin-domain**
+(HTML 7.5.2, 7.1.1). The setter takes the document's host, or a suffix of it
+at a dot that is no public suffix (`tldts` where it is installed and has
+loaded, else the last label, as a `CookieJar` has it); it throws a
+`SecurityError` for anything else, in a sandbox, for an opaque origin and
+for a document no window shows. Two documents are of one origin-domain where
+both set the same domain and have one scheme, whatever their ports, or
+where neither set one and they are of one origin. So a page and a frame of
+its site that both set it reach each other's windows, documents and
+elements as a same-origin frame does, and a page and a frame of its own
+origin of which only one set it reach nothing of each other, where the
+frame runs in a realm of its own. The host
+decides this, of what it keeps, and links the realms again at each set: a
+window reaches what it may from then on, and an object a page took while the
+two were one stays the page's, as it does in a browser. An `about:blank` or
+`about:srcdoc` document shares its creator's domain, as it shares its
+origin. `document.open()` still asks for one origin, not one origin-domain
+(whatwg/html#2282). Not here: `Origin-Agent-Cluster`, which would make the
+setter do nothing; a frame with no script, whose document is the page
+realm's, which the page reaches whatever either set; and a frame reaching
+its sibling through a parent of another origin, which is a number to it.
 A `javascript:` URL is no navigation `navigate` hears of (HTML 7.4.2.2,
 "navigate"): `navigation.navigate()` refuses one with a
 `NotSupportedError` before anything else, and a link, `location` or a

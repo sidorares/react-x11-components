@@ -271,6 +271,7 @@ import { PageSockets } from './sockets.js';
 import { connectAllowed, parseCsp } from '../csp.js';
 import type { CspPolicy } from '../csp.js';
 import type { HtmlDocumentCookies } from '../cookies.js';
+import { publicSuffixList, publicSuffixNow } from '../cookies.js';
 import { defaultStorage } from '../storage.js';
 import { askCaches } from '../cache-storage.js';
 import type {
@@ -1992,12 +1993,52 @@ function documentHolding(element: Element): Document | null {
   return node instanceof Document ? node : null;
 }
 
+/** Whether a host is an IP address, which has no domain to relax to. */
+function isAddress(host: string): boolean {
+  return host.startsWith('[') || /^\d+\.\d+\.\d+\.\d+$/.test(host);
+}
+
+/** A host's public suffix: the Public Suffix List's where it has loaded
+ *  (`publicSuffixNow`), else its last label, as a `CookieJar`'s default. */
+function publicSuffixOf(host: string): string {
+  const list = publicSuffixNow();
+  return list?.(host) ?? host.slice(host.lastIndexOf('.') + 1);
+}
+
+/**
+ * What `document.domain` may be set to from a document whose effective
+ * domain is `host` (HTML 7.1.1, "is a registrable domain suffix of or is
+ * equal to"): `value` parsed as a host, where it is `host` itself, or a
+ * suffix of it at a dot that is no public suffix and has one under it. An
+ * IP address is neither, and a value with more in it than a host is none.
+ * Null where it may not.
+ */
+function registrableSuffix(value: string, host: string): string | null {
+  // a port, a path, a user or a space is more than a host, and a colon
+  // anywhere but in an IPv6 address is a port
+  if (value === '' || /[/?#@\\\s]/.test(value)) return null;
+  if (value.includes(':') && !value.startsWith('[')) return null;
+  let parsed: string;
+  try {
+    const url = new URL(`http://${value}/`);
+    parsed = url.hostname;
+  } catch {
+    return null;
+  }
+  if (parsed === '' || parsed === host) return parsed || null;
+  if (isAddress(parsed) || isAddress(host)) return null;
+  if (!host.endsWith(`.${parsed}`)) return null;
+  if (publicSuffixOf(parsed) === parsed) return null;
+  if (`.${publicSuffixOf(host)}`.endsWith(`.${parsed}`)) return null;
+  return parsed;
+}
+
 export class DomShared {
   readonly inert = new WeakSet<Element>();
-  /** The domain each document set its `document.domain` to, where it set
-   *  one (HTML 7.5.2): two documents of one origin are of one origin-domain
-   *  only where neither did, or both set the same. Nothing else reads it
-   *  yet but whether a `javascript:` URL may run (`javascriptAllowed`). */
+  /** The domain `document.domain` was set to (HTML 7.5.2), by the document
+   *  whose origin it is (`DomHost._originRoot`): two documents are of one
+   *  origin-domain where both set the same, of one scheme, or neither set
+   *  one and they are of one origin (`DomHost.sameOriginDomainWith`). */
   readonly domains = new WeakMap<Document, string>();
   /** Each document's encoding where its bytes came through here, by its
    *  name. One a host handed over is the host's to say (`charset`). */
@@ -2055,7 +2096,7 @@ export class DomShared {
   windows: WindowGroup | null = null;
   /** A node one realm hands another (`handOver`), and that realm's origin:
    *  another origin's takes nothing. */
-  handed: { node: AnyNode; origin: string } | null = null;
+  handed: { node: AnyNode; host: DomHost } | null = null;
 
   /** Each `<canvas>`'s pixels, whichever realm's script drew them, and who
    *  is told as they change. */
@@ -2513,6 +2554,10 @@ export class DomHost {
   /** The opaque origin that made it, where one did: an address says nothing
    *  of that, and a sandbox's address is a real origin's. */
   creatorOrigin: object | null = null;
+  /** The document that made it, where it is a window's `about:blank` of
+   *  that document's origin: which shares its `document.domain` with it,
+   *  as it shares the origin (`_originRoot`). */
+  creatorDocument: Document | null = null;
   /** This document's opaque origin, where it has one: `'null'` is what it
    *  serializes to, and this is which it is. */
   private readonly _opaqueOwn = {};
@@ -5157,10 +5202,34 @@ export class DomHost {
         return null;
       }
       // `document.domain` set (HTML 7.5.2), which makes the document of
-      // another origin-domain than the documents of its origin that did not
-      case 'setDomain':
-        this._s.domains.set(this._node(a) as Document, text(b).toLowerCase());
-        return null;
+      // another origin-domain than the documents of its origin that did not,
+      // and of one with those of its site that set the same (`_setDomain`)
+      case 'setDomain': {
+        const doc = this._node(a);
+        return doc instanceof Document
+          ? this._setDomain(doc, text(b))
+          : 'opaque';
+      }
+      // whether `document.open()` may run on a document of this realm's
+      // (HTML 8.4.2): where the realm whose code reached it is of its
+      // origin, not its origin-domain — this realm while its code runs, and
+      // the window around it while another realm's code reaches in
+      case 'openAllowed': {
+        const doc = this._node(a);
+        const entry =
+          this.entries?.running === false && this.frameParent
+            ? this.frameParent
+            : this;
+        if (entry === this || !(doc instanceof Document)) return true;
+        const origin = this._originOfDocument(doc);
+        return origin !== 'null' && origin === entry._origin();
+      }
+      // what `document.domain` reads: the domain it was set to, else its
+      // origin's host, and '' for an opaque origin (HTML 7.5.2)
+      case 'domain': {
+        const doc = this._node(a);
+        return doc instanceof Document ? this._effectiveDomain(doc) : '';
+      }
       // whether a `javascript:` URL may run in a document of this realm's
       // (HTML, "navigate to a `javascript:` URL"): where it is of one
       // origin-domain with the document that asked — the one given, else
@@ -6625,13 +6694,15 @@ export class DomHost {
         return typeof frame === 'string' ? 0 : this.idOf(frame);
       }
       case 'handOver':
-        this._s.handed = { node: this._node(a), origin: this._origin() };
+        this._s.handed = { node: this._node(a), host: this };
         return null;
       case 'takeNode': {
         const handed = this._s.handed;
         this._s.handed = null;
         if (!handed) return 0;
-        if (handed.origin !== this._origin() || handed.origin === 'null') {
+        // of one origin-domain, as two realms are handed each other's
+        // globals (`sameOriginDomainWith`)
+        if (handed.host !== this && !this.sameOriginDomainWith(handed.host)) {
           throw new DomError(
             'SecurityError',
             "A node of another origin's is none of this document's.",
@@ -8139,9 +8210,123 @@ export class DomHost {
   /** Whether two documents of one origin are of one origin-domain (HTML
    *  7.1.1): neither set `document.domain`, or both set it the same. */
   private _sameOriginDomain(a: Document, b: Document): boolean {
+    return a === b || this._domainOf(a) === this._domainOf(b);
+  }
+
+  /** The document whose origin a document has (HTML 7.1.1): an
+   *  `about:blank` or `about:srcdoc` frame's is the document's around it,
+   *  its `document.domain` and all, unless its sandbox gave it an origin of
+   *  its own, and a popup's `about:blank` is its creator's
+   *  (`creatorDocument`); any other document's is its own. */
+  private _originRoot(doc: Document): Document {
+    let at = doc === this.document ? (this.creatorDocument ?? doc) : doc;
+    for (let depth = 0; depth < 64; depth++) {
+      const frame = this._frameOf.get(at);
+      if (!frame) return at;
+      const url = this._frameAt.get(frame) ?? 'about:blank';
+      if (!/^about:(?:blank|srcdoc)(?:[?#]|$)/i.test(url)) return at;
+      if ((this._s.sandboxes.get(at) ?? 0) & SB_ORIGIN) return at;
+      const around = documentHolding(frame);
+      if (!around) return at;
+      at = around;
+    }
+    return at;
+  }
+
+  /** What `document.domain` was set to on a document, or on the one whose
+   *  origin it has, or null where neither set it. */
+  private _domainOf(doc: Document): string | null {
+    return this._s.domains.get(this._originRoot(doc)) ?? null;
+  }
+
+  /** This document's `document.domain`, where it was set (`_domainOf`). */
+  get domain(): string | null {
+    return this._domainOf(this.document);
+  }
+
+  /** The origin of a document of this realm's: its own, or where the frame
+   *  that shows it loaded it from, which is its own for one no frame shows. */
+  private _originOfDocument(doc: Document): string {
+    const root = this._originRoot(doc);
+    if (root === this.document || !this._frameOf.get(root)) {
+      return this._origin();
+    }
+    if ((this._s.sandboxes.get(root) ?? 0) & SB_ORIGIN) return 'null';
+    return originOf(this._documentUrl(root)) || 'null';
+  }
+
+  /** What `document.domain` reads of a document (HTML 7.5.2): the domain
+   *  it was set to, else its origin's host; '' for an opaque origin. */
+  private _effectiveDomain(doc: Document): string {
+    const origin = this._originOfDocument(doc);
+    if (origin === 'null') return '';
+    try {
+      return this._domainOf(doc) ?? new URL(origin).hostname;
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * `document.domain` set on a document of this realm's (HTML 7.5.2, the
+   * setter's steps from its sandbox on): why it may not, where it may not —
+   * a sandbox, an opaque origin, or a value that is neither its effective
+   * domain nor a registrable domain suffix of it (`registrableSuffix`) —
+   * and '' where it may, and is kept on the document whose origin it is
+   * (`_originRoot`), and the realms of the page now of one origin-domain
+   * with each other linked, and those no longer unlinked
+   * (`WindowOps.domainChanged`). The host's to decide and never the
+   * facade's: it is what another origin's global is handed over on.
+   */
+  private _setDomain(
+    doc: Document,
+    value: string,
+  ): '' | 'sandboxed' | 'opaque' | 'suffix' {
+    if (this._s.sandboxes.get(doc) ?? 0) return 'sandboxed';
+    const origin = this._originOfDocument(doc);
+    if (origin === 'null') return 'opaque';
+    // only a document of this realm's origin is its to set: a realm that
+    // came by another origin's document could otherwise relax it for it
+    if (doc !== this.document && origin !== this._origin()) return 'opaque';
+    let host: string;
+    try {
+      host = this._domainOf(doc) ?? new URL(origin).hostname;
+    } catch {
+      return 'opaque';
+    }
+    // the list is asked for the first time a page sets it, and a
+    // `CookieJar`'s last label stands in until it is in
+    if (publicSuffixNow() === undefined) void publicSuffixList();
+    const domain = registrableSuffix(value, host);
+    if (domain === null) return 'suffix';
+    this._s.domains.set(this._originRoot(doc), domain);
+    this.windows?.domainChanged();
+    return '';
+  }
+
+  /**
+   * Whether this document and another realm's are of one origin-domain
+   * (HTML 7.1.1, "same origin-domain"): of one scheme with one
+   * `document.domain` set on both, whatever their ports, or of one origin
+   * with it set on neither. A realm is handed another's global on it
+   * (`./popups.ts`), and a node (`takeNode`): decided of what the host
+   * keeps, never in the facade, whose every builtin a page may replace.
+   */
+  sameOriginDomainWith(other: DomHost): boolean {
+    const a = this._origin();
+    const b = other._origin();
+    const mine = this.domain;
+    const theirs = other.domain;
+    if (mine === null && theirs === null) {
+      return (
+        a === b && (a !== 'null' || this.opaqueOrigin === other.opaqueOrigin)
+      );
+    }
     return (
-      a === b ||
-      (this._s.domains.get(a) ?? null) === (this._s.domains.get(b) ?? null)
+      mine === theirs &&
+      a !== 'null' &&
+      b !== 'null' &&
+      a.slice(0, a.indexOf(':')) === b.slice(0, b.indexOf(':'))
     );
   }
 
