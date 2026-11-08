@@ -98,7 +98,10 @@ test('vi and vb are the element’s own inline and block axes: the width and the
     .style;
   const width = view(node).abs.width;
   assert.ok(width > 0);
-  assert.ok(Math.abs(style.marginRight - width / 10) < 0.5, 'block: width');
+  assert.ok(
+    Math.abs((style.marginRight as number) - width / 10) < 0.5,
+    'block: width',
+  );
 });
 
 test('at a display scale of 2 the absolute units are two device pixels each', () => {
