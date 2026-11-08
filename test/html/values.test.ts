@@ -4630,6 +4630,31 @@ test('what takes a computed value keeps a min-width of auto on any box, as getKe
   );
 });
 
+test('an animation-* longhand el.style is handed takes only a list of what the longhand takes', () => {
+  const takes = (prop: string, value: string) =>
+    specifiedValue(prop, value) !== null;
+  for (const [prop, good, bad] of [
+    ['animation-duration', '1s, auto', '-3s'],
+    ['animation-duration', '0s', '0'],
+    ['animation-delay', '-2s, 3ms', 'infinite'],
+    ['animation-iteration-count', 'infinite, 2.5', '-2'],
+    ['animation-direction', 'reverse, alternate', 'normal reverse'],
+    ['animation-fill-mode', 'both', 'auto'],
+    ['animation-play-state', 'paused, running', 'paused running'],
+    ['animation-name', 'none, slide, "quoted"', 'one two'],
+    ['animation-timing-function', 'steps(2, start)', 'steps(2,() start)'],
+    ['animation-composition', 'add, accumulate', 'add replace'],
+    ['animation-range-start', 'entry 10%', 'peek 50%'],
+    ['animation-range-end', 'contain 100%', '1s 2s'],
+  ] as const) {
+    assert.ok(takes(prop, good), `${prop}: ${good}`);
+    assert.ok(!takes(prop, bad), `${prop}: ${bad}`);
+  }
+  // what every property takes, and what is known once substituted
+  assert.strictEqual(specifiedValue('animation-name', 'inherit'), undefined);
+  assert.strictEqual(specifiedValue('animation-name', 'var(--x)'), undefined);
+});
+
 test('the scroll-timeline and view-timeline shorthands set their longhands, and getComputedStyle reads them back', async () => {
   const { node } = await render(
     '<div id="a" style="scroll-timeline: --s inline"></div>' +

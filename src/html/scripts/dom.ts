@@ -3802,6 +3802,10 @@ export function installDom(
       asTrusted(new PageRevealEvent('pagereveal', { viewTransition })),
     );
   };
+  /** Whether the page's document has its rendering suppressed for a view
+   *  transition: its old state captured and its update not yet done. */
+  const renderingSuppressed = (): boolean =>
+    activeTransition?._suppressed === true;
   /** Whether an element's `blocking` attribute names `render`. */
   const blocksRender = (el: Any): boolean =>
     /(?:^|\s)render(?:\s|$)/i.test(str(el?.getAttribute?.('blocking') ?? ''));
@@ -3948,7 +3952,10 @@ export function installDom(
     // render-blocking resources hold every rendering opportunity —
     // including animation frame callbacks — until they settle
     // (html/dom/render-blocking/)
-    if (renderOpportunitiesBlocked()) {
+    // and so does a view transition's update, from the capture of the old
+    // state until the new one is captured (CSS View Transitions 1, 7.4:
+    // "rendering suppression for view transitions")
+    if (renderOpportunitiesBlocked() || renderingSuppressed()) {
       frameTimer = 0;
       wantFrame();
       return;
@@ -3970,6 +3977,9 @@ export function installDom(
     // and the CSS animations on one a page has hold of, as a frame updates
     // every animation (Web Animations 1, 4.4.19); the cascade draws them
     for (const css of cssAnimationObjects.values()) {
+      // one waiting for its first paint, or under a pause or a play its
+      // style began, takes what the cascade made of it since
+      if (css._waiting || css._styleTask) followStyle(css);
       if (css._finite() && css.playState !== 'idle') css._frameScrolled();
     }
     let moved = false;
@@ -5040,10 +5050,159 @@ export function installDom(
     _name = '';
     /** Its run's key, which the cascade knows it by. */
     _key = 0;
+    /** What its style did as it was last read (`applyCss`): whether its
+     *  `animation-play-state` paused it, whether its run waited for its
+     *  first paint, and a pause or a play the style began, under way. */
+    _styledPaused: boolean | undefined = undefined;
+    _waiting = false;
+    _styleTask: 'pause' | 'play' | null = null;
+    /** While what a style did to it is done to it, which the host is not
+     *  told; and while it is being brought to its run. */
+    _quiet = false;
+    _following = false;
+    _followedAt = -1;
+    _followedIn = -1;
+    /** Whether the page replaced its effect or its timeline, which the
+     *  cascade's run cannot follow, so neither does it the cascade. */
+    _detached = false;
+    /** What the cascade last said of its state (`applyCss`). */
+    _stateSeen = '';
+    /** What it last read of its timing and its range (`refreshCss`); null
+     *  where the page has set its range since. */
+    _cssSeen: string | null = '';
     get animationName(): string {
       return this._name;
     }
+    /** Whether what is being done to it is a page's `play()`, `pause()`,
+     *  `reverse()` or start time, which stands over its
+     *  `animation-play-state` from then on (CSS Animations 2, 4.2), where
+     *  a seek does not. */
+    _overriding = false;
+    _override(run: () => void): void {
+      const was = this._overriding;
+      this._overriding = true;
+      try {
+        this._act(run);
+      } finally {
+        this._overriding = was;
+      }
+    }
+    /** What a page does to it: done to it as the cascade has it now, and
+     *  without reading the cascade back half way through, which has not
+     *  heard of it yet — its procedures ask its own play state as they go
+     *  (`followStyle`). */
+    _act(run: () => void): void {
+      if (this._following) {
+        run();
+        return;
+      }
+      followStyle(this);
+      // what the page does now is its own, whatever the style began
+      this._styleTask = null;
+      this._following = true;
+      try {
+        run();
+      } finally {
+        this._following = false;
+      }
+    }
+    override play(): void {
+      this._override(() => super.play());
+    }
+    override pause(): void {
+      // what a style did is no page's
+      if (this._quiet) {
+        super.pause();
+        return;
+      }
+      // and a page's stands over the style even where the style has paused
+      // it already, which leaves Web Animations' procedure nothing to do
+      this._override(() => {
+        const pending = this._pendingPause;
+        super.pause();
+        if (!pending && !this._pendingPause) this._changed();
+      });
+    }
+    override reverse(): void {
+      this._override(() => super.reverse());
+    }
+    override finish(): void {
+      this._act(() => super.finish());
+    }
+    override cancel(): void {
+      if (this._quiet) super.cancel();
+      else this._act(() => super.cancel());
+    }
+    /** A pending task run, which reads its own play state as it goes, and
+     *  must not have the cascade's laid over it half way (`followStyle`). */
+    override _tryPending(): boolean {
+      const following = this._following;
+      this._following = true;
+      try {
+        return super._tryPending();
+      } finally {
+        this._following = following;
+      }
+    }
+    override updatePlaybackRate(v: Any): void {
+      this._act(() => super.updatePlaybackRate(v));
+    }
+    override get playbackRate(): Any {
+      return super.playbackRate;
+    }
+    override set playbackRate(v: Any) {
+      this._act(() => {
+        super.playbackRate = v;
+      });
+    }
+    override get effect(): Any {
+      return super.effect;
+    }
+    override set effect(v: Any) {
+      this._act(() => {
+        super.effect = v;
+      });
+      // what the cascade runs is no longer what it shows, and it follows
+      // the page from then on (`followStyle`): a play the cascade held for
+      // its paint is the page's to finish
+      this._detached = true;
+      this._ownWaiting();
+    }
+    /** A pending play the cascade held for its first paint, handed to its
+     *  own pending task, which no cascade will settle now. */
+    _ownWaiting(): void {
+      if (!this._waiting) return;
+      this._waiting = false;
+      if (this._hold === null && this._start === null) this._hold = 0;
+      this._schedulePending();
+    }
+    override get timeline(): Any {
+      return super.timeline;
+    }
+    override set timeline(v: Any) {
+      this._act(() => {
+        super.timeline = v;
+      });
+      this._detached = true;
+      this._ownWaiting();
+    }
+    /** Its state as the cascade has it now (`followStyle`). */
+    override get playState(): string {
+      followStyle(this);
+      return super.playState;
+    }
+    override get pending(): boolean {
+      followStyle(this);
+      return super.pending;
+    }
+    override get ready(): Any {
+      followStyle(this);
+      return super.ready;
+    }
     override _rangeSet(end: boolean): void {
+      // what the cascade reports of its range next is the page's own, which
+      // it is aligned to already (`refreshCss`)
+      this._cssSeen = null;
       const edge = end ? this._rangeEnd : this._rangeStart;
       if (edge === 'normal') {
         call('rangeAnimation', this._key, end, '"normal"');
@@ -5069,14 +5228,18 @@ export function installDom(
       return super.startTime;
     }
     override set startTime(v: Any) {
-      super.startTime = v;
+      this._override(() => {
+        super.startTime = v;
+      });
     }
     override get currentTime(): Any {
       refreshCss(this);
       return super.currentTime;
     }
     override set currentTime(v: Any) {
-      super.currentTime = v;
+      this._act(() => {
+        super.currentTime = v;
+      });
     }
     /** What a page's `updateTiming()` set on its effect — of its duration,
      *  delay, iterations, direction and fill — stands over the
@@ -5103,6 +5266,21 @@ export function installDom(
      *  animations: `getAnimations()` finds it through the cascade. */
     override _changed(): void {
       this._reschedule();
+      // what a style did to it, which the cascade did already, and the
+      // pending pause or play it began, settled where the cascade has it
+      if (this._quiet || this._styleTask) return;
+      // and what the page did is told before anything reads the cascade
+      // back, which has not heard of it yet (`followStyle`)
+      const following = this._following;
+      this._following = true;
+      try {
+        this._tellCascade();
+      } finally {
+        this._following = following;
+      }
+    }
+    /** What the page did, told the cascade's run (`_changed`). */
+    _tellCascade(): void {
       // one the page has held, running or paused, keeps a view transition
       // whose pseudo-element it animates going (`scriptedTransition`)
       if (this.playState === 'idle') heldCssAnimations.delete(this);
@@ -5113,7 +5291,13 @@ export function installDom(
       }
       const time = this.currentTime;
       if (typeof time === 'number') {
-        call('seekAnimation', this._key, time, this.playState === 'paused');
+        call(
+          'seekAnimation',
+          this._key,
+          time,
+          this.playState === 'paused',
+          this._overriding,
+        );
       } else if (this.playState === 'idle') {
         call('cancelCss', 'animation', this._key);
       }
@@ -5133,10 +5317,13 @@ export function installDom(
         return;
       }
       const rate = this._effRate();
+      // a mode with a `-` after it overrides no play state (`_overriding`)
+      const as = (mode: string): string =>
+        this._overriding ? mode : `${mode}-`;
       if (state === 'paused') {
-        call('seekScrolled', this._key, 'hold', this._cur(), rate);
+        call('seekScrolled', this._key, as('hold'), this._cur(), rate);
       } else if (this._autoAlign) {
-        call('seekScrolled', this._key, 'align', null, rate);
+        call('seekScrolled', this._key, as('align'), null, rate);
       } else {
         const t = this._tlTime();
         const start =
@@ -5145,8 +5332,8 @@ export function installDom(
             ? t - this._hold / this._rate
             : null);
         if (start === null) {
-          call('seekScrolled', this._key, 'hold', this._cur(), rate);
-        } else call('seekScrolled', this._key, 'start', start, this._rate);
+          call('seekScrolled', this._key, as('hold'), this._cur(), rate);
+        } else call('seekScrolled', this._key, as('start'), start, this._rate);
       }
     }
     /** A frame, on a scroll's timeline: its start time aligned, its
@@ -5249,22 +5436,186 @@ export function installDom(
     effect._timing = cssTimingOf(info, effect);
     a._rangeStart = rangeEdgeOf(info.rangeStart, false);
     a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+    a._cssSeen = cssSeenOf(info);
   };
+  /** What a run's timing and range are, as the cascade reported them, for
+   *  telling whether they moved since (`refreshCss`). */
+  const cssSeenOf = (info: Any): string =>
+    JSON.stringify([
+      info.rangeStart,
+      info.rangeEnd,
+      info.duration,
+      info.delay,
+      info.iterations,
+      info.direction,
+      info.fill,
+    ]);
   /** A CSS animation on a scroll's timeline, its timing and its range read
    *  again as the cascade has them, and a start time its range aligns
    *  aligned again (`CSSAnimation.startTime`). */
   const refreshCss = (a: Any): void => {
-    if (!a._effect || !a._finite()) return;
-    const was = [a._rangeStart, a._rangeEnd, a._effect._timing];
+    if (!a._effect || a._following || a._detached || !a._finite()) return;
+    const was = a._cssSeen;
     refreshCssTiming(a._effect);
     // where a style moved what it is aligned to: aligned again, and its
     // finished state with it, as at a frame
-    const moved =
-      JSON.stringify(was) !==
-      JSON.stringify([a._rangeStart, a._rangeEnd, a._effect._timing]);
-    if (moved && a._autoAlign) {
+    if (was !== null && a._cssSeen !== was && a._autoAlign) {
       a._autoAlignStart();
       a._updateFinished(false, false);
+    }
+  };
+  /**
+   * A CSS animation's object brought to its run as the cascade has it
+   * (`HtmlViewNode.cssAnimationsOf`'s `info`): its timing and its range,
+   * and where its time is. What the style did since the page last read it
+   * is what Web Animations has a style do (CSS Animations 2, 4.2): a run
+   * still waiting for the paint that first shows it is play-pending, with
+   * no start time; an `animation-play-state` that pauses it or plays it
+   * again pauses it or plays it, pending, as `pause()` and `play()` would,
+   * which the host is not told (`_quiet`), or what the page did would stand
+   * over the style from then on.
+   */
+  const applyCss = (a: Any, info: Any): void => {
+    const following = a._following;
+    a._following = true;
+    try {
+      applyCssInfo(a, info);
+    } finally {
+      a._following = following;
+    }
+  };
+  const applyCssInfo = (a: Any, info: Any): void => {
+    a._effect._timing = cssTimingOf(info, a._effect);
+    a._rangeStart = rangeEdgeOf(info.rangeStart, false);
+    a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
+    a._cssSeen = cssSeenOf(info);
+    // waiting for its paint: play-pending until the cascade starts it
+    if (info.waiting) {
+      if (!a._pendingPlay) {
+        if (!a._pendingPause) a._newReady();
+        a._pendingPause = false;
+        a._pendingPlay = true;
+      }
+      a._waiting = true;
+      a._styledPaused = !!info.stylePaused;
+      a._start = null;
+      a._hold = info.currentTime;
+      a._reschedule();
+      // and is looked at again at the next frame (`runFrame`)
+      wantFrame();
+      return;
+    }
+    const was = a._styledPaused;
+    a._styledPaused = !!info.stylePaused;
+    // a pause or a play the style asked for, under way as the page left it
+    if (a._styleTask && (a._pendingPlay || a._pendingPause)) {
+      a._reschedule();
+      return;
+    }
+    a._styleTask = null;
+    // what the style says of its play state, where no page has said since
+    if (
+      !info.pageSet &&
+      was !== undefined &&
+      was !== a._styledPaused &&
+      !a._waiting
+    ) {
+      a._quiet = true;
+      try {
+        if (a._styledPaused) a.pause();
+        else a._play(false);
+      } finally {
+        a._quiet = false;
+      }
+      if (a._pendingPlay || a._pendingPause) {
+        a._styleTask = a._styledPaused ? 'pause' : 'play';
+        a._reschedule();
+        return;
+      }
+    }
+    a._waiting = false;
+    // where nothing the cascade says of its state moved since it was last
+    // brought to it — its play state, the start time and rate a page gave
+    // it, its range and timing — its own state stands: its time runs on as
+    // the cascade's does, and is held where it has finished
+    const state = JSON.stringify([
+      info.paused,
+      info.scroll?.start ?? null,
+      info.scroll?.rate ?? 1,
+      a._cssSeen,
+      !!a._timeline,
+    ]);
+    if (state === a._stateSeen && !a._pendingPlay && !a._pendingPause) {
+      a._reschedule();
+      return;
+    }
+    a._stateSeen = state;
+    // a task the page left pending is the cascade's now, and done
+    const pending = a._pendingPlay || a._pendingPause;
+    a._pendingPlay = false;
+    a._pendingPause = false;
+    if (pending) a._resolveReady();
+    if (!a._timeline) {
+      a._start = null;
+      a._hold = null;
+    } else if (a._finite()) {
+      // on a scroll's timeline: held where the cascade holds it, from the
+      // start time a page gave it, or where its range starts — or ends,
+      // played backwards — and at the rate the page gave it
+      const scroll = info.scroll ?? { at: null, start: null, rate: 1 };
+      a._rate = scroll.rate;
+      a._pendingRate = null;
+      a._autoAlign = scroll.start === null;
+      const [from, to] = a._range();
+      a._start = scroll.start ?? (scroll.rate < 0 ? to : from);
+      a._hold = null;
+      if (info.paused) {
+        a._hold = scroll.at ?? a._cur();
+        a._start = null;
+      }
+    } else if (info.paused) {
+      a._start = null;
+      a._hold = info.currentTime;
+    } else {
+      a._hold = null;
+      a._start = a._timeline._time() - info.currentTime;
+    }
+    a._reschedule();
+  };
+  /**
+   * A held CSS animation brought to its run as the cascade has it now,
+   * where a page asks it something (`CSSAnimation.playState`): what a style
+   * changed since `getAnimations()` listed it — its play state, its
+   * removal, which cancels it as `cancel()` does — is its own at once.
+   */
+  const followStyle = (a: Any): void => {
+    const target = a._effect?._target;
+    if (!target?._id || a._following || a._detached) return;
+    // once for as long as nothing has changed since: the methods ask their
+    // own play state as they go
+    if (a._followedAt === opEpoch && a._followedIn === taskEpoch) return;
+    a._following = true;
+    try {
+      const raw = call('cssAnimations', target._id, false);
+      const list: Any[] = typeof raw === 'string' && raw ? JSON.parse(raw) : [];
+      const info = list.find((i: Any) => i.key === a._key);
+      if (!info) {
+        // no longer run by the cascade: a style took it away
+        if (a.playState !== 'idle') {
+          a._quiet = true;
+          try {
+            a.cancel();
+          } finally {
+            a._quiet = false;
+          }
+        }
+        return;
+      }
+      if (!info.cancelled) applyCss(a, info);
+    } finally {
+      a._following = false;
+      a._followedAt = opEpoch;
+      a._followedIn = taskEpoch;
     }
   };
   /** The CSS animations under way on `target`, or on what it holds, or in
@@ -5299,40 +5650,7 @@ export function installDom(
       } else {
         a._timeline = cssTimelineOf(info.timeline);
       }
-      a._effect._timing = cssTimingOf(info, a._effect);
-      a._rangeStart = rangeEdgeOf(info.rangeStart, false);
-      a._rangeEnd = rangeEdgeOf(info.rangeEnd, true);
-      // a task the page left pending is the cascade's now, and done
-      const pending = a._pendingPlay || a._pendingPause;
-      a._pendingPlay = false;
-      a._pendingPause = false;
-      if (pending) a._resolveReady();
-      if (!a._timeline) {
-        a._start = null;
-        a._hold = null;
-      } else if (a._finite()) {
-        // on a scroll's timeline: held where the cascade holds it, from the
-        // start time a page gave it, or where its range starts — or ends,
-        // played backwards — and at the rate the page gave it
-        const scroll = info.scroll ?? { at: null, start: null, rate: 1 };
-        a._rate = scroll.rate;
-        a._pendingRate = null;
-        a._autoAlign = scroll.start === null;
-        const [from, to] = a._range();
-        a._start = scroll.start ?? (scroll.rate < 0 ? to : from);
-        a._hold = null;
-        if (info.paused) {
-          a._hold = scroll.at ?? a._cur();
-          a._start = null;
-        }
-      } else if (info.paused) {
-        a._start = null;
-        a._hold = info.currentTime;
-      } else {
-        a._hold = null;
-        a._start = a._timeline._time() - info.currentTime;
-      }
-      a._reschedule();
+      applyCss(a, info);
       out.push(a);
     }
     // what the cascade no longer runs is no one's
@@ -15418,12 +15736,201 @@ export function installDom(
       this.style.cssText = v;
     }
   }
+  /** A `@keyframes` rule (CSS Animations 1, 6.2): its name and its
+   *  keyframes, which a page reads, adds to and takes from, each edit
+   *  rewriting the rule's text in its sheet, as the cascade reads it. */
   class CSSKeyframesRule extends CSSRule {
     override _type = 7;
+    /** Its keyframes' texts, as its block holds them. */
+    _frames(): string[] {
+      return (
+        JSON.parse(String(call('cssRules', blockOf(this._text)))) as string[]
+      )
+        .filter((text) => !droppedKeyframe(text))
+        .map(keyframeOnly);
+    }
+    /** Its text again, from its name and its keyframes' texts. */
+    _write(frames: string[]): void {
+      const at = /^@(?:-[a-z]+-)?keyframes/i.exec(this._text)?.[0];
+      replaceRule(
+        this,
+        `${at ?? '@keyframes'} ${conditionOf(this._text)} { ${frames.join(' ')} }`,
+      );
+    }
     get name(): string {
-      return conditionOf(this._text).replace(/^["']|["']$/g, '');
+      const raw = conditionOf(this._text);
+      return /^["']/.test(raw) ? raw.slice(1, -1) : raw;
+    }
+    set name(v: Any) {
+      const name = String(v);
+      const at = /^@(?:-[a-z]+-)?keyframes/i.exec(this._text)?.[0];
+      const written = keyframesNameValid(name) ? name : JSON.stringify(name);
+      replaceRule(
+        this,
+        `${at ?? '@keyframes'} ${written} {${blockOf(this._text)}}`,
+      );
+    }
+    get cssRules(): Any {
+      const rules = this._frames().map((text, i) => {
+        const rule = ruleOf(text, this.parentStyleSheet, this);
+        rule._index = i;
+        return rule;
+      });
+      return listMade(CSSRuleList, rules, null, false, null);
+    }
+    get length(): number {
+      return this._frames().length;
+    }
+    /** The last keyframe whose selector is `key`, as `keyText` reads it. */
+    findRule(key: Any): Any {
+      const want = keyframeKeyText(String(key));
+      if (want === null) return null;
+      const rules = this.cssRules;
+      for (let i = rules.length - 1; i >= 0; i -= 1) {
+        if (rules[i].keyText === want) return rules[i];
+      }
+      return null;
+    }
+    appendRule(text: Any): void {
+      const frames = JSON.parse(
+        String(call('cssRules', String(text), true)),
+      ) as string[];
+      if (frames.length !== 1 || droppedKeyframe(frames[0])) {
+        throw new DOMException(
+          `Failed to execute 'appendRule' on 'CSSKeyframesRule': Failed to parse the keyframe rule '${text}'.`,
+          'SyntaxError',
+        );
+      }
+      this._write([...this._frames(), frames[0]]);
+    }
+    deleteRule(key: Any): void {
+      const want = keyframeKeyText(String(key));
+      if (want === null) return;
+      const frames = this._frames();
+      for (let i = frames.length - 1; i >= 0; i -= 1) {
+        if (keyframeKeyText(preludeOf(frames[i])) !== want) continue;
+        frames.splice(i, 1);
+        this._write(frames);
+        return;
+      }
     }
   }
+  /** A keyframe in a `@keyframes` rule (CSS Animations 1, 6.1): its
+   *  selector and its declarations, an edit to either rewriting the rule
+   *  it is in. */
+  class CSSKeyframeRule extends CSSRule {
+    override _type = 8;
+    _index = 0;
+    get keyText(): string {
+      return keyframeKeyText(preludeOf(this._text)) ?? preludeOf(this._text);
+    }
+    set keyText(v: Any) {
+      const key = keyframeKeyText(String(v));
+      if (key === null) {
+        throw new DOMException(
+          `Failed to set the 'keyText' property on 'CSSKeyframeRule': The key '${v}' is invalid and cannot be parsed`,
+          'SyntaxError',
+        );
+      }
+      this._replace(`${key} {${blockOf(this._text)}}`);
+    }
+    _style: Any = null;
+    get style(): Any {
+      return (this._style ??= writableStyle({
+        value: (name) =>
+          String(call('blockValue', blockOf(this._text), name) ?? ''),
+        priority: (name) =>
+          String(call('blockPriority', blockOf(this._text), name) ?? ''),
+        set: (name, value, priority) => {
+          const next = call(
+            'blockSet',
+            blockOf(this._text),
+            name,
+            value,
+            priority,
+          );
+          if (typeof next === 'string') {
+            this._replace(
+              `${preludeOf(this._text)} { ${next ? `${next} ` : ''}}`,
+            );
+          }
+        },
+        names: () =>
+          String(call('blockNames', blockOf(this._text)) ?? '')
+            .split(',')
+            .filter(Boolean),
+        text: () => String(call('blockText', blockOf(this._text)) ?? ''),
+        setText: (text) =>
+          this._replace(
+            `${preludeOf(this._text)} { ${String(call('blockText', text) ?? '')} }`,
+          ),
+        rule: this,
+      }));
+    }
+    set style(v: Any) {
+      this.style.cssText = v;
+    }
+    /** Its text, and the rule it is in with it. */
+    _replace(text: string): void {
+      this._text = text;
+      const parent = this.parentRule;
+      if (!(parent instanceof CSSKeyframesRule)) return;
+      const frames = parent._frames();
+      if (this._index < frames.length) frames[this._index] = text;
+      parent._write(frames);
+    }
+  }
+  /** What `@keyframes` takes for a name (CSS Animations 1, 3): an
+   *  identifier other than `none`, `default` and the CSS-wide keywords,
+   *  or a string with something in it. */
+  const keyframesNameValid = (prelude: string): boolean => {
+    const v = prelude.trim();
+    if (/^(["'])[\s\S]*\1$/.test(v)) return v.length > 2;
+    if (!/^(?:--|-?[A-Za-z_\u0080-\uffff])[\w\u0080-\uffff-]*$/.test(v)) {
+      return false;
+    }
+    return !/^(?:none|default|initial|inherit|unset|revert|revert-layer)$/i.test(
+      v,
+    );
+  };
+  /** A keyframe selector as `keyText` reads it (CSS Animations 1, 3;
+   *  Scroll-driven Animations 1, 4.4): each item a percentage from 0% to
+   *  100% — `from` and `to` among them — a timeline range's name and a
+   *  percentage, or a math function; null where an item is none. */
+  const keyframeKeyText = (selector: string): string | null => {
+    const items = selector.split(',').map((item) => item.trim());
+    const out: string[] = [];
+    for (const item of items) {
+      const lower = item.toLowerCase();
+      if (lower === 'from') out.push('0%');
+      else if (lower === 'to') out.push('100%');
+      else {
+        const m =
+          /^(?:(cover|contain|entry|exit|entry-crossing|exit-crossing)\s+)?([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%|calc\([\s\S]*\))$/i.exec(
+            item,
+          );
+        if (!m) return null;
+        const pct = m[2];
+        if (!/^calc\(/i.test(pct)) {
+          const n = parseFloat(pct);
+          if (!m[1] && (n < 0 || n > 100)) return null;
+        }
+        out.push(m[1] ? `${m[1].toLowerCase()} ${pct}` : pct);
+      }
+    }
+    return out.length ? out.join(', ') : null;
+  };
+  /** A keyframe's text without what no keyframe takes: the animation
+   *  properties but `animation-timing-function` and
+   *  `animation-composition` (CSS Animations 1, 3; CSS Animations 2, 4). */
+  const keyframeOnly = (text: string): string => {
+    const body = String(call('keyframeBlock', blockOf(text)) ?? '');
+    return `${preludeOf(text)} { ${body ? `${body} ` : ''}}`;
+  };
+  /** Whether a rule in a `@keyframes` block is no keyframe, and is dropped
+   *  as a parser drops it. */
+  const droppedKeyframe = (text: string): boolean =>
+    /^@/.test(text) || keyframeKeyText(preludeOf(text)) === null;
   /** What a `@position-try` rule takes (CSS Anchor Positioning 1, 4.4,
    *  the accepted `@position-try` properties), in the order its
    *  descriptors' interface lists them (8.1): the margins, the insets,
@@ -15885,7 +16392,10 @@ export function installDom(
     // a `@position-try` names one dashed ident (CSS Anchor Positioning 1,
     // 4.2), or is no rule
     (/^@position-try(?![\w-])/i.test(text) &&
-      !/^--\S+$/.test(preludeOf(text).slice('@position-try'.length).trim()));
+      !/^--\S+$/.test(preludeOf(text).slice('@position-try'.length).trim())) ||
+    // a `@keyframes` names an identifier or a string (CSS Animations 1, 3)
+    (/^@(?:-[a-z]+-)?keyframes(?![\w-])/i.test(text) &&
+      !keyframesNameValid(conditionOf(text)));
   /** `@layer name { … }` as a grouping rule so nested `@view-transition`
    *  (and the rest) are in `cssRules` (CSS Cascade 5, 3.1). A statement
    *  `@layer a, b;` has no block and an empty list. */
@@ -15913,6 +16423,12 @@ export function installDom(
     namespace: 10,
   };
   const ruleOf = (text: string, sheet: Any, parent: Any = null): Any => {
+    // what a `@keyframes` holds is keyframes
+    if (parent instanceof CSSKeyframesRule) {
+      const rule = new CSSKeyframeRule(text, sheet);
+      rule.parentRule = parent;
+      return rule;
+    }
     const at = /^@(?:-[a-z]+-)?([a-z-]+)/i.exec(text);
     const kind = at ? at[1].toLowerCase() : '';
     const Rule = RULE_CLASSES[kind] ?? (at ? CSSRule : CSSStyleRule);
@@ -15948,6 +16464,11 @@ export function installDom(
     _rules: string[] | null = [];
     /** The host's edit of a `<style>`'s rules `_list` is. */
     _version: Any = null;
+    /** Where each rule of `cssRules` is in the host's list of the sheet's
+     *  rules, which holds as well the rules CSS drops (`droppedRule`), and
+     *  how many that list holds: an index a page edits by is the first. */
+    _hostAt: number[] = [];
+    _hostCount = 0;
     _list: Any = null;
     _media = '';
     _disabled = false;
@@ -16024,7 +16545,13 @@ export function installDom(
       if (answer) {
         const cut = answer.indexOf('\u0000');
         this._version = Number(answer.slice(0, cut));
-        this._list = ruleList(JSON.parse(answer.slice(cut + 1)), this, null);
+        const texts = JSON.parse(answer.slice(cut + 1)) as string[];
+        this._list = ruleList(texts, this, null);
+        this._hostAt = [];
+        texts.forEach((text, i) => {
+          if (!droppedRule(text)) this._hostAt.push(i);
+        });
+        this._hostCount = texts.length;
       }
       return this._list;
     }
@@ -16048,8 +16575,25 @@ export function installDom(
         return at;
       }
       // a rule the host would keep and CSS drops (`droppedRule`)
-      if (/^\s*@(?:view-transition|position-try)/i.test(text)) oneRule(text);
-      const answer = String(call('sheetInsert', this._owner._id, text, at));
+      if (
+        /^\s*@(?:view-transition|position-try|(?:-[a-z]+-)?keyframes)/i.test(
+          text,
+        )
+      ) {
+        oneRule(text);
+      }
+      const map = this._hostMap();
+      if (at > map.length) {
+        throw new DOMException(
+          `The index provided (${at}) is larger than the maximum index (${map.length}).`,
+          'IndexSizeError',
+        );
+      }
+      const hostAt = at < map.length ? map[at] : this._hostCount;
+      const answer = String(call('sheetInsert', this._owner._id, text, hostAt));
+      for (let i = 0; i < map.length; i += 1) if (map[i] >= hostAt) map[i] += 1;
+      map.splice(at, 0, hostAt);
+      this._hostCount += 1;
       const first = answer.indexOf('\u0000');
       const second = answer.indexOf('\u0000', first + 1);
       // the list kept, edited as the host's rules were, where it was the
@@ -16065,6 +16609,11 @@ export function installDom(
       }
       return at;
     }
+    /** `_hostAt`, read where the host's rules moved since. */
+    _hostMap(): number[] {
+      if (this._owner) this.cssRules;
+      return this._hostAt;
+    }
     deleteRule(index: Any): void {
       const at = Number(index) >>> 0;
       if (this._rules) {
@@ -16079,7 +16628,18 @@ export function installDom(
         if (!this._owner) readopt(this);
         return;
       }
-      const answer = String(call('sheetDelete', this._owner._id, at));
+      const map = this._hostMap();
+      if (at >= map.length) {
+        throw new DOMException(
+          `The index provided (${at}) is outside the range [0, ${map.length}).`,
+          'IndexSizeError',
+        );
+      }
+      const hostAt = map[at];
+      const answer = String(call('sheetDelete', this._owner._id, hostAt));
+      map.splice(at, 1);
+      for (let i = 0; i < map.length; i += 1) if (map[i] > hostAt) map[i] -= 1;
+      this._hostCount -= 1;
       const cut = answer.indexOf('\u0000');
       if (this._list && this._version === Number(answer.slice(0, cut))) {
         this._list[LIST].items.splice(at, 1);
@@ -19205,6 +19765,9 @@ export function installDom(
     /** Whether `callUpdate` has already run (7.5), or a cross-document
      *  transition that has no update callback to call. */
     _called = false;
+    /** Whether its document's rendering is suppressed for it (7.4): from
+     *  the capture of its old state until it is activated or skipped. */
+    _suppressed = false;
     _types = new ViewTransitionTypeSet();
     _done: Any;
     _ready: Any;
@@ -19315,6 +19878,7 @@ export function installDom(
    *  share a name, and otherwise ready, and over once the animations of
    *  its pseudo-elements are (7.9). */
   const activateTransition = (vt: Any): void => {
+    vt._suppressed = false;
     if (vt._phase === 'done') return;
     const shared = str(transitionOp(vt, 'vtNew'));
     if (shared) {
@@ -19409,6 +19973,7 @@ export function installDom(
    *  is still called, `ready` is rejected, and `finished` settles as the
    *  update does. */
   const skipTransition = (vt: Any, reason: Any): void => {
+    vt._suppressed = false;
     if (vt._phase === 'done') return;
     leaveActive(vt);
     const called = vt._called;
@@ -19645,42 +20210,43 @@ export function installDom(
     if (doc === document) activeTransition = vt;
     else frameTransitions.set(doc, vt);
     tellActive(doc, vt);
-    // the old state is captured at the next frame, once the updates of the
-    // transitions skipped before it have run, so that it is the state they
-    // leave; and the update is called in a task after it, once what those
-    // updates settled has been heard (7.4, "setup view transition")
-    setTimer(
-      () => {
-        if (vt._phase === 'done') return;
-        flushUpdates(doc);
-        // an update the flush called may have skipped it
-        if ((vt as Any)._phase === 'done') return;
-        const shared = str(transitionOp(vt, 'vtOld'));
-        if (shared) {
-          skipTransition(
-            vt,
-            new DOMException(
-              `Unexpected duplicate view-transition-name: ${shared}`,
-              'InvalidStateError',
-            ),
-          );
-          return;
-        }
-        setTimer(
-          () => {
-            if (vt._phase === 'done') return;
-            queueUpdate(vt);
-            flushUpdates(doc);
-          },
-          0,
-          [],
-          false,
+    // the old state is captured at the next frame, after its callbacks, as
+    // "perform pending transition operations" is, and before what they
+    // changed is painted; once the updates of the transitions skipped
+    // before it have run, so that it is the state they leave; and the
+    // update is called in a task after it, once what those updates settled
+    // has been heard (7.4, "setup view transition")
+    afterNextFrame(() => {
+      if (vt._phase === 'done') return;
+      flushUpdates(doc);
+      // an update the flush called may have skipped it
+      if ((vt as Any)._phase === 'done') return;
+      const shared = str(transitionOp(vt, 'vtOld'));
+      if (shared) {
+        skipTransition(
+          vt,
+          new DOMException(
+            `Unexpected duplicate view-transition-name: ${shared}`,
+            'InvalidStateError',
+          ),
         );
-      },
-      16,
-      [],
-      false,
-    );
+        return;
+      }
+      // nothing of the document is rendered from here until the update
+      // is done: no frame, no animation, no paint, and a press is the
+      // root element's (7.4)
+      vt._suppressed = true;
+      setTimer(
+        () => {
+          if (vt._phase === 'done') return;
+          queueUpdate(vt);
+          flushUpdates(doc);
+        },
+        0,
+        [],
+        false,
+      );
+    });
     return vt;
   };
 
@@ -35950,6 +36516,7 @@ export function installDom(
     CSSImportRule,
     CSSFontFaceRule,
     CSSKeyframesRule,
+    CSSKeyframeRule,
     CSSViewTransitionRule,
     CSSPositionTryRule,
     CSSPositionTryDescriptors,
@@ -38694,6 +39261,9 @@ export function installDom(
         else cssTransitionsOf(target, false);
       }
       ev._animation = objects.get(e.key) ?? null;
+      // what the cascade made of it is the object's before the page hears:
+      // a pending play its first paint settled is settled by now
+      if (ev._animation instanceof CSSAnimation) followStyle(ev._animation);
       ev.isTrusted = true;
       dispatch(target, ev);
     }

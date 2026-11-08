@@ -108,7 +108,7 @@ const metric = SCRIPTS_CONTAINED ? fontMetric : nodeTest.skip;
 const PAGE = 'https://example.test/dir/page.html';
 
 interface Hosted {
-  handle: HtmlHandle;
+  handle: ReturnType<typeof useHtmlHandle>;
   view: HtmlViewNode;
   logs: string[];
   links: string[];
@@ -213,7 +213,17 @@ async function hosted(
       left: 0,
       top: 0,
     }),
-    scrollTo: (x, y) => out.pane?.scrollTo({ x, y }),
+    scrollTo: (x, y) => {
+      // as `useScriptedHtml` does: hold a scroll across until the reach
+      // marker mounts (`oweScrollReach`), and one down for the next pass
+      const node = out.handle?.ref
+        ? ((out.handle.ref as { current?: HtmlViewNode | null }).current ??
+          null)
+        : null;
+      node?.oweScrollReach?.(x);
+      out.pane?.scrollTo?.({ x, y });
+      node?.oweScrollDown?.(y);
+    },
     navigate: (url) => void out.links.push(url),
     reload: () => {},
     go: () => {},
@@ -1395,6 +1405,65 @@ test('a @position-try rule is a CSSPositionTryRule, whose descriptors are the pr
     '@position-try --pf { margin-block: unset; }',
     '--\\{',
     '@position-try --\\{ { }',
+  ]);
+});
+
+test('a @keyframes rule is a CSSKeyframesRule of CSSKeyframeRules, with a name it took and what a keyframe takes, which a page edits and the document animates by', async () => {
+  // WPT css-animations/parsing: a name that is no identifier, or a
+  // reserved one, drops the rule; a selector outside 0% to 100% drops its
+  // keyframe; a keyframe keeps of the animation properties only its
+  // timing function, whatever a shorthand after it says. Edited, the rule
+  // is written again in its sheet, and the element animates by it
+  const doc = await hosted(
+    '<style>@keyframes none { from { color: red } }' +
+      '@keyframes k { from { margin-left: 10px; animation-timing-function: ease;' +
+      '  animation-duration: 1s; animation: x 2s linear } -10% { margin-left: 1px }' +
+      '  entry 10%, TO { margin-left: 10px } }' +
+      '#e { animation: k 100s paused }</style>' +
+      '<p id="out">-</p><div id="e"></div><script>' +
+      'var r = [], sheet = document.styleSheets[0], k = sheet.cssRules[0];' +
+      'var e = document.getElementById("e"), at = function () { return getComputedStyle(e).marginLeft; };' +
+      'r.push(sheet.cssRules.length, k instanceof CSSKeyframesRule, k.type, k.name, k.cssRules.length);' +
+      'var from = k.cssRules[0];' +
+      'r.push(from instanceof CSSKeyframeRule, from.type, from.keyText, from.parentRule === k,' +
+      '  from.style.length, from.style.animationTimingFunction, k.cssRules[1].keyText);' +
+      'r.push(at()); k.findRule("0%").style.marginLeft = "30px"; r.push(at());' +
+      'k.deleteRule("from"); r.push(k.cssRules.length, at());' +
+      'k.appendRule("0% { margin-left: 50px }"); r.push(k.length, k.findRule("from").style.marginLeft, at());' +
+      'try { k.appendRule("120% { color: red }"); r.push("no throw"); } catch (x) { r.push(x.name); }' +
+      'k.cssRules[1].keyText = "from"; r.push(k.cssRules[1].keyText);' +
+      'try { k.cssRules[0].keyText = "nope"; r.push("no throw"); } catch (x) { r.push(x.name); }' +
+      'k.name = "j"; r.push(k.name, sheet.cssRules[0] === k, at());' +
+      'document.getElementById("out").textContent = JSON.stringify(r);</script>',
+  );
+  assert.deepEqual(JSON.parse(doc.text('out')), [
+    2,
+    true,
+    7,
+    'k',
+    2,
+    true,
+    8,
+    '0%',
+    true,
+    2,
+    'ease',
+    'entry 10%, 100%',
+    '10px',
+    '30px',
+    // no keyframe at 0%: what is under the animation
+    1,
+    '0px',
+    2,
+    '50px',
+    '50px',
+    'SyntaxError',
+    '0%',
+    'SyntaxError',
+    'j',
+    true,
+    // named otherwise, it is no rule of the element's animation
+    '0px',
   ]);
 });
 
@@ -15260,6 +15329,37 @@ metric(
 );
 
 metric(
+  'scrollIntoView under vertical-lr scrolls across once the document width is known',
+  async () => {
+    // A scroll across before the first layout that finds the width (an
+    // end-of-body scrollIntoView on a vertical-lr page) was dropped; the
+    // reach marker never saw it, and WPT massive-element-left-of-viewport-*
+    // compared a scrolled capture to an unscrolled ref.
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>' +
+        ' html { writing-mode: vertical-lr }' +
+        ' .t { inline-size: 100px; block-size: 40000px }' +
+        ' .b { inline-size: 100%; block-size: 100px }' +
+        '</style></head><body>' +
+        '<div class="t"><div style="inline-size:100%;block-size:39900px"></div>' +
+        '<div id="b" class="b"></div></div>' +
+        '<p id="out"></p><script>' +
+        'b.scrollIntoView();' +
+        'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+        '  document.getElementById("out").textContent =' +
+        '    Math.round(scrollX) + "|" + Math.round(b.getBoundingClientRect().x);' +
+        '}); });' +
+        '</script></body></html>',
+      { pane: 300 },
+    );
+    const out = await settled(doc, 'out', (t) => t.includes('|'));
+    const [sx, bx] = out.split('|').map(Number);
+    assert.ok(sx > 1000, `scrollX after scrollIntoView: ${out}`);
+    assert.ok(bx < 400, `blue in view: ${out}`);
+  },
+);
+
+metric(
   'a view transition captures an inline element by its fragments: its group is as large as they are, its image is it alone, and the block around it is captured without it',
   async () => {
     // CSS View Transitions 1, 7.4: an element's border box, which an inline
@@ -15306,6 +15406,98 @@ metric(
       '#808080',
       "the block's old image, without the span in it",
     );
+  },
+);
+
+metric(
+  "a view transition's update runs with the document's rendering suppressed: no frame, no animation starts, the old state is what is drawn, and a press is the root's",
+  async () => {
+    // CSS View Transitions 1, 7.4: from the capture of the old state until
+    // the update is done
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { width: 40px; height: 40px; background: rgb(0, 128, 0) }' +
+        ' @keyframes k { to { opacity: 0.5 } } #a.on { animation: k 50ms }' +
+        '</style></head><body><div id="a"></div><p id="out"></p><script>' +
+        'var a = document.getElementById("a"), out = document.getElementById("out");' +
+        'var frames = 0, ends = 0, hit = "", done, t;' +
+        'function tick() { frames++; requestAnimationFrame(tick); }' +
+        'a.onanimationend = function () { ends++; };' +
+        'requestAnimationFrame(function () {' +
+        '  requestAnimationFrame(tick);' +
+        '  t = document.startViewTransition(function () {' +
+        '    a.style.background = "rgb(0, 0, 255)"; a.className = "on";' +
+        '    var at = frames; out.textContent = "updating";' +
+        '    return new Promise(function (ok) { done = function () {' +
+        '      out.textContent = "held " + (frames - at) + " " + ends + " " + hit; ok(); }; });' +
+        '  });' +
+        '  t.ready.then(function () { t.skipTransition(); });' +
+        '});' +
+        'document.addEventListener("click", function (e) { hit = e.target.localName; });' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'updating');
+    await settle(200);
+    const { abs } = doc.view as unknown as DrawnNode;
+    assert.equal(
+      await colourAt(doc, abs.x + 10, abs.y + 10),
+      '#008000',
+      'the document as its old state was captured',
+    );
+    // a press on #a, which the root element takes
+    const node = doc.view as unknown as DrawnNode;
+    await act(async () => {
+      const dx = 10 - node.abs.width / 2;
+      const dy = 10 - node.abs.height / 2;
+      fireEvent.mouseDown(node, { dx, dy });
+      fireEvent.mouseUp(node, { dx, dy });
+    });
+    await settle();
+    doc.run('done();');
+    assert.equal(
+      await settled(doc, 'out', (t) => t.startsWith('held')),
+      'held 0 0 html',
+      doc.logs.join('\n'),
+    );
+    await settle(100);
+    assert.equal(
+      await colourAt(doc, abs.x + 10, abs.y + 10),
+      '#0000ff',
+      'and the document as it is, once the transition is over',
+    );
+  },
+);
+
+metric(
+  "a class a page sets on the root while a view transition's tree is drawn styles the tree again",
+  async () => {
+    // its pseudo-elements are the root element's, and no rule the document
+    // reaches reads the class: the tree kept the style it was built with
+    // for as long as nothing else built it
+    const doc = await hosted(
+      '<!DOCTYPE html><html><head><style>body { margin: 0 }' +
+        ' #a { position: absolute; top: 0; left: 0; width: 40px; height: 40px;' +
+        '   background: rgb(0, 128, 0); view-transition-name: a }' +
+        ' html::view-transition { background: rgb(255, 0, 0) }' +
+        ' html.on::view-transition { background: rgb(0, 0, 255) }' +
+        ' html::view-transition-group(*) { animation-duration: 300s }' +
+        ' html::view-transition-group(root) { animation: unset; opacity: 0 }' +
+        '</style></head><body><div id="a"></div><p id="out" style="margin-top: 100px"></p><script>' +
+        'requestAnimationFrame(function () {' +
+        '  var t = document.startViewTransition();' +
+        '  t.ready.then(function () { requestAnimationFrame(function () {' +
+        '    document.getElementById("out").textContent = "ready"; }); });' +
+        '});' +
+        '</script></body></html>',
+    );
+    await settled(doc, 'out', (t) => t === 'ready');
+    await settle(40);
+    const { abs } = doc.view as unknown as DrawnNode;
+    const at = () => colourAt(doc, abs.x + 110, abs.y + 10);
+    assert.equal(await at(), '#ff0000', "the tree's ground");
+    doc.run('document.documentElement.className = "on";');
+    await settle(60);
+    assert.equal(await at(), '#0000ff', 'styled again by the class');
   },
 );
 
@@ -16960,6 +17152,42 @@ test('a named timeline an ::after declares has its element for its source', asyn
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
     'c',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a CSS animation a page holds follows its style's play state, pending as pause() and play() are, until the page's own call stands over it, and a style that takes it away cancels it", async () => {
+  const doc = await hosted(
+    '<style>@keyframes anim { from { opacity: 0 } to { opacity: 1 } }</style>' +
+      '<div id="d" style="animation: anim 1000s"></div><p id="out"></p><script>' +
+      'var d = document.getElementById("d"), r = [];' +
+      'var a = d.getAnimations()[0];' +
+      'a.ready.then(function () {' +
+      '  var first = a.ready;' +
+      // the style pauses it: pause-pending, with a ready promise of its own
+      '  d.style.animationPlayState = "paused";' +
+      '  r.push(a.playState, a.pending, a.ready !== first);' +
+      '  return a.ready;' +
+      '}).then(function () {' +
+      '  r.push(a.playState, a.pending);' +
+      // the page plays it, which stands over the style from then on
+      '  a.play();' +
+      '  d.style.animationPlayState = "running"; getComputedStyle(d).opacity;' +
+      '  d.style.animationPlayState = "paused"; getComputedStyle(d).opacity;' +
+      '  return a.ready;' +
+      '}).then(function () {' +
+      '  r.push(a.playState);' +
+      // and a style that names no animation takes it away
+      '  var f = a.finished;' +
+      '  d.style.animationName = "none";' +
+      '  r.push(a.playState);' +
+      '  return f.then(function () { r.push("finished"); }, function (e) { r.push(e.name); });' +
+      '}).then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'paused|true|true|paused|false|running|idle|AbortError',
     doc.logs.join('\n'),
   );
 });

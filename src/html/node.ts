@@ -316,6 +316,7 @@ import {
   onPage,
   pageMargins,
   pageSides,
+  turnsUp,
 } from './layout/writing.js';
 import {
   endOrigins,
@@ -6417,7 +6418,16 @@ export class HtmlViewNode extends Node {
     const pane = this._pane() as
       (ScrollPane & { contentWidth?: number }) | null;
     this._heldScrollX = null;
-    if (!pane || this._documentWidth <= this._laidOutWidth + 0.5) return;
+    if (!pane) return;
+    // a scroll across before the first layout that finds how wide the
+    // document is (an end-of-body `scrollIntoView` on a `vertical-lr`
+    // page, WPT `massive-element-left-of-viewport-*`): keep it until that
+    // width lands, then hold it for the reach marker as below
+    if (this._documentWidth <= this._laidOutWidth + 0.5) {
+      this._owedScrollX = x;
+      return;
+    }
+    this._owedScrollX = null;
     const reaches = (pane.contentWidth ?? 0) - pane.abs.width;
     // no further than the document reaches, as the pane will clamp it
     const most = Math.max(0, this._documentWidth - pane.abs.width);
@@ -6476,6 +6486,9 @@ export class HtmlViewNode extends Node {
    *  scrolled by something else — the wheel, a smooth scroll core runs —
    *  and the hold is over (`heldScrollX`). */
   private _heldFrom = 0;
+  /** A scroll across asked before the document's width was known, in the
+   *  pane's logical pixels: replayed once `_reportReach` finds the width. */
+  private _owedScrollX: number | null = null;
 
   /**
    * `heldScrollX`, read by a page: the viewport's scroll origin, a page
@@ -6503,6 +6516,14 @@ export class HtmlViewNode extends Node {
    *  that far, once it does — or as far as it reaches, once it reaches as
    *  far as the document. */
   private _releaseHeldScroll(): void {
+    // a scroll across owed before the document's width was known, replayed
+    // once the width is in (`_reportReach`) — and again here where a paint
+    // runs before that report's setState has mounted the reach marker
+    if (this._owedScrollX !== null && this._documentWidth > 0) {
+      const owed = this._owedScrollX;
+      this._owedScrollX = null;
+      this.oweScrollReach(owed);
+    }
     const x = this.heldScrollX() === null ? null : this._heldScrollX;
     const pane = this._pane() as
       (ScrollPane & { contentWidth?: number }) | null;
@@ -6511,9 +6532,9 @@ export class HtmlViewNode extends Node {
     const marked = (pane.contentWidth ?? 0) + 0.5 >= this._documentWidth;
     if (x * pane.scale > reaches + 0.5 && !marked) return;
     this._heldScrollX = null;
-    void Promise.resolve().then(() => {
-      if (!this.destroyed) pane.scrollTo({ x });
-    });
+    // sync: a microtask let a reftest's screenshot land on the unscrolled
+    // frame before the pane moved (WPT `massive-element-left-of-viewport-*`)
+    if (!this.destroyed) pane.scrollTo({ x });
   }
 
   /**
@@ -6567,12 +6588,26 @@ export class HtmlViewNode extends Node {
         ? this._documentWidth / s
         : 0;
     const reach = partial ? Math.max(right, this._scrollReach) : right;
-    if (Math.abs(reach - this._scrollReach) < 0.5) return;
+    if (Math.abs(reach - this._scrollReach) < 0.5) {
+      // width unchanged, but a scroll across may have been owed before any
+      // width was known
+      if (this._owedScrollX !== null && right > 0) {
+        const x = this._owedScrollX;
+        this._owedScrollX = null;
+        this.oweScrollReach(x);
+      }
+      return;
+    }
     this._scrollReach = reach;
     // how far it draws past its box moved with it (`paintOverhang`), which
     // core reads only where the element says it changed
     this.invalidate(false, this, 'paint');
     this._props().onScrollReach?.(reach);
+    if (this._owedScrollX !== null && right > 0) {
+      const x = this._owedScrollX;
+      this._owedScrollX = null;
+      this.oweScrollReach(x);
+    }
   }
 
   private _reportViewport(): void {
@@ -9037,13 +9072,11 @@ export class HtmlViewNode extends Node {
     this._followLifted(local);
     const tree = this._tree;
     if (!tree) return null;
-    const hit = deepestAt(
-      tree,
-      local.x,
-      local.y,
-      undefined,
-      this._fixedShift(origin),
-    );
+    // with its rendering suppressed for a view transition, every point is
+    // the root element's (CSS View Transitions 1, 7.4)
+    const hit = this._suppressed()
+      ? null
+      : deepestAt(tree, local.x, local.y, undefined, this._fixedShift(origin));
     if (hit) {
       // an image with a map is its areas (HTML 4.8.14), where a point of it
       // is in one, and otherwise the image
@@ -10999,10 +11032,15 @@ export class HtmlViewNode extends Node {
 
   /** A page set where a CSS animation's time is, the same way, and held
    *  it there where it paused it. */
-  seekAnimation(key: number, currentTime: number, paused: boolean): void {
+  seekAnimation(
+    key: number,
+    currentTime: number,
+    paused: boolean,
+    overrides = true,
+  ): void {
     if (!this._animating()) return;
     this._timeline.now = animationClock.now();
-    if (this._timeline.seekAnimation(key, currentTime, paused)) {
+    if (this._timeline.seekAnimation(key, currentTime, paused, overrides)) {
       this._scheduleFrame();
       return;
     }
@@ -11104,10 +11142,11 @@ export class HtmlViewNode extends Node {
     mode: 'align' | 'start' | 'hold',
     time: number | null,
     rate: number,
+    overrides = true,
   ): void {
     if (!this._animating()) return;
     this._timeline.now = animationClock.now();
-    if (this._timeline.seekScrolled(key, mode, time, rate)) {
+    if (this._timeline.seekScrolled(key, mode, time, rate, overrides)) {
       this._scheduleFrame();
     }
   }
@@ -11580,7 +11619,7 @@ export class HtmlViewNode extends Node {
     // be painted: the window shows each as it starts already, and no paint
     // is coming to start it — a transition turned back from where it was
     // drawn, a fade out from what the element looks like
-    if (this._claims === this._claimsPainted) {
+    if (this._claims === this._claimsPainted && !this._suppressed()) {
       this._timeline.startPending(animationClock.now());
       this._anchoredTimeline.startPending(animationClock.now());
     }
@@ -12314,7 +12353,10 @@ export class HtmlViewNode extends Node {
     // an animation no paint has shown for long — nothing draws the
     // document, or not where it is — starts anyway, and runs to its end
     const now = animationClock.now();
-    if (now - this._timeline.pendingSince >= PAINT_WAIT_MS) {
+    if (
+      now - this._timeline.pendingSince >= PAINT_WAIT_MS &&
+      !this._suppressed()
+    ) {
       this._timeline.startPending(now);
     }
     const tree = this._tree;
@@ -12931,6 +12973,18 @@ export class HtmlViewNode extends Node {
     // a fragment a script builds before it puts it in, an element it took
     // out. Its coming in is a change to the document, and says so.
     if (!inDocument(change.target, this._source.document)) return true;
+    // A view transition's pseudo-elements are the root element's, styled
+    // from its rules as their tree is built (`_transitionTree`), which no
+    // reach of a change says: an attribute of the root changed while the
+    // tree is drawn — a class a page sets on it — styles them again
+    if (
+      this._vt?.phase === 'live' &&
+      change.type === 'attributes' &&
+      isElement(change.target) &&
+      isRootElement(change.target)
+    ) {
+      return false;
+    }
     // What is inside a drawing has no box and no style of its own: the
     // drawing is drawn again. A `:has()` around it may ask it something,
     // and what that restyles is found as for a change anywhere — the
@@ -14761,7 +14815,10 @@ export class HtmlViewNode extends Node {
         direction: timing.direction,
         fill: timing.fill,
         easing: easingText(at(lists.easings)),
-        paused: at(lists.playStates) === 'paused' || !!a.run.pagePaused,
+        paused: a.run.pagePaused ?? at(lists.playStates) === 'paused',
+        stylePaused: at(lists.playStates) === 'paused',
+        ...(a.run.pagePaused !== undefined ? { pageSet: true } : null),
+        ...(a.run.pending ? { waiting: true } : null),
         ...(a.run.pageCancelled ? { cancelled: true } : null),
         currentTime: a.run.hold ?? now - a.run.start,
         // on a scroll's, where the scroll has it
@@ -15107,6 +15164,10 @@ export class HtmlViewNode extends Node {
     if (Math.abs(x - pane.scrollX) < 0.5 && Math.abs(y - pane.scrollY) < 0.5) {
       return;
     }
+    // where the pane holds it for its next pass, a page reads where it is
+    // going, as it reads a scroll of its own (`oweScrollDown`)
+    this.oweScrollReach(x / pane.scale);
+    this.oweScrollDown(y / pane.scale);
     const again = () => {
       if (this._pane() === pane) pane.scrollTo({ x: x / s, y: y / s });
     };
@@ -15723,6 +15784,19 @@ export class HtmlViewNode extends Node {
   override paint(ctx: Context2D): void {
     this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
+    const held = this._vt?.phase === 'old' ? this._vt.held : null;
+    if (held) {
+      // a view transition's update runs: what is drawn is the document as
+      // its old state was captured, and nothing starts (7.4)
+      const viewport = this._viewport() ?? this.abs;
+      (ctx as PaintContext).drawImage?.(
+        held,
+        Math.round(viewport.x),
+        Math.round(viewport.y),
+      );
+      this._props().onPaint?.();
+      return;
+    }
     this._counted(() => this._paintContent(ctx));
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
@@ -15993,9 +16067,20 @@ export class HtmlViewNode extends Node {
         anim: null,
       });
     }
+    // and all of the document as it is now, which is drawn until the new
+    // state is captured: its rendering is suppressed (7.4)
+    run.held = this._captureSurface(tree, null, new Set())?.surface ?? null;
     this._vt = run;
     run.timeline.onCssEvent = () => this._oweCssEvents();
     return '';
+  }
+
+  /** Whether a view transition suppresses the document's rendering (CSS
+   *  View Transitions 1, 7.4): its old state captured and its new not yet.
+   *  What the document draws is then the picture held of it, no animation
+   *  starts, and a point is the root element's. */
+  private _suppressed(): boolean {
+    return this._vt?.phase === 'old';
   }
 
   /**
@@ -16052,6 +16137,7 @@ export class HtmlViewNode extends Node {
       }
     }
     run.phase = 'live';
+    run.release();
     run.started = animationClock.now();
     if (this._cascade) this._cascade.transitionKeyframes = run.keyframes;
     this._sprites?.clear();
@@ -16211,9 +16297,12 @@ export class HtmlViewNode extends Node {
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
     }
     if (!drawnAtViewport(box)) {
+      // where the pane's offsets have the document now: a capture may come
+      // in the frame of a page's `scrollTo`, before a pass has moved `abs`
       const viewport = this._viewport() ?? this.abs;
+      const origin = this._scrolledOrigin();
       m = multiply(
-        [1, 0, 0, 1, this.abs.x - viewport.x, this.abs.y - viewport.y],
+        [1, 0, 0, 1, origin.x - viewport.x, origin.y - viewport.y],
         m,
       );
     }
@@ -16265,6 +16354,8 @@ export class HtmlViewNode extends Node {
   } | null {
     const base = this._paintOptions(null, null);
     const viewport = this._viewport() ?? this.abs;
+    // where the pane's offsets have the document now (`_placementOf`)
+    const origin = this._scrolledOrigin();
     if (!box) {
       const w = Math.ceil(viewport.width);
       const h = Math.ceil(viewport.height);
@@ -16273,8 +16364,8 @@ export class HtmlViewNode extends Node {
       if (!surface) return null;
       paintDocument(surface.getContext('2d') as PaintContext, tree, {
         ...base,
-        originX: this.abs.x - viewport.x,
-        originY: this.abs.y - viewport.y,
+        originX: origin.x - viewport.x,
+        originY: origin.y - viewport.y,
         canvas: base.canvas && {
           ...base.canvas,
           x: base.canvas.x - viewport.x,
@@ -16296,8 +16387,8 @@ export class HtmlViewNode extends Node {
     // what it draws, in the document: where a box fixed to the viewport is
     // laid out at the document's top, and any other one where it scrolls
     const fixed = drawnAtViewport(box);
-    const vx = fixed ? 0 : viewport.x - this.abs.x;
-    const vy = fixed ? 0 : viewport.y - this.abs.y;
+    const vx = fixed ? 0 : viewport.x - origin.x;
+    const vy = fixed ? 0 : viewport.y - origin.y;
     const own = this._borderRect(box);
     // an inline box's bounds are its lines', which it shares
     const inline = box.kind === 'inline';
@@ -16326,9 +16417,16 @@ export class HtmlViewNode extends Node {
     const w = x1 - x0;
     const h = y1 - y0;
     if (!(w > 0 && h > 0) || w * h > CAPTURE_LIMIT) return null;
-    // paint in layout coordinates: undo the page mapping for the clip
+    // paint in the frame's layout axes (where the box is drawn), then turn
+    // the picture onto a page-sized surface: the transition places captures
+    // in the page's axes (`_placementOf`), and a layout-sized paint into a
+    // page-sized buffer leaves the ink unrotated (`massive-element-*-of-
+    // viewport-*` under `vertical-lr`)
     let paintX = x0;
     let paintY = y0;
+    let paintW = w;
+    let paintH = h;
+    let turn: ComputedStyle['writingMode'] | null = null;
     if (tree.vertical) {
       const frame = frameOfBox(box);
       const mode = frame ? FRAME_ROOTS.get(frame)?.style.writingMode : null;
@@ -16340,11 +16438,15 @@ export class HtmlViewNode extends Node {
         );
         paintX = laid.x;
         paintY = laid.y;
+        paintW = laid.width;
+        paintH = laid.height;
+        turn = mode;
       }
     }
-    const surface = this._surface(w, h);
-    if (!surface) return null;
-    paintCapture(surface.getContext('2d') as PaintContext, tree, box, {
+    if (paintW * paintH > CAPTURE_LIMIT) return null;
+    const painted = this._surface(paintW, paintH);
+    if (!painted) return null;
+    paintCapture(painted.getContext('2d') as PaintContext, tree, box, {
       ...base,
       originX: -paintX,
       originY: -paintY,
@@ -16355,10 +16457,34 @@ export class HtmlViewNode extends Node {
         width: viewport.width,
         height: viewport.height,
       },
-      damage: { x: 0, y: 0, width: w, height: h },
+      damage: { x: 0, y: 0, width: paintW, height: paintH },
       selection: null,
       captured: others,
     });
+    let surface = painted;
+    if (turn && (paintW !== w || paintH !== h)) {
+      const page = this._surface(w, h);
+      if (!page) {
+        painted.destroy?.();
+        return null;
+      }
+      const ctx = page.getContext('2d') as PaintContext;
+      if (ctx.drawImage && ctx.setTransform) {
+        // the frame's own quarter turn (`makeFrame`): layout (sx, sy) onto
+        // the page surface so its bottom-left lands at the page's top-left
+        // for a clockwise frame, and its top-left for one that turns up
+        if (turnsUp(turn)) ctx.setTransform(0, -1, 1, 0, 0, paintW);
+        else ctx.setTransform(0, 1, -1, 0, paintH, 0);
+        ctx.drawImage(painted, 0, 0);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      } else {
+        page.destroy?.();
+        painted.destroy?.();
+        return null;
+      }
+      painted.destroy?.();
+      surface = page;
+    }
     return {
       surface,
       inkX: x0 - pageOwn.x,
@@ -16503,12 +16629,12 @@ export class HtmlViewNode extends Node {
     if (info.which === 'old') {
       const old = entry.old;
       if (!old?.surface) return null;
-      return (ctx, x, y, w, h) =>
-        drawCaptured(ctx, old.surface!, old, x, y, w, h);
+      return (ctx, x, y, w, h, _damage, lighter) =>
+        drawCaptured(ctx, old.surface!, old, x, y, w, h, lighter);
     }
     const el = entry.el;
     if (!el) return null;
-    return (ctx, x, y, w, h, damage) => {
+    return (ctx, x, y, w, h, damage, lighter) => {
       const root = isRootElement(el);
       const own = this._firstBoxesOf(tree).get(el) ?? null;
       if (!own) return;
@@ -16520,10 +16646,19 @@ export class HtmlViewNode extends Node {
           if (top.pseudo === 'view-transition') others.add(top);
         }
       }
-      const size = root ? this._viewportPlacement(own) : this._borderRect(own);
-      // drawn at its size, as it is: straight onto the context, as the
-      // document would draw it there
-      if (Math.abs(w - size.width) < 1e-6 && Math.abs(h - size.height) < 1e-6) {
+      // page axes, as the group's width/height (`_placementOf`): a layout
+      // border box would scale a page-oriented capture by the frame's swap
+      const size = root ? this._viewportPlacement(own) : this._placementOf(own);
+      // live paint is layout-oriented; a box in a vertical frame must go
+      // through `_captureSurface`, which turns the picture onto the page
+      // and where it is added to what is under it (`plus-lighter`), as a
+      // picture of it, not each thing it draws
+      const live =
+        !lighter &&
+        !frameOfBox(own) &&
+        Math.abs(w - size.width) < 1e-6 &&
+        Math.abs(h - size.height) < 1e-6;
+      if (live) {
         this._paintLive(ctx, tree, root ? null : own, x, y, damage, others);
         return;
       }
@@ -16538,6 +16673,7 @@ export class HtmlViewNode extends Node {
           y,
           w,
           h,
+          lighter,
         );
       } finally {
         shot.surface.destroy?.();
@@ -16842,17 +16978,24 @@ function drawCaptured(
   y: number,
   w: number,
   h: number,
+  lighter = false,
 ): void {
   if (!ctx.drawImage || !(image.width > 0 && image.height > 0)) return;
   const sx = w / image.width;
   const sy = h / image.height;
   const dx = x + image.inkX * sx;
   const dy = y + image.inkY * sy;
+  // `plus-lighter`: added to what is under it (CSS Compositing 2)
+  if (lighter) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+  }
   if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
     ctx.drawImage(surface, Math.round(dx), Math.round(dy));
-    return;
+  } else {
+    ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
   }
-  ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
+  if (lighter) ctx.restore();
 }
 
 /** A number for an object, the same for as long as it lives: what a tree
@@ -17691,6 +17834,15 @@ export interface CssAnimationInfo {
   fill: string;
   easing: string;
   paused: boolean;
+  /** Whether its `animation-play-state` pauses it, whatever the page did,
+   *  which a page's object follows as `pause()` and `play()` would. */
+  stylePaused: boolean;
+  /** Whether a page's `play()`, `pause()`, `reverse()` or start time has
+   *  stood over its `animation-play-state` (`Running.pagePaused`). */
+  pageSet?: boolean;
+  /** Whether it is new and waits, held at its start, for the paint that
+   *  first shows it (`Running.pending`): play-pending, to a page. */
+  waiting?: boolean;
   /** Whether the page cancelled it (`CSSAnimation.cancel()`), which
    *  `getAnimations()` lists no longer. */
   cancelled?: boolean;

@@ -1616,6 +1616,7 @@ export type TransitionDraw = (
   w: number,
   h: number,
   damage: Rect | null,
+  lighter: boolean,
 ) => void;
 
 /** Whether a box is in one a view transition captured
@@ -2284,7 +2285,47 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
-  if (opacity < 1 && paintGroup(ctx, box, options, opacity)) return;
+  // `plus-lighter` adds the group a box makes to what is under it (CSS
+  // Compositing 2): a view transition's old and new images are drawn so,
+  // and sum to the element where the fade has them at any two opacities
+  // that come to 1. It is the group that is added, never each thing in it,
+  // or a page's canvas would add up to white whatever is drawn over it; so
+  // where no group is had, the box is drawn as `normal`. And a box that
+  // isolates what blends in it is a group, so that what blends adds to
+  // what is in it and not to what is behind it (3.2).
+  // A view transition's image is one picture, faded and added as it is
+  // drawn (`TransitionDraw`'s `lighter`), and no group.
+  const lighter =
+    box.style.mixBlendMode === 'plus-lighter' &&
+    typeof ctx.globalCompositeOperation === 'string' &&
+    !TRANSITION_IMAGES.has(box);
+  const isolates = isolatesBlending(box);
+  if (
+    ((opacity < 1 && !TRANSITION_IMAGES.has(box)) || lighter || isolates) &&
+    paintGroup(ctx, box, options, opacity, lighter, isolates)
+  ) {
+    return;
+  }
+  paintFaded(ctx, box, options, opacity);
+}
+
+/** Whether a box isolates a child that blends with what is under it. */
+function isolatesBlending(box: Box): boolean {
+  if (box.style.isolation !== 'isolate') return false;
+  for (const child of box.children) {
+    if (child.style.mixBlendMode === 'plus-lighter') return true;
+  }
+  return false;
+}
+
+/** A box painted with what it holds, each thing faded on its own where it
+ *  is under full opacity and no group was had (`paintOwnBox`). */
+function paintFaded(
+  ctx: PaintContext,
+  box: Box,
+  options: PaintOptions,
+  opacity: number,
+): void {
   const fade = opacity < 1 && typeof ctx.globalAlpha === 'number';
   if (fade) {
     ctx.save();
@@ -3540,12 +3581,25 @@ function paintGroup(
   box: Box,
   options: PaintOptions,
   opacity: number,
+  lighter = false,
+  isolates = false,
 ): boolean {
   if (!options.surface || !groupsOnSurfaces(ctx)) return false;
-  if (!drawsOverItself(ctx, box, options) || holdsViewportFixed(box, options)) {
+  // a group that is added to what is under it, or that what blends in it
+  // is added to, is one whatever it draws, and drawn at every paint: what
+  // is added changes with what is under it
+  const blends = lighter || isolates;
+  if (
+    (!blends && !drawsOverItself(ctx, box, options)) ||
+    holdsViewportFixed(box, options)
+  ) {
     return false;
   }
-  if (options.sprites && paintSprite(ctx, box, options, null, opacity)) {
+  if (
+    !blends &&
+    options.sprites &&
+    paintSprite(ctx, box, options, null, opacity)
+  ) {
     return true;
   }
   let x0 = Math.floor(box.boundsX + options.originX);
@@ -3569,9 +3623,11 @@ function paintGroup(
     paintUnfaded(
       surface.getContext('2d') as PaintContext,
       box,
-      inGroup(options, x0, y0, w, h),
+      blends
+        ? onSurface(options, x0, y0, w, h)
+        : inGroup(options, x0, y0, w, h),
     );
-    drawThrough(ctx, surface, null, x0, y0, opacity);
+    drawThrough(ctx, surface, null, x0, y0, opacity, lighter);
     return true;
   } finally {
     surface.destroy?.();
@@ -4274,8 +4330,10 @@ function drawThrough(
   x0: number,
   y0: number,
   opacity: number,
+  lighter = false,
 ): void {
   ctx.save();
+  if (lighter) ctx.globalCompositeOperation = 'lighter';
   if (through) {
     ctx.transform!(
       through[0],
@@ -13725,6 +13783,8 @@ function paintImage(ctx: PaintContext, box: Box, options: PaintOptions): void {
         box.contentWidth,
         box.contentHeight,
         options.damage,
+        box.style.mixBlendMode === 'plus-lighter' &&
+          typeof ctx.globalCompositeOperation === 'string',
       );
     }
     return;

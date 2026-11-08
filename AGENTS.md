@@ -7792,6 +7792,18 @@ way an inset moves one: a capture of the block around it leaves its text
 out, and a capture of it paints that text alone. Its border box is its
 fragments' (`_borderRect`), since an inline box keeps no rect.
 
+**Between the two captures the document's rendering is suppressed**
+(7.4): the realm runs no frame (`renderingSuppressed`, beside
+`renderOpportunitiesBlocked`), and the element draws the picture of the
+whole document it took with the old state (`ViewTransitionRun.held`),
+starts no pending animation and answers every point with the root element
+(`_suppressed`). The old state is captured after a frame's callbacks
+(`afterNextFrame`), before the host paints what they changed: on a timer
+it raced the frame, and an animation a callback started ran out before the
+capture. **Anything new that starts an animation, runs a frame's steps or
+hit-tests asks whether rendering is suppressed**, or the update's changes
+reach the page before the transition is ready.
+
 **A scroll container scrolls by moving its content, as `position:
 relative` does** (`layout/scroll.ts`). After layout, `applyScrollOffsets`
 moves each container's lines and boxes by the offset its element is
