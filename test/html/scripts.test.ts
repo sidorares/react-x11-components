@@ -18757,6 +18757,39 @@ test('a javascript: URL runs in a frame only where the frame is of one origin-do
   assert.equal(text('page', 'out'), 'ran self');
 });
 
+test("a document's performance has its navigation entry, which says how it came to be shown, a frame's its own", async () => {
+  // Navigation Timing 2: `getEntriesByType("navigation")` is the document's
+  // one PerformanceNavigationTiming, and a frame's window has its own
+  // document's, a reload's `type` "reload" (WPT's
+  // navigation-methods/reload-navigation-timing)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var page = performance.getEntriesByType("navigation");' +
+      '  r.push(page.length, page[0] instanceof PerformanceNavigationTiming, page[0].type,' +
+      '    page[0].name === location.href, page[0].loadEventEnd > 0, performance.navigation.type);' +
+      '  f.onload = function () {' +
+      '    var own = f.contentWindow.performance.getEntriesByType("navigation");' +
+      '    r.push(own.length, own[0].type, /a\\.html$/.test(own[0].name), f.contentWindow.performance.navigation.type);' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  };' +
+      '  f.contentWindow.navigation.reload();' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|true|navigate|true|true|0|1|reload|true|1',
+    logs.join('\n'),
+  );
+});
+
 test("a frame running its own realm tells its document's readystatechange, its frame's load before its pageshow, and its own cross-document navigate() never settles", async () => {
   // every browser tells a frame's `load` between its window's `load` and its
   // `pageshow`; `document.onreadystatechange` is a handler like any; and the
