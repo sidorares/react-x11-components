@@ -1624,17 +1624,24 @@ listens, and its timer keeps no process alive.
 
 `coreMediaDevices(app, { permission, request })` is the machine's cameras,
 microphones, speakers and screen, through react-x11's media capture
-(react-x11's `docs/media.md`): AVFoundation's cameras and CoreAudio's
-microphones (echo cancelled) on macOS, and on X11 the screen alone, since
-core has no camera or microphone there yet. A device a page opens is one
+(react-x11's `docs/media.md`): AVFoundation's cameras, CoreAudio's
+microphones (echo cancelled) and ScreenCaptureKit's displays on macOS, and
+on X11 the screen alone, since core has no camera or microphone there yet.
+A device a page opens is one
 core track at the settings its constraints came to, so a preview and a call
 beside it share one capture session, and where a constraint leaves a
 setting open it is Chrome's: 640×480 at 30 frames a second, 48 kHz with
 echo cancellation, noise suppression and gain control on, each held to the
 device. The host's own prompt is `request`, and core asks the system as a
-device opens. **Not in a `<Frame>` pane on macOS**: a pane runs no AppKit,
-so core captures nothing there, and the example browser shows a page that
-needs a camera in its own window (`BROWSER_INLINE=1`).
+device opens. In a `<Frame>` pane on macOS the pane's app asks its host,
+which captures for it, so the example browser's tabs have the devices as
+its window has them. `getDisplayMedia` shares the main display: a page
+cannot ask for one window, since nothing here offers a picker of them yet.
+macOS refuses a camera, without a prompt, to a process it does not take
+for an app of its own that declares camera use, and the page hears
+`NotAllowedError`: core's error says so, and a bundle launched with `open`
+and `NSCameraUsageDescription` in its `Info.plist` is asked for
+(react-x11's `docs/packaging.md`).
 
 **A service worker answers what its pages ask for** (Service Workers 1),
 where a secure page has `serviceWorkers`. A worker outlives the document that

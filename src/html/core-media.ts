@@ -338,12 +338,12 @@ function rethrown(error: unknown): Error {
  * A page's media devices over react-x11's media capture: the machine's
  * cameras, microphones and speakers, and its screen. On macOS that is
  * AVFoundation's cameras, CoreAudio's microphones (echo cancelled) and
- * outputs; on X11 the screen alone, since core has no camera or microphone
- * there yet, so a page there lists none.
+ * outputs, and ScreenCaptureKit's main display; on X11 the screen alone,
+ * since core has no camera or microphone there yet, so a page there lists
+ * none.
  *
- * In a `<Frame>` pane on macOS core captures nothing — a pane runs no
- * AppKit — so a host that runs its pages in panes hands these only where
- * its pages run in its own window.
+ * In a `<Frame>` pane on macOS the pane's app asks its host to capture for
+ * it (react-x11 2.58), so a pane is handed its own `app`, as a window is.
  */
 export function coreMediaDevices(
   app: unknown,
