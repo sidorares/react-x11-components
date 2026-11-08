@@ -437,7 +437,10 @@ function FrameDocument({
         ? scripts.onDomEvent
         : (event) => (context.parent.dispatch(event) ? undefined : false),
       onDocument: scripts.onDocument,
-      onElementScroll: scripts.onElementScroll,
+      // and its scroll containers' `scroll` and `scrollend` there too
+      onElementScroll: realm
+        ? scripts.onElementScroll
+        : (element) => context.parent.elementScrolled(element),
       stylesheet: scripts.stylesheet,
       renderEmbedded: embeddedMounts(inner),
       canvasImage: scripts.canvasImage,
