@@ -505,6 +505,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
   animation-fill-mode: both;
 }
 ::view-transition-image-pair(*) { position: absolute; inset: 0; }
+::view-transition-group-children(*) {
+  position: absolute;
+  inset: 0;
+  border-style: solid;
+  border-color: transparent;
+}
 ::view-transition-old(*), ::view-transition-new(*) {
   position: absolute;
   inset-block-start: 0;
@@ -512,6 +518,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
   block-size: auto;
 }
 ::view-transition-image-pair(*),
+::view-transition-group-children(*),
 ::view-transition-old(*),
 ::view-transition-new(*) {
   animation-duration: inherit;

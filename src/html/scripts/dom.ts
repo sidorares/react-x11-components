@@ -2946,7 +2946,7 @@ export function installDom(
    */
   const transitionPseudoKey = (pseudo: string): string | null => {
     const m =
-      /^::view-transition(?:-(group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/i.exec(
+      /^::view-transition(?:-(group-children|group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/i.exec(
         pseudo,
       );
     if (!m) return null;

@@ -2225,7 +2225,20 @@ until its animations are over, when it is finished.
   What it does not do yet: hold the element's rendering while its update
   runs, keep the element at the size it had while its children change,
   and hit-test through its captured parts.
-- **Not yet.** Nested groups.
+- **Nested groups** (CSS View Transitions 2, 3.3). `view-transition-group`
+  puts an element's group in the group of a named element around it:
+  `contain` holds the groups of the named elements in it, `nearest` goes
+  in the nearest named element's, a name in the group of the element
+  around it of that name (and holds what is in it, as `contain` does), and
+  `normal` in the nearest group that holds what is in it, or at the top.
+  `none` is at the top, as Chromium takes it. Such a group holds
+  `::view-transition-group-children(name)`, after its image pair, with a
+  transparent border as wide and as round as its element's — animated from
+  the old element's to the new's — and a group in it is placed from its
+  padding box, so `overflow: clip` there clips what is nested as the
+  element did. A group that only the old state had is placed against
+  where its container was, as Chromium places it. The new state's
+  nesting wins where the two differ.
 
 **A list is live, as the DOM has it.** `childNodes`, `children`,
 `getElementsByTagName`, `getElementsByClassName`, `getElementsByName`, a
