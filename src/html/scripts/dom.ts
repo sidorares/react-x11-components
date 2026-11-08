@@ -8843,7 +8843,7 @@ export function installDom(
     accessor(
       function () {
         const raw = attrValue(this, attr);
-        return raw === null ? '' : String(call('resolve', raw));
+        return raw === null ? '' : String(call('resolve', raw, this._id));
       },
       function (v) {
         this._setAttr(attr, usv(v));
@@ -11099,9 +11099,18 @@ export function installDom(
           slot.to = targetEntry;
           call('frameNavigate', frame._id, targetEntry.url, '', 'traverse');
         },
-        // a frame's scroll is its own document's, which no entry keeps
-        scroll: () => [0, 0],
-        scrollTo: () => {},
+        // a frame's scroll is its document's viewport's, which its view
+        // draws and scrolls, and which an entry keeps to go back to
+        scroll: () => {
+          const now = frameDocumentOf(frame);
+          if (!now) return [0, 0];
+          const v = frameViewport(now);
+          return [v.scrollX, v.scrollY];
+        },
+        scrollTo: (x, y) => {
+          const now = frameDocumentOf(frame);
+          if (now) call('viewScrollTo', now._id, `${x},${y},0`);
+        },
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
         // a `javascript:` URL's script, with the frame's window and document
@@ -33548,6 +33557,9 @@ export function installDom(
   const sessionOfElement = (el: Any): Session => {
     const doc = el?.ownerDocument;
     if (doc && doc !== document) {
+      // made as its window's `navigation` is first asked for, which a
+      // link followed before anything asked for it has not been
+      if (!frameSessions.get(doc)?.session) void doc.defaultView?.navigation;
       const made = frameSessions.get(doc);
       if (made?.session) return made.session as Session;
     }

@@ -426,6 +426,18 @@ test('a snap on both axes rests at the nearest pair of places that shows both ar
   );
 });
 
+test('a viewport scroll goes as far as the document reaches on the pixel grid', async () => {
+  // Blink snaps scrollHeight, so a document that ends a fraction of a pixel
+  // down scrolls to a whole pixel (WPT
+  // scroll-initial-target-with-anchor-navigation)
+  const { el: node } = await renderScrolled(
+    '<!doctype html><style>body { margin: 0 }</style><div style="height: 600.4px"></div>',
+    300,
+    400,
+  );
+  assert.deepEqual(node.snapViewport(0, 10000), { x: 0, y: 300 });
+});
+
 test('in an area larger than the snapport a snap rests where it covers the snapport, but not where another area intrudes at its start', async () => {
   // CSS Scroll Snap 1, "snapping boxes that overflow the scrollport": a
   // long area holds small ones, and a scroll across one of them lines it

@@ -19323,6 +19323,41 @@ test("a scriptless frame's root scrolls as its frame's viewport, which starts at
   assert.equal(page, '200|200|150|30|30', logs.join('\n'));
 });
 
+test('a link to a fragment in a scriptless frame is a fragment navigation of the frame: its window hears hashchange, and its history goes back to where it was scrolled', async () => {
+  // HTML 7.4.2.3.3, "navigate to a fragment", of the frame's own session,
+  // its link resolved against the frame's address; and a step back restores
+  // where the entry was scrolled (WPT
+  // scroll-initial-target-with-anchor-navigation)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="width: 300px; height: 150px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f"), r = [];' +
+      'function show() { document.getElementById("out").textContent = r.join("|"); }' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var w = f.contentWindow, d = f.contentDocument;' +
+      '  w.addEventListener("hashchange", function () {' +
+      '    var hash = w.location.hash; setTimeout(function () {' +
+      '      r.push("hash:" + hash);' +
+      '      if (r.length === 1) { d.documentElement.scrollTop = 100; w.history.back(); }' +
+      '      else { r.push(w.scrollY); show(); } }, 50);' +
+      '  });' +
+      '  d.documentElement.scrollTop = 30; d.getElementById("go").click();' +
+      '}, 100); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<!doctype html><a id="go" href="#there">go</a>' +
+        '<div style="height: 600px"></div><div id="there">there</div>',
+    },
+    true,
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, 'hash:#there|hash:|30', logs.join('\n'));
+});
+
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {
   // HTML 4.8.5: the attribute's markup, parsed as the frame's document,
   // ahead of its src

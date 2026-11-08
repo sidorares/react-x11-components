@@ -2957,6 +2957,16 @@ view is laid out — asks for the pass after it, or the frame stayed drawn
 where it was. And its viewport shows no scroll bars where its root has
 `scrollbar-width: none`, or is `overflow: hidden` both ways.
 
+A link in such a document resolves against the document's own address and
+`<base>`, not the page's, so a link to one of its fragments is a fragment
+navigation of the frame's own session: it adds an entry the frame's
+`history` steps back across, and the frame's window hears `hashchange` —
+where it had been the page's session, at the page's address. An entry keeps
+where the frame's viewport was scrolled as it was left, and a step back to it
+restores that, as the page's own entries do. A viewport scroll goes no
+farther than the document reaches rounded to a whole pixel, as Blink snaps
+`scrollHeight`, where the pane would go the fraction of a pixel past it.
+
 **A cross-origin frame sends the top window somewhere only behind a press**, as
 Chromium has it, where it could not at all; a sandbox goes by its flags. A
 `javascript:` address goes nowhere.
