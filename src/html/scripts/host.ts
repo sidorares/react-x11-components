@@ -5195,6 +5195,14 @@ export class DomHost {
         }
         return true;
       }
+      // whether the document goes for the next one its window shows, rather
+      // than with its frame taken out of the page: a top-level one always
+      case 'replacedInPlace': {
+        const parent = this.frameParent;
+        if (!parent) return true;
+        const frame = parent._frameOf.get(this.document);
+        return !!frame && documentHolding(frame) !== null;
+      }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
       // `frameDocument` hands a page a document by

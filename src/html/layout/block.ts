@@ -9697,7 +9697,9 @@ function positionedIn(
                 box.height + box.marginTop + box.marginBottom,
                 false,
               ) + box.marginTop
-            : (at ? at.from.y + at.y : cbY) + box.marginTop;
+            : at?.mirror !== undefined
+              ? at.from.y + at.mirror - at.y - box.height - box.marginBottom
+              : (at ? at.from.y + at.y : cbY) + box.marginTop;
   }
   moveTo(box, x, y);
   if (containing.kind === 'inline') {

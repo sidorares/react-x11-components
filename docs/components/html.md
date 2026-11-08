@@ -2025,7 +2025,13 @@ leaves, which `handle.beforeUnload()` asks the rest of; and a frame's
 history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
-hears `pageshow` after its `load`. A navigation to another document that
+hears `pageshow` after its `load`, and a frame's after its frame's `load`
+in the page too, as every browser tells the three. `readystatechange` is
+told at the document at each change of `readyState`, to `onreadystatechange`
+as to any listener. A `navigate()` that takes a document to another keeps
+its promises as they are once that one is shown, never to settle. One still
+under way as a frame running a realm of its own is taken out of the page is
+aborted, its promises rejected. A navigation to another document that
 the page starts — a link, a form, `location`, `navigation`, `history` past
 its own entries, `reload()` — asks it first, after its `navigate`:
 `beforeunload` at its window and at its frames', and the navigation stops
@@ -6780,7 +6786,10 @@ inherited (CSS Writing Modes 4). A block container whose writing mode is
 vertical in a parent whose writing mode is horizontal is the root of an
 orthogonal flow (7.3): its lines run down the page and stack right to left
 in `vertical-rl` and `sideways-rl` and left to right in `vertical-lr`, and
-run up the page in `sideways-lr`. An inline element in a writing mode its
+run up the page in `sideways-lr`. An absolute box at its static position in
+`vertical-lr` starts at the left, where the flow it would have been in
+starts: laid out after the flow, which is laid out as `vertical-rl`'s and
+put back across, it is put back by its own size once it has one. An inline element in a writing mode its
 parent is not in is an inline-block (3.1). The root is laid out by its
 parent as any box is, in the page's axes. Its width is its block size,
 which is its content's where it has none of its own (7.3.2): a block, a
@@ -7690,7 +7699,10 @@ parent's `scroll-snap-align` with the rest of its style, and is none.
 `scroll-snap-align`, are the snap container's axes, as its writing mode
 puts them, and an area's `start` is the end the container's flow starts at:
 the right in a right-to-left line, and in `vertical-rl`, where the block
-axis runs across (CSS Scroll Snap 1, 6.2). An area in a vertical writing
+axis runs across (CSS Scroll Snap 1, 6.2). The viewport's are the
+document's principal writing mode's, the body's `writing-mode` and
+`direction`, which a browser hands the viewport (CSS Writing Modes 4, 8),
+with the root's `scroll-snap-type`. An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.
