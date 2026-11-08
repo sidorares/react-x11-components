@@ -3268,7 +3268,15 @@ press on a `<label>` is one on its control: a box is toggled, a radio
 checked, a button pressed and a field focused. The first control with
 `autofocus` is focused once the document is up — where nothing else in the
 window holds the focus, since a page never takes the keyboard from the
-application around it.
+application around it. Where the document's scripts run, a top-level
+document does what HTML 6.6.5 has it do: each element put in with
+`autofocus`, by the parser or a script, is a candidate, and at a rendering
+step the first that can take the focus, a button or a link as much as a
+field, takes it. A disabled one is passed over. After that the document is
+done with autofocus, and so it is where something had the focus first or
+its address names an element. An intercepted navigation that resets the
+focus gives it to the document's autofocus delegate as it stands then, the
+first element with `autofocus` that can take the focus, before the body.
 
 **A form that breaks its own constraints does not submit, and says why.**
 `required`, `minlength`, `maxlength`, `pattern`, `min`, `max`, and an email
