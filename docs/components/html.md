@@ -1816,6 +1816,16 @@ another of its documents loads that one, which comes to it at the entry,
 with its state, as a `traverse`; what the document before left under way
 goes with it, so the next navigation aborts nothing of it, and a reload or
 a step that loads nothing — a 204, a download — moves no entry.
+A frame of this realm's whose `src` or `srcdoc` the page sets, past its
+initial `about:blank`, goes there as a navigation of its own window (HTML
+4.8.5, "process the iframe attributes"): its `navigate` first, a push it
+did not start, `about:srcdoc` for a `srcdoc`, and the frame loads only
+where nothing cancelled it, and as a fragment of the document it shows
+where that is all the address changes. A document that declares a refresh,
+`<meta http-equiv="refresh">`, is sent where its first directive says once
+its seconds are up after its `load` (HTML, "shared declarative refresh
+steps"), the page's and a frame's of this realm's alike: a reload, which
+`navigate` is told of, where that is its own address, and else a replace.
 A page's navigation of a frame whose document runs in a realm of its own
 — a frame of another origin's, or one with a script — is told to that
 realm a task later, as one of its own window's from the page's origin: a
@@ -1874,9 +1884,20 @@ What is in it is what the page's realm runs: the page and the frames whose
 documents it runs, those with no script, as WPT's `/common/blank.html` is. A
 frame whose document runs in a realm of its own keeps a history of its own
 still: its steps are not the page's, its `history.length` counts its own
-entries, and a step of the page's does not move it. Of a frame of another
+entries, and a step of the page's does not move it. That history starts with
+the entries of the frame's documents the page's realm ran before it, and the
+page's realm keeps their steps and its first document's, so a sandboxed
+frame's `back()`, `forward()` or `traverseTo()` to one of them that would
+move the page, where its flags do not let it navigate the top, or another
+frame, rejects with a `SecurityError` and tells nothing (HTML, "allowed by
+sandboxing to navigate"). Of a frame of another
 origin's, the page knows the documents it sent the frame to, each a step as
 it asked, a push or a replace, and not those the frame went to by itself. A
+frame that goes to another origin and comes back keeps its entries from before
+the gap, and the entry of the document it went to: a step to one of them loads
+that document again, and its `navigation` shows the entries of its origin
+around the current one and none across the gap, so `activation.from` is null
+for a step that came from the other side of it. A
 document shown again from the host's entries, which no back-forward cache
 kept, has its frames' histories start afresh; and the host's own Back and
 Forward (`session.go(delta)`) step the page's entries, not the tree's.
@@ -7721,7 +7742,11 @@ the right in a right-to-left line, and in `vertical-rl`, where the block
 axis runs across (CSS Scroll Snap 1, 6.2). The viewport's are the
 document's principal writing mode's, the body's `writing-mode` and
 `direction`, which a browser hands the viewport (CSS Writing Modes 4, 8),
-with the root's `scroll-snap-type`. An area in a vertical writing
+with the root's `scroll-snap-type`. A multicol scroll container's
+columns are snap areas where its `::column` has a `scroll-snap-align` (CSS
+Overflow 5, 5.1): each column box its layout set, in any writing mode; the
+only properties `::column` takes here are scroll snapping's, and a snap to a
+column names no element to a snap event. An area in a vertical writing
 mode is where the page draws it, through its frame's turn. A
 container's `scrollend` is told a frame after its last `scroll`, at the
 element, and the viewport's at the document, bubbling to the window.

@@ -18813,6 +18813,45 @@ test("a frame's document has its own base URL, which its navigate() resolves aga
   );
 });
 
+test("a frame's src and srcdoc set by the page are a navigation its window hears first, which it may cancel", async () => {
+  // HTML 4.8.5, "process the iframe attributes", and 7.4.2.2: the frame's
+  // `navigate` before anything loads, a push it did not start, and nothing
+  // loaded where a listener cancels it (WPT's navigate-event/navigate-to-srcdoc)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var n = f.contentWindow.navigation;' +
+      '  n.onnavigate = function (e) {' +
+      '    r.push([e.navigationType, e.cancelable, e.canIntercept, e.userInitiated, e.destination.url.replace(/^.*\\//, ""), e.destination.sameDocument].join(" "));' +
+      '    if (r.length === 1) e.preventDefault();' +
+      '  };' +
+      '  f.onload = function () { r.push("loaded " + f.contentDocument.querySelector("p").textContent); };' +
+      '  f.srcdoc = "<p>srcdoc</p>";' +
+      '  setTimeout(function () {' +
+      '    r.push("kept " + f.contentDocument.querySelector("p").textContent);' +
+      '    f.removeAttribute("srcdoc");' +
+      '    f.src = "b.html";' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 300);' +
+      '  }, 50);' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'push true false false about:srcdoc false|kept a|push true true false b.html false|loaded b',
+    logs.join('\n'),
+  );
+});
+
 test("a frame's window has every on-handler the page's has: its onhashchange and onpopstate run", async () => {
   // a scriptless frame's window had eleven, so `onhashchange` and
   // `onpopstate` were properties nothing called (WPT's
@@ -18838,6 +18877,129 @@ test("a frame's window has every on-handler the page's has: its onhashchange and
       (t) => t !== '',
     ),
     'hashchange #1|popstate |object|object',
+    logs.join('\n'),
+  );
+});
+
+test('a frame that went to another origin and came back steps back to the entries from before, which its navigation shows none of across the gap', async () => {
+  // HTML 7.4.1: the frame's entries are still the joint history's while it
+  // shows another origin's document, so `history.go(-2)` from the page
+  // loads its first document again; the Navigation API shows the same-origin
+  // run around the current entry alone (WPT's
+  // navigation-activation/activation-traverse-not-in-entries)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function next(go, then) { f.onload = function () { setTimeout(then, 0); }; go(); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  next(function () { f.contentWindow.location = "https://other.test/x.html"; }, function () {' +
+      '    next(function () { f.contentWindow.location = "' +
+      PAGE.replace(/[^/]*$/, '') +
+      'b.html"; }, function () {' +
+      '      r.push(f.contentWindow.navigation.entries().length, history.length);' +
+      '      next(function () { history.go(-2); }, function () {' +
+      '        var n = f.contentWindow.navigation;' +
+      '        r.push(/a\\.html$/.test(f.contentWindow.location.href), n.entries().length,' +
+      '          n.currentEntry.index, n.activation.navigationType, String(n.activation.from));' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'x.html': '<!doctype html><p>x</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|3|true|1|0|traverse|null',
+    logs.join('\n'),
+  );
+});
+
+test("a frame's document that declares a refresh is sent where it says once its time is up, as a reload where that is its own address", async () => {
+  // HTML, "shared declarative refresh steps": after the document's load,
+  // the first directive it has — a replace for another address, and a
+  // reload, which `navigate` is told of and a listener may cancel, for its
+  // own (WPT's navigate-event/navigate-meta-refresh)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'f.onload = function () {' +
+      '  r.push("load " + f.contentWindow.location.href.replace(/^.*\\//, ""));' +
+      '  f.contentWindow.navigation.onnavigate = function (e) {' +
+      '    r.push(e.navigationType + " " + e.destination.url.replace(/^.*\\//, ""));' +
+      '    if (e.navigationType !== "reload") return;' +
+      '    e.preventDefault();' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  };' +
+      '};' +
+      '</script>',
+    {
+      'a.html':
+        '<!doctype html><meta http-equiv="Refresh" content="0; url=\'b.html\'"><meta http-equiv="refresh" content="0"><p>a</p>',
+      'b.html':
+        '<!doctype html><meta http-equiv="refresh" content="0"><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'load a.html|replace b.html|load b.html|reload b.html',
+    logs.join('\n'),
+  );
+});
+
+test('a frame whose document runs in a realm of its own has its entries from before it, and a sandbox keeps its back() from moving the page', async () => {
+  // HTML 7.4.1: the frame's history is one across the documents it shows,
+  // those the page's realm ran among them; and a step that would move a
+  // window a sandboxed frame may not navigate rejects with a SecurityError
+  // and tells nothing (WPT's navigation-methods/sandboxing-back-parent)
+  const frame =
+    '<!doctype html><script>' +
+    'window.state = function () { return navigation.entries().length + " " + navigation.currentEntry.index + " " + navigation.canGoBack; };' +
+    'window.back = function () { return navigation.back(); };' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html" sandbox="allow-scripts allow-same-origin"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    r.push(f.contentWindow.state());' +
+      '    onhashchange = function () {' +
+      '      navigation.onnavigate = function () { r.push("page navigate"); };' +
+      '      onpopstate = function () { r.push("page popstate"); };' +
+      '      var res = f.contentWindow.back();' +
+      '      Promise.all([res.committed, res.finished].map(function (p) { return p.then(function () { return "ok"; }, function (e) { return e.name; }); }))' +
+      '        .then(function (got) {' +
+      '          r.push(got.join(","), location.hash);' +
+      '          setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 50);' +
+      '        });' +
+      '    };' +
+      '    location.hash = "#end";' +
+      '  }, 0); };' +
+      '  f.contentWindow.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>', 'b.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '2 1 true|SecurityError,SecurityError|#end',
     logs.join('\n'),
   );
 });

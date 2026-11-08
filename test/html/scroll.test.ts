@@ -473,6 +473,24 @@ test('a viewport scroll goes as far as the document reaches on the pixel grid', 
   assert.deepEqual(node.snapViewport(0, 10000), { x: 0, y: 300 });
 });
 
+test("a multicol scroll container's columns are snap areas where its ::column has a scroll-snap-align, left to right and right to left", async () => {
+  // CSS Overflow 5, 5.1 (WPT snap-to-column-scroll-origin)
+  const page = (dir: string) =>
+    '<!doctype html><style>body { margin: 0 }' +
+    '.s { columns: 200px; column-gap: 0; column-fill: auto; width: 200px; height: 100px;' +
+    ' overflow: auto hidden; scroll-snap-type: x mandatory }' +
+    '.s::column { scroll-snap-align: start } .s p { margin: 0; height: 100px }</style>' +
+    `<div class="s" id="s" style="direction: ${dir}"><p>1</p><p>2</p><p>3</p></div>`;
+  for (const [dir, want] of [
+    ['ltr', 200],
+    ['rtl', -200],
+  ] as const) {
+    const { el: node } = await renderScrolled(page(dir), 300, 400);
+    const s = el(node, 's');
+    assert.equal(node.scrollElementTo(s, { x: want * 0.75 })?.x, want, dir);
+  }
+});
+
 test('in an area larger than the snapport a snap rests where it covers the snapport, but not where another area intrudes at its start', async () => {
   // CSS Scroll Snap 1, "snapping boxes that overflow the scrollport": a
   // long area holds small ones, and a scroll across one of them lines it

@@ -7628,7 +7628,12 @@ export function installDom(
       }
       // before it is set, so that a handler finds the attribute it replaces
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
-      call('setAttr', this._id, n, str(value));
+      const asked = call('setAttr', this._id, n, str(value));
+      // a frame of this realm's sent somewhere by its `src` or `srcdoc`,
+      // whose window hears it first (`_attributeNavigation`)
+      if (typeof asked === 'string' && asked) {
+        frameAttributeNavigate(this, asked);
+      }
       // the attribute is the nonce again, whatever a script set (HTML 2.6.3)
       if (n === 'nonce') nonces.delete(this);
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
@@ -11099,7 +11104,7 @@ export function installDom(
           const fromIndex = s.index;
           const to = fromIndex + Math.trunc(delta);
           const targetEntry = s.entries[to];
-          if (!targetEntry) return;
+          if (!targetEntry?.url) return;
           slot.pending = 'traverse';
           slot.to = targetEntry;
           call('frameNavigate', frame._id, targetEntry.url, '', 'traverse');
@@ -11154,11 +11159,55 @@ export function installDom(
           ? unseen[unseen.length - 1]
           : childStartStep(frame);
       }
+      // the entries it had before it went to another origin, and the one
+      // standing for that origin's document, before this document's: what
+      // a step back finds, of other documents, and that the API does not
+      // show across the gap. A replace took the last one's place.
+      const before = forgottenEntries.get(frame);
+      if (before && jointOn) {
+        forgottenEntries.delete(frame);
+        unseenSteps.delete(frame);
+        const kept =
+          arrival === 'replace' && before.length ? before.slice(0, -1) : before;
+        first.doc = kept.reduce((most, e) => Math.max(most, e.doc ?? 0), 0) + 1;
+        made.session.entries = [...kept, first];
+        made.session.index = kept.length;
+        if (made.session.arrived) {
+          made.session.arrived.fromIndex = kept.length - 1;
+        }
+      }
       made.owner = owner;
       made.slot = slot;
       frameSessions.set(doc, made);
     }
     return made;
+  };
+  /**
+   * A frame sent to an address by its `src` or `srcdoc` (HTML 4.8.5, "process
+   * the iframe attributes"): its window's `navigate` first, a push — or a
+   * replace while its document has not loaded — that its document did not
+   * start, and the host loads it only where nothing kept it there: a
+   * listener's `preventDefault()`, a fragment of the document it shows,
+   * which is a navigation in it, or `beforeunload`.
+   */
+  const frameAttributeNavigate = (frame: Any, url: string): void => {
+    const doc = frameDocumentOf(frame);
+    if (!doc) {
+      call('frameAttributeGo', frame._id);
+      return;
+    }
+    void frameWindowOf(doc, frame).navigation;
+    const made = frameSessions.get(doc);
+    if (!made) {
+      call('frameAttributeGo', frame._id);
+      return;
+    }
+    const s = made.session as Session;
+    const went = navigateTo(s, url, pushOrReplace(s, url, !s.ctx.loaded()), {
+      hostFollows: true,
+      initiator: frame.ownerDocument,
+    });
+    if (went === 'other') call('frameAttributeGo', frame._id);
   };
   /** The window's own methods a frame's script calls by name, which answer
    *  for the frame's viewport and not the page's (`__frameScript`). */
@@ -11329,6 +11378,9 @@ export function installDom(
               entry.navState = reloadState;
             }
             entry.url = at;
+            // the document it stands for is the one shown now, one of this
+            // session's where it was kept from before another origin's
+            entry.other = false;
             made.session.index = stepIndex;
             made.session.arrived = {
               type: pending,
@@ -32211,7 +32263,9 @@ export function installDom(
    * documents before and after it of its origin, up to one that is not.
    */
   const navEntriesOf = (s: Session): SessionEntry[] => {
-    if (!s.host) return s.entries;
+    // a frame's holds entries of another origin's too, from before it went
+    // there and came back (`forgottenEntries`)
+    if (!s.host && !s.entries.some((e) => e.other)) return s.entries;
     const origin = entryOrigin(currentOf(s));
     let lo = s.index;
     let hi = s.index;
@@ -32271,6 +32325,13 @@ export function installDom(
    *  another origin's, and that document's — by frame: steps still the
    *  tree's, which `history.length` counts and a push clears. */
   const unseenSteps = new WeakMap<object, number[]>();
+  /** The entries a frame's session had as it went to a document of another
+   *  origin's, with one standing for that document where it went by a push,
+   *  by frame: the next session this realm keeps for the frame, once it is
+   *  back at this origin, holds them again as other documents' — what a
+   *  step through the history finds to load, and what the Navigation API
+   *  shows none of across the gap (`navEntriesOf`). */
+  const forgottenEntries = new WeakMap<object, SessionEntry[]>();
 
   /** The navigables of the joint history in tree order, the page's first:
    *  each frame this realm keeps a session for, with its document, and each
@@ -32415,12 +32476,15 @@ export function installDom(
    * after it — so a frame's `back()` steps the frame alone where nothing
    * else moved since, as browsers step it.
    */
-  const stepFor = (s: Session, target: SessionEntry): number => {
+  const stepFor = (s: Session, target: SessionEntry): number =>
+    stepIn(s.entries, target);
+  /** `stepFor`, of a navigable's entries as a list: a frame's this realm
+   *  keeps apart from any session (`forgottenEntries`). */
+  const stepIn = (entries: SessionEntry[], target: SessionEntry): number => {
     const step = target.step ?? 0;
     if (step > usedStep()) return step;
     const next =
-      s.entries[s.entries.indexOf(target) + 1]?.step ??
-      Number.POSITIVE_INFINITY;
+      entries[entries.indexOf(target) + 1]?.step ?? Number.POSITIVE_INFINITY;
     let at = step;
     for (const used of jointSteps()) if (used >= step && used < next) at = used;
     return at;
@@ -33494,6 +33558,90 @@ export function installDom(
   ): 'push' | 'replace' =>
     replace || url === currentOf(s).url ? 'replace' : 'push';
 
+  /**
+   * HTML, "parse a refresh directive": the seconds before it, and
+   * the address it goes to, the document's where it names none. Null where
+   * it is no directive, or names nothing that parses.
+   */
+  const parseRefresh = (
+    content: string,
+    url: string,
+    base: string,
+  ): { seconds: number; url: string } | null => {
+    const WS = /[\t\n\f\r ]/;
+    let at = 0;
+    const skip = () => {
+      while (at < content.length && WS.test(content[at])) at += 1;
+    };
+    skip();
+    const digits = /^\d*/.exec(content.slice(at))![0];
+    at += digits.length;
+    if (!digits && content[at] !== '.') return null;
+    const seconds = digits ? Number(digits) : 0;
+    while (at < content.length && /[\d.]/.test(content[at])) at += 1;
+    let to = url;
+    if (at < content.length) {
+      if (!/[;,\t\n\f\r ]/.test(content[at])) return null;
+      skip();
+      if (content[at] === ';' || content[at] === ',') {
+        at += 1;
+        skip();
+      }
+    }
+    if (at < content.length) {
+      let rest = content.slice(at);
+      // `url=`, in any case, with white space about the `=`
+      const named = /^url[\t\n\f\r ]*=[\t\n\f\r ]*/i.exec(rest);
+      if (named) rest = rest.slice(named[0].length);
+      const quote = rest[0] === '"' || rest[0] === "'" ? rest[0] : '';
+      if (quote) {
+        rest = rest.slice(1);
+        const end = rest.indexOf(quote);
+        if (end >= 0) rest = rest.slice(0, end);
+      }
+      try {
+        to = new URL(rest, base).href;
+      } catch {
+        return null;
+      }
+    }
+    return { seconds, url: to };
+  };
+  /**
+   * HTML, "shared declarative refresh steps", for a document as it
+   * finishes loading: its first `<meta http-equiv=refresh>` that is a
+   * directive, once its seconds are up and the document is still the one
+   * shown, sends its window to the address it names — a reload where that is
+   * the document's own, which `navigate` is told of, and else a replace. One
+   * a document; a `javascript:` one goes nowhere.
+   */
+  const declarativeRefresh = (doc: Any, s: Session, nav: Any): void => {
+    if (doc._refreshing) return;
+    for (const meta of Array.from(doc.getElementsByTagName('meta')) as Any[]) {
+      if (str(meta.getAttribute('http-equiv')).toLowerCase() !== 'refresh') {
+        continue;
+      }
+      const content = meta.getAttribute('content');
+      if (!content) continue;
+      const at = s.ctx.url();
+      const found = parseRefresh(str(content), at, str(doc.baseURI));
+      if (!found) continue;
+      doc._refreshing = true;
+      if (JAVASCRIPT_URL.test(found.url)) return;
+      setTimer(
+        () => {
+          if (!s.ctx.active() || s.ctx.owner() !== doc) return;
+          if (found.url === s.ctx.url()) void nav.reload();
+          else navigateTo(s, found.url, 'replace');
+        },
+        Math.min(found.seconds, 2 ** 31 / 1000 - 1) * 1000,
+        [],
+        false,
+      );
+      return;
+    }
+  };
+
   /** A resolved URL whose scheme is `javascript`. */
   const JAVASCRIPT_URL = /^javascript:/i;
   /** The script a serialized `javascript:` URL holds: what follows its
@@ -33932,6 +34080,22 @@ export function installDom(
       }
       // the entry it went to is the one shown already: nothing to take
       if (target === currentOf(s)) return;
+      // a frame whose document runs in a realm of its own has the page's
+      // realm say what the step moves, which a sandbox may not let it move
+      // (`stepAllowed`): nothing is told of it, and the promises reject
+      if (
+        !jointOn &&
+        s.host &&
+        call('stepAllowed', target.key, hasTransientActivation()) === false
+      ) {
+        tracker?.fail(
+          new DOMException(
+            "The step would navigate a window this frame's sandbox does not let it navigate.",
+            'SecurityError',
+          ),
+        );
+        return;
+      }
       const asked = { s, info, tracker, userInitiated };
       if (jointOn) applyStep(stepFor(s, target), asked);
       else stepNavigable(s, target, asked);
@@ -40643,6 +40807,8 @@ export function installDom(
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
       completelyLoaded = true;
+      // a refresh the document declares runs from now
+      declarativeRefresh(document, pageSession.session, navigation);
       // and shown, after its `load` (HTML 8.4, "the end"): a frame's after
       // its frame's `load` too, as every browser has it (`__shown`)
       if (!framed) pageShown();
@@ -40811,36 +40977,67 @@ export function installDom(
   // the entries from before the gap (HTML, `navigation.entries()`). The
   // WindowProxy stays — it is the frame element's for as long as the
   // element is (HTML 7.2.3), including across origins.
+  /**
+   * A frame whose documents this realm ran goes on to one it does not: of
+   * another origin's (`foreign`), or one that runs in a realm of its own. Its
+   * window and session here go, and its entries stay the joint history's,
+   * kept apart (`forgottenEntries`, `unseenSteps`), the one it went to among
+   * them where it went by a push: an entry of an origin that matches none for
+   * another origin's document, which no API shows. False where this realm
+   * kept nothing of the frame's.
+   */
+  const frameApart = (frame: Any, went: string, foreign: boolean): boolean => {
+    const last = keptFrameWindows.get(frame);
+    if (!last) return false;
+    const made = frameSessions.get(last.doc);
+    if (made && jointOn) {
+      const s: Session = made.session;
+      const how = made.slot?.pending ?? 'push';
+      const kept = how === 'push' ? s.entries.slice(0, s.index + 1) : s.entries;
+      const steps = kept
+        .map((e) => e.step)
+        .filter((step): step is number => step !== undefined);
+      jointFrames = true;
+      unseenSteps.set(frame, steps);
+      // as other documents', with none of the `NavigationHistoryEntry`s the
+      // session going made of them, which are of that session
+      const left: SessionEntry[] = kept.map((e) => ({
+        ...e,
+        other: true,
+        api: null,
+      }));
+      if (how === 'push') {
+        s.entries.splice(s.index + 1);
+        jointPush(s, null, true);
+        unseenSteps.set(frame, [...steps, jointStep]);
+        left.push({
+          ...sessionEntry(went, undefined, -1),
+          other: true,
+          ...(foreign && { origin: 'null' }),
+          step: jointStep,
+        });
+      }
+      forgottenEntries.set(frame, left);
+    }
+    frameWindows.delete(last.doc);
+    frameSessions.delete(last.doc);
+    frameTargets.delete(last.doc);
+    keptFrameWindows.delete(frame);
+    return true;
+  };
+  // the frame went to another origin: drop the window and session this
+  // realm kept, so a later same-origin document is not contiguous with
+  // the entries from before the gap (HTML, `navigation.entries()`), and
+  // keep its entries apart. The WindowProxy stays — it is the frame
+  // element's for as long as the element is (HTML 7.2.3), including across
+  // origins.
   entry('__forgetFrameWindow', () => {
-    const [id] = input();
+    // and the address it went to, which only a step back to that document's
+    // entry reads, to load it again: no API shows another origin's entry
+    const [id, went] = input();
     const frame = wrap(id);
     if (!frame) return false;
-    const last = keptFrameWindows.get(frame);
-    if (last) {
-      // its entries are still the tree's, steps no session here has, and
-      // the document it went to is one more where it came by a push
-      const made = frameSessions.get(last.doc);
-      if (made && jointOn) {
-        const s: Session = made.session;
-        const how = made.slot?.pending ?? 'push';
-        const kept =
-          how === 'push' ? s.entries.slice(0, s.index + 1) : s.entries;
-        const steps = kept
-          .map((e) => e.step)
-          .filter((step): step is number => step !== undefined);
-        jointFrames = true;
-        unseenSteps.set(frame, steps);
-        if (how === 'push') {
-          s.entries.splice(s.index + 1);
-          jointPush(s, null, true);
-          unseenSteps.set(frame, [...steps, jointStep]);
-        }
-      }
-      frameWindows.delete(last.doc);
-      frameSessions.delete(last.doc);
-      frameTargets.delete(last.doc);
-      keptFrameWindows.delete(frame);
-    }
+    const last = frameApart(frame, str(went ?? ''), true);
     frameLocations.delete(frame);
     // gone on to another origin since what this realm asked: where that was
     // a push, its step is one the tree has and no session here does
@@ -40851,6 +41048,65 @@ export function installDom(
     }
     frameArrivals.delete(frame);
     return true;
+  });
+  // A frame whose documents this realm ran goes on to one of its origin's
+  // that runs in a realm of its own (`ScriptRunner.bindFrame`): the entries
+  // this realm kept for it, which the frame's own history starts with —
+  // each its address, its key, its id, its document's number and its states
+  // — and whether the next document takes the last one's place. '' where
+  // this realm kept none, or none it shows: an initial `about:blank`'s.
+  entry('__frameEntries', () => {
+    const [id] = input();
+    const frame = wrap(id);
+    const last = frame && keptFrameWindows.get(frame);
+    const made = last && !last.initial && frameSessions.get(last.doc);
+    if (!made) return '';
+    const s: Session = made.session;
+    // the document it showed has unloaded by now, so what says its entries
+    // were none to show is the rest of "has entries and events disabled":
+    // an opaque origin's
+    if (s.ctx.disabled?.() || entryOrigin(currentOf(s)) === 'null') return '';
+    const how = made.slot?.pending ?? 'push';
+    if (how !== 'push' && how !== 'replace') return '';
+    return JSON.stringify({
+      entries: s.entries.slice(0, s.index + 1).map((e) => ({
+        url: e.url,
+        key: e.key,
+        id: e.id,
+        doc: e.doc ?? 0,
+        state: e.state,
+        navState: e.navState ?? null,
+        ...(e.hidesUrl && { hidesUrl: true }),
+      })),
+      replace: how === 'replace',
+    });
+  });
+  /**
+   * What a step to one of a frame's entries would move (HTML, "apply the
+   * traverse history step", which asks whether the window that asked may
+   * navigate each of them): where the frame's document runs in a realm of
+   * its own, that realm asks before it takes the step. 'top' for the page,
+   * and the id of each frame of this realm's whose entry at the step is not
+   * the one it shows; '' where this realm keeps nothing of the frame's that
+   * says.
+   */
+  entry('__stepChanges', () => {
+    const [id, key] = input();
+    const frame = wrap(id);
+    const kept: SessionEntry[] | undefined = frame
+      ? forgottenEntries.get(frame)
+      : undefined;
+    const target = kept?.find((e) => e.key === str(key));
+    if (!jointOn || !kept || !target) return '';
+    const step = stepIn(kept, target);
+    const moved: (string | number)[] = [];
+    for (const { s, frame: f } of jointTree()) {
+      if (!s || !s.ctx.active()) continue;
+      const to = entryAtStep(s, step);
+      if (!to || to === currentOf(s)) continue;
+      moved.push(f ? f._id : 'top');
+    }
+    return JSON.stringify(moved);
   });
 
   // a script of a frame's document, the page's own origin's: run here, in
@@ -40977,6 +41233,15 @@ export function installDom(
       linkedFrames.delete(Number(id));
       crossLinked.add(Number(id));
     } else {
+      // a document of this origin's that runs in a realm of its own takes
+      // over a frame this realm ran the documents of: their entries stay
+      // the joint history's, apart, its own document's among them
+      const frame = wrap(Number(id));
+      const last = frame && keptFrameWindows.get(frame);
+      if (last && !last.initial) {
+        frameApart(frame, String(call('frameLocation', frame._id)), false);
+        frameLocations.delete(frame);
+      }
       linkedFrames.set(Number(id), handed());
       crossLinked.delete(Number(id));
     }
@@ -41298,7 +41563,23 @@ export function installDom(
     }
     const ev = new Event(String(type), { bubbles: bubbles === true });
     ev.isTrusted = true;
-    return dispatch(target, ev);
+    const told = dispatch(target, ev);
+    // a frame's document of this realm's loaded: a refresh it declares runs
+    // from now (`declarativeRefresh`)
+    if (
+      type === 'load' &&
+      (target instanceof HTMLIFrameElement ||
+        target instanceof HTMLFrameElement) &&
+      !linkedFrames.get(target._id)
+    ) {
+      const doc = frameDocumentOf(target);
+      if (doc) {
+        void frameWindowOf(doc, target).navigation;
+        const made = frameSessions.get(doc);
+        if (made) declarativeRefresh(doc, made.session, made.navigation);
+      }
+    }
+    return told;
   });
 
   // a frame's document of this realm's, with no realm of its own, at the end

@@ -62,11 +62,15 @@ import type {
   WorkerInit,
 } from './host.js';
 import type { Popup, PopupAsk } from './popups.js';
-import { arriveAt, forgetKept, liveSession } from './session.js';
+import { arriveAt, forgetKept, liveSession, seedSession } from './session.js';
 import { openApart, slotFor, windowOps } from './popups.js';
 import type { WindowSlot } from './popups.js';
 import { openerPolicyOf, type DocumentHop, type OpenerPolicy } from './coop.js';
-import type { HtmlSessionHistory, SessionArrival } from './session.js';
+import type {
+  HtmlSessionHistory,
+  SessionArrival,
+  SessionRecord,
+} from './session.js';
 import type {
   AbortSignalLike,
   ClearTimeout,
@@ -697,6 +701,20 @@ export class ScriptRunner {
       // keeps one: each document is the next of that history, as a tab's
       // documents are of the host's (`HtmlSessionHistory`)
       const session = view.session ?? null;
+      // and where the frame showed documents this realm ran before, their
+      // entries are its history's from before this one (`__frameEntries`)
+      if (session && !session.entries.length) {
+        const kept = this.engine.call('__frameEntries', [
+          this.host.idOf(frame),
+        ]);
+        if (typeof kept === 'string' && kept) {
+          const given = JSON.parse(kept) as {
+            entries: Omit<SessionRecord, 'scroll'>[];
+            replace: boolean;
+          };
+          seedSession(session, given.entries, given.replace);
+        }
+      }
       const arrival = session ? arriveAt(session, url) : null;
       seat = Object.assign(made, {
         runner: new ScriptRunner(

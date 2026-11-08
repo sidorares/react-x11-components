@@ -237,6 +237,7 @@ import {
   COLUMN_ROWS,
   CUT_BLOCKS,
   GENERATED_FROM,
+  COLUMN_BOXES,
   GENERATED_ON,
   generatedStyle,
   INLINE_OFFSETS,
@@ -14634,6 +14635,9 @@ export class HtmlViewNode extends Node {
         : null;
     const areas = only ? areaIn(box, only, at, initial) : snapAreasIn(box, at);
     if (!areas) return null;
+    if (!only && this._cascade?.styledColumns) {
+      areas.push(...this._columnAreas(box));
+    }
     return {
       style: box.style,
       areas,
@@ -14644,6 +14648,65 @@ export class HtmlViewNode extends Node {
       focused: this._snapFocused,
       targeted: this._snapTargeted,
     };
+  }
+
+  /**
+   * A multicol scroll container's columns as its snap areas, where its
+   * `::column` style has a `scroll-snap-align` (CSS Overflow 5, 5.1): each
+   * column box its last layout set, where it is at no scroll from the
+   * scrollport's corner. A column is no element's, so a snap to one keeps
+   * no key, and a snap event names none.
+   */
+  private _columnAreas(box: Box): SnapArea[] {
+    const el = box.el;
+    // in a vertical writing mode the columns are the frame's, laid out in
+    // its turned axes and moved with what the container scrolls
+    const holder = COLUMN_BOXES.has(box)
+      ? box
+      : box.children.find((c) => COLUMN_BOXES.has(c));
+    const rows = holder && COLUMN_BOXES.get(holder);
+    if (!el || !holder || !rows?.length || !this._cascade) return [];
+    const style = this._cascade.columnStyleFor(el, box.style);
+    if (!style || style.scrollSnapAlign === NO_SNAP_ALIGN) return [];
+    const state = scrollStateOf(box);
+    const inFrameOf = holder === box ? null : ({ parent: holder } as Box);
+    const left0 = box.x + box.borderLeft;
+    const top0 = box.y + box.borderTop;
+    const out: SnapArea[] = [];
+    for (const row of rows) {
+      for (const left of row.lefts) {
+        let rect = {
+          x: holder.contentX + left,
+          y: holder.contentY + row.top,
+          width: row.width,
+          height: row.height,
+        };
+        // where it is at no scroll: the container's own columns are where
+        // its layout put them, and a frame's where the scroll moved them
+        if (inFrameOf) rect = onPage(inFrameOf, rect);
+        const x = inFrameOf
+          ? rect.x - left0 + state.x
+          : rect.x - left0 + state.originX;
+        const y = inFrameOf
+          ? rect.y - top0 + state.y
+          : rect.y - top0 + state.originY;
+        const column = {
+          style,
+          el: null,
+          pseudo: null,
+          parent: box,
+          children: [],
+        } as unknown as Box;
+        out.push({
+          box: column,
+          x,
+          y,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+    }
+    return out;
   }
 
   /** Whether a snap area is the focused element or holds it: the first a
