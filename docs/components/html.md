@@ -9265,6 +9265,23 @@ two seconds is stopped and the page goes on, and the bubble says so. A tab
 keeps the last six pages it left whose scripts ran, frozen, and Back and
 Forward show one again as it was left, what was typed into it included.
 
+```bash
+npm run examples:browser:app -- [url]
+```
+
+The same browser on a Mac as an app of its own, for a page that wants the
+camera. macOS answers a camera request for the app that started the
+process, and refuses it without a prompt where that app declares no camera
+use: run from a terminal or an editor that does not, the page hears
+`NotAllowedError`. So this builds `react-x11 browser.app` in
+`~/Library/Caches/react-x11-browser/`, a copy of the node that runs it with
+an Info.plist that declares the camera, the microphone and other
+applications' sound, and starts the browser in it through `open`, which
+asks about the camera for that app alone. Its tabs need nothing of their
+own: a pane asks the browser to open a device for it. The bundle is built
+again only when the node or the Info.plist changes, so an answer given once
+holds.
+
 [domhandler]: https://github.com/fb55/domhandler
 [domutils]: https://github.com/fb55/domutils
 [css-select]: https://github.com/fb55/css-select

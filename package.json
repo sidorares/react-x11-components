@@ -181,6 +181,7 @@
     "bench:zengarden:scroll": "node --import tsx scripts/zengarden/scroll.tsx",
     "bench:zengarden:resize": "node --import tsx scripts/zengarden/resize.tsx",
     "examples:browser": "node --import tsx --experimental-vm-modules --disable-warning=ExperimentalWarning examples/browser/browser.tsx",
+    "examples:browser:app": "node --import tsx examples/browser/mac-app.ts",
     "examples:calendar": "node --import tsx examples/calendar.tsx",
     "examples:charts": "node --import tsx examples/charts.tsx",
     "examples:code": "node --import tsx examples/code.tsx",
