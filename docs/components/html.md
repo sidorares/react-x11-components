@@ -1793,9 +1793,43 @@ where the page is of its origin (HTML 7.4.2.2, "navigate"); a POST is
 loaded as it was. Not yet: `document.domain`, which would make two origins'
 documents reach each other's windows, so a page and a frame that both set
 it are still two origins here. With no `session`, the host's own entries
-before and after the page's are not in `navigation.entries()`, and a
-frame's entries are not the page's: `history.length` counts the page's,
-and its `history.back()` steps the page's alone.
+before and after the page's are not in `navigation.entries()`.
+
+**The page's history and its frames' are one** (HTML 7.4.1, a top-level
+traversable's joint session history). Each entry of the page's and of each
+frame's is at a step, the place in time the navigation that made it took: a
+push anywhere — the page's, a frame's `pushState` or fragment, another
+document loaded in a frame — takes the step after the current one and clears
+every window's entries past it, the page's forward entries among them, each
+told `dispose`, and a replace keeps its entry's step. `history.length` is how
+many steps there are, read from the page or from any frame, and
+`history.back()`, `forward()` and `go()` go that many steps from whichever
+window asks. A step shows, in each window, the entry with the greatest step at
+or before it, so it moves every window whose entry there is not the one it
+shows: the page first, whose `navigate` is the only one a listener may
+cancel, and canceling it cancels the whole step — what a frame that asked was
+handed back rejects with an `AbortError`, and no frame hears `navigate` —
+then each frame in tree order, one going to another of its documents loading
+it, and the frames inside a document that goes going with it. A window's own
+`back()`, `forward()` and `traverseTo()` go to the step nearest the current
+one at which the window shows the entry, as browsers step them: a frame's
+`back()` steps the frame alone where nothing else moved since, and as far
+back as the step its entry was made at where the page moved in between.
+Traversals are taken one at a time, so one a `navigate` listener asks for
+waits for the `popstate` and `hashchange` of the step it heard. A document
+shown again from the back-forward cache finds its frames' entries past the
+step it was left at cleared, told `dispose` after its `pageshow`.
+
+What is in it is what the page's realm runs: the page and the frames whose
+documents it runs, those with no script, as WPT's `/common/blank.html` is. A
+frame whose document runs in a realm of its own keeps a history of its own
+still: its steps are not the page's, its `history.length` counts its own
+entries, and a step of the page's does not move it. Of a frame of another
+origin's, the page knows the documents it sent the frame to, each a step as
+it asked, a push or a replace, and not those the frame went to by itself. A
+document shown again from the host's entries, which no back-forward cache
+kept, has its frames' histories start afresh; and the host's own Back and
+Forward (`session.go(delta)`) step the page's entries, not the tree's.
 
 **A tab's documents are one history where the host hands them one
 session** (HTML 7.4.1). A host makes an `HtmlSessionHistory` for each place
