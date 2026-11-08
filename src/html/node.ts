@@ -561,8 +561,11 @@ import type {
   MediaRect,
   MediaState,
   Sound,
+  StreamAudio,
+  StreamVideo,
   VideoCandidate,
 } from './media.js';
+import type { StreamShown } from './media-devices.js';
 import type { IntrinsicSize } from './svg.js';
 import { CanvasText } from './canvas-text.js';
 import { WebFonts } from './fonts.js';
@@ -6107,10 +6110,32 @@ export class HtmlViewNode extends Node {
     kind: K,
     el: Element,
   ): {
-    source: K extends 'video' ? VideoSource : AudioSource;
+    source: K extends 'video'
+      ? VideoSource | StreamVideo
+      : AudioSource | StreamAudio;
     url: string;
     reports?: boolean;
   } | null {
+    // a `srcObject`'s stream, whatever its markup says: the source of its
+    // first live track of the kind, or nothing where it has none
+    const streamed = this._streams.get(el);
+    if (streamed) {
+      const shown = kind === 'video' ? streamed.video : streamed.audio;
+      if (!shown) return null;
+      // the same object for the same source, which what reports the
+      // players compares by
+      let source = this._streamSources.get(shown);
+      if (!source) {
+        source = { kind, stream: shown } as StreamVideo | StreamAudio;
+        this._streamSources.set(shown, source);
+      }
+      return {
+        source: source as K extends 'video'
+          ? VideoSource | StreamVideo
+          : AudioSource | StreamAudio,
+        url: `stream:${shown.id}:${shown.enabled ? 1 : 0}`,
+      };
+    }
     const clip = this._clips.get(el);
     if (clip && (kind === 'audio' || clip.video)) {
       const source = { kind, src: clip.src } as VideoSource | AudioSource;
@@ -6149,6 +6174,31 @@ export class HtmlViewNode extends Node {
     );
     this._videoChoices.set(el, { signature, candidates });
     return candidates;
+  }
+
+  /** What the media elements whose `srcObject` is a `MediaStream` show and
+   *  play (`showStream`), by their elements. */
+  private readonly _streams = new Map<Element, StreamShown>();
+  private readonly _streamSources = new WeakMap<
+    object,
+    StreamVideo | StreamAudio
+  >();
+
+  /**
+   * What a media element whose `srcObject` is a `MediaStream` shows and
+   * plays, as the page's realm told it: its first live video track's
+   * source and its first live audio track's, or null where it plays no
+   * stream any more and its markup's sources are its again. A `<video>`
+   * that plays a stream's sound is heard while it plays, as an `<audio>`
+   * is, in the document or out of it.
+   */
+  showStream(element: Element, shown: StreamShown | null): void {
+    if (shown) this._streams.set(element, shown);
+    else if (!this._streams.delete(element)) return;
+    if (!shown?.video && this._videoSizes.delete(element)) {
+      this._invalidate(Stale.Boxes, EMPTY_SET);
+    } else this._reportMedia();
+    this._publishSounds();
   }
 
   /** What a page's `MediaSource`s came to, by their elements
@@ -6215,7 +6265,7 @@ export class HtmlViewNode extends Node {
     if (tagOf(element) === 'audio' && this._props().onSounds) {
       if (state.paused === false) this._sounding.add(element);
       if (this._sounding.has(element)) this._publishSounds();
-    }
+    } else if (this._streams.get(element)?.audio) this._publishSounds();
   }
 
   /**
@@ -6228,7 +6278,15 @@ export class HtmlViewNode extends Node {
     const report = this._props().onSounds;
     if (!report) return;
     const sounds: Sound[] = [];
-    for (const element of this._sounding) {
+    // the `<audio>`s played, and the `<video>`s that play a stream's sound
+    // while they play it
+    const heard = new Set(this._sounding);
+    for (const [element, shown] of this._streams) {
+      if (shown.audio && this._mediaAsked.get(element)?.paused === false) {
+        heard.add(element);
+      }
+    }
+    for (const element of heard) {
       const chosen = this._sourceOf('audio', element);
       if (!chosen) continue;
       const asked = this._mediaAsked.get(element);

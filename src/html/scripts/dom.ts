@@ -14022,6 +14022,9 @@ export function installDom(
   /** A canvas's `captureStream()`, once the media facade is in
    *  (`mediastream.ts`'s `captureCanvas`). */
   let canvasCapture: Any = null;
+  /** What media elements play a `MediaStream` through (`mediastream.ts`'s
+   *  internals): set once media capture is installed. */
+  let streamsOf: Any = null;
 
   /** A `<canvas>` whose control went to an `OffscreenCanvas` refuses what
    *  would read or change its own bitmap (HTML 4.12.5, a placeholder). */
@@ -14228,8 +14231,30 @@ export function installDom(
     progressed: number;
     /** What `:seeking`, `:buffering` and `:stalled` were last told. */
     flags: string;
+    /** Its `srcObject`: a `MediaStream`, or null (HTML 4.8.11.2). */
+    stream: Any;
+    /** What watches the stream it plays (`mediaStreamPlay`), and its video
+     *  source's size, until the next load. */
+    unstream: (() => void) | null;
+    unsize: (() => void) | null;
+    /** The sources the host was last told it shows, as `video|audio`. */
+    shown: string;
+    /** The video source whose size it watches. */
+    sized: number;
+    /** Whether the stream it plays had what it plays — a live track, or a
+     *  live audio track for an `<audio>` — which is what it ends without. */
+    live: boolean;
+    /** Whether a stream's clock has run, which `played` answers from. */
+    played: boolean;
+    /** The tasks queued for it on the media element event task source,
+     *  which a load removes (HTML 4.8.11.5, step 5). */
+    tasks: Set<number>;
+    /** Its video source's frame count as it began to show it. */
+    framesBefore: number;
   }
   const mediaAsks = new WeakMap<Any, MediaAsk>();
+  /** The `sinkId` each element was given (`setSinkId`). */
+  const mediaSinks = new WeakMap<Any, string>();
   const askOf = (el: Any): MediaAsk => {
     let ask = mediaAsks.get(el);
     if (!ask) {
@@ -14263,6 +14288,15 @@ export function installDom(
         stallTimer: null,
         progressed: 0,
         flags: '',
+        stream: null,
+        unstream: null,
+        unsize: null,
+        shown: '',
+        sized: 0,
+        live: false,
+        played: false,
+        tasks: new Set(),
+        framesBefore: 0,
       };
       mediaAsks.set(el, ask);
     }
@@ -14270,8 +14304,23 @@ export function installDom(
   };
   /** A media element's event, in a task of its own (HTML's "queue a media
    *  element task"), on a timer of the facade's that no page replaces. */
-  const mediaTask = (fn: () => void): void => {
-    setTimer(fn, 0, [], false);
+  const mediaTask = (fn: () => void, el?: Any): void => {
+    if (!el) {
+      setTimer(fn, 0, [], false);
+      return;
+    }
+    // kept by its element, which a load removes it from
+    const tasks = askOf(el).tasks;
+    const id = setTimer(
+      () => {
+        tasks.delete(id);
+        fn();
+      },
+      0,
+      [],
+      false,
+    );
+    tasks.add(id);
   };
   const fireMedia = (el: Any, type: string): void => {
     const ev = new Event(type);
@@ -14317,10 +14366,13 @@ export function installDom(
    *  position"). */
   const mediaTime = (ask: MediaAsk): number => {
     if (ask.since === null) return ask.time;
-    const ran = ((now() - ask.since) / 1000) * ask.playbackRate;
-    let t =
-      ask.time +
-      (ask.player ? Math.min(ran, PLAYER_AHEAD * ask.playbackRate) : ran);
+    // a stream's clock runs at one second a second, whatever the rate says
+    // (Media Capture 6.2), and stands still through a task, as the official
+    // playback position does: two reads in one task are one time
+    const rate = ask.stream ? 1 : ask.playbackRate;
+    const at = ask.stream ? Math.max(taskNow(), ask.since) : now();
+    const ran = ((at - ask.since) / 1000) * rate;
+    let t = ask.time + (ask.player ? Math.min(ran, PLAYER_AHEAD * rate) : ran);
     if (ask.limit !== null) t = Math.min(t, Math.max(ask.time, ask.limit));
     return Number.isFinite(ask.duration) ? Math.min(t, ask.duration) : t;
   };
@@ -14339,7 +14391,10 @@ export function installDom(
       ask.time = mediaTime(ask);
       ask.since = null;
     }
-    if (runs && ask.since === null) ask.since = now();
+    if (runs && ask.since === null) {
+      ask.since = ask.stream ? taskNow() : now();
+      if (ask.stream) ask.played = true;
+    }
     if (!runs && ask.ticker !== null) {
       clearTimer(ask.ticker);
       ask.ticker = null;
@@ -14491,20 +14546,29 @@ export function installDom(
     ask.ready = ready;
     mediaSync(el);
     const load = ask.load;
-    mediaTask(() => {
-      if (ask.load !== load) return;
-      if (was < 1) {
-        fireMedia(el, 'durationchange');
+    // each event a task of its own, as HTML queues each: a page that waits
+    // for one with `await` sets its handler for the next in between
+    const step = (fn: () => void): void =>
+      mediaTask(() => {
+        if (ask.load === load) fn();
+      }, el);
+    if (was < 1) {
+      step(() => fireMedia(el, 'durationchange'));
+      step(() => {
         if (ask.width && el instanceof HTMLVideoElement)
           fireMedia(el, 'resize');
-        fireMedia(el, 'loadedmetadata');
-      }
-      if (was < 2 && ready >= 2) fireMedia(el, 'loadeddata');
-      if (was < 3 && ready >= 3) {
+      });
+      step(() => fireMedia(el, 'loadedmetadata'));
+    }
+    if (was < 2 && ready >= 2) step(() => fireMedia(el, 'loadeddata'));
+    if (was < 3 && ready >= 3) {
+      step(() => {
         fireMedia(el, 'canplay');
         if (ask.paused === false) notifyPlaying(el);
-      }
-      if (ready >= 4) {
+      });
+    }
+    if (ready >= 4) {
+      step(() => {
         if (
           ask.autoplaying &&
           ask.paused !== false &&
@@ -14518,8 +14582,8 @@ export function installDom(
           notifyPlaying(el);
         }
         if (was < 4) fireMedia(el, 'canplaythrough');
-      }
-    });
+      });
+    }
   };
   /** The ready state went back to `ready`: the clock stops, and where it
    *  was playing it waits (HTML 4.8.11.7: `timeupdate`, then `waiting`). */
@@ -14712,6 +14776,104 @@ export function installDom(
       mediaFailed(el, load);
     }
   };
+  /**
+   * A `MediaStream` played (Media Capture 6.2, HTML's "resource fetch
+   * algorithm" for a media provider object): the host told which sources
+   * it shows, the video's size watched, and the element ready once that is
+   * known — or at once where the stream has no video track — with
+   * `duration` Infinity and nothing buffered, since there is nothing to
+   * buffer. Watched from then on: another first live track is shown
+   * instead, and a stream that has no live track left, or an `<audio>`'s
+   * with no live audio track, ends it.
+   */
+  const mediaStreamPlay = (el: Any): void => {
+    const ask = askOf(el);
+    const load = ask.load;
+    const stream = ask.stream;
+    const audioOnly = el instanceof HTMLAudioElement;
+    const look = (): void => {
+      if (ask.load !== load || ask.stream !== stream || !streamsOf) return;
+      const video = streamsOf.firstLive(stream, 'video');
+      const audio = streamsOf.firstLive(stream, 'audio');
+      const signed = (t: Any): number =>
+        t ? (t.enabled ? t.source : -t.source) : 0;
+      const shown = `${signed(video)}|${signed(audio)}`;
+      if (shown !== ask.shown) {
+        ask.shown = shown;
+        call('mediaStream', el._id, signed(video), signed(audio));
+      }
+      const source = video && !audioOnly ? video.source : 0;
+      if (source !== ask.sized) {
+        ask.unsize?.();
+        ask.unsize = null;
+        ask.sized = source;
+        if (source) {
+          ask.framesBefore = Number(call('mdFrames', source)) || 0;
+          ask.unsize = streamsOf.watchSize(source, (w: number, h: number) => {
+            if (ask.load !== load || ask.sized !== source) return;
+            const resized = w !== ask.width || h !== ask.height;
+            ask.width = w;
+            ask.height = h;
+            if (ask.ready < 1) {
+              ask.duration = Infinity;
+              mediaReady(el, 4);
+            } else if (resized && el instanceof HTMLVideoElement) {
+              mediaTask(() => {
+                if (ask.load === load) fireMedia(el, 'resize');
+              });
+            }
+          });
+        }
+      }
+      const live = audioOnly
+        ? streamsOf.active(stream, 'audio')
+        : streamsOf.active(stream);
+      if (live) ask.live = true;
+      // nothing to wait for the size of: ready as it is
+      if (live && !source && ask.ready < 1) {
+        ask.duration = Infinity;
+        mediaReady(el, 4);
+      }
+      if (!live && ask.live && !ask.ended) mediaStreamEnd(el, load);
+    };
+    ask.unstream = streamsOf ? streamsOf.watch(stream, look) : null;
+    look();
+  };
+  /** A stream with nothing left to play ends its element, in a task: its
+   *  clock stops where it is, which is its length now, and `ended`. */
+  const mediaStreamEnd = (el: Any, load: number): void => {
+    const ask = askOf(el);
+    mediaTask(() => {
+      if (ask.load !== load || ask.ended) return;
+      ask.time = mediaTime(ask);
+      ask.since = null;
+      ask.ended = true;
+      const was = ask.paused === false;
+      if (ask.duration !== ask.time) {
+        ask.duration = ask.time;
+        fireMedia(el, 'durationchange');
+      }
+      ask.paused = true;
+      call('mediaState', el._id, 'paused', true);
+      mediaSync(el);
+      fireMedia(el, 'timeupdate');
+      if (was) fireMedia(el, 'pause');
+      fireMedia(el, 'ended');
+    });
+  };
+  /** What a load lets go of a stream: its watch, and what the host shows. */
+  const mediaStreamStop = (el: Any): void => {
+    const ask = askOf(el);
+    ask.unstream?.();
+    ask.unstream = null;
+    ask.unsize?.();
+    ask.unsize = null;
+    ask.sized = 0;
+    ask.live = false;
+    ask.played = false;
+    if (ask.shown && ask.shown !== '0|0') call('mediaStream', el._id, 0, 0);
+    ask.shown = '';
+  };
   /** The resource selection algorithm (HTML 4.8.11.5): its `src`, or else
    *  the first `<source>` whose type can play, fetched; neither, and it is
    *  empty again. */
@@ -14722,6 +14884,16 @@ export function installDom(
     const load = ask.load;
     mediaTask(() => {
       if (ask.load !== load) return;
+      // a media provider object (HTML 4.8.11.5, mode "object"): nothing is
+      // fetched, and `preload` is not asked
+      if (ask.stream) {
+        ask.src = '';
+        ask.network = 2;
+        mediaSync(el);
+        fireMedia(el, 'loadstart');
+        mediaStreamPlay(el);
+        return;
+      }
       let url: string | null = null;
       if (el.hasAttribute('src')) {
         const raw = el.getAttribute('src');
@@ -14766,6 +14938,15 @@ export function installDom(
   const mediaLoad = (el: Any): void => {
     const ask = askOf(el);
     const network = ask.network;
+    // steps 3 to 5: what was queued for it goes, and a `play()` whose task
+    // would have kept its promise keeps it now
+    for (const id of ask.tasks) clearTimer(id);
+    ask.tasks.clear();
+    if (ask.paused === false && ask.ready >= 3 && !ask.ended) {
+      const pending = ask.pending;
+      ask.pending = [];
+      for (const p of pending) p.resolve();
+    }
     ask.load += 1;
     ask.abort?.();
     ask.abort = null;
@@ -14808,7 +14989,14 @@ export function installDom(
       }
       ask.duration = NaN;
     }
-    ask.playbackRate = ask.defaultPlaybackRate;
+    mediaStreamStop(el);
+    // step 8, but where a stream is what it loads, whose rate is 1 and no
+    // one's to set: the rate a page set is the one it has again after it
+    if (!ask.stream && ask.playbackRate !== ask.defaultPlaybackRate) {
+      ask.playbackRate = ask.defaultPlaybackRate;
+      call('mediaState', el._id, 'playbackRate', ask.playbackRate);
+      mediaTask(() => fireMedia(el, 'ratechange'), el);
+    }
     ask.error = null;
     ask.ended = false;
     ask.stalled = false;
@@ -14879,6 +15067,8 @@ export function installDom(
     set currentTime(v: Any) {
       const time = Math.max(0, mediaNumber(v, 'currentTime'));
       const ask = askOf(this);
+      // a stream is never sought (Media Capture 6.2)
+      if (ask.stream) return;
       call('mediaState', this._id, 'currentTime', time);
       if (mediaLoads()) {
         if (ask.ready === 0) ask.time = time;
@@ -14907,33 +15097,37 @@ export function installDom(
       if (ask.volume === volume) return;
       ask.volume = volume;
       call('mediaState', this._id, 'volume', volume);
-      mediaTask(() => fireMedia(this, 'volumechange'));
+      mediaTask(() => fireMedia(this, 'volumechange'), this);
     }
+    /** 1 while it plays a stream, whose rate is no page's to set: what it
+     *  was before is kept, for when it plays something else. */
     get playbackRate(): number {
-      return askOf(this).playbackRate;
+      const ask = askOf(this);
+      return ask.stream ? 1 : ask.playbackRate;
     }
     set playbackRate(v: Any) {
       const rate = mediaNumber(v, 'playbackRate');
       const ask = askOf(this);
-      if (ask.playbackRate === rate) return;
+      if (ask.stream || ask.playbackRate === rate) return;
       if (ask.since !== null) {
         ask.time = mediaTime(ask);
         ask.since = now();
       }
       ask.playbackRate = rate;
       call('mediaState', this._id, 'playbackRate', rate);
-      mediaTask(() => fireMedia(this, 'ratechange'));
+      mediaTask(() => fireMedia(this, 'ratechange'), this);
     }
     /** The rate a load starts it at (HTML 4.8.11.8). */
     get defaultPlaybackRate(): number {
-      return askOf(this).defaultPlaybackRate;
+      const ask = askOf(this);
+      return ask.stream ? 1 : ask.defaultPlaybackRate;
     }
     set defaultPlaybackRate(v: Any) {
       const rate = mediaNumber(v, 'defaultPlaybackRate');
       const ask = askOf(this);
-      if (ask.defaultPlaybackRate === rate) return;
+      if (ask.stream || ask.defaultPlaybackRate === rate) return;
       ask.defaultPlaybackRate = rate;
-      mediaTask(() => fireMedia(this, 'ratechange'));
+      mediaTask(() => fireMedia(this, 'ratechange'), this);
     }
     /** Its own state from the first, which the `muted` attribute only
      *  starts it in (HTML 4.8.11.12): `defaultMuted` is the attribute. */
@@ -14946,7 +15140,9 @@ export function installDom(
       // the page's from now on, whatever the attribute comes to say
       askOf(this).muted = muted;
       call('mediaState', this._id, 'muted', muted);
-      if (was !== muted) mediaTask(() => fireMedia(this, 'volumechange'));
+      if (was !== muted) {
+        mediaTask(() => fireMedia(this, 'volumechange'), this);
+      }
     }
     get currentSrc(): string {
       return askOf(this).src;
@@ -14958,8 +15154,60 @@ export function installDom(
       const { source } = askOf(this);
       return source ? MSE.buffered(source) : noTimeRanges;
     }
+    /** A stream's timeline is one range, from 0 to where its clock is
+     *  (Media Capture 6.2), once it has run. */
     get played(): Any {
-      return noTimeRanges;
+      const ask = askOf(this);
+      if (!ask.stream || !ask.played) return noTimeRanges;
+      const end = mediaTime(ask);
+      return {
+        length: 1,
+        start: (i: number) => {
+          if (Number(i) !== 0) throw noTimeRanges.start();
+          return 0;
+        },
+        end: (i: number) => {
+          if (Number(i) !== 0) throw noTimeRanges.end();
+          return end;
+        },
+      };
+    }
+    /** HTML 4.8.11.2: a media provider object — a `MediaStream` here — set,
+     *  and the element loads it. */
+    get srcObject(): Any {
+      return askOf(this).stream;
+    }
+    set srcObject(value: Any) {
+      if (
+        value !== null &&
+        value !== undefined &&
+        !streamsOf?.isStream(value)
+      ) {
+        throw new TypeError(
+          "Failed to set the 'srcObject' property on 'HTMLMediaElement': The provided value is not of type '(MediaSourceHandle or MediaStream)'.",
+        );
+      }
+      askOf(this).stream = value ?? null;
+      mediaLoad(this);
+    }
+    /** The `audiooutput` device it plays on (Audio Output Devices API 2):
+     *  `''` for the default. */
+    get sinkId(): string {
+      return mediaSinks.get(this) ?? '';
+    }
+    /** Resolves once it plays on the device whose id the page was handed
+     *  (`enumerateDevices`), or rejects with a `NotFoundError` where there
+     *  is none such. */
+    setSinkId(id: Any): Promise<void> {
+      const sink = str(id);
+      if (!streamsOf) {
+        return Promise.reject(
+          new DOMException('There is no such device.', 'NotFoundError'),
+        );
+      }
+      return streamsOf.setSink(this._id, sink).then(() => {
+        mediaSinks.set(this, sink);
+      });
     }
     get seekable(): Any {
       return noTimeRanges;
@@ -14982,7 +15230,9 @@ export function installDom(
      */
     play(): Promise<void> {
       const ask = askOf(this);
-      const loads = mediaLoads();
+      // a stream loads as a fetched source does, whether there is a network
+      // or not
+      const loads = mediaLoads() || !!ask.stream;
       if (loads && ask.error?.code === 4) {
         return Promise.reject(
           new DOMException(
@@ -14992,7 +15242,7 @@ export function installDom(
         );
       }
       if (loads && ask.network === 0) mediaSelect(this);
-      if (loads && ask.ended) mediaSeek(this, 0);
+      if (loads && ask.ended && !ask.stream) mediaSeek(this, 0);
       const was = this.paused;
       const pauses = ask.pauses;
       ask.paused = false;
@@ -15050,7 +15300,7 @@ export function installDom(
     /** HTML 4.8.11.5, the media element load algorithm: whatever it was
      *  doing ends, it is paused, and it loads its source again. */
     load(): void {
-      if (mediaLoads() || askOf(this).source) {
+      if (mediaLoads() || askOf(this).source || askOf(this).stream) {
         mediaLoad(this);
         return;
       }
@@ -15070,7 +15320,57 @@ export function installDom(
     }
   }
 
+  // a constant is the interface's and its prototype's (Web IDL 3.7.4):
+  // `video.HAVE_NOTHING` is how a page reads one
+  for (const [name, value] of [
+    ['NETWORK_EMPTY', 0],
+    ['NETWORK_IDLE', 1],
+    ['NETWORK_LOADING', 2],
+    ['NETWORK_NO_SOURCE', 3],
+    ['HAVE_NOTHING', 0],
+    ['HAVE_METADATA', 1],
+    ['HAVE_CURRENT_DATA', 2],
+    ['HAVE_FUTURE_DATA', 3],
+    ['HAVE_ENOUGH_DATA', 4],
+  ] as const) {
+    Object.defineProperty(HTMLMediaElement.prototype, name, {
+      value,
+      enumerable: true,
+    });
+  }
+  /** Media Playback Quality 3: how many frames a video has shown. */
+  const mediaToken = Object.freeze(Object.create(null));
+  class VideoPlaybackQuality {
+    _created: number;
+    _total: number;
+    constructor(token: Any, created: number, total: number) {
+      if (token !== mediaToken) throw new TypeError('Illegal constructor');
+      this._created = created;
+      this._total = total;
+    }
+    get creationTime(): number {
+      return this._created;
+    }
+    get droppedVideoFrames(): number {
+      return 0;
+    }
+    get corruptedVideoFrames(): number {
+      return 0;
+    }
+    get totalVideoFrames(): number {
+      return this._total;
+    }
+  }
   class HTMLVideoElement extends HTMLMediaElement {
+    /** What it has shown: a stream's, the frames its video source handed
+     *  out since it was loaded; any other's, none counted here. */
+    getVideoPlaybackQuality(): Any {
+      const ask = askOf(this);
+      const total = ask.sized
+        ? Math.max(0, Number(call('mdFrames', ask.sized)) - ask.framesBefore)
+        : 0;
+      return new VideoPlaybackQuality(mediaToken, now(), total);
+    }
     /** Its source's size, as its container says it, once that is read. */
     get videoWidth(): number {
       return askOf(this).ready > 0 ? askOf(this).width : 0;
@@ -19073,6 +19373,25 @@ export function installDom(
     }
   }
 
+  // a media element playing a stream is never preloaded, whatever its
+  // attribute says, and a script's `preload` changes nothing while it is
+  // (Media Capture 6.2); the attribute is what it was once the stream goes
+  {
+    const reflected = Object.getOwnPropertyDescriptor(
+      HTMLMediaElement.prototype,
+      'preload',
+    )!;
+    Object.defineProperty(HTMLMediaElement.prototype, 'preload', {
+      ...reflected,
+      get(this: Any) {
+        return askOf(this).stream ? 'none' : reflected.get!.call(this);
+      },
+      set(this: Any, value: Any) {
+        if (!askOf(this).stream) reflected.set!.call(this, value);
+      },
+    });
+  }
+
   // HTMLOrSVGElement is a mixin as well: without it `focus()` on an element
   // of a drawing threw, and `tabIndex` was an expando that said nothing
   for (const name of ['focus', 'blur', 'tabIndex', 'nonce', 'autofocus']) {
@@ -20904,6 +21223,22 @@ export function installDom(
     'seeked',
     'volumechange',
     'ratechange',
+    // a media element's (HTML 4.8.11.16), which every page that waits for a
+    // video to load sets
+    'abort',
+    'canplay',
+    'canplaythrough',
+    'cuechange',
+    'durationchange',
+    'emptied',
+    'ended',
+    'loadeddata',
+    'loadedmetadata',
+    'loadstart',
+    'progress',
+    'stalled',
+    'suspend',
+    'waiting',
     'fullscreenchange',
     'fullscreenerror',
     'transitionrun',
@@ -36919,6 +37254,7 @@ export function installDom(
     HTMLMediaElement,
     MediaError,
     HTMLVideoElement,
+    VideoPlaybackQuality,
     HTMLAudioElement,
     HTMLSourceElement,
     HTMLTrackElement,
@@ -38039,9 +38375,12 @@ export function installDom(
       fire: trusted,
       secure,
       MessageChannel,
+      activated: () => hasTransientActivation(),
+      later: (fn: () => void) => setTimer(fn, 0, [], false),
     });
     canvasCapture = media.internals.captureCanvas;
     mediaTransfer = media.internals;
+    streamsOf = media.internals;
     const audio = webaudio({
       call: call as Any,
       DOMException,
@@ -38055,6 +38394,8 @@ export function installDom(
       track: media.internals.track,
       isStream: media.internals.isStream,
       isTrack: media.internals.isTrack,
+      sourceOf: media.internals.sourceOf,
+      bytesOfBase64,
     });
     for (const name of Object.getOwnPropertyNames(audio)) {
       define(name, audio[name]);

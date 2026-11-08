@@ -183,6 +183,7 @@ function patternSource(
       }
     }
     events.video({
+      format: 'I420',
       width,
       height,
       planes: planes!,
@@ -192,10 +193,11 @@ function patternSource(
     count += 1;
   };
 
+  // a timer only while the listener reads frames
   const run = () => {
     if (timer !== null) clearInterval(timer);
     timer = null;
-    if (stopped || !events) return;
+    if (stopped || !events?.video) return;
     timer = every(1000 / (settings.frameRate ?? 30), frame);
   };
 
@@ -231,26 +233,29 @@ function toneSource(initial: MediaSettings): MediaSourceLike {
   let made = 0;
   let begun = 0;
 
+  const rate = () => settings.sampleRate ?? 48000;
+  /** How many chunks the clock says are due since the source started. */
+  const due = () =>
+    Math.floor(((Date.now() - begun) * rate()) / 1000 / (rate() / 100));
   const chunk = () => {
     if (!events?.audio || stopped) return;
-    const rate = settings.sampleRate ?? 48000;
-    const frames = rate / 100;
-    const due = Math.floor(((Date.now() - begun) * rate) / 1000 / frames);
-    for (; made < due; made++) {
+    const frames = rate() / 100;
+    const until = due();
+    for (; made < until; made++) {
       const channels: Float32Array[] = [];
       for (let c = 0; c < (settings.channelCount ?? 1); c++) {
         channels.push(new Float32Array(frames));
       }
       for (let i = 0; i < frames; i++) {
-        const t = (made * frames + i) / rate;
+        const t = (made * frames + i) / rate();
         const sample = 0.1 * Math.sin(2 * Math.PI * 440 * t);
         for (const channel of channels) channel[i] = sample;
       }
       events.audio({
-        sampleRate: rate,
+        sampleRate: rate(),
         channels,
         frames,
-        timestamp: (made * frames * 1e6) / rate,
+        timestamp: (made * frames * 1e6) / rate(),
       });
     }
   };
@@ -258,7 +263,7 @@ function toneSource(initial: MediaSettings): MediaSourceLike {
   const run = () => {
     if (timer !== null) clearInterval(timer);
     timer = null;
-    if (stopped || !events) return;
+    if (stopped || !events?.audio) return;
     timer = every(10, chunk);
   };
 
@@ -267,8 +272,10 @@ function toneSource(initial: MediaSettings): MediaSourceLike {
     label: 'Fake microphone',
     listen(next) {
       events = next;
-      begun = Date.now();
-      made = 0;
+      // its clock runs from its first listener, and a reader that comes
+      // later hears from now on rather than every chunk since
+      if (!begun) begun = Date.now();
+      made = due();
       next.muted(false);
       run();
     },
@@ -397,19 +404,45 @@ export function fakeMediaDevices(
           : toneSource(at),
       );
     },
+    // the surface a page prefers is the one chosen, as Chrome's fake
+    // picker chooses it; a sound where one is asked for
     display: display
-      ? () =>
-          Promise.resolve(
-            patternSource(
-              'Fake screen',
-              {
-                width: { min: 1, max: 1280 },
-                height: { min: 1, max: 720 },
-                frameRate: { min: 1, max: 30 },
-              },
-              { width: 1280, height: 720, frameRate: 30 },
-            ),
-          )
+      ? (_ask, wants) => {
+          const surface =
+            wants?.displaySurface ??
+            (wants?.monitors === false ? 'window' : 'monitor');
+          const cursor = wants?.cursor ?? 'never';
+          const video = patternSource(
+            'Fake screen',
+            {
+              width: { min: 1, max: 1280 },
+              height: { min: 1, max: 720 },
+              frameRate: { min: 1, max: 30 },
+              displaySurface: surface,
+              logicalSurface: true,
+              cursor: ['never', 'always', 'motion'],
+            },
+            {
+              width: 1280,
+              height: 720,
+              frameRate: 30,
+              displaySurface: surface,
+              logicalSurface: true,
+              cursor,
+            },
+          );
+          const audio = wants?.audio
+            ? toneSource({
+                sampleRate: 48000,
+                sampleSize: 16,
+                channelCount: 2,
+                echoCancellation: false,
+                autoGainControl: false,
+                noiseSuppression: false,
+              })
+            : null;
+          return Promise.resolve({ video, audio });
+        }
       : undefined,
     setPermission(name, state) {
       permissions[name] = state;

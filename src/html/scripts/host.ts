@@ -282,7 +282,7 @@ import type {
 } from '../service-workers.js';
 import type { ServiceClient } from './sw-registry.js';
 import type { HtmlStorage, HtmlStorageChange } from '../storage.js';
-import type { HtmlMediaDevices } from '../media-devices.js';
+import type { HtmlMediaDevices, StreamShown } from '../media-devices.js';
 import type { HtmlWebRTC } from '../rtc.js';
 import type { HtmlWebTransport } from '../transport.js';
 import type { HtmlWebSocket } from '../socket.js';
@@ -807,6 +807,9 @@ export interface HandleInternals {
    *  URL of a feed (`feeds.ts`), whose player says what it does
    *  (`reports`). */
   showClip(element: Element, file: string | null, reports?: boolean): void;
+  /** What a media element whose `srcObject` is a `MediaStream` shows and
+   *  plays, or null for none any more (`HtmlViewNode.showStream`). */
+  showStream?(element: Element, shown: StreamShown | null): void;
   /** What the boxes were laid out and scrolled as, as a key that moves
    *  wherever a measurement of them may (`HtmlViewNode.geometryKey`). */
   geometryKey(): string;
@@ -5800,6 +5803,22 @@ export class DomHost {
           list.map((x) => ({ ...x, element: this.idOf(x.element) })),
         );
       }
+      // what a media element whose `srcObject` is a stream shows and plays:
+      // its first live video track's source and its first live audio
+      // track's, each a number, negative where the page disabled the track
+      // and 0 for none (`mediaStreamPlay`)
+      case 'mediaStream': {
+        const el = this._element(a);
+        const sources = this._sources();
+        const shown = (n: Primitive) => {
+          const id = Number(n) || 0;
+          return id ? sources.shown(Math.abs(id), id > 0) : null;
+        };
+        const video = shown(b);
+        const audio = shown(c);
+        this._handle.showStream?.(el, video || audio ? { video, audio } : null);
+        return null;
+      }
       // what a page asked of a media element's player — `paused`, `muted`,
       // `volume`, `playbackRate`, or `currentTime` for a seek — kept by
       // `<Html>` for the player it mounts over the element
@@ -8996,6 +9015,12 @@ export class DomHost {
         allowed: (name) => this._featureAllowed(name),
         tell: (name, input) => {
           if (!this._disposed) this.entries?.call(name, input);
+        },
+        sink: (id, deviceId) => {
+          const node = this._nodes.get(id);
+          if (node instanceof Element) {
+            this._handle.setMediaState(node, { sinkId: deviceId });
+          }
         },
         canvas: (id) => {
           const node = this._nodes.get(id);

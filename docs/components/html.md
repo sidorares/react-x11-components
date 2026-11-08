@@ -1199,7 +1199,7 @@ since this component navigates nowhere by itself:
 | `syncNetwork`    | none: asynchronous only   | What a page's synchronous `XMLHttpRequest`s are made through, on a thread of its own (`HtmlSyncNetwork`). `HtmlNetwork.syncNetwork()` is one. See below.                         |
 | `webTransport`   | none: every session fails | A page's `WebTransport` sessions: each one's connection, its datagrams and its streams' bytes (`HtmlWebTransport`). `HtmlNetwork.webTransport` is one. See below.                |
 | `webRTC`         | none: no stack            | What a page's `RTCPeerConnection`s are carried over (`HtmlWebRTC`). `HtmlNetwork.webRTC` is one, over the optional peer `werift`. See below.                                     |
-| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `fakeMediaDevices()` is one. See below.                             |
+| `mediaDevices`   | none: no devices          | The cameras, microphones and screens a page's `navigator.mediaDevices` lists and opens (`HtmlMediaDevices`). `coreMediaDevices(app)` is one. See below.                          |
 | `clipboard`      | none: reaches none        | The clipboard a page's `copy`, `cut`, `paste` and `navigator.clipboard` reach (`HtmlClipboard`). `useHtmlClipboard()` is the machine's. See below.                               |
 | `notifications`  | none: reaches none        | What a page's `Notification`s reach (`HtmlNotifications`). `useHtmlNotifications()` is the desktop's. See below.                                                                 |
 | `permissions`    | none: nothing is granted  | What a page has been allowed (`HtmlPermissions`): what `navigator.permissions` and `Notification.permission` answer, and what guards a read of the clipboard. See below.         |
@@ -1447,8 +1447,9 @@ transport with its state and
 `maxChannels`, a connection's transport stats, `RTCError`, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
-gives it. Media does not flow yet: a receiver's track is muted, and a
-sender sends nothing. Two of the page's connections connect to each other,
+gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
+and `getDisplayMedia`. Media does not flow over a connection yet: a
+receiver's track is muted, and a sender sends nothing. Two of the page's connections connect to each other,
 as WPT's tests make them, and to another peer the host can reach.
 
 - **`scripts.webRTC`, an `HtmlWebRTC`**, makes a connection the page's
@@ -1480,16 +1481,51 @@ as WPT's tests make them, and to another peer the host can reach.
   speaker, as Firefox and Safari have it whatever the page is allowed.
   **With none**, a page lists no device, as on a machine with none. A
   secure context's only, as `[SecureContext]` has it.
+  `coreMediaDevices(app)` is the machine's own, over react-x11's media
+  capture (below); `fakeMediaDevices()` is a test pattern and a tone.
 - **A track is transferable** (Media Capture Extensions): to a frame of
   the page's agent cluster, to a dedicated worker, or to itself with
   `structuredClone`, where the track made of it reaches its source back
   through a port to the realm that opened it, so the source stays that
   realm's. A shared worker, a service worker or a window of another site
   hears a `messageerror`.
+- **`getDisplayMedia` wants a press** (Screen Capture 5.2): with no
+  transient activation it rejects with an `InvalidStateError`, and a page
+  may prefer but not require — `video: false`, `advanced`, a `min` or an
+  `exact` are a `TypeError`, as an option no enum has is. The host is
+  asked (`request`, `display: true`), then its picker (`display`), handed
+  what the page prefers (`DisplayWants`: a surface, the pointer, whether
+  it would have the sound); the picture is fitted to the constraints, a
+  width or a height to the pixel with the shape kept and scaled down to a
+  `max`, which nothing can meet under 1 (`OverconstrainedError`). Its
+  settings say `displaySurface`, `logicalSurface` and `cursor`, and a
+  sound's `suppressLocalAudioPlayback`. `CaptureController` is there, and
+  steers nothing.
 - **A track is a source** (`MediaSourceLike`), whoever makes its frames:
   a device, a screen, a canvas, a Web Audio stream destination, or a peer
-  connection's receiver. Video is I420 and audio 10 ms of planar floats,
-  and the frames stay host-side.
+  connection's receiver. Video is in the format its source delivers it in
+  — I420, NV12 off a Mac's camera, BGRA off an X11 screen — and converted
+  only where a reader needs I420 (`toI420`); audio is 10 ms of planar
+  floats. The frames stay host-side, and a source makes them only while
+  something reads them: one listener on it however many do.
+- **A stream plays in a media element** (`srcObject`, Media Capture 6.2):
+  loaded with no fetch and no `preload` — `loadstart`, then once its video
+  track's size is known, or at once for sound alone, `durationchange` to
+  `Infinity`, `resize`, `loadedmetadata`, `loadeddata`, `canplay` and
+  `canplaythrough`, each once, with `HAVE_ENOUGH_DATA` and nothing
+  buffered. Its clock runs from 0 at one second a second while it plays,
+  cannot be sought and has one `played` range; its rates read 1 and are
+  set back to what they were when it goes, and its `preload` reads
+  `none`. It ends a task after its stream has no live track left, or an
+  `<audio>`'s no live audio track, with its length where its clock got to.
+  `<Html>` mounts a player over a `<video>` showing its first live video
+  track: core's own `<video srcObject>` where the source shows itself
+  (`MediaSourceLike.present`, a camera that goes onto a layer of its own
+  on macOS with no frame crossing into JavaScript), and a `VideoFrames`
+  sink of its frames otherwise, black where the page disabled the track.
+  Its first live audio track is heard while it plays, through core's
+  `<audio srcObject>` or an `AudioFrames` sink, on the output `setSinkId`
+  chose.
 - **A canvas is a source on any page** (`captureStream(frameRequestRate)`,
   Media Capture from DOM Elements): a stream of one
   `CanvasCaptureMediaStreamTrack`, its frames the host's copy of the
@@ -1506,7 +1542,11 @@ as WPT's tests make them, and to another peer the host can reach.
   `PeriodicWave`, a biquad's and an IIR filter's frequency response, and
   `MediaStreamAudioDestinationNode`, whose track is a host source that
   renders the oscillators and constant sources reaching it through gains.
-  Nothing else on a path is rendered, an analyser hears silence,
+  An analyser hears what reaches it through gains from a
+  `MediaStreamAudioSourceNode` — a microphone a meter shows — its newest
+  samples the host keeps while it is asked, and its frequency data Web
+  Audio's windowed transform, smoothed. Nothing else on a path is
+  rendered, an `AudioWorklet` is not there,
   `decodeAudioData` reads WAV and gives anything else the `EncodingError` a
   browser gives what it cannot decode, and nothing is heard, since core has
   no audio output.
@@ -1581,6 +1621,20 @@ otherwise — what WPT's runner hands each test, as wptrunner runs a browser
 with fake devices, and what an application can hand a page to show a call
 working with no camera. A source makes frames only while something
 listens, and its timer keeps no process alive.
+
+`coreMediaDevices(app, { permission, request })` is the machine's cameras,
+microphones, speakers and screen, through react-x11's media capture
+(react-x11's `docs/media.md`): AVFoundation's cameras and CoreAudio's
+microphones (echo cancelled) on macOS, and on X11 the screen alone, since
+core has no camera or microphone there yet. A device a page opens is one
+core track at the settings its constraints came to, so a preview and a call
+beside it share one capture session, and where a constraint leaves a
+setting open it is Chrome's: 640×480 at 30 frames a second, 48 kHz with
+echo cancellation, noise suppression and gain control on, each held to the
+device. The host's own prompt is `request`, and core asks the system as a
+device opens. **Not in a `<Frame>` pane on macOS**: a pane runs no AppKit,
+so core captures nothing there, and the example browser shows a page that
+needs a camera in its own window (`BROWSER_INLINE=1`).
 
 **A service worker answers what its pages ask for** (Service Workers 1),
 where a secure page has `serviceWorkers`. A worker outlives the document that

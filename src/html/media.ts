@@ -111,6 +111,21 @@ import {
 } from './paint.js';
 import type { Zoom } from './paint.js';
 import type { AudioSource, VideoSource } from './resources.js';
+import type { ShownSource } from './media-devices.js';
+
+/** A `<video srcObject>`'s picture: its stream's first live video track's
+ *  source, as the page's realm told it (`HtmlViewNode.showStream`). */
+export interface StreamVideo {
+  kind: 'video';
+  stream: ShownSource;
+}
+
+/** A media element's `srcObject`'s sound: its stream's first live audio
+ *  track's source. */
+export interface StreamAudio {
+  kind: 'audio';
+  stream: ShownSource;
+}
 import { crowded } from './sprites.js';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -130,8 +145,9 @@ export interface VideoCandidate {
  */
 export interface MediaRect {
   element: Element;
-  /** What plays: the host's answer for the source the element chose. */
-  source: VideoSource;
+  /** What plays: the host's answer for the source the element chose, or
+   *  the stream its `srcObject` is (`HtmlViewNode.showStream`). */
+  source: VideoSource | StreamVideo;
   /** That source, as the document wrote it: what a failure is told by. */
   url: string;
   /** Set where the page hears what the player says — its time, its end, a
@@ -210,6 +226,9 @@ export interface MediaRect {
   /** Where a script last sought to, in seconds, and how many times it has
    *  sought: a player is sought where the count moved. */
   seek?: { time: number; count: number };
+  /** Where its stream's sound is heard, where a script chose
+   *  (`MediaState.sinkId`). */
+  sinkId?: string;
 }
 
 /**
@@ -223,12 +242,18 @@ export interface MediaState {
   volume?: number;
   playbackRate?: number;
   currentTime?: number;
+  /** The `audiooutput` device a stream it plays is heard on, by its host
+   *  id (`setSinkId`): the default where it is `''`. */
+  sinkId?: string;
 }
 
 /** What is kept of what was asked of a media element's player: the fields
  *  of a `MediaRect` it sets over what the markup says. */
 export type MediaAsked = Partial<
-  Pick<MediaRect, 'paused' | 'muted' | 'volume' | 'playbackRate' | 'seek'>
+  Pick<
+    MediaRect,
+    'paused' | 'muted' | 'volume' | 'playbackRate' | 'seek' | 'sinkId'
+  >
 >;
 
 /**
@@ -238,8 +263,9 @@ export type MediaAsked = Partial<
  */
 export interface Sound extends MediaAsked {
   element: Element;
-  /** What plays: the host's answer for the source the element chose. */
-  source: AudioSource;
+  /** What plays: the host's answer for the source the element chose, or
+   *  the stream its `srcObject` is. */
+  source: AudioSource | StreamAudio;
   /** That source, as the document wrote it: what a failure is told by. */
   url: string;
   /** The same, resolved against the document's base: the page's
@@ -279,6 +305,7 @@ export function sameSounds(a: Sound[], b: Sound[]): boolean {
       x.muted !== y.muted ||
       x.volume !== y.volume ||
       x.playbackRate !== y.playbackRate ||
+      x.sinkId !== y.sinkId ||
       x.seek?.count !== y.seek?.count
     ) {
       return false;
@@ -297,6 +324,7 @@ export function askMedia(
   if (state.muted !== undefined) next.muted = state.muted;
   if (state.volume !== undefined) next.volume = state.volume;
   if (state.playbackRate !== undefined) next.playbackRate = state.playbackRate;
+  if (state.sinkId !== undefined) next.sinkId = state.sinkId;
   if (state.currentTime !== undefined) {
     next.seek = {
       time: state.currentTime,
@@ -359,9 +387,11 @@ export function videoSignature(el: Element): string {
 export function mediaRectsOf(
   tree: BoxTree,
   scale: number,
-  sourceOf: (
-    el: Element,
-  ) => { source: VideoSource; url: string; reports?: boolean } | null,
+  sourceOf: (el: Element) => {
+    source: VideoSource | StreamVideo;
+    url: string;
+    reports?: boolean;
+  } | null,
   /** Filled with what the document paints over each player (`coversOf`),
    *  by its element. */
   covers: Map<Element, Cover[]>,

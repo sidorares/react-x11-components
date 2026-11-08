@@ -102,6 +102,7 @@ import { useForms } from './widgets.js';
 import { useVideos } from './videos.js';
 import { useSounds } from './sounds.js';
 import type { MediaState } from './media.js';
+import type { StreamShown } from './media-devices.js';
 import { useEmbedded } from './embedded.js';
 import type { Embedded, RenderEmbedded } from './embedded.js';
 import type { HtmlClipboardData } from './clipboard.js';
@@ -275,7 +276,12 @@ export type {
   RTCTransceiverState,
   RTCTransportStateLike,
 } from './rtc.js';
-export { NO_MEDIA_DEVICES, idleSource, mediaError } from './media-devices.js';
+export {
+  NO_MEDIA_DEVICES,
+  idleSource,
+  mediaError,
+  toI420,
+} from './media-devices.js';
 export type {
   EchoCancellationMode,
   HtmlMediaDevices,
@@ -292,8 +298,15 @@ export type {
   MediaSourceEvents,
   MediaSourceLike,
   MediaVideoFrame,
+  MediaVideoFormat,
+  DisplayCapture,
+  DisplayWants,
+  ShownSource,
+  StreamShown,
 } from './media-devices.js';
 export { fakeMediaDevices } from './fake-media.js';
+export { coreMediaDevices, coreTrackSource } from './core-media.js';
+export type { CoreMediaOptions } from './core-media.js';
 export { gpuWebGL } from './webgl.js';
 export type {
   HtmlGLCommand,
@@ -1743,6 +1756,8 @@ export function makeHtmlHandle(
       nodeRef.current?.scrollMoves(scroller, element) ?? false,
     showClip: (element: Element, file: string | null, reports?: boolean) =>
       nodeRef.current?.showClip(element, file, reports),
+    showStream: (element: Element, shown: StreamShown | null) =>
+      nodeRef.current?.showStream(element, shown),
     geometryKey: () => nodeRef.current?.geometryKey() ?? '',
     pointerElement: () => nodeRef.current?.pointerElement() ?? null,
     pointerDrawn: () => nodeRef.current?.pointerDrawn() ?? null,
