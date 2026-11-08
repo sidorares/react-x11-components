@@ -1962,6 +1962,9 @@ export interface Entries {
    *  of `script`'s id its `currentScript` (`ScriptEngine.exec`): whether
    *  it ran to its end. */
   exec?(code: string, url: string, script: number): boolean;
+  /** Whether this realm's code is running (`ScriptEngine.running`): where
+   *  it is not, what calls into it is another realm's. */
+  readonly running?: boolean;
 }
 
 /**
@@ -1986,6 +1989,11 @@ function documentHolding(element: Element): Document | null {
 
 export class DomShared {
   readonly inert = new WeakSet<Element>();
+  /** The domain each document set its `document.domain` to, where it set
+   *  one (HTML 7.5.2): two documents of one origin are of one origin-domain
+   *  only where neither did, or both set the same. Nothing else reads it
+   *  yet but whether a `javascript:` URL may run (`javascriptAllowed`). */
+  readonly domains = new WeakMap<Document, string>();
   /** Each document's encoding where its bytes came through here, by its
    *  name. One a host handed over is the host's to say (`charset`). */
   readonly encodings = new WeakMap<Document, string>();
@@ -5018,10 +5026,13 @@ export class DomHost {
       }
       case 'frameNavigate': {
         const frame = this._element(a);
-        // only its own origin may send it a `javascript:` URL (`maySend`)
+        // only its own origin-domain may send it a `javascript:` URL
+        // (`maySend`)
+        const shown = this._frames.get(frame);
         if (
           /^javascript:/i.test(this._resolve(text(b))) &&
-          !this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank')
+          (!this._sameOrigin(this._frameAt.get(frame) ?? 'about:blank') ||
+            (shown && !this._sameOriginDomain(this.document, shown)))
         ) {
           return null;
         }
@@ -5033,6 +5044,30 @@ export class DomHost {
         } else this.navigateFrameFrom(frame, text(b), null, text(c));
         return null;
       }
+      // `document.domain` set (HTML 7.5.2), which makes the document of
+      // another origin-domain than the documents of its origin that did not
+      case 'setDomain':
+        this._s.domains.set(this._node(a) as Document, text(b).toLowerCase());
+        return null;
+      // whether a `javascript:` URL may run in a document of this realm's
+      // (HTML, "navigate to a `javascript:` URL"): where it is of one
+      // origin-domain with the document that asked — the one given, else
+      // this realm's while its code runs, and the window around it while
+      // another realm's code reaches into it
+      case 'javascriptAllowed': {
+        const target = this._node(a) as Document;
+        const from = b
+          ? (this._node(b) as Document)
+          : this.entries?.running === false && this.frameParent
+            ? this.frameParent.document
+            : this.document;
+        return this._sameOriginDomain(from, target);
+      }
+      // the document a `javascript:` URL's string makes, in the place of the
+      // one a frame of this realm's shows (`navigateToJavascript`)
+      case 'frameJavascriptDocument':
+        this._javascriptFrame(this._element(a), text(b));
+        return null;
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
       // `frameDocument` hands a page a document by
@@ -7797,6 +7832,12 @@ export class DomHost {
     how: '' | 'reload' | 'traverse' = '',
   ): void {
     if (!this._loadsFrame(frame)) return;
+    // a `javascript:` URL loads nothing: its script runs in the document the
+    // frame shows
+    if (/^javascript:/i.test(url)) {
+      this._javascriptSent(frame, url);
+      return;
+    }
     // to a fragment of the document a frame of this realm's shows, with no
     // realm of its own: the same document, at its new address, which the
     // view that draws it takes its `:target` and its scroll from (HTML
@@ -7852,6 +7893,56 @@ export class DomHost {
           : undefined;
       if (said !== 'done') this.navigateFrame(frame, url, post, referrerPolicy);
     }, 0);
+  }
+
+  /** Whether two documents of one origin are of one origin-domain (HTML
+   *  7.1.1): neither set `document.domain`, or both set it the same. */
+  private _sameOriginDomain(a: Document, b: Document): boolean {
+    return (
+      a === b ||
+      (this._s.domains.get(a) ?? null) === (this._s.domains.get(b) ?? null)
+    );
+  }
+
+  /** The documents `javascript:` URLs' strings made, each for the frame
+   *  that shows it next, with the address it is at (`_loadFrame`). */
+  private _frameWritten = new Map<Element, { html: string; url: string }>();
+
+  /**
+   * A frame of this realm's sent to a `javascript:` URL — by its `src`, or
+   * by this document's `location`, link or form: the URL's script runs in
+   * the document the frame shows, where it is of one origin-domain with the
+   * one around the frame (HTML, "navigate to a `javascript:` URL"), a task
+   * later — in this realm where that document has none of its own, and in
+   * its own where it has. Nothing is loaded for it.
+   */
+  private _javascriptSent(frame: Element, url: string): void {
+    const doc = this._frames.get(frame);
+    const holder = documentHolding(frame);
+    if (!doc || !this._reaches(frame)) return;
+    if (holder && !this._sameOriginDomain(holder, doc)) return;
+    const realm = this._s.realms.has(doc);
+    // never from inside the op that sent it
+    setTimeout(() => {
+      if (this._disposed || this._frames.get(frame) !== doc) return;
+      if (realm) this.windows?.navigateFrame(this.idOf(frame), url, false);
+      else this.entries?.call('__javascriptUrl', [this.idOf(frame), url]);
+    }, 0);
+  }
+
+  /**
+   * The document a `javascript:` URL's string makes (HTML, "evaluate a
+   * `javascript:` URL"), put in the place of the one a frame of this realm's
+   * shows: HTML, at that one's address, a task later as any document is
+   * put in, its `load` told.
+   */
+  private _javascriptFrame(frame: Element, html: string): void {
+    if (!this._loadsFrame(frame)) return;
+    this._frameWritten.set(frame, {
+      html,
+      url: this._frameAt.get(frame) ?? 'about:blank',
+    });
+    this._loadFrame(frame, true);
   }
 
   /** A frame's document, made where it has none: null where it is another
@@ -8009,6 +8100,38 @@ export class DomHost {
         }, 0);
       }
     };
+    // a document a `javascript:` URL's string made, at the address of the
+    // document it takes the place of (HTML, "evaluate a `javascript:` URL")
+    const written = this._frameWritten.get(frame);
+    if (written) {
+      this._frameWritten.delete(frame);
+      setTimeout(() => {
+        if (this._disposed || this._frameLoads.get(frame) !== serial) return;
+        const sandbox = this._frameSandbox(frame);
+        this._frameLoaded(
+          frame,
+          this._documentOf(written.html, true, !!this._seams.drawsFrames),
+          written.url,
+          'text/html',
+          !(sandbox & (SB_SCRIPTS | SB_ORIGIN)),
+          loaded,
+          sandbox,
+        );
+      }, 0);
+      return;
+    }
+    // a frame sent to a `javascript:` URL by its `src` runs the URL's script
+    // in the document it shows, which stays where it comes to nothing
+    // (HTML 7.4.2.2, "navigate"); its first one is still `about:blank`
+    const raw = this._frameSent.has(frame)
+      ? null
+      : ((frame.name === 'object' ? frame.attribs.data : frame.attribs.src) ??
+        '');
+    if (navigated && raw !== null && /^javascript:/i.test(raw.trim())) {
+      this._frameDone(frame);
+      this._javascriptSent(frame, this._resolve(raw.trim()));
+      return;
+    }
     // an `<iframe srcdoc>` shows the document its attribute holds, before
     // any `src` (HTML 4.8.5), until something sends it elsewhere
     const srcdoc =
