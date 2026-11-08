@@ -480,6 +480,30 @@ export class HtmlSessionHistory {
  * is told and goes (`pageswap`, then its unload), whichever `<Html>` it
  * was in; the new one reads where it is (`sessionView`).
  */
+/**
+ * A frame's history, empty, given the entries the page's realm kept for it
+ * while its documents ran in that realm: the frame is going on to a document
+ * that runs in a realm of its own, whose history is this one, and its entries
+ * from before are still the frame's (HTML 7.4.1). Each is another document's
+ * there; `replace` says the next document takes the last one's place.
+ */
+export function seedSession(
+  session: HtmlSessionHistory,
+  records: readonly Omit<SessionRecord, 'scroll'>[],
+  replace: boolean,
+): void {
+  const state = stateOf(session);
+  if (state.entries.length || !records.length) return;
+  const docs = new Map<number, number>();
+  state.entries = records.map((r) => {
+    let doc = docs.get(r.doc);
+    if (doc === undefined) docs.set(r.doc, (doc = ++state.docs));
+    return { ...r, doc, scroll: null };
+  });
+  state.index = state.entries.length - 1;
+  if (replace) state.plan = { type: 'replace' };
+}
+
 export function arriveAt(
   session: HtmlSessionHistory,
   url: string,

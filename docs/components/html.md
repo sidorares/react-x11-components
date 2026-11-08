@@ -1854,7 +1854,13 @@ What is in it is what the page's realm runs: the page and the frames whose
 documents it runs, those with no script, as WPT's `/common/blank.html` is. A
 frame whose document runs in a realm of its own keeps a history of its own
 still: its steps are not the page's, its `history.length` counts its own
-entries, and a step of the page's does not move it. Of a frame of another
+entries, and a step of the page's does not move it. That history starts with
+the entries of the frame's documents the page's realm ran before it, and the
+page's realm keeps their steps and its first document's, so a sandboxed
+frame's `back()`, `forward()` or `traverseTo()` to one of them that would
+move the page, where its flags do not let it navigate the top, or another
+frame, rejects with a `SecurityError` and tells nothing (HTML, "allowed by
+sandboxing to navigate"). Of a frame of another
 origin's, the page knows the documents it sent the frame to, each a step as
 it asked, a push or a replace, and not those the frame went to by itself. A
 frame that goes to another origin and comes back keeps its entries from before

@@ -18800,6 +18800,50 @@ test('a frame that went to another origin and came back steps back to the entrie
   );
 });
 
+test('a frame whose document runs in a realm of its own has its entries from before it, and a sandbox keeps its back() from moving the page', async () => {
+  // HTML 7.4.1: the frame's history is one across the documents it shows,
+  // those the page's realm ran among them; and a step that would move a
+  // window a sandboxed frame may not navigate rejects with a SecurityError
+  // and tells nothing (WPT's navigation-methods/sandboxing-back-parent)
+  const frame =
+    '<!doctype html><script>' +
+    'window.state = function () { return navigation.entries().length + " " + navigation.currentEntry.index + " " + navigation.canGoBack; };' +
+    'window.back = function () { return navigation.back(); };' +
+    '</script>';
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html" sandbox="allow-scripts allow-same-origin"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    r.push(f.contentWindow.state());' +
+      '    onhashchange = function () {' +
+      '      navigation.onnavigate = function () { r.push("page navigate"); };' +
+      '      onpopstate = function () { r.push("page popstate"); };' +
+      '      var res = f.contentWindow.back();' +
+      '      Promise.all([res.committed, res.finished].map(function (p) { return p.then(function () { return "ok"; }, function (e) { return e.name; }); }))' +
+      '        .then(function (got) {' +
+      '          r.push(got.join(","), location.hash);' +
+      '          setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 50);' +
+      '        });' +
+      '    };' +
+      '    location.hash = "#end";' +
+      '  }, 0); };' +
+      '  f.contentWindow.location.href = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>', 'b.html': frame },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '2 1 true|SecurityError,SecurityError|#end',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,
