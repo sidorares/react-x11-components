@@ -297,6 +297,16 @@ function FrameDocument({
     framesFollowed: true,
     undrawn,
   };
+  // whether the viewport shows scroll bars, as its document's root and the
+  // `overflow` that went to the viewport say once it is laid out
+  const [bars, setBars] = useState(true);
+  const viewportOverflow = (overflow: { x: string; y: string }): void => {
+    const root = document.children.find((n): n is Element => n.type === 'tag');
+    const width = root && handle.computedStyle(root, null)?.['scrollbar-width'];
+    setBars(
+      width !== 'none' && !(overflow.x === 'hidden' && overflow.y === 'hidden'),
+    );
+  };
   const scripts = useScripts(realm, handle, url, seams, {
     parent: context.parent,
     frame,
@@ -378,8 +388,10 @@ function FrameDocument({
       ref: scroller,
       style: { flexGrow: 1, overflow: 'scroll' },
       // `scrolling="no"` shows no scroll bars, whatever the document's
-      // `overflow` (HTML 15.4.4, the iframe element's rendering)
-      ...(SCROLLS_NOT.test(frame.attribs.scrolling ?? '') && {
+      // `overflow` (HTML 15.4.4, the iframe element's rendering), and nor
+      // does a viewport its root gives `scrollbar-width: none` or that is
+      // `hidden` on both axes
+      ...((SCROLLS_NOT.test(frame.attribs.scrolling ?? '') || !bars) && {
         scrollbar: false,
       }),
       onScroll: () => scripts.scrolled?.(),
@@ -438,6 +450,7 @@ function FrameDocument({
         : (event) => (context.parent.dispatch(event) ? undefined : false),
       onDocument: scripts.onDocument,
       // and its scroll containers' `scroll` and `scrollend` there too
+      onViewportOverflow: viewportOverflow,
       onElementScroll: realm
         ? scripts.onElementScroll
         : (element) => context.parent.elementScrolled(element),
