@@ -18748,6 +18748,81 @@ test('a javascript: URL runs in a frame only where the frame is of one origin-do
   assert.equal(text('page', 'out'), 'ran self');
 });
 
+test("a frame's src and srcdoc set by the page are a navigation its window hears first, which it may cancel", async () => {
+  // HTML 4.8.5, "process the iframe attributes", and 7.4.2.2: the frame's
+  // `navigate` before anything loads, a push it did not start, and nothing
+  // loaded where a listener cancels it (WPT's navigate-event/navigate-to-srcdoc)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var n = f.contentWindow.navigation;' +
+      '  n.onnavigate = function (e) {' +
+      '    r.push([e.navigationType, e.cancelable, e.canIntercept, e.userInitiated, e.destination.url.replace(/^.*\\//, ""), e.destination.sameDocument].join(" "));' +
+      '    if (r.length === 1) e.preventDefault();' +
+      '  };' +
+      '  f.onload = function () { r.push("loaded " + f.contentDocument.querySelector("p").textContent); };' +
+      '  f.srcdoc = "<p>srcdoc</p>";' +
+      '  setTimeout(function () {' +
+      '    r.push("kept " + f.contentDocument.querySelector("p").textContent);' +
+      '    f.removeAttribute("srcdoc");' +
+      '    f.src = "b.html";' +
+      '    setTimeout(function () { document.getElementById("out").textContent = r.join("|"); }, 300);' +
+      '  }, 50);' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html': '<!doctype html><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'push true false false about:srcdoc false|kept a|push true true false b.html false|loaded b',
+    logs.join('\n'),
+  );
+});
+
+test("a frame's document that declares a refresh is sent where it says once its time is up, as a reload where that is its own address", async () => {
+  // HTML, "shared declarative refresh steps": after the document's load,
+  // the first directive it has — a replace for another address, and a
+  // reload, which `navigate` is told of and a listener may cancel, for its
+  // own (WPT's navigate-event/navigate-meta-refresh)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'f.onload = function () {' +
+      '  r.push("load " + f.contentWindow.location.href.replace(/^.*\\//, ""));' +
+      '  f.contentWindow.navigation.onnavigate = function (e) {' +
+      '    r.push(e.navigationType + " " + e.destination.url.replace(/^.*\\//, ""));' +
+      '    if (e.navigationType !== "reload") return;' +
+      '    e.preventDefault();' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  };' +
+      '};' +
+      '</script>',
+    {
+      'a.html':
+        '<!doctype html><meta http-equiv="Refresh" content="0; url=\'b.html\'"><meta http-equiv="refresh" content="0"><p>a</p>',
+      'b.html':
+        '<!doctype html><meta http-equiv="refresh" content="0"><p>b</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'load a.html|replace b.html|load b.html|reload b.html',
+    logs.join('\n'),
+  );
+});
+
 async function hostedFrames(
   source: string,
   files: Record<string, string>,

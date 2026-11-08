@@ -1796,6 +1796,16 @@ another of its documents loads that one, which comes to it at the entry,
 with its state, as a `traverse`; what the document before left under way
 goes with it, so the next navigation aborts nothing of it, and a reload or
 a step that loads nothing — a 204, a download — moves no entry.
+A frame of this realm's whose `src` or `srcdoc` the page sets, past its
+initial `about:blank`, goes there as a navigation of its own window (HTML
+4.8.5, "process the iframe attributes"): its `navigate` first, a push it
+did not start, `about:srcdoc` for a `srcdoc`, and the frame loads only
+where nothing cancelled it, and as a fragment of the document it shows
+where that is all the address changes. A document that declares a refresh,
+`<meta http-equiv="refresh">`, is sent where its first directive says once
+its seconds are up after its `load` (HTML, "shared declarative refresh
+steps"), the page's and a frame's of this realm's alike: a reload, which
+`navigate` is told of, where that is its own address, and else a replace.
 A page's navigation of a frame whose document runs in a realm of its own
 — a frame of another origin's, or one with a script — is told to that
 realm a task later, as one of its own window's from the page's origin: a

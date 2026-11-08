@@ -7579,7 +7579,12 @@ export function installDom(
       }
       // before it is set, so that a handler finds the attribute it replaces
       if (n.startsWith('on')) handlerAttributeChanged(this, n.slice(2), true);
-      call('setAttr', this._id, n, str(value));
+      const asked = call('setAttr', this._id, n, str(value));
+      // a frame of this realm's sent somewhere by its `src` or `srcdoc`,
+      // whose window hears it first (`_attributeNavigation`)
+      if (typeof asked === 'string' && asked) {
+        frameAttributeNavigate(this, asked);
+      }
       // the attribute is the nonce again, whatever a script set (HTML 2.6.3)
       if (n === 'nonce') nonces.delete(this);
       // a media element's `src` set or changed loads it (HTML 4.8.11.2)
@@ -11098,6 +11103,33 @@ export function installDom(
       frameSessions.set(doc, made);
     }
     return made;
+  };
+  /**
+   * A frame sent to an address by its `src` or `srcdoc` (HTML 4.8.5, "process
+   * the iframe attributes"): its window's `navigate` first, a push — or a
+   * replace while its document has not loaded — that its document did not
+   * start, and the host loads it only where nothing kept it there: a
+   * listener's `preventDefault()`, a fragment of the document it shows,
+   * which is a navigation in it, or `beforeunload`.
+   */
+  const frameAttributeNavigate = (frame: Any, url: string): void => {
+    const doc = frameDocumentOf(frame);
+    if (!doc) {
+      call('frameAttributeGo', frame._id);
+      return;
+    }
+    void frameWindowOf(doc, frame).navigation;
+    const made = frameSessions.get(doc);
+    if (!made) {
+      call('frameAttributeGo', frame._id);
+      return;
+    }
+    const s = made.session as Session;
+    const went = navigateTo(s, url, pushOrReplace(s, url, !s.ctx.loaded()), {
+      hostFollows: true,
+      initiator: frame.ownerDocument,
+    });
+    if (went === 'other') call('frameAttributeGo', frame._id);
   };
   /** The window's own methods a frame's script calls by name, which answer
    *  for the frame's viewport and not the page's (`__frameScript`). */
@@ -33268,6 +33300,90 @@ export function installDom(
   ): 'push' | 'replace' =>
     replace || url === currentOf(s).url ? 'replace' : 'push';
 
+  /**
+   * HTML, "parse a refresh directive": the seconds before it, and
+   * the address it goes to, the document's where it names none. Null where
+   * it is no directive, or names nothing that parses.
+   */
+  const parseRefresh = (
+    content: string,
+    url: string,
+    base: string,
+  ): { seconds: number; url: string } | null => {
+    const WS = /[\t\n\f\r ]/;
+    let at = 0;
+    const skip = () => {
+      while (at < content.length && WS.test(content[at])) at += 1;
+    };
+    skip();
+    const digits = /^\d*/.exec(content.slice(at))![0];
+    at += digits.length;
+    if (!digits && content[at] !== '.') return null;
+    const seconds = digits ? Number(digits) : 0;
+    while (at < content.length && /[\d.]/.test(content[at])) at += 1;
+    let to = url;
+    if (at < content.length) {
+      if (!/[;,\t\n\f\r ]/.test(content[at])) return null;
+      skip();
+      if (content[at] === ';' || content[at] === ',') {
+        at += 1;
+        skip();
+      }
+    }
+    if (at < content.length) {
+      let rest = content.slice(at);
+      // `url=`, in any case, with white space about the `=`
+      const named = /^url[\t\n\f\r ]*=[\t\n\f\r ]*/i.exec(rest);
+      if (named) rest = rest.slice(named[0].length);
+      const quote = rest[0] === '"' || rest[0] === "'" ? rest[0] : '';
+      if (quote) {
+        rest = rest.slice(1);
+        const end = rest.indexOf(quote);
+        if (end >= 0) rest = rest.slice(0, end);
+      }
+      try {
+        to = new URL(rest, base).href;
+      } catch {
+        return null;
+      }
+    }
+    return { seconds, url: to };
+  };
+  /**
+   * HTML, "shared declarative refresh steps", for a document as it
+   * finishes loading: its first `<meta http-equiv=refresh>` that is a
+   * directive, once its seconds are up and the document is still the one
+   * shown, sends its window to the address it names — a reload where that is
+   * the document's own, which `navigate` is told of, and else a replace. One
+   * a document; a `javascript:` one goes nowhere.
+   */
+  const declarativeRefresh = (doc: Any, s: Session, nav: Any): void => {
+    if (doc._refreshing) return;
+    for (const meta of Array.from(doc.getElementsByTagName('meta')) as Any[]) {
+      if (str(meta.getAttribute('http-equiv')).toLowerCase() !== 'refresh') {
+        continue;
+      }
+      const content = meta.getAttribute('content');
+      if (!content) continue;
+      const at = s.ctx.url();
+      const found = parseRefresh(str(content), at, str(doc.baseURI));
+      if (!found) continue;
+      doc._refreshing = true;
+      if (JAVASCRIPT_URL.test(found.url)) return;
+      setTimer(
+        () => {
+          if (!s.ctx.active() || s.ctx.owner() !== doc) return;
+          if (found.url === s.ctx.url()) void nav.reload();
+          else navigateTo(s, found.url, 'replace');
+        },
+        Math.min(found.seconds, 2 ** 31 / 1000 - 1) * 1000,
+        [],
+        false,
+      );
+      return;
+    }
+  };
+
   /** A resolved URL whose scheme is `javascript`. */
   const JAVASCRIPT_URL = /^javascript:/i;
   /** The script a serialized `javascript:` URL holds: what follows its
@@ -40392,6 +40508,8 @@ export function installDom(
       ev.isTrusted = true;
       dispatch(windowTarget, ev);
       completelyLoaded = true;
+      // a refresh the document declares runs from now
+      declarativeRefresh(document, pageSession.session, navigation);
       // and shown, after its `load` (HTML 8.4, "the end")
       if (!document._pageShowing && !document._unloaded) {
         document._pageShowing = true;
@@ -41032,7 +41150,23 @@ export function installDom(
     }
     const ev = new Event(String(type));
     ev.isTrusted = true;
-    return dispatch(target, ev);
+    const told = dispatch(target, ev);
+    // a frame's document of this realm's loaded: a refresh it declares runs
+    // from now (`declarativeRefresh`)
+    if (
+      type === 'load' &&
+      (target instanceof HTMLIFrameElement ||
+        target instanceof HTMLFrameElement) &&
+      !linkedFrames.get(target._id)
+    ) {
+      const doc = frameDocumentOf(target);
+      if (doc) {
+        void frameWindowOf(doc, target).navigation;
+        const made = frameSessions.get(doc);
+        if (made) declarativeRefresh(doc, made.session, made.navigation);
+      }
+    }
+    return told;
   });
 
   // a frame's document of this realm's, with no realm of its own, at the end

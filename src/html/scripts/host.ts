@@ -3996,8 +3996,12 @@ export class DomHost {
           this._forceAsync.set(el, false);
         }
         this._changed(el, 'attributes', name, oldValue);
-        // a frame given another address, or another `srcdoc`, goes there
+        // a frame given another address, or another `srcdoc`, goes there:
+        // where its document is this realm's, once its `navigate` lets it
+        // (`frameAttributeNavigate`), which the address answered is for
         if (this._sendsFrame(el, name, true)) {
+          const asked = this._attributeNavigation(el);
+          if (asked) return asked;
           this._frameSent.delete(el);
           this._loadFrame(el, true);
         } else if (
@@ -5093,6 +5097,14 @@ export class DomHost {
           (this._node(a) as Document).children,
         );
         return found ? this.idOf(found) : 0;
+      }
+      // a frame whose `src` or `srcdoc` changed, which its `navigate` let
+      // go (`_attributeNavigation`)
+      case 'frameAttributeGo': {
+        const frame = this._element(a);
+        this._frameSent.delete(frame);
+        this._loadFrame(frame, true);
+        return null;
       }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
@@ -7966,6 +7978,29 @@ export class DomHost {
       url: this._frameAt.get(frame) ?? 'about:blank',
     });
     this._loadFrame(frame, true);
+  }
+
+  /**
+   * The address a frame of this realm's goes to as its `src` or `srcdoc`
+   * changes, where its window's `navigation` is to hear of it first (HTML
+   * 7.4.2.2, "navigate": a document of the origin that asked, and no
+   * initial `about:blank`): the facade fires `navigate` there and loads the
+   * frame with `frameAttributeGo` where nothing kept it. Null where the
+   * frame goes there at once — a document of a realm of its own hears its
+   * navigation there, and another origin's hears nothing.
+   */
+  private _attributeNavigation(frame: Element): string | null {
+    if (frame.name !== 'iframe' && frame.name !== 'frame') return null;
+    const doc = this._frames.get(frame);
+    if (!doc || !this.entries || this._initialBlank.has(doc)) return null;
+    if (this._s.realms.has(doc) || !this._reaches(frame)) return null;
+    if (frame.name === 'iframe' && 'srcdoc' in frame.attribs) {
+      return 'about:srcdoc';
+    }
+    const raw = (frame.attribs.src ?? '').trim();
+    // a `javascript:` one is its script, and fires no `navigate`
+    if (/^javascript:/i.test(raw)) return null;
+    return raw ? this._resolve(raw) : 'about:blank';
   }
 
   /** A frame's document, made where it has none: null where it is another
