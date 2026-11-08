@@ -395,7 +395,10 @@ function FrameDocument({
       ...((SCROLLS_NOT.test(frame.attribs.scrolling ?? '') || !bars) && {
         scrollbar: false,
       }),
-      onScroll: () => scripts.scrolled?.(),
+      // a document of the page realm's has its pane's `scroll` told there,
+      // among the page's scroll steps' targets
+      onScroll: () =>
+        realm ? scripts.scrolled?.() : context.parent.frameScrolled(document),
     },
     h(Html, {
       source: '',
@@ -462,14 +465,17 @@ function FrameDocument({
       style: { flexGrow: 1 },
       // the frame's own viewport moved — its box laid out again by the
       // page — which its realm hears as its window's `resize` and its media
-      // query lists' `change`; and its own CSS transitions' events, which
-      // its realm hears and the page's does not (`InternalHtmlProps`)
+      // query lists' `change`; and its own CSS animations' and transitions'
+      // events, which its realm hears at its rendering update, the page's
+      // where it has none of its own (`InternalHtmlProps`)
       ...({
         _sandbox: sandbox,
         _embedderScheme: scheme,
         _frameElement: frame,
         _onPaint: scripts.painted,
-        _onCssEvents: scripts.cssEvents,
+        _onCssEventsOwed: realm
+          ? scripts.cssEventsOwed
+          : () => context.parent.cssEventsOwed(document),
         _onImage: scripts.imageSettled,
         _onMediaEvent: scripts.mediaEvent,
         ...(context.seams.clipboard && {
