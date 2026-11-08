@@ -1770,6 +1770,13 @@ export function makeHtmlHandle(
     setHighlights: (highlights) => nodeRef.current?.setHighlights(highlights),
     setRegisteredProperties: (rules) =>
       nodeRef.current?.setRegisteredProperties(rules),
+    viewportScroll: () => nodeRef.current?.viewportScroll() ?? { x: 0, y: 0 },
+    scrollViewport: (
+      x: number,
+      y: number,
+      target: Element | null,
+      relative: boolean,
+    ) => nodeRef.current?.scrollViewport(x, y, target, relative),
     snapViewport: (x, y, target, relative) =>
       nodeRef.current?.snapViewport(x, y, target, relative) ?? { x, y },
     layoutNow: () => nodeRef.current?.layoutNow(),

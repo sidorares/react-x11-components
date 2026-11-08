@@ -828,6 +828,16 @@ export interface HandleInternals {
     target?: Element | null,
     relative?: boolean,
   ): { x: number; y: number };
+  /** Where the viewport is scrolled, in CSS pixels, and a scroll of it
+   *  where it snaps: what a frame's document with no realm of its own has
+   *  its window's scroll from (`HtmlViewNode.viewportScroll`). */
+  viewportScroll?(): { x: number; y: number };
+  scrollViewport?(
+    x: number,
+    y: number,
+    target: Element | null,
+    relative: boolean,
+  ): void;
   /** What the page's `CSS.registerProperty` registered, as `@property`
    *  rules (`HtmlViewNode.setRegisteredProperties`). */
   setRegisteredProperties(rules: string): void;
@@ -1508,6 +1518,48 @@ function listOf(value: string | null, fold = true): Set<string> {
   }
   return out;
 }
+
+/** The ops whose first argument is a node, whose layout the view that
+ *  draws its document answers (`DomHost._op`). */
+const NODE_READS = new Set([
+  'active',
+  'blur',
+  'viewScroll',
+  'viewScrollTo',
+  'activate',
+  'atViewport',
+  'clientBox',
+  'computed',
+  'cssAnimations',
+  'cssTransitions',
+  'customProperty',
+  'edges',
+  'focus',
+  'fontFaceNew',
+  'mediaState',
+  'movePoint',
+  'offset',
+  'pickFiles',
+  'pointerHover',
+  'rect',
+  'reset',
+  'scrollElement',
+  'scrollInsets',
+  'scrollMoves',
+  'scrollState',
+  'selection',
+  'setSelection',
+  'setValue',
+  'showPicker',
+  'styleProperties',
+  'submit',
+  'svgLength',
+  'validate',
+  'value',
+  'visible',
+  'vtEnd',
+  'vtRemaining',
+]);
 
 /** A declaration block as CSSOM serializes one (6.7.2), which is what a
  *  browser writes into a `style` attribute it changes: each declaration
@@ -2534,6 +2586,17 @@ export class DomHost {
    * frames mounts a frame for (`drawsFrames`), another origin's among them,
    * which runs at its own origin.
    */
+  /** The URL of a document this realm holds: its own, or the one a frame
+   *  of it shows. '' for one no frame shows. */
+  private _documentUrl(doc: Document): string {
+    if (doc === this.document) return this.url;
+    for (const frame of this._s.frameList) {
+      if (this._frames.get(frame) === doc)
+        return this._frameAt.get(frame) ?? '';
+    }
+    return '';
+  }
+
   frames(): FrameShown[] {
     const out: FrameShown[] = [];
     for (const frame of this._s.frameList) {
@@ -2943,7 +3006,10 @@ export class DomHost {
    */
   snapEvent(el: Element | null, kind: 'change' | 'changing'): void {
     if (this._disposed || !this.entries) return;
-    const told = this._seams.handle.snapChanged?.(el, kind);
+    // asked of the view that draws the element's document
+    const view = (el ? this._drawing(el) : this._seams.handle) as
+      (HtmlHandle & Partial<HandleInternals>) | null;
+    const told = view?.snapChanged?.(el, kind);
     if (!told) return;
     // a target in a shadow tree the container is not in is told as the
     // host it is in, as an event's target is retargeted (DOM 4.2.2.2)
@@ -3353,7 +3419,47 @@ export class DomHost {
   /** How many looks a handle with no `geometryKey` was asked for. */
   private _looks = 0;
 
+  /**
+   * The `<Html>` an op reads the layout of: the one that draws the
+   * document its node is in — a frame's document of this realm's, which the
+   * frame's own view draws, for a node there (`DomShared.drawn`) — and the
+   * page's for everything else. Set for the op alone (`_op`).
+   */
+  private get _handle(): HtmlHandle & Partial<HandleInternals> {
+    return (this._opView ?? this._seams.handle) as HtmlHandle &
+      Partial<HandleInternals>;
+  }
+  private _opView: HtmlHandle | null = null;
+
+  /** The view that draws the document of the node an op is about, where it
+   *  is another document's than this realm's own and something draws it. */
+  private _viewOfNode(op: string, id: Primitive): HtmlHandle | null {
+    if (!NODE_READS.has(op)) return null;
+    const node = typeof id === 'number' ? this._nodes.get(id) : undefined;
+    if (!node) return null;
+    const view = this._drawing(node);
+    return view && view !== this._seams.handle ? view : null;
+  }
+
   private _op(
+    op: string,
+    a: Primitive,
+    b: Primitive,
+    c: Primitive,
+    d: Primitive,
+  ): Primitive {
+    const view = this._viewOfNode(op, a);
+    if (!view) return this._opIn(op, a, b, c, d);
+    const was = this._opView;
+    this._opView = view;
+    try {
+      return this._opIn(op, a, b, c, d);
+    } finally {
+      this._opView = was;
+    }
+  }
+
+  private _opIn(
     op: string,
     a: Primitive,
     b: Primitive,
@@ -3433,7 +3539,7 @@ export class DomHost {
       }
       // a pointer's capture has `:hover` go with it
       case 'pointerHover':
-        this._seams.handle.hoverOn?.(a ? this._element(a) : null);
+        this._handle.hoverOn?.(a ? this._element(a) : null);
         return null;
       case 'pointerOver': {
         const cut = this._pointerCut.join(',');
@@ -3443,18 +3549,18 @@ export class DomHost {
       // a page came to listen for its selection's changes
       case 'selectionHeard':
         this._selectionHeard = true;
-        this._selectionSeen = this._seams.handle.selectionKey?.() ?? '';
+        this._selectionSeen = this._handle.selectionKey?.() ?? '';
         return null;
       // a page came to listen for what a pointer's moves make
       case 'movesHeard': {
         this.movesHeard = true;
-        const el = this._seams.handle.pointerDrawn?.() ?? null;
+        const el = this._handle.pointerDrawn?.() ?? null;
         this._under = el;
         return el ? this.idOf(el) : 0;
       }
       case 'pointIn': {
         const v = this._seams.viewport();
-        const at = this._seams.handle.pointIn?.(
+        const at = this._handle.pointIn?.(
           a as 'offset' | 'layer',
           this._element(b),
           (c as number) + v.scrollX,
@@ -3698,7 +3804,7 @@ export class DomHost {
         this.flush();
         const r = this._ranges.get(Number(a));
         const rects = this._inDocument(r.sc)
-          ? this._seams.handle.textRects?.(r.sc, r.so, r.ec, r.eo)
+          ? this._handle.textRects?.(r.sc, r.so, r.ec, r.eo)
           : null;
         return rects
           ? rects.map((q) => `${q.x},${q.y},${q.width},${q.height}`).join(',')
@@ -3712,7 +3818,7 @@ export class DomHost {
         const x = Number(a);
         const y = Number(b);
         if (!(x >= 0 && y >= 0 && x < v.width && y < v.height)) return '';
-        const at = this._seams.handle.textPointAt?.(
+        const at = this._handle.textPointAt?.(
           v.left + x * v.zoom,
           v.top + y * v.zoom,
         );
@@ -4188,7 +4294,7 @@ export class DomHost {
         if (!script?.parent) return false;
         // where the parse waits at the script, into the input stream at the
         // insertion point, which the parser reads on from, as HTML's does
-        if (this._seams.handle.parserWrite?.(script, text(a))) {
+        if (this._handle.parserWrite?.(script, text(a))) {
           this.parserInserted();
           return true;
         }
@@ -4703,7 +4809,7 @@ export class DomHost {
       // of it or set it: its two points as ids and offsets, '' for none,
       // and null for no change
       case 'documentSelection': {
-        const points = this._seams.handle.selectionPoints?.() ?? null;
+        const points = this._handle.selectionPoints?.() ?? null;
         const key = points?.key ?? '';
         if (key === this._selectionTold) return null;
         this._selectionTold = key;
@@ -4717,13 +4823,13 @@ export class DomHost {
           : '';
       }
       case 'selectedText':
-        return this._seams.handle.selectedText?.() ?? null;
+        return this._handle.selectedText?.() ?? null;
       // the page's selection, drawn as the reader's is
       case 'setDocumentSelection': {
         const points = text(a)
           ? (JSON.parse(text(a)) as [number, number, number, number])
           : null;
-        this._seams.handle.selectPoints?.(
+        this._handle.selectPoints?.(
           points
             ? {
                 sc: this._node(points[0]),
@@ -4734,7 +4840,7 @@ export class DomHost {
             : null,
         );
         // what the page set is what it has heard of
-        this._selectionTold = this._seams.handle.selectionPoints?.()?.key ?? '';
+        this._selectionTold = this._handle.selectionPoints?.()?.key ?? '';
         return null;
       }
       // the page's selection as its live range, by its id, or 0 for none:
@@ -4745,7 +4851,7 @@ export class DomHost {
       // a boundary point moved through the drawn text, as `modify` moves
       // the selection's focus
       case 'movePoint': {
-        const moved = this._seams.handle.movedPoint?.(
+        const moved = this._handle.movedPoint?.(
           this._node(a),
           Number(b) || 0,
           text(c) === 'word' ? 'word' : 'character',
@@ -4757,7 +4863,7 @@ export class DomHost {
       }
       // what the page registered, as `@property` rules, told at once
       case 'registeredProperties':
-        this._seams.handle.setRegisteredProperties?.(text(a));
+        this._handle.setRegisteredProperties?.(text(a));
         return null;
       // the sheets the document adopted, each its text, in order
       case 'adopt': {
@@ -5021,7 +5127,7 @@ export class DomHost {
         // the view that draws the document the transition is of — the
         // page's, or a frame's — or none, which answers as none would
         const handle = (
-          a ? this._drawing(this._node(a)) : this._seams.handle
+          a ? this._drawing(this._node(a)) : this._handle
         ) as Partial<HandleInternals> | null;
         if (op === 'vtEnd') {
           handle?.transitionEnd?.();
@@ -5043,7 +5149,7 @@ export class DomHost {
       }
       // a fetched `@import`'s text, for `CSSImportRule.styleSheet`
       case 'importedCss': {
-        const handle = this._seams.handle as Partial<HandleInternals> | null;
+        const handle = this._handle as Partial<HandleInternals> | null;
         return handle?.importedCss?.(text(a)) ?? null;
       }
       // a view transition active with its types, `\u0000`-joined — or,
@@ -5070,9 +5176,8 @@ export class DomHost {
         const seen = new Set<string>();
         for (const el of DomUtils.findAll(() => true, this.document.children)) {
           const name =
-            this._seams.handle.computedStyle(el, null)?.[
-              'view-transition-name'
-            ] ?? 'none';
+            this._handle.computedStyle(el, null)?.['view-transition-name'] ??
+            'none';
           if (name === 'none' || name === 'auto' || name === 'match-element') {
             continue;
           }
@@ -5088,7 +5193,7 @@ export class DomHost {
       // box (`ResizeObserver`)
       case 'edges': {
         this.flush();
-        const style = this._seams.handle.computedStyle(this._element(a), null);
+        const style = this._handle.computedStyle(this._element(a), null);
         if (!style) return '';
         const n = (name: string) => parseFloat(style[name] ?? '0') || 0;
         return [
@@ -5108,29 +5213,28 @@ export class DomHost {
       case 'geometry': {
         if (this._looked && this._viewportHeld()) return this._looked;
         this.flush();
-        this._looked =
-          this._seams.handle.geometryKey?.() || `new ${++this._looks}`;
+        this._looked = this._handle.geometryKey?.() || `new ${++this._looks}`;
         return this._looked;
       }
       case 'rect': {
         this.flush();
         const element = this._element(a);
         const rect =
-          this._seams.handle.elementRect(element) ?? this._foreignRect(element);
+          this._handle.elementRect(element) ?? this._foreignRect(element);
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
       // whether no scroll of the viewport moves an element: one fixed to
       // it, or in one that is (`scrollIntoView`)
       case 'atViewport':
         this.flush();
-        return this._seams.handle.drawnAtViewport?.(this._element(a)) === true;
+        return this._handle.drawnAtViewport?.(this._element(a)) === true;
       // whether a scroll container's scroll moves an element, which it
       // does not for one positioned against something outside it
       // (`scrollIntoView`)
       case 'scrollInsets':
         this.flush();
         return (
-          this._seams.handle.scrollInsets?.(
+          this._handle.scrollInsets?.(
             this._element(a),
             typeof b === 'number' ? this._element(b) : null,
           ) ?? [0, 0, 0, 0, 0, 0, 0, 0]
@@ -5138,10 +5242,8 @@ export class DomHost {
       case 'scrollMoves':
         this.flush();
         return (
-          this._seams.handle.scrollMoves?.(
-            this._element(a),
-            this._element(b),
-          ) !== false
+          this._handle.scrollMoves?.(this._element(a), this._element(b)) !==
+          false
         );
       // what the page's `IntersectionObserver`s measure, all of them at
       // once, at a frame (`_intersections`); '' for none, which stops the
@@ -5162,7 +5264,7 @@ export class DomHost {
       // for an element with no box (`HtmlHandle.offsetRect`)
       case 'offset': {
         this.flush();
-        const r = this._seams.handle.offsetRect(this._element(a));
+        const r = this._handle.offsetRect(this._element(a));
         return r
           ? `${this.idOf(r.parent)},${r.x},${r.y},${r.width},${r.height}`
           : '';
@@ -5170,7 +5272,7 @@ export class DomHost {
       // every name a style has an attribute for, a computed style's list
       // with what it leaves out
       case 'styleProperties': {
-        const style = this._seams.handle.computedStyle(this._element(a), null);
+        const style = this._handle.computedStyle(this._element(a), null);
         if (!style) return '';
         return [
           ...Object.keys(style),
@@ -5202,7 +5304,7 @@ export class DomHost {
         // a view transition's, which the element answers for its root
         if (typeof b === 'string' && b.startsWith('view-transition')) {
           return send(
-            this._seams.handle.computedStyle(
+            this._handle.computedStyle(
               this._element(a),
               b as `view-transition${string}`,
             ),
@@ -5231,7 +5333,7 @@ export class DomHost {
       // the document's `medium` in CSS pixels, which its keyword sizes are
       // worked out from
       case 'fontMedium':
-        return this._seams.handle.fontMedium?.() ?? 16;
+        return this._handle.fontMedium?.() ?? 16;
       // the few values of an element's computed style the editing commands
       // read (`editing.ts`), by camel-case name: a command asks them of
       // every node it walks, and a whole style is most of a read
@@ -5269,7 +5371,7 @@ export class DomHost {
           return this._frameComputed(el, pseudo)?.custom?.get(text(c)) ?? '';
         }
         return (
-          this._seams.handle.customProperty(
+          this._handle.customProperty(
             el,
             text(c),
             pseudo === 'backdrop' ? null : pseudo,
@@ -5283,7 +5385,7 @@ export class DomHost {
         const y = Number(b);
         if (!(x >= 0 && y >= 0 && x < v.width && y < v.height)) return 0;
         return this.idOf(
-          this._seams.handle.elementAt(v.left + x * v.zoom, v.top + y * v.zoom),
+          this._handle.elementAt(v.left + x * v.zoom, v.top + y * v.zoom),
         );
       }
       case 'viewport': {
@@ -5291,7 +5393,7 @@ export class DomHost {
         // out, which can scroll it: a root that became a snap container
         if (a === true) {
           this.flush();
-          this._seams.handle.layoutNow?.();
+          this._handle.layoutNow?.();
         }
         const v = this._seams.viewport();
         return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr},${v.originX ?? 0}`;
@@ -5300,7 +5402,7 @@ export class DomHost {
       // `scrollWidth` and `scrollHeight`, or '' where nothing answers
       case 'documentSize': {
         this.flush();
-        const size = this._seams.handle.documentSize?.();
+        const size = this._handle.documentSize?.();
         return size ? `${size.width},${size.height}` : '';
       }
       // a scroll container in the document: where it is scrolled to, how
@@ -5308,7 +5410,7 @@ export class DomHost {
       // element that is none (`HtmlHandle.scrollState`)
       case 'scrollState': {
         this.flush();
-        const s = this._seams.handle.scrollState(this._element(a));
+        const s = this._handle.scrollState(this._element(a));
         return s
           ? [
               s.x,
@@ -5324,7 +5426,7 @@ export class DomHost {
       }
       case 'clientBox': {
         this.flush();
-        const r = this._seams.handle.clientBox?.(this._element(a));
+        const r = this._handle.clientBox?.(this._element(a));
         return r ? `${r.width},${r.height},${r.top},${r.left}` : '';
       }
       // `checkVisibility`, by whether to ask the opacity and the visibility
@@ -5335,8 +5437,8 @@ export class DomHost {
         const el = this._element(a);
         const asks = { opacity: b === true, visibility: c === true };
         return (
-          this._seams.handle.checkVisibility?.(el, asks) ??
-          !!this._seams.handle.elementRect(el)
+          this._handle.checkVisibility?.(el, asks) ??
+          !!this._handle.elementRect(el)
         );
       }
       // and scrolled, an axis left where it is where it is not a number:
@@ -5346,7 +5448,7 @@ export class DomHost {
         this.flush();
         const x = typeof b === 'number' && Number.isFinite(b) ? b : undefined;
         const y = typeof c === 'number' && Number.isFinite(c) ? c : undefined;
-        const to = this._seams.handle.scrollElementTo(
+        const to = this._handle.scrollElementTo(
           this._element(a),
           { x, y },
           d === true,
@@ -5368,12 +5470,10 @@ export class DomHost {
         // against the style the page has now, as a scroll is (CSSOM View
         // 4, "perform a scroll" runs after the style is up to date)
         this.flush();
-        const to = this._seams.handle.snapViewport?.(
+        const to = this._handle.snapViewport?.(x, y, target, d === true) ?? {
           x,
           y,
-          target,
-          d === true,
-        ) ?? { x, y };
+        };
         this._seams.scrollTo(to.x, to.y);
         return null;
       }
@@ -5381,7 +5481,7 @@ export class DomHost {
       // scheme, its preference for motion
       case 'media':
         try {
-          return this._seams.handle.matchMedia(text(a));
+          return this._handle.matchMedia(text(a));
         } catch {
           return false;
         }
@@ -5389,7 +5489,7 @@ export class DomHost {
       // (`HtmlViewNode.renderBlocked`), which the animation-frame loop
       // asks so rAF waits as it does for `blocking=render`
       case 'renderBlocked':
-        return this._seams.handle.renderBlocked() === true;
+        return this._handle.renderBlocked() === true;
 
       // a document's `@font-face` faces, `document.fonts`'s (CSS Font
       // Loading 3), asked of the view that draws it: the page's, or a
@@ -5447,7 +5547,7 @@ export class DomHost {
           src,
           typeof d === 'string' ? Buffer.from(d, 'base64') : null,
           init,
-          this._seams.handle.base ?? this.url,
+          this._handle.base ?? this.url,
         );
         if (!rule) return false;
         fonts.makeFace(id, rule, root as Element, (ok) =>
@@ -5530,7 +5630,7 @@ export class DomHost {
         this.flush();
         const el = a ? this._element(a) : null;
         const handle = (
-          el ? this._drawing(el) : this._seams.handle
+          el ? this._drawing(el) : this._handle
         ) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
@@ -5564,7 +5664,7 @@ export class DomHost {
         // what a script changed is styled before it is asked of
         this.flush();
         const el = a ? this._element(a) : null;
-        const list = this._seams.handle.cssAnimations?.(el, b === true) ?? [];
+        const list = this._handle.cssAnimations?.(el, b === true) ?? [];
         const id = (e: Element | null) => (e ? this.idOf(e) : 0);
         return JSON.stringify(
           list.map((x) => ({
@@ -5584,24 +5684,24 @@ export class DomHost {
         );
       }
       case 'seekTransition':
-        this._seams.handle.seekTransition?.(Number(a), Number(b));
+        this._handle.seekTransition?.(Number(a), Number(b));
         return null;
       case 'cancelCss':
-        this._seams.handle.cancelCss?.(
+        this._handle.cancelCss?.(
           a === 'animation' ? 'animation' : 'transition',
           Number(b),
         );
         return null;
       // a page's `updateTiming()` on a CSS animation's effect
       case 'timeAnimation':
-        this._seams.handle.timeAnimation?.(Number(a), String(b));
+        this._handle.timeAnimation?.(Number(a), String(b));
         return null;
       // and its `rangeStart` or `rangeEnd`
       case 'rangeAnimation':
-        this._seams.handle.rangeAnimation?.(Number(a), b === true, String(c));
+        this._handle.rangeAnimation?.(Number(a), b === true, String(c));
         return null;
       case 'seekAnimation':
-        this._seams.handle.seekAnimation?.(Number(a), Number(b), c === true);
+        this._handle.seekAnimation?.(Number(a), Number(b), c === true);
         return null;
       // a view timeline's subject: how far from the scroll now each of its
       // edges crosses each of its scrollport's, less the insets given
@@ -5637,7 +5737,7 @@ export class DomHost {
       // one on a scroll's timeline: `align`, `start` or `hold`, the time
       // (null to hold it where its timeline has it) and its rate
       case 'seekScrolled':
-        this._seams.handle.seekScrolled?.(
+        this._handle.seekScrolled?.(
           Number(a),
           b === 'start' || b === 'hold' ? b : 'align',
           typeof c === 'number' && Number.isFinite(c) ? c : null,
@@ -5647,7 +5747,7 @@ export class DomHost {
       case 'cssTransitions': {
         this.flush();
         const el = a ? this._element(a) : null;
-        const list = this._seams.handle.cssTransitions?.(el, b === true) ?? [];
+        const list = this._handle.cssTransitions?.(el, b === true) ?? [];
         return JSON.stringify(
           list.map((x) => ({ ...x, element: this.idOf(x.element) })),
         );
@@ -5659,7 +5759,7 @@ export class DomHost {
         const el = this._element(a);
         const name = text(b);
         if (name === 'paused' || name === 'muted') {
-          this._seams.handle.setMediaState(el, { [name]: c === true });
+          this._handle.setMediaState(el, { [name]: c === true });
           // `:muted` reads it, told as an attribute nothing has
           if (name === 'muted' && setMuted(el, c === true)) {
             this._tell(el, {
@@ -5698,8 +5798,7 @@ export class DomHost {
           // a feed's player is sought in its session's seconds, or handed a
           // session of its own (`Feed.seek`)
           const t = this._feeds.of(el)!.seek(c);
-          if (t !== null)
-            this._seams.handle.setMediaState(el, { currentTime: t });
+          if (t !== null) this._handle.setMediaState(el, { currentTime: t });
         } else if (
           (name === 'volume' ||
             name === 'playbackRate' ||
@@ -5707,7 +5806,7 @@ export class DomHost {
           typeof c === 'number' &&
           Number.isFinite(c)
         ) {
-          this._seams.handle.setMediaState(el, { [name]: c });
+          this._handle.setMediaState(el, { [name]: c });
         }
         return null;
       }
@@ -5742,7 +5841,7 @@ export class DomHost {
 
       // --- controls and the focus, which are `<Html>`'s
       case 'value':
-        return this._seams.handle.controlValue(this._element(a));
+        return this._handle.controlValue(this._element(a));
       case 'setValue': {
         const el = this._element(a);
         // checkedness a script set is the box's from then on, and its
@@ -5755,7 +5854,7 @@ export class DomHost {
         ) {
           this._checkedDefaults.set(el, el.attribs.checked ?? null);
         }
-        return this._seams.handle.setControlValue(
+        return this._handle.setControlValue(
           el,
           typeof b === 'boolean' ? b : text(b),
         );
@@ -5800,11 +5899,11 @@ export class DomHost {
       // a text field's selection, as `start end direction`, or '' for
       // what has none; and set, from offsets the page's realm clamped
       case 'selection': {
-        const s = this._seams.handle.controlSelection(this._element(a));
+        const s = this._handle.controlSelection(this._element(a));
         return s ? `${s.start} ${s.end} ${s.direction}` : '';
       }
       case 'setSelection':
-        return this._seams.handle.setControlSelection(
+        return this._handle.setControlSelection(
           this._element(a),
           Number(b),
           Number(c),
@@ -5816,10 +5915,10 @@ export class DomHost {
       case 'showPicker': {
         this.flush();
         const el = this._element(a);
-        if (el.name === 'select' && !this._seams.handle.elementRect(el)) {
+        if (el.name === 'select' && !this._handle.elementRect(el)) {
           return 'unrendered';
         }
-        return this._seams.handle.showPicker(el) ? 'shown' : 'none';
+        return this._handle.showPicker(el) ? 'shown' : 'none';
       }
       case 'focus': {
         this.flush();
@@ -5833,12 +5932,12 @@ export class DomHost {
         // back to that as it closes. Not one that can take no focus at
         // all, which a page focuses to find out whether it can.
         this._focusing = null;
-        if (this._seams.handle.focus(el)) {
+        if (this._handle.focus(el)) {
           // a stop the render to come mounts the box of, which core's focus
           // follows only then: the element has the focus now, as `focus()`
           // gives it before it returns, and brings it into view — a slide
           // of a carousel was focused a frame late and never scrolled to
-          if (this._seams.handle.activeElement !== el && focusableElement(el)) {
+          if (this._handle.activeElement !== el && focusableElement(el)) {
             this._focusing = el;
             setTimeout(() => {
               if (!this._disposed && this._focusing === el) {
@@ -5851,7 +5950,7 @@ export class DomHost {
           if (pending) {
             this._focusing = el;
             // and its focus events now, as a browser's are
-            this._seams.handle.toldFocus?.(el);
+            this._handle.toldFocus?.(el);
           }
           setTimeout(() => {
             if (this._disposed) return;
@@ -5859,48 +5958,77 @@ export class DomHost {
             if (pending && this._focusing !== el) return;
             if (pending) this._focusing = null;
             // or taken back, as a press elsewhere takes a focus still owed
-            if (pending && this._seams.handle.activeElement !== el) return;
-            this._seams.handle.focus(el);
+            if (pending && this._handle.activeElement !== el) return;
+            this._handle.focus(el);
           }, 16);
         }
         return null;
       }
+      // of the element's document's view, where it names one (`_op`)
       case 'blur':
-        this._focusing = null;
-        this._seams.handle.blur();
+        if (!this._opView || this._focusing === this._node(a)) {
+          this._focusing = null;
+        }
+        this._handle.blur();
         return null;
+      // a frame's document with no realm of its own: where its viewport is
+      // scrolled, and a scroll of it, from the view that draws it (`_op`)
+      case 'viewScroll': {
+        this.flush();
+        const at = this._handle.viewportScroll?.() ?? { x: 0, y: 0 };
+        return `${at.x},${at.y}`;
+      }
+      case 'viewScrollTo': {
+        this.flush();
+        const target = typeof d === 'number' ? this._element(d) : null;
+        this._node(a);
+        const [x, y, relative] = text(b).split(',');
+        this._handle.scrollViewport?.(
+          Number(x) || 0,
+          Number(y) || 0,
+          target,
+          relative === '1',
+        );
+        return null;
+      }
       case 'active': {
-        const active = this._focusing?.parent
-          ? this._focusing
-          : this._seams.handle.activeElement;
+        // a frame's document's, from the view that draws it (`_op`), and the
+        // element focused as it waits for a widget or a stop where it is
+        // that document's
+        const doc =
+          typeof a === 'number' ? (this._node(a) as Document) : this.document;
+        const waiting = this._focusing;
+        const active =
+          waiting?.parent && this._ownerOf(waiting) === doc
+            ? waiting
+            : this._handle.activeElement;
         // an element taken out of the document has lost the focus as it went
         // (HTML, "focus fixup steps"), though `<Html>` hears of it only at
         // its next render
-        return active && !this._inDocument(active) ? 0 : this.idOf(active);
+        return active && shadowIncludingRoot(active) !== doc
+          ? 0
+          : this.idOf(active);
       }
       case 'activate': {
         const node = this._node(a);
-        return node instanceof Element && this._seams.handle.activate(node);
+        return node instanceof Element && this._handle.activate(node);
       }
       case 'submit':
         this.flush();
-        this._seams.handle.submitForm(
-          this._element(a),
-          b ? this._element(b) : null,
-        );
+        this._handle.submitForm(this._element(a), b ? this._element(b) : null);
         return null;
       case 'validate':
         // a sandbox's form is no form to send, before its `submit` is asked
         // about (HTML 4.10.21.3, step 3)
         if (c === true && this.sandbox & SB_FORMS) return false;
-        return this._seams.handle.reportValidity(
+        return this._handle.reportValidity(
           this._element(a),
           b ? this._element(b) : null,
           c === true,
         );
       case 'reset': {
         const form = this._element(a);
-        this._seams.handle.resetForm(form);
+        this._handle.resetForm(form);
         // and a reset puts a dirty box back to its default, clean again
         for (const el of DomUtils.findAll(
           (e) => this._checkedDefaults.has(e),
@@ -5954,7 +6082,7 @@ export class DomHost {
         return answer === 'probably' || answer === 'maybe' ? answer : '';
       }
       case 'base':
-        return this._seams.handle.base ?? this.url;
+        return this._handle.base ?? this.url;
       case 'location':
         return this.url;
       // the document's address changed by its own history. Never to another
@@ -6038,7 +6166,7 @@ export class DomHost {
       case 'windowFeatures':
         return JSON.stringify(parseWindowFeatures(text(a)));
       case 'windowBase':
-        return this._seams.handle.base ?? this.creator ?? this.url;
+        return this._handle.base ?? this.creator ?? this.url;
       case 'windowPopups':
         if (this.sandbox & SB_POPUPS) return 'sandboxed';
         return !this._seams.popups
@@ -6418,7 +6546,7 @@ export class DomHost {
         this.flush();
         const el = a ? this._element(a) : null;
         const handle = (
-          el ? this._drawing(el) : this._seams.handle
+          el ? this._drawing(el) : this._handle
         ) as Partial<HandleInternals> | null;
         const measure = handle?.svgMeasure?.();
         if (!measure) return '';
@@ -6437,7 +6565,7 @@ export class DomHost {
       case 'download':
         if (this.sandbox & SB_DOWNLOADS) return false;
         return (
-          this._seams.handle.download?.({
+          this._handle.download?.({
             url: text(a),
             filename: text(b),
             ...(text(c) && { bytes: bytesOf(text(c)) }),
@@ -6448,7 +6576,7 @@ export class DomHost {
         this._dragOut = text(a);
         return null;
       case 'pickFiles':
-        this._seams.handle.pickFiles?.(this._element(a));
+        this._handle.pickFiles?.(this._element(a));
         return null;
       case 'setFiles':
         this._setFiles(this._element(a), text(b));
@@ -7050,12 +7178,15 @@ export class DomHost {
       ...CONTROL_PSEUDOS,
       ...NAMESPACE_PSEUDOS,
       defined: (el) => isDefinedElement(el),
+      // the element its own document's URL indicates: a frame's document of
+      // this realm's goes by the frame's
       target: (el) => {
+        const doc = this._ownerOf(el);
         let fragment = '';
         try {
-          fragment = new URL(this.url).hash.slice(1);
+          fragment = new URL(this._documentUrl(doc)).hash.slice(1);
         } catch {}
-        return indicatedElement(this.document, fragment) === el;
+        return indicatedElement(doc, fragment) === el;
       },
       focus: focused,
       'focus-visible': focused,
@@ -7570,6 +7701,24 @@ export class DomHost {
     referrerPolicy = '',
   ): void {
     if (!this._loadsFrame(frame)) return;
+    // to a fragment of the document a frame of this realm's shows, with no
+    // realm of its own: the same document, at its new address, which the
+    // view that draws it takes its `:target` and its scroll from (HTML
+    // 7.4.2.3.3, "navigate to a fragment")
+    const doc = this._frames.get(frame);
+    const at = this._frameAt.get(frame);
+    if (
+      !post &&
+      doc &&
+      at &&
+      !this._s.realms.has(doc) &&
+      url.includes('#') &&
+      url.split('#')[0] === at.split('#')[0]
+    ) {
+      this._frameAt.set(frame, url);
+      this._s.framesChanged();
+      return;
+    }
     this._frameNavigated.set(frame, referrerPolicyOf(referrerPolicy));
     this._frameDocument(frame);
     this._frameSent.set(frame, url === 'about:blank' ? null : url);

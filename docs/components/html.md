@@ -2676,6 +2676,21 @@ automatic feature, so a `<video autoplay>` in a sandbox with no `allow-scripts`
 plays. A cross-origin frame's `autofocus` focuses as a same-origin one's does,
 where HTML refuses it.
 
+**A frame's document with no realm of its own is read from the view that
+draws it.** The page's realm holds such a document, and the frame's own
+`<Html>` draws it, so what the page asks of its layout — `offsetTop`, a
+rectangle, a scroll container's `scrollTop` and where it scrolls to, a
+computed style, its focus — is answered by that view (`DomHost._op`,
+`NODE_READS`), where the page's own answered nothing. Its window's
+`scrollX`, `scrollY`, `scrollTo` and `scrollBy` are its own view's pane, and
+`scrollIntoView` and `focus()` of an element in it scroll that pane, where
+they scrolled the page or nothing. Its scroll containers' `scroll` and
+`scrollend` are the page realm's to tell. `:target` matches by
+the frame's address, and the document's `location` is its frame's: a
+fragment it is sent to, `location.hash = ''` among them, keeps the document
+and moves its `:target`, as HTML's "navigate to a fragment" has it, where it
+was the page's own `location`.
+
 **A cross-origin frame sends the top window somewhere only behind a press**, as
 Chromium has it, where it could not at all; a sandbox goes by its flags. A
 `javascript:` address goes nowhere.

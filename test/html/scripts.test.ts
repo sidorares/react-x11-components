@@ -18034,6 +18034,39 @@ test("a port the page posts to another origin's frame is the frame's, and the tw
   );
 });
 
+test("a page reads the layout of a scriptless frame's document from the frame's own view, :target by the frame's URL, and hears its scroll containers scroll", async () => {
+  // the frame's document is the page realm's, drawn by the frame's <Html>:
+  // its boxes, its scroll containers and its fragment are that view's
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html#b2" style="width: 300px; height: 300px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var d = f.contentDocument, s = d.getElementById("s"), b = d.getElementById("b2"), r = [];' +
+      '  r.push(b.offsetTop, d.querySelector(":target") && d.querySelector(":target").id);' +
+      '  s.addEventListener("scroll", function () { r.push("scroll"); });' +
+      '  s.addEventListener("scrollend", function () { r.push("end", s.scrollTop);' +
+      // its focus is its own, and a fragment its location goes to is in it
+      '    d.getElementById("b2").focus({ preventScroll: true }); r.push(d.activeElement.id);' +
+      '    d.location.hash = ""; r.push(String(d.querySelector(":target")),' +
+      '      String(d.location).slice(-1), f.contentDocument === d);' +
+      '    document.getElementById("out").textContent = r.join("|"); });' +
+      '  s.scrollTop = 50; r.push(s.scrollTop); }, 200); };' +
+      '</script>',
+    {
+      'frame.html#b2':
+        '<div id="s" style="height: 100px; overflow: scroll">' +
+        '<div style="height: 100px"></div><div id="b2" tabindex="-1" style="height: 100px"></div>' +
+        '<div style="height: 300px"></div></div>',
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, '108|b2|50|scroll|end|50|b2|null|#|true', logs.join('\n'));
+});
+
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {
   // HTML 4.8.5: the attribute's markup, parsed as the frame's document,
   // ahead of its src

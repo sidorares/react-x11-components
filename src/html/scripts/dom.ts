@@ -7576,8 +7576,10 @@ export function installDom(
         String(call('scrollInsets', this._id, port ? port._id : undefined))
           .split(',')
           .map(Number);
+      // up to its own document's root, whose scroll is its viewport's
+      const root = this.ownerDocument.documentElement;
       for (let at = this.parentElement; at; at = at.parentElement) {
-        if (at === document.documentElement) break;
+        if (at === root) break;
         const s = scrollStateOf(at);
         if (!s || call('scrollMoves', at._id, this._id) !== true) continue;
         const me = docRect(this);
@@ -7608,7 +7610,10 @@ export function installDom(
       if (call('atViewport', this._id) === true) return;
       const r = docRect(this);
       if (!r) return;
-      const v = viewport();
+      // the viewport of the document it is in: a frame's of this realm's,
+      // which its own view scrolls, where it is not this one's
+      const own = this.ownerDocument;
+      const v = own === document ? viewport() : frameViewport(own);
       const [mt, mr, mb, ml, pt, pr, pb, pl] = insets(null);
       const byX = place(
         inline,
@@ -7623,6 +7628,16 @@ export function installDom(
         v.height - pt - pb,
       );
       if (quiet && !byX && !byY) return;
+      if (own !== document) {
+        call(
+          'viewScrollTo',
+          own._id,
+          `${v.scrollX + byX},${v.scrollY + byY},0`,
+          undefined,
+          this._id,
+        );
+        return;
+      }
       call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
     }
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
@@ -7887,16 +7902,15 @@ export function installDom(
       return r ? wrap(r[0]) : null;
     }
     focus(options?: Any): void {
-      const had = document.activeElement === this;
+      // the focus of the document it is in: a frame's of this realm's has
+      // its own
+      const doc = this.ownerDocument ?? document;
+      const had = doc.activeElement === this;
       call('focus', this._id);
       // a focus that moved during an intercepted navigation keeps the
       // page's choice at the end (HTML, "focus changed during ongoing
       // navigation")
-      if (
-        !had &&
-        document.activeElement === this &&
-        pageSession.session.ongoing
-      ) {
+      if (!had && doc.activeElement === this && pageSession.session.ongoing) {
         pageSession.session.focusChanged = true;
       }
       // an editing host focused takes the caret, at its start, where the
@@ -7904,11 +7918,7 @@ export function installDom(
       // and Firefox have it. One focused already keeps what it has, none
       // among it, as a driver's keys focus what they are sent to (WPT's
       // no-beforeinput-when-no-selection)
-      if (
-        !had &&
-        document.activeElement === this &&
-        editingHostOf(this) === this
-      ) {
+      if (!had && doc.activeElement === this && editingHostOf(this) === this) {
         const r = selection._range;
         if (!r || !this.contains(r.startContainer)) selection.collapse(this, 0);
       }
@@ -7916,13 +7926,14 @@ export function installDom(
       // containers around it, where something else had it before (HTML
       // 6.6.3, unless `preventScroll`): as little as shows it, and where a
       // container snaps, at a snap position
-      if (!options?.preventScroll && document.activeElement === this) {
+      if (!options?.preventScroll && doc.activeElement === this) {
         this._intoView('nearest', 'nearest', true);
       }
     }
     blur(): void {
-      if (document.activeElement === this) {
-        call('blur');
+      const doc = this.ownerDocument ?? document;
+      if (doc.activeElement === this) {
+        call('blur', doc === document ? undefined : this._id);
         if (pageSession.session.ongoing) {
           pageSession.session.focusChanged = true;
         }
@@ -10750,10 +10761,10 @@ export function installDom(
       innerHeight: () => size()[1],
       outerWidth: () => size()[0],
       outerHeight: () => size()[1],
-      scrollX: () => 0,
-      scrollY: () => 0,
-      pageXOffset: () => 0,
-      pageYOffset: () => 0,
+      scrollX: () => frameViewport(current).scrollX,
+      scrollY: () => frameViewport(current).scrollY,
+      pageXOffset: () => frameViewport(current).scrollX,
+      pageYOffset: () => frameViewport(current).scrollY,
       devicePixelRatio: () => viewport().dpr,
       visualViewport: () => visualOf(view),
       crypto: () => crypto,
@@ -10768,6 +10779,43 @@ export function installDom(
         get,
         configurable: true,
         enumerable: false,
+      });
+    }
+    // and its viewport scrolled by its own view, as `scrollTo` and
+    // `scrollBy` ask (CSSOM View 4): an axis left out stays where it is
+    const scroller = (relative: boolean) =>
+      function (a?: Any, b?: Any): void {
+        const at = frameViewport(current);
+        const given =
+          a && typeof a === 'object'
+            ? { x: a.left, y: a.top }
+            : a === undefined
+              ? { x: undefined, y: undefined }
+              : { x: a, y: b };
+        const axis = (v: Any, from: number): number => {
+          const n = Number(v);
+          if (v === undefined || !Number.isFinite(n))
+            return relative ? 0 : from;
+          return n;
+        };
+        const x = axis(given.x, at.scrollX);
+        const y = axis(given.y, at.scrollY);
+        call(
+          'viewScrollTo',
+          current._id,
+          relative ? `${at.scrollX + x},${at.scrollY + y},1` : `${x},${y},0`,
+        );
+      };
+    for (const [name, fn] of [
+      ['scrollTo', scroller(false)],
+      ['scroll', scroller(false)],
+      ['scrollBy', scroller(true)],
+    ] as const) {
+      Object.defineProperty(win, name, {
+        value: fn,
+        writable: true,
+        configurable: true,
+        enumerable: true,
       });
     }
     // what opened it, where a window of a name sent it here (HTML 7.2.2.2)
@@ -10843,9 +10891,7 @@ export function installDom(
       blur() {},
       open: (url?: Any, target?: Any, features?: Any) =>
         current._unloadCounter > 0 ? null : G.open(url, target, features),
-      scrollTo() {},
-      scroll() {},
-      scrollBy() {},
+      // its `scrollTo`, `scroll` and `scrollBy` scroll its own view (below)
       matchMedia: (query: Any) => mediaListIn(view, query),
       requestAnimationFrame: (fn: Any) => {
         if (typeof fn !== 'function') {
@@ -11272,6 +11318,12 @@ export function installDom(
           return urlParts(at())?.[part] ?? '';
         },
         set(v: Any) {
+          // an empty fragment is still one, so the address keeps its `#`
+          // and stays in the document, as the page's `location` has it
+          if (part === 'hash') {
+            go(at().split('#')[0] + str(v).replace(/^#?/, '#'));
+            return;
+          }
           const url = new URL(at());
           (url as Any)[part] = v;
           go(url.href);
@@ -17174,11 +17226,16 @@ export function installDom(
     get documentURI(): string {
       return this.URL;
     }
+    // its own window's (HTML 3.1.1): a frame's document of this realm's
+    // has the frame's, and one with no window none
     get location(): Any {
-      return location;
+      if (this === document) return location;
+      return windowOfDocument(this)?.location ?? null;
     }
     set location(v: Any) {
-      location.href = v;
+      const at =
+        this === document ? location : windowOfDocument(this)?.location;
+      if (at) at.href = v;
     }
     get referrer(): string {
       return this === document ? str(call('referrer')) : '';
@@ -17258,8 +17315,10 @@ export function installDom(
     get activeViewTransition(): Any {
       return activeOf(this);
     }
+    // a frame's document of this realm's has the focus its own view gives
     get activeElement(): Any {
-      return wrap(Number(call('active'))) ?? this.body;
+      const id = this === document ? undefined : this._id;
+      return wrap(Number(call('active', id))) ?? this.body;
     }
     get scrollingElement(): Any {
       return this.documentElement;
@@ -20047,6 +20106,31 @@ export function installDom(
       .split(',')
       .map(Number);
     return { width, height, scrollX, scrollY, dpr, originX: originX || 0 };
+  };
+  /** The viewport of a frame's document of this realm's, which has no realm
+   *  of its own: its frame's content box, scrolled as its view has it. */
+  const frameViewport = (
+    doc: Any,
+  ): {
+    width: number;
+    height: number;
+    scrollX: number;
+    scrollY: number;
+    originX: number;
+  } => {
+    const [width, height] = String(call('frameSize', doc._id))
+      .split(' ')
+      .map(Number);
+    const [scrollX, scrollY] = String(call('viewScroll', doc._id))
+      .split(',')
+      .map(Number);
+    return {
+      width: width || 0,
+      height: height || 0,
+      scrollX: scrollX || 0,
+      scrollY: scrollY || 0,
+      originX: 0,
+    };
   };
   /** `scrollX` as a page reads it: from the viewport's scroll origin, which
    *  is past the left of what the pane scrolls where the document spills

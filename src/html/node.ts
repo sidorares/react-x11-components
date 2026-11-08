@@ -14851,6 +14851,48 @@ export class HtmlViewNode extends Node {
    * `target`, the element it brings into view, lined up where it is an
    * area of the viewport's (`lineUp`), whether or not the root snaps.
    */
+  /**
+   * Where the pane around the element is scrolled, in CSS pixels: where a
+   * scroll held for its next pass is about to have it (`oweScrollDown`). A
+   * frame's document with no realm of its own is read so from the page's,
+   * whose window's `scrollX` and `scrollY` it is.
+   */
+  viewportScroll(): { x: number; y: number } {
+    const pane = this._pane();
+    if (!pane) return { x: 0, y: 0 };
+    const s = this._scale;
+    return {
+      x: (this.heldScrollX() ?? pane.scrollX) / s,
+      y: (this._heldDown() ?? pane.scrollY) / s,
+    };
+  }
+
+  /**
+   * Scroll the pane around the element to `x`, `y`, in CSS pixels, where the
+   * viewport snaps (`snapViewport`), held for the pane's next pass where it
+   * cannot take it yet: what a frame's document with no realm of its own is
+   * scrolled by, from the page's (`scrollTo` on its window).
+   */
+  scrollViewport(
+    x: number,
+    y: number,
+    target: Element | null = null,
+    relative = false,
+  ): void {
+    const pane = this._pane();
+    if (!pane) return;
+    const to = this.snapViewport(
+      Math.max(0, x),
+      Math.max(0, y),
+      target,
+      relative,
+    );
+    const zoom = this._scale / (pane.scale || 1);
+    pane.scrollTo({ x: to.x * zoom, y: to.y * zoom });
+    this.oweScrollReach(to.x * zoom);
+    this.oweScrollDown(to.y * zoom);
+  }
+
   snapViewport(
     x: number,
     y: number,
