@@ -3199,22 +3199,6 @@ function startsBody(node: ChildNode): boolean {
   return node instanceof Text && NOT_SPACE.test(node.data);
 }
 
-/** The documents HTML's parser put in quirks mode (13.2.6.4.1): one with no
- *  doctype, or one of the doctypes that asks for it. */
-const QUIRKS_MODE = new WeakSet<object>();
-
-/** Whether a document is in quirks mode: `compatMode`'s `BackCompat`. */
-export function isQuirksMode(doc: object): boolean {
-  return QUIRKS_MODE.has(doc);
-}
-
-/** Put a document in quirks mode or out of it: one whose tree was parsed
- *  into another document and moved into it takes that one's mode. */
-export function setQuirksMode(doc: object, on: boolean): void {
-  if (on) QUIRKS_MODE.add(doc);
-  else QUIRKS_MODE.delete(doc);
-}
-
 function createParser(
   declarative = true,
   document = false,
@@ -3905,16 +3889,6 @@ class DocumentParser extends Parser {
   private _head: Element | null = null;
   private _body: Element | null = null;
   private _quirks = false;
-  /** Note the document's mode: quirks mode is a fact about the document a
-   *  script reads (`compatMode`, `scrollingElement`), kept by it
-   *  (`isQuirksMode`). */
-  private _setQuirks(on: boolean): void {
-    this._quirks = on;
-    const root = (this as unknown as ParserInternals).cbs?.root;
-    if (!root) return;
-    if (on) QUIRKS_MODE.add(root);
-    else QUIRKS_MODE.delete(root);
-  }
   /** Whether the source is a fragment, which no `<html>` holds. */
   private _fragment = true;
   /** Whether the fragment is read as an element's content (`readIn`), which
@@ -3992,7 +3966,7 @@ class DocumentParser extends Parser {
     this._pending = [];
     this._head = null;
     this._body = null;
-    this._setQuirks(false);
+    this._quirks = false;
     this._carriage = false;
     this._plaintext = false;
   }
@@ -4185,7 +4159,7 @@ class DocumentParser extends Parser {
       self.startIndex = endIndex + 1;
       return;
     }
-    this._setQuirks(quirksDoctype('!' + self.getSlice(start, endIndex)));
+    this._quirks = quirksDoctype('!' + self.getSlice(start, endIndex));
     super.ondeclaration(start, endIndex);
     this._mode = BEFORE_HTML;
   }
@@ -5082,7 +5056,7 @@ class DocumentParser extends Parser {
   /** "Anything else" in "initial": a document with no doctype is in quirks
    *  mode. */
   private _initialElse(): void {
-    this._setQuirks(true);
+    this._quirks = true;
     this._mode = BEFORE_HTML;
   }
 

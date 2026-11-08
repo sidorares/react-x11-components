@@ -304,10 +304,56 @@ export function snapTo(
   if (shows(out.targetX, 'x', out.y) && shows(out.targetY, 'y', out.x)) {
     return out;
   }
+  // a scroll with no direction rests at the nearest pair of places, one on
+  // each axis, at which the snapport shows both areas
+  if (!scroll.from) {
+    const pair = nearestPair(c, x, y);
+    if (pair) return pair;
+  }
   const yFirst = snapEach(c, x, out.y, scroll, 'y');
   const xFirst = snapEach(c, out.x, y, scroll, 'x');
   const far = (s: Snapped) => Math.hypot(s.x - x, s.y - y);
   return far(yFirst) <= far(xFirst) ? yFirst : xFirst;
+}
+
+/**
+ * The nearest pair of places to `x`, `y`, one an area lines up at on each
+ * axis, at which the snapport shows the area of each: a place of one area
+ * on one axis and another's on the other, which neither area's places
+ * alone come to ("scoping valid snap positions to visible boxes"). An area
+ * larger than the snapport rests where it is asked to, inside its range.
+ * Null where no pair has both shown.
+ */
+function nearestPair(c: SnapContainer, x: number, y: number): Snapped | null {
+  const on = (axis: Axis, want: number) =>
+    c.areas.flatMap((area) => {
+      const place = placeOf(c, area, axis);
+      if (!place) return [];
+      const at =
+        place.to > place.at
+          ? nearestCovering(c, area, place, axis, want, c.areas)
+          : place.at;
+      return [{ area, at }];
+    });
+  let best: Snapped | null = null;
+  let off = Infinity;
+  for (const px of on('x', x)) {
+    for (const py of on('y', y)) {
+      if (!shownAcross(c, px.area, 'x', py.at)) continue;
+      if (!shownAcross(c, py.area, 'y', px.at)) continue;
+      const d = Math.hypot(px.at - x, py.at - y);
+      if (d < off - 0.5) {
+        off = d;
+        best = {
+          x: px.at,
+          y: py.at,
+          targetX: px.area.box,
+          targetY: py.area.box,
+        };
+      }
+    }
+  }
+  return best;
 }
 
 /**
@@ -365,7 +411,14 @@ function snapEach(
       if (!place) continue;
       const at =
         place.to > place.at
-          ? nearestCovering(c, area, place, axis, want, areas)
+          ? nearestCovering(
+              c,
+              area,
+              dir ? stoppedShort(c, areas, place, axis, start, dir) : place,
+              axis,
+              want,
+              areas,
+            )
           : place.at;
       places.push({ at, box: area.box });
     }
@@ -452,6 +505,42 @@ function stopBetween(
 }
 
 /**
+ * Where a scroll with a direction may rest inside an area larger than the
+ * snapport: no farther than where an area whose `scroll-snap-stop` is
+ * `always`, out of the snapport where it began, would come into it — so
+ * that it passes over none it would show, and goes on to its place only
+ * where that is nearer ("scroll-snap-stop", Chromium's reading of it).
+ */
+function stoppedShort(
+  c: SnapContainer,
+  areas: readonly SnapArea[],
+  place: { at: number; to: number },
+  axis: Axis,
+  start: number,
+  dir: number,
+): { at: number; to: number } {
+  const port = snapportOn(c, axis);
+  let { at, to } = place;
+  for (const area of areas) {
+    if (area.box.style.scrollSnapStop !== 'always') continue;
+    if (!placeOf(c, area, axis)) continue;
+    const st = area.box.style;
+    const lo =
+      (axis === 'x' ? area.x : area.y) -
+      (axis === 'x' ? st.scrollMarginLeft : st.scrollMarginTop);
+    const hi =
+      (axis === 'x' ? area.x + area.width : area.y + area.height) +
+      (axis === 'x' ? st.scrollMarginRight : st.scrollMarginBottom);
+    if (dir > 0 && lo >= start + port.pad + port.size - 0.5) {
+      to = Math.min(to, lo - port.pad - port.size);
+    } else if (dir < 0 && hi <= start + port.pad + 0.5) {
+      at = Math.max(at, hi - port.pad);
+    }
+  }
+  return to < at ? place : { at, to };
+}
+
+/**
  * Of the areas that line up at one place on an axis, the ones a snap may
  * be to ("selecting between multiple aligned snap areas"), in tree order:
  * those that are or hold the focused element where any do, else those
@@ -503,6 +592,8 @@ function shownAcross(
   const start = (o === 'x' ? area.x : area.y) - before;
   const size = (o === 'x' ? area.width : area.height) + before + after;
   const port = o === 'x' ? c.width : c.height;
+  // an area of no size shows where it touches the snapport, at either edge
+  if (size <= 0) return start >= at && start <= at + port;
   return start < at + port && start + size > at;
 }
 

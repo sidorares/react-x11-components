@@ -7535,16 +7535,28 @@ a place within a snapport of where it began before any farther, so that it
 skips no area, and goes farther only where none is that near; Home and End
 go to the place nearest the end. None of them passes over a place of an area
 whose `scroll-snap-stop` is `always`: such a scroll rests at the first it
-reaches, however much nearer where it was going another is. On a container
-that snaps on one axis, only an area the snapport shows across it is a snap
-position, so one pushed out to the side is passed over. Where several areas
+reaches, however much nearer where it was going another is; resting inside
+an area larger than the snapport, it stops short of where such an area out
+of the snapport would come into it, unless that area's own place is nearer.
+On a container that snaps on one axis, only an area the snapport shows
+across it is a snap position, so one pushed out to the side is passed over;
+an area of no width shows where it touches the snapport. On both axes a
+scroll with no direction rests at the nearest pair of places, one on each,
+at which the snapport shows both areas, which may be one area's place on
+one axis and another's on the other. Where several areas
 line up at that place, the one snapped to is the focused element or the one
 that holds it, then the URL's target or the one that holds it, then the
 innermost, then one that lines up on both axes, then the first in tree
 order. A scroll that brings an element into view — `scrollIntoView`, the
 URL's fragment, the scroll `focus()` makes — lines the element up as its
 `scroll-snap-align` says where it is an area, whatever `block` and `inline`
-asked, in a container that snaps and in one that does not; `focus()` of an
+asked, in a container that snaps and in one that does not; A scroll container further out lines up the
+element as the containers it has come through show it, clipped by their
+scrollports, as Chromium does; and `nearest` aligns an element larger than
+the scrollport by its far edge, as CSSOM View 7.1 has it. What `focus()` brings
+into view of a `<textarea>` or a text `<input>` is its selection: the line
+the selection ends on, from the line breaks before it and the field's
+`line-height`, kept inside the field. `focus()` of an
 element the containers around it already show scrolls nothing, and leaves
 what each was snapped to; one they show in part is brought to its nearest
 edge, and one out of sight is centred, as Chromium brings a focused
@@ -7637,16 +7649,6 @@ them, the out-of-flow boxes positioned against it by their border boxes,
 and nothing a box inside it clips. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
-
-**A document with no doctype, or an old one, is in quirks mode** (HTML
-13.2.6.4.1), as its parser decides it, and `document.compatMode` reads
-`BackCompat` for it: a frame's, a `srcdoc`'s, `DOMParser`'s and a
-document written with `open` and `close` take the mode of what they were
-parsed from. In quirks mode the body is the scrolling element (CSSOM View
-7): its `scrollTop`, `scrollLeft`, `clientWidth` and their kin are the
-viewport's, and the root's are its own box's, which scrolls nothing. Beyond
-that and the parser's own `<p><table>`, the mode changes nothing: the
-layout quirks (CSS Quirks) are not applied.
 
 **A page reads the viewport where it asked it to go.** Core's pane holds
 a scroll its extent cannot take yet for its next pass, which is where a
