@@ -7638,6 +7638,16 @@ and nothing a box inside it clips. Its scrollport is its padding box: no
 room is taken for a scroll bar, and none is drawn, as an overlay scroll bar
 is not at rest. An RTL container scrolls as an LTR one does, from its left.
 
+**A document with no doctype, or an old one, is in quirks mode** (HTML
+13.2.6.4.1), as its parser decides it, and `document.compatMode` reads
+`BackCompat` for it: a frame's, a `srcdoc`'s, `DOMParser`'s and a
+document written with `open` and `close` take the mode of what they were
+parsed from. In quirks mode the body is the scrolling element (CSSOM View
+7): its `scrollTop`, `scrollLeft`, `clientWidth` and their kin are the
+viewport's, and the root's are its own box's, which scrolls nothing. Beyond
+that and the parser's own `<p><table>`, the mode changes nothing: the
+layout quirks (CSS Quirks) are not applied.
+
 **A page reads the viewport where it asked it to go.** Core's pane holds
 a scroll its extent cannot take yet for its next pass, which is where a
 page that scrolls as it loads leaves it: such a scroll is read back from
