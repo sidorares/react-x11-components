@@ -428,8 +428,8 @@ imports — `react-x11` itself plus `/host`, `/node`, `/style`, `/keysyms`,
 `/ntk`, `/yoga`, `/jsx-runtime`, and `/test` and `/debug` from the suite.
 Both specs are ordinary registry ranges:
 
-- `peerDependencies.react-x11` is `^2.56.3` — what a consumer must supply.
-- `devDependencies.react-x11` is `^2.56.3` — what the suite runs against.
+- `peerDependencies.react-x11` is `^2.57.0` — what a consumer must supply.
+- `devDependencies.react-x11` is `^2.57.0` — what the suite runs against.
 
 Keep them the same range. They are one decision written twice, and a
 devDependency that drifts above the peer range means the suite passes
@@ -867,6 +867,16 @@ it up. **The floor is a running one and moves often** — every move since
   the floor moves with the fix. 2.56.2 under it keeps pinned repairs apart
   (#1022), so a sticky header over a sticky sidebar is no repaint of the
   window at every scroll, which needed no change here.
+- `^2.57.0` — media capture (react-x11#1038, #1040, #1041, #1042):
+  `enumerateDevices`, `watchDevices`, `getUserMedia` and `getDisplayMedia`,
+  tracks whose frames come off by callback, `<video srcObject>`,
+  `<audio srcObject>` and `createAudioFrames`. `coreMediaDevices` hands a
+  page the machine's cameras, microphones and screen through them, and a
+  page's stream of core's plays in core's own `<video srcObject>`, a camera
+  on a layer of its own on macOS. A core before it has none of it to
+  import, so the floor moves with the feature. macOS has the camera, the
+  microphone and audio out, and X11 the screen alone; a `<Frame>` pane on
+  macOS captures nothing, since it runs no AppKit.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
@@ -5236,6 +5246,33 @@ list.
   `homeOf` in `mediastream.ts`), whatever thread it is on. So anything new a
   track asks of its source goes through `retain`, `release` or its home's
   port, never `call` with its source's number, which is another host's.
+- **A source is listened to once, and asked for frames only while
+  something reads them** (`PageSources.read`): the host listens again with
+  `video` or `audio` in the events as the first reader comes and without as
+  the last goes, which is how a camera's frames stay out of JavaScript, and
+  a reader that comes is handed the newest frame, since a canvas drawn once
+  gives no other. **Anything new that reads a source's frames goes through
+  `read`**, never `listen`, which would take the one listener from
+  everything else; and **anything new a source does when it is listened to
+  again leaves its clock and its watches as they were** (`toneSource`'s
+  `begun`, `canvasSource`'s `unwatch`).
+- **A media element plays a stream as Media Capture 6.2 has it, and
+  `<Html>` mounts what plays it from what the page tells the host**
+  (`mediaStreamPlay` in `dom.ts`, the `mediaStream` op, `showStream`): the
+  first live track of each kind, a source of core's shown by core's own
+  `<video srcObject>` and `<audio srcObject>` (`MediaSourceLike.present`,
+  `coreMediaDevices`) and any other by a sink fed from `read`. Its readiness
+  waits for its video source's size, which is watched from a task after the
+  page asks (`_watchSize`): told inside the page's op it would re-enter the
+  realm, and read at once it misses a frame its source hands the first
+  reader. **Anything new that changes what a stream plays — a track added,
+  removed, ended or disabled — tells the stream's watchers**
+  (`trackChanged`, `streamChanged`), or an element keeps showing what the
+  stream no longer has, and never ends. **A media element's events are a task
+  each** (`mediaReady`'s `step`), and **a load removes what was queued for
+  its element** (`ask.tasks`, HTML 4.8.11.5's step 5): a page that awaits
+  one event sets its handler for the next between the two, and a rate set
+  just before a stream is assigned is no `ratechange`.
 - **Web Audio is the whole API, and silent** (`webaudio.ts`). A page that
   finds `AudioContext` uses all of it, so every node Web Audio 1 has a
   factory for is there with its parameters, automation and errors, where

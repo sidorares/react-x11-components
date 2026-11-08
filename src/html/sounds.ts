@@ -15,12 +15,14 @@
 // failure. A new source is a new player, keyed so, as HTML has it.
 import React from 'react';
 import type { ReactNode } from 'react';
-import type { AudioElementNode } from 'react-x11';
+import { createAudioFrames, useApp } from 'react-x11';
+import type { AudioElementNode, AudioFrames } from 'react-x11';
 
 import { hx } from './hx.js';
 import type { Element } from './dom.js';
 import type { Sound } from './media.js';
 import type { HtmlViewNode } from './node.js';
+import type { MediaAudioData, ShownSource } from './media-devices.js';
 
 export interface Sounds {
   /** What the element reports to. */
@@ -75,6 +77,14 @@ function renderSound(
   ref: (node: AudioElementNode | null) => void,
 ): ReactNode {
   const { element: el, url } = sound;
+  if ('stream' in sound.source) {
+    return React.createElement(StreamSound, {
+      key: `audio:${id}:${url}`,
+      stream: sound.source.stream,
+      sound,
+      playerRef: ref,
+    });
+  }
   const tell = (kind: 'metadata' | 'time' | 'ended' | 'error', value = '') =>
     view.current?.soundEvent(el, url, kind, value);
   return hx('audio', {
@@ -95,5 +105,76 @@ function renderSound(
     onTimeUpdate: ({ currentTime }) => tell('time', String(currentTime)),
     onEnded: () => tell('ended'),
     onError: (err) => tell('error', err.message),
+  });
+}
+
+/**
+ * A `srcObject`'s sound: core's own `<audio srcObject>` where the source
+ * is one of core's — on macOS what it plays is what the echo canceller of
+ * a microphone opened beside it subtracts — and otherwise an `AudioFrames`
+ * sink its chunks are pushed into as they come, at their rate, made again
+ * where that changes. Muted, paused or disabled, nothing is pushed, which
+ * the sink plays as silence; the volume scales what is.
+ */
+function StreamSound(props: {
+  stream: ShownSource;
+  sound: Sound;
+  playerRef: (node: AudioElementNode | null) => void;
+}): ReactNode {
+  const { stream, sound, playerRef } = props;
+  const app = useApp();
+  const present = stream.enabled ? stream.present() : null;
+  const live = React.useRef(sound);
+  live.current = sound;
+  const sinkId = sound.sinkId ?? '';
+  React.useEffect(() => {
+    if (present) return;
+    let out: AudioFrames | null = null;
+    let failed = false;
+    const stop = stream.read((data) => {
+      const chunk = data as MediaAudioData;
+      const { muted, paused, volume } = live.current;
+      if (failed || muted || paused || !stream.enabled) return;
+      const channels = chunk.channels.length;
+      if (
+        !out ||
+        out.closed ||
+        out.sampleRate !== chunk.sampleRate ||
+        out.channels !== channels
+      ) {
+        out?.close();
+        try {
+          out = createAudioFrames(app, {
+            sampleRate: chunk.sampleRate,
+            channels,
+            ...(sinkId && { deviceId: sinkId }),
+          });
+        } catch {
+          // nothing here can play audio: an ordinary state, and silent
+          failed = true;
+          return;
+        }
+      }
+      // a chunk is the source's until the next; push copies it
+      const gain = volume ?? 1;
+      out.push(
+        gain === 1
+          ? chunk.channels
+          : chunk.channels.map((c) => c.map((v) => v * gain)),
+      );
+    });
+    return () => {
+      stop();
+      out?.close();
+    };
+  }, [stream, present, app, sinkId]);
+  if (!present) return null;
+  return hx('audio', {
+    ref: playerRef,
+    srcObject: present,
+    muted: sound.muted,
+    ...(sound.paused !== undefined && { paused: sound.paused }),
+    ...(sound.volume !== undefined && { volume: sound.volume }),
+    ...(sinkId && { sinkId }),
   });
 }

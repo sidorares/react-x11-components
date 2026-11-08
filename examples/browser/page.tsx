@@ -73,6 +73,7 @@ import {
   isFramed,
   matchesShortcut,
   useAccelerator,
+  useApp,
   useClipboard,
   useSupports,
 } from 'react-x11';
@@ -103,6 +104,7 @@ import {
   HtmlSessionHistory,
   NetworkError,
   canPlayMedia,
+  coreMediaDevices,
   decodeText as decode,
   dispositionOf,
   downloadName,
@@ -1497,6 +1499,36 @@ export default function Page(props: PageProps): ReactElement {
       return () => permissionsHeard.current.delete(listener);
     },
   }).current;
+  // the machine's cameras, microphones and screen, through core's media
+  // capture, each kind asked of the user in the bar above the page as a
+  // page first wants it, and the screen every time: the bar is the picker
+  // where the display has none (X11)
+  const app = useApp();
+  const pageMedia = useMemo(
+    () =>
+      coreMediaDevices(app, {
+        permission: (name, origin) => sitePermission(name, origin),
+        request: async (ask) => {
+          const names = [
+            ask.camera && 'camera',
+            ask.microphone && 'microphone',
+            ask.display && 'display-capture',
+          ].filter((name): name is string => !!name);
+          for (const name of names) {
+            const state = sitePermission(name, ask.origin);
+            if (state === 'denied') return false;
+            if (state === 'granted' && name !== 'display-capture') continue;
+            if (
+              (await pagePermissions.request(name, ask.origin)) !== 'granted'
+            ) {
+              return false;
+            }
+          }
+          return true;
+        },
+      }),
+    [app, pagePermissions],
+  );
   const pageNotifications = useMemo<HtmlNotifications>(
     () => ({ ...notifier, focus: () => live.current.onBringForward() }),
     [notifier],
@@ -1655,6 +1687,8 @@ export default function Page(props: PageProps): ReactElement {
       notifications: pageNotifications,
       // and its peer connections, over werift where it is installed
       webRTC: network.webRTC,
+      // and its cameras, microphones and screen, the machine's
+      mediaDevices: pageMedia,
       // and its WebGL, on the GPU where x11-dri can reach one
       webgl: GPU_WEBGL,
       onTimeout: () =>

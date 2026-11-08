@@ -44,13 +44,20 @@
 // a count in the rect, and the player is sought once each time it moves.
 import React from 'react';
 import type { ReactNode } from 'react';
-import type { DrawnNode, VideoNode } from 'react-x11';
+import { useVideoFrames } from 'react-x11';
+import type {
+  DrawnNode,
+  VideoColorSpace,
+  VideoFormat,
+  VideoNode,
+} from 'react-x11';
 import type { Style } from 'react-x11/style';
 
 import { hx } from './hx.js';
 import { keptMount } from './widgets.js';
 import type { Element } from './dom.js';
 import type { EmbeddedRect, MediaRect } from './media.js';
+import type { MediaVideoFrame, ShownSource } from './media-devices.js';
 import type { HtmlViewNode } from './node.js';
 
 export interface Videos {
@@ -202,10 +209,13 @@ function renderVideo(
   const { x: left, y: top, width, height } = rect;
   const port = rect.clip ?? { x: left, y: top, width, height };
   const opacity = rect.hidden ? 0 : rect.opacity;
+  const stream = 'stream' in rect.source ? rect.source.stream : null;
   const source =
-    'frames' in rect.source
-      ? { frames: rect.source.frames }
-      : { src: rect.source.src };
+    'stream' in rect.source
+      ? {}
+      : 'frames' in rect.source
+        ? { frames: rect.source.frames }
+        : { src: rect.source.src };
   const style: Style = {
     width,
     height,
@@ -247,7 +257,7 @@ function renderVideo(
           }),
         },
       },
-      hx('video', {
+      playerOf(stream, {
         ...source,
         ref,
         autoPlay: rect.autoPlay,
@@ -295,4 +305,96 @@ function renderVideo(
       }),
     ),
   );
+}
+
+type VideoProps = NonNullable<Parameters<typeof hx<'video'>>[1]>;
+
+/** The player a video is handed: core's `<video>`, or what shows a
+ *  stream's picture where its `srcObject` is one. */
+function playerOf(stream: ShownSource | null, props: VideoProps): ReactNode {
+  return stream
+    ? React.createElement(StreamPicture, { stream, video: props })
+    : hx('video', props);
+}
+
+/** Video range black, Y then Cb and Cr. */
+const BLACK = [16, 128, 128];
+
+/**
+ * A `<video srcObject>`'s picture: core's own `<video srcObject>` where the
+ * source shows itself (a camera, on a layer of its own on macOS), and
+ * otherwise a `VideoFrames` sink its frames are pushed into, a sink of the
+ * size and format they come in, made again as those change. A track the
+ * page disabled is black, at the size its frames have; a paused video
+ * holds the frame it had.
+ */
+function StreamPicture(props: {
+  stream: ShownSource;
+  video: VideoProps;
+}): ReactNode {
+  const { stream, video } = props;
+  const present = stream.enabled ? stream.present() : null;
+  const settings = stream.settings();
+  const [shape, setShape] = React.useState<{
+    width: number;
+    height: number;
+    format: VideoFormat;
+    colorSpace: VideoColorSpace;
+  }>(() => ({
+    width: Math.max(2, Math.round(settings.width ?? 2)),
+    height: Math.max(2, Math.round(settings.height ?? 2)),
+    format: 'I420',
+    colorSpace: 'bt601',
+  }));
+  const sink = useVideoFrames(shape);
+  const live = React.useRef({ sink, paused: !!video.paused });
+  live.current = { sink, paused: !!video.paused };
+  React.useEffect(() => {
+    if (present) return;
+    let black: Uint8Array[] | null = null;
+    return stream.read((data) => {
+      const frame = data as MediaVideoFrame;
+      const format: VideoFormat = stream.enabled
+        ? (frame.format ?? 'I420')
+        : 'I420';
+      const colorSpace = frame.colorSpace ?? 'bt601';
+      const { sink, paused } = live.current;
+      if (
+        sink.width !== frame.width ||
+        sink.height !== frame.height ||
+        sink.format !== format ||
+        sink.colorSpace !== colorSpace
+      ) {
+        black = null;
+        setShape({
+          width: frame.width,
+          height: frame.height,
+          format,
+          colorSpace,
+        });
+        return;
+      }
+      if (paused || sink.closed) return;
+      if (stream.enabled) {
+        sink.push(frame.planes, {
+          strides: frame.strides,
+          time: frame.timestamp / 1e6,
+        });
+        return;
+      }
+      if (!black) {
+        const cw = (frame.width + 1) >> 1;
+        const ch = (frame.height + 1) >> 1;
+        black = [
+          new Uint8Array(frame.width * frame.height).fill(BLACK[0]),
+          new Uint8Array(cw * ch).fill(BLACK[1]),
+          new Uint8Array(cw * ch).fill(BLACK[2]),
+        ];
+        sink.push(black);
+      }
+    });
+  }, [stream, present]);
+  return present
+    ? hx('video', { ...video, srcObject: present })
+    : hx('video', { ...video, frames: sink });
 }

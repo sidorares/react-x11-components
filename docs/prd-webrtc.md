@@ -22,9 +22,14 @@ them (#1036, #1039), simulcast narrowed by an answer (#1040), Web Audio
 rejected m-section's transceiver; with workstream 3's, the area came to
 77.6%. What tier A has left waits for H.264, for media to flow, for DTMF
 werift can send, or asserts `transceiver.stopped`, which WebRTC 1.0 no
-longer has. Media does not flow yet. The spikes it quotes ran on Node
-24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and are not
-in the repository.
+longer has. A page's real cameras, microphones and screen came next, over
+react-x11 2.57's media capture (`coreMediaDevices`), with `getDisplayMedia`
+and a stream played in a `<video>` or an `<audio>`: on WPT fea36e4 with
+fake devices, `mediacapture-streams` went from 50.7% to 79.9% with the
+constraint round beside it, and `screen-capture` from 23.0% to 61.9%.
+Media does not flow over a connection yet. The spikes it quotes ran on
+Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and
+are not in the repository.
 
 ## The answer, short
 
@@ -410,23 +415,44 @@ where it is werift's to fix, as quico's three behaviours were
   The WPT runner's seam gives fake devices (`fakeMediaDevices`): a test
   pattern and a tone, as wptrunner runs Chrome with fake media devices,
   and its `test_driver.set_permission` sets what they answer. A real camera or
-  microphone is the host's to supply, and the host's permission to ask.
-  `canvas.captureStream` comes in tier C, from the page realm's canvas
-  pixels.
+  microphone is the host's to supply, and the host's permission to ask:
+  `coreMediaDevices(app)` (`src/html/core-media.ts`) is react-x11 2.57's
+  media capture behind the seam — a device a page opens is one core track
+  at the settings its constraints came to, Chrome's defaults where they
+  leave a setting open — and the example browser hands it, asking in its
+  bar. `getDisplayMedia` is the page realm's checks (a press, no `min` or
+  `exact`, the options' enums) over the seam's `display(ask, wants)`, the
+  picture fitted to its constraints host-side (`displayFit`).
+  `canvas.captureStream` comes from the page realm's canvas pixels.
 - **Constraints.** `getUserMedia` and `applyConstraints` fit a page's
   constraints on the host with Media Capture's SelectSettings
   (`src/html/scripts/constraints.ts`), over a camera's native `modes` and
   what `'crop-and-scale'` makes of them. What a document's
   `enumerateDevices` shows it is what it has captured, as Firefox and Safari
   have it, not what it is allowed.
+- **Frames.** A frame is in the format its source delivers it in — a Mac
+  camera's NV12, an X11 screen's BGRA, a canvas's I420 — and `toI420`
+  converts it where a reader needs I420, which an encoder will. A source is
+  listened to once (`PageSources`); its frames are asked of it only while a
+  reader reads them (`read`), by listening again with `video` or `audio`
+  in the events, and a source that does not show itself is read for its
+  size while a media element plays it.
+- **Showing.** A `<video srcObject>` and an `<audio srcObject>` are the
+  page realm's media element model played over a stream (Media Capture
+  6.2), and `<Html>` mounts what plays it from what the page tells the host
+  (`mediaStream`, `HtmlViewNode.showStream`): a source of core's shows
+  itself through core's own `<video srcObject>` and `<audio srcObject>`
+  (`MediaSourceLike.present`), a camera onto a layer on macOS with no frame
+  in JavaScript and what is heard what the echo canceller subtracts; any
+  other is a `VideoFrames` sink, or an `AudioFrames` sink, fed from
+  `read`. A received track will be the second kind.
 - **Sending.** A track's frames are encoded by libav.js, VP8 or Opus, on a
   worker thread of the host's so a frame's encode never holds the page.
   They are packetized and sent by werift's RTP sender.
 - **Receiving.** werift's receiver hands RTP over, libav.js decodes it, and
-  the frames feed the `VideoFrames` sink of a core `<video frames>` that
-  `<Html>` mounts over a `<video srcObject>`. That needs `srcObject` in the
-  facade and a kind of media rect that `videos.ts` mounts from a stream
-  rather than from `onResource`.
+  the frames are its source's (`MediaSourceLike.listen`), which a
+  `<video srcObject>` already shows through a `VideoFrames` sink: nothing
+  of the showing is left to build for it.
 - **Audio.** Core has no audio output, so a received audio track is
   decoded and counted, which its stats and `currentTime` need, and not
   heard. That is a gap of core's to file, not this design's to fill.

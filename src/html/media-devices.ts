@@ -21,6 +21,8 @@
 // Light on purpose: `<Html>` reaches it whether or not a document runs
 // scripts.
 
+import type { MediaStream as CoreMediaStream } from 'react-x11';
+
 /** What `enumerateDevices()` lists a device as. */
 export type MediaDeviceKind = 'audioinput' | 'audiooutput' | 'videoinput';
 
@@ -54,6 +56,10 @@ export interface MediaDeviceCapabilities {
   noiseSuppression?: boolean[];
   /** Media Capture Extensions' voice isolation. */
   voiceIsolation?: boolean[];
+  /** A display's: what it captures, as its settings say. */
+  displaySurface?: string;
+  logicalSurface?: boolean;
+  cursor?: string[];
 }
 
 /** The modes of echo cancellation a page may ask for by name. */
@@ -87,6 +93,16 @@ export interface MediaSettings {
   autoGainControl?: boolean;
   noiseSuppression?: boolean;
   voiceIsolation?: boolean;
+  /** A display's (Screen Capture): what it captures — `'monitor'`,
+   *  `'window'` or `'browser'` — whether that is all of it, and whether
+   *  the pointer is drawn in — `'always'`, `'motion'` or `'never'`. */
+  displaySurface?: string;
+  logicalSurface?: boolean;
+  cursor?: string;
+  /** A display's audio: whether this application's own sound is left
+   *  out of what is heard of it, and out of what is captured. */
+  suppressLocalAudioPlayback?: boolean;
+  restrictOwnAudio?: boolean;
 }
 
 /** A device, as the host has it. */
@@ -127,21 +143,115 @@ export interface MediaPermissionRequest {
 }
 
 /**
- * One frame of video, as I420: a Y plane, then Cb and Cr at half the size
- * each way — `yuv420p`, what core's `VideoFrames` takes as `'I420'` and what
- * libvpx encodes from.
+ * How a video frame's bytes are laid out, as core's `VideoFrames` has it:
+ * `'I420'`, a Y plane then Cb and Cr at half the size each way (`yuv420p`,
+ * what libvpx encodes from); `'NV12'`, a Y plane then one of Cb/Cr pairs at
+ * half the size each way (a camera's on macOS); `'BGRA'`, four bytes a
+ * pixel, blue first, the fourth ignored (a screen's on X11).
+ */
+export type MediaVideoFormat = 'I420' | 'NV12' | 'BGRA';
+
+/**
+ * One frame of video, in the format its source delivers it in: converted
+ * only where a reader needs another (`toI420`), so a camera shown by a
+ * `VideoFrames` sink is never converted at all.
  */
 export interface MediaVideoFrame {
+  /** I420 where it says nothing. */
+  format?: MediaVideoFormat;
   width: number;
   height: number;
-  /** Y, Cb, Cr. Read until the next frame and not after it: what keeps a
-   *  frame copies it. */
-  planes: [Uint8Array, Uint8Array, Uint8Array];
+  /** Y, Cb, Cr for I420; Y and CbCr for NV12; one plane for BGRA. Read
+   *  until the next frame and not after it: what keeps a frame copies
+   *  it. */
+  planes: Uint8Array[];
   /** Each plane's bytes per row. */
-  strides: [number, number, number];
+  strides: number[];
+  /** What its YCbCr numbers mean, where the source says: `'bt601'` where
+   *  it does not. */
+  colorSpace?: 'bt709' | 'bt601' | 'bt2020';
+  /** `'video'` (black at 16) where the source says nothing. */
+  range?: 'video' | 'full';
   /** When it was captured, in microseconds on the source's clock, as
    *  WebCodecs' `timestamp`. */
   timestamp: number;
+}
+
+/**
+ * A frame as I420, which an encoder reads: the frame itself where it is
+ * I420 already, and a copy converted from NV12 or BGRA (BT.601 at video
+ * range, a chroma sample the mean of the four pixels it covers) where not.
+ */
+export function toI420(frame: MediaVideoFrame): MediaVideoFrame {
+  const format = frame.format ?? 'I420';
+  if (format === 'I420') return frame;
+  const { width, height } = frame;
+  const cw = (width + 1) >> 1;
+  const ch = (height + 1) >> 1;
+  const y = new Uint8Array(width * height);
+  const cb = new Uint8Array(cw * ch);
+  const cr = new Uint8Array(cw * ch);
+  if (format === 'NV12') {
+    const [py, puv] = frame.planes;
+    const [sy, suv] = frame.strides;
+    for (let row = 0; row < height; row++) {
+      y.set(py.subarray(row * sy, row * sy + width), row * width);
+    }
+    for (let row = 0; row < ch; row++) {
+      for (let x = 0; x < cw; x++) {
+        cb[row * cw + x] = puv[row * suv + x * 2];
+        cr[row * cw + x] = puv[row * suv + x * 2 + 1];
+      }
+    }
+  } else {
+    const [bgra] = frame.planes;
+    const [stride] = frame.strides;
+    for (let row = 0; row < height; row++) {
+      for (let x = 0; x < width; x++) {
+        const i = row * stride + x * 4;
+        y[row * width + x] =
+          (16 +
+            (65.738 * bgra[i + 2] + 129.057 * bgra[i + 1] + 25.064 * bgra[i]) /
+              256 +
+            0.5) |
+          0;
+      }
+    }
+    for (let row = 0; row < ch; row++) {
+      for (let x = 0; x < cw; x++) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let n = 0;
+        for (let dy = 0; dy < 2 && row * 2 + dy < height; dy++) {
+          for (let dx = 0; dx < 2 && x * 2 + dx < width; dx++) {
+            const i = (row * 2 + dy) * stride + (x * 2 + dx) * 4;
+            b += bgra[i];
+            g += bgra[i + 1];
+            r += bgra[i + 2];
+            n++;
+          }
+        }
+        r /= n;
+        g /= n;
+        b /= n;
+        cb[row * cw + x] =
+          (128 + (-37.945 * r - 74.494 * g + 112.439 * b) / 256 + 0.5) | 0;
+        cr[row * cw + x] =
+          (128 + (112.439 * r - 94.154 * g - 18.285 * b) / 256 + 0.5) | 0;
+      }
+    }
+  }
+  return {
+    format: 'I420',
+    width,
+    height,
+    planes: [y, cb, cr],
+    strides: [width, cw, cw],
+    colorSpace: frame.colorSpace,
+    range: frame.range,
+    timestamp: frame.timestamp,
+  };
 }
 
 /**
@@ -160,9 +270,9 @@ export interface MediaAudioData {
 
 /** What becomes of a source, told as it happens. */
 export interface MediaSourceEvents {
-  /** A frame, where it is a video source. */
+  /** A frame, where it is a video source and the listener reads frames. */
   video?(frame: MediaVideoFrame): void;
-  /** A chunk, where it is an audio source. */
+  /** A chunk, where it is an audio source and the listener reads them. */
   audio?(data: MediaAudioData): void;
   /**
    * It gives no frames for now, or gives them again: a track's `mute` and
@@ -172,6 +282,9 @@ export interface MediaSourceEvents {
   /** It will give no more — unplugged, taken back, the peer's track gone —
    *  and the tracks of it end. Told once, and nothing after it. */
   ended(): void;
+  /** What it runs at changed — a camera at another size, a screen
+   *  captured at another — where the source can tell. */
+  changed?(): void;
 }
 
 /**
@@ -184,8 +297,13 @@ export interface MediaSourceLike {
   readonly kind: 'audio' | 'video';
   /** What a track of it is labelled. */
   readonly label: string;
-  /** Starts telling its events, to one listener: the host hands each frame
-   *  on to whatever reads it. */
+  /**
+   * Starts telling its events, to one listener: the host hands each frame
+   * on to whatever reads it. Called again, the events it is handed replace
+   * the last: the host listens with `video` or `audio` only while something
+   * reads frames, and a source makes them only for a listener that does,
+   * since a camera's frames cost a copy into JavaScript.
+   */
   listen(events: MediaSourceEvents): void;
   /** What it runs at now. */
   settings(): MediaSettings;
@@ -197,6 +315,16 @@ export interface MediaSourceLike {
   /** Stops it: no frame after it, and no `ended`, since the page ended
    *  it. */
   stop(): void;
+  /**
+   * A core `MediaStream` that shows it, where the source is one of core's
+   * (`coreMediaDevices`): `<Html>` mounts core's `<video srcObject>` and
+   * `<audio srcObject>` with it, so a camera goes onto a layer of its own
+   * on macOS and its frames never cross into JavaScript, and what an audio
+   * element plays is what the echo canceller subtracts. Answers null, or is
+   * absent, for a source that is not; `<Html>` shows that one through a
+   * `VideoFrames` sink of what `listen` gives.
+   */
+  present?(): CoreMediaStream | null;
 }
 
 /**
@@ -226,13 +354,63 @@ export interface HtmlMediaDevices {
   open(deviceId: string, settings: MediaSettings): Promise<MediaSourceLike>;
   /**
    * What a `getDisplayMedia` captures: the host's picker, once the page is
-   * allowed. Resolves null where the user chose nothing. Absent, a page
-   * can capture no display.
+   * allowed. Resolves null where the user chose nothing; a source, or a
+   * display's picture with its sound where `wants.audio` asked for it and
+   * there is any. Absent, a page can capture no display.
    */
-  display?(ask: MediaPermissionRequest): Promise<MediaSourceLike | null>;
+  display?(
+    ask: MediaPermissionRequest,
+    wants?: DisplayWants,
+  ): Promise<MediaSourceLike | DisplayCapture | null>;
   /** Tells `changed` whenever the devices change (`devicechange`), until
    *  the function it answers is called. */
   watch?(changed: () => void): () => void;
+}
+
+/**
+ * A page's source as `<Html>` shows it (`HtmlHandle.showStream`): over a
+ * `<video srcObject>` or an `<audio srcObject>` whose stream's first live
+ * track of the kind is over it.
+ */
+export interface ShownSource {
+  readonly kind: 'audio' | 'video';
+  /** The host's number for it: the same number is the same player. */
+  readonly id: number;
+  /** Whether the page's track is enabled: one that is not is shown black,
+   *  and heard as silence. */
+  readonly enabled: boolean;
+  /** A core `MediaStream` that shows it, where it is core's
+   *  (`MediaSourceLike.present`). */
+  present(): CoreMediaStream | null;
+  /** Its frames, until the function it answers is called. */
+  read(fn: (frame: MediaVideoFrame | MediaAudioData) => void): () => void;
+  /** What it runs at now. */
+  settings(): MediaSettings;
+}
+
+/** What a media element playing a `MediaStream` shows and plays: its
+ *  first live video track's source, and its first live audio track's. */
+export interface StreamShown {
+  video: ShownSource | null;
+  audio: ShownSource | null;
+}
+
+/** What a page's `getDisplayMedia` prefers (Screen Capture 5.4): the
+ *  kind of surface it would rather have offered first, the pointer, and
+ *  whether it would have the sound too. A picker is free to offer other. */
+export interface DisplayWants {
+  displaySurface?: 'monitor' | 'window' | 'browser';
+  /** `monitorTypeSurfaces: 'exclude'`: not a whole screen. */
+  monitors: boolean;
+  cursor?: 'always' | 'motion' | 'never';
+  audio: boolean;
+}
+
+/** What a display capture comes to: its picture, and its sound where
+ *  there is any. */
+export interface DisplayCapture {
+  video: MediaSourceLike;
+  audio?: MediaSourceLike | null;
 }
 
 /** The names a media seam rejects with, as Media Capture and Streams has
