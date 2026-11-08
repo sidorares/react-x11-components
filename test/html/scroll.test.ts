@@ -461,6 +461,18 @@ test("the viewport snaps on the axes of the body's writing mode, the document's 
   assert.deepEqual(root.snapViewport(200, 900), { x: 200, y: 1000 });
 });
 
+test('a viewport scroll goes as far as the document reaches on the pixel grid', async () => {
+  // Blink snaps scrollHeight, so a document that ends a fraction of a pixel
+  // down scrolls to a whole pixel (WPT
+  // scroll-initial-target-with-anchor-navigation)
+  const { el: node } = await renderScrolled(
+    '<!doctype html><style>body { margin: 0 }</style><div style="height: 600.4px"></div>',
+    300,
+    400,
+  );
+  assert.deepEqual(node.snapViewport(0, 10000), { x: 0, y: 300 });
+});
+
 test("a multicol scroll container's columns are snap areas where its ::column has a scroll-snap-align, left to right and right to left", async () => {
   // CSS Overflow 5, 5.1 (WPT snap-to-column-scroll-origin)
   const page = (dir: string) =>

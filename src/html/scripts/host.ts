@@ -6379,7 +6379,10 @@ export class DomHost {
         return null;
       }
       case 'resolve':
-        return this._resolve(text(a));
+        return this._resolve(
+          text(a),
+          typeof b === 'number' ? this._node(b) : null,
+        );
       case 'characterSet':
         return this._encodingOf(
           a ? (this._node(a) as Document) : this.document,
@@ -9356,9 +9359,12 @@ export class DomHost {
     return kids;
   }
 
-  private _resolve(url: string): string {
+  private _resolve(url: string, node: AnyNode | null = null): string {
     try {
-      const base = this._seams.handle.base ?? this.creator ?? this.url;
+      // against the document the node is in: a frame's of this realm's has
+      // its own address, and its own `<base>`
+      const own = node ? this._frameBase(node) : null;
+      const base = own ?? this._seams.handle.base ?? this.creator ?? this.url;
       // a query is in the document's encoding (URL's "encoding-parse")
       const encoding = outputEncoding(this._encodingOf(this.document));
       return encoding === 'UTF-8'
@@ -9366,6 +9372,28 @@ export class DomHost {
         : encodingCodecs.urlInEncoding(encoding, url, base);
     } catch {
       return url;
+    }
+  }
+
+  /** The base URL of a frame's document of this realm's a node is in: its
+   *  first `<base href>` against its address, else its address; null for
+   *  the page's own document, or an address `about:` — whose base is its
+   *  creator's — or none. */
+  private _frameBase(node: AnyNode): string | null {
+    let root: AnyNode = node;
+    while (root.parent) root = root.parent as AnyNode;
+    if (!(root instanceof Document) || root === this.document) return null;
+    const at = this._documentUrl(root);
+    if (!at || /^about:/i.test(at)) return null;
+    const base = DomUtils.findOne(
+      (el) => el.name === 'base' && el.attribs.href !== undefined,
+      root.children,
+    );
+    if (!base) return at;
+    try {
+      return new URL(base.attribs.href, at).href;
+    } catch {
+      return at;
     }
   }
 
