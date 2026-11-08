@@ -15727,7 +15727,7 @@ test('@view-transition in a later @layer wins over an earlier one that opts out'
   ]);
 });
 
-test('window.resizeTo changes innerWidth at once, fires resize, and skips a view transition under way', async () => {
+test('window.resizeTo changes innerWidth at once, fires resize at the next frame, and skips a view transition under way', async () => {
   const doc = await hosted(
     '<!DOCTYPE html><html><head><style>' +
       ' html::view-transition-group(*) { animation-duration: 10s }' +
@@ -15743,7 +15743,7 @@ test('window.resizeTo changes innerWidth at once, fires resize, and skips a view
       '  r.push(innerWidth === before[0] / 2, innerHeight === before[1] / 2, resized);' +
       '  return vt.finished;' +
       '}).then(function () {' +
-      '  r.push("finished");' +
+      '  r.push(resized, "finished");' +
       '  document.getElementById("out").textContent = r.join("|");' +
       '});' +
       'vt.ready.catch(function (e) { r.push("ready " + e.name); });' +
@@ -15751,7 +15751,42 @@ test('window.resizeTo changes innerWidth at once, fires resize, and skips a view
   );
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
-    'true|true|true|finished',
+    'true|true|false|true|finished',
+    doc.logs.join('\n'),
+  );
+});
+
+test("waitUntil holds a view transition's finished until its promise settles, and a removed frame's transition is skipped as it is made", async () => {
+  const doc = await hosted(
+    '<!DOCTYPE html><html><body><p id="out"></p><script>' +
+      'var r = [], go;' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.waitUntil(new Promise(function (ok) { go = ok; }));' +
+      'var done = false;' +
+      'vt.finished.then(function () { done = true; });' +
+      'vt.ready.then(function () {' +
+      '  setTimeout(function () {' +
+      '    r.push(done, document.activeViewTransition === vt);' +
+      '    go();' +
+      '    vt.finished.then(function () {' +
+      '      r.push(done, document.activeViewTransition);' +
+      '      var frame = document.createElement("iframe");' +
+      '      document.body.appendChild(frame);' +
+      '      var inner = frame.contentDocument;' +
+      '      frame.remove();' +
+      '      var gone = inner.startViewTransition({ update: function () {}, types: ["a"] });' +
+      '      gone.ready.catch(function (e) {' +
+      '        r.push(e.name, gone.types.has("a"), ViewTransition.length, ViewTransition.prototype.waitUntil.length);' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      });' +
+      '    });' +
+      '  }, 600);' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'false|true|true||AbortError|true|0|1',
     doc.logs.join('\n'),
   );
 });
