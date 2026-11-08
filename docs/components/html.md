@@ -7486,6 +7486,21 @@ not in — at the element, and the viewport's at the document, which alone
 bubbles. What a container snapped to as it was first laid out is what it
 was last told, so a scroll that comes back to it tells nothing.
 
+**A scroll container starts at its initial target** (CSS Scroll Snap 2,
+3.1): the first box in tree order with `scroll-initial-target: nearest` of
+those whose nearest scroll container it is, and the viewport's where none
+is around it. The container is scrolled to line it up as its
+`scroll-snap-align` says, at the start of its flow on an axis where that is
+`none`, with its `scroll-margin` and the container's `scroll-padding`, and a
+snap container snaps from there. Each layout does it again, so a target
+that moves, comes back from `display: none` or lines up otherwise takes the
+container with it, until a script or the user scrolls the container: from
+then on it stays where it was put. A fragment's scroll is a script's here.
+An inline box has no rectangle of its own, and is no initial target. A
+frame's document that runs no scripts has its root's `scrollTop`,
+`scrollLeft`, `clientHeight` and their kin read and set as its frame's
+viewport, as the page's root has the page's.
+
 **A page reads scroll snapping's properties as a browser keeps them.**
 `el.style` takes a value of `scroll-snap-type`, `scroll-snap-align`,
 `scroll-snap-stop`, `scroll-padding`, `scroll-margin` and their sides, or

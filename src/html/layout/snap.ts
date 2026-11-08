@@ -151,8 +151,8 @@ function placeOf(
   c: SnapContainer,
   area: SnapArea,
   axis: Axis,
+  align: SnapAlign = alignOn(c, area.box, axis),
 ): { at: number; to: number } | null {
-  const align = alignOn(c, area.box, axis);
   if (align === 'none') return null;
   const st = area.box.style;
   const client = axis === 'x' ? c.width : c.height;
@@ -180,6 +180,29 @@ function placeOf(
   else at = start + size / 2 - (padStart + port / 2);
   at = clamp(at);
   return { at, to: at };
+}
+
+/**
+ * Where a container is first scrolled to with an area its initial target
+ * (CSS Scroll Snap 2, 3.1): the area lined up as its `scroll-snap-align`
+ * says, and at the start of its flow on an axis where that is `none`, as
+ * `scrollIntoView()` would bring it; an area larger than the snapport at
+ * its start.
+ */
+export function initialPlace(
+  c: SnapContainer,
+  area: SnapArea,
+): { x: number; y: number } {
+  const on = (axis: Axis): number => {
+    let align = alignOn(c, area.box, axis);
+    if (align === 'none') {
+      align = startsHigh(c.style, axis) ? 'end' : 'start';
+    }
+    const place = placeOf(c, area, axis, align);
+    if (!place) return 0;
+    return startsHigh(c.style, axis) ? place.to : place.at;
+  };
+  return { x: on('x'), y: on('y') };
 }
 
 /**

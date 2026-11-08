@@ -18462,6 +18462,36 @@ test("a page reads the layout of a scriptless frame's document from the frame's 
   assert.equal(page, '108|b2|50|scroll|end|50|b2|null|#|true', logs.join('\n'));
 });
 
+test("a scriptless frame's root scrolls as its frame's viewport, which starts at its scroll-initial-target", async () => {
+  // CSSOM View 7: the root's scrollTop is its viewport's, and for a frame's
+  // document of the page realm that is the frame's view (CSS Scroll Snap
+  // 2, 3.1: first scrolled to its initial target)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="width: 300px; height: 150px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var d = f.contentDocument, root = d.documentElement, r = [];' +
+      '  r.push(root.scrollTop, d.scrollingElement.scrollTop, root.clientHeight);' +
+      '  root.scrollTop = 30;' +
+      '  r.push(root.scrollTop, f.contentWindow.scrollY);' +
+      '  document.getElementById("out").textContent = r.join("|"); }, 200); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<style>body { margin: 0 } div { height: 100px }</style>' +
+        '<div style="height: 200px"></div>' +
+        '<div style="scroll-initial-target: nearest"></div>' +
+        '<div style="height: 400px"></div>',
+    },
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, '200|200|150|30|30', logs.join('\n'));
+});
+
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {
   // HTML 4.8.5: the attribute's markup, parsed as the frame's document,
   // ahead of its src

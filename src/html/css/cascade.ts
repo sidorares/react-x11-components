@@ -4672,6 +4672,10 @@ export class Cascade {
    *  layout ask whether a snap container is at rest where it should be
    *  (`HtmlViewNode._resnap`). */
   snaps = false;
+  /** Whether a declaration anywhere sets `scroll-initial-target`: what
+   *  makes a layout scroll each container no one has scrolled to its
+   *  initial target (`HtmlViewNode._toInitialTargets`). */
+  initialTargets = false;
   /** Whether a declaration anywhere sets `zoom`, which only then is looked
    *  for ahead of an element's other declarations (`_ownZoom`). */
   private _zoom = false;
@@ -4950,6 +4954,7 @@ export class Cascade {
     this._vars = before._vars;
     this._lh = before._lh;
     this.snaps = before.snaps;
+    this.initialTargets = before.initialTargets;
     this._zoom = before._zoom;
     this._writing = before._writing;
     this._adapter = before._adapter;
@@ -5024,6 +5029,9 @@ export class Cascade {
       if (!this._vars && usesVars(rule.declarations)) this._vars = true;
       if (!this._lh && usesLh(rule.declarations)) this._lh = true;
       if (!this.snaps && usesSnap(rule.declarations)) this.snaps = true;
+      if (!this.initialTargets && usesInitialTarget(rule.declarations)) {
+        this.initialTargets = true;
+      }
       if (!this._zoom && usesZoom(rule.declarations)) this._zoom = true;
       if (!this._writing && usesWritingMode(rule.declarations)) {
         this._writing = true;
@@ -10248,6 +10256,9 @@ export class Cascade {
       if (!this._lh && usesLh(declarations)) this._lh = true;
       if (!this._zoom && usesZoom(declarations)) this._zoom = true;
       if (!this.snaps && usesSnap(declarations)) this.snaps = true;
+      if (!this.initialTargets && usesInitialTarget(declarations)) {
+        this.initialTargets = true;
+      }
       if (!this._writing && usesWritingMode(declarations)) {
         this._writing = true;
       }
@@ -11023,6 +11034,13 @@ const BOUND_PREFIXES = new Map([
 
 function usesSnap(declarations: readonly Declaration[]): boolean {
   for (const d of declarations) if (d.prop === 'scroll-snap-type') return true;
+  return false;
+}
+
+function usesInitialTarget(declarations: readonly Declaration[]): boolean {
+  for (const d of declarations) {
+    if (d.prop === 'scroll-initial-target') return true;
+  }
   return false;
 }
 
