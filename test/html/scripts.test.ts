@@ -9250,7 +9250,9 @@ test('a History method acts on the history it is called on, whichever window it 
       '1',
       '#two',
       '2',
-      '1',
+      // the frame's `length` is the page's: one history, as a browser's
+      // top-level traversable keeps it
+      '2',
       // attributes and methods are the interface's, not the object's
       '0',
       'true',
@@ -18315,6 +18317,202 @@ test('a frame of another origin that the page sends back to its own comes by the
       (t) => t !== '',
     ),
     'replace|null|1',
+    logs.join('\n'),
+  );
+});
+
+test("the page's history is one with its frames: a frame's push is a step `history.length` counts, and a step back from any window moves whichever windows the step was theirs", async () => {
+  // HTML's joint session history (WPT's back-forward-multiple-frames): the
+  // frame's own `back()` steps the frame alone where nothing else moved
+  // since, the page's steps both where the step it goes to has both, and
+  // `history.back()` goes one step, wherever it was asked
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function at() { return [navigation.currentEntry.index, n().currentEntry.index, history.length, f.contentWindow.history.length].join(","); }' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await navigation.navigate("#top").committed;' +
+      '  await n().navigate("#f").committed;' +
+      '  r.push(at());' +
+      '  await n().back().finished;' +
+      '  r.push(at());' +
+      '  await n().forward().finished;' +
+      '  var pops = 0; f.contentWindow.onpopstate = function () { pops++; };' +
+      '  await navigation.back().finished;' +
+      '  r.push(at(), pops);' +
+      '  await n().forward().finished;' +
+      '  r.push(at());' +
+      '  var popped = new Promise(function (go) { f.contentWindow.onpopstate = go; });' +
+      '  history.back();' +
+      '  await popped;' +
+      '  r.push(at());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '1,1,3,3|1,0,3,3|0,0,3,3|1|1,1,3,3|1,0,3,3',
+    logs.join('\n'),
+  );
+});
+
+test("a frame's push clears the page's forward entries, each disposed, and the page's `navigate` cancels a step that would move it, for the frame that asked as much", async () => {
+  // WPT's dispose-for-navigation-in-child and
+  // navigation-traverseTo-in-iframe-same-document-preventDefault: only the
+  // top-level traversable's `navigate` may cancel a traversal, and it
+  // cancels the whole step, the frame's promises with it, before the frame
+  // hears `navigate`
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function at() { return [navigation.currentEntry.index, n().currentEntry.index, history.length].join(","); }' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await n().navigate("#a").committed;' +
+      '  await navigation.navigate("#1").committed;' +
+      '  await navigation.navigate("#2").committed;' +
+      '  await n().back().finished;' +
+      '  r.push(at());' +
+      '  var disposed = 0;' +
+      '  navigation.entries().slice(1).forEach(function (e) { e.ondispose = function () { disposed++; }; });' +
+      '  await n().navigate("#b").committed;' +
+      '  r.push(at(), disposed, navigation.entries().length);' +
+      '  await navigation.navigate("#3").committed;' +
+      '  navigation.onnavigate = function (e) { e.preventDefault(); };' +
+      '  var errors = 0; navigation.onnavigateerror = function () { errors++; };' +
+      '  var heard = 0; n().onnavigate = function () { heard++; };' +
+      '  var why = await n().traverseTo(n().entries()[0].key).finished.then(' +
+      '    function () { return "done"; }, function (e) { return e.name; });' +
+      '  r.push(why, errors, heard, at());' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '0,0,4|0,1,2|2|1|AbortError|1|0|1,1,3',
+    logs.join('\n'),
+  );
+});
+
+test('a frame the page sends from a document of another origin to one of its own by a push is one more step of the history, and a step back loads the document it left', async () => {
+  // WPT's traverseTo-with-cross-origin-in-history and
+  // cross-document-away-and-back: the page cannot see the frame's history
+  // while it is another origin's, and the push it asked for is a step all
+  // the same; then the frame goes on to another document of its own, and
+  // the page's `history.back()` brings the one before it back, its state
+  // and all
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="https://other.test/x.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    r.push(history.length, n().entries().length);' +
+      '    n().updateCurrentEntry({ state: "kept" });' +
+      '    f.onload = function () { setTimeout(function () {' +
+      '      r.push(history.length, n().entries().length);' +
+      '      f.onload = function () { setTimeout(function () {' +
+      '        r.push(history.length, n().currentEntry.index, n().currentEntry.getState());' +
+      '        document.getElementById("out").textContent = r.join("|");' +
+      '      }, 0); };' +
+      '      history.back();' +
+      '    }, 0); };' +
+      '    n().navigate("c.html");' +
+      '  }, 0); };' +
+      '  f.contentWindow.location = "b.html";' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'x.html': '<!doctype html><p>x</p>',
+      'b.html': '<!doctype html><p>b</p>',
+      'c.html': '<!doctype html><p>c</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '2|1|3|2|3|0|kept',
+    logs.join('\n'),
+  );
+});
+
+test("a frame that goes on from a document of the page's origin to another origin's by a push is a step the page still counts", async () => {
+  // the page forgets the frame's window and session as it goes to a
+  // document it cannot see (`__forgetFrameWindow`), and the steps they held
+  // are the tree's all the same, with the one the push took
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var before = history.length;' +
+      '  f.onload = function () { setTimeout(function () {' +
+      '    document.getElementById("out").textContent = [before, history.length].join("|");' +
+      '  }, 0); };' +
+      '  f.contentWindow.navigation.navigate("https://other.test/x.html");' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'x.html': '<!doctype html><p>x</p>',
+    },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '1|2',
+    logs.join('\n'),
+  );
+});
+
+test("a traversal a `navigate` listener asks for is taken after the one it heard, once that one's `hashchange` is told", async () => {
+  // the session history traversal queue (WPT's
+  // navigate-history-traversal-during-onnavigate): the second step was a
+  // task queued before the first one's `hashchange`, which then told of an
+  // entry two steps on
+  const { text, logs } = await hostedFrames(
+    '<p id="out"></p><script>' +
+      'window.onload = function () { setTimeout(async function () {' +
+      '  await navigation.navigate("#0").finished;' +
+      '  await navigation.navigate("#1").finished;' +
+      '  await navigation.navigate("#2").finished;' +
+      '  await new Promise(function (go) { setTimeout(go, 50); });' +
+      '  var key = navigation.entries()[1].key, seen = [];' +
+      '  navigation.onnavigate = function () { navigation.onnavigate = null; navigation.traverseTo(key); };' +
+      '  onhashchange = function () {' +
+      '    seen.push(navigation.currentEntry.index + location.hash);' +
+      '    if (seen.length === 2) document.getElementById("out").textContent = seen.join("|");' +
+      '  };' +
+      '  history.back();' +
+      '}, 0); };' +
+      '</script>',
+    {},
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      8000,
+    ),
+    '2#1|1#0',
     logs.join('\n'),
   );
 });

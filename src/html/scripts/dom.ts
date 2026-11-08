@@ -11004,6 +11004,21 @@ export function installDom(
         frameArrivals.delete(frame);
         made.session.arrived = { type: arrival, fromIndex: -1, from: null };
       }
+      // its step in the joint history: a push's from the document of
+      // another origin's it came from — where this realm sent it, or where
+      // it was before that this realm saw — that document's for a replace,
+      // and else the step its parent's document came in at, as a frame
+      // made in it starts there
+      jointFrames = true;
+      const unseen = unseenSteps.get(frame);
+      const first = made.session.entries[0];
+      if (arrival === 'push' || (!arrival && unseen?.length)) {
+        jointPush(null, first, true);
+      } else {
+        first.step = unseen?.length
+          ? unseen[unseen.length - 1]
+          : childStartStep(frame);
+      }
       made.owner = owner;
       made.slot = slot;
       frameSessions.set(doc, made);
@@ -11097,17 +11112,26 @@ export function installDom(
       if (made) {
         const at = String(call('frameLocation', frame._id));
         if (wasInitial) {
+          const initialStep = made.session.entries[0]?.step;
+          // sent on by this realm from a document of another origin's it
+          // went to from its `about:blank`, which this realm never saw
+          const sent = frameArrivals.get(frame);
+          frameArrivals.delete(frame);
           made.session.entries = [sessionEntry(at, undefined, 0)];
           made.session.index = 0;
           // a navigation from the initial `about:blank` replaces it (HTML
           // 7.4.2.2), so the document it shows came by a replace from no
-          // entry the API showed
+          // entry the API showed, at the blank's step
           made.session.arrived = {
-            type: 'replace',
+            type: sent ?? 'replace',
             fromIndex: -1,
             from: null,
           };
           made.session.activation = null;
+          if (sent === 'push') jointPush(null, made.session.entries[0], true);
+          else {
+            made.session.entries[0].step = initialStep ?? childStartStep(frame);
+          }
         } else {
           const bare = (u: string) => u.split('#')[0];
           const known = made.session.entries.findIndex(
@@ -11189,10 +11213,14 @@ export function installDom(
             made.session.index = made.session.entries.length - 1;
             made.session.arrived = { type: 'push', fromIndex, from };
             made.session.activation = null;
+            // the step after the current one, which clears what the tree
+            // had past it
+            jointPush(made.session, entry, true);
           } else if (pending === 'replace') {
             if (from) from.scroll = made.session.ctx.scroll();
             // a replace across documents is still another document's entry
             const entry = sessionEntry(at, from?.key, fresh());
+            entry.step = from?.step;
             made.session.entries[made.session.index] = entry;
             made.session.arrived = {
               type: 'replace',
@@ -11426,6 +11454,8 @@ export function installDom(
       });
     }
     windowMethods.set(win, methods);
+    // a step of the joint history moves a frame as much as the page, and
+    // tells its window `popstate` and `hashchange`
     for (const type of [
       'load',
       'error',
@@ -11438,6 +11468,8 @@ export function installDom(
       'pageswap',
       'pagereveal',
       'unload',
+      'popstate',
+      'hashchange',
     ]) {
       Object.defineProperty(win, `on${type}`, {
         get: () => target._handlers[type] ?? null,
@@ -31703,6 +31735,10 @@ export function installDom(
      *  one — what `sameDocument` reads for a frame that keeps one history
      *  across the documents it shows. */
     doc?: number;
+    /** Its step in the joint session history of the top-level traversable
+     *  (HTML 7.4.1, "step"): the place in time its navigation made, which
+     *  a replace keeps and a push takes one past the current step for. */
+    step?: number;
     /** Whether its URL is none of another document's to read (HTML
      *  7.2.6.5, the `url` getter): its document's referrer policy, as it
      *  stood when the document was left, is `no-referrer` or `origin`. */
@@ -31900,6 +31936,219 @@ export function installDom(
     currentOf(s).scroll = s.ctx.scroll();
     persist(s);
     s.ctx.plan?.(plan);
+  };
+
+  // --- the joint session history (HTML 7.4.1) --------------------------------
+  //
+  // A top-level traversable's history is one list across the navigables in
+  // it, the page's and each frame's, whose entries are each at a step: the
+  // place in time the navigation that made it took. A push anywhere takes the
+  // step after the current one and clears every navigable's entries past it,
+  // so a frame's push drops the page's forward entries as much as its own;
+  // `history.length` is how many steps there are, and `history.go()` goes that
+  // many of them from any window in the tree. A step shows, in each
+  // navigable, the entry with the greatest step at or before it, so going to
+  // one moves every navigable whose entry there is not the one it shows: the
+  // page's first, whose `navigate` alone may cancel the step, then each
+  // frame's in tree order. Kept here, where the page's session is and the
+  // sessions of the frames this realm draws; a frame whose document runs in a
+  // realm of its own keeps a history of its own (`./frames.ts`).
+
+  /** Whether this realm keeps a joint session history: its document is a
+   *  top-level traversable's. Set as the page's session is made. */
+  let jointOn = false;
+  /** The top-level traversable's current session history step. */
+  let jointStep = 0;
+  /** Whether any frame's history is in it yet: until one is, the page's
+   *  entries are all of it, and nothing walks the tree. */
+  let jointFrames = false;
+  /** What a frame's history holds that no session of this realm's does —
+   *  the entries of the one it forgot as the frame went to a document of
+   *  another origin's, and that document's — by frame: steps still the
+   *  tree's, which `history.length` counts and a push clears. */
+  const unseenSteps = new WeakMap<object, number[]>();
+
+  /** The navigables of the joint history in tree order, the page's first:
+   *  each frame this realm keeps a session for, with its document, and each
+   *  frame with steps it keeps no session of (`unseenSteps`). A frame that
+   *  has gone, or runs in a realm of its own, is none of them. */
+  const jointTree = (): {
+    s: Session | null;
+    frame: Any;
+    doc: Any;
+    depth: number;
+  }[] => {
+    const out: { s: Session | null; frame: Any; doc: Any; depth: number }[] = [
+      { s: pageSession.session, frame: null, doc: document, depth: 0 },
+    ];
+    if (!jointFrames) return out;
+    const walk = (doc: Any, depth: number): void => {
+      for (const frame of Array.from(
+        doc.querySelectorAll('iframe, frame'),
+      ) as Any[]) {
+        // one in a realm of its own keeps its history there, but for the
+        // steps this realm sent it to (`unseenSteps`)
+        const apart = crossLinked.has(frame._id) || linkedFrames.has(frame._id);
+        // a frame's session is the one its last document's window has,
+        // which the document it is going to takes over: what the one going
+        // holds goes with it
+        const kept = apart ? undefined : keptFrameWindows.get(frame);
+        const made = kept ? frameSessions.get(kept.doc) : null;
+        if (made) {
+          out.push({ s: made.session, frame, doc: kept!.doc, depth });
+          if (!kept!.doc._unloaded) walk(kept!.doc, depth + 1);
+        } else if (unseenSteps.has(frame)) {
+          out.push({ s: null, frame, doc: null, depth });
+        }
+      }
+    };
+    walk(document, 1);
+    return out;
+  };
+  /** The steps the tree uses, ascending (HTML 7.4.1, "get all used history
+   *  steps"). */
+  const jointSteps = (): number[] => {
+    const used = new Set<number>();
+    for (const { s, frame } of jointTree()) {
+      for (const e of s?.entries ?? []) {
+        if (e.step !== undefined) used.add(e.step);
+      }
+      for (const step of (frame && unseenSteps.get(frame)) ?? []) {
+        used.add(step);
+      }
+    }
+    return [...used].sort((a, b) => a - b);
+  };
+  /** Where the traversable is (HTML 7.4.1, "get the used step"): its
+   *  current step, or, where a frame whose navigation made it has gone, the
+   *  greatest step before it the tree still uses. */
+  const usedStep = (steps = jointSteps()): number => {
+    let at = steps[0] ?? jointStep;
+    for (const step of steps) if (step <= jointStep) at = step;
+    return at;
+  };
+  /** The entry a navigable shows at a step (HTML 7.4.1, "get the target
+   *  history entry"): the one with the greatest step at or before it. */
+  const entryAtStep = (s: Session, step: number): SessionEntry | null => {
+    let found: SessionEntry | null = null;
+    for (const e of s.entries) if ((e.step ?? 0) <= step) found = e;
+    return found;
+  };
+  /**
+   * Every navigable's entries past `after` cleared (HTML 7.4.2.3.3, "clear
+   * the forward session history"), but `except`'s, which the navigation
+   * that pushed clears itself: the page's written back to the host's
+   * session, and what goes of them that the Navigation API showed told
+   * `dispose` by what this answers — at once, or `later`, a task on.
+   */
+  const clearForward = (
+    after: number,
+    except: Session | null,
+    later = false,
+  ): (() => void) => {
+    const gone: SessionEntry[] = [];
+    for (const { s, frame } of jointTree()) {
+      const unseen = frame ? unseenSteps.get(frame) : undefined;
+      if (unseen) {
+        unseenSteps.set(
+          frame,
+          unseen.filter((step) => step <= after),
+        );
+      }
+      if (!s || s === except) continue;
+      const at = s.entries.findIndex(
+        (e, i) => i > s.index && (e.step ?? 0) > after,
+      );
+      if (at < 0) continue;
+      const dropped = s.entries.splice(at);
+      persist(s);
+      if (!entriesDisabled(s)) gone.push(...dropped.filter((e) => e.api));
+    }
+    if (!gone.length) return () => {};
+    const tell = (): void => {
+      for (const e of gone) dispatch(e.api, asTrusted(new Event('dispose')));
+    };
+    if (!later) return tell;
+    setTimer(tell, 0, [], false);
+    return () => {};
+  };
+  /** A navigable of the tree pushed `entry` (HTML 7.4.2.3.3, "finalize a
+   *  same-document navigation" and "finalize a cross-document
+   *  navigation"): it takes the step after the current one, and what every
+   *  other navigable had past that is cleared; what answers tells their
+   *  `dispose`, once the push itself is told. */
+  const jointPush = (
+    s: Session | null,
+    entry: SessionEntry | null,
+    later = false,
+  ): (() => void) => {
+    if (!jointOn) return () => {};
+    const from = usedStep();
+    const tell = clearForward(from, s, later);
+    jointStep = from + 1;
+    if (entry) entry.step = jointStep;
+    return tell;
+  };
+  /** The step a frame's first entry this realm sees is at, where nothing
+   *  it was sent on by says (HTML, "create a new child navigable"): the
+   *  step its parent's document came in at, the first of that document's
+   *  entries. */
+  const childStartStep = (frame: Any): number => {
+    const parent = frame?.ownerDocument;
+    const made =
+      parent && parent !== document ? frameSessions.get(parent) : null;
+    const s: Session = made?.session ?? pageSession.session;
+    const doc = currentOf(s).doc;
+    const first = s.entries.find((e) =>
+      s.host ? !e.other : e.doc === undefined || e.doc === doc,
+    );
+    return first?.step ?? jointStep;
+  };
+  /**
+   * The step a traversal to one of a navigable's entries goes to: the one
+   * nearest the current step at which the navigable shows that entry —
+   * going forward the entry's own, and going back the last before the entry
+   * after it — so a frame's `back()` steps the frame alone where nothing
+   * else moved since, as browsers step it.
+   */
+  const stepFor = (s: Session, target: SessionEntry): number => {
+    const step = target.step ?? 0;
+    if (step > usedStep()) return step;
+    const next =
+      s.entries[s.entries.indexOf(target) + 1]?.step ??
+      Number.POSITIVE_INFINITY;
+    let at = step;
+    for (const used of jointSteps()) if (used >= step && used < next) at = used;
+    return at;
+  };
+
+  /** The traversals asked for and not yet taken, each a task after the one
+   *  before it and after what that one queued (HTML 7.4.1, "session history
+   *  traversal queue"): a step a `navigate` listener of the one before asks
+   *  for is taken once that one's `popstate` and `hashchange` are told. */
+  const traversals: (() => void)[] = [];
+  let traversing = false;
+  const queueTraversal = (job: () => void): void => {
+    traversals.push(job);
+    if (!traversing && traversals.length === 1) nextTraversal();
+  };
+  const nextTraversal = (): void => {
+    setTimer(
+      () => {
+        const job = traversals.shift();
+        if (!job) return;
+        traversing = true;
+        try {
+          job();
+        } finally {
+          traversing = false;
+          if (traversals.length) nextTraversal();
+        }
+      },
+      0,
+      [],
+      false,
+    );
   };
 
   /** Whether a URL is a fragment of the document's (HTML 7.4.2.3.3): the
@@ -32858,21 +33107,27 @@ export function installDom(
     entry.state = state;
     entry.navState = navState;
     let dropped: SessionEntry[];
+    // the other navigables' entries a push clears, told after its own
+    let others = (): void => {};
     if (mode === 'push') {
       dropped = s.entries.splice(s.index + 1);
       s.entries.push(entry);
       s.index = s.entries.length - 1;
+      others = jointPush(s, entry);
     } else {
       dropped = [old];
       s.entries[s.index] = entry;
+      entry.step = old.step;
     }
     s.ctx.setUrl(url);
     persist(s);
     entryChanged(s, type, from);
-    if (entriesDisabled(s)) return;
-    for (const gone of dropped) {
-      if (gone.api) dispatch(gone.api, asTrusted(new Event('dispose')));
+    if (!entriesDisabled(s)) {
+      for (const gone of dropped) {
+        if (gone.api) dispatch(gone.api, asTrusted(new Event('dispose')));
+      }
     }
+    others();
   };
 
   /** Scroll to a fragment's element, or to the top for none (HTML
@@ -33330,9 +33585,12 @@ export function installDom(
     );
   };
 
-  /** Go to another of the window's entries (HTML 7.4.6.1, "traverse the
-   *  history by a delta"), as a task: `navigate`, then the entry made the
-   *  current one, `popstate`, and `hashchange` where the fragment differs. */
+  /** Go to another of the window's entries (HTML 7.2.6.4, "perform a
+   *  navigation API traversal"), as a task of the traversal queue: in a
+   *  joint history the step that entry is shown at, across the tree
+   *  (`applyStep`); else the entry, `navigate` first, then the entry made
+   *  the current one, `popstate`, and `hashchange` where the fragment
+   *  differs. */
   const traverseTo = (
     s: Session,
     index: number,
@@ -33340,73 +33598,129 @@ export function installDom(
     tracker?: Tracker | null,
     userInitiated = false,
   ): void => {
-    setTimer(
-      () => {
-        // no longer upcoming once its step is taken: the next traversal to
-        // the key is a traversal of its own
-        for (const [key, upcoming] of s.upcoming ?? []) {
-          if (upcoming === tracker) s.upcoming!.delete(key);
-        }
-        // a document gone since — its frame taken out — takes no step, and
-        // fires no `navigate`; its promises were rejected as it went
-        if (!s.ctx.active() || tracker?.aborted) return;
-        const target = s.entries[index];
-        if (!target) {
-          tracker?.fail(
-            new DOMException('The entry is gone.', 'InvalidStateError'),
-          );
-          return;
-        }
-        if (ofAnotherDocument(s, target)) {
-          traverseAway(s, target, info, tracker);
-          return;
-        }
-        const fromUrl = currentOf(s).url;
-        navigateWith(
-          s,
-          {
-            url: target.url,
-            type: 'traverse',
-            target,
-            info,
-            tracker,
-            userInitiated,
-            sameDocument: true,
-          },
-          (intercepted) => {
-            const leaving = currentOf(s);
-            const from = apiEntryOf(s, leaving);
-            leaving.scroll = s.ctx.scroll();
-            s.index = s.entries.indexOf(target);
-            s.ctx.setUrl(target.url);
-            persist(s);
-            entryChanged(s, 'traverse', from);
-            // `popstate` once the handlers have been called, as HTML's
-            // "update document for history step application" tells it after
-            // the navigation API's entries are brought up to date
-            return () => {
-              dispatch(
-                s.ctx.target,
-                asTrusted(
-                  new PopStateEvent('popstate', {
-                    state: historyStateOf(target),
-                  }),
-                ),
-              );
-              // where it was scrolled to, as it is restored (HTML 7.4.6.3,
-              // "restore persisted state"), unless a handler has it
-              if (!intercepted && s.restoration === 'auto' && target.scroll) {
-                s.ctx.scrollTo(target.scroll[0], target.scroll[1]);
-              }
-              queueHashChange(s, fromUrl, target.url);
-            };
-          },
+    const key = s.entries[index]?.key;
+    queueTraversal(() => {
+      // no longer upcoming once its step is taken: the next traversal to
+      // the key is a traversal of its own
+      for (const [k, upcoming] of s.upcoming ?? []) {
+        if (upcoming === tracker) s.upcoming!.delete(k);
+      }
+      // a document gone since — its frame taken out — takes no step, and
+      // fires no `navigate`; its promises were rejected as it went
+      if (!s.ctx.active() || tracker?.aborted) return;
+      const target = s.entries.find((e) => e.key === key);
+      if (!target) {
+        tracker?.fail(
+          new DOMException('The entry is gone.', 'InvalidStateError'),
         );
+        return;
+      }
+      // the entry it went to is the one shown already: nothing to take
+      if (target === currentOf(s)) return;
+      const asked = { s, info, tracker, userInitiated };
+      if (jointOn) applyStep(stepFor(s, target), asked);
+      else stepNavigable(s, target, asked);
+    });
+  };
+  /** What a traversal's navigable that asked for it hands each step: the
+   *  `info` its `navigate` is told, the method's promises, whether a user
+   *  asked. */
+  interface TraversalAsk {
+    s: Session;
+    info?: Any;
+    tracker?: Tracker | null;
+    userInitiated?: boolean;
+  }
+  /** One navigable goes to one of its entries: in its document, or to the
+   *  entry's document (`traverseAway`). What came of it. */
+  const stepNavigable = (
+    s: Session,
+    target: SessionEntry,
+    asked: TraversalAsk | null,
+  ): 'same' | 'canceled' | 'other' | 'download' => {
+    const info = asked?.info;
+    const tracker = asked?.tracker ?? null;
+    if (ofAnotherDocument(s, target)) {
+      return traverseAway(s, target, info, tracker);
+    }
+    const fromUrl = currentOf(s).url;
+    return navigateWith(
+      s,
+      {
+        url: target.url,
+        type: 'traverse',
+        target,
+        info,
+        tracker,
+        userInitiated: !!asked?.userInitiated,
+        sameDocument: true,
       },
-      0,
-      [],
-      false,
+      (intercepted) => {
+        const leaving = currentOf(s);
+        const from = apiEntryOf(s, leaving);
+        leaving.scroll = s.ctx.scroll();
+        s.index = s.entries.indexOf(target);
+        s.ctx.setUrl(target.url);
+        persist(s);
+        entryChanged(s, 'traverse', from);
+        // `popstate` once the handlers have been called, as HTML's
+        // "update document for history step application" tells it after
+        // the navigation API's entries are brought up to date
+        return () => {
+          dispatch(
+            s.ctx.target,
+            asTrusted(
+              new PopStateEvent('popstate', {
+                state: historyStateOf(target),
+              }),
+            ),
+          );
+          // where it was scrolled to, as it is restored (HTML 7.4.6.3,
+          // "restore persisted state"), unless a handler has it
+          if (!intercepted && s.restoration === 'auto' && target.scroll) {
+            s.ctx.scrollTo(target.scroll[0], target.scroll[1]);
+          }
+          queueHashChange(s, fromUrl, target.url);
+        };
+      },
     );
+  };
+  /**
+   * HTML 7.4.6.1, "apply the traverse history step": each navigable whose
+   * entry at `step` is not the one it shows goes to it. The page's first,
+   * whose `navigate` alone can cancel a step that stays in its document, and
+   * the whole step with it — what the navigable that asked was handed back
+   * rejects; then each frame's in tree order, a frame in one that goes to
+   * another document going with it. Only the navigable that asked is told
+   * its `info` and settles its method's promises.
+   */
+  const applyStep = (step: number, asked: TraversalAsk | null): void => {
+    const changing: { s: Session; to: SessionEntry }[] = [];
+    // what a navigable going to another document holds goes with it
+    let skipBelow = Number.POSITIVE_INFINITY;
+    for (const { s, depth } of jointTree()) {
+      if (depth > skipBelow) continue;
+      skipBelow = Number.POSITIVE_INFINITY;
+      if (!s || !s.ctx.active()) continue;
+      const to = entryAtStep(s, step);
+      if (!to || to === currentOf(s)) continue;
+      changing.push({ s, to });
+      if (ofAnotherDocument(s, to)) skipBelow = depth;
+    }
+    const its = (s: Session): TraversalAsk | null =>
+      asked && asked.s === s ? asked : null;
+    const page =
+      changing[0]?.s === pageSession.session ? changing.shift() : null;
+    if (page && stepNavigable(page.s, page.to, its(page.s)) === 'canceled') {
+      if (asked && asked.s !== page.s) {
+        asked.tracker?.fail(
+          new DOMException('The navigation was aborted.', 'AbortError'),
+        );
+      }
+      return;
+    }
+    jointStep = step;
+    for (const { s, to } of changing) stepNavigable(s, to, its(s));
   };
   /**
    * Go to an entry of another document's, where the session is the host's
@@ -33422,12 +33736,12 @@ export function installDom(
     target: SessionEntry,
     info?: Any,
     tracker?: Tracker | null,
-  ): void => {
+  ): 'canceled' | 'other' => {
     if (!unloadAllowed(s.ctx.owner(), s.ctx.target)) {
       tracker?.fail(
         new DOMException('The navigation was canceled.', 'AbortError'),
       );
-      return;
+      return 'canceled';
     }
     if (entryOrigin(target) === entryOrigin(currentOf(s))) {
       const went = navigateWith(
@@ -33442,15 +33756,36 @@ export function installDom(
         },
         () => {},
       );
-      if (went !== 'other') return;
+      if (went !== 'other') return 'canceled';
     }
     const delta = s.entries.indexOf(target) - s.index;
     planAway(s, { type: 'traverse', key: target.key });
     s.ctx.traverseAway?.(delta);
+    return 'other';
   };
-  /** Past the window's own entries, the host's history; where the session
-   *  is the host's, every entry is in it, and past them is nowhere. */
+  /** History's step by a delta (HTML 7.4.1, "traverse the history by a
+   *  delta"): in a joint history that many of its steps, from whichever
+   *  window of the tree asks; else past the window's own entries the
+   *  host's history, and where the session is the host's, every entry is
+   *  in it, and past them is nowhere. */
   const traverseBy = (s: Session, delta: number): void => {
+    if (jointOn) {
+      queueTraversal(() => {
+        const steps = jointSteps();
+        const index = steps.indexOf(usedStep(steps)) + delta;
+        const step = steps[index];
+        if (step !== undefined) {
+          applyStep(step, null);
+          return;
+        }
+        // past them, the host's own history, where it keeps one apart
+        const page = pageSession.session;
+        if (page.host) return;
+        if (index < 0) page.ctx.go(index);
+        else page.ctx.go(index - (steps.length - 1));
+      });
+      return;
+    }
     const index = s.index + delta;
     if (index >= 0 && index < s.entries.length) traverseTo(s, index);
     else if (s.host) return;
@@ -33812,8 +34147,10 @@ export function installDom(
       if (token !== TOKEN) throw new TypeError('Illegal constructor');
       historySessions.set(this, session!);
     }
+    /** How many steps the joint history has (HTML 7.4.3, "length"), for
+     *  any window of the tree: every navigable's entries, each step once. */
     get length(): number {
-      return historyOf(this).entries.length;
+      return jointOn ? jointSteps().length : historyOf(this).entries.length;
     }
     get state(): Any {
       return historyStateOf(currentOf(historyOf(this)));
@@ -33858,7 +34195,7 @@ export function installDom(
   ): { session: Session; history: Any; navigation: Any } => {
     const s: Session = {
       ctx,
-      entries: [sessionEntry(ctx.url(), undefined, 0)],
+      entries: [{ ...sessionEntry(ctx.url(), undefined, 0), step: 0 }],
       index: 0,
       ongoing: null,
       restoration: 'auto',
@@ -33874,6 +34211,8 @@ export function installDom(
     // document was shown at (`HtmlSessionHistory`)
     const seeded = seed ? seedEntries(seed) : null;
     if (seeded) {
+      // a step each, as the documents before this one came
+      seeded.forEach((e, i) => (e.step = i));
       s.entries = seeded;
       s.index = Math.max(0, Math.min(seeded.length - 1, Number(seed.index)));
       s.host = true;
@@ -33967,6 +34306,10 @@ export function installDom(
     },
     hostSession,
   );
+  // the joint history is a top-level traversable's, and starts where the
+  // page's session is
+  jointOn = call('topLevel') === true;
+  jointStep = currentOf(pageSession.session).step ?? 0;
   const history = pageSession.history;
   const navigation = pageSession.navigation;
   /** `location`'s navigations: to a URL, or in place of the entry, which
@@ -34260,6 +34603,38 @@ export function installDom(
         false,
       );
     }
+  };
+
+  /**
+   * The joint history of a document shown again from the back-forward cache
+   * (HTML 7.4.6.3, "reactivate a document"): the entries it had keep their
+   * steps, and where documents were shown after it meanwhile, each was a
+   * push from the step it was left at, which cleared what its frames had
+   * past that step — `dispose` told of those after its `pageshow`, as the
+   * session the frames are in is brought up to date as it is shown. It is
+   * at its entry's step again, or at the step it left at where it is
+   * shown at the entry it was left at.
+   */
+  const reseedSteps = (
+    s: Session,
+    steps: Map<string, number | undefined>,
+    left: SessionEntry,
+  ): (() => void) => {
+    if (!jointOn) return () => {};
+    const after = s.entries.slice(s.index + 1);
+    const shown = after.some((e) => steps.get(e.id) === undefined);
+    let tell = (): void => {};
+    if (shown) {
+      tell = clearForward(usedStep(), s);
+      after.forEach((e, i) => (e.step = jointStep + 1 + i));
+    } else {
+      for (const e of after) e.step = steps.get(e.id);
+    }
+    s.entries.slice(0, s.index + 1).forEach((e, i) => {
+      e.step ??= steps.get(e.id) ?? i;
+    });
+    if (currentOf(s) !== left) jointStep = currentOf(s).step ?? jointStep;
+    return () => setTimer(tell, 0, [], false);
   };
 
   /**
@@ -39986,10 +40361,16 @@ export function installDom(
   // `pageshow`, and `pagereveal` at its next frame
   entry('__reactivate', () => {
     const [seed] = input() ?? [];
+    let disposed = (): void => {};
     if (seed && typeof seed === 'object') {
-      reseedSession(pageSession.session, seed);
+      const s = pageSession.session;
+      const left = currentOf(s);
+      const steps = new Map(s.entries.map((e) => [e.id, e.step]));
+      reseedSession(s, seed);
+      disposed = reseedSteps(s, steps, left);
     }
     showTree(document, windowTarget);
+    disposed();
     revealOwed = true;
     wantFrame();
     return true;
@@ -40080,13 +40461,38 @@ export function installDom(
     if (!frame) return false;
     const last = keptFrameWindows.get(frame);
     if (last) {
+      // its entries are still the tree's, steps no session here has, and
+      // the document it went to is one more where it came by a push
+      const made = frameSessions.get(last.doc);
+      if (made && jointOn) {
+        const s: Session = made.session;
+        const how = made.slot?.pending ?? 'push';
+        const kept =
+          how === 'push' ? s.entries.slice(0, s.index + 1) : s.entries;
+        const steps = kept
+          .map((e) => e.step)
+          .filter((step): step is number => step !== undefined);
+        jointFrames = true;
+        unseenSteps.set(frame, steps);
+        if (how === 'push') {
+          s.entries.splice(s.index + 1);
+          jointPush(s, null, true);
+          unseenSteps.set(frame, [...steps, jointStep]);
+        }
+      }
       frameWindows.delete(last.doc);
       frameSessions.delete(last.doc);
       frameTargets.delete(last.doc);
       keptFrameWindows.delete(frame);
     }
     frameLocations.delete(frame);
-    // gone on to another origin since what this realm asked
+    // gone on to another origin since what this realm asked: where that was
+    // a push, its step is one the tree has and no session here does
+    if (jointOn && !last && frameArrivals.get(frame) === 'push') {
+      jointPush(null, null, true);
+      jointFrames = true;
+      unseenSteps.set(frame, [...(unseenSteps.get(frame) ?? []), jointStep]);
+    }
     frameArrivals.delete(frame);
     return true;
   });
