@@ -7741,13 +7741,13 @@ export function installDom(
     get clientWidth(): number {
       const s = scrollStateOf(this);
       if (s) return Math.round(s[4]);
-      if (this._viewport()) return viewport().width;
+      if (this._viewport()) return this._ownViewport().width;
       return Math.round(clientBoxOf(this)?.[0] ?? 0);
     }
     get clientHeight(): number {
       const s = scrollStateOf(this);
       if (s) return Math.round(s[5]);
-      if (this._viewport()) return viewport().height;
+      if (this._viewport()) return this._ownViewport().height;
       return Math.round(clientBoxOf(this)?.[1] ?? 0);
     }
     get clientTop(): number {
@@ -7763,9 +7763,9 @@ export function installDom(
       if (s) return Math.round(s[2]);
       if (this._viewport()) {
         // the viewport's scrollable overflow, where the host can say it
-        const d = documentSize();
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
-          viewport().width,
+          this._ownViewport().width,
           Math.round(d ? d[0] : (docRect(this)?.[2] ?? 0)),
         );
       }
@@ -7777,23 +7777,23 @@ export function installDom(
       if (this._viewport()) {
         // as far down as the viewport's scrollable overflow reaches, what
         // is positioned out of the flow below the root included
-        const d = documentSize();
+        const d = this.ownerDocument === document ? documentSize() : null;
         return Math.max(
-          viewport().height,
+          this._ownViewport().height,
           Math.round(d ? d[1] : (docRect(this)?.[3] ?? 0)),
         );
       }
       return this.clientHeight;
     }
     get scrollTop(): number {
-      if (this._viewport()) return viewport(true).scrollY;
+      if (this._viewport()) return this._ownViewport(true).scrollY;
       return scrollStateOf(this)?.[1] ?? 0;
     }
     set scrollTop(v: Any) {
       this._scrollTo(undefined, Number(v));
     }
     get scrollLeft(): number {
-      if (this._viewport()) return pageScrollX(viewport(true));
+      if (this._viewport()) return pageScrollX(this._ownViewport(true));
       return scrollStateOf(this)?.[0] ?? 0;
     }
     set scrollLeft(v: Any) {
@@ -7801,7 +7801,20 @@ export function installDom(
     }
     /** Whether this element's scrolling is the viewport's: the root's. */
     _viewport(): boolean {
-      return this === document.documentElement;
+      if (this === document.documentElement) return true;
+      // a frame's document of this realm's, which its frame's view draws
+      // and scrolls (CSSOM View 7: its root's scrolling is its viewport's)
+      const own = this.ownerDocument;
+      return (
+        own !== document && !!own?.defaultView && this === own.documentElement
+      );
+    }
+    /** The viewport this root's scrolling is: the page's, or its frame's. */
+    _ownViewport(fresh = false): ReturnType<typeof viewport> {
+      const own = this.ownerDocument;
+      return own === document
+        ? viewport(fresh)
+        : { ...viewport(fresh), ...frameViewport(own) };
     }
     /** Scroll this element, an axis left where it is where it is not a
      *  number: the viewport for the root. */
@@ -7814,6 +7827,15 @@ export function installDom(
         v !== undefined && Number.isFinite(v);
       // what a scroll-driven animation draws follows at the next frame
       nudgeFrames();
+      if (this._viewport() && this.ownerDocument !== document) {
+        const v = frameViewport(this.ownerDocument);
+        call(
+          'viewScrollTo',
+          this.ownerDocument._id,
+          `${ok(x) ? x : v.scrollX},${ok(y) ? y : v.scrollY},${relative ? 1 : 0}`,
+        );
+        return;
+      }
       if (this._viewport()) {
         const v = viewport();
         call(

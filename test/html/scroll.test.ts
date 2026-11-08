@@ -321,6 +321,40 @@ test('a snap container comes to rest where an area lines up, and follows it thro
   assert.equal(near.scrollElementTo(far, { y: 180 })?.y, 200, 'near enough');
 });
 
+test('a scroll container is first scrolled to its scroll-initial-target, lined up as its scroll-snap-align says, until something else scrolls it', async () => {
+  // CSS Scroll Snap 2, 3.1: the container's initial scroll position brings
+  // the first target whose nearest scroll container it is into view, at
+  // its start where its scroll-snap-align is none; a layout that lines it
+  // up otherwise takes the container with it, until a script scrolls it
+  const { el: node } = await renderScrolled(
+    '<style>#s{position:absolute;width:300px;height:300px;overflow:scroll}' +
+      '#space{width:1000px;height:1000px}' +
+      '.b{position:absolute;width:200px;height:200px}' +
+      '#t{top:200px;left:200px;scroll-initial-target:nearest}</style>' +
+      '<div id="s"><div id="space"></div><div class="b" id="t"></div></div>',
+    600,
+  );
+  const s = el(node, 's');
+  const at = () => {
+    const state = node.scrollStateOf(s);
+    return [state?.x, state?.y];
+  };
+  assert.deepEqual(at(), [200, 200], 'at its start');
+  await act(async () => {
+    el(node, 't').attribs.style = 'scroll-snap-align:center';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.deepEqual(at(), [150, 150], 'centred');
+  node.scrollElementTo(s, { x: 0, y: 0 });
+  await act(async () => {
+    el(node, 't').attribs.style = 'scroll-snap-align:end';
+    node.touchDocument(null);
+  });
+  await act();
+  assert.deepEqual(at(), [0, 0], 'a script scrolled it');
+});
+
 test('in an area larger than the snapport a snap rests where it covers the snapport, but not where another area intrudes at its start', async () => {
   // CSS Scroll Snap 1, "snapping boxes that overflow the scrollport": a
   // long area holds small ones, and a scroll across one of them lines it
