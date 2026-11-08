@@ -1794,6 +1794,7 @@ const PSEUDO_ELEMENTS = new Set([
   'placeholder',
   'marker',
   'backdrop',
+  'column',
   'file-selector-button',
   'cue',
   'part',
