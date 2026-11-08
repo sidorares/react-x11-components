@@ -2636,9 +2636,11 @@ export class DomHost {
    *  base URL"): the first `<base href>` in it, resolved against its
    *  address, and else its address — or this document's base, for one
    *  whose address is `about:blank` or `about:srcdoc`, or that no frame
-   *  shows, which take their creator's. */
+   *  shows, which take their creator's. This document's own is the
+   *  handle's, or its creator's where it is an `about:blank` a window
+   *  opened. */
   private _documentBase(doc: Document): string {
-    const own = this._handle.base ?? this.url;
+    const own = this._handle.base ?? this.creator ?? this.url;
     if (doc === this.document) return own;
     const at = this._documentUrl(doc);
     const fallback =
@@ -6388,9 +6390,9 @@ export class DomHost {
       // a node's base URL, its document's (HTML 2.4.1): this realm's own, or
       // another document's of it — a frame's — by the `<base>` it has
       case 'base':
-        return a
-          ? this._documentBase(this._node(a) as Document)
-          : (this._handle.base ?? this.url);
+        return this._documentBase(
+          a ? (this._node(a) as Document) : this.document,
+        );
       case 'location':
         return this.url;
       // the document's address changed by its own history. Never to another
@@ -6407,7 +6409,10 @@ export class DomHost {
         return null;
       }
       case 'resolve':
-        return this._resolve(text(a));
+        return this._resolve(
+          text(a),
+          typeof b === 'number' ? this._node(b) : null,
+        );
       case 'characterSet':
         return this._encodingOf(
           a ? (this._node(a) as Document) : this.document,
@@ -9384,9 +9389,12 @@ export class DomHost {
     return kids;
   }
 
-  private _resolve(url: string): string {
+  private _resolve(url: string, node: AnyNode | null = null): string {
     try {
-      const base = this._seams.handle.base ?? this.creator ?? this.url;
+      // against the document the node is in: a frame's of this realm's has
+      // its own address, and its own `<base>`
+      const own = node ? this._frameBase(node) : null;
+      const base = own ?? this._seams.handle.base ?? this.creator ?? this.url;
       // a query is in the document's encoding (URL's "encoding-parse")
       const encoding = outputEncoding(this._encodingOf(this.document));
       return encoding === 'UTF-8'
@@ -9395,6 +9403,16 @@ export class DomHost {
     } catch {
       return url;
     }
+  }
+
+  /** The base URL of a frame's document of this realm's a node is in
+   *  (`_documentBase`); null for the page's own document, or a node in
+   *  none. */
+  private _frameBase(node: AnyNode): string | null {
+    let root: AnyNode = node;
+    while (root.parent) root = root.parent as AnyNode;
+    if (!(root instanceof Document) || root === this.document) return null;
+    return this._documentBase(root);
   }
 
   /** The label `charset` last was and what it names, which `_resolve` asks

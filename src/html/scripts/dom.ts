@@ -8846,7 +8846,7 @@ export function installDom(
     accessor(
       function () {
         const raw = attrValue(this, attr);
-        return raw === null ? '' : String(call('resolve', raw));
+        return raw === null ? '' : String(call('resolve', raw, this._id));
       },
       function (v) {
         this._setAttr(attr, usv(v));
@@ -11104,9 +11104,18 @@ export function installDom(
           slot.to = targetEntry;
           call('frameNavigate', frame._id, targetEntry.url, '', 'traverse');
         },
-        // a frame's scroll is its own document's, which no entry keeps
-        scroll: () => [0, 0],
-        scrollTo: () => {},
+        // a frame's scroll is its document's viewport's, which its view
+        // draws and scrolls, and which an entry keeps to go back to
+        scroll: () => {
+          const now = frameDocumentOf(frame);
+          if (!now) return [0, 0];
+          const v = frameViewport(now);
+          return [v.scrollX, v.scrollY];
+        },
+        scrollTo: (x, y) => {
+          const now = frameDocumentOf(frame);
+          if (now) call('viewScrollTo', now._id, `${x},${y},0`);
+        },
         // its initial `about:blank` keeps no entries the API shows
         disabled: () => call('frameInitialBlank', frame._id) === true,
         // a `javascript:` URL's script, with the frame's window and document
@@ -11433,6 +11442,8 @@ export function installDom(
       crypto: () => crypto,
       isSecureContext: () => call('secureContext') === true,
       crossOriginIsolated: () => false,
+      // its document's navigation entry, the page's for the rest
+      performance: () => framePerformanceOf(frame, current),
       // its own session history (`makeSession`), made as it is asked for
       history: () => frameSessionOf(frame, current, target).history,
       navigation: () => frameSessionOf(frame, current, target).navigation,
@@ -25226,6 +25237,144 @@ export function installDom(
           (type === undefined || e.entryType === str(type)),
       ),
   });
+  /** Navigation Timing 2's type for how a document came to be shown: a
+   *  reload, a step through the history, or anything else, a navigation. */
+  const navigationTypeOf = (arrived: string | null): string =>
+    arrived === 'reload'
+      ? 'reload'
+      : arrived === 'traverse'
+        ? 'back_forward'
+        : 'navigate';
+  /** HTML's legacy `performance.navigation`, its type as a number. */
+  const legacyNavigation = (arrived: string | null): Any => ({
+    type: { navigate: 0, reload: 1, back_forward: 2 }[
+      navigationTypeOf(arrived)
+    ],
+    redirectCount: 0,
+  });
+  /** Navigation Timing 2: a document's `navigation` entry, which says how
+   *  it came to be shown (`type`) and when its parse and its load got
+   *  where. What no network here says — the hops, the bytes — is 0. */
+  class PerformanceNavigationTiming {
+    constructor(token?: Any) {
+      if (token !== TOKEN) throw new TypeError('Illegal constructor');
+    }
+    toJSON(): Any {
+      return { ...this };
+    }
+  }
+  Object.defineProperty(
+    PerformanceNavigationTiming.prototype,
+    Symbol.toStringTag,
+    { value: 'PerformanceNavigationTiming', configurable: true },
+  );
+  /** Each document's navigation entry, one for its life, its times filled
+   *  in as its parse and its load get there (`noteReadiness`). */
+  const navigationTimings = new WeakMap<object, Any>();
+  const navigationTimingOf = (
+    doc: Any,
+    url: string,
+    arrived: string | null,
+  ): Any => {
+    let entry = navigationTimings.get(doc);
+    if (!entry) {
+      entry = Object.assign(new PerformanceNavigationTiming(TOKEN), {
+        name: url,
+        entryType: 'navigation',
+        startTime: 0,
+        duration: 0,
+        initiatorType: 'navigation',
+        deliveryType: '',
+        nextHopProtocol: '',
+        renderBlockingStatus: 'non-blocking',
+        contentType: 'text/html',
+        workerStart: 0,
+        redirectStart: 0,
+        redirectEnd: 0,
+        fetchStart: 0,
+        domainLookupStart: 0,
+        domainLookupEnd: 0,
+        connectStart: 0,
+        connectEnd: 0,
+        secureConnectionStart: 0,
+        requestStart: 0,
+        responseStart: 0,
+        responseEnd: 0,
+        transferSize: 0,
+        encodedBodySize: 0,
+        decodedBodySize: 0,
+        responseStatus: 200,
+        serverTiming: [],
+        unloadEventStart: 0,
+        unloadEventEnd: 0,
+        domInteractive: 0,
+        domContentLoadedEventStart: 0,
+        domContentLoadedEventEnd: 0,
+        domComplete: 0,
+        loadEventStart: 0,
+        loadEventEnd: 0,
+        type: navigationTypeOf(arrived),
+        redirectCount: 0,
+        activationStart: 0,
+      });
+      navigationTimings.set(doc, entry);
+    }
+    return entry;
+  };
+  /** A document's parse or load got where `state` says, at `at`. */
+  const noteReadiness = (
+    entry: Any,
+    state: 'interactive' | 'complete',
+    at: number,
+  ): void => {
+    if (state === 'interactive') {
+      entry.domInteractive = at;
+      entry.domContentLoadedEventStart = at;
+      entry.domContentLoadedEventEnd = at;
+    } else {
+      entry.domComplete = at;
+      entry.loadEventStart = at;
+      entry.loadEventEnd = at;
+      entry.duration = at;
+    }
+  };
+  /** A frame's `performance` where its document has no realm of its own:
+   *  the page's, but for the navigation entry, which is its document's. */
+  const framePerformances = new WeakMap<object, Any>();
+  const framePerformanceOf = (frame: Any, doc: Any): Any => {
+    let made = framePerformances.get(doc);
+    if (made) return made;
+    const nav = (): Any => {
+      const session = frameSessions.get(doc)?.session;
+      return navigationTimingOf(
+        doc,
+        String(call('frameLocation', frame._id)),
+        session?.arrived?.type ?? null,
+      );
+    };
+    const own = (): Any[] => [nav()];
+    made = Object.create(G.performance, {
+      getEntries: { value: own, configurable: true },
+      getEntriesByType: {
+        value: (type: Any) => entryList(own()).getEntriesByType(type),
+        configurable: true,
+      },
+      getEntriesByName: {
+        value: (name: Any, type?: Any) =>
+          entryList(own()).getEntriesByName(name, type),
+        configurable: true,
+      },
+      navigation: {
+        get: () =>
+          legacyNavigation(
+            frameSessions.get(doc)?.session?.arrived?.type ?? null,
+          ),
+        configurable: true,
+      },
+    });
+    framePerformances.set(doc, made);
+    return made;
+  };
   /** Paint Timing 1: `performance.getEntriesByType('paint')` entries. */
   class PerformancePaintTiming {
     constructor() {
@@ -33548,6 +33697,9 @@ export function installDom(
   const sessionOfElement = (el: Any): Session => {
     const doc = el?.ownerDocument;
     if (doc && doc !== document) {
+      // made as its window's `navigation` is first asked for, which a
+      // link followed before anything asked for it has not been
+      if (!frameSessions.get(doc)?.session) void doc.defaultView?.navigation;
       const made = frameSessions.get(doc);
       if (made?.session) return made.session as Session;
     }
@@ -38545,6 +38697,15 @@ export function installDom(
   define('CSS', cssNamespace);
   define('customElements', customElements);
   const timeOrigin = Date.now() - now();
+  /** How the page's document came to be shown, for its navigation entry. */
+  const pageArrival = (): string | null =>
+    pageSession.session.arrived?.type ?? null;
+  /** The entries the page's `performance` lists: its document's navigation
+   *  entry first, then its marks and measures. */
+  const pageEntries = (): Any[] => [
+    navigationTimingOf(document, String(call('location')), pageArrival()),
+    ...entries,
+  ];
   define('performance', {
     now,
     timeOrigin,
@@ -38599,10 +38760,11 @@ export function installDom(
     },
     clearResourceTimings() {},
     setResourceTimingBufferSize() {},
-    getEntries: () => entries.slice(),
-    getEntriesByType: (type: Any) => entryList(entries).getEntriesByType(type),
+    getEntries: () => pageEntries(),
+    getEntriesByType: (type: Any) =>
+      entryList(pageEntries()).getEntriesByType(type),
     getEntriesByName: (name: Any, type?: Any) =>
-      entryList(entries).getEntriesByName(name, type),
+      entryList(pageEntries()).getEntriesByName(name, type),
     // the legacy timing, where a page reads how long it took to load
     timing: {
       navigationStart: timeOrigin,
@@ -38617,7 +38779,10 @@ export function installDom(
       loadEventStart: 0,
       loadEventEnd: 0,
     },
-    navigation: { type: 0, redirectCount: 0 },
+    // HTML's legacy `PerformanceNavigation`: 0, 1 or 2 for the type
+    get navigation() {
+      return legacyNavigation(pageArrival());
+    },
     toJSON: () => ({ timeOrigin }),
   });
   define('screen', {
@@ -38645,6 +38810,7 @@ export function installDom(
   // `History` is an interface of its own (`makeSession`), since a frame's
   // `history` is one as well.
   define('History', History);
+  define('PerformanceNavigationTiming', PerformanceNavigationTiming);
   for (const [name, object] of [
     ['Location', location],
     ['Navigator', navigator],
@@ -40456,6 +40622,11 @@ export function installDom(
         }
       }
     }
+    noteReadiness(
+      navigationTimingOf(document, String(call('location')), pageArrival()),
+      state,
+      now(),
+    );
     const change = new Event('readystatechange');
     change.isTrusted = true;
     dispatch(document, change);

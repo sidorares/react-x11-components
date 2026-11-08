@@ -18842,6 +18842,39 @@ test("a frame's window has every on-handler the page's has: its onhashchange and
   );
 });
 
+test("a document's performance has its navigation entry, which says how it came to be shown, a frame's its own", async () => {
+  // Navigation Timing 2: `getEntriesByType("navigation")` is the document's
+  // one PerformanceNavigationTiming, and a frame's window has its own
+  // document's, a reload's `type` "reload" (WPT's
+  // navigation-methods/reload-navigation-timing)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var page = performance.getEntriesByType("navigation");' +
+      '  r.push(page.length, page[0] instanceof PerformanceNavigationTiming, page[0].type,' +
+      '    page[0].name === location.href, page[0].loadEventEnd > 0, performance.navigation.type);' +
+      '  f.onload = function () {' +
+      '    var own = f.contentWindow.performance.getEntriesByType("navigation");' +
+      '    r.push(own.length, own[0].type, /a\\.html$/.test(own[0].name), f.contentWindow.performance.navigation.type);' +
+      '    document.getElementById("out").textContent = r.join("|");' +
+      '  };' +
+      '  f.contentWindow.navigation.reload();' +
+      '}, 0); };' +
+      '</script>',
+    { 'a.html': '<!doctype html><p>a</p>' },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    '1|true|navigate|true|true|0|1|reload|true|1',
+    logs.join('\n'),
+  );
+});
+
 test("a frame running its own realm tells its document's readystatechange, its frame's load before its pageshow, and its own cross-document navigate() never settles", async () => {
   // every browser tells a frame's `load` between its window's `load` and its
   // `pageshow`; `document.onreadystatechange` is a handler like any; and the
@@ -19445,6 +19478,41 @@ test("a scriptless frame's root scrolls as its frame's viewport, which starts at
     (t) => t !== '',
   );
   assert.equal(page, '200|200|150|30|30', logs.join('\n'));
+});
+
+test('a link to a fragment in a scriptless frame is a fragment navigation of the frame: its window hears hashchange, and its history goes back to where it was scrolled', async () => {
+  // HTML 7.4.2.3.3, "navigate to a fragment", of the frame's own session,
+  // its link resolved against the frame's address; and a step back restores
+  // where the entry was scrolled (WPT
+  // scroll-initial-target-with-anchor-navigation)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="frame.html" style="width: 300px; height: 150px"></iframe>' +
+      '<p id="out"></p><script>' +
+      'var f = document.getElementById("f"), r = [];' +
+      'function show() { document.getElementById("out").textContent = r.join("|"); }' +
+      'f.onload = function () { setTimeout(function () {' +
+      '  var w = f.contentWindow, d = f.contentDocument;' +
+      '  w.addEventListener("hashchange", function () {' +
+      '    var hash = w.location.hash; setTimeout(function () {' +
+      '      r.push("hash:" + hash);' +
+      '      if (r.length === 1) { d.documentElement.scrollTop = 100; w.history.back(); }' +
+      '      else { r.push(w.scrollY); show(); } }, 50);' +
+      '  });' +
+      '  d.documentElement.scrollTop = 30; d.getElementById("go").click();' +
+      '}, 100); };' +
+      '</script>',
+    {
+      'frame.html':
+        '<!doctype html><a id="go" href="#there">go</a>' +
+        '<div style="height: 600px"></div><div id="there">there</div>',
+    },
+    true,
+  );
+  const page = await until(
+    () => text('page', 'out'),
+    (t) => t !== '',
+  );
+  assert.equal(page, 'hash:#there|hash:|30', logs.join('\n'));
 });
 
 test("an iframe's srcdoc is its document, at about:srcdoc, the page's origin and base", async () => {

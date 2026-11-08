@@ -14723,7 +14723,7 @@ export class HtmlViewNode extends Node {
       width: port.width,
       height: port.height,
       maxX: Math.max(0, this._documentWidth - port.width),
-      maxY: Math.max(0, this._documentHeight - port.height),
+      maxY: Math.max(0, Math.round(this._documentHeight) - port.height),
       focused: this._snapFocused,
       targeted: this._snapTargeted,
     };
@@ -15207,7 +15207,18 @@ export class HtmlViewNode extends Node {
       return at;
     }
     const lone = aim && this._viewportSnap(aim);
-    return lone ? lineUp(lone, aim, x, y) : { x, y };
+    return lone ? lineUp(lone, aim, x, y) : this._inViewportReach(x, y);
+  }
+
+  /** A viewport scroll kept to how far the document reaches on the pixel
+   *  grid, as Blink snaps `scrollHeight`: content that ends a fraction of
+   *  a pixel down scrolls to a whole one, where the pane would go the rest
+   *  of the way. */
+  private _inViewportReach(x: number, y: number): { x: number; y: number } {
+    const port = this._viewport();
+    if (!port) return { x, y };
+    const maxY = Math.max(0, Math.round(this._documentHeight) - port.height);
+    return { x, y: Math.min(y, maxY) };
   }
 
   /**
