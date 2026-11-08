@@ -8825,6 +8825,7 @@ npm run examples:tray-host   # X11 only, and no other tray on that display
 npm run examples:three       # a GL context: see docs/components/three.md
 npm run examples:tree -- <dir>  # defaults to cwd
 npm run examples:browser -- [url]  # and a network; BROWSER_DEBUG=1 logs requests
+npm run examples:browser:app -- [url]  # macOS: as an app of its own, for the camera
 npm run examples:tree -- --stress[=rows]  # generated 100k-row tree instead
 npm run examples:flow-stress    # the measured pan loop, with an X-traffic HUD
 ```
