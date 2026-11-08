@@ -285,6 +285,7 @@ import {
   layoutApart,
   setPlacedTransitions,
   viewportShiftOf,
+  viewportShiftYOf,
   placedAtScroll,
   layoutDocument,
   noteMoving,
@@ -4064,8 +4065,12 @@ export class HtmlViewNode extends Node {
    * as a scroll as far as the spill.
    */
   private _fromOrigin<V extends Viewport | null>(viewport: V): V {
-    return viewport && this._originX
-      ? { ...viewport, x: viewport.x - this._originX }
+    return viewport && (this._originX || this._originY)
+      ? {
+          ...viewport,
+          x: viewport.x - this._originX,
+          y: viewport.y - this._originY,
+        }
       : viewport;
   }
 
@@ -6602,6 +6607,17 @@ export class HtmlViewNode extends Node {
   /** The origin the pane was last kept at (`_followOrigin`). */
   private _originX = 0;
 
+  /** The same down: where the viewport's scroll origin is, in device pixels
+   *  from the top of what the pane scrolls, past 0 where it is at the
+   *  bottom of a document that spills past its top (`viewportShiftYOf`) —
+   *  a vertical page's under `rtl`. What `scrollY` and `scrollTop` count
+   *  from, which are negative from it. */
+  scrollOriginY(): number {
+    return this._originY;
+  }
+
+  private _originY = 0;
+
   /**
    * Keep the pane as far from the viewport's scroll origin as it was, where
    * a layout moved the origin: what spills past the left of the document
@@ -6614,6 +6630,7 @@ export class HtmlViewNode extends Node {
   private _followOrigin(): void {
     const tree = this._tree;
     if (!tree) return;
+    this._followOriginY(tree);
     const origin = viewportShiftOf(tree);
     const was = this._originX;
     if (origin === was) return;
@@ -6624,6 +6641,22 @@ export class HtmlViewNode extends Node {
     this._heldScrollX = (from + origin) / (pane.scale || 1);
     this._heldFrom = pane.scrollX;
     this.invalidate(false, this, 'paint');
+  }
+
+  /** `_followOrigin` down: the pane kept as far from an origin at the
+   *  bottom as it was, started at it, and held there for a page that reads
+   *  it before the pane's next pass takes the scroll (`oweScrollDown`). */
+  private _followOriginY(tree: BoxTree): void {
+    const origin = viewportShiftYOf(tree);
+    const was = this._originY;
+    if (origin === was) return;
+    this._originY = origin;
+    const pane = this._pane();
+    if (!pane) return;
+    const scale = pane.scale || 1;
+    const to = pane.scrollY - was + origin;
+    pane.scrollTo({ y: to / scale });
+    this.oweScrollDown(to / scale);
   }
 
   /** What `onScrollReach` was last told. */

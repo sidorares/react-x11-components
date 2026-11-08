@@ -8111,6 +8111,16 @@ owes a layout (`_scrolledSinceLaidOut`), which a page's read settles as
 well as a paint. Painting it at the viewport through the frame's turn is
 what would lift the layout a scroll costs.
 
+**A vertical page whose lines run upwards starts at its bottom**
+(`viewportStartsBottom`, `VIEWPORT_SHIFT_Y`, `scrollOriginY`): the right
+origin's shape along the other axis. What spills past the top is counted
+into the document's height and the document is drawn that far down, which
+a layout takes back first (`unshifted`). A page reads its scroll from the
+origin (`pageScrollY`, the viewport's `originY`), so **anything new that
+hands a page the pane's vertical scroll, or takes one from it, goes through
+`originY`**, as the horizontal does through `originX`. `layoutApart`
+refuses while the shift is on.
+
 **In a tree with anchors, positioned boxes are laid out in the order a
 browser lays them out** (`finishOrder`, `inFinishOrder` in
 `layoutDocument`): as the layout of each one's containing block ends, the

@@ -916,6 +916,8 @@ export interface HostSeams {
     scrollY: number;
     /** Where `scrollX` counts from for a page (`ScriptViewport.originX`). */
     originX?: number;
+    /** Where `scrollY` counts from (`ScriptViewport.originY`). */
+    originY?: number;
     zoom: number;
     dpr: number;
     left: number;
@@ -5435,7 +5437,7 @@ export class DomHost {
           this._handle.layoutNow?.();
         }
         const v = this._seams.viewport();
-        return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr},${v.originX ?? 0}`;
+        return `${v.width},${v.height},${v.scrollX},${v.scrollY},${v.dpr},${v.originX ?? 0},${v.originY ?? 0}`;
       }
       // how far the viewport's scrollable overflow reaches: the root's
       // `scrollWidth` and `scrollHeight`, or '' where nothing answers
@@ -5502,9 +5504,9 @@ export class DomHost {
         // `scrollBy()`'s the way it went
         // from the viewport's scroll origin, as a page writes `scrollX`:
         // negative from one at the right
-        const origin = this._seams.viewport().originX ?? 0;
-        const x = Math.max(0, (Number(a) || 0) + origin);
-        const y = Math.max(0, Number(b) || 0);
+        const at = this._seams.viewport();
+        const x = Math.max(0, (Number(a) || 0) + (at.originX ?? 0));
+        const y = Math.max(0, (Number(b) || 0) + (at.originY ?? 0));
         const target = typeof c === 'number' ? this._element(c) : null;
         // against the style the page has now, as a scroll is (CSSOM View
         // 4, "perform a scroll" runs after the style is up to date)

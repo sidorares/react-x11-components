@@ -782,7 +782,7 @@ export function installDom(
       typeof (v as Any)?.addEventListener === 'function',
     scrolled: () => {
       const v = viewport();
-      return { x: pageScrollX(v), y: v.scrollY };
+      return { x: pageScrollX(v), y: pageScrollY(v) };
     },
     offsetIn: (target, x, y) => pointIn('offset', target, x, y),
     layerIn: (target, x, y) => pointIn('layer', target, x, y),
@@ -7786,7 +7786,7 @@ export function installDom(
       return this.clientHeight;
     }
     get scrollTop(): number {
-      if (this._viewport()) return viewport(true).scrollY;
+      if (this._viewport()) return pageScrollY(viewport(true));
       return scrollStateOf(this)?.[1] ?? 0;
     }
     set scrollTop(v: Any) {
@@ -7819,7 +7819,7 @@ export function installDom(
         call(
           'scrollTo',
           ok(x) ? x : pageScrollX(v),
-          ok(y) ? y : v.scrollY,
+          ok(y) ? y : pageScrollY(v),
           undefined,
           relative,
         );
@@ -7975,7 +7975,7 @@ export function installDom(
         );
         return;
       }
-      call('scrollTo', pageScrollX(v) + byX, v.scrollY + byY, this._id);
+      call('scrollTo', pageScrollX(v) + byX, pageScrollY(v) + byY, this._id);
     }
     /** A shadow root `<Html>` draws, as it draws a declarative one: the
      *  host's boxes are the tree's, with the host's children in its
@@ -21073,13 +21073,22 @@ export function installDom(
     scrollY: number;
     dpr: number;
     originX: number;
+    originY: number;
   } => {
-    const [width, height, scrollX, scrollY, dpr, originX] = String(
+    const [width, height, scrollX, scrollY, dpr, originX, originY] = String(
       call('viewport', scrolled),
     )
       .split(',')
       .map(Number);
-    return { width, height, scrollX, scrollY, dpr, originX: originX || 0 };
+    return {
+      width,
+      height,
+      scrollX,
+      scrollY,
+      dpr,
+      originX: originX || 0,
+      originY: originY || 0,
+    };
   };
   /** The viewport of a frame's document of this realm's, which has no realm
    *  of its own: its frame's content box, scrolled as its view has it. */
@@ -21091,6 +21100,7 @@ export function installDom(
     scrollX: number;
     scrollY: number;
     originX: number;
+    originY: number;
   } => {
     const [width, height] = String(call('frameSize', doc._id))
       .split(' ')
@@ -21104,6 +21114,7 @@ export function installDom(
       scrollX: scrollX || 0,
       scrollY: scrollY || 0,
       originX: 0,
+      originY: 0,
     };
   };
   /** `scrollX` as a page reads it: from the viewport's scroll origin, which
@@ -21113,6 +21124,11 @@ export function installDom(
    *  measured against. */
   const pageScrollX = (v: { scrollX: number; originX: number }): number =>
     v.scrollX - v.originX;
+  /** `scrollY` the same way: from an origin at the bottom of a document
+   *  that spills past its top — a vertical page's under `rtl` — negative
+   *  there. */
+  const pageScrollY = (v: { scrollY: number; originY: number }): number =>
+    v.scrollY - v.originY;
 
   /** Where this realm's clock starts on the host's, which is the process's:
    *  a worker's, whose time is its own (`__becomeWorker`). */
@@ -37317,9 +37333,9 @@ export function installDom(
   getter('outerWidth', () => windowSize?.[0] ?? viewport().width);
   getter('outerHeight', () => windowSize?.[1] ?? viewport().height);
   getter('scrollX', () => pageScrollX(viewport(true)));
-  getter('scrollY', () => viewport(true).scrollY);
+  getter('scrollY', () => pageScrollY(viewport(true)));
   getter('pageXOffset', () => pageScrollX(viewport(true)));
-  getter('pageYOffset', () => viewport(true).scrollY);
+  getter('pageYOffset', () => pageScrollY(viewport(true)));
   getter('devicePixelRatio', () => viewport().dpr);
   getter('isSecureContext', () => call('secureContext') === true);
   // every realm here shares a process, which is the "logical" cross-origin
@@ -37420,8 +37436,8 @@ export function installDom(
     const v = viewport();
     call(
       'scrollTo',
-      Number(to.left ?? v.scrollX) || 0,
-      Number(to.top ?? v.scrollY) || 0,
+      Number(to.left ?? pageScrollX(v)) || 0,
+      Number(to.top ?? pageScrollY(v)) || 0,
     );
   });
   define('scroll', G.scrollTo);
@@ -37431,8 +37447,8 @@ export function installDom(
     // a relative scroll, which a snapping root snaps the way it went
     call(
       'scrollTo',
-      v.scrollX + (Number(by.left) || 0),
-      v.scrollY + (Number(by.top) || 0),
+      pageScrollX(v) + (Number(by.left) || 0),
+      pageScrollY(v) + (Number(by.top) || 0),
       undefined,
       true,
     );
