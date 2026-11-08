@@ -1183,6 +1183,13 @@ export interface ComputedStyle {
    *  as written. What a transition captures the element by. */
   viewTransitionName: string;
   viewTransitionClass: string;
+  /** The shadow root whose rule set each, null for the document's (CSS
+   *  View Transitions 2, 3.1): a name or classes a shadow tree's sheet
+   *  gives are associated with no document, and capture nothing, and
+   *  `auto` takes an element's `id` only from a rule of the element's own
+   *  tree (`Cascade._noteTree`). */
+  viewTransitionNameTree: object | null;
+  viewTransitionClassTree: object | null;
   /** `view-transition-scope` (CSS View Transitions 2, 4): `all` keeps the
    *  names in the element out of a transition started outside it; an
    *  element a transition is started on has it for the transition's
@@ -1949,6 +1956,8 @@ export function initialStyle(look: RootLook, scale = 1): ComputedStyle {
     mixBlendMode: 'normal',
     willChangeNames: 'auto',
     viewTransitionName: 'none',
+    viewTransitionNameTree: null,
+    viewTransitionClassTree: null,
     viewTransitionClass: 'none',
     viewTransitionScope: 'none',
     viewTransitionGroup: 'normal',
