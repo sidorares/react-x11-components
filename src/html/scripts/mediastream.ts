@@ -127,12 +127,19 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     return s;
   };
   /** An event handler IDL attribute, its accessors named as Web IDL
-   *  names them. */
-  const handler = (proto: Any, name: string): void => {
+   *  names them, and called on what is not of its interface a
+   *  `TypeError`. */
+  const handler = (
+    proto: Any,
+    name: string,
+    brand: (s: Any) => boolean,
+  ): void => {
     const get = function (this: Any) {
+      slotOf(this, brand);
       return this._handlers[name] ?? null;
     };
     const set = function (this: Any, fn: Any) {
+      slotOf(this, brand);
       setHandler(
         this,
         name,
@@ -270,19 +277,37 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     getSettings(): Any {
       return { ...slotOf(this, (s) => s.track).settings };
     }
-    applyConstraints(constraints: Any = {}): Promise<void> {
+    /** Settled by the host, which fits the track's source to the
+     *  constraints (`constraints.ts`): the settings they came to, or an
+     *  `OverconstrainedError` naming the one it cannot meet. An ended
+     *  track's resolves and changes nothing. */
+    applyConstraints(constraints: Any = undefined): Promise<void> {
       let s: TrackSlot;
+      let asked: Any;
       try {
         s = slotOf(this, (x) => x.track);
+        if (constraints === undefined || constraints === null) asked = {};
+        else if (typeof constraints !== 'object') {
+          throw typeError(
+            "Failed to execute 'applyConstraints' on 'MediaStreamTrack': The provided value is not of type 'MediaTrackConstraints'.",
+          );
+        } else asked = JSON.parse(stringify(constraints));
       } catch (error) {
         return P.reject(error);
       }
-      s.constraints = { ...constraints };
-      return P.resolve(undefined);
+      if (s.state === 'ended') return P.resolve(undefined);
+      return ask('mdApply', { source: s.source, constraints: asked }).then(
+        (answer: Any) => {
+          s.constraints = asked;
+          if (answer?.settings)
+            s.settings = { ...s.settings, ...answer.settings };
+          return undefined;
+        },
+      );
     }
   }
   for (const name of ['mute', 'unmute', 'ended']) {
-    handler(MediaStreamTrack.prototype, name);
+    handler(MediaStreamTrack.prototype, name, (s) => s.track);
   }
 
   /** A canvas's track (Media Capture from DOM Elements, 3.2): the canvas,
@@ -340,6 +365,43 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     }
     get track(): Any {
       return slotOf(this, (s) => s.event).track;
+    }
+  }
+
+  /** What `devicechange` is told with (Media Capture 9.4): the devices
+   *  there are, and of them those the user plugged in just now. */
+  class DeviceChangeEvent extends Event {
+    constructor(type: string, init: Any = undefined) {
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to construct 'DeviceChangeEvent': 1 argument required, but only 0 present.",
+        );
+      }
+      super(type, init);
+      const given = init?.devices;
+      const devices: Any[] =
+        given === undefined || given === null ? [] : [...given];
+      for (const d of devices) {
+        if (!apply(wmGet, slots, [d])?.device) {
+          throw typeError(
+            "Failed to construct 'DeviceChangeEvent': Failed to read the 'devices' property from 'DeviceChangeEventInit': Failed to convert value to 'MediaDeviceInfo'.",
+          );
+        }
+      }
+      apply(wmSet, slots, [
+        this,
+        {
+          change: true,
+          devices: Object.freeze(devices),
+          inserted: Object.freeze([]),
+        },
+      ]);
+    }
+    get devices(): Any {
+      return slotOf(this, (s) => s.change).devices;
+    }
+    get userInsertedDevices(): Any {
+      return slotOf(this, (s) => s.change).inserted;
     }
   }
 
@@ -423,6 +485,12 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       return this.getTracks().filter((t: Any) => t.kind === 'video');
     }
     getTrackById(id: string): Any {
+      slotOf(this, (s) => s.stream);
+      if (arguments.length < 1) {
+        throw typeError(
+          "Failed to execute 'getTrackById' on 'MediaStream': 1 argument required, but only 0 present.",
+        );
+      }
       const key = String(id);
       return this.getTracks().find((t: Any) => t.id === key) ?? null;
     }
@@ -451,7 +519,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     }
   }
   for (const name of ['addtrack', 'removetrack']) {
-    handler(MediaStream.prototype, name);
+    handler(MediaStream.prototype, name, (s) => s.stream);
   }
 
   const isStream = (v: Any): boolean => {
@@ -575,9 +643,15 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       if (token !== TOKEN) throw illegalConstructor();
     }
     enumerateDevices(): Promise<Any[]> {
+      try {
+        slotOf(this, (s) => s.devices);
+      } catch (error) {
+        return P.reject(error);
+      }
       return ask('mdDevices', {}).then((list: Any[]) => list.map(deviceInfo));
     }
     getSupportedConstraints(): Any {
+      slotOf(this, (s) => s.devices);
       const out: Any = {};
       for (const name of [
         'width',
@@ -591,6 +665,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         'echoCancellation',
         'autoGainControl',
         'noiseSuppression',
+        'voiceIsolation',
         'latency',
         'channelCount',
         'deviceId',
@@ -601,6 +676,11 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       return out;
     }
     getUserMedia(constraints: Any = {}): Promise<Any> {
+      try {
+        slotOf(this, (s) => s.devices);
+      } catch (error) {
+        return P.reject(error);
+      }
       if (constraints === null || typeof constraints !== 'object') {
         return P.reject(
           typeError(
@@ -639,8 +719,9 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       });
     }
   }
-  handler(MediaDevices.prototype, 'devicechange');
+  handler(MediaDevices.prototype, 'devicechange', (s) => s.devices);
   const mediaDevices = new MediaDevices(TOKEN);
+  apply(wmSet, slots, [mediaDevices, { devices: true }]);
 
   const interfaces: Record<string, unknown> = {
     MediaStream,
@@ -648,6 +729,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     CanvasCaptureMediaStreamTrack,
     MediaStreamTrackEvent,
     OverconstrainedError,
+    DeviceChangeEvent,
   };
   if (deps.secure) {
     interfaces.MediaDevices = MediaDevices;
@@ -663,6 +745,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     MediaDevices,
     MediaDeviceInfo,
     InputDeviceInfo,
+    DeviceChangeEvent,
   });
 
   return {

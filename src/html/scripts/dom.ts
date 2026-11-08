@@ -26019,6 +26019,9 @@ export function installDom(
       };
     }
     const resolved = new URL(href, location.href).href;
+    // a `data:` script is any document's, and runs at an origin of none
+    // (HTML 10.2.5.1, "fetch a classic worker script")
+    if (/^data:/i.test(resolved)) return { resolved, source: null };
     if (new URL(resolved).origin !== location.origin) {
       throw new DOMException(
         `Failed to construct '${made}': Script at '${resolved}' cannot be accessed from origin '${location.origin}'.`,
@@ -37864,8 +37867,15 @@ export function installDom(
     }
     for (const name of Object.getOwnPropertyNames(rtc)) define(name, rtc[name]);
     if (media.mediaDevices) {
-      Object.defineProperty(navigator, 'mediaDevices', {
-        get: () => media.mediaDevices,
+      // an attribute of `Navigator`'s, as Web IDL has one: on its prototype,
+      // and called on anything but this navigator a `TypeError`
+      const get = function (this: Any) {
+        if (this !== navigator) throw new TypeError('Illegal invocation');
+        return media.mediaDevices;
+      };
+      Object.defineProperty(get, 'name', { value: 'get mediaDevices' });
+      Object.defineProperty(Object.getPrototypeOf(navigator), 'mediaDevices', {
+        get,
         enumerable: true,
         configurable: true,
       });

@@ -15,13 +15,14 @@
 import { NO_MEDIA_DEVICES, mediaError } from '../media-devices.js';
 import type {
   HtmlMediaDevices,
-  MediaDeviceCapabilities,
   MediaDeviceDescription,
   MediaSettings,
   MediaSourceEvents,
   MediaSourceLike,
 } from '../media-devices.js';
 import type { CanvasPixels } from './host.js';
+import { selectSettings } from './constraints.js';
+import type { Constrainable, ConstraintSet } from './constraints.js';
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -37,6 +38,9 @@ export interface SourceSeams {
   originless(): boolean;
   /** An entry of the page's, with its input. */
   tell(entry: string, input: unknown): void;
+  /** Whether the document may use a camera or a microphone (Permissions
+   *  Policy). Absent, it may. */
+  allowed?(name: 'camera' | 'microphone'): boolean;
   /** The canvas an element's number names, as a `captureStream()` reads
    *  it, or null where it names none. */
   canvas?(element: number): CanvasFeed | null;
@@ -83,80 +87,20 @@ function digest(origin: string, id: string): string {
   return out;
 }
 
-const NUMBERS = [
-  'width',
-  'height',
-  'aspectRatio',
-  'frameRate',
-  'sampleRate',
-  'sampleSize',
-  'channelCount',
-  'latency',
-] as const;
-const BOOLEANS = [
-  'echoCancellation',
-  'autoGainControl',
-  'noiseSuppression',
-] as const;
-
-type Constraint = Record<string, unknown>;
-
-/** The settings a kind's constraints come to on a device, or the name of
- *  the one it cannot meet. */
-function settingsFor(
-  constraint: Constraint,
-  device: MediaDeviceDescription,
-): MediaSettings | string {
-  const out: MediaSettings = { ...device.defaults };
-  const caps = device.capabilities;
-  for (const key of NUMBERS) {
-    const c = constraint[key];
-    if (c === undefined) continue;
-    const range = caps[key];
-    const o = (typeof c === 'object' && c ? c : {}) as Record<string, unknown>;
-    const exact = typeof c === 'number' ? undefined : o.exact;
-    const min = typeof o.min === 'number' ? o.min : undefined;
-    const max = typeof o.max === 'number' ? o.max : undefined;
-    if (range) {
-      if (typeof exact === 'number' && (exact < range.min || exact > range.max))
-        return key;
-      if (min !== undefined && min > range.max) return key;
-      if (max !== undefined && max < range.min) return key;
-    }
-    let value =
-      typeof c === 'number'
-        ? c
-        : typeof exact === 'number'
-          ? exact
-          : typeof o.ideal === 'number'
-            ? o.ideal
-            : undefined;
-    if (value === undefined) continue;
-    if (min !== undefined) value = Math.max(min, value);
-    if (max !== undefined) value = Math.min(max, value);
-    if (range) value = Math.min(range.max, Math.max(range.min, value));
-    out[key] = value;
-  }
-  for (const key of BOOLEANS) {
-    const c = constraint[key];
-    const value =
-      typeof c === 'boolean'
-        ? c
-        : typeof c === 'object' && c
-          ? ((c as Record<string, unknown>).exact ??
-            (c as Record<string, unknown>).ideal)
-          : undefined;
-    if (typeof value === 'boolean') out[key] = value;
-  }
-  return out;
-}
-
 export class PageSources {
   private readonly _held = new Map<number, Held>();
   private readonly _ids = new Map<MediaSourceLike, number>();
   private _seq = 0;
-  /** The kinds a `getUserMedia` of this document was allowed. */
-  private readonly _granted = { camera: false, microphone: false };
+  /** The kinds of device this document may be told about, since a
+   *  `getUserMedia` of them succeeded. */
+  private readonly _exposed = { audio: false, video: false };
+  /** What each source a `getUserMedia` opened is, as its constraints are
+   *  fitted to it: what `applyConstraints` sets it with. */
+  private readonly _views = new Map<number, Constrainable>();
+  /** What makes this document's group ids its own. */
+  private readonly _salt = `${Date.now()}.${Math.random()}`;
+  /** The `applyConstraints` under way, one after another. */
+  private _applying: Promise<void> = Promise.resolve();
   private _disposed = false;
 
   constructor(private readonly _seams: SourceSeams) {}
@@ -202,6 +146,7 @@ export class PageSources {
         held.tracks -= 1;
         if (held.tracks <= 0) {
           this._held.delete(id);
+          this._views.delete(id);
           this._ids.delete(held.source);
           held.source.stop();
         }
@@ -239,6 +184,9 @@ export class PageSources {
       case 'mdGetUserMedia':
         void this._getUserMedia(Number(a), text(b));
         return null;
+      case 'mdApply':
+        this._apply(Number(a), text(b));
+        return null;
       default:
         return null;
     }
@@ -253,6 +201,7 @@ export class PageSources {
       } catch {}
     }
     this._held.clear();
+    this._views.clear();
     this._ids.clear();
   }
 
@@ -264,48 +213,114 @@ export class PageSources {
     return this._seams.devices() ?? NO_MEDIA_DEVICES;
   }
 
-  private _allowed(name: 'camera' | 'microphone'): boolean {
-    if (this._seams.originless()) return false;
-    return (
-      this._granted[name] ||
-      this._seam().permission?.(name, this._seams.origin()) === 'granted'
-    );
+  /** A device's id as this document is handed it: the same in every
+   *  document of its origin. */
+  private _deviceId(device: MediaDeviceDescription): string {
+    return digest(this._seams.origin(), device.deviceId);
   }
 
+  /** A device's group as this document is handed it: a document's own,
+   *  which no other document's matches (Media Capture 9.2.1). */
+  private _groupId(device: MediaDeviceDescription): string {
+    return digest(`${this._seams.origin()}\n${this._salt}`, device.groupId);
+  }
+
+  /** A device as its constraints are fitted to it. */
+  private _view(device: MediaDeviceDescription): Constrainable {
+    return {
+      kind: device.kind === 'videoinput' ? 'video' : 'audio',
+      deviceId: this._deviceId(device),
+      groupId: this._groupId(device),
+      capabilities: device.capabilities,
+      defaults: device.defaults,
+      modes: device.modes,
+    };
+  }
+
+  /** Whether the document may be told about a kind of device: its
+   *  "camera information can be exposed" and "microphone information can
+   *  be exposed" — a `getUserMedia` of it succeeded here, or a track of
+   *  such a device is live. Not whether the kind is allowed: Firefox and
+   *  Safari keep a page that has not captured to empty ids whatever its
+   *  permission, as WPT holds them to. */
+  private _exposes(kind: 'audio' | 'video'): boolean {
+    if (this._exposed[kind]) return true;
+    for (const id of this._held.keys()) {
+      if (this._views.get(id)?.kind === kind) return true;
+    }
+    return false;
+  }
+
+  /** Whether the document may use a kind of device at all: a frame's
+   *  `allow`, or the `Permissions-Policy` it was served with. */
+  private _usable(name: 'camera' | 'microphone'): boolean {
+    return this._seams.allowed?.(name) ?? true;
+  }
+
+  /**
+   * Media Capture's "creating a list of device info objects": the
+   * microphones, then the cameras, then the speakers, each the system's
+   * default first. A kind the document may not be told about is one entry
+   * with no id, no group and no label, and a speaker is listed only where
+   * a microphone is (Audio Output Devices API, 3.1).
+   */
   private async _devices(req: number): Promise<void> {
-    const origin = this._seams.origin();
     try {
       const list = await this._seam().devices();
-      const shown: unknown[] = [];
-      const kinds = new Set<string>();
-      for (const d of list) {
-        const name = d.kind === 'videoinput' ? 'camera' : 'microphone';
-        if (this._allowed(name)) {
-          shown.push({
-            deviceId: digest(origin, d.deviceId),
-            groupId: digest(origin, d.groupId),
-            kind: d.kind,
-            label: d.label,
-            capabilities: d.kind === 'audiooutput' ? undefined : d.capabilities,
-          });
-        } else if (!kinds.has(d.kind)) {
-          // what a page not allowed the kind is shown: that there is one
-          kinds.add(d.kind);
-          shown.push({ deviceId: '', groupId: '', kind: d.kind, label: '' });
-        }
-      }
+      const mic = this._exposes('audio');
+      const cam = this._exposes('video');
+      const info = (d: MediaDeviceDescription, exposed: boolean) => {
+        if (!exposed)
+          return { deviceId: '', groupId: '', kind: d.kind, label: '' };
+        const ids = { deviceId: this._deviceId(d), groupId: this._groupId(d) };
+        return {
+          ...ids,
+          kind: d.kind,
+          label: d.label,
+          capabilities:
+            d.kind === 'audiooutput'
+              ? undefined
+              : { ...d.capabilities, ...ids },
+        };
+      };
+      const of = (kind: string, exposed: boolean, usable: boolean) => {
+        if (!usable) return [];
+        const all = list.filter((d) => d.kind === kind);
+        return (exposed ? all : all.slice(0, 1)).map((d) => info(d, exposed));
+      };
+      const shown = [
+        ...of('audioinput', mic, this._usable('microphone')),
+        ...of('videoinput', cam, this._usable('camera')),
+        ...(mic ? of('audiooutput', true, true) : []),
+      ];
       this._tell('__mdSettled', [req, true, shown]);
     } catch (error) {
       this._tell('__mdSettled', [req, false, errorOf(error)]);
     }
   }
 
+  /** Whether a failure of `getUserMedia` may say what it was, rather than
+   *  that permission was denied (Media Capture's "getUserMedia specific
+   *  failure is allowed"). */
+  private _specific(kinds: ('audio' | 'video')[]): boolean {
+    const seam = this._seam();
+    const origin = this._seams.origin();
+    return !kinds.some(
+      (kind) =>
+        seam.permission?.(
+          kind === 'video' ? 'camera' : 'microphone',
+          origin,
+        ) === 'denied',
+    );
+  }
+
   private async _getUserMedia(req: number, json: string): Promise<void> {
     const origin = this._seams.origin();
     const fail = (error: unknown) =>
       this._tell('__mdSettled', [req, false, errorOf(error)]);
+    const denied = () => mediaError('NotAllowedError', 'Permission denied.');
     if (this._seams.originless()) {
-      fail(mediaError('NotAllowedError', 'Permission denied.'));
+      fail(denied());
       return;
     }
     let asked: { audio: unknown; video: unknown };
@@ -316,62 +331,84 @@ export class PageSources {
       return;
     }
     const seam = this._seam();
-    const wants: ['audio' | 'video', Constraint][] = [];
-    if (asked.audio) wants.push(['audio', asConstraint(asked.audio)]);
-    if (asked.video) wants.push(['video', asConstraint(asked.video)]);
+    const wants: ['audio' | 'video', ConstraintSet][] = [];
+    if (asked.audio) wants.push(['audio', asConstraints(asked.audio)]);
+    if (asked.video) wants.push(['video', asConstraints(asked.video)]);
+    const kinds = wants.map(([kind]) => kind);
+    if (
+      (kinds.includes('audio') && !this._usable('microphone')) ||
+      (kinds.includes('video') && !this._usable('camera'))
+    ) {
+      fail(denied());
+      return;
+    }
     try {
       const list = await seam.devices();
-      const chosen: [
-        'audio' | 'video',
-        MediaDeviceDescription,
-        MediaSettings,
-      ][] = [];
-      for (const [kind, constraint] of wants) {
-        const found = chooseDevice(list, kind, constraint, origin);
-        if (typeof found === 'string') {
-          throw mediaError(
-            found === 'deviceId' ? 'OverconstrainedError' : 'NotFoundError',
-            found === 'deviceId'
-              ? 'No device has the id asked for.'
-              : `There is no ${kind === 'audio' ? 'microphone' : 'camera'}.`,
-            found === 'deviceId' ? 'deviceId' : undefined,
-          );
+      const chosen: {
+        kind: 'audio' | 'video';
+        device: MediaDeviceDescription;
+        view: Constrainable;
+        settings: MediaSettings;
+      }[] = [];
+      for (const [kind, constraints] of wants) {
+        const of = list.filter(
+          (d) => d.kind === (kind === 'audio' ? 'audioinput' : 'videoinput'),
+        );
+        if (!of.length) {
+          throw this._specific(kinds)
+            ? mediaError(
+                'NotFoundError',
+                `There is no ${kind === 'audio' ? 'microphone' : 'camera'}.`,
+              )
+            : denied();
         }
-        const settings = settingsFor(constraint, found);
-        if (typeof settings === 'string') {
-          throw mediaError(
-            'OverconstrainedError',
-            `The ${kind} device cannot meet ${settings}.`,
-            settings,
-          );
+        const views = of.map((d) => this._view(d));
+        const selected = selectSettings(views, constraints);
+        if ('failed' in selected) {
+          throw this._specific(kinds)
+            ? mediaError(
+                'OverconstrainedError',
+                `No ${kind === 'audio' ? 'microphone' : 'camera'} can meet ${selected.failed}.`,
+                selected.failed,
+              )
+            : denied();
         }
-        chosen.push([kind, found, settings]);
+        const {
+          deviceId: _id,
+          groupId: _group,
+          ...settings
+        } = selected.settings;
+        chosen.push({
+          kind,
+          device: of[selected.index],
+          view: views[selected.index],
+          settings,
+        });
       }
       const allowed = seam.request
         ? await seam.request({
             origin,
-            camera: chosen.some(([k]) => k === 'video'),
-            microphone: chosen.some(([k]) => k === 'audio'),
+            camera: kinds.includes('video'),
+            microphone: kinds.includes('audio'),
             display: false,
           })
         : true;
-      if (!allowed) throw mediaError('NotAllowedError', 'Permission denied.');
+      if (!allowed) throw denied();
+      // what the document may be told from here on: the kinds it asked for
+      for (const kind of kinds) this._exposed[kind] = true;
       const tracks: unknown[] = [];
       const opened: MediaSourceLike[] = [];
       try {
-        for (const [kind, device, settings] of chosen) {
+        for (const { kind, device, view, settings } of chosen) {
           const source = await seam.open(device.deviceId, settings);
           opened.push(source);
-          const ids = {
-            deviceId: digest(origin, device.deviceId),
-            groupId: digest(origin, device.groupId),
-          };
+          const ids = { deviceId: view.deviceId, groupId: view.groupId };
           tracks.push({
             source: 0,
             kind,
             label: source.label || device.label,
-            settings: { ...source.settings(), ...ids },
-            capabilities: { ...capabilitiesOf(source.capabilities()), ...ids },
+            settings: { ...settings, ...source.settings(), ...ids },
+            capabilities: { ...source.capabilities(), ...ids },
           });
         }
       } catch (error) {
@@ -383,15 +420,69 @@ export class PageSources {
         return;
       }
       opened.forEach((source, i) => {
-        (tracks[i] as { source: number }).source = this.register(source);
+        const id = this.register(source);
+        (tracks[i] as { source: number }).source = id;
+        this._views.set(id, chosen[i].view);
       });
-      for (const [kind] of chosen) {
-        this._granted[kind === 'video' ? 'camera' : 'microphone'] = true;
-      }
       this._tell('__mdSettled', [req, true, tracks]);
     } catch (error) {
       fail(error);
     }
+  }
+
+  /**
+   * A track's `applyConstraints`: SelectSettings over its source — a
+   * device's every mode, or what any other source runs at — and the source
+   * set to what it came to, or the constraint it could not meet. In the
+   * order they were asked for, as 4.3.8 has it.
+   */
+  private _apply(req: number, json: string): void {
+    this._applying = this._applying.then(async () => {
+      try {
+        const { source: id, constraints } = JSON.parse(json) as {
+          source: number;
+          constraints: unknown;
+        };
+        const held = this._held.get(id);
+        if (!held) {
+          // its source has stopped: nothing to set
+          this._tell('__mdSettled', [req, true, { settings: null }]);
+          return;
+        }
+        const source = held.source;
+        const device = this._views.get(id);
+        const view: Constrainable = device ?? {
+          kind: source.kind,
+          capabilities: source.capabilities(),
+          defaults: {},
+          fixed: source.settings(),
+        };
+        const selected = selectSettings([view], asConstraints(constraints));
+        if ('failed' in selected) {
+          throw mediaError(
+            'OverconstrainedError',
+            `The track cannot meet ${selected.failed}.`,
+            selected.failed,
+          );
+        }
+        const {
+          deviceId: _id,
+          groupId: _group,
+          ...settings
+        } = selected.settings;
+        if (device) await source.reconfigure(settings);
+        const ids = device
+          ? { deviceId: device.deviceId, groupId: device.groupId }
+          : {};
+        this._tell('__mdSettled', [
+          req,
+          true,
+          { settings: { ...settings, ...source.settings(), ...ids } },
+        ]);
+      } catch (error) {
+        this._tell('__mdSettled', [req, false, errorOf(error)]);
+      }
+    });
   }
 }
 
@@ -691,45 +782,10 @@ export function i420Of(pixels: CanvasPixels): {
   return { width, height, planes: [y, cb, cr], strides: [width, cw, cw] };
 }
 
-function asConstraint(c: unknown): Constraint {
-  return typeof c === 'object' && c ? (c as Constraint) : {};
-}
-
-/** A device's capabilities, as `getCapabilities()` answers them. */
-function capabilitiesOf(
-  caps: MediaDeviceCapabilities,
-): Record<string, unknown> {
-  return { ...caps };
-}
-
-/** The device a kind's constraints take: the first of the kind, or the
- *  first whose id they name; or why there is none. */
-function chooseDevice(
-  list: MediaDeviceDescription[],
-  kind: 'audio' | 'video',
-  constraint: Constraint,
-  origin: string,
-): MediaDeviceDescription | 'none' | 'deviceId' {
-  const wanted = kind === 'audio' ? 'audioinput' : 'videoinput';
-  const of = list.filter((d) => d.kind === wanted);
-  if (!of.length) return 'none';
-  const c = constraint.deviceId;
-  const named = (v: unknown): string[] =>
-    typeof v === 'string' ? [v] : Array.isArray(v) ? v.map(String) : [];
-  const exact =
-    typeof c === 'object' && c && !Array.isArray(c)
-      ? named((c as Record<string, unknown>).exact)
-      : [];
-  const ideal =
-    typeof c === 'object' && c && !Array.isArray(c)
-      ? named((c as Record<string, unknown>).ideal)
-      : named(c);
-  if (exact.length) {
-    return (
-      of.find((d) => exact.includes(digest(origin, d.deviceId))) ?? 'deviceId'
-    );
-  }
-  return of.find((d) => ideal.includes(digest(origin, d.deviceId))) ?? of[0];
+/** What a kind of a page's request asks, as a constraint set: `true` is
+ *  none. */
+function asConstraints(c: unknown): ConstraintSet {
+  return typeof c === 'object' && c ? (c as ConstraintSet) : {};
 }
 
 /** An error as it crosses to the page: its name and its message. */
