@@ -350,8 +350,8 @@ export function scrollContent(
 ): ScrollOffset {
   const state = scrollStateOf(box);
   const to = {
-    x: clampOffset(x, state.width - state.clientWidth),
-    y: clampOffset(y, state.height - state.clientHeight),
+    x: clampOffset(x, maxScroll(state, 'x')),
+    y: clampOffset(y, maxScroll(state, 'y')),
   };
   const dx = to.x - state.x;
   const dy = to.y - state.y;
@@ -502,6 +502,19 @@ function moveLines(
 
 /** Where a scroll container is scrolled to, how far it can be, and its
  *  scrollport, in the device pixels its boxes are laid out in. */
+/**
+ * How far a scroll container can be scrolled on an axis, in device pixels:
+ * its scrollable overflow less its scrollport, each on the pixel grid, as
+ * Blink takes `scrollHeight` and `clientHeight` for it — so a container
+ * whose content ends a fraction of a pixel down scrolls to a whole pixel,
+ * and `scrollTop` at its end is `scrollHeight - clientHeight`.
+ */
+export function maxScroll(state: ScrollState, axis: 'x' | 'y'): number {
+  return axis === 'x'
+    ? Math.max(0, Math.round(state.width) - Math.round(state.clientWidth))
+    : Math.max(0, Math.round(state.height) - Math.round(state.clientHeight));
+}
+
 export function scrollStateOf(box: Box): ScrollState {
   const at = APPLIED.get(box);
   const clientWidth = Math.max(0, box.width - box.borderLeft - box.borderRight);

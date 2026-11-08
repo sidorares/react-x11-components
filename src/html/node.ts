@@ -339,6 +339,7 @@ import {
   setViewport,
   updatePositionVisibility,
   scrolledBy,
+  maxScroll,
   scrollMoves,
   scrollInFrame,
   scrollOnPage,
@@ -14628,8 +14629,8 @@ export class HtmlViewNode extends Node {
       areas,
       width: state.clientWidth,
       height: state.clientHeight,
-      maxX: state.width - state.clientWidth,
-      maxY: state.height - state.clientHeight,
+      maxX: maxScroll(state, 'x'),
+      maxY: maxScroll(state, 'y'),
       focused: this._snapFocused,
       targeted: this._snapTargeted,
     };
@@ -15646,9 +15647,7 @@ export class HtmlViewNode extends Node {
       const y = state.y / s;
       const at = axis === 'x' ? x : y;
       const max =
-        (axis === 'x'
-          ? state.width - state.clientWidth
-          : state.height - state.clientHeight) / s;
+        (axis === 'x' ? maxScroll(state, 'x') : maxScroll(state, 'y')) / s;
       const client =
         (axis === 'x' ? state.clientWidth : state.clientHeight) / s;
       const to = step(at, max, client);
@@ -15735,10 +15734,8 @@ export class HtmlViewNode extends Node {
       const room = (v: number, max: number, d: number) =>
         d > 0 ? v < max - 0.5 : d < 0 ? v > 0.5 : false;
       if (
-        (wheelScrolls(box, 'x') &&
-          room(state.x, state.width - state.clientWidth, dx)) ||
-        (wheelScrolls(box, 'y') &&
-          room(state.y, state.height - state.clientHeight, dy))
+        (wheelScrolls(box, 'x') && room(state.x, maxScroll(state, 'x'), dx)) ||
+        (wheelScrolls(box, 'y') && room(state.y, maxScroll(state, 'y'), dy))
       ) {
         return box;
       }

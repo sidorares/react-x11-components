@@ -16058,6 +16058,49 @@ test('focus() brings the element into view through the scroll containers around 
   assert.strictEqual(doc.text('out'), 'true|0|0', doc.logs.join('\n'));
 });
 
+test('focus() leaves what shows whole, takes what shows in part to its nearest edge and centres what is out of sight; a container scrolls to a whole pixel at its end', async () => {
+  // Chromium's focus brings an element into view centre-if-needed; and its
+  // largest scroll offset is the pixel-snapped scrollHeight less
+  // clientHeight (WPT css-scroll-snap/scroll-padding-focus and
+  // scroll-margin-focus)
+  const doc = await hosted(
+    '<p id="out"></p><style>#s { height: 100px; overflow-y: scroll; width: 200px }' +
+      ' #s div { height: 20px } #s .gap { height: 300px }</style>' +
+      '<div id="s"><div class="gap"></div><div id="t" tabindex="-1"></div>' +
+      '<div class="gap" style="height: 300.4px"></div></div>' +
+      '<button id="away">away</button><script>' +
+      'var s = document.getElementById("s"), t = document.getElementById("t"), r = [];' +
+      'function to(y) { document.getElementById("away").focus(); s.scrollTop = y; t.focus(); r.push(s.scrollTop); }' +
+      'to(0); to(250); to(210);' +
+      's.scrollTop = 10000; r.push(s.scrollTop === s.scrollHeight - s.clientHeight);' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.strictEqual(doc.text('out'), '260|250|220|true', doc.logs.join('\n'));
+});
+
+test("a key typed in a field scrolled out of sight brings it into view inside its container's scroll-padding", async () => {
+  // WPT css-scroll-snap/selection-target: what is typed is revealed as a
+  // browser reveals the selection it edits
+  const doc = await hosted(
+    '<p id="out"></p><div id="s" style="height: 100px; overflow-y: scroll; scroll-padding-top: 40px">' +
+      '<div style="height: 300px"></div><input id="i"><div style="height: 300px"></div></div>' +
+      '<script>' +
+      'var s = document.getElementById("s"), i = document.getElementById("i");' +
+      'function log() { document.getElementById("out").textContent =' +
+      '  Math.round(i.getBoundingClientRect().top - s.getBoundingClientRect().top); }' +
+      '</script>',
+  );
+  doc.run('i.focus(); s.scrollTop = 10000; log();');
+  await settle();
+  assert.ok(Number(doc.text('out')) < 0, `out of sight: ${doc.text('out')}`);
+  await act(async () => fireEvent.char('a'));
+  await settle();
+  doc.run('log()');
+  await settle();
+  assert.strictEqual(doc.text('out'), '40', doc.logs.join('\n'));
+});
+
 test("el.style keeps scroll snapping's values as their grammars take them, and getComputedStyle reads the flow-relative scroll-padding and scroll-margin by the element's writing mode", async () => {
   const doc = await hosted(
     '<p id="out"></p><div id="e"></div>' +
