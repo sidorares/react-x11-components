@@ -14,6 +14,7 @@ import {
   noteAnimated,
 } from '../../src/html/css/timeline.js';
 import { interpolateField } from '../../src/html/css/interpolate.js';
+import { parseStylesheet } from '../../src/html/css/parse.js';
 import { copyStyle, initialStyle } from '../../src/html/css/style.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { animationClock } from '../../src/html/node.js';
@@ -361,6 +362,78 @@ test('what transitions and what does not: the first style nothing, a keyword at 
   await act();
   assert.strictEqual(still.style('a').opacity, 1, 'at once');
   assert.strictEqual(still.clock.pending, false);
+});
+
+test('a rule under @starting-style is marked and keeps its place in the sheet, nested or not, and what else it holds is the sheet’s', () => {
+  const sheet = parseStylesheet(
+    '.a { color: red } @starting-style { .a { color: blue }' +
+      ' @keyframes k { to { opacity: 0 } } }' +
+      '.b { color: red; @starting-style { color: blue } }' +
+      '@starting-style x { .c { color: blue } }',
+  );
+  assert.deepStrictEqual(
+    sheet.rules.map((r) => [r.selector, r.starting ?? false]),
+    [
+      ['.a', false],
+      ['.a', true],
+      ['.b', false],
+      ['.b', true],
+    ],
+  );
+  assert.ok(sheet.rules[0].order < sheet.rules[1].order);
+  assert.strictEqual(sheet.keyframes?.[0].name, 'k');
+});
+
+test('under a parent whose inherited property is in transition, a child’s transition runs to the value it inherits from the parent’s after-change style', async (t) => {
+  // CSS Transitions 1, 3: the after-change style
+  const doc = await holding(
+    t,
+    '<style>#p { color: #000000; transition: color 160ms linear }' +
+      '#p.on { color: #ffffff }' +
+      '#c { color: #000000; transition: color 160ms linear }' +
+      '#p.on #c { color: inherit }</style>' +
+      '<div id="p"><span id="c">text</span></div>',
+  );
+  findById(doc.el.document, 'p')!.attribs.class = 'on';
+  doc.el.touchDocument();
+  await act();
+  await doc.at(animationClock.now() + 80);
+  // both from black to white, each half way: the child's to the parent's
+  // white, not to the grey the parent is drawn in
+  assert.strictEqual(doc.style('c').color, doc.style('p').color);
+});
+
+test('a starting style is what an element not drawn before transitions from: at the first style, and shown from display: none, but not where it comes to none, nor what no starting rule reaches', async (t) => {
+  // CSS Transitions 2, 3.1
+  const doc = await holding(
+    t,
+    '<style>.t { transition: opacity 160ms linear; opacity: 1 }' +
+      '@starting-style { .t { opacity: 0 } }' +
+      '#n { transition: opacity 160ms linear }' +
+      '@starting-style { #gone { display: none; opacity: 0 } }' +
+      '#h[hidden] { display: none }' +
+      '#c { opacity: .5; transition: opacity 160ms linear }' +
+      '#c > p { opacity: 1; transition: opacity 160ms linear }' +
+      '@starting-style { #c > p { opacity: 0 } }' +
+      '</style><div id="a" class="t">a</div><div id="gone" class="t">x</div>' +
+      '<div id="n">n</div><div id="h" class="t" hidden>h</div>' +
+      '<div id="c"><p id="cp">c</p></div>',
+  );
+  assert.strictEqual(doc.style('a').opacity, 0, 'from the starting style');
+  assert.strictEqual(doc.style('gone').opacity, 1, 'none where it is none');
+  assert.strictEqual(doc.style('n').opacity, 1, 'none where no rule reaches');
+  assert.strictEqual(doc.style('cp').opacity, 0, 'a child, its own rule');
+  await doc.at(80);
+  assert.ok(near(doc.style('a').opacity, 0.5), 'half way');
+  await doc.at(400);
+  assert.strictEqual(doc.style('a').opacity, 1);
+  const h = findById(doc.el.document, 'h')!;
+  delete h.attribs.hidden;
+  doc.el.touchDocument();
+  await act();
+  assert.strictEqual(doc.style('h').opacity, 0, 'shown: from its start');
+  await doc.at(animationClock.now() + 80);
+  assert.ok(near(doc.style('h').opacity, 0.5), 'half way');
 });
 
 test('an inherited property in transition is what the element holds inherits, at every frame', async (t) => {

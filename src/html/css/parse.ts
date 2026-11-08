@@ -113,6 +113,10 @@ export interface StyleRule {
   /** Where it was written: the offset of its selector in the text the sheet
    *  was parsed from, comments and all. Absent for a rule no sheet holds. */
   at?: number;
+  /** Set for a rule under `@starting-style` (CSS Transitions 2, 3.1): in
+   *  the sheet's order with the rest, and matched only for an element's
+   *  starting style (`Cascade._startingStyle`). */
+  starting?: true;
 }
 
 /** Where a sheet came from, as a developer's tools name it
@@ -315,6 +319,7 @@ const LAYER_NAME =
  *  is too late for. */
 const BLOCK_AT_RULES = new Set([
   'media',
+  'starting-style',
   'supports',
   'font-face',
   'page',
@@ -426,6 +431,8 @@ export function parseStylesheet(
     return [ranks, full];
   };
   let anonymous = 0;
+  // how many `@starting-style` blocks the rule being read is under
+  let starting = 0;
 
   const walk = (
     source: string,
@@ -511,6 +518,15 @@ export function parseStylesheet(
           // false (`supportsCondition`)
           if (supportsCondition(at.prelude) !== false) {
             walk(at.block, media, layer, path, containers, origin + at.blockAt);
+          }
+        } else if (name === 'starting-style' && at.block !== null) {
+          // its style rules are the starting style's, and what else it
+          // holds — an `@keyframes`, an `@font-face`, a `@layer` — is the
+          // sheet's as anywhere (CSS Transitions 2, 3.1)
+          if (!at.prelude.trim()) {
+            starting += 1;
+            walk(at.block, media, layer, path, containers, origin + at.blockAt);
+            starting -= 1;
           }
         } else if (name === 'layer') {
           // `@layer a, b;` names layers, and so fixes their order, and
@@ -715,6 +731,10 @@ export function parseStylesheet(
       } else if (name === 'layer' && LAYER_NAME.test(item.prelude.trim())) {
         const [ranks, full] = enter(item.prelude.trim(), layer, path);
         deeper(selectors, item.block, media, ranks, full, containers);
+      } else if (name === 'starting-style' && !item.prelude.trim()) {
+        starting += 1;
+        deeper(selectors, item.block, media, layer, path, containers);
+        starting -= 1;
       }
     }
   };
@@ -755,6 +775,7 @@ export function parseStylesheet(
         at: asWritten(written[k] ?? written[0], cuts),
       };
       if (containers) rule.containers = containers;
+      if (starting) rule.starting = true;
       sheet.rules.push(rule);
     }
   };

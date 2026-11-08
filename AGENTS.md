@@ -6583,6 +6583,24 @@ layer carries goes on one as an animation does (`liftOf`): one iteration
 from where it starts to where it ends, held at its start through its
 delay.
 
+**A starting style stands for the style an element had where the
+document drew none of it** (CSS Transitions 2, 3.1; `_startingStyle`,
+`UNRENDERED`). `Cascade.previous` answers `UNRENDERED` for the first
+build, an element new to the tree whatever the sheets did, and a
+pseudo-element with no box, and a style of `display: none` counts as none;
+the `@starting-style` rules are in an index of their own (`_starting`),
+asked only there, so no other style reads them. Two things are
+load-bearing. **What is not rendered takes none**: a style worked out for
+what a `display: none` element holds, for a page's `getComputedStyle`, is
+worked out under `Cascade.unrendered`, and a pseudo-element of an element
+not displayed starts no transition. And **a child's after-change style is
+from its parent's after-change style** (`settledOf`, `noteSettled`): a
+style drawn with an inherited property in transition notes the style it
+runs to, and a child under it runs to what that one would give it, while
+what it draws of a field none runs on inherits the parent's value as
+drawn. Anything new that hands a child a parent's style for a transition
+to read hands the settled one through `settledOf`.
+
 **A dragged width lays out what can be seen, and sets the rest aside.**
 While the width keeps moving, `_stopAt` hands `layoutDocument` an `until`,
 and `layoutChildren` lays out no child that starts below it: the rest of
