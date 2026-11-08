@@ -2206,7 +2206,22 @@ until its animations are over, when it is finished.
 - **Skipping.** `updateCallbackDone`, `ready` and `finished` settle in the
   specification's order. A transition is skipped by one started while it is
   active, by two elements sharing a name, by an update that throws or never
-  settles (after four seconds), and by `skipTransition()`.
+  settles (after four seconds), by `skipTransition()`, and by the window
+  taking another size between the old state's capture and the new one's,
+  or at any frame while it animates: a `resizeTo()` in the update is heard
+  as the new state is captured, not as it is asked, so `finished` waits
+  for the update as the specification has it. A window that has no size
+  yet, a popup before its first frame, is captured at its first frame that
+  has one. One started in a document no longer fully active — a removed
+  frame's — is skipped as it is made, with `AbortError`, its types kept.
+- **Lifetime.** `waitUntil(promise)` holds `finished`, and the tree, until
+  every promise it was handed has settled, fulfilled or rejected (CSS View
+  Transitions 2). A rejected `ready` or `updateCallbackDone` that the page
+  reads nowhere is an `unhandledrejection`, and so is the `finished` that
+  follows it, as Chromium tells them; one of a removed frame's is not, as
+  its realm is gone. A callback made in a frame that has since been removed
+  is still called, since the frame's globals are the page's here, where
+  Chromium skips it with `AbortError`.
 - **Elsewhere.** `types` is a set of strings, and
   `document.activeViewTransition` is the one running.
 - **Script.** `getComputedStyle(root, '::view-transition-group(name)')`
@@ -2687,8 +2702,10 @@ process as every window with an opener does, so `crossOriginIsolated` is false, 
 turns down a document with a policy as a network error: nothing of it runs or is
 drawn.
 
-`resizeTo` / `resizeBy` resize a popup's content and skip a view transition
-under way; the host hears them through `HtmlPopup.onResize`. Not done:
+`resizeTo` / `resizeBy` resize a popup's content: `innerWidth` answers the
+new size at once and `resize` is told at the next frame, as a browser tells
+it, which is also where a view transition under way finds the window
+resized and is skipped; the host hears them through `HtmlPopup.onResize`. Not done:
 `moveTo` ([the design](../prd-popups.md#left-out)).
 
 ### Sandboxes and framing

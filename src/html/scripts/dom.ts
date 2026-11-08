@@ -8018,7 +8018,9 @@ export function installDom(
     }
     /** A view transition of what the element holds (CSS View Transitions
      *  2, 2.2): the document's, where it is the root element. */
-    startViewTransition(options?: Any): Any {
+    startViewTransition(...args: Any[]): Any {
+      if (!(this instanceof Element)) throw new TypeError('Illegal invocation');
+      const options = args[0];
       const doc = this.ownerDocument ?? document;
       if (doc.documentElement === this) {
         return startViewTransition(options, doc);
@@ -16377,6 +16379,13 @@ export function installDom(
   /** An `@view-transition` rule (CSS View Transitions 2, 2.1), its
    *  descriptors read only and its text as they parse. */
   class CSSViewTransitionRule extends CSSRule {
+    // made by a sheet alone (Web IDL: no constructor)
+    constructor(...args: Any[]) {
+      if (typeof args[0] !== 'string') {
+        throw new TypeError('Illegal constructor');
+      }
+      super(args[0], args[1]);
+    }
     get navigation(): string {
       return viewTransitionDescriptors(blockOf(this._text)).navigation ?? '';
     }
@@ -17901,8 +17910,11 @@ export function installDom(
     getAnimations(): Any[] {
       return animationsOf(this, true);
     }
-    startViewTransition(options?: Any): Any {
-      return startViewTransition(options, this);
+    startViewTransition(...args: Any[]): Any {
+      if (!(this instanceof Document)) {
+        throw new TypeError('Illegal invocation');
+      }
+      return startViewTransition(args[0], this);
     }
     get activeViewTransition(): Any {
       return activeOf(this);
@@ -19709,6 +19721,11 @@ export function installDom(
    *  strings, worked through the built-ins as a highlight's ranges are. */
   class ViewTransitionTypeSet {
     _set = new Set<string>();
+    constructor(...args: Any[]) {
+      // made by a transition alone (Web IDL: no constructor)
+      if (args[0] !== TRANSITION_KEY)
+        throw new TypeError('Illegal constructor');
+    }
     /** The transition whose types these are, which `:active-view-transition-
      *  type()` matches by while it is active. */
     _owner: Any = null;
@@ -19732,7 +19749,8 @@ export function installDom(
     get size(): number {
       return setSize.call(this._set);
     }
-    forEach(fn: Any, thisArg?: Any): void {
+    forEach(fn: Any, ...rest: Any[]): void {
+      const thisArg = rest[0];
       for (const v of setValues.call(this._set)) fn.call(thisArg, v, v, this);
     }
     values(): Any {
@@ -19823,8 +19841,10 @@ export function installDom(
     /** Whether its document's rendering is suppressed for it (7.4): from
      *  the capture of its old state until it is activated or skipped. */
     _suppressed = false;
-    _types = new ViewTransitionTypeSet();
+    _types = new ViewTransitionTypeSet(TRANSITION_KEY);
     _done: Any;
+    /** What the update came to, for `finished` (`skipTransition`). */
+    _outcome: Any;
     _ready: Any;
     _finished: Any;
     _resolveDone!: (v?: Any) => void;
@@ -19833,14 +19853,41 @@ export function installDom(
     _rejectReady!: (e: Any) => void;
     _resolveFinished!: (v?: Any) => void;
     _rejectFinished!: (e: Any) => void;
-    constructor(callback: Any, key: Any) {
+    /** The promises `waitUntil()` was handed that have not settled (CSS
+     *  View Transitions 2, "wait until promise count"): it does not finish
+     *  while there are any. */
+    _waiting = 0;
+    /** The snapshot containing block's size as the old state was captured
+     *  (7.3, "initial snapshot containing block size"): a window resized
+     *  after it skips the transition. */
+    _size: string | null = null;
+    // no constructor of the page's (Web IDL), so its `length` is 0
+    constructor(...args: Any[]) {
+      const [callback, key] = args;
       if (key !== TRANSITION_KEY) throw new TypeError('Illegal constructor');
       this._callback = callback;
       this._types._owner = this;
+      // what the update came to, twice: `updateCallbackDone`, which is the
+      // page's to handle, and a copy `finished` follows, so that following
+      // it handles nothing of the page's (7.1)
+      let ok1: Any, fail1: Any, ok2: Any, fail2: Any;
       this._done = new Promise((ok, fail) => {
-        this._resolveDone = ok;
-        this._rejectDone = fail;
+        ok1 = ok;
+        fail1 = fail;
       });
+      this._outcome = new Promise((ok, fail) => {
+        ok2 = ok;
+        fail2 = fail;
+      });
+      this._outcome.catch(() => {});
+      this._resolveDone = (v?: Any) => {
+        ok1(v);
+        ok2(v);
+      };
+      this._rejectDone = (e: Any) => {
+        fail1(e);
+        fail2(e);
+      };
       this._ready = new Promise((ok, fail) => {
         this._resolveReady = ok;
         this._rejectReady = fail;
@@ -19849,8 +19896,9 @@ export function installDom(
         this._resolveFinished = ok;
         this._rejectFinished = fail;
       });
-      // `ready` rejected and unread is no unhandled rejection (7.1)
-      this._ready.catch(() => {});
+      // `ready` and `updateCallbackDone` rejected and unread are each an
+      // unhandled rejection (7.1), and `finished`, which rejects only
+      // with `updateCallbackDone`, is one too, as Chromium tells it
     }
     get updateCallbackDone(): Any {
       return this._done;
@@ -19869,13 +19917,30 @@ export function installDom(
     get transitionRoot(): Any {
       return this._scope ?? this._doc?.documentElement ?? null;
     }
-    set types(v: Any) {
-      const set = new ViewTransitionTypeSet();
-      for (const t of v ?? []) set.add(t);
-      set._owner = this;
-      this._types = set;
-      typesChanged(set);
+    /** Hold `finished` until `promise` settles (CSS View Transitions 2,
+     *  "delay finish for promise"). */
+    waitUntil(promise: Any): void {
+      if (!(this instanceof ViewTransition)) {
+        throw new TypeError('Illegal invocation');
+      }
+      if (!arguments.length) {
+        throw new TypeError(
+          "Failed to execute 'waitUntil' on 'ViewTransition': 1 argument required, but only 0 present.",
+        );
+      }
+      if (this._phase === 'done') return;
+      this._waiting += 1;
+      const settled = (): void => {
+        this._waiting -= 1;
+        // finished at the next rendering opportunity
+        if (this._waiting === 0 && this._phase === 'animating') {
+          afterNextFrame(() => this._settle?.());
+        }
+      };
+      Promise.resolve(promise).then(settled, settled);
     }
+    /** What asks whether it is over, once it animates. */
+    _settle: (() => void) | null = null;
     skipTransition(): void {
       if (this._phase !== 'done') {
         skipTransition(
@@ -19889,6 +19954,72 @@ export function installDom(
     }
   }
   const TRANSITION_KEY = {};
+  // Web IDL's shape (3.7): attributes that check what they are read of,
+  // a promise attribute answering a rejected promise rather than throwing,
+  // every operation enumerable and the type set's `@@iterator` its
+  // `values`
+  idlAttributes(ViewTransition);
+  for (const key of ['updateCallbackDone', 'ready', 'finished']) {
+    const d = Object.getOwnPropertyDescriptor(ViewTransition.prototype, key)!;
+    const get = d.get!;
+    const checked = function (this: Any): Any {
+      try {
+        return get.call(this);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    Object.defineProperty(checked, 'name', { value: `get ${key}` });
+    Object.defineProperty(ViewTransition.prototype, key, {
+      ...d,
+      get: checked,
+    });
+  }
+  for (const name of ['skipTransition', 'waitUntil']) {
+    Object.defineProperty(ViewTransition.prototype, name, { enumerable: true });
+  }
+  for (const name of [
+    'add',
+    'delete',
+    'has',
+    'clear',
+    'forEach',
+    'values',
+    'keys',
+    'entries',
+  ]) {
+    Object.defineProperty(ViewTransitionTypeSet.prototype, name, {
+      enumerable: true,
+    });
+  }
+  Object.defineProperty(ViewTransitionTypeSet.prototype, Symbol.iterator, {
+    value: ViewTransitionTypeSet.prototype.values,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+  idlAttributes(ViewTransitionTypeSet);
+  idlAttributes(CSSViewTransitionRule);
+  for (const Interface of [Document, Element]) {
+    const proto = Interface.prototype;
+    Object.defineProperty(proto, 'startViewTransition', { enumerable: true });
+    const d = Object.getOwnPropertyDescriptor(proto, 'activeViewTransition')!;
+    const get = d.get!;
+    const checked = function (this: Any): Any {
+      if (!(this instanceof Interface)) {
+        throw new TypeError('Illegal invocation');
+      }
+      return get.call(this);
+    };
+    Object.defineProperty(checked, 'name', {
+      value: 'get activeViewTransition',
+    });
+    Object.defineProperty(proto, 'activeViewTransition', {
+      ...d,
+      enumerable: true,
+      get: checked,
+    });
+  }
 
   /** Call a transition's update callback, once (7.5): what it returns
    *  settles `updateCallbackDone`, and a fulfilment activates the
@@ -19940,6 +20071,7 @@ export function installDom(
   const activateTransition = (vt: Any): void => {
     vt._suppressed = false;
     if (vt._phase === 'done') return;
+    if (sizeMoved(vt)) return;
     const shared = str(transitionOp(vt, 'vtNew'));
     if (shared) {
       skipTransition(
@@ -19959,9 +20091,13 @@ export function installDom(
     // element out of the rendering, which skips the transition (7.8, 7.9)
     const settle = (): void => {
       if (vt._phase !== 'animating') return;
+      if (sizeMoved(vt)) return;
       let left = Number(transitionOp(vt, 'vtRemaining'));
-      // and the page's own animations of them, running or paused
-      if (left === 0 && scriptedTransition(vt._doc)) left = -1;
+      // and the page's own animations of them, running or paused, and the
+      // promises `waitUntil()` was handed
+      if (left === 0 && (scriptedTransition(vt._doc) || vt._waiting > 0)) {
+        left = -1;
+      }
       if (left === -2) {
         skipTransition(
           vt,
@@ -19974,6 +20110,7 @@ export function installDom(
       }
       if (left === 0) {
         vt._phase = 'done';
+        vt._settle = null;
         leaveActive(vt);
         vt._resolveFinished();
         return;
@@ -19985,7 +20122,46 @@ export function installDom(
         false,
       );
     };
+    vt._settle = settle;
     afterNextFrame(settle);
+  };
+
+  /** The snapshot containing block's size as a transition would capture
+   *  it now: the document's viewport, whose scroll bars it leaves out as
+   *  `innerWidth` does not, so it is told by both. */
+  const snapshotSize = (vt: Any): string | null => {
+    // a transition on an element is held to its own box, not the window
+    if (vt._scope) return null;
+    const view = vt._doc?.defaultView;
+    if (!view) return null;
+    const width = Number(view.innerWidth);
+    const height = Number(view.innerHeight);
+    // a window not laid out yet, a popup before its first frame, has no
+    // size to hold the transition to
+    if (!(width > 0 && height > 0)) return null;
+    return `${width}x${height}`;
+  };
+  /** Whether the snapshot containing block's size is not what it was as
+   *  the old state was captured (7.4, "activate"; 7.9): the transition is
+   *  skipped, since nothing it captured stands where it would now. */
+  /** How many frames a transition's old state waits for its window to
+   *  have a size before it is captured without one. */
+  const UNSIZED_FRAMES = 10;
+  const sizeMoved = (vt: Any): boolean => {
+    // one captured before its window had a size holds to the first it has
+    if (vt._size === null) {
+      vt._size = snapshotSize(vt);
+      return false;
+    }
+    if (snapshotSize(vt) === vt._size) return false;
+    skipTransition(
+      vt,
+      new DOMException(
+        'The snapshot containing block changed size',
+        'InvalidStateError',
+      ),
+    );
+    return true;
   };
 
   /** Whether a page's script animates one of the active transition's
@@ -20040,7 +20216,7 @@ export function installDom(
     vt._phase = 'done';
     if (!called) scheduleUpdate(vt);
     vt._rejectReady(reason);
-    vt._done.then(
+    vt._outcome.then(
       () => vt._resolveFinished(),
       (error: Any) => vt._rejectFinished(error),
     );
@@ -20313,6 +20489,13 @@ export function installDom(
     return vt;
   };
 
+  /** Whether a frame's document of the realm's is fully active (HTML
+   *  7.3.3): in a frame still in the document, and the one it shows. */
+  const frameFullyActive = (doc: Any): boolean => {
+    if (doc._unloaded) return false;
+    const frame = wrap(Number(call('frameElement', doc._id)));
+    return !!frame && frame.isConnected && frameDocumentOf(frame) === doc;
+  };
   /** `document.startViewTransition()` (7.2), of the document asked. */
   const startViewTransition = (
     options: Any,
@@ -20331,8 +20514,19 @@ export function installDom(
     if (options && typeof options === 'object' && options.types) {
       for (const t of options.types) vt._types.add(t);
     }
+    // a document no longer fully active (HTML 7.3.3), a removed frame's,
+    // has a transition that is skipped as it is made, as Chromium has it
+    if (doc !== document && !frameFullyActive(doc)) {
+      // in a realm that is gone, where no rejection is reported
+      vt._ready.catch(() => {});
+      skipTransition(
+        vt,
+        new DOMException('The document is not fully active', 'AbortError'),
+      );
+      return vt;
+    }
     if (scope) return startScoped(vt, scope);
-    if (document.visibilityState === 'hidden') {
+    if (doc.visibilityState === 'hidden') {
       skipTransition(
         vt,
         new DOMException('The document is hidden', 'InvalidStateError'),
@@ -20355,8 +20549,16 @@ export function installDom(
     // before it have run, so that it is the state they leave; and the
     // update is called in a task after it, once what those updates settled
     // has been heard (7.4, "setup view transition")
-    afterNextFrame(() => {
+    let waited = 0;
+    const capture = (): void => {
       if (vt._phase === 'done') return;
+      // a window not laid out yet, a popup before its first frame, has no
+      // rendering to capture: its first frame that has one is (7.4)
+      if (snapshotSize(vt) === null && waited < UNSIZED_FRAMES) {
+        waited += 1;
+        afterNextFrame(capture);
+        return;
+      }
       flushUpdates(doc);
       // an update the flush called may have skipped it
       if ((vt as Any)._phase === 'done') return;
@@ -20371,6 +20573,7 @@ export function installDom(
         );
         return;
       }
+      vt._size = snapshotSize(vt);
       // nothing of the document is rendered from here until the update
       // is done: no frame, no animation, no paint, and a press is the
       // root element's (7.4)
@@ -20385,7 +20588,8 @@ export function installDom(
         [],
         false,
       );
-    });
+    };
+    afterNextFrame(capture);
     return vt;
   };
 
@@ -21032,12 +21236,20 @@ export function installDom(
       call('rendering', shown.map((v) => v.doc()._id).join(' ')),
     ).split('\n');
     shown.forEach((v, i) => {
-      const [width, height] = (lines[i] ?? '').split(' ', 2).map(Number);
+      let [width, height] = (lines[i] ?? '').split(' ', 2).map(Number);
+      // the size a script set, which the host is yet to lay the window out
+      // at (`resizeWindow`)
+      if (v === ownViewport && windowSize) [width, height] = windowSize;
       const was = v.size;
       v.size = [width, height];
       if (was && (was[0] !== width || was[1] !== height)) {
         fireTrusted(v.target, 'resize');
         if (v.visual) fireTrusted(v.visual, 'resize');
+        // a transition under way in it is skipped at this frame, which is
+        // when handling its frame finds the snapshot containing block
+        // another size (CSS View Transitions 1, 7.9)
+        const active = activeOf(v.doc());
+        if (active?._phase === 'animating') sizeMoved(active);
       }
     });
     if (scrollOwed) tellScroll();
@@ -37259,30 +37471,19 @@ export function installDom(
     if (running?.event?._dispatching) running.event.preventDefault();
     abortOngoing(s);
   });
-  /** CSSOM View, `resizeTo` / `resizeBy`: the window's content size, and a
-   *  `resize` at once. A view transition under way is skipped — the
-   *  snapshot viewport changed (CSS View Transitions 1, 7.6). */
+  /** CSSOM View, `resizeTo` / `resizeBy`: the window's content size at
+   *  once, and a `resize` at the next frame. A view transition under way is skipped at its next
+   *  step for it, as the snapshot containing block changed size (CSS View
+   *  Transitions 1, 7.4 and 7.9, `sizeMoved`). */
   const resizeWindow = (width: number, height: number): void => {
     const w = Math.max(0, Math.floor(width));
     const h = Math.max(0, Math.floor(height));
     const was = windowSize ?? [viewport().width, viewport().height];
     windowSize = [w, h];
     call('windowResizeTo', w, h);
-    const active = activeOf(document);
-    if (active && active._phase !== 'done') {
-      skipTransition(
-        active,
-        new DOMException(
-          'Transition skipped due to viewport size change',
-          'InvalidStateError',
-        ),
-      );
-    }
-    if (was[0] !== w || was[1] !== h) {
-      ownViewport.size = [w, h];
-      fireTrusted(windowTarget, 'resize');
-      if (ownViewport.visual) fireTrusted(ownViewport.visual, 'resize');
-    }
+    // told at the next frame's resize steps (HTML 8.1.7.3), as a browser
+    // tells it, so a page listens after it asks
+    if (was[0] !== w || was[1] !== h) wantFrame();
   };
   define('resizeTo', (width: Any, height: Any) => {
     resizeWindow(Number(width) || 0, Number(height) || 0);
