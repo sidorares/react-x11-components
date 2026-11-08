@@ -15551,7 +15551,8 @@ test("a view transition's pseudo-elements answer getComputedStyle and getAnimati
       '</style></head><body><div id="t"></div><div id="c"></div><p id="out"></p><script>' +
       'var r = [], html = document.documentElement, t = document.getElementById("t");' +
       'function cs(p, prop) { return getComputedStyle(html, p)[prop]; }' +
-      // not there before a transition, as Chromium answers
+      // before a transition, what the rules alone make of it, as Chromium
+      // answers
       'r.push(cs("::view-transition-group(t)", "position"));' +
       'var vt = document.startViewTransition(function () {' +
       '  t.classList.add("big");' +
@@ -15574,9 +15575,46 @@ test("a view transition's pseudo-elements answer getComputedStyle and getAnimati
   );
   assert.equal(
     await settled(doc, 'out', (t) => t !== ''),
-    'static|absolute|none|absolute|-ua-view-transition-group-anim-t|' +
+    'absolute|absolute|none|absolute|-ua-view-transition-group-anim-t|' +
       '-ua-view-transition-fade-out, -ua-mix-blend-mode-plus-lighter|plus-lighter|' +
       '1|2|40px|true|2|0|1|auto|replace',
+    doc.logs.join('\n'),
+  );
+});
+
+test("a view transition's names are the document's: a shadow tree's sheet names nothing, `auto` hides an id, and `\\*` is a name and no universal selector", async () => {
+  // CSS View Transitions 2, 3.1 and 3.2, and 1, 3.2: a name or classes a
+  // shadow tree's sheet gives are no document's, `auto` makes a name of an
+  // id no rule can write, and an escaped star names `*`
+  const doc = await hosted(
+    '<!DOCTYPE html><html><head><style>' +
+      ' :root { view-transition-name: none }' +
+      ' div { width: 10px; height: 10px }' +
+      ' #a { view-transition-name: auto } #s { view-transition-name: \\* }' +
+      ' ::view-transition-group(*) { animation-play-state: paused; outline-color: green }' +
+      ' ::view-transition-group(\\*) { outline-color: red }' +
+      '</style></head><body><div id="a"></div><div id="s"></div>' +
+      '<div id="host"><template shadowrootmode="open">' +
+      '<style>div { view-transition-name: shadow }</style><div></div></template></div>' +
+      '<p id="out"></p><script>' +
+      'var r = [], html = document.documentElement;' +
+      'function cs(p) { return getComputedStyle(html, p).outlineColor; }' +
+      'var vt = document.startViewTransition(function () {});' +
+      'vt.ready.then(function () {' +
+      '  var names = document.getAnimations().map(function (a) { return a.effect.pseudoElement; })' +
+      '    .filter(function (p) { return /group/.test(p); });' +
+      // two groups: the id's own name and `*`, and none from the shadow tree
+      '  r.push(names.length, names.some(function (p) { return /\\(a\\)/.test(p); }),' +
+      '    names.some(function (p) { return /shadow/.test(p); }),' +
+      '    cs("::view-transition-group(\\\\*)"));' +
+      '  vt.skipTransition();' +
+      '  document.getElementById("out").textContent = r.join("|");' +
+      '});' +
+      '</script></body></html>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    '2|false|false|rgb(255, 0, 0)',
     doc.logs.join('\n'),
   );
 });

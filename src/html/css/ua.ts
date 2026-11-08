@@ -507,6 +507,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
 ::view-transition-image-pair(*) { position: absolute; inset: 0; }
 ::view-transition-old(*), ::view-transition-new(*) {
   position: absolute;
+  display: block;
   inset-block-start: 0;
   inline-size: 100%;
   block-size: auto;
@@ -522,8 +523,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.1); }
   animation-direction: inherit;
   animation-play-state: inherit;
 }
-::view-transition-old(*) { animation-name: -ua-view-transition-fade-out; }
-::view-transition-new(*) { animation-name: -ua-view-transition-fade-in; }
+/* an image's fade is the transition's to give each image it generates
+   (12.4.4), so one it does not generate has none */
 @keyframes -ua-view-transition-fade-out { to { opacity: 0; } }
 @keyframes -ua-view-transition-fade-in { from { opacity: 0; } }
 @keyframes -ua-mix-blend-mode-plus-lighter {

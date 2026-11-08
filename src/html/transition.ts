@@ -6,6 +6,7 @@
 // as boxes in its top layer (`TransitionTree`) and paints each image.
 
 import type { Element } from 'domhandler';
+import { shadowRootAround } from './dom.js';
 import { AnimationTimeline } from './css/timeline.js';
 import { readIdent } from './css/parse.js';
 import { timingAt } from './css/animation.js';
@@ -131,12 +132,28 @@ let elementNames = 0;
  * it has one, and a name its identity makes for `match-element` and for
  * `auto` without one — which a rule reaches by its classes or by `*` alone.
  */
-export function captureName(el: Element, style: ComputedStyle): string | null {
+export function captureName(
+  el: Element,
+  style: ComputedStyle,
+  scopeTree: object | null = null,
+): string | null {
   const name = style.viewTransitionName;
   if (name === 'none') return null;
+  // a shadow tree's sheet names nothing the document's transition captures
+  // (CSS View Transitions 2, 3.1: its document-scoped name is `none`), and
+  // one started on an element takes the names of that element's tree, as
+  // Chromium does (`scoped/shadow-dom`)
+  const tree = style.viewTransitionNameTree;
+  if (tree !== scopeTree) return null;
   if (name === 'auto' || name === 'match-element') {
     const id = el.attribs.id;
-    if (name === 'auto' && id) return id;
+    // a name of its own the `id` makes, one for every element of that
+    // `id`, and never the `id` itself, which a rule names — where the rule
+    // is of the element's own tree: through `::part()` it is the element's
+    // (CSS View Transitions 2, 3.1)
+    if (name === 'auto' && id && shadowRootAround(el) === tree) {
+      return `-ua-id-${id}`;
+    }
     let made = ELEMENT_NAMES.get(el);
     if (!made) {
       made = `-ua-element-${++elementNames}`;
@@ -149,7 +166,12 @@ export function captureName(el: Element, style: ComputedStyle): string | null {
 }
 
 /** The classes an element is captured with (CSS View Transitions 2, 3.2). */
-export function captureClasses(style: ComputedStyle): string[] {
+export function captureClasses(
+  style: ComputedStyle,
+  scopeTree: object | null = null,
+): string[] {
+  // a shadow tree's are no document's (CSS View Transitions 2, 3.2)
+  if (style.viewTransitionClassTree !== scopeTree) return [];
   const classes = style.viewTransitionClass;
   return classes === 'none' ? [] : classes.split(' ');
 }

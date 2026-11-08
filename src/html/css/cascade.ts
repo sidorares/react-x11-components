@@ -1020,13 +1020,14 @@ function splitPseudoElement(rule: StyleRule): {
 /**
  * Which of a view transition's pseudo-elements a rule styles (CSS View
  * Transitions 1, 3.2): the tree's root, a group, an image pair, an old or
- * a new image — the name its argument names, `*` for any, the classes it
+ * a new image — the name its argument names, null for `*`, which is any
+ * (and not `\*`, which names `*`, an ordinary name), the classes it
  * asks the element to have had, and whether it asks to be the only child
  * of its parent (`:only-child`, the one pseudo-class it may take).
  */
 export interface TransitionPart {
   part: 'view-transition' | 'group' | 'image-pair' | 'old' | 'new';
-  name: string;
+  name: string | null;
   classes: readonly string[];
   onlyChild: boolean;
 }
@@ -1053,7 +1054,7 @@ function splitTransitionPart(
   if (!m) return null;
   const head = rule.selector.slice(0, m.index).trimEnd();
   const selector = !head ? '*' : /[>+~]$/.test(head) ? `${head} *` : head;
-  let name = '*';
+  let name: string | null = null;
   const classes: string[] = [];
   let typed = true;
   if (m[1]) {
@@ -1072,7 +1073,7 @@ function splitTransitionPart(
       classes.push(ident.value);
       i = ident.end;
     }
-    typed = name !== '*' || classes.length > 0;
+    typed = name !== null || classes.length > 0;
   }
   const part: TransitionPart = {
     part: (m[1]?.toLowerCase() ?? 'view-transition') as TransitionPart['part'],
@@ -7850,7 +7851,7 @@ export class Cascade {
           return (
             !!p &&
             p.part === part &&
-            (p.name === '*' || p.name === name) &&
+            (p.name === null || p.name === name) &&
             p.classes.every((c) => classes.includes(c)) &&
             (!p.onlyChild || onlyChild)
           );
@@ -10567,8 +10568,11 @@ const ANIMATION_NAMES = new Set([
 ]);
 
 /** The declarations whose names are tree-scoped references, or define
- *  tree-scoped names, for anchor positioning (`noteTree`). */
+ *  tree-scoped names, for anchor positioning and view transitions
+ *  (`noteTree`). */
 const TREE_SCOPED = new Set([
+  'view-transition-name',
+  'view-transition-class',
   'anchor-name',
   'position-anchor',
   'anchor-scope',
@@ -10608,6 +10612,12 @@ function noteTree(
   tree: ShadowRoot | null,
 ): void {
   switch (d.prop) {
+    case 'view-transition-name':
+      style.viewTransitionNameTree = tree;
+      return;
+    case 'view-transition-class':
+      style.viewTransitionClassTree = tree;
+      return;
     case 'anchor-name':
       style.anchorNamesTree = tree;
       return;

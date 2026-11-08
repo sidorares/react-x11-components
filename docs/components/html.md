@@ -2151,8 +2151,13 @@ until its animations are over, when it is finished.
 
 - **What a state captures.** Each element with a `view-transition-name` and
   a box is captured by that name, the root element among them by the user
-  agent's `root`. `auto` takes the element's `id`, and `match-element` and
-  an `auto` with no `id` make a name of the element. The old state is the
+  agent's `root`. `auto` makes a name of the element's `id` — one every
+  element of that `id` shares, and not the `id` itself, so no rule written
+  as `::view-transition-group(the-id)` reaches it — where the rule that
+  set it is of the element's own tree; through `::part()`, and for
+  `match-element` and an `auto` with no `id`, the name is the element's.
+  A name or classes a shadow tree's sheet sets are no document's, and
+  capture nothing (CSS View Transitions 2, 3.1). The old state is the
   element's border box, where it is from the viewport's corner — its
   transform and those around it included — and a picture of it and all it
   holds, as laid out, with its opacity, filter, mask and clip, past its
@@ -2168,10 +2173,12 @@ until its animations are over, when it is finished.
   image pair, which holds an old image and a new one where the transition
   has each. These are boxes styled by the user agent's sheet and the page's
   rules, a name or a class in a selector's argument counting as a type
-  selector and `*` alone as none. Under them is what the transition gives
-  each: a group is its element's size and is placed where it is, animated
-  from where it was by a `@keyframes` of its own, and the images fade
-  across. The old image draws its picture; the new image draws its element
+  selector and `*` alone as none; `\*` is the name `*`, which a
+  `view-transition-name: \*` element has, and as specific as any. Under
+  them is what the transition gives each: a group is its element's size
+  and is placed where it is, animated from where it was by a `@keyframes`
+  of its own, and the images fade — across where it has both, out or in
+  where it has one. The old image draws its picture; the new image draws its element
   as it is now, at every paint, at its size or stretched to the image's.
   The element itself is a hole where it is laid out, and with the root
   captured, the canvas is too. The old and new images are added to each
@@ -2205,8 +2212,9 @@ until its animations are over, when it is finished.
 - **Script.** `getComputedStyle(root, '::view-transition-group(name)')`
   answers each part's style from its box while the tree is drawn — the
   transition's own styles and animations in it — and from the rules alone
-  inside the update callback, where the old state's parts are there; a
-  part that is not there answers as one no rule styles, as Chromium does.
+  wherever it has no box — inside the update callback, before or after a
+  transition, for a name it never had — with nothing a transition gives a
+  part it generates, as Chromium does.
   The tree's CSS animations are `CSSAnimation`s in `getAnimations()`, with
   their pseudo-element. A frame's document's transition is its own and is
   drawn by the frame's view.

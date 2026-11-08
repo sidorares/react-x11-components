@@ -82,6 +82,7 @@ import {
   isStylePreload,
   NON_RENDERED,
   ShadowRoot,
+  shadowRootAround,
   shadowRootOf,
   tagOf,
   treeGeneration,
@@ -152,6 +153,7 @@ import {
   parseDeclarations,
   parseMediaQuery,
   parseStylesheet,
+  readIdent,
 } from './css/parse.js';
 import type {
   Declaration,
@@ -8413,7 +8415,11 @@ export class HtmlViewNode extends Node {
     // only while one started on it is under way
     const run = this._runOfElement(element);
     if (!run && !isRootElement(element)) return null;
-    const key = m[1] ? `view-transition-${m[1]}(${m[2]})` : 'view-transition';
+    // its argument read as a name is: `\*` names `*` (CSS View Transitions
+    // 1, 3.2), which the tree's keys hold as captured
+    const name =
+      m[2] && m[2].includes('\\') ? readIdent(m[2], 0).value : (m[2] ?? '');
+    const key = m[1] ? `view-transition-${m[1]}(${name})` : 'view-transition';
     const top = run?.phase === 'live' ? this._transitionTop(tree, run) : null;
     if (top) {
       const stack = [top];
@@ -8426,26 +8432,16 @@ export class HtmlViewNode extends Node {
         stack.push(...box.children);
       }
     }
-    const name = m[2] ?? '';
     const entry = name ? run?.entries.get(name) : undefined;
     const part = m[1] as TransitionPart['part'] | undefined;
-    // A part the live tree never built still answers the style it would
-    // have if generated — Chromium does, so a page can ask
-    // `::view-transition-new(name)` when only the old image was captured
-    // (only-child-new.html, root to element) and `:only-child` follows
-    // whether its sibling image exists. In an update callback, only the
-    // old state's parts are there. Before or after a transition, and for
-    // a name the transition never had, inherit from the root.
+    // A part the live tree never built answers what the rules alone make
+    // of it, as Chromium does — the user agent's sheet's position and
+    // display among them — and nothing of what a transition gives a part it
+    // generates: before or after a transition, in its update callback, and
+    // for a name it never had (`computed-style-no-active-transition`,
+    // `dynamic-stylesheet-animations`). `:only-child` follows whether its
+    // sibling image exists (`only-child-new`).
     const phase = run?.phase;
-    const there =
-      phase === 'live'
-        ? !part || !!entry
-        : phase === 'old'
-          ? !part || (!!entry?.old && part !== 'new')
-          : false;
-    if (!there) {
-      return cssomStyle(inherit(rootStyle, cascade.initial), this._scale, null);
-    }
     const timeline =
       phase === 'live' && run ? run.timeline : new AnimationTimeline();
     timeline.now = animationClock.now();
@@ -16355,8 +16351,11 @@ export class HtmlViewNode extends Node {
     const out: { name: string; el: Element; box: Box; classes: string[] }[] =
       [];
     const seen = new Set<string>();
+    // the tree whose sheets name what it captures: the scope's, where it
+    // was started on an element, and the document's otherwise
+    const names = scope ? shadowRootAround(scope) : null;
     for (const [el, { style }] of tree.styles) {
-      const name = captureName(el, style);
+      const name = captureName(el, style, names);
       if (name === null) continue;
       // in the transition's scope, and in no scope inside it: an element
       // with `view-transition-scope: all` keeps its names, its own among
@@ -16368,7 +16367,7 @@ export class HtmlViewNode extends Node {
       if (!box || COLUMN_PIECES.has(box)) continue;
       if (seen.has(name)) return name;
       seen.add(name);
-      out.push({ name, el, box, classes: captureClasses(style) });
+      out.push({ name, el, box, classes: captureClasses(style, names) });
     }
     return out;
   }
@@ -16723,12 +16722,12 @@ export class HtmlViewNode extends Node {
         group,
         declarations(both ? 'isolation: isolate' : ''),
       );
+      // the image's fade, which the transition gives each image it
+      // generates (12.4.4): across, where it has both, the two added up
       const fade = (out: boolean) =>
         declarations(
-          both
-            ? `animation-name: -ua-view-transition-fade-${out ? 'out' : 'in'}, ` +
-                '-ua-mix-blend-mode-plus-lighter'
-            : '',
+          `animation-name: -ua-view-transition-fade-${out ? 'out' : 'in'}` +
+            (both ? ', -ua-mix-blend-mode-plus-lighter' : ''),
         );
       const old = entry.old
         ? styled('old', name, classes, !entry.el, pair, fade(true))
