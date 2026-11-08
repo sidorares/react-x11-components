@@ -182,7 +182,7 @@ import { drawnWithin, svgAnswer, unitSize } from './svg-geometry.js';
 import { SVG_PROPERTIES } from '../css/svg-properties.js';
 import type { SvgMeasure } from './svg-geometry.js';
 import { matchesSyntax, validSyntax } from '../css/syntax.js';
-import { focusableElement } from '../focus.js';
+import { focusableElement, isInert } from '../focus.js';
 import { CONTROL_PSEUDOS } from '../control-state.js';
 import { serializeXml } from './xml.js';
 import { XAttr, compileXPath, evaluateXPath, prefixesIn } from './xpath.js';
@@ -228,6 +228,7 @@ import {
 import type { Hop } from './fetch-hops.js';
 import { readDataUrl } from '../network.js';
 import {
+  SB_AUTOMATIC,
   SB_DOWNLOADS,
   SB_FORMS,
   SB_ORIGIN,
@@ -613,6 +614,9 @@ export interface HandleInternals {
   /** The document told an element has the focus before anything is there
    *  to take core's (`DocumentInteraction.told`). */
   toldFocus(element: Element): void;
+  /** Whether something of the window around the document has core's focus:
+   *  the application's own field, which autofocus leaves it in. */
+  focusOutside(): boolean;
   /** What is selected in the document, as it is drawn: what a copy of it
    *  puts on the clipboard. */
   selectedText(): string;
@@ -2691,6 +2695,7 @@ export class DomHost {
    */
   parserInserted(): { body: boolean } | null {
     const made = this._seams.handle.parserMade?.();
+    this._noteAutofocus(made ?? [], false);
     if (!made?.length || this._disposed) return null;
     const fresh = this._custom || this._scoped ? new Set<AnyNode>(made) : null;
     let body = false;
@@ -5077,6 +5082,21 @@ export class DomHost {
       case 'frameJavascriptDocument':
         this._javascriptFrame(this._element(a), text(b));
         return null;
+      // HTML 6.6.5, the candidates flushed at a rendering step
+      case 'autofocusFlush':
+        return this._autofocusFlush();
+      // a document's autofocus delegate (HTML, "autofocus delegate"): the
+      // first element in it with `autofocus` that is a focusable area, or 0
+      case 'autofocusDelegate': {
+        const found = DomUtils.findOne(
+          (el) =>
+            el.attribs.autofocus !== undefined &&
+            focusableElement(el) &&
+            !isInert(el),
+          (this._node(a) as Document).children,
+        );
+        return found ? this.idOf(found) : 0;
+      }
       // a frame's address changed by its own history, with no navigation:
       // never to or from another origin, since what the address says is what
       // `frameDocument` hands a page a document by
@@ -8720,6 +8740,7 @@ export class DomHost {
    *  written in on a click, an `<iframe>` of YouTube's embed, loaded only
    *  once a page read its `contentWindow`, and was an empty box. */
   private _connected(nodes: readonly AnyNode[]): void {
+    this._noteAutofocus(nodes, true);
     const found = DomUtils.findAll(
       (el) =>
         el.name === 'script' || el.name === 'link' || FRAME_TAGS.has(el.name),
@@ -8731,6 +8752,109 @@ export class DomHost {
       else if (el.name === 'link') this._preloadLink(el);
       else this._frameIn(el);
     }
+  }
+
+  /** The elements with `autofocus` put into the document, in the order
+   *  they went in, until one takes the focus (HTML 6.6.5, "autofocus
+   *  candidates"): what a scan finds the first time it is asked, the
+   *  parser's elements from before anything was told of what it makes
+   *  among them, and then what the parser and the page's scripts put in.
+   *  The document's own, and only where it is top-level. */
+  private _autofocus: Element[] | null = null;
+  /** The document's autofocus processed flag (HTML 6.6.5): one element
+   *  took the focus by it, or something had it first, and no other will. */
+  private _autofocused = false;
+
+  /** The candidates, scanned for the first time they are asked. */
+  private _autofocusList(): Element[] {
+    if (!this._autofocus) {
+      this._autofocus = DomUtils.findAll(
+        (el) => el.attribs.autofocus !== undefined,
+        this.document.children,
+      );
+      if (this._autofocus.length) this._wakeForAutofocus();
+    }
+    return this._autofocus;
+  }
+
+  /** Elements put into the document, the ones with `autofocus` among them
+   *  candidates now, at the end — again there, where `moved` says a
+   *  script's insertion may be of one that went in before. */
+  private _noteAutofocus(nodes: readonly AnyNode[], moved: boolean): void {
+    if (this._autofocused || this.frameParent || this._disposed) return;
+    const scanned = this._autofocus !== null;
+    const list = this._autofocusList();
+    // a scan made now found them where they are
+    if (!scanned || !nodes.length) return;
+    let added = false;
+    for (const el of DomUtils.findAll(
+      (e) => e.attribs.autofocus !== undefined,
+      nodes as AnyNode[],
+    )) {
+      if (documentHolding(el) !== this.document) continue;
+      const at = list.indexOf(el);
+      if (at >= 0) {
+        if (!moved) continue;
+        list.splice(at, 1);
+      }
+      list.push(el);
+      added = true;
+    }
+    if (added) this._wakeForAutofocus();
+  }
+
+  /** A rendering step, which flushes the candidates (`autofocusFlush`),
+   *  where nothing else would ask for one: never from inside an op. */
+  private _wakeForAutofocus(): void {
+    setTimeout(() => {
+      if (!this._disposed && !this._autofocused) {
+        this.entries?.call('__rendering', null);
+      }
+    }, 0);
+  }
+
+  /**
+   * HTML 6.6.5, "flush autofocus candidates", at a rendering step of a
+   * top-level document: the first candidate still in it that is a
+   * focusable area, now done with, as all of them are where something has
+   * the focus already — the document's or the application's — or its
+   * address names an element. The element to focus, 0 for none yet, and -1
+   * once none ever will be.
+   */
+  private _autofocusFlush(): number {
+    if (this._autofocused || this.frameParent) return -1;
+    const done = (): void => {
+      this._autofocused = true;
+      this._autofocus = [];
+    };
+    // what happens by itself, which such a sandbox has none of
+    if (this.sandbox & SB_AUTOMATIC) {
+      done();
+      return -1;
+    }
+    const list = this._autofocusList();
+    if (!list.length) return 0;
+    let fragment = '';
+    try {
+      fragment = new URL(this.url).hash.slice(1);
+    } catch {}
+    if (
+      this._handle.activeElement ||
+      this._focusing ||
+      this._handle.focusOutside?.() ||
+      indicatedElement(this.document, fragment)
+    ) {
+      done();
+      return -1;
+    }
+    while (list.length) {
+      const el = list.shift()!;
+      if (documentHolding(el) !== this.document) continue;
+      if (!focusableElement(el) || isInert(el)) continue;
+      done();
+      return this.idOf(el);
+    }
+    return 0;
   }
 
   /**

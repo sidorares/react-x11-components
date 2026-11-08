@@ -1944,6 +1944,7 @@ export function makeHtmlHandle(
       nodeRef.current?.interactive?.focus(element) ?? false,
     toldFocus: (element: Element) =>
       nodeRef.current?.interactive?.told(element),
+    focusOutside: () => nodeRef.current?.interactive?.focusOutside() ?? false,
     blur: () => nodeRef.current?.interactive?.blur(),
     get activeElement() {
       return nodeRef.current?.interactive?.activeElement() ?? null;
@@ -2103,6 +2104,15 @@ function documentInteraction(
     },
     activeElement: () =>
       live.current?.forms.owed() ?? owner(focusedNode(view.current)),
+    focusOutside: () => {
+      const inside = root.current;
+      let at: DrawnNode | null = focusedNode(view.current);
+      if (!at || !inside) return false;
+      for (; at; at = at.parent as DrawnNode | null) {
+        if (at === inside) return false;
+      }
+      return true;
+    },
     activate: (el) => {
       const node = view.current;
       const now = live.current;

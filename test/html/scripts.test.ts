@@ -9536,6 +9536,73 @@ test('an intercepted navigation resets focus after the transition, unless focusR
   );
 });
 
+test('the first element put in with autofocus takes the focus at a rendering step, whatever it is, and nothing put in after it does', async () => {
+  // HTML 6.6.5, "flush autofocus candidates": a button is no form widget,
+  // so only the document's own flush gives it the focus (WPT's
+  // focus-reset/autofocus, whose setup waits two frames for it); the
+  // document is done with autofocus once one has, and a disabled one is
+  // passed over
+  const doc = await hosted(
+    '<p id="out"></p><button id="off" autofocus disabled>off</button>' +
+      '<button id="first" autofocus>first</button><button id="second" autofocus>second</button><script>' +
+      'var r = [];' +
+      'requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '  r.push(document.activeElement.id);' +
+      '  document.getElementById("first").remove();' +
+      '  r.push(document.activeElement === document.body);' +
+      '  var late = document.createElement("button");' +
+      '  late.id = "late"; late.autofocus = true; document.body.append(late);' +
+      '  requestAnimationFrame(function () { requestAnimationFrame(function () {' +
+      '    r.push(document.activeElement === document.body);' +
+      "    document.getElementById('out').textContent = r.join('|');" +
+      '  }); });' +
+      '}); });' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'first|true|true',
+  );
+});
+
+test("an intercepted navigation's focus reset goes to the document's autofocus delegate as it stands at the end", async () => {
+  // HTML, "potentially reset the focus": the first element with `autofocus`
+  // that can take the focus then, else the body — not one disabled since,
+  // nor one that lost its attribute (WPT's focus-reset/autofocus)
+  const doc = await hosted(
+    '<p id="out"></p><button id="decoy">decoy</button><script>' +
+      'var r = [], decoy = document.getElementById("decoy");' +
+      'function add(id) { var b = document.createElement("button"); b.id = id; b.autofocus = true; document.body.append(b); return b; }' +
+      'function step(change) {' +
+      '  decoy.focus();' +
+      '  var go;' +
+      '  navigation.addEventListener("navigate", function (e) {' +
+      '    e.intercept({ handler: function () { return new Promise(function (ok) { go = ok; }); } });' +
+      '  }, { once: true });' +
+      '  var res = navigation.navigate("#" + r.length);' +
+      '  return res.committed.then(function () {' +
+      '    r.push(document.activeElement.id);' +
+      '    change(); go(); return res.finished;' +
+      '  }).then(function () { r.push(document.activeElement === document.body ? "body" : document.activeElement.id); });' +
+      '}' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  var one = add("one"), two = add("two");' +
+      '  step(function () {}).then(function () {' +
+      '    return step(function () { one.disabled = true; });' +
+      '  }).then(function () {' +
+      '    return step(function () { two.autofocus = false; });' +
+      '  }).then(function () {' +
+      "    document.getElementById('out').textContent = r.join('|');" +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+  );
+  assert.strictEqual(
+    await settled(doc, 'out', (t) => t !== ''),
+    'decoy|one|decoy|two|decoy|body',
+  );
+});
+
 test('a document is shown after its load, and as it goes hears beforeunload, pagehide, visibilitychange to hidden and unload, and runs nothing after', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

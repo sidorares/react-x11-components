@@ -3963,6 +3963,20 @@ export function installDom(
       );
     }
   };
+  /** Whether the document is done with autofocus (HTML 6.6.5, its
+   *  "autofocus processed flag"), as the host last said: no frame asks
+   *  again once it is. */
+  let autofocusDone = false;
+  /** HTML 6.6.5, "flush autofocus candidates": the candidate the host finds
+   *  for a top-level document is given the focus by the focusing steps. */
+  const flushAutofocus = (): void => {
+    if (autofocusDone) return;
+    const id = Number(call('autofocusFlush'));
+    if (id < 0) autofocusDone = true;
+    if (id <= 0) return;
+    autofocusDone = true;
+    wrap(id)?.focus?.();
+  };
   const runFrame = (): void => {
     // in the frame: a frame its steps ask for is the next one
     // (`nextFrame`), and not one more beside this
@@ -3984,6 +3998,9 @@ export function installDom(
     // the documents shown for the first time are revealed before the
     // rest of the rendering steps (HTML's "update the rendering")
     if (revealOwed) reveal();
+    // then the elements put in with `autofocus`, one of which may take the
+    // focus (HTML 6.6.5)
+    flushAutofocus();
     const time = taskNow();
     let shown: Viewport[] = [ownViewport];
     try {
@@ -32443,14 +32460,21 @@ export function installDom(
     if (changed) return;
     if (event._focusReset === 'manual') return;
     const doc = s.ctx.doc();
-    // autofocus delegate first (HTML); without one, the body, then the
-    // document element — `autofocus.html` is the next step of that
-    const target = doc.body ?? doc.documentElement;
+    // its autofocus delegate first (HTML, "autofocus delegate"): the first
+    // element in it with `autofocus` that can take the focus as things
+    // stand now; without one, the body, then the document element
+    const delegate = wrap(Number(call('autofocusDelegate', doc._id)));
+    const target = delegate ?? doc.body ?? doc.documentElement;
     const active = doc.activeElement;
     // already there (a focused control removed, focus fixup to the body)
     // needs no focusing steps: body's `focus` would fire and fail WPT's
     // `change-focus-then-remove-during-intercept`
     if (!target || active === target) return;
+    if (delegate) {
+      delegate.focus({ preventScroll: true });
+      s.focusChanged = false;
+      return;
+    }
     // the body is not a focusable widget here, so `body.focus()` leaves
     // the control lit; blur the active one so `activeElement` falls back
     // to the body, as the focusing steps for the viewport do
