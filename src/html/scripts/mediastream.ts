@@ -34,6 +34,9 @@ export interface MediaStreamsDeps {
   fire(target: unknown, event: unknown): void;
   /** Whether the page is a secure context, which `mediaDevices` needs. */
   secure: boolean;
+  /** The realm's `MessageChannel`, whose ports a track handed to another
+   *  realm reaches its source back through. */
+  MessageChannel: unknown;
 }
 
 /** What a peer connection's facade makes tracks and streams with. */
@@ -61,6 +64,24 @@ export interface MediaStreamsInternals {
   end(track: unknown, told: boolean): void;
   /** A fresh id, as a track's and a stream's are made. */
   uuid(): string;
+  /** Whether a track has been handed to another realm already, which a
+   *  second transfer of it is a `DataCloneError` for. */
+  detached(track: unknown): boolean;
+  /**
+   * A track's transfer (Media Capture Extensions, "Transferable
+   * MediaStreamTrack"): what the track is, as data, and the port the track
+   * made of it over there reaches its source through, from a realm that
+   * serves it here. Nothing is given up until `commit`: `abort` closes the
+   * port where the message it was in could not be sent.
+   */
+  transfer(track: unknown): {
+    data: unknown;
+    port: unknown;
+    commit(): void;
+    abort(): void;
+  };
+  /** The track a transfer made in this realm, over the port it came with. */
+  adopt(data: unknown, port: unknown): unknown;
   /**
    * `canvas.captureStream(frameRequestRate)`, its rate already checked: a
    * stream of one `CanvasCaptureMediaStreamTrack` over a host source of
@@ -199,7 +220,39 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     constraints: Any;
     /** The canvas a `captureStream()` track captures, or null. */
     canvas: Any;
+    /** Where a track handed over from another realm reaches its source,
+     *  or null for one over a source of this realm's host. */
+    home: Home | null;
+    /** Whether it was handed to another realm (`[[IsDetached]]`). */
+    detached: boolean;
   }
+
+  /**
+   * A source of another realm's host, as tracks handed over from there
+   * reach it: a port back to that realm, which serves it (`serve`), what
+   * this realm's tracks over it are, and the `applyConstraints` waiting on
+   * an answer over it.
+   */
+  interface Home {
+    port: Any;
+    tracks: Set<Any>;
+    waiting: Map<number, { resolve(v: Any): void; reject(e: Any): void }>;
+    seq: number;
+  }
+
+  const MessageChannel: Any = D.MessageChannel;
+  const portPost: Any = (MessageChannel as Any).prototype
+    ? new MessageChannel().port1.postMessage
+    : null;
+  const post = (port: Any, message: Any): void => {
+    apply(portPost, port, [message]);
+  };
+  /** Hears what arrives at a port: its handler set as the facade's own
+   *  handlers are, so a page's `EventTarget.prototype` is not asked. */
+  const hear = (port: Any, fn: (data: Any) => void): void => {
+    setHandler(port, 'message', (e: Any) => fn(e.data));
+    port.start();
+  };
 
   const HINTS: Record<string, string[]> = {
     audio: ['', 'speech', 'speech-recognition', 'music'],
@@ -242,7 +295,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     }
     clone(): Any {
       const s: TrackSlot = slotOf(this, (x) => x.track);
-      if (s.state === 'live') call('mdClone', s.source);
+      if (s.state === 'live') retain(s);
       // a canvas's track clones as one, of the same canvas
       const copy = makeTrack(
         s.kind,
@@ -250,6 +303,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         s.label,
         s.muted,
         s.canvas ? CanvasCaptureMediaStreamTrack : MediaStreamTrack,
+        s.home,
       );
       const c: TrackSlot = apply(wmGet, slots, [copy]);
       c.canvas = s.canvas;
@@ -265,8 +319,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       const s: TrackSlot = slotOf(this, (x) => x.track);
       if (s.state === 'ended') return;
       s.state = 'ended';
-      bySource.get(s.source)?.delete(this);
-      call('mdStop', s.source);
+      release(this, s);
     }
     getCapabilities(): Any {
       return { ...slotOf(this, (s) => s.track).capabilities };
@@ -296,14 +349,15 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         return P.reject(error);
       }
       if (s.state === 'ended') return P.resolve(undefined);
-      return ask('mdApply', { source: s.source, constraints: asked }).then(
-        (answer: Any) => {
-          s.constraints = asked;
-          if (answer?.settings)
-            s.settings = { ...s.settings, ...answer.settings };
-          return undefined;
-        },
-      );
+      const asking = s.home
+        ? askHome(s.home, asked)
+        : ask('mdApply', { source: s.source, constraints: asked });
+      return asking.then((answer: Any) => {
+        s.constraints = asked;
+        if (answer?.settings)
+          s.settings = { ...s.settings, ...answer.settings };
+        return undefined;
+      });
     }
   }
   for (const name of ['mute', 'unmute', 'ended']) {
@@ -329,6 +383,7 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
     label: string,
     muted: boolean,
     Kind: Any = MediaStreamTrack,
+    home: Home | null = null,
   ): Any => {
     const track = new Kind(TOKEN);
     const s: TrackSlot = {
@@ -345,13 +400,139 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
       capabilities: {},
       constraints: {},
       canvas: null,
+      home,
+      detached: false,
     };
     apply(wmSet, slots, [track, s]);
-    let set = bySource.get(source);
-    if (!set) bySource.set(source, (set = new Set()));
-    set.add(track);
+    if (home) home.tracks.add(track);
+    else {
+      let set = bySource.get(source);
+      if (!set) bySource.set(source, (set = new Set()));
+      set.add(track);
+    }
     return track;
   };
+
+  /** A track's hold on its source gone: told to the host, or to the realm
+   *  its source is of. */
+  const release = (track: Any, s: TrackSlot): void => {
+    if (s.home) {
+      s.home.tracks.delete(track);
+      post(s.home.port, { op: 'stop' });
+    } else {
+      bySource.get(s.source)?.delete(track);
+      call('mdStop', s.source);
+    }
+  };
+  /** Another hold on a track's source: a clone's. */
+  const retain = (s: TrackSlot): void => {
+    if (s.home) post(s.home.port, { op: 'clone' });
+    else call('mdClone', s.source);
+  };
+
+  /** What becomes of a source, told to a track over it: muted, unmuted,
+   *  or its end. */
+  const tellTrack = (track: Any, what: string): void => {
+    const s: TrackSlot = apply(wmGet, slots, [track]);
+    if (!s || s.state === 'ended') return;
+    if (what === 'ended') {
+      s.state = 'ended';
+      s.home?.tracks.delete(track);
+      bySource.get(s.source)?.delete(track);
+      fire(track, new Event('ended'));
+    } else {
+      const muted = what === 'muted';
+      if (s.muted === muted) return;
+      s.muted = muted;
+      fire(track, new Event(muted ? 'mute' : 'unmute'));
+    }
+  };
+
+  /** Who else hears of a source of this realm's host: the realms its
+   *  tracks were handed to, over their ports. */
+  const watchers = new Map<number, Set<(what: string) => void>>();
+
+  /** A source served over a port to a realm a track of it was handed to:
+   *  what that realm's tracks ask of it, and what becomes of it told
+   *  back. `target` is this realm's host's source, or a home of this
+   *  realm's, which a track handed on again goes on through. */
+  const serve = (
+    port: Any,
+    target: {
+      clone(): void;
+      stop(): void;
+      apply(constraints: Any): Promise<Any>;
+      watch(fn: (what: string) => void): void;
+    },
+  ): void => {
+    hear(port, (m: Any) => {
+      if (!m || typeof m !== 'object') return;
+      if (m.op === 'clone') target.clone();
+      else if (m.op === 'stop') target.stop();
+      else if (m.op === 'apply') {
+        target.apply(m.constraints).then(
+          (answer: Any) => post(port, { applied: m.id, ok: true, answer }),
+          (e: Any) =>
+            post(port, {
+              applied: m.id,
+              ok: false,
+              error: {
+                name: String(e?.name ?? 'Error'),
+                message: String(e?.message ?? ''),
+                constraint: e?.constraint,
+              },
+            }),
+        );
+      }
+    });
+    target.watch((what) => post(port, { ev: what }));
+  };
+  const sourceTarget = (source: number) => ({
+    clone: () => call('mdClone', source),
+    stop: () => call('mdStop', source),
+    apply: (constraints: Any) => ask('mdApply', { source, constraints }),
+    watch: (fn: (what: string) => void) => {
+      let set = watchers.get(source);
+      if (!set) watchers.set(source, (set = new Set()));
+      set.add(fn);
+    },
+  });
+  const homeTarget = (home: Home) => ({
+    clone: () => post(home.port, { op: 'clone' }),
+    stop: () => post(home.port, { op: 'stop' }),
+    apply: (constraints: Any) => askHome(home, constraints),
+    watch: (fn: (what: string) => void) => {
+      home.tracks.add({ relay: fn });
+    },
+  });
+
+  /** A home over a port a transfer brought: what arrives on it told to
+   *  this realm's tracks over it. */
+  const homeOf = (port: Any): Home => {
+    const home: Home = { port, tracks: new Set(), waiting: new Map(), seq: 0 };
+    hear(port, (m: Any) => {
+      if (!m || typeof m !== 'object') return;
+      if (typeof m.ev === 'string') {
+        for (const track of [...home.tracks]) {
+          if (track && typeof track.relay === 'function') track.relay(m.ev);
+          else tellTrack(track, m.ev);
+        }
+      } else if (typeof m.applied === 'number') {
+        const w = home.waiting.get(m.applied);
+        if (!w) return;
+        home.waiting.delete(m.applied);
+        if (m.ok) w.resolve(m.answer);
+        else w.reject(errorOf(m.error));
+      }
+    });
+    return home;
+  };
+  const askHome = (home: Home, constraints: Any): Promise<Any> =>
+    new P((resolve: Any, reject: Any) => {
+      const id = ++home.seq;
+      home.waiting.set(id, { resolve, reject });
+      post(home.port, { op: 'apply', id, constraints });
+    });
 
   class MediaStreamTrackEvent extends Event {
     constructor(type: string, init: Any) {
@@ -413,22 +594,11 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
   // what becomes of a host source: its tracks' muted state and their end
   entry('__mdSource', () => {
     const [source, what] = input() as [number, string];
+    for (const fn of [...(watchers.get(source) ?? [])]) fn(what);
+    if (what === 'ended') watchers.delete(source);
     const tracks = bySource.get(source);
     if (!tracks) return null;
-    for (const track of [...tracks]) {
-      const s: TrackSlot = apply(wmGet, slots, [track]);
-      if (s.state === 'ended') continue;
-      if (what === 'ended') {
-        s.state = 'ended';
-        tracks.delete(track);
-        fire(track, new Event('ended'));
-      } else {
-        const muted = what === 'muted';
-        if (s.muted === muted) continue;
-        s.muted = muted;
-        fire(track, new Event(muted ? 'mute' : 'unmute'));
-      }
-    }
+    for (const track of [...tracks]) tellTrack(track, what);
     return null;
   });
 
@@ -789,6 +959,73 @@ export function installMediaStreams(deps: MediaStreamsDeps): {
         if (told) fire(track, new Event('ended'));
       },
       uuid,
+      detached: (track: Any) => {
+        const s = track && apply(wmGet, slots, [track]);
+        return !!s?.track && s.detached;
+      },
+      transfer: (track: Any) => {
+        const s: TrackSlot = apply(wmGet, slots, [track]);
+        const channel = new MessageChannel();
+        const data = {
+          kind: s.kind,
+          id: s.id,
+          label: s.label,
+          state: s.state,
+          enabled: s.enabled,
+          muted: s.muted,
+          contentHint: s.contentHint,
+          constraints: s.constraints,
+          settings: s.settings,
+          capabilities: s.capabilities,
+        };
+        return {
+          data,
+          port: channel.port2,
+          commit: () => {
+            // the track's hold on its source is the one over there now:
+            // it ends here without stopping it, and tells nothing
+            const live = s.state === 'live';
+            s.detached = true;
+            s.state = 'ended';
+            s.home?.tracks.delete(track);
+            bySource.get(s.source)?.delete(track);
+            if (live) {
+              serve(
+                channel.port1,
+                s.home ? homeTarget(s.home) : sourceTarget(s.source),
+              );
+            } else channel.port1.close();
+          },
+          abort: () => {
+            channel.port1.close();
+            channel.port2.close();
+          },
+        };
+      },
+      adopt: (data: Any, port: Any) => {
+        const home = homeOf(port);
+        const kind = data?.kind === 'audio' ? 'audio' : 'video';
+        const track = makeTrack(
+          kind,
+          -1,
+          String(data?.label ?? ''),
+          !!data?.muted,
+          MediaStreamTrack,
+          home,
+        );
+        const s: TrackSlot = apply(wmGet, slots, [track]);
+        s.id = String(data?.id ?? s.id);
+        s.enabled = data?.enabled !== false;
+        s.state = data?.state === 'ended' ? 'ended' : 'live';
+        if (HINTS[kind].includes(data?.contentHint)) {
+          s.contentHint = data.contentHint;
+        }
+        s.constraints = data?.constraints ?? {};
+        s.settings = data?.settings ?? {};
+        s.capabilities = data?.capabilities ?? {};
+        if (s.state === 'ended') home.tracks.delete(track);
+        return track;
+      },
       captureCanvas: (
         canvas: Any,
         element: number,

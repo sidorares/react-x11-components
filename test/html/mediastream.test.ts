@@ -193,3 +193,55 @@ test('the interfaces are Web IDL’s: mediaDevices on Navigator.prototype, handl
     'devices|TypeError',
   ]);
 });
+
+test('a track is transferable: to a dedicated worker, which reaches its source back through the page, and to itself', async () => {
+  const logs = await run(`
+    var stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    var video = stream.getVideoTracks()[0], audio = stream.getAudioTracks()[0];
+    var src = 'onmessage = async function (e) {' +
+      '  var t = e.data.track, r = [t instanceof MediaStreamTrack, t.kind, t.readyState, t.id === e.data.id, typeof MediaStream];' +
+      '  await t.applyConstraints({ width: 400, height: 300 });' +
+      '  r.push(t.getSettings().width);' +
+      '  try { await t.applyConstraints({ width: { max: 0 } }); } catch (x) { r.push(x.name, x.constraint); }' +
+      '  var c = t.clone(); c.stop(); t.stop(); r.push(t.readyState);' +
+      '  postMessage(r.join(" "));' +
+      '};';
+    var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    var heard = new Promise(function (ok) { w.onmessage = function (e) { ok(e.data); }; });
+    w.postMessage({ track: video, id: video.id }, [video]);
+    log('detached', video.readyState);
+    try { w.postMessage(video, [video]); } catch (e) { log('again', e.name); }
+    log('worker', await heard);
+    var copy = structuredClone(audio, { transfer: [audio] });
+    log('here', copy instanceof MediaStreamTrack, copy !== audio, copy.id === audio.id, copy.readyState, audio.readyState);
+    await copy.applyConstraints({ channelCount: 2 });
+    log('applied', copy.getSettings().channelCount);
+    copy.stop();
+  `);
+  expect(logs, [
+    'detached|ended',
+    'again|DataCloneError',
+    'worker|true video live true undefined 400 OverconstrainedError width ended',
+    'here|true|true|true|live|ended',
+    'applied|2',
+  ]);
+});
+
+test('a track handed to a shared worker is its messageerror, which a window and a port both have a handler for', async () => {
+  const logs = await run(`
+    var stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    var track = stream.getVideoTracks()[0];
+    var src = 'onconnect = function (e) { var port = e.ports[0];' +
+      '  port.onmessage = function () { port.postMessage("message"); };' +
+      '  port.onmessageerror = function () { port.postMessage("messageerror"); }; };';
+    var w = new SharedWorker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    var heard = new Promise(function (ok) { w.port.onmessage = function (e) { ok(e.data); }; });
+    w.port.postMessage(track, [track]);
+    log('shared', await heard, track.readyState);
+    var n = 0;
+    window.onmessageerror = function () { n++; };
+    window.dispatchEvent(new MessageEvent('messageerror'));
+    log('window', n, typeof Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessageerror').set);
+  `);
+  expect(logs, ['shared|messageerror|ended', 'window|1|function']);
+});
