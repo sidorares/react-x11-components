@@ -2049,6 +2049,11 @@ export class HtmlViewNode extends Node {
   /** Everything owed run, for a read of the page's: what it reads is what
    *  a browser would answer, whatever is drawn. */
   private _settle(): void {
+    // and a scroll of the pane since a layout that placed a fixed box
+    // against it, which a page reads straight after its own `scrollTo`
+    if (this._scrolledSinceLaidOut() && this._stale < Stale.Layout) {
+      this._stale = Stale.Layout;
+    }
     if (this._owed.size || this._facesOwed) {
       this._owedAsk = OWED_ALL;
       this._measureOwed = true;
@@ -3981,6 +3986,17 @@ export class HtmlViewNode extends Node {
     this._placeAgainstPane();
   }
 
+  /** Whether the pane scrolled since a layout that placed a fixed box in
+   *  the frame a vertical root element turns against where it had the
+   *  viewport (`placedAtScroll`): a layout is owed. */
+  private _scrolledSinceLaidOut(): boolean {
+    const tree = this._tree;
+    if (!tree || !placedAtScroll(tree)) return false;
+    const at = this._viewportAt();
+    const was = this._laidAtScroll;
+    return !!at && (!was || at.x !== was.x || at.y !== was.y);
+  }
+
   /** Where the pane had the viewport for the last layout handed one
    *  (`setViewport`), or where a scroll since was last found. */
   private _laidAtScroll: Viewport | null = null;
@@ -3993,13 +4009,9 @@ export class HtmlViewNode extends Node {
     // a fixed box in the frame a vertical root element turns was placed
     // against the viewport as its layout had it (`placedAtScroll`), and a
     // scroll since is a layout owed
-    if (tree && placedAtScroll(tree)) {
-      const at = this._viewportAt();
-      const was = this._laidAtScroll;
-      if (at && (!was || at.x !== was.x || at.y !== was.y)) {
-        this._laidAtScroll = at;
-        void Promise.resolve().then(() => this._invalidate(Stale.Layout));
-      }
+    if (this._scrolledSinceLaidOut()) {
+      this._laidAtScroll = this._viewportAt();
+      void Promise.resolve().then(() => this._invalidate(Stale.Layout));
     }
     const boxes = tree && VIEWPORT_STICKY.get(tree);
     // and what is anchored across the pane's scroll: fixed to the viewport

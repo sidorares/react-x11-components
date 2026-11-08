@@ -8065,6 +8065,17 @@ without a layout moves its followers through one of the two. And
 which a restyle in place can change without a layout, so it asks again
 where the tree has anchors (`_revisit`).
 
+**A fixed box in the frame a vertical root element turns is placed at
+the scroll of its layout** (`viewportInRootFrame`, `placedAtScroll`). The
+root element's frame stands for the initial containing block where
+nothing positions the root (`rootElementFrame`), but its turn is a
+transform, which holds what is fixed in it: such a box is drawn with the
+frame, and the pane scrolls it. So in a tree with anchors its containing
+block is the viewport as the pane has it, turned, and a scroll of the pane
+owes a layout (`_scrolledSinceLaidOut`), which a page's read settles as
+well as a paint. Painting it at the viewport through the frame's turn is
+what would lift the layout a scroll costs.
+
 **In a tree with anchors, positioned boxes are laid out in the order a
 browser lays them out** (`finishOrder`, `inFinishOrder` in
 `layoutDocument`): as the layout of each one's containing block ends, the

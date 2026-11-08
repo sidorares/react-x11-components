@@ -7340,10 +7340,13 @@ pane reaches yet is held too, and read where the pane is until the pane
 takes it. A page whose root element is `vertical-rl` or `sideways-rl`
 starts at the right the same way, and its fixed boxes, and its absolute
 boxes nothing positions, are placed in the viewport, turned with the
-root's frame. Not yet for such a page: its vertical scroll origin at the
-bottom under `direction: rtl`, and a fixed box that holds still while the
-viewport scrolls under it, which scrolls with the frame it is in, so what
-anchors it to the document does not follow the scroll either.
+root's frame. A fixed box there is drawn with the frame, which the pane
+scrolls, so where the document has anchors it is placed against the
+viewport as the pane has it at its layout, and a scroll of the pane lays
+the document out again: an anchored one follows its anchor and takes the
+position option that fits where the viewport is now. Not yet for such a
+page: its vertical scroll origin at the bottom under `direction: rtl`, and
+a fixed box in a document with no anchors, which scrolls with the frame.
 
 **A document wider than its window scrolls the pane around it across**, as
 far as the viewport's scrollable overflow reaches (CSS Overflow 3, 2.2):

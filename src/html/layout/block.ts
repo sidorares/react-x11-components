@@ -10082,7 +10082,7 @@ export function placedAtScroll(tree: BoxTree): boolean {
  * placed where the viewport is at the scroll of its layout, and a scroll
  * lays the document out again (`placedAtScroll`), which is where it
  * follows its anchor and takes its position options. Null for any other
- * box, and where the layout is told no viewport.
+ * box, and where the layout is told no viewport yet.
  */
 function viewportInRootFrame(
   box: Box,
@@ -10090,9 +10090,16 @@ function viewportInRootFrame(
   ctx: LayoutContext,
 ): CbRect | null {
   if (!framed.any || box.style.position !== 'fixed') return null;
-  const viewport = ctx.viewport;
-  if (!viewport || !rootElementFrame(containing)) return null;
+  // a tree with no anchors is told no viewport (`setViewport`), and its
+  // fixed boxes are where the frame draws them
+  if (ctx.viewport === undefined || !rootElementFrame(containing)) {
+    return null;
+  }
+  // and where it is told none yet, the initial containing block, which the
+  // pane's first word on it lays out again
   ctx.atScroll = true;
+  const viewport = ctx.viewport;
+  if (!viewport) return null;
   ctx.readViewportHeight = true;
   return frameRectOf(
     containing,
