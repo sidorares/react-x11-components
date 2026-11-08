@@ -18158,6 +18158,54 @@ test('a frame without scripts reloads and steps back across its documents by loa
   );
 });
 
+test("a frame's entries of a document fetched under no-referrer or origin have no URL for the documents after it, and have it again once it is shown", async () => {
+  // HTML 7.2.6.5, the `url` getter: the policy is the document's as it is
+  // left — its response's, a `<meta>` in its markup, one written after it
+  // loaded — and read again each time it is left (WPT's
+  // no-referrer-*-url-censored)
+  const { text, logs } = await hostedFrames(
+    '<iframe id="f" src="a.html"></iframe><p id="out"></p><script>' +
+      'var r = [], f = document.getElementById("f");' +
+      'function n() { return f.contentWindow.navigation; }' +
+      'function then(go, next) { f.onload = function () { setTimeout(next, 0); }; go(); }' +
+      'function name(e) { return e.url === null ? "null" : e.url.split("/").pop(); }' +
+      'function seen() { r.push(n().entries().map(name).join(",") + " " + name(n().activation.from)); }' +
+      'window.onload = function () { setTimeout(function () {' +
+      '  n().navigate("#1").committed.then(function () {' +
+      '    then(function () { n().navigate("b.html"); }, function () {' +
+      '      seen();' +
+      '      then(function () { n().back(); }, function () {' +
+      '        seen();' +
+      '        f.contentDocument.head.innerHTML = \'<meta name="referrer" content="same-origin">\';' +
+      '        then(function () { n().forward(); }, function () {' +
+      '          seen();' +
+      '          document.getElementById("out").textContent = r.join("|");' +
+      '        });' +
+      '      });' +
+      '    });' +
+      '  });' +
+      '}, 0); };' +
+      '</script>',
+    {
+      'a.html': '<!doctype html><p>a</p>',
+      'b.html':
+        '<!doctype html><meta name="referrer" content="origin"><p>b</p>',
+    },
+    false,
+    {},
+    { 'a.html': [['referrer-policy', 'no-referrer']] },
+  );
+  assert.equal(
+    await until(
+      () => text('page', 'out'),
+      (t) => t !== '',
+      6000,
+    ),
+    'null,null,b.html null|a.html,a.html#1,null null|a.html,a.html#1,b.html a.html#1',
+    logs.join('\n'),
+  );
+});
+
 test("a frame's next document starts its navigation API afresh: what the last one left under way is no navigation for it to abort, and a step that loads nothing moves nothing", async () => {
   // the frame's window is kept across its documents, and with it the
   // session: the cross-document `navigate()` the last one started never
@@ -18478,6 +18526,8 @@ async function hostedFrames(
   /** The status each request for a file is answered with, in turn: 200
    *  once they are spent, and a 204 with no body. */
   statuses: Record<string, number[]> = {},
+  /** Headers a file is answered with besides its type. */
+  headers: Record<string, [string, string][]> = {},
 ): Promise<{
   text: (where: string, id: string) => string;
   logs: string[];
@@ -18532,7 +18582,7 @@ async function hostedFrames(
         status,
         statusText: status === 200 ? 'OK' : '',
         redirected: false,
-        headers: [['content-type', 'text/html']],
+        headers: [['content-type', 'text/html'], ...(headers[file] ?? [])],
         body: status === 204 ? '' : body,
       };
     },

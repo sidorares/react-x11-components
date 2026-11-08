@@ -1624,17 +1624,24 @@ listens, and its timer keeps no process alive.
 
 `coreMediaDevices(app, { permission, request })` is the machine's cameras,
 microphones, speakers and screen, through react-x11's media capture
-(react-x11's `docs/media.md`): AVFoundation's cameras and CoreAudio's
-microphones (echo cancelled) on macOS, and on X11 the screen alone, since
-core has no camera or microphone there yet. A device a page opens is one
+(react-x11's `docs/media.md`): AVFoundation's cameras, CoreAudio's
+microphones (echo cancelled) and ScreenCaptureKit's displays on macOS, and
+on X11 the screen alone, since core has no camera or microphone there yet.
+A device a page opens is one
 core track at the settings its constraints came to, so a preview and a call
 beside it share one capture session, and where a constraint leaves a
 setting open it is Chrome's: 640×480 at 30 frames a second, 48 kHz with
 echo cancellation, noise suppression and gain control on, each held to the
 device. The host's own prompt is `request`, and core asks the system as a
-device opens. **Not in a `<Frame>` pane on macOS**: a pane runs no AppKit,
-so core captures nothing there, and the example browser shows a page that
-needs a camera in its own window (`BROWSER_INLINE=1`).
+device opens. In a `<Frame>` pane on macOS the pane's app asks its host,
+which captures for it, so the example browser's tabs have the devices as
+its window has them. `getDisplayMedia` shares the main display: a page
+cannot ask for one window, since nothing here offers a picker of them yet.
+macOS refuses a camera, without a prompt, to a process it does not take
+for an app of its own that declares camera use, and the page hears
+`NotAllowedError`: core's error says so, and a bundle launched with `open`
+and `NSCameraUsageDescription` in its `Info.plist` is asked for
+(react-x11's `docs/packaging.md`).
 
 **A service worker answers what its pages ask for** (Service Workers 1),
 where a secure page has `serviceWorkers`. A worker outlives the document that
@@ -1878,7 +1885,13 @@ to another document's entry is that document shown at the entry, asked
 first with `beforeunload` and then told as a `navigate` — a traversal,
 neither cancelable nor one a handler can take, and none at all for an
 entry of another origin — whose promises never settle, since the document
-they are of goes. Past the ends is nowhere, as in a browser.
+they are of goes. Past the ends is nowhere, as in a browser. An entry of
+another document whose referrer policy was `no-referrer` or `origin` as it
+was left — its response's `Referrer-Policy`, or a `<meta name="referrer">`
+in it, one written after it loaded included — has a `url` of null, in
+`navigation.entries()` and in `activation.from` (HTML 7.2.6.5), and has it
+again once its document is shown; the policy is read each time the
+document is left, in a tab's history and in a frame's alike.
 
 The entries a document's own navigations make share a document number
 (`HtmlSessionEntry.document`), so a document shown again at one of them, a
@@ -1904,7 +1917,8 @@ them rather than off the site. A document shown with no scripts running
 in it — JavaScript off for its site — never reaches an engine, so the host
 says it was shown: `session.show(url)` makes it the next of the history as
 an engine would, by the navigation planned for it or as a push, and
-answers its entry; `session.fragment(url)` adds an entry of its own for a
+answers its entry, and `session.show(url, () => policy)` reads its
+referrer policy as it is left, which no engine is there to read; `session.fragment(url)` adds an entry of its own for a
 fragment followed in it, as a fragment navigation does; and
 `session.go()` to one of its entries moves there at once and answers null,
 for the host to scroll. A host that keeps the history somewhere that

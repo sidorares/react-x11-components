@@ -330,7 +330,8 @@ function FrameDocument({
     if (realm || shownBare.current) return;
     if (session.entries.length === 0) return;
     shownBare.current = true;
-    session.show(url);
+    // its policy is the page realm's to read, which loaded it
+    session.show(url, () => host.referrerPolicyOfDocument(document));
   }, [realm, session, url]);
   // a frame in this frame is a frame of this frame's realm, and in a document
   // with no realm of its own one of the page's, which loads it

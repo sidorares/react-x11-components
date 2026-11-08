@@ -4994,6 +4994,15 @@ export class DomHost {
         const doc = this._frameDocument(this._element(a));
         return doc ? this.idOf(doc) : 0;
       }
+      // the referrer policy of a document of this tree's, which a frame's
+      // session reads of the one it leaves (HTML 7.2.6.5): one the realm
+      // holds already, whose `<meta>` it could read itself
+      case 'referrerPolicyOf': {
+        const doc = this._node(a);
+        return doc instanceof Document
+          ? this.referrerPolicyOfDocument(doc)
+          : '';
+      }
       case 'frameElement': {
         const doc = this._node(a) as Document;
         const frame = this._frameOf.get(doc);
@@ -8192,6 +8201,12 @@ export class DomHost {
           scripts = false;
         }
         this._s.encodings.set(doc, encoding);
+        // its own policy, which a frame's document with no realm of its own
+        // has only from here
+        this._responseReferrers.set(
+          doc,
+          referrerPolicyOfHeaders(response.headers),
+        );
         // another origin's scripts never run in this realm, where it was
         // asked for or where it sent the frame, and a sandbox's, of an origin
         // of their own or none to run, no more than they
@@ -9194,9 +9209,11 @@ export class DomHost {
   }
 
   /** The policy the last `<meta name="referrer">` that said one brought,
-   *  and the elements already heard (HTML 4.2.5.3, the `referrer` name):
-   *  one that goes leaves its policy behind. */
-  private _metaReferrer: ReferrerPolicy = '';
+   *  by the document it is in, and the elements already heard (HTML
+   *  4.2.5.3, the `referrer` name): one that goes leaves its policy behind.
+   *  A frame's document this realm holds has a `<meta>` of its own, which
+   *  is no policy of this document's. */
+  private _metaReferrers = new WeakMap<AnyNode, ReferrerPolicy>();
   private _referrerMetas = new WeakSet<AnyNode>();
   private _noteReferrer(node: AnyNode): void {
     if (
@@ -9209,18 +9226,31 @@ export class DomHost {
     }
     this._referrerMetas.add(node);
     const policy = referrerPolicyOfMeta(node.attribs.content ?? '');
-    if (policy) this._metaReferrer = policy;
+    let doc: AnyNode = node;
+    while (doc.parent) doc = doc.parent;
+    if (policy) this._metaReferrers.set(doc, policy);
   }
+  /** What `Referrer-Policy` said of each frame's document this realm
+   *  loaded with no realm of its own (`_loadFrame`), whose policy it is
+   *  until a `<meta>` says otherwise. */
+  private _responseReferrers = new WeakMap<Document, ReferrerPolicy>();
   /** The document's referrer policy: what its response said, unless a
    *  `<meta>` in its head said otherwise since. */
   documentReferrerPolicy(): ReferrerPolicy {
-    const head = DomUtils.findOne(
-      (e) => e.name === 'head',
-      this.document.children,
-      true,
-    );
+    return this.referrerPolicyOfDocument(this.document);
+  }
+  /** The referrer policy of this document or of a frame's this realm
+   *  holds, as `documentReferrerPolicy` says it: what a navigation away
+   *  from it reads as it leaves (HTML 7.2.6.5, the `url` getter). */
+  referrerPolicyOfDocument(doc: Document): ReferrerPolicy {
+    const head = DomUtils.findOne((e) => e.name === 'head', doc.children, true);
     for (const child of head?.children ?? []) this._noteReferrer(child);
-    return this._metaReferrer || this.referrerPolicy;
+    return (
+      this._metaReferrers.get(doc) ||
+      (doc === this.document
+        ? this.referrerPolicy
+        : (this._responseReferrers.get(doc) ?? ''))
+    );
   }
   /** The policy a frame's next navigation is made under, where something
    *  sent it there (`navigateFrame`): the link's, '' for the document's. */
