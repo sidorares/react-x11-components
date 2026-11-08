@@ -341,6 +341,46 @@ test('an element at no opacity is not drawn, and at half is drawn faded', async 
   });
 });
 
+test('plus-lighter adds what a box draws to what is under it, inside the box that isolates it', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // CSS Compositing 2: a view transition's old and new images cross-fade so,
+  // and at any two opacities that come to 1 they are the element itself;
+  // drawn over each other, two halves came to three quarters of it
+  const pair = (blend: string) =>
+    '<div style="position:relative;isolation:isolate;height:20px">' +
+    ['0.25', '0.75']
+      .map(
+        (o) =>
+          `<div style="position:absolute;inset:0;opacity:${o};` +
+          `mix-blend-mode:${blend};background:#00ff00"></div>`,
+      )
+      .join('') +
+    '</div>';
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0;background:#ffffff">' +
+          pair('plus-lighter') +
+          pair('normal') +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  await expectPixel(result.ctx, 10, 10, '#00ff00', {
+    tolerance: 3,
+    message: 'the two add up to the colour, over the page',
+  });
+  await expectPixel(result.ctx, 10, 30, '#30ff30', {
+    tolerance: 3,
+    message: 'drawn over each other, they let the page through',
+  });
+});
+
 test('a block inside an inline element is faded with it', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // CSS 2.1 9.2.1.1: the block breaks the inline box in pieces and stands

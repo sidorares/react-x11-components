@@ -9072,13 +9072,11 @@ export class HtmlViewNode extends Node {
     this._followLifted(local);
     const tree = this._tree;
     if (!tree) return null;
-    const hit = deepestAt(
-      tree,
-      local.x,
-      local.y,
-      undefined,
-      this._fixedShift(origin),
-    );
+    // with its rendering suppressed for a view transition, every point is
+    // the root element's (CSS View Transitions 1, 7.4)
+    const hit = this._suppressed()
+      ? null
+      : deepestAt(tree, local.x, local.y, undefined, this._fixedShift(origin));
     if (hit) {
       // an image with a map is its areas (HTML 4.8.14), where a point of it
       // is in one, and otherwise the image
@@ -11621,7 +11619,7 @@ export class HtmlViewNode extends Node {
     // be painted: the window shows each as it starts already, and no paint
     // is coming to start it — a transition turned back from where it was
     // drawn, a fade out from what the element looks like
-    if (this._claims === this._claimsPainted) {
+    if (this._claims === this._claimsPainted && !this._suppressed()) {
       this._timeline.startPending(animationClock.now());
       this._anchoredTimeline.startPending(animationClock.now());
     }
@@ -12355,7 +12353,10 @@ export class HtmlViewNode extends Node {
     // an animation no paint has shown for long — nothing draws the
     // document, or not where it is — starts anyway, and runs to its end
     const now = animationClock.now();
-    if (now - this._timeline.pendingSince >= PAINT_WAIT_MS) {
+    if (
+      now - this._timeline.pendingSince >= PAINT_WAIT_MS &&
+      !this._suppressed()
+    ) {
       this._timeline.startPending(now);
     }
     const tree = this._tree;
@@ -12972,6 +12973,18 @@ export class HtmlViewNode extends Node {
     // a fragment a script builds before it puts it in, an element it took
     // out. Its coming in is a change to the document, and says so.
     if (!inDocument(change.target, this._source.document)) return true;
+    // A view transition's pseudo-elements are the root element's, styled
+    // from its rules as their tree is built (`_transitionTree`), which no
+    // reach of a change says: an attribute of the root changed while the
+    // tree is drawn — a class a page sets on it — styles them again
+    if (
+      this._vt?.phase === 'live' &&
+      change.type === 'attributes' &&
+      isElement(change.target) &&
+      isRootElement(change.target)
+    ) {
+      return false;
+    }
     // What is inside a drawing has no box and no style of its own: the
     // drawing is drawn again. A `:has()` around it may ask it something,
     // and what that restyles is found as for a change anywhere — the
@@ -15729,6 +15742,19 @@ export class HtmlViewNode extends Node {
   override paint(ctx: Context2D): void {
     this._notePlaced();
     super.paint(ctx); // background, border, clip to `abs`
+    const held = this._vt?.phase === 'old' ? this._vt.held : null;
+    if (held) {
+      // a view transition's update runs: what is drawn is the document as
+      // its old state was captured, and nothing starts (7.4)
+      const viewport = this._viewport() ?? this.abs;
+      (ctx as PaintContext).drawImage?.(
+        held,
+        Math.round(viewport.x),
+        Math.round(viewport.y),
+      );
+      this._props().onPaint?.();
+      return;
+    }
     this._counted(() => this._paintContent(ctx));
     // the animations this paint is the first to show start now, and run
     // from here (`AnimationTimeline.startsAtPaint`)
@@ -15999,9 +16025,20 @@ export class HtmlViewNode extends Node {
         anim: null,
       });
     }
+    // and all of the document as it is now, which is drawn until the new
+    // state is captured: its rendering is suppressed (7.4)
+    run.held = this._captureSurface(tree, null, new Set())?.surface ?? null;
     this._vt = run;
     run.timeline.onCssEvent = () => this._oweCssEvents();
     return '';
+  }
+
+  /** Whether a view transition suppresses the document's rendering (CSS
+   *  View Transitions 1, 7.4): its old state captured and its new not yet.
+   *  What the document draws is then the picture held of it, no animation
+   *  starts, and a point is the root element's. */
+  private _suppressed(): boolean {
+    return this._vt?.phase === 'old';
   }
 
   /**
@@ -16058,6 +16095,7 @@ export class HtmlViewNode extends Node {
       }
     }
     run.phase = 'live';
+    run.release();
     run.started = animationClock.now();
     if (this._cascade) this._cascade.transitionKeyframes = run.keyframes;
     this._sprites?.clear();
@@ -16217,9 +16255,12 @@ export class HtmlViewNode extends Node {
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
     }
     if (!drawnAtViewport(box)) {
+      // where the pane's offsets have the document now: a capture may come
+      // in the frame of a page's `scrollTo`, before a pass has moved `abs`
       const viewport = this._viewport() ?? this.abs;
+      const origin = this._scrolledOrigin();
       m = multiply(
-        [1, 0, 0, 1, this.abs.x - viewport.x, this.abs.y - viewport.y],
+        [1, 0, 0, 1, origin.x - viewport.x, origin.y - viewport.y],
         m,
       );
     }
@@ -16271,6 +16312,8 @@ export class HtmlViewNode extends Node {
   } | null {
     const base = this._paintOptions(null, null);
     const viewport = this._viewport() ?? this.abs;
+    // where the pane's offsets have the document now (`_placementOf`)
+    const origin = this._scrolledOrigin();
     if (!box) {
       const w = Math.ceil(viewport.width);
       const h = Math.ceil(viewport.height);
@@ -16279,8 +16322,8 @@ export class HtmlViewNode extends Node {
       if (!surface) return null;
       paintDocument(surface.getContext('2d') as PaintContext, tree, {
         ...base,
-        originX: this.abs.x - viewport.x,
-        originY: this.abs.y - viewport.y,
+        originX: origin.x - viewport.x,
+        originY: origin.y - viewport.y,
         canvas: base.canvas && {
           ...base.canvas,
           x: base.canvas.x - viewport.x,
@@ -16302,8 +16345,8 @@ export class HtmlViewNode extends Node {
     // what it draws, in the document: where a box fixed to the viewport is
     // laid out at the document's top, and any other one where it scrolls
     const fixed = drawnAtViewport(box);
-    const vx = fixed ? 0 : viewport.x - this.abs.x;
-    const vy = fixed ? 0 : viewport.y - this.abs.y;
+    const vx = fixed ? 0 : viewport.x - origin.x;
+    const vy = fixed ? 0 : viewport.y - origin.y;
     const own = this._borderRect(box);
     // an inline box's bounds are its lines', which it shares
     const inline = box.kind === 'inline';
@@ -16544,12 +16587,12 @@ export class HtmlViewNode extends Node {
     if (info.which === 'old') {
       const old = entry.old;
       if (!old?.surface) return null;
-      return (ctx, x, y, w, h) =>
-        drawCaptured(ctx, old.surface!, old, x, y, w, h);
+      return (ctx, x, y, w, h, _damage, lighter) =>
+        drawCaptured(ctx, old.surface!, old, x, y, w, h, lighter);
     }
     const el = entry.el;
     if (!el) return null;
-    return (ctx, x, y, w, h, damage) => {
+    return (ctx, x, y, w, h, damage, lighter) => {
       const root = isRootElement(el);
       const own = this._firstBoxesOf(tree).get(el) ?? null;
       if (!own) return;
@@ -16566,7 +16609,10 @@ export class HtmlViewNode extends Node {
       const size = root ? this._viewportPlacement(own) : this._placementOf(own);
       // live paint is layout-oriented; a box in a vertical frame must go
       // through `_captureSurface`, which turns the picture onto the page
+      // and where it is added to what is under it (`plus-lighter`), as a
+      // picture of it, not each thing it draws
       const live =
+        !lighter &&
         !frameOfBox(own) &&
         Math.abs(w - size.width) < 1e-6 &&
         Math.abs(h - size.height) < 1e-6;
@@ -16585,6 +16631,7 @@ export class HtmlViewNode extends Node {
           y,
           w,
           h,
+          lighter,
         );
       } finally {
         shot.surface.destroy?.();
@@ -16889,17 +16936,24 @@ function drawCaptured(
   y: number,
   w: number,
   h: number,
+  lighter = false,
 ): void {
   if (!ctx.drawImage || !(image.width > 0 && image.height > 0)) return;
   const sx = w / image.width;
   const sy = h / image.height;
   const dx = x + image.inkX * sx;
   const dy = y + image.inkY * sy;
+  // `plus-lighter`: added to what is under it (CSS Compositing 2)
+  if (lighter) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+  }
   if (Math.abs(sx - 1) < 1e-6 && Math.abs(sy - 1) < 1e-6) {
     ctx.drawImage(surface, Math.round(dx), Math.round(dy));
-    return;
+  } else {
+    ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
   }
-  ctx.drawImage(surface, dx, dy, image.inkWidth * sx, image.inkHeight * sy);
+  if (lighter) ctx.restore();
 }
 
 /** A number for an object, the same for as long as it lives: what a tree
