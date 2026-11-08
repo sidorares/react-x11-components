@@ -2783,6 +2783,17 @@ fragment it is sent to, `location.hash = ''` among them, keeps the document
 and moves its `:target`, as HTML's "navigate to a fragment" has it, where it
 was the page's own `location`.
 
+Such a document is scrolled to its fragment in a task after its frame's
+`load`, where Chromium's fragment anchor scrolls it, rather than before, as
+HTML's "the end" has it — WPT's `layout-follows-focused-targeted-block`
+reads the frame unscrolled in its `onload` — and as `scrollIntoView` would
+scroll it: lined up as its `scroll-snap-align` says, and its `scroll-margin` and
+the root's `scroll-padding` taken off. A scroll of its viewport that the
+page's script makes during core's pass — the frame's `load` is told as its
+view is laid out — asks for the pass after it, or the frame stayed drawn
+where it was. And its viewport shows no scroll bars where its root has
+`scrollbar-width: none`, or is `overflow: hidden` both ways.
+
 **A cross-origin frame sends the top window somewhere only behind a press**, as
 Chromium has it, where it could not at all; a sandbox goes by its flags. A
 `javascript:` address goes nowhere.

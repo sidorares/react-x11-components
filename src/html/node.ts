@@ -15030,6 +15030,18 @@ export class HtmlViewNode extends Node {
     pane.scrollTo({ x: to.x * zoom, y: to.y * zoom });
     this.oweScrollReach(to.x * zoom);
     this.oweScrollDown(to.y * zoom);
+    // a page's script may run inside core's pass — a frame's `load` is told
+    // as its view says it is laid out — where the pass the scroll asks for
+    // is the one under way, which placed the pane's content already: it is
+    // asked for again once that pass is over, or the content stays drawn
+    // where the pane was
+    const again = () => {
+      if (!this.destroyed && this._pane() === pane) {
+        pane.invalidate(true, pane, 'scroll');
+      }
+    };
+    if (timers.queueMicrotask) timers.queueMicrotask(again);
+    else void Promise.resolve().then(again);
   }
 
   snapViewport(
