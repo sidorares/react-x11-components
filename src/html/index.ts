@@ -1798,10 +1798,14 @@ export function makeHtmlHandle(
     cancelCss: (kind, key) => nodeRef.current?.cancelCss(kind, key),
     cssKeyframes: (element, pseudo, name) =>
       nodeRef.current?.cssKeyframesOf(element, pseudo, name) ?? null,
-    transitionCaptureOld: () => nodeRef.current?.transitionCaptureOld() ?? '',
-    transitionCaptureNew: () => nodeRef.current?.transitionCaptureNew() ?? '',
-    transitionRemaining: () => nodeRef.current?.transitionRemaining() ?? 0,
-    transitionEnd: () => nodeRef.current?.transitionEnd(),
+    transitionCaptureOld: (scope) =>
+      nodeRef.current?.transitionCaptureOld(scope) ?? '',
+    transitionCaptureNew: (scope) =>
+      nodeRef.current?.transitionCaptureNew(scope) ?? '',
+    transitionRemaining: (scope) =>
+      nodeRef.current?.transitionRemaining(scope) ?? 0,
+    transitionEnd: (scope) => nodeRef.current?.transitionEnd(scope),
+    transitionScope: (scope, on) => nodeRef.current?.transitionScope(scope, on),
     importedCss: (href) => nodeRef.current?.importedCss(href) ?? null,
     selectionPoints: () => nodeRef.current?.selectionPoints() ?? null,
     selectedText: () => nodeRef.current?.parent?.selectedText?.() ?? '',

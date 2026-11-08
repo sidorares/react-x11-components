@@ -1131,6 +1131,7 @@ function cssomAt(
     'font-stretch': `${num(style.fontStretch)}%`,
     'view-transition-name': style.viewTransitionName,
     'view-transition-class': style.viewTransitionClass,
+    'view-transition-scope': style.viewTransitionScope,
     color: cssomColor(color, style.colorSource, color, style.colorSource),
     'color-scheme': style.colorSchemeKeywords,
     'background-color': cssomColor(

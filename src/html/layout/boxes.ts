@@ -1120,7 +1120,7 @@ export const TRANSITION_STYLES = new WeakMap<Box, ComputedStyle>();
 /** The box of a view transition's old or new image, by what it shows. */
 export const TRANSITION_IMAGES = new WeakMap<
   Box,
-  { name: string; which: 'old' | 'new' }
+  { name: string; which: 'old' | 'new'; scope: Element }
 >();
 
 /** The blocks that broke an inline box under full opacity in pieces, and
@@ -1400,6 +1400,10 @@ export interface BuildOptions {
    *  root element in the top layer (`TransitionTree`). */
   transition?:
     ((root: Element, rootStyle: ComputedStyle) => TransitionTree | null) | null;
+  /** The elements a view transition was started on whose trees are drawn
+   *  (CSS View Transitions 2, 2.2): each hangs its `::view-transition` in
+   *  its own box, as the root hangs the document's in the top layer. */
+  transitionScopes?: ReadonlySet<Element> | null;
   /** The styles of the tree this one replaces, where only some elements'
    *  can have changed since (`Cascade.beginSharing`). */
   kept?: KeptStyles | null;
@@ -4608,9 +4612,10 @@ class Builder {
       this._pseudo(el, 'after', style, box);
       if (
         this._options.transition &&
-        el.parent &&
-        !el.parent.parent &&
-        !(el.parent instanceof ShadowRoot)
+        ((el.parent &&
+          !el.parent.parent &&
+          !(el.parent instanceof ShadowRoot)) ||
+          this._options.transitionScopes?.has(el))
       ) {
         this._viewTransition(el, box);
       }
@@ -4864,14 +4869,18 @@ class Builder {
     // size and place (`snapshot-containing-block-static`), and
     // `getComputedStyle` still answers the author's position
     // (`TRANSITION_STYLES`).
+    // A transition started on an element hangs its tree in the element's
+    // box, over its padding box (CSS View Transitions 2, 6), which its
+    // layout containment makes the tree's containing block
+    const scoped = !!this._options.transitionScopes?.has(el);
     const pos = tree.style.position;
     const againstSnapshot =
-      pos === 'absolute' || pos === 'static' || pos === 'relative';
+      !scoped && (pos === 'absolute' || pos === 'static' || pos === 'relative');
     const laid = againstSnapshot ? copyStyle(tree.style) : null;
     if (laid) laid.position = 'fixed';
     const root = make(laid ?? tree.style, into, 'view-transition');
     if (laid) TRANSITION_STYLES.set(root, tree.style);
-    root.topLayer = true;
+    if (!scoped) root.topLayer = true;
     for (const g of tree.groups) {
       if (g.group.display === 'none') continue;
       const group = make(g.group, root, `view-transition-group(${g.name})`);
@@ -4893,7 +4902,7 @@ class Builder {
         pair.append(box);
         GENERATED_FROM.set(box, el);
         TRANSITION_KEYS.set(box, `view-transition-${which}(${g.name})`);
-        TRANSITION_IMAGES.set(box, { name: g.name, which });
+        TRANSITION_IMAGES.set(box, { name: g.name, which, scope: el });
       }
     }
   }

@@ -8001,6 +8001,20 @@ export function installDom(
     getAnimations(options?: Any): Any[] {
       return animationsOf(this, !!options?.subtree);
     }
+    /** A view transition of what the element holds (CSS View Transitions
+     *  2, 2.2): the document's, where it is the root element. */
+    startViewTransition(options?: Any): Any {
+      const doc = this.ownerDocument ?? document;
+      if (doc.documentElement === this) {
+        return startViewTransition(options, doc);
+      }
+      return startViewTransition(options, doc, this);
+    }
+    get activeViewTransition(): Any {
+      const doc = this.ownerDocument ?? document;
+      if (doc.documentElement === this) return activeOf(doc);
+      return scopedTransitions.get(this) ?? null;
+    }
     get nextElementSibling(): Any {
       return wrap(Number(call('next', this._id, 'element')));
     }
@@ -19682,18 +19696,28 @@ export function installDom(
   /** The document's active view transition told to the host, with its
    *  types — or none — for `:active-view-transition` to match the root by
    *  (CSS View Transitions 1, 3.3). */
-  const tellActive = (doc: Any, vt: Any): void => {
+  const tellActive = (doc: Any, vt: Any, scope: Any = null): void => {
     call(
       'vtActive',
       doc._id,
       vt ? [...setValues.call(vt._types._set)].map(str).join('\u0000') : null,
+      scope ? scope._id : null,
     );
   };
   /** A transition's types changed: told where it is the active one. */
   const typesChanged = (set: Any): void => {
     const vt = set._owner;
-    if (vt && activeOf(vt._doc) === vt) tellActive(vt._doc, vt);
+    if (vt && activeOfTransition(vt) === vt) {
+      tellActive(vt._doc, vt, vt._scope);
+    }
   };
+  /** The transitions started on elements (CSS View Transitions 2, 2.2), by
+   *  the element: each element's active one. */
+  const scopedTransitions = new WeakMap<object, Any>();
+  /** The active transition of what a transition is of: its scope's, or
+   *  its document's. */
+  const activeOfTransition = (vt: Any): Any =>
+    vt._scope ? (scopedTransitions.get(vt._scope) ?? null) : activeOf(vt._doc);
   /** The active transition of a document of the realm's: the page's, or
    *  a frame's the page reaches into, which the frame's view draws. */
   const frameTransitions = new WeakMap<object, Any>();
@@ -19701,14 +19725,24 @@ export function installDom(
     doc === document ? activeTransition : (frameTransitions.get(doc) ?? null);
   /** A transition no longer its document's active one, where it was. */
   const leaveActive = (vt: Any): void => {
-    if (activeOf(vt._doc) !== vt) return;
+    if (activeOfTransition(vt) !== vt) return;
+    if (vt._scope) {
+      scopedTransitions.delete(vt._scope);
+      tellActive(vt._doc, null, vt._scope);
+      call('vtEnd', vt._doc._id, vt._scope._id);
+      // its scope's containment and `view-transition-scope` go with it
+      call('vtScope', vt._doc._id, vt._scope._id, false);
+      return;
+    }
     if (vt._doc === document) activeTransition = null;
     else frameTransitions.delete(vt._doc);
     tellActive(vt._doc, null);
     call('vtEnd', vt._doc._id);
   };
-  /** A transition's step, asked of the view that draws its document. */
-  const transitionOp = (vt: Any, op: string): Any => call(op, vt._doc._id);
+  /** A transition's step, asked of the view that draws its document, for
+   *  the element it was started on where it was. */
+  const transitionOp = (vt: Any, op: string): Any =>
+    call(op, vt._doc._id, vt._scope ? vt._scope._id : null);
 
   /** How long an update callback may take before the transition is
    *  skipped (7.4, "implementation-defined"): Chrome's four seconds. */
@@ -19720,6 +19754,9 @@ export function installDom(
       'pending';
     /** The document it is of. */
     _doc: Any = null;
+    /** The element it was started on (CSS View Transitions 2, 2.2), or
+     *  null for the document's. */
+    _scope: Any = null;
     _callback: Any;
     /** Whether `callUpdate` has already run (7.5), or a cross-document
      *  transition that has no update callback to call. */
@@ -19767,6 +19804,11 @@ export function installDom(
     }
     get types(): Any {
       return this._types;
+    }
+    /** The element whose transition it is (CSS View Transitions 2, 2.1):
+     *  the one it was started on, or the document's root element. */
+    get transitionRoot(): Any {
+      return this._scope ?? this._doc?.documentElement ?? null;
     }
     set types(v: Any) {
       const set = new ViewTransitionTypeSet();
@@ -20139,8 +20181,85 @@ export function installDom(
     }
   };
 
+  /**
+   * A transition started on an element (CSS View Transitions 2, 2.2.1):
+   * skipped where the element has no box a transition can be hung in;
+   * otherwise its scope and layout containment for its length, the one
+   * before it on the element skipped, and its steps as the document's
+   * are, its names found in the element.
+   */
+  const startScoped = (vt: Any, scope: Any): Any => {
+    const doc = vt._doc;
+    // step 4: a principal box, of a kind that can hold one
+    const display = str(
+      scope.isConnected ? getComputedStyle(scope).display : 'none',
+    );
+    const boxless =
+      !scope.isConnected ||
+      display === 'none' ||
+      display === 'contents' ||
+      display === 'inline' ||
+      (display.startsWith('table-') && display !== 'table-cell') ||
+      display.startsWith('ruby');
+    if (boxless || document.visibilityState === 'hidden') {
+      skipTransition(
+        vt,
+        new DOMException(
+          boxless
+            ? 'The element has no box to transition'
+            : 'The document is hidden',
+          'InvalidStateError',
+        ),
+      );
+      return vt;
+    }
+    // step 7: the element's transition before it
+    const active = scopedTransitions.get(scope);
+    if (active) {
+      skipTransition(
+        active,
+        new DOMException('Skipped by a new transition', 'AbortError'),
+      );
+    }
+    scopedTransitions.set(scope, vt);
+    tellActive(doc, vt, scope);
+    // step 5: its scope and layout containment, for its length
+    call('vtScope', doc._id, scope._id, true);
+    afterNextFrame(() => {
+      if (vt._phase === 'done') return;
+      flushUpdates(doc);
+      if ((vt as Any)._phase === 'done') return;
+      const shared = str(transitionOp(vt, 'vtOld'));
+      if (shared) {
+        skipTransition(
+          vt,
+          new DOMException(
+            `Unexpected duplicate view-transition-name: ${shared}`,
+            'InvalidStateError',
+          ),
+        );
+        return;
+      }
+      setTimer(
+        () => {
+          if (vt._phase === 'done') return;
+          queueUpdate(vt);
+          flushUpdates(doc);
+        },
+        0,
+        [],
+        false,
+      );
+    });
+    return vt;
+  };
+
   /** `document.startViewTransition()` (7.2), of the document asked. */
-  const startViewTransition = (options: Any, doc: Any = document): Any => {
+  const startViewTransition = (
+    options: Any,
+    doc: Any = document,
+    scope: Any = null,
+  ): Any => {
     const callback =
       typeof options === 'function'
         ? options
@@ -20149,9 +20268,11 @@ export function installDom(
           : null;
     const vt = new ViewTransition(callback, TRANSITION_KEY);
     vt._doc = doc;
+    vt._scope = scope;
     if (options && typeof options === 'object' && options.types) {
       for (const t of options.types) vt._types.add(t);
     }
+    if (scope) return startScoped(vt, scope);
     if (document.visibilityState === 'hidden') {
       skipTransition(
         vt,
@@ -20194,7 +20315,7 @@ export function installDom(
       // nothing of the document is rendered from here until the update
       // is done: no frame, no animation, no paint, and a press is the
       // root element's (7.4)
-      vt._suppressed = true;
+      if (!vt._scope) vt._suppressed = true;
       setTimer(
         () => {
           if (vt._phase === 'done') return;

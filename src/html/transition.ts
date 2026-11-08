@@ -61,9 +61,18 @@ export interface TransitionEntry {
 }
 
 export class ViewTransitionRun {
+  /** The element it was started on (CSS View Transitions 2, 2.2), whose
+   *  subtree its names are found in and whose box its tree is hung in; null
+   *  for the document's, whose tree is in the top layer. */
+  readonly scope: Element | null;
+  constructor(scope: Element | null = null) {
+    this.scope = scope;
+  }
   /** Its old state captured and its update not yet done, or its tree
    *  drawn. */
   phase: 'old' | 'live' = 'old';
+  /** The timer for its tree's next frame. */
+  timer: unknown = null;
   /** Its names, in the order its groups are drawn: the old state's in
    *  their elements' paint order, the root's first, and then the new
    *  state's the old had not. */

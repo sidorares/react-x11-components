@@ -3378,7 +3378,10 @@ export class HtmlViewNode extends Node {
       }
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
-      this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
+      this._cascade.transitionKeyframes = this._transitionKeyframes();
+      this._cascade.transitionScopes = this._vtScopes.size
+        ? this._vtScopes
+        : null;
       this._cascade.shapeAnimations = this._shapeMotion;
       kept.cascade.viewportWidth = width;
       kept.cascade.viewportHeight = this._viewportHeight();
@@ -3497,7 +3500,10 @@ export class HtmlViewNode extends Node {
       this._cascade.laidOutScroll = this._laidOutScroll;
       this._cascade.previous = this._previousStyle;
       this._cascade.scripts = this._scripts;
-      this._cascade.transitionKeyframes = this._vt?.keyframes ?? null;
+      this._cascade.transitionKeyframes = this._transitionKeyframes();
+      this._cascade.transitionScopes = this._vtScopes.size
+        ? this._vtScopes
+        : null;
       this._cascade.shapeAnimations = this._shapeMotion;
       this._sheetsRead = {
         look,
@@ -4838,7 +4844,8 @@ export class HtmlViewNode extends Node {
         const options = (): BuildOptions => ({
           cascade,
           kept,
-          transition: this._vt?.phase === 'live' ? this._transitionTree : null,
+          transition: this._anyLive() ? this._transitionTree : null,
+          transitionScopes: this._liveScopes(),
           scale: this._scale,
           imageSize: (el) => this._videoSizes.get(el) ?? this._imageSize(el),
           holdsDocument: (el) =>
@@ -4923,7 +4930,7 @@ export class HtmlViewNode extends Node {
           this._owedDone();
         }
         kept = null;
-        if (this._vt?.phase === 'live') this._armTransitionFrame();
+        if (this._anyLive()) this._armTransitionFrame();
         this._styledWith = cascade;
         this._keptFor = null;
         this._styledWidth = target;
@@ -6255,7 +6262,7 @@ export class HtmlViewNode extends Node {
     // a view transition's pseudo-element is styled as its tree is built,
     // on the transition's timeline
     if (touched.some((pseudo) => pseudo.startsWith('view-transition'))) {
-      if (this._vt?.phase === 'live') {
+      if (this._runOfElement(element)?.phase === 'live') {
         this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
         this.invalidateMeasure('content');
         this.invalidate(true, this, 'props');
@@ -8401,24 +8408,26 @@ export class HtmlViewNode extends Node {
       /^view-transition(?:-(group|image-pair|old|new)\(\s*([^()\s]+)\s*\)?)?$/.exec(
         pseudo,
       );
-    if (!m || !isRootElement(element)) return null;
+    if (!m) return null;
+    // the root's are the document's transition's, and another element's
+    // only while one started on it is under way
+    const run = this._runOfElement(element);
+    if (!run && !isRootElement(element)) return null;
     const key = m[1] ? `view-transition-${m[1]}(${m[2]})` : 'view-transition';
-    if (this._vt?.phase === 'live') {
-      for (const top of topLayerBoxes(tree.root)) {
-        if (top.pseudo !== 'view-transition') continue;
-        const stack = [top];
-        while (stack.length) {
-          const box = stack.pop()!;
-          if (TRANSITION_KEYS.get(box) === key) {
-            const style = TRANSITION_STYLES.get(box) ?? box.style;
-            return cssomStyle(style, this._scale, this._usedBox(box, style));
-          }
-          stack.push(...box.children);
+    const top = run?.phase === 'live' ? this._transitionTop(tree, run) : null;
+    if (top) {
+      const stack = [top];
+      while (stack.length) {
+        const box = stack.pop()!;
+        if (TRANSITION_KEYS.get(box) === key) {
+          const style = TRANSITION_STYLES.get(box) ?? box.style;
+          return cssomStyle(style, this._scale, this._usedBox(box, style));
         }
+        stack.push(...box.children);
       }
     }
     const name = m[2] ?? '';
-    const entry = name ? this._vt?.entries.get(name) : undefined;
+    const entry = name ? run?.entries.get(name) : undefined;
     const part = m[1] as TransitionPart['part'] | undefined;
     // A part the live tree never built still answers the style it would
     // have if generated — Chromium does, so a page can ask
@@ -8427,7 +8436,7 @@ export class HtmlViewNode extends Node {
     // whether its sibling image exists. In an update callback, only the
     // old state's parts are there. Before or after a transition, and for
     // a name the transition never had, inherit from the root.
-    const phase = this._vt?.phase;
+    const phase = run?.phase;
     const there =
       phase === 'live'
         ? !part || !!entry
@@ -8438,9 +8447,7 @@ export class HtmlViewNode extends Node {
       return cssomStyle(inherit(rootStyle, cascade.initial), this._scale, null);
     }
     const timeline =
-      phase === 'live' && this._vt
-        ? this._vt.timeline
-        : new AnimationTimeline();
+      phase === 'live' && run ? run.timeline : new AnimationTimeline();
     timeline.now = animationClock.now();
     const classes = entry?.classes ?? [];
     const at = (
@@ -8463,7 +8470,7 @@ export class HtmlViewNode extends Node {
       );
     let style = at('view-transition', rootStyle, false);
     if (part) {
-      style = at('group', style, (this._vt?.entries.size ?? 1) === 1);
+      style = at('group', style, (run?.entries.size ?? 1) === 1);
       if (part !== 'group') {
         style = at('image-pair', style, true);
         if (part !== 'image-pair') {
@@ -10968,7 +10975,7 @@ export class HtmlViewNode extends Node {
       const events = [
         ...this._timeline.takeCssEvents(),
         ...this._anchoredTimeline.takeCssEvents(),
-        ...(this._vt?.timeline.takeCssEvents() ?? []),
+        ...this._runs().flatMap((run) => run.timeline.takeCssEvents()),
         ...this._cssEventsLeft.splice(0),
       ];
       // the ends held for these are let go as they are told, and the next
@@ -11060,10 +11067,12 @@ export class HtmlViewNode extends Node {
       return;
     }
     // or one of a view transition's pseudo-elements, on its own timeline
-    const vt = this._vt;
-    if (!vt || vt.phase !== 'live') return;
-    vt.timeline.now = animationClock.now();
-    if (!vt.timeline.seekAnimation(key, currentTime, paused)) return;
+    const vt = this._runs().find((run) => {
+      if (run.phase !== 'live') return false;
+      run.timeline.now = animationClock.now();
+      return !!run.timeline.seekAnimation(key, currentTime, paused);
+    });
+    if (!vt) return;
     this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
     this.invalidateMeasure('content');
     this.invalidate(true, this, 'props');
@@ -12443,7 +12452,7 @@ export class HtmlViewNode extends Node {
     this._claims += 1;
     // a change anywhere under a view transition's tree may be drawn in any
     // image of it, wherever its group puts it
-    if (this._vt?.phase === 'live' && damage && damage !== this) damage = this;
+    if (damage && damage !== this && this._anyLive()) damage = this;
     super.invalidate(layout, damage, reason);
   }
 
@@ -12993,10 +13002,9 @@ export class HtmlViewNode extends Node {
     // reach of a change says: an attribute of the root changed while the
     // tree is drawn — a class a page sets on it — styles them again
     if (
-      this._vt?.phase === 'live' &&
       change.type === 'attributes' &&
       isElement(change.target) &&
-      isRootElement(change.target)
+      this._runOfElement(change.target)?.phase === 'live'
     ) {
       return false;
     }
@@ -14638,8 +14646,9 @@ export class HtmlViewNode extends Node {
     const cascade = this._cascade;
     if (!tree || !cascade) return null;
     if (pseudo.startsWith('view-transition')) {
-      const how = this._vt?.styled.get(pseudo);
-      if (!how) return this.computedStyle(element, pseudo);
+      const run = this._runOfElement(element);
+      const how = run?.styled.get(pseudo);
+      if (!run || !how) return this.computedStyle(element, pseudo);
       const style = cascade.transitionStyle(
         element,
         how.part,
@@ -14648,7 +14657,7 @@ export class HtmlViewNode extends Node {
         how.onlyChild,
         how.parent,
         how.dynamic,
-        this._vt!.timeline,
+        run.timeline,
         pseudo,
         true,
       );
@@ -14728,33 +14737,33 @@ export class HtmlViewNode extends Node {
       .map((a) => ({ ...a, timeline: this._timeline }));
     // and a view transition's tree's, on its own timeline, in the order
     // its boxes are (CSS View Transitions 1, 3.4), by their keys
-    const transitionBoxes = new Map<string, Box>();
-    const vt = this._vt;
-    if (vt?.phase === 'live') {
-      for (const top of topLayerBoxes(tree.root)) {
-        if (top.pseudo !== 'view-transition') continue;
-        const stack = [top];
-        while (stack.length) {
-          const box = stack.pop()!;
-          const key = TRANSITION_KEYS.get(box);
-          if (key) transitionBoxes.set(key, box);
-          for (let i = box.children.length - 1; i >= 0; i -= 1) {
-            stack.push(box.children[i]);
-          }
+    // — the document's, and each one started on an element, by its scope
+    const transitionBoxes = new Map<object, Box>();
+    for (const vt of this._runs()) {
+      if (vt.phase !== 'live') continue;
+      const own = new Map<string, Box>();
+      const top = this._transitionTop(tree, vt);
+      const stack = top ? [top] : [];
+      while (stack.length) {
+        const box = stack.pop()!;
+        const key = TRANSITION_KEYS.get(box);
+        if (key) own.set(key, box);
+        for (let i = box.children.length - 1; i >= 0; i -= 1) {
+          stack.push(box.children[i]);
         }
       }
-      const keys = [...transitionBoxes.keys()];
-      listed.push(
-        ...vt.timeline
-          .cssAnimations()
-          .filter((a) => transitionBoxes.has(a.pseudo))
-          .sort(
-            (x, y) =>
-              keys.indexOf(x.pseudo) - keys.indexOf(y.pseudo) ||
-              x.index - y.index,
-          )
-          .map((a) => ({ ...a, timeline: vt.timeline })),
-      );
+      const keys = [...own.keys()];
+      const found = vt.timeline
+        .cssAnimations()
+        .filter((a) => own.has(a.pseudo))
+        .sort(
+          (x, y) =>
+            keys.indexOf(x.pseudo) - keys.indexOf(y.pseudo) ||
+            x.index - y.index,
+        )
+        .map((a) => ({ ...a, timeline: vt.timeline }));
+      for (const a of found) transitionBoxes.set(a, own.get(a.pseudo)!);
+      listed.push(...found);
     }
     for (const a of listed) {
       const el = a.el as Element;
@@ -14766,7 +14775,7 @@ export class HtmlViewNode extends Node {
           ? tree.styles.get(el)?.style
           : a.pseudo === 'before' || a.pseudo === 'after'
             ? generatedStyle(this._pseudoBoxOf(tree, el, a.pseudo))
-            : transitionBoxes.get(a.pseudo)?.style;
+            : transitionBoxes.get(a)?.style;
       if (!style) continue;
       const lists = style.animations;
       const i = a.index;
@@ -15984,10 +15993,95 @@ export class HtmlViewNode extends Node {
   // its element (`_transitionImage`): the old one as it was captured, and
   // the new one as it is, at every paint.
 
-  /** A view transition under way, from the capture of its old state. */
+  /** The document's view transition under way, from the capture of its
+   *  old state. */
   private _vt: ViewTransitionRun | null = null;
-  /** The timer for its tree's next frame. */
-  private _vtTimer: unknown = null;
+  /** The transitions started on elements (CSS View Transitions 2, 2.2),
+   *  by the element, from the capture of each one's old state. */
+  private readonly _scopedVts = new Map<Element, ViewTransitionRun>();
+  /** The elements a transition was started on, from its start to its end:
+   *  each has layout containment and `view-transition-scope: all` for that
+   *  long (2.2.1, step 5; `Cascade.transitionScopes`). */
+  private readonly _vtScopes = new Set<Element>();
+
+  /** Every transition under way, the document's first. */
+  private _runs(): ViewTransitionRun[] {
+    const out = this._vt ? [this._vt] : [];
+    for (const run of this._scopedVts.values()) out.push(run);
+    return out;
+  }
+
+  /** Whether a transition's tree is drawn, any of them. */
+  private _anyLive(): boolean {
+    if (this._vt?.phase === 'live') return true;
+    for (const run of this._scopedVts.values()) {
+      if (run.phase === 'live') return true;
+    }
+    return false;
+  }
+
+  /** The transition a scope's, or the document's for null. */
+  private _runOf(scope: Element | null): ViewTransitionRun | null {
+    return scope ? (this._scopedVts.get(scope) ?? null) : this._vt;
+  }
+
+  /** The transition whose pseudo-elements an element's are: the root
+   *  element's is the document's, and any other's its own. */
+  private _runOfElement(el: Element): ViewTransitionRun | null {
+    return isRootElement(el) ? this._vt : (this._scopedVts.get(el) ?? null);
+  }
+
+  /** A transition's `::view-transition` box: in the top layer for the
+   *  document's, and in its scope's box for one started on an element. */
+  private _transitionTop(tree: BoxTree, run: ViewTransitionRun): Box | null {
+    const tops = run.scope
+      ? (this._firstBoxesOf(tree).get(run.scope)?.children ?? [])
+      : topLayerBoxes(tree.root);
+    for (const top of tops) {
+      if (TRANSITION_KEYS.get(top) === 'view-transition') return top;
+    }
+    return null;
+  }
+
+  /** The elements whose transitions' trees are drawn, which the builder
+   *  hangs a tree in. */
+  private _liveScopes(): Set<Element> | null {
+    let out: Set<Element> | null = null;
+    for (const [el, run] of this._scopedVts) {
+      if (run.phase === 'live') (out ??= new Set()).add(el);
+    }
+    return out;
+  }
+
+  /** The `@keyframes` the transitions under way make, all of them. */
+  private _transitionKeyframes(): Map<string, KeyframesRule> | null {
+    let out: Map<string, KeyframesRule> | null = null;
+    for (const run of this._runs()) {
+      if (run.phase !== 'live') continue;
+      for (const [name, rule] of run.keyframes) {
+        (out ??= new Map()).set(name, rule);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A transition was started on an element, or it is over (CSS View
+   * Transitions 2, 2.2.1, step 5): the element has layout containment and
+   * `view-transition-scope: all` from its start to its end, which the
+   * document is styled again for.
+   */
+  transitionScope(scope: Element, on: boolean): void {
+    if (on === this._vtScopes.has(scope)) return;
+    if (on) this._vtScopes.add(scope);
+    else this._vtScopes.delete(scope);
+    if (this._cascade) {
+      this._cascade.transitionScopes = this._vtScopes.size
+        ? this._vtScopes
+        : null;
+    }
+    this._invalidate(Stale.Boxes);
+  }
 
   /**
    * Capture a view transition's old state (7.4): each element a name
@@ -16006,14 +16100,16 @@ export class HtmlViewNode extends Node {
     return this._resources.stylesheet(url)?.text ?? null;
   }
 
-  transitionCaptureOld(): string {
-    this.transitionEnd();
+  transitionCaptureOld(scope: Element | null = null): string {
+    this.transitionEnd(scope);
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return '';
-    const named = this._namedElements(tree);
+    const scopeBox = scope ? this._firstBoxesOf(tree).get(scope) : null;
+    if (scope && !scopeBox) return '';
+    const named = this._namedElements(tree, scope);
     if (typeof named === 'string') return named;
-    const run = new ViewTransitionRun();
+    const run = new ViewTransitionRun(scope);
     const boxes = new Set(named.map((n) => n.box));
     for (const { name, el, box, classes } of named) {
       const others = new Set(boxes);
@@ -16021,7 +16117,7 @@ export class HtmlViewNode extends Node {
       const root = isRootElement(el);
       const placement = root
         ? this._viewportPlacement(box)
-        : this._placementOf(box);
+        : this._placementOf(box, scopeBox ?? null);
       const shot = this._captureSurface(tree, root ? null : box, others);
       const old: OldImage = {
         ...placement,
@@ -16042,8 +16138,12 @@ export class HtmlViewNode extends Node {
     }
     // and all of the document as it is now, which is drawn until the new
     // state is captured: its rendering is suppressed (7.4)
-    run.held = this._captureSurface(tree, null, new Set())?.surface ?? null;
-    this._vt = run;
+    if (!scope) {
+      run.held = this._captureSurface(tree, null, new Set())?.surface ?? null;
+      this._vt = run;
+    } else {
+      this._scopedVts.set(scope, run);
+    }
     run.timeline.onCssEvent = () => this._oweCssEvents();
     return '';
   }
@@ -16063,15 +16163,20 @@ export class HtmlViewNode extends Node {
    * old element was. The name two elements share, which ends the
    * transition, or ''.
    */
-  transitionCaptureNew(): string {
-    const run = this._vt;
+  transitionCaptureNew(scope: Element | null = null): string {
+    const run = this._runOf(scope);
     if (!run || run.phase !== 'old') return '';
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (!tree) return '';
-    const named = this._namedElements(tree);
+    const scopeBox = scope ? this._firstBoxesOf(tree).get(scope) : null;
+    if (scope && !scopeBox) {
+      this.transitionEnd(scope);
+      return '';
+    }
+    const named = this._namedElements(tree, scope);
     if (typeof named === 'string') {
-      this.transitionEnd();
+      this.transitionEnd(scope);
       return named;
     }
     for (const { name, el, box, classes } of named) {
@@ -16084,7 +16189,7 @@ export class HtmlViewNode extends Node {
       entry.classes = classes;
       entry.now = isRootElement(el)
         ? this._viewportPlacement(box)
-        : this._placementOf(box);
+        : this._placementOf(box, scopeBox ?? null);
     }
     const s = this._scale;
     let index = 0;
@@ -16112,7 +16217,9 @@ export class HtmlViewNode extends Node {
     run.phase = 'live';
     run.release();
     run.started = animationClock.now();
-    if (this._cascade) this._cascade.transitionKeyframes = run.keyframes;
+    if (this._cascade) {
+      this._cascade.transitionKeyframes = this._transitionKeyframes();
+    }
     this._sprites?.clear();
     this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
     this.invalidateMeasure('content');
@@ -16122,17 +16229,20 @@ export class HtmlViewNode extends Node {
 
   /** End a view transition (7.9 and 7.6): its tree goes, and its elements
    *  are drawn where they are laid out again. */
-  transitionEnd(): void {
-    const run = this._vt;
+  transitionEnd(scope: Element | null = null): void {
+    const run = this._runOf(scope);
     if (!run) return;
-    this._vt = null;
+    if (scope) this._scopedVts.delete(scope);
+    else this._vt = null;
     this._cssEventsLeft.push(...run.timeline.takeCssEvents());
-    if (this._vtTimer !== null) {
-      animationClock.disarm(this._vtTimer);
-      this._vtTimer = null;
+    if (run.timer !== null) {
+      animationClock.disarm(run.timer);
+      run.timer = null;
     }
     run.dispose();
-    if (this._cascade) this._cascade.transitionKeyframes = null;
+    if (this._cascade) {
+      this._cascade.transitionKeyframes = this._transitionKeyframes();
+    }
     if (run.phase === 'live') {
       this._sprites?.clear();
       this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
@@ -16146,14 +16256,16 @@ export class HtmlViewNode extends Node {
    *  once they are, or where none is under way. Null where it cannot go
    *  on (7.8): an element its new state captured is no longer rendered, or
    *  is broken across columns. */
-  transitionRemaining(): number | null {
-    const run = this._vt;
+  transitionRemaining(scope: Element | null = null): number | null {
+    const run = this._runOf(scope);
     if (!run || run.phase !== 'live') return 0;
     // its tree as it is styled now: a page may have changed its rules
     this._prepare(this.abs.width || 1);
     const tree = this._tree;
     if (tree) {
       const boxes = this._firstBoxesOf(tree);
+      // and its scope, which has to stay rendered (2.2.1, step 4)
+      if (scope && !boxes.get(scope)) return null;
       for (const entry of run.entries.values()) {
         if (!entry.el) continue;
         const box = boxes.get(entry.el);
@@ -16165,24 +16277,25 @@ export class HtmlViewNode extends Node {
 
   /** A timer for the next frame a view transition's tree changes at. */
   private _armTransitionFrame(): void {
-    if (this._vtTimer !== null) {
-      animationClock.disarm(this._vtTimer);
-      this._vtTimer = null;
+    for (const run of this._runs()) {
+      if (run.timer !== null) {
+        animationClock.disarm(run.timer);
+        run.timer = null;
+      }
+      if (run.phase !== 'live' || this.destroyed) continue;
+      const next = run.timeline.nextFrame();
+      if (next === null) continue;
+      run.timer = animationClock.arm(
+        () => {
+          run.timer = null;
+          if (this._runOf(run.scope) !== run || this.destroyed) return;
+          this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
+          this.invalidateMeasure('content');
+          this.invalidate(true, this, 'props');
+        },
+        Math.max(1, next - animationClock.now()),
+      );
     }
-    const run = this._vt;
-    if (!run || run.phase !== 'live' || this.destroyed) return;
-    const next = run.timeline.nextFrame();
-    if (next === null) return;
-    this._vtTimer = animationClock.arm(
-      () => {
-        this._vtTimer = null;
-        if (this._vt !== run || this.destroyed) return;
-        this._stale = Math.max(this._stale, Stale.Boxes) as Stale;
-        this.invalidateMeasure('content');
-        this.invalidate(true, this, 'props');
-      },
-      Math.max(1, next - animationClock.now()),
-    );
   }
 
   /**
@@ -16194,6 +16307,7 @@ export class HtmlViewNode extends Node {
    */
   private _namedElements(
     tree: BoxTree,
+    scope: Element | null = null,
   ): { name: string; el: Element; box: Box; classes: string[] }[] | string {
     const boxes = this._firstBoxesOf(tree);
     const out: { name: string; el: Element; box: Box; classes: string[] }[] =
@@ -16202,6 +16316,11 @@ export class HtmlViewNode extends Node {
     for (const [el, { style }] of tree.styles) {
       const name = captureName(el, style);
       if (name === null) continue;
+      // in the transition's scope, and in no scope inside it: an element
+      // with `view-transition-scope: all` keeps its names, its own among
+      // them, from a transition started outside it (CSS View Transitions 2,
+      // 4)
+      if (!inTransitionScope(el, scope, tree)) continue;
       const box = boxes.get(el);
       // one broken across columns is not captured (7.4)
       if (!box || COLUMN_PIECES.has(box)) continue;
@@ -16215,12 +16334,13 @@ export class HtmlViewNode extends Node {
   /** The boxes of the elements a view transition draws in its tree now. */
   private _capturedBoxes(tree: BoxTree): Set<Box> {
     const out = new Set<Box>();
-    const run = this._vt;
-    if (!run) return out;
     const boxes = this._firstBoxesOf(tree);
-    for (const entry of run.entries.values()) {
-      const box = entry.el && boxes.get(entry.el);
-      if (box) out.add(box);
+    for (const run of this._runs()) {
+      if (run.phase !== 'live') continue;
+      for (const entry of run.entries.values()) {
+        const box = entry.el && boxes.get(entry.el);
+        if (box) out.add(box);
+      }
     }
     return out;
   }
@@ -16259,17 +16379,32 @@ export class HtmlViewNode extends Node {
    * transition tree sits outside that frame, so a frame-local size would
    * swap its group's width and height.
    */
-  private _placementOf(box: Box): Placement {
+  private _placementOf(box: Box, scope: Box | null = null): Placement {
     const laid = this._borderRect(box);
     const own = this._tree?.vertical ? onPage(box, laid) : laid;
     let m: Matrix = [1, 0, 0, 1, own.x, own.y];
     for (let at: Box | null = box; at; at = at.topLayer ? null : at.parent) {
+      // a scope's transition places its elements from its padding box,
+      // which its tree is drawn in, through the transforms between
+      if (at === scope) break;
       // the frame's turn is already in `own` via `onPage`
       if (FRAMES.has(at) || FRAME_ROOTS.has(at)) continue;
       const placed = placedMatrix(at);
       if (placed && placed.length === 6) m = multiply(placed as Matrix, m);
     }
-    if (!drawnAtViewport(box)) {
+    if (scope) {
+      m = multiply(
+        [
+          1,
+          0,
+          0,
+          1,
+          -(scope.x + scope.borderLeft),
+          -(scope.y + scope.borderTop),
+        ],
+        m,
+      );
+    } else if (!drawnAtViewport(box)) {
       // where the pane's offsets have the document now: a capture may come
       // in the frame of a page's `scrollTo`, before a pass has moved `abs`
       const viewport = this._viewport() ?? this.abs;
@@ -16480,7 +16615,7 @@ export class HtmlViewNode extends Node {
     root: Element,
     rootStyle: ComputedStyle,
   ): TransitionTree | null => {
-    const run = this._vt;
+    const run = this._runOfElement(root);
     const cascade = this._cascade;
     if (!run || run.phase !== 'live' || !cascade) return null;
     const s = this._scale;
@@ -16593,9 +16728,9 @@ export class HtmlViewNode extends Node {
    * draws past it with it.
    */
   private readonly _transitionImage = (box: Box): TransitionDraw | null => {
-    const run = this._vt;
     const tree = this._tree;
     const info = TRANSITION_IMAGES.get(box);
+    const run = info ? this._runOfElement(info.scope) : null;
     if (!run || !tree || !info) return null;
     const entry = run.entries.get(info.name);
     if (!entry) return null;
@@ -16613,11 +16748,13 @@ export class HtmlViewNode extends Node {
       if (!own) return;
       const others = this._capturedBoxes(tree);
       others.delete(own);
-      // the root's leaves the transition's own tree out
-      if (root) {
-        for (const top of topLayerBoxes(tree.root)) {
-          if (top.pseudo === 'view-transition') others.add(top);
-        }
+      // and every transition's tree, which no image holds: the root's tree
+      // is in the top layer, and an element a transition was started on
+      // may be captured, by its own or by another
+      for (const any of this._runs()) {
+        const top =
+          any.phase === 'live' ? this._transitionTop(tree, any) : null;
+        if (top) others.add(top);
       }
       // page axes, as the group's width/height (`_placementOf`): a layout
       // border box would scale a page-oriented capture by the frame's swap
@@ -16718,12 +16855,13 @@ export class HtmlViewNode extends Node {
     this._drawnLast = this._drawnNow;
     this._drawnNow = last;
     const vt = this._vt?.phase === 'live' ? this._vt : null;
-    const captured = vt ? this._capturedBoxes(tree) : null;
+    const live = this._anyLive();
+    const captured = live ? this._capturedBoxes(tree) : null;
     paintDocument(ctx as PaintContext, tree, {
       ...this._paintOptions(range, damage),
       captured,
       noCanvas: !!vt && this._rootCaptured(vt),
-      transitionImage: vt ? this._transitionImage : undefined,
+      transitionImage: live ? this._transitionImage : undefined,
       lifted: this._liftedBoxes(tree),
       shadowless: this._shadowlessBoxes(tree),
       drag: this._liveResizing()
@@ -16936,6 +17074,26 @@ const CAPTURE_LIMIT = 16 * 1024 * 1024;
  * element's pixels, stretched as the border box is, on whole pixels where
  * it is drawn at its size.
  */
+/**
+ * Whether a transition started on `scope` — the document's, for null —
+ * captures an element by its name (CSS View Transitions 2, 4): one in the
+ * scope, and in no element inside it, the element itself among them, with
+ * `view-transition-scope: all`. The root element scopes nothing it holds
+ * away from the document's.
+ */
+function inTransitionScope(
+  el: Element,
+  scope: Element | null,
+  tree: BoxTree,
+): boolean {
+  for (let at: Element | null = el; at; at = flatParentOf(at)) {
+    if (at === scope) return true;
+    if (!scope && isRootElement(at)) return true;
+    if (tree.styles.get(at)?.style.viewTransitionScope === 'all') return false;
+  }
+  return !scope;
+}
+
 function drawCaptured(
   ctx: PaintContext,
   surface: SurfaceLike,

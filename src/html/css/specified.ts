@@ -71,6 +71,11 @@ export function specifiedValue(
         : viewTransitionClass(word);
     return out;
   }
+  if (name === 'view-transition-scope') {
+    const word = value.trim().toLowerCase();
+    if (CSS_WIDE.test(word)) return undefined;
+    return word === 'none' || word === 'all' ? word : null;
+  }
   // what anchor positioning names and takes (CSS Anchor Positioning 1)
   const anchor = ANCHOR_GRAMMARS[name];
   if (anchor) {

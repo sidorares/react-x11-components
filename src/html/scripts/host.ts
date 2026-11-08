@@ -736,10 +736,13 @@ export interface HandleInternals {
         values: Record<string, string>;
       }[]
     | null;
-  transitionCaptureOld(): string;
-  transitionCaptureNew(): string;
-  transitionRemaining(): number | null;
-  transitionEnd(): void;
+  transitionCaptureOld(scope?: Element | null): string;
+  transitionCaptureNew(scope?: Element | null): string;
+  transitionRemaining(scope?: Element | null): number | null;
+  transitionEnd(scope?: Element | null): void;
+  /** A transition started on an element, or over: the element's scope and
+   *  containment for its length (`HtmlViewNode.transitionScope`). */
+  transitionScope(scope: Element, on: boolean): void;
   /** Text of a stylesheet `@import` fetched, for `CSSImportRule.styleSheet`
    *  (`HtmlViewNode.importedCss`). */
   importedCss(href: string): string | null;
@@ -5034,20 +5037,28 @@ export class DomHost {
       case 'vtOld':
       case 'vtNew':
       case 'vtRemaining':
-      case 'vtEnd': {
+      case 'vtEnd':
+      case 'vtScope': {
         this.flush();
         // the view that draws the document the transition is of — the
-        // page's, or a frame's — or none, which answers as none would
+        // page's, or a frame's — or none, which answers as none would; and
+        // the element it was started on, where it was (CSS View Transitions
+        // 2, 2.2), or null for the document's
         const handle = (
           a ? this._drawing(this._node(a)) : this._seams.handle
         ) as Partial<HandleInternals> | null;
+        const scope = b ? this._element(b) : null;
+        if (op === 'vtScope') {
+          if (scope) handle?.transitionScope?.(scope, !!c);
+          return null;
+        }
         if (op === 'vtEnd') {
-          handle?.transitionEnd?.();
+          handle?.transitionEnd?.(scope);
           return null;
         }
         if (op === 'vtRemaining') {
           const left = handle?.transitionRemaining
-            ? handle.transitionRemaining()
+            ? handle.transitionRemaining(scope)
             : 0;
           return left === null ? -2 : left === Infinity ? -1 : left;
         }
@@ -5056,7 +5067,7 @@ export class DomHost {
             ? handle?.transitionCaptureOld
             : handle?.transitionCaptureNew;
         return capture
-          ? capture.call(handle)
+          ? capture.call(handle, scope)
           : this._op('transitionNames', null, null, null, null);
       }
       // a fetched `@import`'s text, for `CSSImportRule.styleSheet`
@@ -5069,10 +5080,14 @@ export class DomHost {
       // by, told as a change of an attribute nothing has
       case 'vtActive': {
         const doc = (a ? this._node(a) : this.document) as Document;
-        const root = DomUtils.findOne(() => true, doc.children, false);
+        // the element a transition was started on, which matches as the
+        // root does for the document's
+        const root = c
+          ? this._element(c)
+          : DomUtils.findOne(() => true, doc.children, false);
         const types =
           typeof b === 'string' ? (b ? b.split('\u0000') : []) : null;
-        if (setActiveTransition(doc, types) && root) {
+        if (setActiveTransition(c ? root! : doc, types) && root) {
           this._tell(root, {
             type: 'attributes',
             target: root,

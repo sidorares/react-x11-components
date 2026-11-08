@@ -15152,6 +15152,46 @@ test('document.startViewTransition calls its update at the next frame, and settl
   );
 });
 
+test("element.startViewTransition runs a transition of what the element holds, beside the document's and beside another element's, with its scope for its length", async () => {
+  // CSS View Transitions 2, 2.2: a transition per element, its names found
+  // in the element, and a scope with layout containment while it runs
+  const doc = await hosted(
+    '<p id="out"></p><div id="s1"><i id="x"></i></div><div id="s2"><i id="y"></i></div>' +
+      '<span id="inl">text</span><script>' +
+      'var r = [], s1 = document.getElementById("s1"), s2 = document.getElementById("s2");' +
+      'document.getElementById("x").style.viewTransitionName = "same";' +
+      'document.getElementById("y").style.viewTransitionName = "same";' +
+      'function name(p, n) { return p.then(function () { r.push(n + ":ok"); }, function (e) { r.push(n + ":" + e.name); }); }' +
+      'var t1 = s1.startViewTransition(function () { r.push("cb1", getComputedStyle(s1).viewTransitionScope); });' +
+      'var t2 = s2.startViewTransition(function () { r.push("cb2"); });' +
+      'r.push(s1.activeViewTransition === t1, s2.activeViewTransition === t2, document.activeViewTransition === null,' +
+      '  t1.transitionRoot === s1, document.documentElement.activeViewTransition === null);' +
+      'var t3 = document.getElementById("inl").startViewTransition(function () {});' +
+      'Promise.all([name(t1.ready, "r1"), name(t2.ready, "r2"), name(t3.ready, "r3"), name(t1.finished, "f1"), name(t2.finished, "f2")]).then(function () {' +
+      '  r.push(s1.activeViewTransition === null, getComputedStyle(s1).viewTransitionScope);' +
+      '  var t4 = s1.startViewTransition(function () {}); var t5 = s1.startViewTransition(function () {});' +
+      '  return Promise.all([name(t4.ready, "r4"), name(t5.ready, "r5"), name(t5.finished, "f5")]);' +
+      '}).then(function () { document.getElementById("out").textContent = r.join("|"); });' +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    [
+      // each element its own active transition, the document none
+      'true|true|true|true|true',
+      // an inline element holds none
+      'r3:InvalidStateError',
+      // the one name in two scopes is no duplicate
+      'cb1|all|r1:ok|cb2|r2:ok|f1:ok|f2:ok',
+      // its scope goes with it
+      'true|none',
+      // a new transition on the element skips the one it finds
+      'r4:AbortError|r5:ok|f5:ok',
+    ].join('|'),
+    doc.logs.join('\n'),
+  );
+});
+
 test("a view transition's update has no this: a sloppy one's is the window, a strict one's undefined, and never the transition", async () => {
   // invoked as Web IDL invokes a callback function, with no this value
   const doc = await hosted(
