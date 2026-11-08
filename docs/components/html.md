@@ -1851,7 +1851,13 @@ to another document's entry is that document shown at the entry, asked
 first with `beforeunload` and then told as a `navigate` — a traversal,
 neither cancelable nor one a handler can take, and none at all for an
 entry of another origin — whose promises never settle, since the document
-they are of goes. Past the ends is nowhere, as in a browser.
+they are of goes. Past the ends is nowhere, as in a browser. An entry of
+another document whose referrer policy was `no-referrer` or `origin` as it
+was left — its response's `Referrer-Policy`, or a `<meta name="referrer">`
+in it, one written after it loaded included — has a `url` of null, in
+`navigation.entries()` and in `activation.from` (HTML 7.2.6.5), and has it
+again once its document is shown; the policy is read each time the
+document is left, in a tab's history and in a frame's alike.
 
 The entries a document's own navigations make share a document number
 (`HtmlSessionEntry.document`), so a document shown again at one of them, a
@@ -1877,7 +1883,8 @@ them rather than off the site. A document shown with no scripts running
 in it — JavaScript off for its site — never reaches an engine, so the host
 says it was shown: `session.show(url)` makes it the next of the history as
 an engine would, by the navigation planned for it or as a push, and
-answers its entry; `session.fragment(url)` adds an entry of its own for a
+answers its entry, and `session.show(url, () => policy)` reads its
+referrer policy as it is left, which no engine is there to read; `session.fragment(url)` adds an entry of its own for a
 fragment followed in it, as a fragment navigation does; and
 `session.go()` to one of its entries moves there at once and answers null,
 for the host to scroll. A host that keeps the history somewhere that
