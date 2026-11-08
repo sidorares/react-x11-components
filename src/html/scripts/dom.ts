@@ -10925,7 +10925,12 @@ export function installDom(
       // arrived, set as `away` is asked, for the handoff in `frameWindowOf`
       const slot: {
         session?: Any;
-        pending: 'push' | 'replace' | null;
+        pending: 'push' | 'replace' | 'reload' | 'traverse' | null;
+        /** The entry a step away goes to, and the state a reload gives
+         *  the entry it reloads: theirs once the document is in, and never
+         *  where none comes — a 204, a download (`frameWindowOf`). */
+        to?: Any;
+        navState?: string | undefined;
       } = { pending: null };
       made = makeSession({
         owner: () => owner.doc,
@@ -10949,18 +10954,12 @@ export function installDom(
         tellsFragments: false,
         reload: (navState) => {
           if (!unloadAllowed(owner.doc, target)) return;
-          const s = slot.session;
-          if (s) {
-            const from = s.entries[s.index];
-            s.arrived = {
-              type: 'reload',
-              fromIndex: s.index,
-              from,
-            };
-            s.activation = null;
-            if (navState !== undefined && from) from.navState = navState;
-          }
-          call('frameNavigate', frame._id, at());
+          slot.pending = 'reload';
+          slot.to = undefined;
+          slot.navState = navState;
+          // the document again, whatever fragment it is at: no fragment
+          // navigation of the one it replaces
+          call('frameNavigate', frame._id, at(), '', 'reload');
         },
         // past this frame's own entries there is nowhere: a frame is not
         // joint with its tab's history yet
@@ -10974,14 +10973,9 @@ export function installDom(
           const to = fromIndex + Math.trunc(delta);
           const targetEntry = s.entries[to];
           if (!targetEntry) return;
-          s.index = to;
-          s.arrived = {
-            type: 'traverse',
-            fromIndex,
-            from: s.entries[fromIndex],
-          };
-          s.activation = null;
-          call('frameNavigate', frame._id, targetEntry.url);
+          slot.pending = 'traverse';
+          slot.to = targetEntry;
+          call('frameNavigate', frame._id, targetEntry.url, '', 'traverse');
         },
         // a frame's scroll is its own document's, which no entry keeps
         scroll: () => [0, 0],
@@ -10990,6 +10984,13 @@ export function installDom(
         disabled: () => call('frameInitialBlank', frame._id) === true,
       });
       slot.session = made.session;
+      // the first document of this origin's after one of another's, which
+      // this realm sent there: a replace or a push from no entry it can see
+      const arrival = frameArrivals.get(frame);
+      if (arrival) {
+        frameArrivals.delete(frame);
+        made.session.arrived = { type: arrival, fromIndex: -1, from: null };
+      }
       made.owner = owner;
       made.slot = slot;
       frameSessions.set(doc, made);
@@ -10998,6 +10999,9 @@ export function installDom(
   };
   /** The window that sent each frame where it is, by the frame's name. */
   const frameOpeners = new WeakMap<object, Any>();
+  /** How this realm sent a frame of another origin's on (`location`),
+   *  for the next document of this origin's it shows (`frameSessionOf`). */
+  const frameArrivals = new WeakMap<object, 'push' | 'replace'>();
   /** The window each frame's document was handed last, and whether that
    *  document is the frame's initial `about:blank` (`frameWindowOf`). */
   const keptFrameWindows = new WeakMap<
@@ -11053,20 +11057,61 @@ export function installDom(
             (e: Any) => bare(e.url) === bare(at),
           );
           const slot = made.slot as {
-            pending: 'push' | 'replace' | null;
+            pending: 'push' | 'replace' | 'reload' | 'traverse' | null;
+            to?: Any;
+            navState?: string;
           } | null;
           const pending = slot?.pending ?? null;
-          if (slot) slot.pending = null;
+          const stepTo = slot?.to;
+          const reloadState = slot?.navState;
+          if (slot) {
+            slot.pending = null;
+            slot.to = undefined;
+            slot.navState = undefined;
+          }
           const from = made.session.entries[made.session.index] ?? null;
           const fromIndex = made.session.index;
-          if (pending === 'push' || (pending === null && known < 0)) {
+          // a number no other document of the frame's has: one after them
+          // all, since a step back and a replace would otherwise give the
+          // document the number of one ahead of it
+          const fresh = (): number =>
+            made.session.entries.reduce(
+              (most: number, e: Any) => Math.max(most, e.doc ?? 0),
+              0,
+            ) + 1;
+          const stepIndex =
+            pending === 'traverse'
+              ? made.session.entries.indexOf(stepTo)
+              : pending === 'reload'
+                ? fromIndex
+                : -1;
+          if (stepIndex >= 0) {
+            // the entry the step or the reload chose (`traverseAway` /
+            // `reload`): its document again, under the same number, at the
+            // address it came to, and the entry made current only now
+            const entry = made.session.entries[stepIndex];
+            if (pending === 'traverse' && from) {
+              from.scroll = made.session.ctx.scroll();
+            }
+            if (pending === 'reload' && reloadState !== undefined) {
+              entry.navState = reloadState;
+            }
+            entry.url = at;
+            made.session.index = stepIndex;
+            made.session.arrived = {
+              type: pending,
+              fromIndex,
+              from,
+            };
+            made.session.activation = null;
+          } else if (pending === 'push' || (pending === null && known < 0)) {
             // a cross-document `navigateTo` plans the host session only
             // (`planAway`); a frame's own entries still need the push here
             // — including a push to the URL it is already at — and a
             // parent setting `src`/`srcdoc` to a new address is a push
             if (from) from.scroll = made.session.ctx.scroll();
-            const entry = sessionEntry(at, undefined, (from?.doc ?? 0) + 1);
             made.session.entries.splice(made.session.index + 1);
+            const entry = sessionEntry(at, undefined, fresh());
             made.session.entries.push(entry);
             made.session.index = made.session.entries.length - 1;
             made.session.arrived = { type: 'push', fromIndex, from };
@@ -11074,7 +11119,7 @@ export function installDom(
           } else if (pending === 'replace') {
             if (from) from.scroll = made.session.ctx.scroll();
             // a replace across documents is still another document's entry
-            const entry = sessionEntry(at, from?.key, (from?.doc ?? 0) + 1);
+            const entry = sessionEntry(at, from?.key, fresh());
             made.session.entries[made.session.index] = entry;
             made.session.arrived = {
               type: 'replace',
@@ -11089,6 +11134,12 @@ export function installDom(
             made.session.entries[known].url = at;
           }
         }
+        // the navigation API is the new document's (HTML 7.4.6.2): what the
+        // last one had under way went with it, unsettled, and is no
+        // navigation for the next to abort
+        made.session.ongoing = null;
+        made.session.transition = null;
+        made.session.upcoming?.clear();
         made.owner.doc = doc;
         frameSessions.set(doc, made);
       }
@@ -11685,6 +11736,9 @@ export function installDom(
         ) {
           return;
         }
+        // another origin's, whose next document this realm may see: that
+        // one came by what this asked, from no entry it can see
+        if (!doc) frameArrivals.set(frame, replace ? 'replace' : 'push');
         call('frameNavigate', frame._id, href);
       }
     };
@@ -11713,7 +11767,7 @@ export function installDom(
           const doc = frameDocumentOf(frame);
           const made = doc && frameSessions.get(doc);
           if (made) void made.navigation.reload();
-          else call('frameNavigate', frame._id, at());
+          else call('frameNavigate', frame._id, at(), '', 'reload');
         },
       },
       toString: {
@@ -31670,6 +31724,16 @@ export function installDom(
     doc,
   });
   const currentOf = (s: Session): SessionEntry => s.entries[s.index];
+  /** Whether an entry is of a document other than the one shown: another
+   *  document's in the host's session (`other`), or in a frame's session
+   *  across the documents it shows, one of another number (`doc`). A step
+   *  to one loads its document; one among the document's own is a step in
+   *  place. */
+  const ofAnotherDocument = (s: Session, e: SessionEntry): boolean => {
+    if (e.other) return true;
+    const doc = currentOf(s)?.doc;
+    return e.doc !== undefined && doc !== undefined && e.doc !== doc;
+  };
   /** HTML 7.2.6.1, "has entries and events disabled": a document that is
    *  not fully active, its frame's initial `about:blank`, or of an opaque
    *  origin (`ctx.disabled`) shows no entries and tells no navigation. */
@@ -32233,7 +32297,13 @@ export function installDom(
     if (!arrived) return new NavigationActivation(TOKEN, entry);
     let from: Any = null;
     const before = arrived.fromIndex >= 0 ? s.entries[arrived.fromIndex] : null;
-    if (before && navEntriesOf(s).includes(before)) {
+    // the entry left, where it is still in the list: not the one a replace
+    // put at its place, which keeps its key and has an id of its own
+    if (
+      before &&
+      navEntriesOf(s).includes(before) &&
+      (!arrived.from || before.id === arrived.from.id)
+    ) {
       from = apiEntryOf(s, before);
     } else if (
       arrived.type === 'replace' &&
@@ -32922,6 +32992,20 @@ export function installDom(
       // own navigation; a window of its group goes where it is sent, and
       // any other is the host's to choose
       const framed = namedFrame(target);
+      // one that runs in a realm of its own, or is another origin's: that
+      // realm's to hear of (`DomHost.navigateFrameFrom`)
+      const named = framed ? 0 : Number(call('frameNamed', target));
+      if (named) {
+        call(
+          'frameNavigate',
+          named,
+          address(),
+          linkReferrerPolicy({
+            sourceElement: anchor,
+          }),
+        );
+        return false;
+      }
       if (!framed) {
         return !WINDOWS!.follow(
           address(),
@@ -33096,7 +33180,7 @@ export function installDom(
           );
           return;
         }
-        if (target.other) {
+        if (ofAnotherDocument(s, target)) {
           traverseAway(s, target, info, tracker);
           return;
         }
@@ -39753,6 +39837,30 @@ export function installDom(
     void frameWindowOf(doc, frame).navigation;
     return true;
   });
+  // A navigation of this document's window that another document asked for
+  // — a link or a form whose target names its frame, its `location` or a
+  // `window.open()` from the page around it (`DomHost.navigateFrameFrom`):
+  // a fragment of this document is this window's to go to, and `navigate`
+  // is told of another document only where the document that asked is of
+  // this one's origin (HTML 7.4.2.2, "navigate"). 'load' where what is left
+  // of it is the host's, another document, and 'done' where nothing is.
+  entry('__navigatedFrom', () => {
+    const [url, sameOrigin, post] = input();
+    const s = pageSession.session;
+    const href = str(url);
+    if (s.ctx.owner()._unloadCounter > 0 || !s.ctx.active()) return 'done';
+    // a POST's entries are no realm's but the one that made them
+    if (post === true) return 'load';
+    if (!fragmentOf(currentOf(s).url, href) && sameOrigin !== true) {
+      return 'load';
+    }
+    const went = navigateTo(s, href, pushOrReplace(s, href, false), {
+      userInitiated: false,
+      sourceElement: null,
+      hostFollows: true,
+    });
+    return went === 'other' ? 'load' : 'done';
+  });
   // the frame went to another origin: drop the window and session this
   // realm kept, so a later same-origin document is not contiguous with
   // the entries from before the gap (HTML, `navigation.entries()`). The
@@ -39770,6 +39878,8 @@ export function installDom(
       keptFrameWindows.delete(frame);
     }
     frameLocations.delete(frame);
+    // gone on to another origin since what this realm asked
+    frameArrivals.delete(frame);
     return true;
   });
 

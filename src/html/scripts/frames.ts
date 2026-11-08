@@ -379,7 +379,7 @@ function FrameDocument({
       host.navigateFrame(frame, to, post, referrerPolicy);
     } else if (scripts.navigateFrame) {
       scripts.navigateFrame(where, to, post, referrerPolicy);
-    } else if (!realm) host.navigateFrame(where, to, post, referrerPolicy);
+    } else if (!realm) host.navigateFrameFrom(where, to, post, referrerPolicy);
   };
   const { look } = context;
   return hx(

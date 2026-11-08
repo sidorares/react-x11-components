@@ -66,6 +66,8 @@ interface Scene {
   navigated: string[];
   opened: HtmlPopup[];
   tabs: string[];
+  /** What the host's `onDownload` was handed to save. */
+  downloads: string[];
   /** A press and a release at a point of the window, as a user's. */
   click(x: number, y: number): Promise<void>;
 }
@@ -88,6 +90,7 @@ async function scene(
     navigated: [],
     opened: [],
     tabs: [],
+    downloads: [],
     click: async () => {},
   };
   const fetch = async (request: FetchRequest): Promise<FetchResponse> => {
@@ -128,6 +131,7 @@ async function scene(
       scripts,
       onSubmit: (s: { url: string }) => void out.submitted.push(s.url),
       onLink: (href: string) => void out.linked.push(href),
+      onDownload: (d: { url: string }) => void out.downloads.push(d.url),
       onResource: (request: ResourceRequest) => {
         out.resources.push(request);
         const found = pages[request.url];
@@ -762,7 +766,7 @@ const DOWNLOAD: Answer = {
   headers: [['content-disposition', 'attachment']],
 };
 
-test('a sandbox that saves no file goes nowhere where it is sent to a download, and one that may shows it as before', async () => {
+test('a sandbox that saves no file goes nowhere where it is sent to a download, and one that may hands it to the host to save', async () => {
   const s = await scene(
     `<iframe sandbox="allow-scripts" src="${APP}a"></iframe>
      <iframe sandbox="allow-scripts allow-downloads" src="${APP}b"></iframe>`,
@@ -773,9 +777,13 @@ test('a sandbox that saves no file goes nowhere where it is sent to a download, 
       [`${APP}dl-b`]: DOWNLOAD,
     },
   );
-  assert.equal(await until(s, 'shown'), '/dl-b');
+  const end = Date.now() + 4000;
+  while (!s.downloads.length && Date.now() < end) await settle(20);
+  // a download, and no navigation: the frame shows what it showed (HTML
+  // 7.4.2.3.3, "handle as a download")
+  assert.deepEqual(s.downloads, [`${APP}dl-b`]);
   await settle();
-  assert.ok(!s.logs.some((l) => l.endsWith('shown /dl-a')), s.logs.join('\n'));
+  assert.ok(!s.logs.some((l) => l.includes('shown /dl-')), s.logs.join('\n'));
   assert.ok(
     s.logs.some((l) => l.includes(`${APP}dl-a was not downloaded`)),
     s.logs.join('\n'),
