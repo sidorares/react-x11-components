@@ -877,6 +877,21 @@ it up. **The floor is a running one and moves often** — every move since
   import, so the floor moves with the feature. macOS has the camera, the
   microphone and audio out, and X11 the screen alone; a `<Frame>` pane on
   macOS captures nothing, since it runs no AppKit.
+- `^2.58.0` — capture in a `<Frame>` pane on macOS, and the screen there
+  (react-x11#1043, #1045). A pane's capture is its host's, asked up the
+  frame channel: one camera session for the host and every pane, the
+  picture by a ring of shared IOSurfaces, and a pane's sound played on the
+  host's engine, where the echo canceller hears it. So the example browser's
+  tabs, each a page in a pane, capture, where only a tab under
+  `BROWSER_INLINE=1` did. `getDisplayMedia` streams the main display on a
+  Mac over @windowkit/appkit 0.33's ScreenCaptureKit verbs, which core's
+  range admits only from 2.58.0: over 0.32 it rejected with
+  `NotSupportedError`. Neither needed a change here, since
+  `coreMediaDevices` asks the app it is handed, and in a pane that is the
+  pane's. A tab's microphone and its share of the display were checked on a
+  Mac. Its camera was not: macOS refuses a camera, without a prompt, to node
+  started from an app that declares no camera use, which a session's own
+  shell was, in a window as much as in a pane.
 
 Do not reach back for a `github:` spec to get at unreleased core — cut a core
 release instead.
