@@ -118,8 +118,11 @@ export class FakeTransceiver implements RTCTransceiverLike {
   setJitterBufferTarget(): void {}
   /** The tones sent, each with its duration, in the order sent. */
   readonly tones: string[] = [];
+  /** When each tone was sent, by `performance.now()`. */
+  readonly toneTimes: number[] = [];
   sendTone(tone: string, duration: number): boolean {
     this.tones.push(`${tone}:${duration}`);
+    this.toneTimes.push(performance.now());
     return this.kind === 'audio';
   }
   stats() {
