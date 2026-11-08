@@ -2014,7 +2014,13 @@ leaves, which `handle.beforeUnload()` asks the rest of; and a frame's
 history in the tab's.
 
 **A document a navigation leaves hears it go** (HTML 7.4.2.4). Shown, it
-hears `pageshow` after its `load`. A navigation to another document that
+hears `pageshow` after its `load`, and a frame's after its frame's `load`
+in the page too, as every browser tells the three. `readystatechange` is
+told at the document at each change of `readyState`, to `onreadystatechange`
+as to any listener. A `navigate()` that takes a document to another keeps
+its promises as they are once that one is shown, never to settle. One still
+under way as a frame running a realm of its own is taken out of the page is
+aborted, its promises rejected. A navigation to another document that
 the page starts — a link, a form, `location`, `navigation`, `history` past
 its own entries, `reload()` — asks it first, after its `navigate`:
 `beforeunload` at its window and at its frames', and the navigation stops
