@@ -649,18 +649,16 @@ test('an audio sender’s DTMF sender plays its tones in turn once connected, ea
     try { dtmf.insertDTMF('12E'); } catch (e) { log('unrecognized', e.name, dtmf.toneBuffer === ''); }
     dtmf.insertDTMF('ab#*');
     log('buffer', dtmf.toneBuffer);
-    var heard = [], start = Date.now(), last = start, gaps = [];
+    var heard = [];
     dtmf.ontonechange = function (e) {
       heard.push(e.tone === '' ? '-' : e.tone);
-      gaps.push(Date.now() - last);
-      last = Date.now();
     };
     // a later call replaces the buffer and the times; the one queued task
     // plays it
     dtmf.insertDTMF('12', 10, 10);
     log('replaced', dtmf.toneBuffer);
     await until(function () { return heard.length === 3; });
-    log('tones', heard.join(','), gaps[1] >= 69, gaps[2] >= 69, dtmf.toneBuffer === '');
+    log('tones', heard.join(','), dtmf.toneBuffer === '');
     // a stopped transceiver plays no more
     heard = [];
     dtmf.addEventListener('tonechange', function (e) {
@@ -682,15 +680,31 @@ test('an audio sender’s DTMF sender plays its tones in turn once connected, ea
     'unrecognized|InvalidCharacterError|true',
     'buffer|AB#*',
     'replaced|12',
-    'tones|1,2,-|true|true|true',
+    'tones|1,2,-|true',
     'stopped|3,4|false',
     'after stop|InvalidStateError',
   ]) {
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
   // the seam was handed each tone at the clamped duration, and no ','
-  const tones = webRTC.connections[0]!.transceivers[0]!.tones;
-  assert.deepEqual(tones, ['1:40', '2:40', '3:40', '4:40']);
+  const sent = webRTC.connections[0]!.transceivers[0]!;
+  assert.deepEqual(sent.tones, ['1:40', '2:40', '3:40', '4:40']);
+  // and each tone the clamped 40 and 30 after the one before, where 10 and
+  // 10 were asked for. Timed where the seam is handed them: in the page, a
+  // gap took in how late each tone's handler ran, and a busy runner made 70
+  // read 68. Node arms a timer on a whole millisecond, so one may come a
+  // millisecond early, and no load makes it earlier than that.
+  const at = sent.toneTimes;
+  for (const [from, to] of [
+    [0, 1],
+    [2, 3],
+  ] as const) {
+    const gap = at[to]! - at[from]!;
+    assert.ok(
+      gap >= 69,
+      `tone ${to + 1} came ${gap} ms after tone ${from + 1}`,
+    );
+  }
 });
 
 test('a channel queues 16 MiB at most, and the page’s own close announces no closing', async () => {
