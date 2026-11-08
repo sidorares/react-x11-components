@@ -6366,8 +6366,11 @@ export function installDom(
       return null;
     }
     set nodeValue(_v: Any) {}
+    // its document's: a frame's, with a `<base>` of its own, is not the
+    // page's (HTML 2.4.1)
     get baseURI(): string {
-      return String(call('base'));
+      const doc = this.ownerDocument ?? this;
+      return String(call('base', doc === document ? 0 : doc._id));
     }
     hasChildNodes(): boolean {
       return !!call('first', this._id);
@@ -11066,7 +11069,9 @@ export function installDom(
         active: () => frame.isConnected && !owner.doc._unloaded,
         url: at,
         // a frame's document's address, or for `about:blank` its creator's
-        base: () => (/^about:/.test(at()) ? document.baseURI : at()),
+        // the frame's document's base, `<base>` and all, which an `about:`
+        // document has from the page
+        base: () => str((frameDocumentOf(frame) ?? document).baseURI),
         // a frame's document the page reaches into is the one it loaded
         loaded: () => true,
         setUrl: (url) => void call('setFrameLocation', frame._id, url),
@@ -11638,23 +11643,9 @@ export function installDom(
       });
     }
     windowMethods.set(win, methods);
-    // a step of the joint history moves a frame as much as the page, and
-    // tells its window `popstate` and `hashchange`
-    for (const type of [
-      'load',
-      'error',
-      'message',
-      'messageerror',
-      'resize',
-      'beforeunload',
-      'pagehide',
-      'pageshow',
-      'pageswap',
-      'pagereveal',
-      'unload',
-      'popstate',
-      'hashchange',
-    ]) {
+    // every handler the page's window has: `onhashchange` and `onpopstate`
+    // among them, which a page sets on a frame's window to hear its history
+    for (const type of windowHandlerTypes) {
       Object.defineProperty(win, `on${type}`, {
         get: () => target._handlers[type] ?? null,
         set: (fn: Any) => {
@@ -21528,6 +21519,9 @@ export function installDom(
   );
 
   /** A window's `on<type>`, which is kept by its target of its own. */
+  /** The events the window has an `on<type>` handler for, which a frame's
+   *  window has as well (`frameWindowOf`). */
+  const windowHandlerTypes = new Set<string>();
   const windowHandler = (type: string): PropertyDescriptor => ({
     get: () => handlerOf(windowTarget, type),
     set: (fn: Any) => {
@@ -21642,6 +21636,7 @@ export function installDom(
     Object.defineProperty(SVGElement.prototype, `on${type}`, property);
     Object.defineProperty(Document.prototype, `on${type}`, property);
     Object.defineProperty(G, `on${type}`, windowHandler(type));
+    windowHandlerTypes.add(type);
   }
   for (const name of ['pointerLockElement', 'exitPointerLock']) {
     Object.defineProperty(Document.prototype, name, { enumerable: true });
@@ -34745,9 +34740,11 @@ export function installDom(
       // a sandbox's and a `data:` document's origin is opaque, and its
       // entries and events are disabled (HTML 7.2.6.1); a `file:` page's
       // reads as opaque too, and keeps its history, as browsers keep it
+      // and so are a window's initial `about:blank`'s, as a frame's are
       disabled: () =>
-        documentOrigin() === 'null' &&
-        !/^file:/i.test(String(call('location'))),
+        (documentOrigin() === 'null' &&
+          !/^file:/i.test(String(call('location')))) ||
+        WINDOWS?.blank() === true,
       topLevel: () => call('topLevel') === true,
       get target() {
         return windowTarget;
@@ -39385,6 +39382,7 @@ export function installDom(
     'offline',
   ]) {
     Object.defineProperty(G, `on${type}`, windowHandler(type));
+    windowHandlerTypes.add(type);
   }
 
   // Named access on the window (HTML 7.2.2.3): an element is a global by

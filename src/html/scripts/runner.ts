@@ -310,7 +310,7 @@ export class ScriptRunner {
     }
     this.host.onScrollsTold = this._scrollsTold;
     // before its realm is made, which asks what context it is as it starts
-    if (popup && slot?.auxiliary && url === 'about:blank') {
+    if (popup && slot?.auxiliary && ABOUT_BLANK.test(url)) {
       this.host.creator = popup.creator;
       this.host.creatorOrigin = popup.creatorOrigin;
     }
@@ -331,8 +331,8 @@ export class ScriptRunner {
     const foreign =
       !!_link &&
       (this.host.origin === 'null'
-        ? url !== 'about:blank' || !!(this.host.sandbox & SB_ORIGIN)
-        : url !== 'about:blank' &&
+        ? !ABOUT_BLANK.test(url) || !!(this.host.sandbox & SB_ORIGIN)
+        : !ABOUT_BLANK.test(url) &&
           (originOf(url) === 'null' ||
             originOf(url) !== _link.parent.host.origin));
     this.host.foreignParent = foreign;
@@ -1447,6 +1447,10 @@ export class ScriptRunner {
     }
   }
 }
+
+/** An address that matches `about:blank` (HTML 2.4.2): with a query or a
+ *  fragment as much as without. */
+const ABOUT_BLANK = /^about:blank(?:[?#]|$)/i;
 
 /** An address's origin, as a realm's is held to. */
 function originOf(url: string): string {

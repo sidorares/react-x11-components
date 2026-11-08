@@ -1778,15 +1778,24 @@ traversal back restores where `history.scrollRestoration` is `auto`; an
 intercepted navigation scrolls once its handlers are done — a traversal to
 where its entry was, anything else to its fragment or the top — unless the
 page asked for `scroll: 'manual'` and calls the event's `scroll()` itself.
+A traversal asked for while another is applied, from that one's
+`navigate`, starts once that one's tasks have run, its `hashchange` among
+them, as HTML's traversal queue takes them one after another.
 A frame keeps a history of its own over the frame's URL, and a link, a
 form or `window.open()` aimed at a frame by its window's name is the
 frame's navigation, which the frame's `navigation` hears and the page's
 does not. The frame's first document keeps the window of its initial
 `about:blank`, as HTML has it, so what the page set on that window before
 the frame loaded — a handler on its `navigation` — is still there, and
-the document it came to arrived by a replace. A document whose entries
-and events are disabled (HTML 7.2.6.1) — a frame's initial `about:blank`,
-a document of an opaque origin, a sandbox's or a `data:` one's, and a
+the document it came to arrived by a replace. A frame's window has every
+`on…` handler the page's has, `onhashchange` and `onpopstate` among them,
+and its document has a base URL of its own, from its `<base>` and its
+address, which its `navigation.navigate()` resolves against; an
+`about:blank` or `about:srcdoc` document's is the page's. A window opened
+at an `about:blank` address with a query or a fragment is at it at once,
+with no navigation. A document whose entries and events are disabled (HTML
+7.2.6.1) — a frame's initial `about:blank`, a window's, a document of an
+opaque origin, a sandbox's or a `data:` one's, and a
 frame's taken out of the page — has no `currentEntry`, `activation` or
 entries, hears no `navigate`, `currententrychange` or `dispose`, and
 refuses `updateCurrentEntry()` with an `InvalidStateError` before it

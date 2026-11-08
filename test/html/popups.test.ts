@@ -365,6 +365,29 @@ test('a press opens a window, and it is the same object through every document i
   assert.equal(s.popups[0].url, `${APP}one`);
 });
 
+test('a window opened at about:blank with a fragment is at it at once, and its initial about:blank tells no entry changes', async () => {
+  // HTML's window open steps: an `about:blank` address is no navigation,
+  // its query or fragment the document's at once, and an initial
+  // `about:blank` has its entries and events disabled (WPT's
+  // currententrychange-event/navigate-from-initial-about-blank-same-doc-popup)
+  const s = await scene(
+    pressed(`
+      const w = window.open('about:blank#1');
+      w.navigation.oncurrententrychange = () => console.log('changed');
+      console.log('at', w.location.href);
+      w.location.href = 'about:blank#2';
+      console.log('then', w.location.href);
+      setTimeout(() => console.log('done'), 40);
+    `),
+    {},
+  );
+  await s.press();
+  assert.equal(await s.until('at'), 'about:blank#1');
+  assert.equal(await s.until('then'), 'about:blank#2');
+  await s.until('done');
+  assert.ok(!s.logs.some((l) => l.includes('changed')), s.logs.join('\n'));
+});
+
 test('a popup login comes home: another origin, a redirect, and the callback posts to its opener and closes', async () => {
   const s = await scene(
     pressed(`
