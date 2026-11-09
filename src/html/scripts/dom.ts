@@ -2196,6 +2196,102 @@ export function installDom(
     unitFactories[name] = (v: Any) => new CSSUnitValue(Number(v), unit);
   }
   const percentOf = (v: number): Any => new CSSUnitValue(v, 'percent');
+  /** A value Typed OM has no class of its own for, read as written. */
+  class CSSReifiedValue extends CSSStyleValue {
+    _text: string;
+    constructor(text: string) {
+      super();
+      this._text = text;
+    }
+    override toString(): string {
+      return this._text;
+    }
+  }
+  /** A computed value as Typed OM reifies it (CSS Typed OM 1, 5): one
+   *  number, dimension or percentage a `CSSUnitValue`, one name a
+   *  `CSSKeywordValue`, and anything else a value read as written. */
+  const reifyComputed = (text: string): Any => {
+    const v = text.trim();
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:%|[a-z]+)?$/i.test(v)) {
+      try {
+        return CSSNumericValue.parse(v);
+      } catch {
+        // a unit Typed OM has no name for
+      }
+    }
+    if (/^-?[a-z_][\w-]*$/i.test(v)) return new CSSKeywordValue(v);
+    return new CSSReifiedValue(v);
+  };
+  /** An element's computed values from the host, by kebab-case name, or
+   *  null where it answers none — an element in no document. */
+  const computedValuesOf = (el: Any): Record<string, string> | null => {
+    if (!(el instanceof Element)) return null;
+    const json = str(call('computed', el._id, '', undefined, 'values'));
+    return json ? JSON.parse(json) : null;
+  };
+  /** An element's computed style as Typed OM reads it (CSS Typed OM 1,
+   *  4.1), `computedStyleMap()`: what `getComputedStyle` answers, each
+   *  value reified as it is asked for. */
+  class StylePropertyMapReadOnly {
+    _el: Any;
+    constructor(el: Any) {
+      this._el = el;
+    }
+    _name(property: Any): string {
+      const raw = String(property);
+      const name = raw.startsWith('--') ? raw : raw.toLowerCase();
+      if (!name.startsWith('--') && !isStyleProperty(name)) {
+        throw new TypeError(
+          `Failed to execute 'get' on 'StylePropertyMapReadOnly': Invalid propertyName: ${raw}`,
+        );
+      }
+      return name;
+    }
+    get(property: Any): Any {
+      const name = this._name(property);
+      if (name.startsWith('--')) {
+        const text = getComputedStyle(this._el).getPropertyValue(name);
+        return text === '' ? undefined : reifyComputed(text);
+      }
+      // the computed value, where `getComputedStyle` has the resolved one:
+      // an inset of `auto` on a positioned box is `auto` here
+      const values = computedValuesOf(this._el);
+      const text =
+        values?.[name] ?? getComputedStyle(this._el).getPropertyValue(name);
+      return reifyComputed(text);
+    }
+    getAll(property: Any): Any[] {
+      const one = this.get(property);
+      return one === undefined ? [] : [one];
+    }
+    has(property: Any): boolean {
+      return this.get(property) !== undefined;
+    }
+    get size(): number {
+      return getComputedStyle(this._el).length;
+    }
+    *entries(): IterableIterator<[string, Any[]]> {
+      const style = getComputedStyle(this._el);
+      for (let i = 0; i < style.length; i += 1) {
+        const name = style[i];
+        yield [name, [reifyComputed(style.getPropertyValue(name))]];
+      }
+    }
+    *keys(): IterableIterator<string> {
+      for (const [name] of this.entries()) yield name;
+    }
+    *values(): IterableIterator<Any[]> {
+      for (const [, value] of this.entries()) yield value;
+    }
+    forEach(callback: Any, thisArg?: Any): void {
+      for (const [name, value] of this.entries()) {
+        callback.call(thisArg, value, name, this);
+      }
+    }
+    [Symbol.iterator](): IterableIterator<[string, Any[]]> {
+      return this.entries();
+    }
+  }
 
   // --- easing functions (CSS Easing 2) ------------------------------------------
 
@@ -7745,6 +7841,9 @@ export function installDom(
     // hidden`, and, where the options ask, is faded to nothing nowhere up
     // the flat tree and is visible itself. HubSpot's forms hand their
     // `onFormReady` the form, and cultureamp.com's asks it this.
+    computedStyleMap(): Any {
+      return new StylePropertyMapReadOnly(this);
+    }
     checkVisibility(options?: Any): boolean {
       const o = options ?? {};
       return !!call(
@@ -38354,6 +38453,7 @@ export function installDom(
     CSSNumericValue,
     CSSUnitValue,
     CSSKeywordValue,
+    StylePropertyMapReadOnly,
     CSSMathValue,
     CSSMathSum,
     CSSMathProduct,

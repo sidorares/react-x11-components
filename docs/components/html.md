@@ -2362,7 +2362,13 @@ script that scrolls, or that changes what the source holds, reads the
 time it had, as an animation on it is drawn. Their times, and an
 animation's on them, are
 `CSSUnitValue` percentages — `CSS.percent()`, `CSSNumericValue.parse()` and
-the rest of Typed OM's numbers are there — and an animation's timing is
+the rest of Typed OM's numbers are there, and an element's
+`computedStyleMap()`, which reifies its computed values: a number, a
+dimension or a percentage a `CSSUnitValue`, a name a `CSSKeywordValue`, and
+anything else a `CSSStyleValue` that reads as written. They are computed
+values where `getComputedStyle` has resolved ones, so an inset of `auto` on a
+positioned box is `auto`, a margin of `10%` is `10%`, and an inset `anchor()`
+the length its layout came to. Nothing of it can be set — and an animation's timing is
 normalized to its attachment range, which `rangeStart` and `rangeEnd` name
 (`contain 10%`, `{ rangeName, offset }`, an absolute length). Its start
 time aligns to the range at each frame until a page sets one, and it is
@@ -7462,7 +7468,11 @@ box between two insets neither of which is `auto`, where neither margin
 is, sized to its content there (CSS Position 3, 4.3): `start`, `end`,
 `center`, and `anchor-center` with no default anchor. A box too big for
 where it is aligned is held inside its containing block as far as it
-goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2).
+goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2). For a
+box in a `position-area` that is its original containing block (CSS Anchor
+Positioning 1, 4.1), the one before grid placement: a grid item takes its
+cells of its grid area, and is held only within the grid, so one whose
+anchor is past its grid area stays on the anchor's edge.
 `justify-self` and `align-self` read `anchor-center` back from
 `getComputedStyle`.
 
