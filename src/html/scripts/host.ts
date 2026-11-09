@@ -779,6 +779,11 @@ export interface HandleInternals {
    *  in a box that is — so that no scroll of the pane around the document
    *  moves it (`HtmlViewNode.atViewport`). */
   drawnAtViewport(element: Element): boolean;
+  /** The axes a scroll of the pane moves an element on, as `'xy'`, `'x'`,
+   *  `'y'` or `''`: both for one in the document, none for one fixed to the
+   *  viewport, and for a fixed box anchored to something in the document,
+   *  those it follows its anchor on (`HtmlViewNode.viewportMoves`). */
+  viewportMoves?(element: Element): string;
   /** An element's padding box and its top and left borders, in CSS
    *  pixels, where it is no scroll container, as `clientWidth` and its
    *  kin read it; null where its box is none or inline
@@ -5616,11 +5621,16 @@ export class DomHost {
           this._handle.elementRect(element) ?? this._foreignRect(element);
         return rect ? `${rect.x},${rect.y},${rect.width},${rect.height}` : '';
       }
-      // whether no scroll of the viewport moves an element: one fixed to
-      // it, or in one that is (`scrollIntoView`)
-      case 'atViewport':
+      // the axes a scroll of the viewport moves an element on: none for one
+      // fixed to it, or in one that is, but those a fixed box follows its
+      // anchor on (`scrollIntoView`)
+      case 'atViewport': {
         this.flush();
-        return this._handle.drawnAtViewport?.(this._element(a)) === true;
+        const element = this._element(a);
+        const moves = this._handle.viewportMoves?.(element);
+        if (moves !== undefined) return moves;
+        return this._handle.drawnAtViewport?.(element) === true ? '' : 'xy';
+      }
       // whether a scroll container's scroll moves an element, which it
       // does not for one positioned against something outside it
       // (`scrollIntoView`)
