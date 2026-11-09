@@ -1033,3 +1033,183 @@ test('a remote offer’s rejected m-section is a transceiver stopped at once, wh
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+/** What a page's two peers need to send media to each other: a call set up
+ *  the way WPT's helpers set one up, and a wait that gives up. */
+const CALL = `
+  function wait(what, test, ms) {
+    var end = Date.now() + (ms || 15000);
+    return new Promise(function (resolve, reject) {
+      (function look() {
+        var got = test();
+        if (got) return resolve(got);
+        if (Date.now() > end) return reject(new Error('timed out waiting for ' + what));
+        setTimeout(look, 20);
+      })();
+    });
+  }
+  async function call(pc1, pc2) {
+    pc1.onicecandidate = function (e) { pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { pc1.addIceCandidate(e.candidate); };
+    await pc1.setLocalDescription();
+    await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    await pc1.setRemoteDescription(pc2.localDescription);
+  }
+`;
+
+test('Opus flows both ways: a remote track unmutes on its first packet, and its sources and stats are the packets’', async () => {
+  const logs = await run(`
+    ${CALL}
+    var start = performance.timeOrigin + performance.now();
+    var ctx = new AudioContext();
+    var osc = ctx.createOscillator();
+    var dst = ctx.createMediaStreamDestination();
+    osc.connect(dst); osc.start();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    var track = dst.stream.getAudioTracks()[0];
+    var t1 = pc1.addTransceiver(track, { direction: 'sendrecv' });
+    var remote = null, unmuted = 0;
+    pc2.ontrack = function (e) {
+      remote = e.track;
+      log('track', e.track.muted);
+      e.track.onunmute = function () { unmuted++; };
+    };
+    await call(pc1, pc2);
+    pc2.getTransceivers()[0].sender.replaceTrack(track.clone());
+    pc2.getTransceivers()[0].direction = 'sendrecv';
+    await call(pc2, pc1);
+    await wait('unmute', function () { return unmuted; });
+    log('unmuted', remote.muted);
+    var r2 = pc2.getReceivers()[0];
+    var ssrcs = await wait('ssrcs', function () {
+      var s = r2.getSynchronizationSources();
+      return s.length && s[0].audioLevel !== undefined ? s : null;
+    });
+    var s = ssrcs[0];
+    var now = performance.timeOrigin + performance.now();
+    log('ssrc', typeof s.source, s.timestamp >= start && s.timestamp <= now,
+      s.rtpTimestamp >= 0 && s.rtpTimestamp <= 0xffffffff,
+      s.audioLevel > 0 && s.audioLevel <= 1, r2.getContributingSources().length);
+    await wait('back', function () { return !t1.receiver.track.muted; });
+    var sent = await t1.sender.getStats();
+    var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
+    log('outbound', !!out && out.packetsSent > 0, out && out.kind, out && out.mid,
+      [...sent.values()].some(function (x) { return x.type === 'transport'; }));
+    var got = await r2.getStats();
+    var inb = [...got.values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    log('inbound', !!inb && inb.packetsReceived > 0, inb && inb.trackIdentifier === remote.id,
+      [...got.values()].some(function (x) { return x.type === 'outbound-rtp'; }));
+    var all = await pc2.getStats();
+    log('pc', [...all.values()].filter(function (x) { return /bound-rtp$/.test(x.type); }).map(function (x) { return x.type; }).sort().join(','));
+    log('energy', inb.totalAudioEnergy > 0, inb.totalSamplesReceived > 0, inb.nackCount, inb.packetsDiscarded);
+    var source = sent.get(out.mediaSourceId);
+    log('source', source.kind, source.totalAudioEnergy > 0, source.totalSamplesDuration > 0);
+    // RTCP's reports, which werift sends a second or so apart
+    var reported = null;
+    for (var i = 0; i < 60 && !reported; i++) {
+      var r = [...(await pc1.getStats()).values()];
+      var ri = r.find(function (x) { return x.type === 'remote-inbound-rtp' && x.roundTripTime !== undefined; });
+      var ro = [...(await pc2.getStats()).values()].find(function (x) { return x.type === 'remote-outbound-rtp' && x.remoteTimestamp !== undefined; });
+      if (ri && ro) reported = [ri, ro];
+      else await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    log('reports', !!reported && reported[0].localId === out.id);
+    // a jitter buffer target holds each packet's samples that long
+    async function inboundOf() {
+      return [...(await r2.getStats()).values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    }
+    r2.jitterBufferTarget = 300;
+    await new Promise(function (r) { setTimeout(r, 500); });
+    var before = await inboundOf();
+    await new Promise(function (r) { setTimeout(r, 1000); });
+    var after = await inboundOf();
+    var held = 1000 * (after.jitterBufferDelay - before.jitterBufferDelay) /
+      (after.jitterBufferEmittedCount - before.jitterBufferEmittedCount);
+    log('held', Math.abs(held - 300) < 60 ? 'about 300' : held);
+    var muted = 0;
+    remote.onmute = function () { muted++; };
+    pc1.close();
+    await wait('quiet', function () { return muted; }, 8000).catch(function () {});
+    log('quiet', remote.muted, muted);
+    pc2.close();
+    track.stop();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'track|true',
+    'unmuted|false',
+    'ssrc|number|true|true|true|0',
+    'outbound|true|audio|0|true',
+    'inbound|true|true|false',
+    'pc|inbound-rtp,outbound-rtp',
+    'energy|true|true|0|0',
+    'source|audio|true|true',
+    'reports|true',
+    'held|about 300',
+    'quiet|true|1',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
+
+test('VP8 flows from a canvas into a remote <video>, which loads its metadata at the canvas’s size and plays', async () => {
+  const logs = await run(`
+    ${CALL}
+    var canvas = document.createElement('canvas');
+    canvas.width = 320; canvas.height = 240;
+    document.documentElement.appendChild(canvas);
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () {
+      n++;
+      g.fillStyle = 'rgb(' + (n * 20 % 255) + ',80,120)';
+      g.fillRect(0, 0, 320, 240);
+      g.fillStyle = 'white';
+      g.fillRect(n % 300, 20, 20, 20);
+    }, 100);
+    var stream = canvas.captureStream();
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.addTrack(stream.getVideoTracks()[0], stream);
+    var video = document.createElement('video');
+    video.autoplay = true;
+    document.documentElement.appendChild(video);
+    var metadata = new Promise(function (r) { video.onloadedmetadata = r; });
+    var remote = null;
+    pc2.ontrack = function (e) { remote = e.track; video.srcObject = e.streams[0]; };
+    await call(pc1, pc2);
+    await wait('unmute', function () { return remote && !remote.muted; });
+    log('unmuted');
+    await Promise.race([metadata, wait('metadata', function () { return false; })]);
+    log('metadata', video.videoWidth, video.videoHeight, video.readyState);
+    var t0 = video.currentTime;
+    await new Promise(function (r) { setTimeout(r, 600); });
+    log('playing', video.currentTime > t0);
+    var settings = remote.getSettings();
+    log('settings', settings.width, settings.height);
+    var inbound = [...(await pc2.getStats()).values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    log('inbound', inbound.kind, inbound.packetsReceived > 0);
+    log('decoded', inbound.framesDecoded > 0, inbound.framesReceived >= inbound.framesDecoded, inbound.frameWidth, inbound.frameHeight, inbound.decoderImplementation);
+    var sent = await pc1.getStats();
+    var out = [...sent.values()].find(function (x) { return x.type === 'outbound-rtp'; });
+    var source = sent.get(out.mediaSourceId);
+    log('encoded', out.framesEncoded > 0, out.framesSent > 0, out.keyFramesEncoded > 0, out.frameWidth, source.width, source.frames > 0);
+    clearInterval(timer);
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  if (process.env.WERIFT_LOGS) console.log(logs.join('\n'));
+  for (const line of [
+    'unmuted',
+    'metadata|320|240|4',
+    'playing|true',
+    'inbound|video|true',
+    'decoded|true|true|320|240|libvpx',
+    'encoded|true|true|true|320|320|true',
+    'done',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});

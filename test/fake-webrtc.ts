@@ -7,7 +7,12 @@
 // held to WebRTC 1.0 on every runtime; `webrtc-werift.test.ts` holds the
 // adapter.
 import { idleSource } from '../src/html/media-devices.js';
-import type { MediaSourceLike } from '../src/html/media-devices.js';
+import type {
+  MediaAudioData,
+  MediaSourceEvents,
+  MediaSourceLike,
+  MediaVideoFrame,
+} from '../src/html/media-devices.js';
 import { offeredCapabilities } from '../src/html/rtc-codecs.js';
 import type {
   HtmlWebRTC,
@@ -20,7 +25,9 @@ import type {
   RTCDataChannelLike,
   RTCDescriptionsLike,
   RTCDirectionLike,
+  RTCRtpSourceLike,
   RTCSessionState,
+  RTCStatsLike,
   RTCTransceiverInit,
   RTCTransceiverLike,
   RTCTransportStateLike,
@@ -73,8 +80,71 @@ const intersect = (mine: Direction, offered: Direction): Direction => {
   return s && r ? 'sendrecv' : s ? 'sendonly' : r ? 'recvonly' : 'inactive';
 };
 
+/**
+ * A receiver's source in the fake's media mode (`FakeWebRTC({ media: true
+ * })`): muted until the paired sender's first frame arrives, and handing on
+ * each frame to a listener that reads frames, as a stack's decoded frames
+ * are; a synchronization source a frame.
+ */
+export class FakeReceived implements MediaSourceLike {
+  readonly label = '';
+  events: MediaSourceEvents | null = null;
+  muted = true;
+  frames = 0;
+  heard: RTCRtpSourceLike[] = [];
+  size = { width: 0, height: 0 };
+  constructor(readonly kind: 'audio' | 'video') {}
+  listen(events: MediaSourceEvents): void {
+    this.events = events;
+    events.muted(this.muted);
+  }
+  deliver(frame: MediaVideoFrame | MediaAudioData): void {
+    this.frames += 1;
+    this.heard = [
+      {
+        kind: 'synchronization',
+        source: 1234,
+        timestamp: performance.timeOrigin + performance.now(),
+        rtpTimestamp: this.frames * 960,
+        ...(this.kind === 'audio' ? { audioLevel: 0.5 } : {}),
+      },
+    ];
+    if (this.muted) {
+      this.muted = false;
+      this.events?.muted(false);
+    }
+    if (this.kind === 'video') {
+      const f = frame as MediaVideoFrame;
+      if (f.width !== this.size.width || f.height !== this.size.height) {
+        this.size = { width: f.width, height: f.height };
+        this.events?.changed?.();
+      }
+      this.events?.video?.(f);
+    } else this.events?.audio?.(frame as MediaAudioData);
+  }
+  quiet(): void {
+    if (this.muted) return;
+    this.muted = true;
+    this.events?.muted(true);
+  }
+  settings() {
+    return this.size.width ? { ...this.size } : {};
+  }
+  capabilities() {
+    return {};
+  }
+  reconfigure() {
+    return Promise.resolve(false);
+  }
+  stop(): void {
+    this.events = null;
+  }
+}
+
 export class FakeTransceiver implements RTCTransceiverLike {
   readonly received: MediaSourceLike;
+  /** What its sender was handed to send, in the media mode. */
+  source: MediaSourceLike | null = null;
   mid: string | null = null;
   currentDirection: RTCDirectionLike | null = null;
   stopping = false;
@@ -90,14 +160,20 @@ export class FakeTransceiver implements RTCTransceiverLike {
     public direction: Direction,
     streams: string[],
     trackId: string | null,
+    media = false,
   ) {
-    this.received = idleSource(kind);
+    this.received = media ? new FakeReceived(kind) : idleSource(kind);
     this.streams = streams;
     this.trackId = trackId;
   }
-  setTrack(_source: MediaSourceLike | null, trackId: string | null): void {
+  setTrack(source: MediaSourceLike | null, trackId: string | null): void {
     this.trackId = trackId;
+    this.source?.stop();
+    this.source = source;
+    this.onTrack?.();
   }
+  /** Told as `setTrack` changes what it sends, in the media mode. */
+  onTrack?: () => void;
   setDirection(direction: Direction): void {
     this.direction = direction;
   }
@@ -113,7 +189,9 @@ export class FakeTransceiver implements RTCTransceiverLike {
     this.stopping = true;
   }
   sources() {
-    return [];
+    return this.received instanceof FakeReceived
+      ? this.received.heard.map((x) => ({ ...x }))
+      : [];
   }
   setJitterBufferTarget(): void {}
   /** The tones sent, each with its duration, in the order sent. */
@@ -125,8 +203,11 @@ export class FakeTransceiver implements RTCTransceiverLike {
     this.toneTimes.push(performance.now());
     return this.kind === 'audio';
   }
-  stats() {
-    return Promise.resolve([]);
+  /** A sender's or a receiver's stats, which the media mode selects from
+   *  the connection's. */
+  statsOf?: (side: 'sender' | 'receiver') => Promise<RTCStatsLike[]>;
+  stats(side: 'sender' | 'receiver' = 'sender') {
+    return this.statsOf ? this.statsOf(side) : Promise.resolve([]);
   }
 }
 
@@ -194,9 +275,55 @@ export class FakeConnection implements RTCConnectionLike {
       init.direction,
       init.streams,
       init.trackId,
+      this.stack.media,
     );
+    t.source = init.source;
+    this._media(t);
     this.transceivers.push(t);
     return t;
+  }
+
+  private _media(t: FakeTransceiver): void {
+    t.onTrack = () => this._pipe();
+    t.statsOf = async (side) =>
+      (await this.stats()).filter(
+        (x) =>
+          x.mid === t.mid &&
+          x.type === (side === 'sender' ? 'outbound-rtp' : 'inbound-rtp'),
+      );
+  }
+
+  /** The media mode's network: once connected, each sending transceiver's
+   *  frames go to the receiver of the same mid on the other connection of
+   *  the stack, read through the source it was handed. */
+  private _piped = new Map<FakeTransceiver, MediaSourceLike>();
+  private _connected = false;
+  private _pipe(): void {
+    if (!this.stack.media || !this._connected || this.closed) return;
+    const peer = this.stack.connections.find(
+      (c) => c !== this && !c.closed && c._connected,
+    );
+    for (const t of this.transceivers) {
+      const source =
+        t.source &&
+        !t.stopping &&
+        t.currentDirection &&
+        sends(t.currentDirection)
+          ? t.source
+          : null;
+      const to = peer?.transceivers.find((x) => x.mid === t.mid)?.received;
+      if (this._piped.get(t) === source) continue;
+      this._piped.delete(t);
+      if (!source || !(to instanceof FakeReceived)) continue;
+      this._piped.set(t, source);
+      source.listen({
+        muted() {},
+        ended() {},
+        ...(t.kind === 'video'
+          ? { video: (f: MediaVideoFrame) => to.deliver(f) }
+          : { audio: (d: MediaAudioData) => to.deliver(d) }),
+      });
+    }
   }
 
   private _write(type: 'offer' | 'answer'): string {
@@ -367,7 +494,10 @@ export class FakeConnection implements RTCConnectionLike {
           role: 'controlling',
         });
         setTimeout(() => {
-          if (!this.closed) this._tellTransport({ dtlsState: 'connected' });
+          if (this.closed) return;
+          this._tellTransport({ dtlsState: 'connected' });
+          this._connected = true;
+          for (const c of this.stack.connections) c._pipe();
         }, 0);
       }, 0);
     }, 0);
@@ -439,7 +569,9 @@ export class FakeConnection implements RTCConnectionLike {
             'recvonly',
             [],
             null,
+            this.stack.media,
           );
+          this._media(t);
           t.mid = s.mid;
           t.fromRemote = true;
           this.transceivers.push(t);
@@ -485,10 +617,49 @@ export class FakeConnection implements RTCConnectionLike {
     return ch;
   }
   async stats() {
-    return [{ id: 'P', type: 'peer-connection', timestamp: 0 }];
+    const out: RTCStatsLike[] = [
+      { id: 'P', type: 'peer-connection', timestamp: 0 },
+    ];
+    // the media mode's streams: a stack names each by its mid, and knows
+    // nothing of the page's track ids
+    for (const t of this.transceivers) {
+      if (t.mid === null || t.stopping) continue;
+      if (this._piped.has(t)) {
+        out.push({
+          id: `OT${t.mid}`,
+          type: 'outbound-rtp',
+          timestamp: 0,
+          kind: t.kind,
+          mid: t.mid,
+          ssrc: 1,
+        });
+      }
+      if (t.received instanceof FakeReceived && t.received.frames) {
+        out.push({
+          id: `IT${t.mid}`,
+          type: 'inbound-rtp',
+          timestamp: 0,
+          kind: t.kind,
+          mid: t.mid,
+          ssrc: 1234,
+          trackIdentifier: 'the stack’s own',
+          packetsReceived: t.received.frames,
+        });
+      }
+    }
+    return out;
   }
   close(): void {
     this.closed = true;
+    for (const source of this._piped.values()) source.stop();
+    this._piped.clear();
+    // the far side hears no more, and mutes as a stack's receiver does
+    for (const c of this.stack.connections) {
+      if (c === this) continue;
+      for (const t of c.transceivers) {
+        if (t.received instanceof FakeReceived) t.received.quiet();
+      }
+    }
   }
 }
 
@@ -496,6 +667,12 @@ export class FakeConnection implements RTCConnectionLike {
 export class FakeWebRTC implements HtmlWebRTC {
   connections: FakeConnection[] = [];
   private _certificates = 0;
+  /** Whether a connection carries its senders' frames to the other's
+   *  receivers, as a stack with a media pipeline does. */
+  readonly media: boolean;
+  constructor(options: { media?: boolean } = {}) {
+    this.media = !!options.media;
+  }
   connect(
     request: RTCConnectRequest,
     events: RTCConnectionEvents,

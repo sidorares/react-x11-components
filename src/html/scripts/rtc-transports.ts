@@ -82,9 +82,7 @@ export function installRtcTransports(
   const call: Any = H.call;
   const bytesOfBase64: Any = H.bytesOfBase64;
   const stringify: Any = H.stringify;
-  const rejected: Any = H.rejected;
   const then: Any = H.then;
-  const invalidState: Any = H.invalidState;
   const ask: Any = H.ask;
   const channels: Any = H.channels;
   const connections = { get: (id: number): Any => H.connectionOf(id) };
@@ -682,13 +680,30 @@ export function installRtcTransports(
     apply(wmSet, slots, [report, { report: true, map }]);
     return report;
   };
+  /** An inbound-rtp's `trackIdentifier` is the id of the receiver's track,
+   *  which the host cannot know: the realm made it. Found by the stream's
+   *  mid, which the host names it with. */
+  const withTracks = (pc: Any, list: Any[]): Any[] => {
+    for (const s of list ?? []) {
+      if (!s || s.type !== 'inbound-rtp' || s.mid == null) continue;
+      for (const t of pc.transceivers) {
+        const ts = apply(wmGet, slots, [t]);
+        if (!ts || ts.mid !== s.mid) continue;
+        const track = apply(wmGet, slots, [ts.receiver])?.track;
+        if (track) s.trackIdentifier = track.id;
+        break;
+      }
+    }
+    return list;
+  };
+  /** `getStats()`, a sender's and a receiver's: a closed connection's too,
+   *  since WebRTC 1.0 no longer refuses one (8.2). */
   const statsOf = (pc: Any, tx: Any, side: string): Promise<Any> => {
-    if (pc.closed) return rejected(invalidState());
     return then(
       ask((req: number) =>
         call('rtcStats', pc.id, req, side, tx ? tx.id : null),
       ),
-      (list: Any) => reportOf(list),
+      (list: Any) => reportOf(withTracks(pc, list)),
     );
   };
 

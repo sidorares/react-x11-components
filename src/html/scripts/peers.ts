@@ -40,6 +40,11 @@ import type { BufferClass } from './platform.js';
 
 declare const Buffer: BufferClass;
 declare const queueMicrotask: (fn: () => void) => void;
+declare const setTimeout: (fn: () => void, ms: number) => unknown;
+
+/** A value a task later. */
+const later = <T>(value: T): Promise<T> =>
+  new Promise((resolve) => setTimeout(() => resolve(value), 0));
 
 type Primitive = string | number | boolean | null | undefined;
 
@@ -251,8 +256,10 @@ export class PagePeers {
       case 'rtcTrack': {
         const t = this._transceivers.get(Number(a));
         if (!t) return null;
+        // a tap of the page's source, which the sender reads its frames
+        // through beside whatever else reads them
         const source =
-          Number(b) >= 0 ? this._seams.sources().get(Number(b)) : null;
+          Number(b) >= 0 ? this._seams.sources().tap(Number(b)) : null;
         t.transceiver.setTrack(source, source ? text(c) || null : null);
         return null;
       }
@@ -325,19 +332,25 @@ export class PagePeers {
       }
       case 'rtcStats': {
         const peer = this._peers.get(Number(a));
-        const t =
-          d === null || d === undefined
-            ? null
-            : this._transceivers.get(Number(d));
+        const selected = d !== null && d !== undefined;
+        const t = selected ? this._transceivers.get(Number(d)) : null;
         const side = text(c) === 'receiver' ? 'receiver' : 'sender';
-        this._settle(
-          Number(b),
-          t
-            ? t.transceiver.stats(side)
-            : peer
-              ? peer.connection.stats()
-              : this._gone(),
-        );
+        // a closed connection's stats are what its stack has left, and a
+        // sender's or a receiver's there have no stream (WebRTC 1.0, 8.2):
+        // its transceivers are gone
+        const work = t
+          ? t.transceiver.stats(side)
+          : selected
+            ? Promise.resolve([])
+            : peer?.closed
+              ? peer.connection.stats().catch(() => [])
+              : peer
+                ? peer.connection.stats()
+                : this._gone();
+        // settled in a task of its own, as a browser settles it: a page
+        // that asks again as each report comes, in a loop, would otherwise
+        // never let the network in, and nothing it waits for would arrive
+        this._settle(Number(b), work.then(later));
         return null;
       }
       case 'rtcCertificate': {
@@ -590,7 +603,7 @@ export class PagePeers {
     const kind = i.kind === 'video' ? 'video' : 'audio';
     const source =
       typeof i.source === 'number' && i.source >= 0
-        ? this._seams.sources().get(i.source)
+        ? this._seams.sources().tap(i.source)
         : null;
     const transceiver = peer.connection.addTransceiver({
       kind,

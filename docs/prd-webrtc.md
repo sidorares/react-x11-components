@@ -25,13 +25,18 @@ react-x11 2.57's media capture (`coreMediaDevices`), with `getDisplayMedia`
 and a stream played in a `<video>` or an `<audio>`: on WPT fea36e4 with
 fake devices, `mediacapture-streams` went from 50.7% to 79.9% with the
 constraint round beside it, and `screen-capture` from 23.0% to 61.9%.
-Media does not flow over a connection yet. A facade round then took what
+A facade round then took what
 tier A had left that needs neither media nor H.264: `RTCDTMFSender`,
 whose tests time the tones and read no RTP (the seam is handed each
 tone, and werift's adapter sends none yet), the candidate grammar, the
 ICE server URL checks, a certificate's clone and origin, when a sender's
 transport is set, and `transceiver.stopped`, which WebRTC 1.0 no longer
-has and every browser still ships. The spikes it quotes ran on
+has and every browser still ships. Workstream 4's first round makes
+media flow: Opus, G.711, VP8 and VP9 both ways through libav.js, a remote
+track's mute, its synchronization sources and the RTP stats. On WPT
+fea36e4, every `/webrtc*` test wpt.fyi lists, 340 with their variants,
+went from 55.3% to 61.9%, and the area's 91 from 78.2% to 85.4%. The
+spikes it quotes ran on
 Node 24.22.0 and Bun 1.4.3 on an M5 Pro. They were scratch scripts and
 are not in the repository.
 
@@ -220,6 +225,10 @@ on one side, or left for werift:
 | An answer to an offer of `a=setup:active` is `active` too                                                                                                                                                                                                                           | `passive`                                                                                                                | werift itself, from 0.26.0, which answers `passive`                                                                                                                                                                                                                               |
 | A subsequent offer lists only the codecs negotiated before                                                                                                                                                                                                                          | Every codec it can                                                                                                       | Left; filed as [werift#818](https://github.com/shinyoshiaki/werift-webrtc/issues/818)                                                                                                                                                                                             |
 | No `getSynchronizationSources`, no `generateCertificate` (it has `createSelfSignedCertificate`)                                                                                                                                                                                     | Both                                                                                                                     | The adapter, in workstreams 1 and 4                                                                                                                                                                                                                                               |
+| Sends no RTCP BYE as a sender stops or its connection closes                                                                                                                                                                                                                        | A BYE, which the far side mutes its track on                                                                             | The adapter mutes a remote track after two seconds with no packet; a sender sends its last frame again each second; worth filing upstream                                                                                                                                         |
+| Routes RTP by SSRC or rid alone: a stream whose description names no SSRC and whose packets carry no rid is dropped, whatever its mid or payload type                                                                                                                               | Demuxed by mid, then by payload type (RFC 8843, 9.2)                                                                     | Left; worth filing upstream (WPT `protocol/rtp-demuxing`)                                                                                                                                                                                                                         |
+| Collects an outbound-rtp from a sender's making, an inbound-rtp from the description naming its SSRC, and either of a stopped transceiver                                                                                                                                           | From the answer that first sends, and the first packet (WebRTC Statistics, 3.2)                                          | The adapter                                                                                                                                                                                                                                                                       |
+| Writes no audio level extension on what it sends                                                                                                                                                                                                                                    | Each audio packet's level (RFC 6464)                                                                                     | The adapter puts one on each audio packet it sends                                                                                                                                                                                                                                |
 | No `RTCDtlsTransport.getRemoteCertificates`                                                                                                                                                                                                                                         | The peer's certificates, DER                                                                                             | The adapter reads the DTLS socket's `remoteCertificate`                                                                                                                                                                                                                           |
 | Asks `stun.l.google.com` where a configuration names no STUN server, and `setLocalDescription` waits up to five seconds for the answer, with no option against either                                                                                                               | Gathering asks only the servers the page named                                                                           | The adapter clears each transport's server before `setLocalDescription` (`_gatherFromNamed`); worth filing upstream                                                                                                                                                               |
 | Gathers its host candidates inside `setLocalDescription`, so the local description holds them as its promise settles                                                                                                                                                                | The candidates the page has heard of, each added as its `icecandidate` is fired                                          | The facade (`surfacedOnly`)                                                                                                                                                                                                                                                       |
@@ -468,16 +477,33 @@ where it is werift's to fix, as quico's three behaviours were
   in JavaScript and what is heard what the echo canceller subtracts; any
   other is a `VideoFrames` sink, or an `AudioFrames` sink, fed from
   `read`. A received track will be the second kind.
-- **Sending.** A track's frames are encoded by libav.js, VP8 or Opus, on a
-  worker thread of the host's so a frame's encode never holds the page.
-  They are packetized and sent by werift's RTP sender.
-- **Receiving.** werift's receiver hands RTP over, libav.js decodes it, and
-  the frames are its source's (`MediaSourceLike.listen`), which a
-  `<video srcObject>` already shows through a `VideoFrames` sink: nothing
-  of the showing is left to build for it.
-- **Audio.** Core has no audio output, so a received audio track is
-  decoded and counted, which its stats and `currentTime` need, and not
-  heard. That is a gap of core's to file, not this design's to fill.
+- **Sending.** A track's frames are encoded by libav.js in the codec the
+  answer negotiated — Opus, VP8 or VP9, and G.711, which is a table
+  (`src/html/media-codecs.ts`) — packetized with werift's own packetizers
+  and written into the werift track its RTP sender sends from
+  (`src/html/werift-media.ts`). The sender reads its frames through a tap
+  of the page's source (`PageSources.tap`), one reader among the others,
+  since a source has one listener and the page's tracks hold it. It encodes
+  only while werift can send — a codec negotiated, DTLS connected, the
+  direction sending — starts each run with a key frame and makes one where
+  the peer asks (PLI or FIR), drops a frame that comes while the last is
+  being encoded rather than fall behind, and sends its last frame again
+  where none came for a second. Each Opus packet carries its level (RFC
+  6464). The codecs run on the page's thread for now ("A codec's thread"
+  below).
+- **Receiving.** werift's receiver hands RTP over, and the receiver's
+  source (`MediaReceiver`) unmutes on the first packet, keeps the sources
+  `getSynchronizationSources` answers from, with each audio packet's level,
+  and mutes again once none has come for two seconds: werift sends no RTCP
+  BYE, which is what Chrome mutes on. While something reads its frames —
+  a `<video srcObject>`, the size its media element waits for — it puts a
+  video frame's packets together, decodes it with libav.js, and hands the
+  frames on as its source's (`MediaSourceLike.listen`), which a
+  `<video srcObject>` already shows through a `VideoFrames` sink. A decoder
+  that starts, or that lost a packet, waits for a key frame and asks for
+  one. There is no jitter buffer yet: a packet out of order is a loss.
+- **Audio.** A received audio track is decoded while a media element plays
+  it, and heard where core has an `AudioFrames` sink for it.
 - **`videoDetectorTest`** reads a received frame's pixels through a
   canvas. That means bringing decoded frames into the page realm's
   `CanvasState`, which is the most expensive crossing in the design and
@@ -534,7 +560,7 @@ Each workstream after the first is a loop:
 | 1   | **The facade and the offer/answer layer over werift.** Every class in tier A, the operations chain, the mirror, configuration, SDP as a browser writes it; driven in CI by a fake seam, as WebTransport's fake server drives its tests | 0                | tier A                       |                ~50% |
 | 2   | **`MediaStream`, `MediaStreamTrack`, `mediaDevices`.** Enough for tier A's tests to add tracks, early; `canvas.captureStream` later                                                                                                    | 0                | tier A's track cases, then C |                   — |
 | 3   | **The transport.** Candidates, ICE and DTLS states, data channels end to end, SCTP, ICE errors, transport stats, a channel transferred to a worker                                                                                     | 0; runs beside 1 | tier B                       |                ~80% |
-| 4   | **The media pipeline.** libav.js encode and decode on a worker, RTP both ways, `getSynchronizationSources`, receiver stats, `jitterBufferTarget`, DTMF, `<video srcObject>`                                                            | 1, 2, 3          | most of tier C               |                ~92% |
+| 4   | **The media pipeline.** libav.js encode and decode, RTP both ways, `getSynchronizationSources`, receiver stats, `<video srcObject>` (first round built); then a codec worker, a jitter buffer, `jitterBufferTarget`, DTMF's RTP        | 1, 2, 3          | most of tier C               |                ~92% |
 | 5   | **Simulcast encoders, VP9 scalability, encoded transforms in a worker, screen share, `videoDetectorTest`**                                                                                                                             | 4                | the rest of C                |                ~97% |
 
 Workstreams 1 and 3 can run in parallel once 0 has fixed the seam. 2 is
