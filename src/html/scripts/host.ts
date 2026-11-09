@@ -642,6 +642,14 @@ export interface HandleInternals {
     pseudo: string | null,
   ): Record<string, string> | null;
   layoutOwed(): boolean;
+  /** An element's computed values, as Typed OM reifies them, where
+   *  `computedStyle` has its resolved values: insets, sizes and margins as
+   *  they compute, and an inset `anchor()` the length its layout came to
+   *  (`HtmlViewNode.computedStyle`'s `computed`). */
+  computedValues?(
+    element: Element,
+    pseudo: string | null,
+  ): Record<string, string> | null;
   /** The document's `medium` font size, in CSS pixels
    *  (`HtmlViewNode.fontMedium`). */
   fontMedium?(): number;
@@ -5711,6 +5719,15 @@ export class DomHost {
         // one: they are no part of what a read of a longhand sends
         const send = (style: Record<string, string> | null): string =>
           style ? JSON.stringify(d ? cssomShorthands(style) : style) : '';
+        // the computed values, which Typed OM reifies (`computedStyleMap`)
+        if (d === 'values') {
+          const el = this._element(a);
+          if (!this._inDocument(el)) return send(this._frameStyle(el, pseudo));
+          const values = (
+            this._seams.handle as Partial<HandleInternals>
+          ).computedValues?.(el, part);
+          return values ? JSON.stringify(values) : '';
+        }
         // SVG's properties, asked for apart as a page reads one
         // (`svg-properties.ts`)
         if (d === 'svg') {

@@ -3945,3 +3945,28 @@ test('unset in a @position-try rule takes an inset back with its anchor(), and p
     );
   }
 });
+
+test('a box in a position-area that is a grid item takes its cells of its grid area, and is held only within the grid, its original containing block', async () => {
+  // WPT css-anchor-position/grid-position-area-basic: the anchor is past
+  // the box's grid area, whose cells come to nothing beside it, and the
+  // box stays on the anchor's edge, where held within the grid area it was
+  // pushed back over the anchor
+  const place = async (area: string) => {
+    // a window wide enough for the grid, past the box on the anchor's edge
+    const { el } = await renderScrolled(
+      '<style>body{margin:0}#g{display:grid;grid:150px 100px / 200px 300px;' +
+        'padding:20px;position:relative;border:1px solid}' +
+        `#p{position:absolute;grid-column:1/2;grid-row:1/2;position-anchor:--f;position-area:${area};width:30px;height:10px}` +
+        '#a{grid-column:2/3;grid-row:2/3;anchor-name:--f}</style>' +
+        '<div id="g"><div id="a"></div><div id="p"></div></div>',
+      400,
+      900,
+    );
+    const box = boxOf(el, 'p');
+    cleanup();
+    return [box.x, box.y];
+  };
+  // the anchor is at 221, 171, 300 by 100
+  assert.deepStrictEqual(await place('top right'), [521, 161]);
+  assert.deepStrictEqual(await place('bottom left'), [191, 271]);
+});

@@ -17209,6 +17209,26 @@ test('CSS numeric values are made, added, converted and parsed as CSS Typed OM h
   );
 });
 
+test('an element’s computedStyleMap() reifies its computed values: an inset of auto stays auto on a positioned box, a length is a CSSUnitValue and a name a CSSKeywordValue', async () => {
+  const doc = await hosted(
+    '<style>#a { position: absolute; width: 30px; margin-left: 10%; display: block; --x: 1px 2px }</style>' +
+      '<div id="a"></div><p id="out"></p><script>' +
+      'var r = [], m = document.getElementById("a").computedStyleMap();' +
+      'var left = m.get("left"), width = m.get("width"), display = m.get("display");' +
+      'r.push(left.constructor.name, String(left), width.constructor.name, width.value, width.unit);' +
+      'r.push(display instanceof CSSKeywordValue, String(display), String(m.get("margin-left")));' +
+      'r.push(m.get("--x") instanceof CSSStyleValue, m.get("--none"), m.has("color"));' +
+      'try { m.get("no-such-property"); } catch (e) { r.push(e.name); }' +
+      "document.getElementById('out').textContent = r.join('|');" +
+      '</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    'CSSKeywordValue|auto|CSSUnitValue|30|px|true|block|10%|true||true|TypeError',
+    doc.logs.join('\n'),
+  );
+});
+
 test('a keyframe at a timeline offset is kept as given and placed by the view timeline, where there is one', async () => {
   const doc = await hosted(
     '<style>#s { overflow: auto; width: 100px; height: 100px } #c { height: 300px }' +

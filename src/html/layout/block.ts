@@ -9643,6 +9643,9 @@ function positionedContaining(
   box: Box,
   containing: Box,
   ctx: LayoutContext,
+  /** Whether a grid's area is the box's, as it is; false for its original
+   *  containing block, the grid's own (CSS Position 3, 2.1.1). */
+  grid = true,
 ): CbRect {
   if (containing.kind === 'inline') {
     return inlineContainingBlock(containing, box, ctx);
@@ -9653,7 +9656,7 @@ function positionedContaining(
   const strip = inColumns(box, containing);
   if (strip) return stripPadding(containing, strip);
   const local =
-    gridArea(box, containing, ctx) ??
+    (grid ? gridArea(box, containing, ctx) : null) ??
     viewportInRootFrame(box, containing, ctx) ??
     containingRect(containing, ctx);
   return isScroller(containing) && defaultAnchorBox(box, box.style, ctx)
@@ -9676,6 +9679,11 @@ function positionedIn(
     containing.kind === 'inline' ? null : gridArea(box, containing, ctx);
   // and a box in a `position-area` is in the area's cells
   const placed = anchoring?.area ?? null;
+  // which one too big for them shifts to stay inside of where it can: its
+  // original containing block, the one before grid placement made it a
+  // grid area (CSS Anchor Positioning 1, 4.1; CSS Position 3, 2.1.1)
+  const holder =
+    placed && area ? positionedContaining(box, containing, ctx, false) : whole;
   const { x: cbX, y: cbY, width: cbWidth, height: cbHeight } = placed ?? whole;
   resolveEdges(box, cbWidth);
   box.percentHeightBase = cbHeight;
@@ -9920,8 +9928,8 @@ function positionedIn(
       alignedStart(
         alignX,
         box.width + box.marginLeft + box.marginRight,
-        whole.x,
-        whole.width,
+        holder.x,
+        holder.width,
         overflowLimit(box, containing, false, ctx),
       ) + box.marginLeft;
   } else if (
@@ -9990,8 +9998,8 @@ function positionedIn(
       alignedStart(
         alignY,
         box.height + box.marginTop + box.marginBottom,
-        whole.y,
-        whole.height,
+        holder.y,
+        holder.height,
         overflowLimit(box, containing, true, ctx),
       ) + box.marginTop;
   } else if (top !== null && bottom !== null) {

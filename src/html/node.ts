@@ -8369,6 +8369,10 @@ export class HtmlViewNode extends Node {
         !!style.transform && this._unrendered(element, style),
       );
     }
+    // its computed values, which Typed OM reifies: no box, so its insets,
+    // sizes and margins read as they compute, a percentage as one, and an
+    // `anchor()` as the length its placed style came to
+    if (computed) return cssomStyle(read, this._scale, null, true);
     const used = this._usedBox(box, own);
     if (read !== own) edgesAsRead(used, read);
     return cssomStyle(read, this._scale, used, isItem(box));
