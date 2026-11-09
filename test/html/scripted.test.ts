@@ -835,6 +835,101 @@ test('a hand that holds still tells a page that draws nothing after it, where no
   await act(async () => void (await drag.clock.finish()));
 });
 
+/** A drag whose first frame runs past the budget, which a page that has
+ *  spent nothing since it last heard hears; then its scripts have spent all
+ *  the time there is, and the next width is held from it, a frame before the
+ *  drag is drawn cheaper at the third. A `quiet` page has no clock of its
+ *  own to wait for, so the test waits a tenth of a second for its frame. */
+async function slow(drag: Awaited<ReturnType<typeof dragged>>, quiet = false) {
+  drag.live(true);
+  drag.work.value = 20;
+  await drag.step(396);
+  await drag.hears('resize 396');
+  if (!quiet) await drag.hears('observer 396');
+  drag.scripts.value += 1e9;
+  await drag.step(392);
+  assert.ok(!drag.held(), 'the drag is not drawn cheaper');
+  if (quiet) await act(() => new Promise((r) => setTimeout(r, 100)));
+  else {
+    assert.equal(await drag.reads(), '392 true 392', 'it reads what is there');
+  }
+  const heard = drag.heard();
+  assert.ok(!heard.includes('resize 392'), heard);
+  assert.ok(!heard.includes('observer 392'), heard);
+}
+
+test('a page whose scripts took their part hears nothing of a drag after its first slow frame, before it is drawn cheaper, and hears where it came to as the drag ends', async (t) => {
+  const drag = await dragged(t);
+  await slow(drag);
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('resize 392');
+  await drag.hears('observer 392');
+});
+
+test('a hand that holds still in a drag that was slow and drew nothing cheaper tells the page where it has come to', async (t) => {
+  const drag = await dragged(t);
+  await slow(drag);
+  // past a rest of the hand, with the window still saying it is dragged
+  let frames = 0;
+  while (!drag.heard().includes('resize 392') && frames < 40) {
+    await act(async () => void (await drag.clock.frame()));
+    frames += 1;
+  }
+  await drag.hears('resize 392');
+  await drag.hears('observer 392');
+  assert.ok(!drag.held(), 'nothing was drawn cheaper');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
+test('a hand that holds still in a slow drag tells a page that draws nothing after it, where no paint would', async (t) => {
+  const drag = await dragged(t, '', true);
+  await slow(drag, true);
+  let frames = 0;
+  while (!drag.heard().includes('resize 392') && frames < 40) {
+    await act(async () => void (await drag.clock.frame()));
+    frames += 1;
+  }
+  await drag.hears('resize 392');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
+test('a page held in one drag is held from the first slow frame of the next, though its scripts have spent nothing since', async (t) => {
+  const drag = await dragged(t);
+  await slow(drag);
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('resize 392');
+  await drag.hears('observer 392');
+  await drag.rests();
+  const before = drag.heard();
+  // the next drag: as slow, and the page's scripts have spent nothing
+  drag.live(true);
+  await drag.step(388);
+  await drag.step(384);
+  assert.ok(!drag.held(), 'the drag is not drawn cheaper');
+  assert.equal(await drag.reads(), '384 true 384', 'it reads what is there');
+  assert.equal(drag.heard(), before, 'and has heard none of it');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+  await drag.hears('resize 384');
+  await drag.hears('observer 384');
+  // a drag the document keeps up with tells it every width, as ever — once
+  // what the page wrote as it heard is painted, at the drag's own cost: a
+  // slow runner painted it in the drag's first frame, at the slow drag's,
+  // and the frame came out slow
+  drag.work.value = 1;
+  await drag.rests();
+  drag.live(true);
+  await drag.step(380);
+  await drag.hears('resize 380');
+  await drag.hears('observer 380');
+  drag.live(false);
+  await act(async () => void (await drag.clock.finish()));
+});
+
 test('a page whose scripts take little of a drag that fell behind hears every width of it', async (t) => {
   const drag = await dragged(t);
   drag.live(true);

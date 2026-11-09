@@ -1369,6 +1369,16 @@ export class HtmlViewNode extends Node {
    *  tasks had taken by then (`viewportHeld`). */
   private _heardAt = 0;
   private _heardBusy = 0;
+  /** Whether a frame of the drag under way ran past `FRAME_BUDGET_MS` since
+   *  the drag last rested, from which what the page hears of the viewport
+   *  may wait (`viewportHeld`); whether it has waited since the drag last
+   *  rested, for the rest to tell it, and in the drag under way; and whether
+   *  it waited in a drag before this one, which holds it from the first slow
+   *  frame of every drag after. */
+  private _dragSlow = false;
+  private _pageHeld = false;
+  private _heldThisDrag = false;
+  private _viewportDear = false;
   /** When the last frame of the drag under way was painted. */
   private _dragFrameAt = -Infinity;
   /** The tile each background layer was drawn at in the drag under way, by
@@ -5531,12 +5541,12 @@ export class HtmlViewNode extends Node {
       // has stopped
       const late = now - armed >= DRAG_REST_MS;
       // a drag drawn cheaper is drawn as at rest once it is over, and once
-      // the hand that drags it holds still (`DRAG_REST_MS`)
-      if (
-        this._cheap &&
-        (!live || (!late && now - this._dragFrameAt >= DRAG_REST_MS))
-      ) {
-        this._drawAtRest();
+      // the hand that drags it holds still (`DRAG_REST_MS`), and a page
+      // held from hearing of its viewport hears then
+      if (!live || (!late && now - this._dragFrameAt >= DRAG_REST_MS)) {
+        this._dragSlow = false;
+        if (this._cheap) this._drawAtRest();
+        else if (this._pageHeld) this._tellPage();
       }
       if (live) {
         if (this._partial || this._cheap || this._overBudget.length) {
@@ -5544,8 +5554,11 @@ export class HtmlViewNode extends Node {
         }
         return;
       }
-      // what the drag's frames cost, and which sizes it moved, are its own
+      // what the drag's frames cost, and which sizes it moved, are its own,
+      // but for a page it held, which the next drag holds at once
       this._overBudget.length = 0;
+      if (this._heldThisDrag) this._viewportDear = true;
+      this._heldThisDrag = false;
       this._tileSizes = new WeakMap();
       if (!this._partial) return;
       this._widthMovedAt = -Infinity;
@@ -5570,24 +5583,38 @@ export class HtmlViewNode extends Node {
   }
 
   /**
-   * Whether the page waits to hear of its viewport: the drag under way fell
-   * behind its edge (`_cheap`), and its scripts have had more than
-   * `SCRIPT_SHARE` of the time since it last heard, `busy` being how long
-   * they have taken so far. A page's `resize` and its `ResizeObserver`s are
-   * a cycle of their own at each width — its script, a build, a paint —
-   * and through a drag it cannot keep up with, that cycle is the one to
-   * give up, since a layout says all a page's sheets do. A reaction that
-   * costs little is told at every frame, and only the drag's rest, which
-   * asks (`_drawAtRest`), tells one that costs a lot. Only what it is told
-   * waits: what it reads is what is there. A window that says nothing of a
-   * drag — X11's — tells a page at every step.
+   * Whether the page waits to hear of its viewport: a frame of the drag
+   * under way ran past `FRAME_BUDGET_MS` since the drag last rested
+   * (`_dragSlow`), or the drag fell behind its edge (`_cheap`), and its
+   * scripts have had more than `SCRIPT_SHARE` of the time since it last
+   * heard, `busy` being how long they have taken so far. A page's `resize`
+   * and its `ResizeObserver`s are a cycle of their own at each width — its
+   * script, a build, a paint — and through a drag it cannot keep up with,
+   * that cycle is the one to give up, since a layout says all a page's
+   * sheets do. It waits from the first slow frame, where drawing cheaper
+   * waits for two of three. A reaction that costs little is told at every
+   * frame, and only the drag's rest, which asks (`_tellPage`), tells one
+   * that costs a lot. But what it costs is known only once it has run, and
+   * a page held in one drag is held from the first slow frame of each drag
+   * after it, whatever its scripts have taken since (`_viewportDear`): a
+   * webmail page heard a drag's first width, and its reaction — a frame
+   * callback that sized its panes and read them back, and the timers it
+   * armed — held the tab for some 250 ms in the middle of the drag: its
+   * later drags drew 16 to 18 widths a second held, where they drew 11 to
+   * 14. It is learnt as the drag ends, and not at a rest of the hand, after
+   * which a page that has spent nothing hears the next step. Only what it
+   * is told waits: what it reads is what is there. A window that says
+   * nothing of a drag — X11's — tells a page at every step.
    */
   viewportHeld(busy: number): boolean {
     const now = frameClock.now();
     if (
-      this._cheap &&
-      busy - this._heardBusy > SCRIPT_SHARE * (now - this._heardAt)
+      (this._cheap || this._dragSlow) &&
+      (this._viewportDear ||
+        busy - this._heardBusy > SCRIPT_SHARE * (now - this._heardAt))
     ) {
+      this._pageHeld = true;
+      this._heldThisDrag = true;
       return true;
     }
     this._heardAt = now;
@@ -5618,7 +5645,13 @@ export class HtmlViewNode extends Node {
       this.invalidate(false, this, 'content');
     }
     this._scheduleFrame();
-    // what the page was held from (`viewportHeld`), which may be no paint
+    this._tellPage();
+  }
+
+  /** What the page was held from (`viewportHeld`) told at the drag's rest,
+   *  by asking it again: there may be no paint, which asks after each. */
+  private _tellPage(): void {
+    this._pageHeld = false;
     this._props().onPaint?.();
   }
 
@@ -17668,7 +17701,9 @@ export class HtmlViewNode extends Node {
     this._armSettle();
     if (this._cheap) return;
     const over = this._overBudget;
-    over.push(work > FRAME_BUDGET_MS);
+    const slow = work > FRAME_BUDGET_MS;
+    if (slow) this._dragSlow = true;
+    over.push(slow);
     if (over.length > 3) over.shift();
   }
 
@@ -21434,8 +21469,8 @@ export const frameClock = {
  *  core's layout and the window's own paint and present take the rest. */
 const FRAME_BUDGET_MS = 12;
 
-/** The part of a drag that fell behind a page's scripts may take before
- *  what they hear of the viewport waits (`viewportHeld`). */
+/** The part of a slow drag a page's scripts may take before what they hear
+ *  of the viewport waits (`viewportHeld`). */
 const SCRIPT_SHARE = 0.1;
 
 /** How long the hand that drags a window's edge holds still before a drag
