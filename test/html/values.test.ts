@@ -4741,6 +4741,10 @@ test('the anchor positioning properties take their grammars, and anchor() and an
   );
   assert.strictEqual(v('width', 'anchor-size(10px)'), 'anchor-size(10px)');
   assert.strictEqual(
+    v('width', 'anchor-size(width, 0)'),
+    'anchor-size(width, 0px)',
+  );
+  assert.strictEqual(
     v('margin-left', 'anchor-size(--a height)'),
     'anchor-size(--a height)',
   );
@@ -4751,6 +4755,12 @@ test('the anchor positioning properties take their grammars, and anchor() and an
     ['top', 'anchor(--foo top bottom)'],
     ['top', 'anchor(foo top)'],
     ['width', 'anchor-size(, 10px)'],
+    // a math function that comes to a unitless 0 is a number, no
+    // fallback; a bare 0 is a length (WPT anchor-function-zero-fallback)
+    ['width', 'anchor-size(width, calc(0))'],
+    ['width', 'anchor-size(width, min(0, 0))'],
+    ['height', 'anchor-size(height, max(0))'],
+    ['left', 'anchor(left, calc(0))'],
   ]) {
     assert.strictEqual(v(prop, bad), null, `${prop}: ${bad}`);
   }

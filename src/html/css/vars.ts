@@ -215,9 +215,21 @@ export function customProperties(
     state.set(name, true);
     return resolved(name);
   };
-  for (const name of own.keys()) visit(name);
+  for (const name of own.keys()) {
+    visit(name);
+    // an `anchor()` is only an inset's: a property registered with a
+    // syntax holds none, whatever its fallback, and is as though `unset`
+    // (CSS Anchor Positioning 1, 3.2); an `anchor-size()` is a length
+    const syntax = registered?.get(name)?.syntax;
+    const value = out.own.get(name);
+    if (syntax && syntax.trim() !== '*' && value && ANCHOR_CALL.test(value)) {
+      out.own.set(name, unset(name));
+    }
+  }
   return out;
 }
+
+const ANCHOR_CALL = /(?<![\w-])anchor\(/i;
 
 /**
  * `substitute`, remembered for the properties it was asked against: the

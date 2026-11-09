@@ -2053,3 +2053,28 @@ test('a matched rule points at where it came from, an import among them', async 
   assert.ok(ua.length > 0);
   assert.ok(ua.every((r) => r.source === null));
 });
+
+test('anchor() is no value of a property registered with a syntax, which is as though unset, and anchor-size() is its fallback', async () => {
+  // WPT css-anchor-position/registered-custom-property-anchor: an anchor()
+  // is only an inset's (CSS Anchor Positioning 1, 3.2)
+  const { node } = await render(
+    '<style>' +
+      '@property --l { syntax: "<length>"; inherits: false; initial-value: 3px }' +
+      '@property --any { syntax: "*"; inherits: false }' +
+      '#a { --l: anchor(--foo bottom, 5px); --any: anchor(--foo bottom, 5px);' +
+      ' width: var(--l) }' +
+      '#s { --l: anchor-size(--foo block, 7px); width: var(--l) }' +
+      '</style><div id="a">x</div><div id="s">x</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'a').width, 3);
+  assert.strictEqual(
+    (
+      boxOf(el, 'a') as unknown as {
+        style: { custom: { get(n: string): string } | null };
+      }
+    ).style.custom?.get('--any'),
+    'anchor(--foo bottom, 5px)',
+  );
+  assert.strictEqual(boxOf(el, 's').width, 7);
+});

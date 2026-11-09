@@ -7366,8 +7366,16 @@ and `anchor-size()` as a `width` or a `height`, each alone or among the
 terms of a `calc()`, a `min()`, a `max()` or a `clamp()`:
 `top: calc(anchor(bottom) + 8px)`, `left: calc((anchor(left) +
 anchor(right)) / 2)`. A call with no anchor and no fallback makes the
-property `auto`. An animation of an inset or a size with an `anchor()` or an
-`anchor-size()` at either end runs between where each end puts the box,
+property `auto`. A fallback is a length or a percentage, and a math function
+that comes to a bare number, `calc(0)`, is neither; it may hold calls of its
+own, `anchor(--a top, anchor(--b top))`, which find their anchors in turn.
+What a box inherits of an anchored box's insets and sizes is the length its
+anchor functions, or the position option it was placed by, came to, which
+`getComputedStyle` reads too, and a box placed in a `position-area` has its
+insets read against the area's cells. An `anchor()` is no value of a
+custom property registered with a syntax, which is as though `unset`. An
+animation of an inset or a size with an `anchor()` or an `anchor-size()` at
+either end runs between where each end puts the box,
 the two mixed as a math function of their calls,
 `calc((1 - p) * (a) + p * (b))`, which layout resolves; a length an
 animation runs takes the place of the element's own `anchor()` while it

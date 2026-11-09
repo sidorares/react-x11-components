@@ -33,6 +33,7 @@ import {
   anchorCalls,
   anchorInset,
   anchorMathValue,
+  nestedValue,
   areaAlignment,
   areaLines,
   areaTracks,
@@ -45,6 +46,7 @@ import type {
   AnchorSide,
   AnchorSize,
   AnchorSizeKind,
+  AnchorRef,
   AnchorSizeRef,
   InsetSide,
   PositionArea,
@@ -7693,6 +7695,101 @@ export const ANCHOR_FALLBACK_AXES = new WeakMap<
   { cb: WritingAxes; own: WritingAxes }
 >();
 
+/** The cells of the `position-area` an anchored box was placed in, by box,
+ *  from the corner of its containing block: the containing block its
+ *  insets are of (CSS Anchor Positioning 1, 3.1.1), which a page reads
+ *  them against. */
+const PLACED_AREA = new WeakMap<Box, CbRect>();
+
+/** The sizes an anchored box was last placed at (`sizesKey`), by box: an
+ *  option with other sizes lays it out anew, since what a layout of it
+ *  keeps is of the sizes it had. */
+const PLACED_SIZES = new WeakMap<Box, string>();
+
+/** What of a style an option may change that its box's layout is of. */
+const sizesKey = (style: ComputedStyle): string =>
+  [
+    style.width,
+    style.height,
+    style.minWidth,
+    style.minHeight,
+    style.maxWidth,
+    style.maxHeight,
+    style.widthSize?.text,
+    style.heightSize?.text,
+    style.justifySelf,
+    style.alignSelf,
+  ].join(' ');
+
+/** A box, the style it has, and the style an anchored box around it lent
+ *  it (`inheritAnchored`). */
+type Lent = [Box, ComputedStyle, ComputedStyle];
+
+/** The boxes an anchored box lent a style to as it was placed, which the
+ *  next placement takes back from `PLACED_STYLE`. */
+const LENT_TO = new WeakMap<Box, Lent[]>();
+
+/** A size's `calc-size()` beside it, which goes with it (`widthSize`). */
+const SIZE_OF_FIELD: Readonly<Partial<Record<string, keyof ComputedStyle>>> = {
+  width: 'widthSize',
+  height: 'heightSize',
+  minWidth: 'minWidthSize',
+  maxWidth: 'maxWidthSize',
+  minHeight: 'minHeightSize',
+  maxHeight: 'maxHeightSize',
+};
+
+/**
+ * Hand what an anchored box's anchor functions came to (`resolved`) to the
+ * boxes in it whose style took one of them with `inherit`
+ * (`anchorInherited`): the computed value they inherit is the length the
+ * function comes to (CSS Anchor Positioning 1, 2.1), which only its
+ * placement knows. Each such box is laid out by a style that has the
+ * parent's lengths in those fields, and so is what inherited from it in
+ * turn; an anonymous box passes the parent's on. Answers what it lent, by
+ * box, for the caller to put back, or null where nothing took one. What the
+ * placement it keeps lent is each box's placed style (`PLACED_STYLE`),
+ * which its relative offset and `getComputedStyle` read.
+ */
+function inheritAnchored(box: Box, resolved: ComputedStyle): Lent[] | null {
+  let lent: Lent[] | null = null;
+  const walk = (parent: Box, from: ComputedStyle): void => {
+    for (const child of parent.children) {
+      if (!child.el) {
+        walk(child, from);
+        continue;
+      }
+      const marks = child.style.anchorInherited;
+      if (!marks) continue;
+      const own = child.style;
+      const copy = { ...own } as Record<string, unknown>;
+      let insets = own.anchorInsets;
+      let sizes = own.anchorSizes;
+      for (const field of marks) {
+        copy[field] = from[field];
+        const size = SIZE_OF_FIELD[field];
+        if (size) copy[size] = from[size];
+        if (insets?.[field as InsetSide]) {
+          const { [field as InsetSide]: _gone, ...rest } = insets;
+          insets = Object.keys(rest).length ? rest : null;
+        }
+        if (sizes?.[field]) {
+          const { [field]: _gone, ...rest } = sizes;
+          sizes = Object.keys(rest).length ? rest : null;
+        }
+      }
+      copy.anchorInsets = insets;
+      copy.anchorSizes = sizes;
+      copy.anchorInherited = null;
+      child.style = copy as unknown as ComputedStyle;
+      (lent ??= []).push([child, own, child.style]);
+      walk(child, child.style);
+    }
+  };
+  walk(box, resolved);
+  return lent;
+}
+
 /**
  * What placing a box against its default anchor gives it beside its style
  * (`anchoredStyle`): the cells of its `position-area`, which it takes for
@@ -7930,6 +8027,7 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   // with its anchor functions come to lengths
   const triedStyles = new Map<number, ComputedStyle>();
   const resolvedStyles = new Map<number, ComputedStyle>();
+  const lentStyles = new Map<number, Lent[] | null>();
   const triedStyle = (index: number): ComputedStyle | null => {
     const known = triedStyles.get(index);
     if (known) return known;
@@ -7957,14 +8055,28 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
     const tried = triedStyle(index);
     if (!tried) return null;
     ctx.anchorShift = anchor && context ? { anchor, x: sx, y: sy } : null;
+    let lent: Lent[] | null = null;
     try {
       const { resolved, anchoring } = anchoredStyle(box, tried, cb, ctx, axes);
       resolvedStyles.set(index, resolved);
       lastAnchoring = anchoring;
       box.style = resolved;
+      // what a layout of it kept is of the sizes it was laid out at, which
+      // another option may change
+      const sizes = sizesKey(resolved);
+      if (PLACED_SIZES.get(box) !== sizes) {
+        if (PLACED_SIZES.has(box)) {
+          box.layoutSerial = 0;
+          forgetOne(box);
+        }
+        PLACED_SIZES.set(box, sizes);
+      }
+      lent = inheritAnchored(box, resolved);
+      lentStyles.set(index, lent);
       return positionedIn(box, containing, ctx, anchoring);
     } finally {
       box.style = style;
+      if (lent) for (const [b, own] of lent) b.style = own;
       ctx.anchorShift = null;
     }
   };
@@ -8042,6 +8154,23 @@ function layoutPositioned(box: Box, containing: Box, ctx: LayoutContext): void {
   }
   if (own && own !== style) PLACED_STYLE.set(box, own);
   else PLACED_STYLE.delete(box);
+  // the cells of its `position-area` it was placed in, from its containing
+  // block's corner, which its insets are read against
+  const area = (lastAnchoring as Anchoring | null)?.area;
+  if (area) {
+    PLACED_AREA.set(box, {
+      x: area.x - cb.x,
+      y: area.y - cb.y,
+      width: area.width,
+      height: area.height,
+    });
+  } else PLACED_AREA.delete(box);
+  for (const [b] of LENT_TO.get(box) ?? []) PLACED_STYLE.delete(b);
+  const lent = lentStyles.get(chosen);
+  if (lent) {
+    for (const [b, , as] of lent) PLACED_STYLE.set(b, as);
+    LENT_TO.set(box, lent);
+  } else LENT_TO.delete(box);
   if (kept && !ctx.question)
     notePosition(kept[0], kept[1], { key, option: chosen });
   // whether `position-visibility` may hide it, and whether it overflows
@@ -8265,6 +8394,13 @@ function anchoredStyle(
   }
   // which are the containing block its insets are against
   const against = area ?? cb;
+  // the size of the anchor an `anchor-size()` names, or null
+  const sizeOfAnchor = (ref: AnchorSizeRef): number | null => {
+    const at = referencedAnchor(box, style, ref.name, ctx);
+    if (!at) return null;
+    const of = anchorRect(at, box, ctx);
+    return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
+  };
   const insets = style.anchorInsets;
   if (insets) {
     for (const side of ['top', 'right', 'bottom', 'left'] as const) {
@@ -8272,7 +8408,9 @@ function anchoredStyle(
       if (!inset) continue;
       const across = side === 'left' || side === 'right';
       let scrolled = false;
-      const values = anchorCalls(inset).map((ref) => {
+      const resolve = (ref: AnchorRef | AnchorSizeRef): number | null => {
+        // an `anchor-size()` in an `anchor()`'s fallback, the anchor's size
+        if (!('side' in ref)) return sizeOfAnchor(ref);
         // a side of the other axis is no `anchor()` of this inset's, which
         // is its fallback (CSS Anchor Positioning 1, 3.2.1)
         if (typeof ref.side === 'string' && OTHER_AXIS[side].has(ref.side)) {
@@ -8297,10 +8435,15 @@ function anchoredStyle(
           startLow[across ? 0 : 1],
           selfLow[across ? 0 : 1],
         );
-      });
+      };
+      const values = anchorCalls(inset).map(resolve);
       if (isAnchorMath(inset)) {
-        own()[side] = anchorMathValue(inset, values) ?? AUTO;
+        own()[side] = anchorMathValue(inset, values, resolve) ?? AUTO;
       } else if (values[0] !== null) own()[side] = values[0];
+      else if (inset.nested) {
+        // a fallback with calls of its own, which may find their anchors
+        own()[side] = nestedValue(inset.nested, resolve) ?? AUTO;
+      }
       if (scrolled) moving |= EDGE_OF[side];
     }
   }
@@ -8311,16 +8454,21 @@ function anchoredStyle(
       AnchorSize,
     ][]) {
       if (!size) continue;
-      const values = anchorCalls(size).map((ref) => {
-        const at = referencedAnchor(box, style, ref.name, ctx);
-        if (!at) return null;
-        const of = anchorRect(at, box, ctx);
-        return laidDimension(axes, ref.size) === 'width' ? of.width : of.height;
-      });
+      // an `anchor()` in an `anchor-size()`'s fallback has no side of this
+      // property's to read, and comes to its own fallback
+      const resolve = (ref: AnchorRef | AnchorSizeRef): number | null =>
+        'size' in ref ? sizeOfAnchor(ref) : null;
+      const values = anchorCalls(size).map(resolve);
       const set = own() as unknown as Record<string, unknown>;
       if (isAnchorMath(size)) {
         // a length like any other, which `box-sizing` says the box of
-        set[prop] = anchorMathValue(size, values) ?? ANCHOR_SIZE_UNSET[prop];
+        set[prop] =
+          anchorMathValue(size, values, resolve) ?? ANCHOR_SIZE_UNSET[prop];
+        continue;
+      }
+      if (values[0] === null && size.nested) {
+        set[prop] =
+          nestedValue(size.nested, resolve) ?? ANCHOR_SIZE_UNSET[prop];
         continue;
       }
       const value = values[0];
@@ -11235,7 +11383,8 @@ export function retranslate(box: Box, was: ComputedStyle): void {
 
 /** How far `position: relative` moves a box. */
 function relativeOffset(box: Box): [number, number] {
-  const style = box.style;
+  // an inset it inherited from a box an anchor placed is what that came to
+  const style = PLACED_STYLE.get(box) ?? box.style;
   const parentWidth = box.parent ? box.parent.contentWidth : 0;
   const left = resolveOrNull(style.left, parentWidth);
   const right = resolveOrNull(style.right, parentWidth);
@@ -11277,6 +11426,14 @@ export function resolvedInsets(
   if (position === 'static') return null;
   const sides = [style.top, style.right, style.bottom, style.left];
   if (position === 'relative' || position === 'sticky') {
+    // an inset it inherited from a box an anchor placed is what that came to
+    const lent = PLACED_STYLE.get(box);
+    if (lent) {
+      sides[0] = lent.top;
+      sides[1] = lent.right;
+      sides[2] = lent.bottom;
+      sides[3] = lent.left;
+    }
     const across = box.parent ? box.parent.contentWidth : 0;
     // a percentage on an inline box stays as it was written, as Chrome
     // answers it, and leaves the side opposite nothing to negate
@@ -11302,7 +11459,12 @@ export function resolvedInsets(
   const placed =
     containing && placedIn(box, containing, viewportWidth, viewportHeight);
   if (!placed) return null;
-  const { top, left, width, height } = placed;
+  // against the cells of its `position-area`, where it was placed in some
+  const area = PLACED_AREA.get(box);
+  const top = placed.top - (area?.y ?? 0);
+  const left = placed.left - (area?.x ?? 0);
+  const width = area?.width ?? placed.width;
+  const height = area?.height ?? placed.height;
   const ownWidth = placed.own?.width ?? box.width;
   const ownHeight = placed.own?.height ?? box.height;
   const used = [

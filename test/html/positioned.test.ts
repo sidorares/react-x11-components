@@ -2483,6 +2483,88 @@ test("anchor-size() is a length in a box's least and greatest sizes, its insets 
   );
 });
 
+test("what a box inherits of an anchored box's insets and sizes is what its anchor functions came to, and what a position option set", async () => {
+  // CSS Anchor Positioning 1, 2.1 and 4.1: an anchor() is a length at
+  // computed-value time, and an option's declarations a cascade origin, so
+  // `inherit` takes what they came to (WPT anchor-inherited,
+  // inherit-height-from-fallback), as getComputedStyle reads it
+  const { node } = await render(
+    '<style>body{margin:0}#cb{width:400px;height:400px;position:relative}' +
+      '#a{width:100px;height:100px;top:10px;left:20px;position:absolute;' +
+      'anchor-name:--a}' +
+      '#p{position-anchor:--a;position:absolute;top:anchor(top);' +
+      'left:anchor(left);width:anchor-size(width);height:anchor-size(height)}' +
+      '#c{position:relative;top:inherit;left:inherit;width:inherit;' +
+      'height:inherit}' +
+      '#b{anchor-name:--b;width:0;height:100px}' +
+      '#q{position:absolute;position-anchor:--b;position-area:left center;' +
+      'position-try-fallbacks:--f;width:100px}' +
+      '#d{height:inherit}' +
+      '@position-try --f{position-area:right center;height:100px}' +
+      '</style><div id="cb"><div id="a"></div><div id="p"><div id="c"></div>' +
+      '</div></div><div style="position:relative"><div id="b"></div>' +
+      '<div id="q"><div id="d"></div></div></div>',
+  );
+  const el = view(node);
+  const at = (id: string) => {
+    const b = boxOf(el, id);
+    return [b.x, b.y, b.width, b.height];
+  };
+  assert.deepStrictEqual(at('c'), [40, 20, 100, 100]);
+  const cs = el.computedStyle(findById(el.document, 'c')!)!;
+  assert.deepStrictEqual(
+    [cs.top, cs.left, cs.height],
+    ['10px', '20px', '100px'],
+  );
+  assert.deepStrictEqual(at('q').slice(2), [100, 100]);
+  assert.strictEqual(boxOf(el, 'd').height, 100);
+});
+
+test("an anchor()'s or an anchor-size()'s fallback may hold calls of its own, which find their anchors", async () => {
+  // WPT css-anchor-position/anchor-query-fallback: a call with no anchor,
+  // or reading a side of the other axis, comes to its fallback, and one
+  // with calls in it comes to what they do — alone, or in a math function
+  const { node } = await render(
+    '<style>body{margin:0}#cb{position:relative;width:300px;height:300px}' +
+      '#a1{anchor-name:--a1;position:absolute;left:0;top:0;' +
+      'width:100px;height:50px}' +
+      '#a2{anchor-name:--a2;position:absolute;left:0;top:100px;' +
+      'width:100px;height:50px}' +
+      '.t{position:absolute;width:1px;height:1px}</style>' +
+      '<div id="cb"><div id="a1"></div><div id="a2"></div>' +
+      '<div class="t" id="lone" style="top: anchor(--a1 left, anchor(--a2 top))"></div>' +
+      '<div class="t" id="calc" style="top: anchor(--a1 left, calc((anchor(--a1 bottom) + anchor(--a2 top)) / 2))"></div>' +
+      '<div class="t" id="deep" style="left: calc(anchor(--x left, calc(anchor(--x left, 20%) + 20px)) + 20px)"></div>' +
+      '<div class="t" id="size" style="height: anchor-size(--x height, anchor-size(--a1 width))"></div>' +
+      '</div>',
+  );
+  const el = view(node);
+  assert.strictEqual(boxOf(el, 'lone').y, 100);
+  assert.strictEqual(boxOf(el, 'calc').y, 75);
+  assert.strictEqual(boxOf(el, 'deep').x, 100);
+  assert.strictEqual(boxOf(el, 'size').height, 100);
+});
+
+test("getComputedStyle reads a box's insets against the cells of the position-area it was placed in", async () => {
+  // CSS Anchor Positioning 1, 3.1.1: the cells are its containing block
+  // (WPT position-area-anchor-getComputedStyle)
+  const { node } = await render(
+    '<style>#cb{width:200px;height:200px;border:5px solid;position:relative}' +
+      '#a{anchor-name:--a;width:50px;height:50px;margin-left:75px}' +
+      '.p{position:absolute;position-anchor:--a;width:25px;height:25px}' +
+      '#tr{bottom:anchor(top);left:anchor(right);position-area:top right}' +
+      '#bl{top:anchor(bottom);right:anchor(left);position-area:bottom left}' +
+      '</style><div id="cb"><div style="height:75px"></div><div id="a"></div>' +
+      '<div class="p" id="tr"></div><div class="p" id="bl"></div></div>',
+  );
+  const el = view(node);
+  const cs = (id: string) => el.computedStyle(findById(el.document, id)!)!;
+  assert.deepStrictEqual(
+    [cs('tr').bottom, cs('tr').left, cs('bl').top, cs('bl').right],
+    ['0px', '0px', '0px', '0px'],
+  );
+});
+
 test('an anchor in the top layer is no anchor of a box laid out before it', async () => {
   // 2.3: what is in the top layer is laid out after everything that is
   // not, in the order it went in
