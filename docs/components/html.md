@@ -1465,9 +1465,16 @@ null where any part is not, and
 `MediaStream`,
 `MediaStreamTrack` and `navigator.mediaDevices` over the devices the host
 gives it, a stream played in a `<video>` or an `<audio>` (`srcObject`),
-and `getDisplayMedia`. Media does not flow over a connection yet: a
-receiver's track is muted, and a sender sends nothing. Two of the page's connections connect to each other,
-as WPT's tests make them, and to another peer the host can reach.
+and `getDisplayMedia`. Media flows over a connection whose stack carries
+it, as `HtmlNetwork.webRTC`'s does (below): a remote track is muted until
+its first packet and again once none has come for two seconds, plays in a
+`<video>` or an `<audio>` (`srcObject`), and its receiver's
+`getSynchronizationSources` answers from the packets, an audio one's with
+its level; `getStats` has a sender's outbound-rtp from the answer that
+first negotiated it to send and a receiver's inbound-rtp from its first
+packet, as WebRTC Statistics has them live, a closed connection's too.
+Two of the page's connections connect to each other, as WPT's tests make
+them, and to another peer the host can reach.
 
 - **`scripts.webRTC`, an `HtmlWebRTC`**, makes a connection the page's
   realm drives. The realm keeps WebRTC 1.0's semantics: the operations
@@ -1628,6 +1635,28 @@ before werift is loaded. Where werift differs from a browser it shows:
 docs/prd-webrtc.md lists each difference and which side corrects it. A
 page's host candidates name the machine's addresses, as no mDNS name
 stands in for them yet. `webRTC: false` makes none.
+
+Its media goes through **libav.js's `webm-vp9` build**
+(`@libav.js/variant-webm-vp9`), FFmpeg's libvpx and libopus compiled to
+WebAssembly: another optional peer, which an app that sends media over a
+page's connections installs (`npm install @libav.js/variant-webm-vp9`),
+loaded the first time media must flow (`src/html/media-codecs.ts`). A
+sender's track is encoded in the codec the answer negotiated — Opus, VP8 or
+VP9, and G.711, which needs no library — packetized with werift's own
+packetizers, and sent, each Opus packet with its level (RFC 6464); a
+receiver's packets are decoded into the frames a `<video>` shows, only
+while something reads them, a decoder that starts or lost a packet waiting
+for a key frame and asking for one (`src/html/werift-media.ts`). Without
+it a connection still connects and negotiates, and carries no Opus, VP8 or
+VP9: a remote track stays muted. werift sends no RTCP BYE as a sender
+stops, which is what Chrome mutes a remote track on, so silence is the
+signal here, and a sender whose source gives no new frame — a canvas
+nobody draws on — sends its last again each second. RTCP's reports are
+werift's, so the remote-inbound-rtp and remote-outbound-rtp stats come
+with them. The codecs run on the page's thread: VP8 at 640×480 is some
+4 ms a frame to encode and 1 ms to decode. Nothing here encodes H.264.
+A stream whose description names no SSRC and whose packets carry no rid
+is not received, since werift routes RTP by nothing else.
 
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
 down them and its frame's number along the bottom, natively at 640×480,

@@ -1001,3 +1001,79 @@ test('a remote answer narrows a sender’s encodings to the rids its a=simulcast
     assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
   }
 });
+
+test('media a stack carries: a sender reads its track beside the page, and a remote track unmutes, plays in a <video>, names its sources and its stats', async () => {
+  const logs = await run(
+    `
+    ${NEGOTIATE}
+    function wait(test) {
+      return new Promise(function (resolve, reject) {
+        var end = Date.now() + 5000;
+        (function look() {
+          var got = test();
+          if (got) return resolve(got);
+          if (Date.now() > end) return reject(new Error('timed out: ' + test));
+          setTimeout(look, 10);
+        })();
+      });
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 48;
+    var g = canvas.getContext('2d');
+    var n = 0;
+    var timer = setInterval(function () { g.fillStyle = 'rgb(' + (n++ * 10 % 255) + ',0,0)'; g.fillRect(0, 0, 64, 48); }, 20);
+    var stream = canvas.captureStream();
+    var track = stream.getVideoTracks()[0];
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = function (e) { b.addIceCandidate(e.candidate); };
+    b.onicecandidate = function (e) { a.addIceCandidate(e.candidate); };
+    a.addTrack(track, stream);
+    var remote = null, events = [];
+    var video = document.createElement('video');
+    var metadata = new Promise(function (r) { video.onloadedmetadata = r; });
+    b.ontrack = function (e) {
+      remote = e.track;
+      events.push('track:' + e.track.muted);
+      e.track.onunmute = function () { events.push('unmute'); };
+      e.track.onmute = function () { events.push('mute'); };
+      video.srcObject = e.streams[0];
+    };
+    await negotiate(a, b);
+    await wait(function () { return remote && !remote.muted; });
+    log('local', track.readyState, track.muted);
+    await metadata;
+    log('metadata', video.videoWidth, video.videoHeight);
+    var r = b.getReceivers()[0];
+    var s = r.getSynchronizationSources()[0];
+    log('sources', s.source, typeof s.timestamp, r.getContributingSources().length);
+    var inbound = [...(await b.getStats()).values()].find(function (x) { return x.type === 'inbound-rtp'; });
+    log('inbound', inbound.trackIdentifier === remote.id, inbound.mid);
+    var selected = await b.getStats(remote);
+    log('selected', [...selected.values()].filter(function (x) { return x.type === 'inbound-rtp'; }).length);
+    var sender = a.getSenders()[0];
+    log('sent', [...(await sender.getStats()).values()].filter(function (x) { return x.type === 'outbound-rtp'; }).length);
+    a.close();
+    await wait(function () { return remote.muted; });
+    log('events', events.join(','));
+    var closed = await a.getStats();
+    log('closed', closed instanceof RTCStatsReport,
+      [...(await sender.getStats()).values()].length);
+    clearInterval(timer);
+    track.stop();
+    b.close();
+  `,
+    { webRTC: new FakeWebRTC({ media: true }) },
+  );
+  for (const line of [
+    'local|live|false',
+    'metadata|64|48',
+    'sources|1234|number|0',
+    'inbound|true|0',
+    'selected|1',
+    'sent|1',
+    'events|track:true,unmute,mute',
+    'closed|true|0',
+  ]) {
+    assert.ok(logs.includes(line), `missing ${line}:\n${logs.join('\n')}`);
+  }
+});
