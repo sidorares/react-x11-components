@@ -5924,7 +5924,14 @@ the restyle follows down from it only where a style comes out other than it
 was (`StateReach.follows`, `_restyleInPlace`'s `from`): a webmail page's
 banner, `:hover` a background, holds a hidden strip of ten thousand
 elements, past what a hover restyles in place, and each move across it
-built them all. **A touch that reaches less than an element's subtree says
+built them all. A compound a sibling combinator follows reaches, of what
+comes after its element, what its rule's subject names there and in it
+(`PointerCompounds.later`, `Cascade.hoverLater`), and in its own element
+only what its other rules restyle there (`later`'s `own`): another
+webmail page styles `:hover ~ .tag`, whose compound every element is,
+and each row the pointer crossed restyled and built every row after it,
+while the pointer coming in from outside reached all of the page from its
+root. **A touch that reaches less than an element's subtree says
 how the restyle reaches what inherits from it**, or what it hands down is
 left as it was. **Anything that draws an element some other box's way has to
 bring that box into the reach** — a shape in an inline `<svg>` brings the
