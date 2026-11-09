@@ -8,6 +8,7 @@
 // Skipped where werift, the optional peer, is not installed or does not
 // load, and on Node before 22, which werift does not run on.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
 import dns from 'node:dns';
 import { afterEach, test as nodeTest } from 'node:test';
@@ -315,6 +316,128 @@ test('a transport that only hears the peer’s checks finds it peer-reflexive an
   const line = (prefix: string) =>
     logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
   assert.match(line('states'), /^states\|new,checking,connected/);
+});
+
+test('a peer-reflexive remote candidate is hidden from the page, in the selected pair and in the stats, and a signalled one is not', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    var t1 = pc1.addTransceiver('audio');
+    await pc1.setLocalDescription(); await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription();
+    // pc1 never hears of pc2's candidates: it finds pc2 from its checks
+    await pc1.setRemoteDescription({ type: 'answer', sdp: pc2.localDescription.sdp.replace(/a=candidate:[^\\r\\n]*\\r\\n/g, '') });
+    var end = Date.now() + 8000;
+    while ((pc1.iceConnectionState !== 'connected' || pc2.iceConnectionState !== 'connected') && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    var pair = t1.sender.transport.iceTransport.getSelectedCandidatePair();
+    var r = pair.remote;
+    log('pair', r.candidate === '', r.type, r.address === null, typeof r.port, typeof r.priority, r.protocol, r.component, r.relatedAddress === null, typeof r.relatedPort, pair.local.type, pair.local.address !== null);
+    var stats = []; (await pc1.getStats()).forEach(function (s) { if (s.type === 'remote-candidate') stats.push(s); });
+    log('stats', stats.length > 0, stats.every(function (s) { return s.candidateType === 'prflx' && s.address === null && s.usernameFragment === undefined; }));
+    // pc2 was told pc1's candidates: what it reached is what it was told
+    var other = pc2.getTransceivers()[0].sender.transport.iceTransport.getSelectedCandidatePair().remote;
+    log('signalled', other.candidate !== '', other.type, other.address !== null);
+    var stats2 = []; (await pc2.getStats()).forEach(function (s) { if (s.type === 'remote-candidate' && s.candidateType !== 'prflx') stats2.push(s); });
+    log('signalled stats', stats2.length > 0, stats2.every(function (s) { return s.address !== null; }));
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(
+    line('pair'),
+    'pair|true|prflx|true|number|number|udp|rtp|true|number|host|true',
+  );
+  assert.equal(line('stats'), 'stats|true|true');
+  assert.equal(line('signalled'), 'signalled|true|host|true');
+  assert.equal(line('signalled stats'), 'signalled stats|true|true');
+});
+
+test('a TCP candidate werift cannot use is ignored, in a description and in addIceCandidate, and checks nothing', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.addTransceiver('audio');
+    await pc1.setLocalDescription();
+    var tcp = 'candidate:2983561038 1 tcp 1518214911 127.0.0.1 9 typ host tcptype passive generation 0';
+    var offer = pc1.localDescription.sdp.replace(/a=candidate:[^\\r\\n]*\\r\\n/g, '').replace(/(a=mid:[^\\r\\n]*\\r\\n)/, '$1a=' + tcp + '\\r\\n');
+    await pc2.setRemoteDescription({ type: 'offer', sdp: offer });
+    await pc2.setLocalDescription();
+    var states = [];
+    pc2.oniceconnectionstatechange = function () { states.push(pc2.iceConnectionState); };
+    await pc2.addIceCandidate({ candidate: tcp.replace(' 9 ', ' 8001 '), sdpMid: pc2.getTransceivers()[0].mid });
+    log('added');
+    await new Promise(function (r) { setTimeout(r, 500); });
+    log('tcp', pc2.iceConnectionState, states.join(',') || 'none', pc2.getTransceivers()[0].receiver.transport.iceTransport.state);
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  assert.ok(logs.includes('added'), logs.join('\n'));
+  assert.ok(logs.includes('tcp|new|none|new'), logs.join('\n'));
+});
+
+test('a STUN or TURN server that does not resolve, or resolves where nothing reaches, is an icecandidateerror naming a host candidate', async (t) => {
+  t.mock.method(dns.promises, 'lookup', (host: string) =>
+    host.endsWith('.invalid')
+      ? Promise.reject(
+          Object.assign(new Error('ENOTFOUND'), { code: 'ENOTFOUND' }),
+        )
+      : Promise.resolve([
+          { address: host, family: host.includes(':') ? 6 : 4 },
+        ]),
+  );
+  const logs = await run(`
+    var pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:0.0.0.1', 'stun:stun.invalid:3478'] }, { urls: 'turns:turn.invalid', username: 'u', credential: 'p' }, { urls: 'stun:127.0.0.1:9' }] });
+    var errors = [];
+    pc.onicecandidateerror = function (e) {
+      errors.push([e.url, e.errorCode, e instanceof RTCPeerConnectionIceErrorEvent, /[.:]/.test(e.address), typeof e.port].join(','));
+    };
+    pc.addTransceiver('audio');
+    await pc.setLocalDescription();
+    var end = Date.now() + 5000;
+    while (errors.length < 3 && Date.now() < end) await new Promise(function (r) { setTimeout(r, 20); });
+    await new Promise(function (r) { setTimeout(r, 200); });
+    log('errors', errors.sort().join(';'));
+    // the same gathering is not checked again
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(function (r) { setTimeout(r, 200); });
+    log('again', errors.length);
+    pc.close();
+    log('done');
+  `);
+  const line = (prefix: string) =>
+    logs.find((l) => l.startsWith(`${prefix}|`)) ?? `${prefix}: missing`;
+  assert.equal(
+    line('errors'),
+    'errors|stun:0.0.0.1,701,true,true,number;stun:stun.invalid:3478,701,true,true,number;turns:turn.invalid?transport=tcp,701,true,true,number',
+  );
+  assert.equal(line('again'), 'again|3');
+});
+
+test('a certificate’s stats hold its DER, which hashes to the fingerprint they name, on both sides', async () => {
+  const logs = await run(`
+    var pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = function (e) { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = function (e) { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    pc1.createDataChannel('x');
+    await pc1.setLocalDescription(); await pc2.setRemoteDescription(pc1.localDescription);
+    await pc2.setLocalDescription(); await pc1.setRemoteDescription(pc2.localDescription);
+    while (pc1.sctp.transport.state !== 'connected') await new Promise(function (r) { setTimeout(r, 20); });
+    (await pc1.getStats()).forEach(function (s) {
+      if (s.type === 'certificate') log('certificate', s.fingerprintAlgorithm, s.fingerprint, s.base64Certificate);
+    });
+    pc1.close(); pc2.close();
+    log('done');
+  `);
+  const certificates = logs.filter((l) => l.startsWith('certificate|'));
+  assert.equal(certificates.length, 2, logs.join('\n'));
+  for (const l of certificates) {
+    const [, algorithm, fingerprint, base64] = l.split('|');
+    assert.equal(algorithm, 'sha-256');
+    const digest = createHash('sha256')
+      .update(Buffer.from(base64, 'base64'))
+      .digest('hex');
+    assert.equal(digest, fingerprint.replace(/:/g, '').toLowerCase());
+  }
 });
 
 test('data channels: a close delivers what was queued, a negotiated channel opens late, and a lost peer is an sctp-failure', async () => {

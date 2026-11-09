@@ -1627,7 +1627,12 @@ the header extensions a browser offers — is answered by `getCapabilities`
 before werift is loaded. Where werift differs from a browser it shows:
 docs/prd-webrtc.md lists each difference and which side corrects it. A
 page's host candidates name the machine's addresses, as no mDNS name
-stands in for them yet. `webRTC: false` makes none.
+stands in for them yet. A TCP candidate is ignored, since werift has no
+ICE-TCP. A STUN or TURN server is told as an `icecandidateerror` where its
+name does not resolve or its address can never be reached; one that
+resolves and never answers is not, yet. A peer-reflexive remote candidate
+the page was not told of shows no address, in the selected pair or in the
+stats. `webRTC: false` makes none.
 
 `fakeMediaDevices()` is a camera that draws colour bars with a band moving
 down them and its frame's number along the bottom, natively at 640×480,
