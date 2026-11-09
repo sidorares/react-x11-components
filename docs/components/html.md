@@ -4982,9 +4982,7 @@ block size, and what is positioned in them is cut where they are. A
 multicol container in another's columns goes to a column whole, where a
 browser breaks it. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
-cut into the columns of each row it reaches. In a vertical writing mode, a
-box positioned in a block the columns break is laid out at the wrong width
-(WPT's `anchor-position-multicol-colspan-003`).
+cut into the columns of each row it reaches.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
