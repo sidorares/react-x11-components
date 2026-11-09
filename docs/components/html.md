@@ -5336,11 +5336,19 @@ onto a layer of its own — `isolation` — `isolate` makes a box a stacking con
 or not, painted whole among the positioned boxes as one under full
 opacity is, so a box in it with a negative `z-index` goes over its
 background and under its text (CSS Compositing 1, 3.2), and is painted
-as a group where a box in it blends — `mix-blend-mode` — `plus-lighter`
-adds what the box draws to what is under it inside the box that isolates
-it, which is how a view transition's old and new images come to the
-element at every point of their fade; every other mode draws as `normal`
-— `will-change` —
+as a group where a box in it blends — `mix-blend-mode` — a mode other
+than `normal` makes a box a stacking context (CSS Compositing 1, 3.2),
+painted whole among the positioned boxes, and its group is blended with
+what is under it, inside the box that isolates it, where the context the
+document is drawn with has the mode: `plus-lighter` adds it on every
+backend, which is how a view transition's old and new images come to the
+element at every point of their fade, and on macOS every mode is
+CoreGraphics' own — vercel.com's footer multiplies a gray pill over the
+word in each of its "New" badges. Where the context has no such mode —
+ntk's, on X11, has the Porter-Duff operations and `lighter` alone — the
+box is drawn as `normal`, and so is an inline box, whose text is drawn on
+its block's lines, and a box larger than a surface can be. A box that
+blends is never lifted onto a layer of its own — `will-change` —
 a property named in it makes the box what a value of the property other
 than its initial one would (CSS Will Change 1, 2): a stacking context for
 `opacity`, a transform, a filter, a mask, a `clip-path`, `isolation`,

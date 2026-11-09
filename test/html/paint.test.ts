@@ -381,6 +381,127 @@ test('plus-lighter adds what a box draws to what is under it, inside the box tha
   });
 });
 
+/** Surfaces whose contexts record the colour of each fill made on them. */
+function fillingSurfaces(made: { fills: string[] }[]) {
+  return () => {
+    const rec = { fills: [] as string[] };
+    made.push(rec);
+    const ctx = {
+      fillStyle: '' as unknown,
+      globalAlpha: 1,
+      shadowColor: 'rgba(0, 0, 0, 0)',
+      shadowBlur: 0,
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+      save() {},
+      restore() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      bezierCurveTo() {},
+      closePath() {},
+      rect() {},
+      roundRect() {},
+      clip() {},
+      transform() {},
+      translate() {},
+      drawImage() {},
+      fillRect() {
+        rec.fills.push(String(ctx.fillStyle));
+      },
+      fill() {
+        rec.fills.push(String(ctx.fillStyle));
+      },
+    };
+    return { getContext: () => ctx };
+  };
+}
+
+const BADGE =
+  '<style>body{margin:0;font:14px sans-serif;background:#fafafa}' +
+  '.badge{position:relative;display:inline-flex;padding:0 8px;' +
+  'line-height:20px;border-radius:9999px;color:#171717}' +
+  '.badge::before{content:"";position:absolute;inset:0;' +
+  'border-radius:9999px;pointer-events:none;mix-blend-mode:multiply;' +
+  'background:#e0e0e0}</style>' +
+  '<a>Connect <span class="badge">New</span></a>';
+
+test('a box that blends is painted as a group, and drawn over what is under it with the operation for its blend mode', async () => {
+  // CSS Compositing 1, 3.2: vercel.com's footer marks its links "New" with
+  // a pill drawn by a `::before` over the word, absolutely positioned and so
+  // painted after it, and multiplied with what is under it, the word among
+  // it. Every mode but `plus-lighter` was drawn as `normal`, and the pill
+  // hid the word. On a context that takes `multiply` — react-x11's macOS
+  // one, CoreGraphics' own — the pill is painted on a surface of its own
+  // and that is drawn with the operation, after the text
+  const { node } = await render(BADGE);
+  const pill = String(parseColor('#e0e0e0'));
+  const ops: PaintOp[] = [];
+  const made: { fills: string[] }[] = [];
+  await fillsOf(view(node), ops, {
+    surface: fillingSurfaces(made),
+    composites: ['multiply', 'screen', 'lighter'],
+  });
+  const blended = ops.findIndex(
+    (o) => o.op === 'image' && o.composite === 'multiply',
+  );
+  assert.ok(blended >= 0, 'the pill is drawn with `multiply`');
+  const texts = ops.flatMap((o, i) => (o.op === 'text' ? [i] : []));
+  assert.ok(texts.length >= 2, 'both words are drawn');
+  assert.ok(
+    texts.every((i) => i < blended),
+    'over the text, which it blends with',
+  );
+  assert.ok(
+    !ops.some((o) => o.op === 'fill' && o.style === pill),
+    'and not on the window',
+  );
+  assert.deepStrictEqual(
+    made.map((s) => s.fills.filter((f) => f === pill).length),
+    [1],
+    'but on its own surface',
+  );
+  // where the context has no such operation — ntk's has the Porter-Duff
+  // ones and `lighter` alone — it is drawn as `normal`, as it was
+  const flat: PaintOp[] = [];
+  await fillsOf(view(node), flat, {
+    surface: fillingSurfaces([]),
+    composites: ['lighter'],
+  });
+  assert.ok(
+    !flat.some((o) => o.op === 'image'),
+    'no group where it cannot be blended',
+  );
+  assert.ok(
+    flat.some((o) => o.op === 'fill' && o.style === pill),
+    'the pill is drawn on the window',
+  );
+});
+
+test('a block in the flow with a blend mode is a stacking context, painted after the blocks in the flow around it', async () => {
+  // CSS Compositing 1, 3.2: it is painted as a layer, as one under full
+  // opacity is, after the backgrounds of the blocks that follow it; and as
+  // one, so that its group, not each thing in it, is what is blended
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="mix-blend-mode:screen;height:20px;margin-bottom:-10px;' +
+      'background:#ff0000"></div>' +
+      '<div style="height:20px;background:#0000ff"></div>',
+  );
+  const ops: PaintOp[] = [];
+  await fillsOf(view(node), ops, {
+    surface: fillingSurfaces([]),
+    composites: ['screen'],
+  });
+  const blue = String(parseColor('#0000ff'));
+  const under = ops.findIndex((o) => o.op === 'fill' && o.style === blue);
+  const blended = ops.findIndex(
+    (o) => o.op === 'image' && o.composite === 'screen',
+  );
+  assert.ok(under >= 0, 'the block after it is drawn');
+  assert.ok(blended > under, 'and the one that blends over it');
+});
+
 test('a block inside an inline element is faded with it', async (t) => {
   if (!FONTS) return t.skip('no font files for the in-process server');
   // CSS 2.1 9.2.1.1: the block breaks the inline box in pieces and stands

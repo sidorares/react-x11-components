@@ -617,6 +617,8 @@ export type PaintOp =
       h: number;
       /** The piece of the image drawn, where not all of it is. */
       src?: number[];
+      /** The operation it was drawn with, where not `source-over`. */
+      composite?: string;
     }
   | {
       op: 'text';
@@ -668,6 +670,11 @@ export async function fillsOf(
     /** A context whose surfaces cost about the same drawn under an alpha:
      *  react-x11's macOS one over a bridge that scales them. */
     fadesSurfacesCheaply?: boolean;
+    /** A context that takes these composite operations besides
+     *  `source-over`, and none other: react-x11's macOS one takes every
+     *  blend mode, CoreGraphics' own. With none given it has no
+     *  `globalCompositeOperation` at all. */
+    composites?: readonly string[];
     /** A paint of a drag of the window's edge (`DragPaint`). */
     drag?: {
       cheap: boolean;
@@ -715,6 +722,10 @@ export async function fillsOf(
         }
       : undefined;
   const saved: [string, number, number, number][] = [];
+  let composite = 'source-over';
+  const savedComposites: string[] = [];
+  const drawnWith = (): { composite?: string } =>
+    composite === 'source-over' ? {} : { composite };
   let matrix: number[] | null = null;
   const matrices: (number[] | null)[] = [];
   const ctx = {
@@ -736,6 +747,7 @@ export async function fillsOf(
         ctx.shadowOffsetY,
       ]);
       matrices.push(matrix);
+      savedComposites.push(composite);
       ops?.push({ op: 'save' });
     },
     restore() {
@@ -749,6 +761,7 @@ export async function fillsOf(
         ] = state;
       }
       matrix = matrices.pop() ?? null;
+      composite = savedComposites.pop() ?? composite;
       ops?.push({ op: 'restore' });
     },
     fillRect(x: number, y: number, w: number, h: number) {
@@ -846,11 +859,19 @@ export async function fillsOf(
     drawImage(_image: unknown, ...args: number[]) {
       if (args.length >= 8) {
         const [x, y, w, h] = args.slice(4);
-        ops?.push({ op: 'image', x, y, w, h, src: args.slice(0, 4) });
+        ops?.push({
+          op: 'image',
+          x,
+          y,
+          w,
+          h,
+          src: args.slice(0, 4),
+          ...drawnWith(),
+        });
         return;
       }
       const [x, y, w, h] = args;
-      ops?.push({ op: 'image', x, y, w, h });
+      ops?.push({ op: 'image', x, y, w, h, ...drawnWith() });
     },
     createLinearGradient(x0: number, y0: number, x1: number, y1: number) {
       const stops: [number, string][] = [];
@@ -893,6 +914,16 @@ export async function fillsOf(
   if (options?.scalesText) (ctx as { scalesText?: boolean }).scalesText = true;
   if (options?.fadesSurfacesCheaply) {
     (ctx as { fadesSurfacesCheaply?: boolean }).fadesSurfacesCheaply = true;
+  }
+  const composites = options?.composites;
+  if (composites) {
+    // canvas's rule: a name the context does not have does not stick
+    Object.defineProperty(ctx, 'globalCompositeOperation', {
+      get: () => composite,
+      set: (v: string) => {
+        if (v === 'source-over' || composites.includes(v)) composite = v;
+      },
+    });
   }
   for (const layout of layouts) {
     (layout as { draw: unknown }).draw = (_: unknown, x: number, y: number) => {

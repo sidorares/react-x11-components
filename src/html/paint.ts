@@ -2286,35 +2286,59 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
   ) {
     return;
   }
-  // `plus-lighter` adds the group a box makes to what is under it (CSS
-  // Compositing 2): a view transition's old and new images are drawn so,
-  // and sum to the element where the fade has them at any two opacities
-  // that come to 1. It is the group that is added, never each thing in it,
-  // or a page's canvas would add up to white whatever is drawn over it; so
-  // where no group is had, the box is drawn as `normal`. And a box that
-  // isolates what blends in it is a group, so that what blends adds to
-  // what is in it and not to what is behind it (3.2).
+  // A `mix-blend-mode` blends the group a box makes with what is under it
+  // (CSS Compositing 1, 3.2; 2): `plus-lighter` adds it, which a view
+  // transition's old and new images are drawn with, and sum to the element
+  // where the fade has them at any two opacities that come to 1; and
+  // `multiply` darkens what is under it by it, which vercel.com's "New"
+  // badges are drawn with, a gray `::before` over their text. It is the
+  // group that is blended, never each thing in it, or a page's canvas would
+  // add up to white whatever is drawn over it; so where no group is had,
+  // or the context has no such operation (`blendOf`), the box is drawn as
+  // `normal`. And a box that isolates what blends in it is a group, so that
+  // what blends meets what is in it and not what is behind it (3.2).
   // A view transition's image is one picture, faded and added as it is
   // drawn (`TransitionDraw`'s `lighter`), and no group.
-  const lighter =
-    box.style.mixBlendMode === 'plus-lighter' &&
-    typeof ctx.globalCompositeOperation === 'string' &&
-    !TRANSITION_IMAGES.has(box);
-  const isolates = isolatesBlending(box);
+  const blend = TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box);
+  const isolates = isolatesBlending(ctx, box);
   if (
-    ((opacity < 1 && !TRANSITION_IMAGES.has(box)) || lighter || isolates) &&
-    paintGroup(ctx, box, options, opacity, lighter, isolates)
+    ((opacity < 1 && !TRANSITION_IMAGES.has(box)) ||
+      blend !== null ||
+      isolates) &&
+    paintGroup(ctx, box, options, opacity, blend, isolates)
   ) {
     return;
   }
   paintFaded(ctx, box, options, opacity);
 }
 
+/**
+ * The operation the context draws a box's group with for its
+ * `mix-blend-mode`: canvas's name for the mode, which is CSS's but for
+ * `plus-lighter`, canvas's `lighter`. Null for `normal`, and where the
+ * context does not take the mode — a name it does not have does not stick,
+ * and reads back as the one before, as canvas has it. react-x11's macOS
+ * context takes every mode CSS has, CoreGraphics' own; ntk's has the
+ * Porter-Duff operations and `lighter` alone, so a `multiply` there is
+ * drawn as `normal`, as it always was.
+ */
+function blendOf(ctx: PaintContext, box: Box): string | null {
+  const mode = box.style.mixBlendMode;
+  if (mode === 'normal') return null;
+  const was = ctx.globalCompositeOperation;
+  if (typeof was !== 'string') return null;
+  const op = mode === 'plus-lighter' ? 'lighter' : mode;
+  ctx.globalCompositeOperation = op;
+  const takes = ctx.globalCompositeOperation === op;
+  ctx.globalCompositeOperation = was;
+  return takes ? op : null;
+}
+
 /** Whether a box isolates a child that blends with what is under it. */
-function isolatesBlending(box: Box): boolean {
+function isolatesBlending(ctx: PaintContext, box: Box): boolean {
   if (box.style.isolation !== 'isolate') return false;
   for (const child of box.children) {
-    if (child.style.mixBlendMode === 'plus-lighter') return true;
+    if (blendOf(ctx, child) !== null) return true;
   }
   return false;
 }
@@ -2490,9 +2514,10 @@ function paintTurned(ctx: PaintContext, box: Box, options: PaintOptions): void {
     drag.drawn();
     return;
   }
+  const blend = TRANSITION_IMAGES.has(box) ? null : blendOf(ctx, box);
   if (
-    opacity < 1 &&
-    paintGroupThrough(ctx, box, options, inside, through, opacity)
+    (opacity < 1 || blend !== null) &&
+    paintGroupThrough(ctx, box, options, inside, through, opacity, blend)
   ) {
     return;
   }
@@ -3582,14 +3607,19 @@ function paintGroup(
   box: Box,
   options: PaintOptions,
   opacity: number,
-  lighter = false,
+  blend: string | null = null,
   isolates = false,
 ): boolean {
-  if (!options.surface || !groupsOnSurfaces(ctx)) return false;
-  // a group that is added to what is under it, or that what blends in it
-  // is added to, is one whatever it draws, and drawn at every paint: what
-  // is added changes with what is under it
-  const blends = lighter || isolates;
+  // a group that blends with what is under it, or that what blends in it
+  // meets, is one whatever it draws, and drawn at every paint: what it
+  // comes to changes with what is under it. And it is one on any context
+  // that draws a surface, where one that is only faded is had only where
+  // a surface is cheap to fade (`groupsOnSurfaces`): drawn a thing at a
+  // time, what it draws over itself blends with itself
+  const blends = blend !== null || isolates;
+  if (!options.surface || !(blends ? ctx.drawImage : groupsOnSurfaces(ctx))) {
+    return false;
+  }
   if (
     (!blends && !drawsOverItself(ctx, box, options)) ||
     holdsViewportFixed(box, options)
@@ -3628,7 +3658,7 @@ function paintGroup(
         ? onSurface(options, x0, y0, w, h)
         : inGroup(options, x0, y0, w, h),
     );
-    drawThrough(ctx, surface, null, x0, y0, opacity, lighter);
+    drawThrough(ctx, surface, null, x0, y0, opacity, blend);
     return true;
   } finally {
     surface.destroy?.();
@@ -3649,21 +3679,34 @@ function paintGroupThrough(
   inside: PaintOptions,
   through: Matrix,
   opacity: number,
+  blend: string | null = null,
 ): boolean {
-  if (!options.surface || !groupsOnSurfaces(ctx)) return false;
+  // one that blends is a group wherever a surface is drawn, and made at
+  // every paint, as `paintGroup` has it
+  if (
+    !options.surface ||
+    !(blend !== null ? ctx.drawImage : groupsOnSurfaces(ctx))
+  ) {
+    return false;
+  }
   // A box that does not draw over itself is faded a thing at a time, and
   // one faded as a group is the same but for how each edge pixel rounds, a
   // level or two of 255 apart: drawn from a group kept for it, not one made
   // at every paint. Not one with text in it, which CoreGraphics sets
   // otherwise on a surface with nothing under it.
-  const over = drawsOverItself(ctx, box, options);
+  const over = blend !== null || drawsOverItself(ctx, box, options);
   if (!over && box.subtreeTextEnd > box.subtreeTextStart) return false;
   // a box that turns has its own ink bounds where it is drawn
   let x0 = Math.floor(box.boundsX + options.originX);
   let y0 = Math.floor(box.boundsY + options.originY);
   let x1 = Math.ceil(box.boundsX + box.boundsWidth + options.originX);
   let y1 = Math.ceil(box.boundsY + box.boundsHeight + options.originY);
-  if (groupKept(ctx, box, options, inside, through, opacity)) return true;
+  if (
+    blend === null &&
+    groupKept(ctx, box, options, inside, through, opacity)
+  ) {
+    return true;
+  }
   if (!over) return false;
   const damage = options.damage;
   if (damage) {
@@ -3698,7 +3741,7 @@ function paintGroupThrough(
       matrix: multiply([1, 0, 0, 1, -x0, -y0], through),
     });
     on.restore();
-    drawThrough(ctx, surface, null, x0, y0, opacity);
+    drawThrough(ctx, surface, null, x0, y0, opacity, blend);
     return true;
   } finally {
     surface.destroy?.();
@@ -4323,7 +4366,8 @@ function fitsFixedPoint(through: Matrix, x0: number, y0: number): boolean {
 }
 
 /** A surface with its corner at (`x0`, `y0`) drawn through `through`, where
- *  there is one, at `opacity` times the context's. */
+ *  there is one, at `opacity` times the context's, and with the operation
+ *  `blend` where it is given one (`blendOf`). */
 function drawThrough(
   ctx: PaintContext,
   surface: Offscreen,
@@ -4331,10 +4375,10 @@ function drawThrough(
   x0: number,
   y0: number,
   opacity: number,
-  lighter = false,
+  blend: string | null = null,
 ): void {
   ctx.save();
-  if (lighter) ctx.globalCompositeOperation = 'lighter';
+  if (blend !== null) ctx.globalCompositeOperation = blend;
   if (through) {
     ctx.transform!(
       through[0],
@@ -9742,6 +9786,11 @@ export function stacksLayers(box: Box): boolean {
   // and isolation, whose whole purpose that is (CSS Compositing 1, 3.2)
   if (contained(box, CONTAIN_LAYOUT | CONTAIN_PAINT)) return true;
   if (style.isolation === 'isolate' && box.kind !== 'inline') return true;
+  // and a blend mode, whose group is blended with what is under it (3.2):
+  // a block in the flow is then painted whole, as a layer, where its own
+  // paint can blend it (`blendOf`). An inline box's text is drawn on its
+  // block's lines, and it is left as it was, drawn as `normal`
+  if (style.mixBlendMode !== 'normal' && box.kind !== 'inline') return true;
   // and a view transition's name, which a transition captures it by with
   // all it holds (CSS View Transitions 1, 3.5) — an inline box's too, which
   // is laid out and painted apart from its lines for it (`laidApart`) — but
