@@ -3719,6 +3719,16 @@ function layoutOwn(box: Box, ctx: LayoutContext, width: number): void {
   });
 }
 
+/** Forget the layout `layoutOwn` keeps of a box for a later request in the
+ *  same pass: what a caller did to it was more than move it. Columns cut
+ *  an out-of-flow box into pieces after it is laid out (`cutIntoColumns`),
+ *  each piece and what it holds moved to its column, and a frame of a
+ *  vertical writing mode lays its positioned boxes out twice in a pass;
+ *  kept, the second took the rect around the pieces for the box's own. */
+export function forgetOwnLayout(box: Box): void {
+  LAID_OWN.delete(box);
+}
+
 /** Every box's layout counted, for `Box.layoutSerial`. */
 let layoutSerial = 0;
 

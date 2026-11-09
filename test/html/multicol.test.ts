@@ -1342,3 +1342,32 @@ test("a box positioned in the columns of a vertical writing mode is cut where th
   // over its anchor's pieces, each in the column its anchor's is in
   assert.deepStrictEqual(pieces('t'), pieces('an'));
 });
+
+test('a box positioned in a block the columns of a vertical writing mode break is as wide as the block in its column', async () => {
+  // A frame lays its positioned boxes out twice in a pass, and the second
+  // kept the first's layout (`layoutOwn`), with the rect around the pieces
+  // the columns cut it into for its own: `inline-size: 100%` came out three
+  // columns wide (WPT css-anchor-position/
+  // anchor-position-multicol-colspan-003's anchor)
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="writing-mode:vertical-rl;position:relative">' +
+      '<div style="columns:5;gap:0;inline-size:100px;block-size:20px;' +
+      'column-fill:auto"><div style="position:relative;block-size:70px">' +
+      '<div style="block-size:30px"></div>' +
+      '<div id="a" style="position:absolute;inline-size:100%;' +
+      'block-size:40px"></div></div></div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = COLUMN_PIECES.get(boxOf(el, 'a') as never) ?? [];
+  assert.deepStrictEqual(
+    pieces.map((p) => [p.width, p.height]),
+    [
+      [20, 10],
+      [20, 20],
+      [20, 10],
+    ],
+    'a column wide in each, in the frame',
+  );
+});
