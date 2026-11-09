@@ -2318,9 +2318,9 @@ function paintOwnBox(ctx: PaintContext, box: Box, options: PaintOptions): void {
  * `plus-lighter`, canvas's `lighter`. Null for `normal`, and where the
  * context does not take the mode — a name it does not have does not stick,
  * and reads back as the one before, as canvas has it. react-x11's macOS
- * context takes every mode CSS has, CoreGraphics' own; ntk's has the
- * Porter-Duff operations and `lighter` alone, so a `multiply` there is
- * drawn as `normal`, as it always was.
+ * context takes every mode CSS has, CoreGraphics' own, and ntk's every one
+ * RENDER 0.11 has, which is all of them, where the X server answered 0.11;
+ * on a server below it a `multiply` is drawn as `normal`, as it always was.
  */
 function blendOf(ctx: PaintContext, box: Box): string | null {
   const mode = box.style.mixBlendMode;

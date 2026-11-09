@@ -5344,12 +5344,17 @@ painted whole among the positioned boxes, and its group is blended with
 what is under it, inside the box that isolates it, where the context the
 document is drawn with has the mode: `plus-lighter` adds it on every
 backend, which is how a view transition's old and new images come to the
-element at every point of their fade, and on macOS every mode is
-CoreGraphics' own — vercel.com's footer multiplies a gray pill over the
-word in each of its "New" badges. Where the context has no such mode —
-ntk's, on X11, has the Porter-Duff operations and `lighter` alone — the
-box is drawn as `normal`, and so is an inline box, whose text is drawn on
-its block's lines, and a box larger than a surface can be. A box that
+element at every point of their fade. On macOS every mode is
+CoreGraphics' own, and on X11 RENDER's, wherever the server has its 0.11
+blend operators, as every X.Org server since 2009 does — vercel.com's
+footer multiplies a gray pill over the word in each of its "New" badges,
+and screens it in its dark theme. A server on an older pixman can be
+wrong there in one way: Debian bookworm's, 0.42.2, draws `hue`, `saturation`, `color` and `luminosity` through a mask
+with green masked twice and blue not at all, so such a box under an
+opacity, a clip or a rounded edge comes out off in those two. Where the
+context has no such mode — ntk's on a server below RENDER 0.11 — the box
+is drawn as `normal`, and so is an inline box, whose text is drawn on its
+block's lines, and a box larger than a surface can be. A box that
 blends is never lifted onto a layer of its own — `will-change` —
 a property named in it makes the box what a value of the property other
 than its initial one would (CSS Will Change 1, 2): a stacking context for

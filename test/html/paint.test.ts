@@ -381,6 +381,44 @@ test('plus-lighter adds what a box draws to what is under it, inside the box tha
   });
 });
 
+test('on X11, multiply and screen blend a box with what is under it', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // vercel.com's "New" badges: a pill painted after the word it marks,
+  // `multiply` in the light theme and `screen` in the dark. ntk's context
+  // takes canvas's blend modes where the server has RENDER 0.11, which
+  // node-x11's in-process one composites; before, the pill was drawn as
+  // `normal` here and hid the word
+  const pill = (blend: string, page: string, word: string, ink: string) =>
+    `<div style="position:relative;height:20px;background:${page}">` +
+    `<div style="position:absolute;left:10px;top:5px;width:20px;height:10px;background:${word}"></div>` +
+    `<div style="position:absolute;left:5px;top:0;width:40px;height:20px;` +
+    `mix-blend-mode:${blend};background:${ink}"></div>` +
+    '</div>';
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 200, flexDirection: 'column' } },
+      h(Html, {
+        source:
+          '<body style="margin:0">' +
+          pill('multiply', '#ffffff', '#000000', '#eaeaea') +
+          pill('screen', '#000000', '#ffffff', '#333333') +
+          '</body>',
+        partial: false,
+      }),
+    ),
+    { width: 240, height: 100, fonts: FONTS },
+  );
+  const at = (x: number, y: number, want: string, message: string) =>
+    expectPixel(result.ctx, x, y, want, { tolerance: 1, message });
+  await at(20, 10, '#000000', 'black multiplied by the pill is black');
+  await at(7, 10, '#eaeaea', 'white multiplied by it is the pill');
+  await at(60, 10, '#ffffff', 'and the page beside it is white');
+  await at(20, 30, '#ffffff', 'white screened by the pill is white');
+  await at(7, 30, '#333333', 'black screened by it is the pill');
+  await at(60, 30, '#000000', 'and the page beside it is black');
+});
+
 /** Surfaces whose contexts record the colour of each fill made on them. */
 function fillingSurfaces(made: { fills: string[] }[]) {
   return () => {
@@ -461,8 +499,8 @@ test('a box that blends is painted as a group, and drawn over what is under it w
     [1],
     'but on its own surface',
   );
-  // where the context has no such operation — ntk's has the Porter-Duff
-  // ones and `lighter` alone — it is drawn as `normal`, as it was
+  // where the context has no such operation — ntk's on an X server below
+  // RENDER 0.11 — it is drawn as `normal`, as it was
   const flat: PaintOp[] = [];
   await fillsOf(view(node), flat, {
     surface: fillingSurfaces([]),
@@ -475,6 +513,36 @@ test('a box that blends is painted as a group, and drawn over what is under it w
   assert.ok(
     flat.some((o) => o.op === 'fill' && o.style === pill),
     'the pill is drawn on the window',
+  );
+});
+
+test('on X11, the word under a multiplied badge shows through it', async (t) => {
+  if (!FONTS) return t.skip('no font files for the in-process server');
+  // the badge's own markup, the word alone in the window: drawn as
+  // `normal`, the pill's #e0e0e0 covers all of it, and nothing is darker
+  const result = await renderX11(
+    h(
+      'box',
+      { style: { width: 120, flexDirection: 'column' } },
+      h(Html, {
+        source: BADGE.replace('<a>Connect <span', '<a><span'),
+        partial: false,
+      }),
+    ),
+    { width: 140, height: 40, fonts: FONTS },
+  );
+  const pixels = await pixelsIn(result.ctx, {
+    x: 0,
+    y: 0,
+    width: 120,
+    height: 20,
+  });
+  let darkest = 255;
+  for (let i = 0; i < pixels.length; i += 4)
+    darkest = Math.min(darkest, pixels[i], pixels[i + 1], pixels[i + 2]);
+  assert.ok(
+    darkest < 0x60,
+    `the word shows through the pill: its darkest is ${darkest}`,
   );
 });
 
