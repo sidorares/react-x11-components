@@ -2171,7 +2171,9 @@ metric(
     const el = view(node);
     const cut = (line: PlacedLine) =>
       lastRunText(line) === '…' ||
-      line.texts.some((text) => text.layout.truncated);
+      line.texts.some(
+        (text) => (text.layout as unknown as { truncated?: boolean }).truncated,
+      );
     const right = (line: PlacedLine) =>
       Math.max(...line.texts.map((text) => extentOf(text)[1]));
     // the text beside the float, before the float's own line
