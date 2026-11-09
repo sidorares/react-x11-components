@@ -50,6 +50,9 @@ export interface RtcTransportsDeps {
   sectionOfTransport(s: unknown, id: number): [string | null, number | null];
   /** The transports a connection uses now. */
   transportsInUse(s: unknown): number[];
+  /** The text of a connection's current and pending remote descriptions,
+   *  whose candidates the page signalled. */
+  remoteText(s: unknown): string;
 }
 
 export function installRtcTransports(
@@ -87,6 +90,7 @@ export function installRtcTransports(
   const connections = { get: (id: number): Any => H.connectionOf(id) };
   const sectionOfTransport: Any = H.sectionOfTransport;
   const transportsInUse: Any = H.transportsInUse;
+  const remoteText: Any = H.remoteText;
 
   // --- candidates ---------------------------------------------------------------
 
@@ -95,8 +99,11 @@ export function installRtcTransports(
    *  attribute can hold, which leaves every parsed attribute null (WebRTC
    *  1.0, "create an RTCIceCandidate"). The SDP framing's `a=` is let
    *  through, as every browser lets it. The ufrag extension is `ufrag`,
-   *  which only the stack's own candidates are read for. */
-  const parseCandidate = (text: string): Any => {
+   *  which only the stack's own candidates are read for. With `fromStack`,
+   *  the stack's own: a peer-reflexive candidate it learned from a check
+   *  is written with no related address, since it was derived from none
+   *  the agent knows. */
+  const parseCandidate = (text: string, fromStack = false): Any => {
     let line = text.replace(/\r?\n$/, '');
     if (line.startsWith('a=')) line = line.slice(2);
     if (!line.startsWith('candidate:')) return null;
@@ -140,7 +147,11 @@ export function installRtcTransports(
       i += 2;
     }
     // what is not a host is reached from a related address (RFC 8839, 5.1)
-    if (type !== 'host' && (relatedAddress === null || relatedPort === null))
+    if (
+      type !== 'host' &&
+      (relatedAddress === null || relatedPort === null) &&
+      !(fromStack && type === 'prflx')
+    )
       return null;
     // a TCP candidate says its type first (RFC 6544, 4.5)
     let tcpType: string | null = null;
@@ -432,7 +443,8 @@ export function installRtcTransports(
       return slotOf(this, 'iceTransport').remote.slice();
     }
     getSelectedCandidatePair(): Any {
-      const pair = slotOf(this, 'iceTransport').state.selectedPair;
+      const ice = slotOf(this, 'iceTransport');
+      const pair = ice.state.selectedPair;
       if (!pair) return null;
       const out = new RTCIceCandidatePair(TOKEN);
       apply(wmSet, slots, [
@@ -440,7 +452,7 @@ export function installRtcTransports(
         {
           candidatePair: true,
           local: candidateFrom(pair.local),
-          remote: candidateFrom(pair.remote),
+          remote: remoteCandidateFrom(pair.remote, ice),
         },
       ]);
       return out;
@@ -508,7 +520,7 @@ export function installRtcTransports(
     t = { id, ice, dtls, state: { ...NEW_TRANSPORT } };
     apply(wmSet, slots, [
       ice,
-      { iceTransport: true, state: t.state, local: [], remote: [] },
+      { iceTransport: true, state: t.state, local: [], remote: [], pc: s },
     ]);
     apply(wmSet, slots, [dtls, { dtlsTransport: true, ice, state: t.state }]);
     s.transports.set(id, t);
@@ -584,6 +596,51 @@ export function installRtcTransports(
       usernameFragment:
         c.usernameFragment ?? parseCandidate(c.candidate)?.ufrag ?? null,
     });
+
+  /**
+   * A selected pair's remote candidate as the page may see it. One the agent
+   * learned from a connectivity check (peer-reflexive), at an address the
+   * page never signalled, is the empty string, and its address and related
+   * address null; one at an address it did signal is that candidate: what the page was not told, it does not learn from the
+   * pair (WebRTC 1.0, RTCIceCandidatePair; WPT's `candidate-exchange`). Its
+   * other fields are what the agent knows of it, and a related port it has
+   * none of is 0.
+   */
+  const remoteCandidateFrom = (c: Any, ice: Any): Any => {
+    const fields = parseCandidate(c.candidate, true);
+    if (fields?.type !== 'prflx') return candidateFrom(c);
+    // one the page signalled since, trickled or in a description, is the
+    // candidate it signalled
+    const at = (f: Any): boolean =>
+      !!f && f.address === fields.address && f.port === fields.port;
+    const trickled = ice.remote.find((k: Any) =>
+      at(apply(wmGet, slots, [k])?.fields),
+    );
+    if (trickled) return new RTCIceCandidate(trickled.toJSON());
+    for (const line of String(remoteText(ice.pc)).split(/\r?\n/)) {
+      if (!line.startsWith('a=candidate:')) continue;
+      if (!at(parseCandidate(line.slice(2)))) continue;
+      return new RTCIceCandidate({
+        candidate: line.slice(2),
+        sdpMid: c.sdpMid ?? '0',
+        sdpMLineIndex: c.sdpMLineIndex,
+      });
+    }
+    const out = new RTCIceCandidate({
+      candidate: '',
+      sdpMid: c.sdpMid ?? '0',
+      sdpMLineIndex: c.sdpMLineIndex,
+      usernameFragment: null,
+    });
+    apply(wmGet, slots, [out]).fields = {
+      ...fields,
+      address: null,
+      relatedAddress: null,
+      relatedPort: fields.relatedPort ?? 0,
+      ufrag: null,
+    };
+    return out;
+  };
 
   // --- stats ----------------------------------------------------------------------
 

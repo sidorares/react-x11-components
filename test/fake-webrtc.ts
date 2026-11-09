@@ -312,9 +312,12 @@ export class FakeConnection implements RTCConnectionLike {
         },
         headerExtensions: [],
       })),
-      sctp: sectionsOf(
+      // a stack makes its SCTP transport for a data m-section either side
+      // offered
+      sctp: [
         this.descriptions_.pendingLocal ?? this.descriptions_.currentLocal,
-      ).some((s) => s.kind === 'application')
+        this.descriptions_.pendingRemote ?? this.descriptions_.currentRemote,
+      ].some((d) => sectionsOf(d).some((s) => s.kind === 'application'))
         ? { transport: 1, maxMessageSize: 262144, maxChannels: null }
         : null,
     };

@@ -377,6 +377,10 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
     connectionOf: (id: number) => connections.get(id),
     sectionOfTransport: (s: Any, id: number) => sectionOfTransport(s, id),
     transportsInUse: (s: Any) => transportsInUse(s),
+    remoteText: (s: Any) => {
+      const d = descriptionsOf(s);
+      return `${d.currentRemote ?? ''}\n${d.pendingRemote ?? ''}`;
+    },
   });
   const {
     parseCandidate,
@@ -1880,17 +1884,26 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
       }
       t.receiving = receiving;
     }
+    let dropSctp = false;
     if (type === 'rollback') {
       // a transceiver the rolled-back offer made is gone with it, stopped,
       // unless `addTrack` gave it a track since — `replaceTrack` and a
       // direction do not keep it — and a mid only it gave is taken back
       // (WebRTC 1.0, 4.4.1.6)
       const d = descriptionsOf(s);
-      const kept = new Set(
-        [...sectionsOf(d.currentLocal), ...sectionsOf(d.currentRemote)].map(
-          (m) => m.mid,
-        ),
-      );
+      const current = [
+        ...sectionsOf(d.currentLocal),
+        ...sectionsOf(d.currentRemote),
+      ];
+      const kept = new Set(current.map((m) => m.mid));
+      // and so is an SCTP transport it made: one no current description
+      // has a data m-section for (WebRTC 1.0, 4.4.1.6, "if description is
+      // of type rollback")
+      dropSctp = !current.some((m) => m.kind === 'application' && m.port !== 0);
+      if (dropSctp) {
+        s.sctpTransport = null;
+        channels.sctpDropped(s);
+      }
       s.transceivers = s.transceivers.filter((x: Any) => {
         const t = apply(wmGet, slots, [x]);
         if (t.mid !== null && !kept.has(t.mid)) t.mid = null;
@@ -1925,7 +1938,7 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
         return false;
       });
     }
-    if (state.sctp) {
+    if (state.sctp && !dropSctp) {
       s.sctpTransport = state.sctp.transport;
       channels.sctpNegotiated(
         s,
@@ -2598,9 +2611,12 @@ export function installWebRTC(deps: WebRTCDeps): Record<string, unknown> {
           ask((req) => call('rtcCandidate', s.id, req, payload)),
           () => {
             if (text !== '' && section) {
-              const used = s.transceivers
-                .map((x: Any) => apply(wmGet, slots, [x]))
-                .find((t: Any) => t.mid === section!.mid)?.transport;
+              // a data m-section's is the SCTP transport's
+              const used =
+                s.transceivers
+                  .map((x: Any) => apply(wmGet, slots, [x]))
+                  .find((t: Any) => t.mid === section!.mid)?.transport ??
+                (section.kind === 'application' ? s.sctpTransport : undefined);
               if (used !== undefined && used !== null) {
                 apply(wmGet, slots, [transportOf(s, used).ice]).remote.push(
                   new RTCIceCandidate({
