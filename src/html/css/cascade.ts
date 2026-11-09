@@ -1142,6 +1142,7 @@ export function pointerCompounds(
     nested: false,
     has: [],
     followed: [],
+    later: [],
     below: [],
     host: false,
   };
@@ -1185,6 +1186,16 @@ export interface PointerCompounds {
   /** The compounds and anchors a sibling combinator follows: the ones
    *  whose elements' later siblings change with them. */
   followed: string[];
+  /**
+   * Of `followed`'s compounds, each with what among the later siblings of
+   * the element it matches, and in them, its rule can restyle: the subject
+   * as `below` names one, or null for all of it — a compound nested in a
+   * function, and a subject that names every element. `:hover ~ .label`
+   * restyles the labels after what is hovered, and not every row after it
+   * with all it holds. `alone` where it is the selector's own compound,
+   * and its rule restyles nothing in its element.
+   */
+  later: { compound: string; subject: string | null; alone: boolean }[];
   /**
    * The compounds that test the state and lead below to the selector's
    * subject, and are not it: `.anchor-link`'s `:hover > .anchor-link`,
@@ -1578,8 +1589,18 @@ function scanComplex(
     // named, which is more than it reaches and never less
     if (sibling && (found.pointer || found.below || found.args.length)) {
       out.siblings = true;
+      // this compound's own, the last pushed, reaches what the subject of
+      // its selector names; one a selector nested in it named, whose
+      // element may be another, reaches all of it
+      const own = found.pointer ? out.compounds.length - 1 : -1;
+      const named = top ? subjectOf(parts[parts.length - 1].text) : '*';
       for (let i = compoundsFrom; i < out.compounds.length; i += 1) {
         out.followed.push(out.compounds[i]);
+        out.later.push({
+          compound: out.compounds[i],
+          subject: i === own && named !== '*' ? named : null,
+          alone: i === own,
+        });
       }
       for (let i = hasFrom; i < out.has.length; i += 1) {
         out.followed.push(out.has[i].anchor);
@@ -2586,8 +2607,13 @@ class StateRules {
    *  selector has it reach; and their matchers, compiled when a change
    *  first asks (`touches`). */
   private _compounds = new Map<string, HoverTouch>();
+  /** What each compound's rules restyle in the element it matches, past
+   *  what follows it: `HOVER_UNTOUCHED` where every rule's sibling
+   *  combinator follows it and it is the selector's own (`later`'s `own`). */
+  private _own = new Map<string, HoverTouch>();
   private _matchers:
-    { match: (el: Element) => boolean; touch: HoverTouch }[] | null = null;
+    | { match: (el: Element) => boolean; touch: HoverTouch; own: HoverTouch }[]
+    | null = null;
   /** Whether a change can be restyled where it happened
    *  (`HtmlViewNode._hoverInPlace`): false where a selector tests the
    *  state inside a functional pseudo-class, which reaches elements no
@@ -2604,6 +2630,17 @@ class StateRules {
   private _below = new Map<string, Map<string, boolean>>();
   private _belowMatchers:
     { match: (el: Element) => boolean; reaches: BelowReach[] }[] | null = null;
+  /** The compounds a sibling combinator follows (`PointerCompounds.later`),
+   *  each with the subjects its rules can restyle among the later siblings
+   *  of the element it matches, and in them, or null for all of it; and
+   *  their matchers, compiled when a change first asks (`later`). */
+  private _later = new Map<string, Set<string> | null>();
+  private _laterMatchers:
+    | {
+        match: (el: Element) => boolean;
+        subjects: ((el: Element) => boolean)[] | null;
+      }[]
+    | null = null;
   /** The compounds whose `:has()` tests the state, each without it,
    *  whether its argument starts at a sibling, and whether a sibling
    *  combinator follows it (`anchors`). */
@@ -2626,6 +2663,7 @@ class StateRules {
   rebound(): this {
     this._matchers = null;
     this._belowMatchers = null;
+    this._laterMatchers = null;
     this._anchorMatchers = null;
     return this;
   }
@@ -2640,20 +2678,36 @@ class StateRules {
       if (!subjects) this._below.set(compound, (subjects = new Map()));
       subjects.set(subject, child && (subjects.get(subject) ?? true));
     }
+    for (const { compound, subject } of found.later) {
+      const kept = this._later.get(compound);
+      if (kept === null) continue;
+      if (subject === null) this._later.set(compound, null);
+      else if (kept) kept.add(subject);
+      else this._later.set(compound, new Set([subject]));
+    }
+    if (found.later.length) this._laterMatchers = null;
     const followed = new Set(found.followed);
     // a compound that is a subject here may be followed or lead elsewhere
     // in the same selector, which reaches more
     const subjects = found.subjects.filter(
       (c) => found.compounds.indexOf(c) === found.compounds.lastIndexOf(c),
     );
+    // a compound each of whose places here is its own, followed, restyles
+    // nothing in its element: `:hover ~ .tag`'s every element is one, and
+    // the pointer coming into the page reached all of it from the root
+    const alone = new Map<string, number>();
+    for (const { compound, alone: own } of found.later) {
+      if (own) alone.set(compound, (alone.get(compound) ?? 0) + 1);
+    }
     for (const c of found.compounds) {
-      const touch = followed.has(c)
-        ? HOVER_FOLLOWED
-        : subjects.includes(c)
-          ? HOVER_SELF
-          : HOVER_TOUCHED;
+      const self = subjects.includes(c) ? HOVER_SELF : HOVER_TOUCHED;
+      const touch = followed.has(c) ? HOVER_FOLLOWED : self;
       const was = this._compounds.get(c) ?? HOVER_UNTOUCHED;
       if (touch > was) this._compounds.set(c, touch);
+      const places = found.compounds.filter((one) => one === c).length;
+      const own = (alone.get(c) ?? 0) === places ? HOVER_UNTOUCHED : self;
+      if (own > (this._own.get(c) ?? HOVER_UNTOUCHED)) this._own.set(c, own);
+      else if (!this._own.has(c)) this._own.set(c, own);
     }
     for (const { anchor, siblings } of found.has) {
       const was = this._anchors.get(anchor);
@@ -2695,7 +2749,8 @@ class StateRules {
       .sort(([, a], [, b]) => b - a)
       .flatMap(([compound, touch]) => {
         const match = compile(compound);
-        return match ? [{ match, touch }] : [];
+        const own = this._own.get(compound) ?? touch;
+        return match ? [{ match, touch, own }] : [];
       });
     let found: HoverTouch = HOVER_UNTOUCHED;
     for (const { match, touch } of this._matchers) {
@@ -2707,7 +2762,18 @@ class StateRules {
     // the element alone is all a subject reaches, so what a compound that
     // leads below reaches from it is asked for as well
     if (found > HOVER_SELF) return found;
-    if (!this._below.size) return found;
+    this._belowInto(el, compile, below);
+    return found;
+  }
+
+  /** What the compounds `el` matches that lead below reach in it, into
+   *  `below` (`PointerCompounds.below`). */
+  private _belowInto(
+    el: Element,
+    compile: (selector: string) => ((el: Element) => boolean) | null,
+    below?: BelowReach[],
+  ): void {
+    if (!this._below.size) return;
     if (!this._belowMatchers) {
       // one matcher a subject, shared by every compound that leads to it
       const subjects = new Map<string, ((el: Element) => boolean) | null>();
@@ -2738,7 +2804,59 @@ class StateRules {
       if (!match(el)) continue;
       if (below) for (const r of reaches) if (!below.includes(r)) below.push(r);
     }
-    return found;
+  }
+
+  /**
+   * `Cascade.hoverLater`, for this state: the subjects the rules whose
+   * followed compounds `el` matches can restyle among its later siblings
+   * and in them, or null for all of it, and what every compound it matches
+   * restyles in `el` itself. A compound or a subject that compiles to
+   * nothing names no element, as in `touches`, which compiles them first.
+   */
+  later(
+    el: Element,
+    compile: (selector: string) => ((el: Element) => boolean) | null,
+    below?: BelowReach[],
+  ): {
+    subjects: ((el: Element) => boolean)[] | null;
+    own: HoverTouch;
+  } {
+    // what the rules restyle in `el` itself, from every compound it
+    // matches, followed or not; and below it, where that is no more than
+    // the element
+    let own: HoverTouch = HOVER_UNTOUCHED;
+    for (const m of this._matchers ?? []) {
+      if (m.own > own && m.match(el)) own = m.own;
+    }
+    if (own <= HOVER_SELF) this._belowInto(el, compile, below);
+    return { subjects: this._laterOf(el, compile), own };
+  }
+
+  private _laterOf(
+    el: Element,
+    compile: (selector: string) => ((el: Element) => boolean) | null,
+  ): ((el: Element) => boolean)[] | null {
+    if (!this._laterMatchers) {
+      const subjects = new Map<string, ((el: Element) => boolean) | null>();
+      const subjectMatch = (subject: string) => {
+        if (!subjects.has(subject)) subjects.set(subject, compile(subject));
+        return subjects.get(subject)!;
+      };
+      this._laterMatchers = [];
+      for (const [compound, of] of this._later) {
+        const match = compile(compound);
+        if (!match) continue;
+        const list = of && [...of].map(subjectMatch).filter((m) => !!m);
+        this._laterMatchers.push({ match, subjects: list });
+      }
+    }
+    const out: ((el: Element) => boolean)[] = [];
+    for (const { match, subjects } of this._laterMatchers) {
+      if (!match(el)) continue;
+      if (!subjects) return null;
+      for (const m of subjects) if (!out.includes(m)) out.push(m);
+    }
+    return out;
   }
 
   /** `Cascade.hoverAnchors`, for this state. */
@@ -5253,6 +5371,37 @@ export class Cascade {
    *  it up, or its `:focus-within` changing, can change a style. */
   focusTouches(el: Element, below?: BelowReach[]): HoverTouch {
     return this._focusRules.touches(
+      el,
+      (selector) => this._compile(selector),
+      below,
+    );
+  }
+
+  /**
+   * What among the later siblings of `el`, and in them, a flip of its hover
+   * can restyle where `hoverTouches` answers `HOVER_FOLLOWED`: the elements
+   * `subjects` match, or null for all of it; and what it restyles in `el`
+   * itself (`own`, a `HoverTouch` short of followed), with what a compound
+   * that leads below reaches in it, into `below`, where that is the
+   * element alone.
+   */
+  hoverLater(
+    el: Element,
+    below?: BelowReach[],
+  ): { subjects: ((el: Element) => boolean)[] | null; own: HoverTouch } {
+    return this._hoverRules.later(
+      el,
+      (selector) => this._compile(selector),
+      below,
+    );
+  }
+
+  /** `hoverLater` for the focus. */
+  focusLater(
+    el: Element,
+    below?: BelowReach[],
+  ): { subjects: ((el: Element) => boolean)[] | null; own: HoverTouch } {
+    return this._focusRules.later(
       el,
       (selector) => this._compile(selector),
       below,

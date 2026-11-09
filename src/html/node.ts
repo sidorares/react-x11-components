@@ -122,6 +122,7 @@ import {
   HOVER_PSEUDO_NONE,
   HOVER_PSEUDO_OTHER,
   HOVER_SELF,
+  HOVER_TOUCHED,
   HOVER_UNTOUCHED,
   NO_FOCUS,
   TARGET_TEXT,
@@ -9601,6 +9602,7 @@ export class HtmlViewNode extends Node {
           was.element === element ? element : null,
           (el, below) => cascade.focusTouches(el, below),
           (el, into) => cascade.focusAnchors(el, into),
+          (el, below) => cascade.focusLater(el, below),
         )
       : null;
     const reach = found?.reach ?? null;
@@ -9653,6 +9655,7 @@ export class HtmlViewNode extends Node {
       null,
       (el, below) => cascade.hoverTouches(el, below),
       (el, into) => cascade.hoverAnchors(el, into),
+      (el, below) => cascade.hoverLater(el, below),
     );
   }
 
@@ -9675,6 +9678,12 @@ export class HtmlViewNode extends Node {
     also: Element | null,
     touches: (el: Element, below: BelowReach[]) => HoverTouch,
     anchors: (el: Element, into: Map<Element, HoverTouch>) => void,
+    /** What among an element's later siblings its flip can restyle where
+     *  it is `HOVER_FOLLOWED` (`Cascade.hoverLater`). */
+    later: (
+      el: Element,
+      below: BelowReach[],
+    ) => { subjects: ((el: Element) => boolean)[] | null; own: HoverTouch },
   ): StateReach {
     const before = new Set(was);
     const after = new Set(now);
@@ -9683,13 +9692,47 @@ export class HtmlViewNode extends Node {
      *  reaches under each (`BelowReach`). */
     const leading = new Map<Element, BelowReach[]>();
     let edge = false;
+    /** What among each followed root's later siblings it reaches, the
+     *  subjects of its rules, or null for all of it: a root a `:has()`
+     *  testing the state is the anchor of reaches all of it. */
+    const followers = new Map<Element, ((el: Element) => boolean)[] | null>();
+    /** And what a followed root's rules restyle in it (`hoverLater`'s
+     *  `own`): a compound that is only ever followed, nothing. */
+    const owns = new Map<Element, HoverTouch>();
+    const own = (el: Element, touch: HoverTouch): void => {
+      const had = owns.get(el);
+      if (had === undefined || touch > had) owns.set(el, touch);
+    };
     const flipped = (el: Element, other: Set<Element> | null): void => {
       if (other?.has(el)) return;
       const below = leading.get(el) ?? [];
       const touch = touches(el, below);
       if (touch === HOVER_EDGE) edge = true;
+      if (touch === HOVER_FOLLOWED) {
+        const found = later(el, below);
+        own(el, found.own);
+        const had = followers.get(el);
+        if (had !== null) {
+          followers.set(
+            el,
+            found.subjects && had
+              ? [...new Set([...had, ...found.subjects])]
+              : found.subjects,
+          );
+        }
+      }
       if (touch > (roots.get(el) ?? HOVER_UNTOUCHED)) roots.set(el, touch);
       if (below.length) leading.set(el, below);
+    };
+    const anchored = (el: Element): void => {
+      const found = new Map<Element, HoverTouch>();
+      anchors(el, found);
+      for (const [at, touch] of found) {
+        // a `:has()` reaches all of its anchor, and all after it
+        if (touch === HOVER_FOLLOWED) followers.set(at, null);
+        own(at, Math.min(touch, HOVER_TOUCHED) as HoverTouch);
+        if (touch > (roots.get(at) ?? HOVER_UNTOUCHED)) roots.set(at, touch);
+      }
     };
     for (const el of was) flipped(el, after);
     for (const el of now) flipped(el, before);
@@ -9697,13 +9740,13 @@ export class HtmlViewNode extends Node {
     // side is where a `:has()` is looked for from
     const deepest = (chain: readonly Element[], other: Set<Element>) => {
       const el = chain[0];
-      if (el && !other.has(el)) anchors(el, roots);
+      if (el && !other.has(el)) anchored(el);
     };
     deepest(was, after);
     deepest(now, before);
     if (also) {
       flipped(also, null);
-      anchors(also, roots);
+      anchored(also);
     }
 
     // the roots' subtrees, which a descendant combinator reaches, and
@@ -9732,18 +9775,48 @@ export class HtmlViewNode extends Node {
         }
       }
     };
+    /** What in `el`, itself among it, the subjects match, with what is in
+     *  each, through a host's shadow tree and a slot's assigned children. */
+    const collectNamed = (
+      el: Element,
+      subjects: readonly ((el: Element) => boolean)[],
+    ): void => {
+      const stack: Element[] = [el];
+      while (stack.length) {
+        const at = stack.pop()!;
+        if (reach.has(at) && !alone.has(at)) continue;
+        if (subjects.some((match) => match(at))) {
+          collect(at);
+          continue;
+        }
+        for (const child of at.children)
+          if (isElement(child)) stack.push(child);
+        const flat = flatChildrenOf(at);
+        if (flat !== at.children) {
+          for (const child of flat) if (isElement(child)) stack.push(child);
+        }
+      }
+    };
     for (const [root, touch] of roots) {
-      if (touch === HOVER_SELF) {
+      // a followed root reaches in itself only what its rules restyle there
+      const inIt =
+        touch === HOVER_FOLLOWED ? (owns.get(root) ?? HOVER_TOUCHED) : touch;
+      if (inIt === HOVER_SELF) {
         if (!reach.has(root)) {
           reach.add(root);
           alone.add(root);
         }
-        continue;
-      }
-      collect(root);
+      } else if (inIt !== HOVER_UNTOUCHED) collect(root);
       if (touch !== HOVER_FOLLOWED && touch !== HOVER_EDGE) continue;
+      // of what follows, what the subjects of its rules name and what is
+      // in each: a webmail page's `:hover ~ .label` restyled and built
+      // every row after the hovered one, with all it holds, at each row the
+      // pointer crossed
+      const subjects = touch === HOVER_FOLLOWED ? followers.get(root) : null;
       for (let s = root.nextSibling; s; s = s.nextSibling) {
-        if (isElement(s)) collect(s);
+        if (!isElement(s)) continue;
+        if (subjects) collectNamed(s, subjects);
+        else collect(s);
       }
     }
     // What a compound that leads below reaches in its element: the

@@ -27,6 +27,7 @@ import type { Element as DocElement } from '../../src/html/index.js';
 import { hoverClock } from '../../src/html/node.js';
 import type { ComputedStyle } from '../../src/html/css/style.js';
 import { holdClock } from '../held-clock.js';
+import { mulberry32 } from '../mulberry32.js';
 import {
   FONTS,
   boxOf,
@@ -939,6 +940,7 @@ test("a :hover in a :has() names the element that holds it, and is no rule's nes
       nested: false,
       has: [{ anchor: '#rir-map', siblings: false }],
       followed: [],
+      later: [],
       below: [],
       host: false,
     },
@@ -1043,6 +1045,7 @@ test('a :hover that leads below names the subject it reaches, not all that is in
     nested: false,
     has: [],
     followed: [],
+    later: [],
     below: [{ compound: '*', subject: '.anchor-link', child: true }],
     host: false,
   });
@@ -1091,8 +1094,23 @@ test('a :hover that leads below names the subject it reaches, not all that is in
   assert.deepStrictEqual(both.below, [
     { compound: 'a', subject: 'b', child: true },
   ]);
-  // a sibling after it still reaches the siblings, whole
+  // a sibling after it reaches the siblings, and in them what the subject
+  // names
   assert.deepStrictEqual(pointerCompounds('.a:hover + .b .c').followed, ['.a']);
+  assert.deepStrictEqual(pointerCompounds('.a:hover + .b .c').later, [
+    { compound: '.a', subject: '.c', alone: true },
+  ]);
+  assert.deepStrictEqual(pointerCompounds(':hover ~ .label::after').later, [
+    { compound: '*', subject: '.label', alone: true },
+  ]);
+  // all of them where the subject names any element, or the compound is
+  // nested in a function and its element may be another
+  assert.deepStrictEqual(pointerCompounds('.a:hover ~ *').later, [
+    { compound: '.a', subject: null, alone: true },
+  ]);
+  assert.deepStrictEqual(pointerCompounds(':is(.x .a:hover) ~ .b').later, [
+    { compound: '.a', subject: null, alone: false },
+  ]);
   // and one inside a function is not a rule's own subject
   assert.deepStrictEqual(pointerCompounds(':is(.x:hover .y) .z').below, []);
   // a host's own state is the edge's
@@ -1308,6 +1326,135 @@ metric(
     assert.strictEqual(reach.size, 1, 'a row reaches itself');
   },
 );
+
+metric(
+  'a hover a sibling combinator follows reaches, among what comes after, what its rule styles',
+  async () => {
+    // A webmail page styles `.list :hover ~ .tag`: a compound of nothing
+    // but `:hover`, followed. Every element is one, and each row the pointer
+    // crossed restyled and built every row after it, with all each holds
+    const rows = Array.from(
+      { length: 400 },
+      (_, i) =>
+        `<li id="r${i}"${i === 9 ? ' class="tag"' : ''}>` +
+        `<b id="b${i}">row ${i}</b> <i class="${i === 7 ? 'tag' : 'x'}">` +
+        `note</i></li>`,
+    ).join('');
+    const { result, node } = await render(
+      '<style>body{margin:0} ul{margin:0;list-style:none}' +
+        ' li:hover{background:#ffff00} ul :hover ~ .tag{color:#00aa00}' +
+        ' li:hover + li > .tag{color:#0000ff}</style>' +
+        `<ul>${rows}</ul>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    const reach = (
+      el as unknown as {
+        _hoverReach(was: unknown[], now: unknown[]): { reach: Set<unknown> };
+      }
+    )._hoverReach([], [findById(el.document, 'r5')]).reach;
+    const at = (id: string) => findById(el.document, id);
+    assert.ok(reach.has(at('r9')), 'the tag after it was not reached');
+    assert.ok(
+      !reach.has(at('r8')),
+      'a row after it that is no tag was reached',
+    );
+    assert.ok(
+      !reach.has(at('b8')),
+      'what a row that is no tag holds was reached',
+    );
+    assert.ok(reach.size < 20, `${reach.size} elements reached`);
+    // and drawn as a rebuild draws it, the tag in a row after another's
+    // hover as well as one beside a hovered row's own
+    await hoverInPlace(result, el, 'r5');
+    assert.strictEqual(colourOf(el, 'r9'), '#00aa00');
+    await hoverInPlace(result, el, 'r6');
+    await hoverInPlace(result, el, 'b8');
+    await hoverInPlace(result, el, 'r9');
+  },
+);
+
+test('a hover a sibling combinator follows restyles in place what a rebuild draws, over generated documents and rules', async () => {
+  const seeds = Number(process.env.HOVER_SIBLING_SEEDS ?? 24);
+  const from = Number(process.env.HOVER_SIBLING_FROM ?? 1);
+  const classes = ['a', 'b', 'c', 'tag'];
+  const colours = ['#ff0000', '#00aa00', '#0000ff', '#aa00aa', '#ffaa00'];
+  for (let seed = from; seed < from + seeds; seed += 1) {
+    const next = mulberry32(seed);
+    const pick = <T>(list: readonly T[]): T =>
+      list[Math.floor(next() * list.length)];
+    const c = () => pick(classes);
+    const colour = () => pick(colours);
+    const ids: string[] = [];
+    let n = 0;
+    const kid = (depth: number): string => {
+      const id = `e${n++}`;
+      ids.push(id);
+      const inner =
+        depth < 2 && next() < 0.5
+          ? Array.from({ length: 1 + Math.floor(next() * 2) }, () =>
+              kid(depth + 1),
+            ).join(' ')
+          : `w${n}`;
+      return `<span id="${id}" class="${c()}">${inner}</span>`;
+    };
+    const items = Array.from({ length: 6 + Math.floor(next() * 6) }, () => {
+      const id = `e${n++}`;
+      ids.push(id);
+      const kids = Array.from({ length: 1 + Math.floor(next() * 3) }, () =>
+        kid(1),
+      ).join(' ');
+      return `<li id="${id}" class="${c()}">${kids}</li>`;
+    }).join('');
+    const rules = [
+      () => `.${c()}:hover ~ .${c()} { color: ${colour()} }`,
+      () => `.${c()}:hover + .${c()} { color: ${colour()} }`,
+      () => `ul :hover ~ .${c()} { color: ${colour()} }`,
+      () => `.${c()}:hover ~ .${c()} .${c()} { color: ${colour()} }`,
+      () => `.${c()}:hover + * .${c()} { background: ${colour()} }`,
+      () => `.${c()}:hover ~ * { color: ${colour()} }`,
+      () =>
+        `.${c()}:hover ~ .${c()}::after { content: "*"; color: ${colour()} }`,
+      () => `li:hover ~ li > .${c()} { color: ${colour()} }`,
+      () => `.${c()}:hover > .${c()} ~ .${c()} { color: ${colour()} }`,
+      () => `:is(.${c()}:hover) ~ .${c()} { color: ${colour()} }`,
+      () => `.${c()}:hover + .${c()} + .${c()} { color: ${colour()} }`,
+      () => `li:hover { background: #ffffaa }`,
+      // and what restyles in the hovered element, beside a sibling
+      // combinator that follows the same compound
+      () => `.${c()}:hover { color: ${colour()} }`,
+      () => `.${c()}:hover .${c()} { color: ${colour()} }`,
+      () => `:is(.${c()}:hover) .${c()} { color: ${colour()} }`,
+      () => `.${c()}:has(+ .${c()}:hover) { color: ${colour()} }`,
+    ];
+    const sheet = Array.from({ length: 3 + Math.floor(next() * 4) }, () =>
+      pick(rules)(),
+    ).join('\n');
+    const { result, node } = await render(
+      '<style>body{margin:0} ul{margin:0;list-style:none}' +
+        ` span{padding:0 2px}\n${sheet}</style><ul>${items}</ul>`,
+      300,
+    );
+    const el = view(node);
+    await snapshot(result, el);
+    for (let step = 0; step < 5; step += 1) {
+      const id = pick(ids);
+      el.setHover(...pointIn(el, id));
+      const drawn = await snapshot(result, el);
+      const told = ids.map((one) => colourOf(el, one));
+      const whole = await rebuilt(result, el);
+      const where = `seed ${seed}, step ${step}, #${id}\n${sheet}`;
+      assert.deepStrictEqual(
+        told,
+        ids.map((one) => colourOf(el, one)),
+        `styles: ${where}`,
+      );
+      assert.strictEqual(bytesApart(drawn, whole), 0, `pixels: ${where}`);
+    }
+    await cleanup();
+  }
+});
 
 metric(
   "a container's hover restyles in place the anchors it shows, however much is in it",
