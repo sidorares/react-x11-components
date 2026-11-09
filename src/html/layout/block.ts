@@ -8056,13 +8056,28 @@ function notePosition(
  * after a style change — tries what the last rendering had, and what it
  * places a box by is no box's last successful option until a rendering.
  */
-export function commitLastPositions(): void {
-  if (!PENDING_POSITIONS.size) return;
+export function commitLastPositions(
+  /** Whether an element that has one is rendered — has a box — in the
+   *  document being rendered, or undefined for another document's. */
+  rendered?: (owner: object) => boolean | undefined,
+): void {
   for (const [map, pending] of PENDING_POSITIONS) {
     for (const [at, position] of pending) map.set(at, position);
   }
   PENDING_POSITIONS.clear();
+  // and an element that stopped being rendered forgets its own, so one
+  // shown again is placed by its base style first (6.5.1.1)
+  if (!rendered) return;
+  for (const owner of POSITIONED) {
+    if (rendered(owner) !== false) continue;
+    LAST_POSITIONS.delete(owner);
+    POSITIONED.delete(owner);
+  }
 }
+
+/** The elements that have a last position, for a rendering to ask whether
+ *  each is still rendered (`commitLastPositions`). */
+const POSITIONED = new Set<object>();
 
 /** The options in the order `position-try-order` sorts them (CSS Anchor
  *  Positioning 1, 6.3): by the room each leaves the box on its axis, the
@@ -8105,6 +8120,7 @@ function lastPositionOf(box: Box): [Map<string, LastPosition>, string] | null {
   if (!owner) return null;
   let map = LAST_POSITIONS.get(owner);
   if (!map) LAST_POSITIONS.set(owner, (map = new Map()));
+  POSITIONED.add(owner);
   return [map, box.el ? '' : (box.pseudo ?? '')];
 }
 
