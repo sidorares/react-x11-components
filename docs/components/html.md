@@ -4974,8 +4974,10 @@ them, as a browser's bounding rect does, and a point between two of them is
 not over it. Right to left, the first column is the one at the right. A
 container as wide as its content is as wide as its columns side by side.
 A transform makes no box monolithic, so a containing block made by one is
-broken as any block is, though its pieces are drawn through the matrix of
-the whole. An absolutely positioned box whose containing block is inside
+broken as any block is, and an empty block with a height as well, though
+its pieces are drawn through the matrix of the whole. As an anchor such a
+box is the rectangle around its pieces each transformed about its own
+origin, as a browser draws them. An absolutely positioned box whose containing block is inside
 the columns — or a fixed one whose containing block a transform makes
 there — is laid out as though nothing were broken, against where the
 strip the columns were cut from had its containing block, and is then cut
@@ -7109,11 +7111,12 @@ and `all`, which sets every property but `direction`, `unicode-bidi` and
 the custom properties to one of them at its place in the cascade (CSS
 Cascade 4, 3.2). `button { all: unset }`, the first line of many a reset,
 takes the UA sheet's ground, border and control font off a button, as it
-does in a browser, and the button is the page's to draw. `revert` on a
-property the UA sheet never sets is `unset`, which is what the UA origin
-has for it; on one the UA sheet sets anywhere it leaves the property as
-the declarations before it had it, where a browser would take it back to
-the UA sheet's for that element.
+does in a browser, and the button is the page's to draw. An author's
+`revert` takes the property back to what the UA sheet's rules give that
+element, worked out the first time a declaration reverts (CSS Cascade 5,
+7.3.3), and so does one in a `@position-try` rule: `p { margin: 0 } p {
+margin-top: revert }` is the UA sheet's `1em`, and `all: revert` takes
+every property `all` sets back so. `revert` in the UA sheet is `unset`.
 
 **Colours:** the named colours, hex with three, four, six or eight digits,
 the system colours, and CSS Color 4's functions: `rgb()` and `hsl()` in

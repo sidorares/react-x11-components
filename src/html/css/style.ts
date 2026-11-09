@@ -2611,6 +2611,15 @@ export function applyDeclaration(
     inheritOne(style, parent, name);
     return;
   }
+  // an author's `revert` is the property as the user agent's rules alone
+  // have it, which an author origin it is in rolls back to
+  if (lower === 'revert' && ctx.reverted) {
+    const back = ctx.reverted();
+    if (back) {
+      inheritOne(style, back, name);
+      return;
+    }
+  }
   if (lower === 'initial' || lower === 'unset' || lower === 'revert') {
     // `unset` is `inherit` for an inherited property and `initial` otherwise.
     // `initial` is the value the property starts at, which an inherited one
@@ -9199,6 +9208,11 @@ function applyAll(
   else if (keyword === 'initial' && ctx.initial) from = ctx.initial;
   else if (keyword === 'unset' && ctx.initial) {
     from = inherit(parent, ctx.initial);
+  } else if (keyword === 'revert' && ctx.reverted) {
+    // an author's, every property as the user agent's rules give it
+    const back = ctx.reverted();
+    if (!back) return;
+    from = back;
   } else return;
   AllCopy ??= allConstructor(Object.keys(from));
   AllCopy(style, from);

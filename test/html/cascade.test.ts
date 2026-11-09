@@ -2078,3 +2078,30 @@ test('anchor() is no value of a property registered with a syntax, which is as t
   );
   assert.strictEqual(boxOf(el, 's').width, 7);
 });
+
+test("an author's revert rolls a property back to what the user agent's rules give it, in a @position-try rule as in a style sheet", async () => {
+  // CSS Cascade 5, 7.3.3: the author origin rolls back to the user's, which
+  // is the user agent's here; WPT css-anchor-position/position-try-cascade
+  const { node } = await render(
+    '<style>body{margin:0;font-size:16px} p{margin:0} #p{margin-top:revert}' +
+      ' #r{all:revert}' +
+      ' .cb{position:relative;width:100px;height:100px}' +
+      ' #a{position:absolute;top:20px;left:20px;width:200px;height:200px;' +
+      'position-try-fallbacks:--f}' +
+      ' @position-try --f{left:revert;width:30px;height:30px}</style>' +
+      '<p id="p">a</p><p id="q">b</p><p id="r">c</p>' +
+      '<div class="cb" id="cb"><div id="a"></div></div>',
+  );
+  const el = view(node);
+  const margin = (id: string) =>
+    el.computedStyle(findById(el.document, id)!)!['margin-top'];
+  assert.deepStrictEqual(
+    [margin('p'), margin('q'), margin('r')],
+    ['16px', '0px', '16px'],
+  );
+  // the option's `left` goes back to the user agent's `auto`, the static
+  // position, where the author's `20px` was kept
+  const a = boxOf(el, 'a');
+  const cb = boxOf(el, 'cb');
+  assert.deepStrictEqual([a.x - cb.x, a.width], [0, 30]);
+});

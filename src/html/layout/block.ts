@@ -8930,31 +8930,40 @@ function movedAnchorRect(rect: CbRect, anchor: Box, box: Box): CbRect {
     // what is around it is in the page's axes, not the frame's
     if (framed.any && FRAME_ROOTS.has(b)) break;
     const style = b.style;
-    if (transformed(style) && b.kind !== 'inline' && b.kind !== 'text') {
-      const origin = style.transformOrigin;
-      const ox = b.x + resolve(origin[0], b.width, 0);
-      const oy = b.y + resolve(origin[1], b.height, 0);
-      const oz = style.transformOriginZ;
+    const pieces =
+      b === anchor && columnsSet.any ? COLUMN_PIECES.get(anchor) : undefined;
+    if (
+      pieces &&
+      transformed(style) &&
+      b.kind !== 'inline' &&
+      b.kind !== 'text'
+    ) {
+      // an anchor the columns broke is transformed a piece at a time, each
+      // about its own origin, as each piece is drawn: the rectangle around
+      // what that makes of them
+      let lo: [number, number] = [Infinity, Infinity];
+      let hi: [number, number] = [-Infinity, -Infinity];
+      for (const piece of pieces) {
+        const p = transformProjection(b, piece);
+        for (const [x, y] of rectCorners(piece)) {
+          const [px, py] = project(p, x, y) ?? [x, y];
+          lo = [Math.min(lo[0], px), Math.min(lo[1], py)];
+          hi = [Math.max(hi[0], px), Math.max(hi[1], py)];
+        }
+      }
+      corners = rectCorners({
+        x: lo[0],
+        y: lo[1],
+        width: hi[0] - lo[0],
+        height: hi[1] - lo[1],
+      });
+    } else if (transformed(style) && b.kind !== 'inline' && b.kind !== 'text') {
       // the whole of it, its translation too, about its origin where the
       // flow has the box, seen in the perspective around it
-      const m =
-        matrix4Of(style, b.width, b.height) ??
-        lift(matrixOf(style, b.width, b.height));
-      let placed = multiply4(
-        translate4(ox, oy, oz),
-        multiply4(m, translate4(-ox, -oy, -oz)),
+      const p = transformProjection(b, b);
+      corners = (corners ?? rectCorners(rect)).map(
+        ([x, y]) => project(p, x + dx, y + dy) ?? [x + dx, y + dy],
       );
-      const seen = perspectiveAround(b);
-      if (seen) placed = multiply4(seen, placed);
-      const p = projectionOf(placed);
-      corners = (
-        corners ?? [
-          [rect.x, rect.y],
-          [rect.x + rect.width, rect.y],
-          [rect.x, rect.y + rect.height],
-          [rect.x + rect.width, rect.y + rect.height],
-        ]
-      ).map(([x, y]) => project(p, x + dx, y + dy) ?? [x + dx, y + dy]);
       dx = dy = 0;
     }
     if (style.position === 'relative') {
@@ -8969,6 +8978,37 @@ function movedAnchorRect(rect: CbRect, anchor: Box, box: Box): CbRect {
   const x = Math.min(...xs);
   const y = Math.min(...ys);
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
+/** A rectangle's four corners. */
+function rectCorners(r: CbRect): [number, number][] {
+  return [
+    [r.x, r.y],
+    [r.x + r.width, r.y],
+    [r.x, r.y + r.height],
+    [r.x + r.width, r.y + r.height],
+  ];
+}
+
+/** The projection a box's transform draws `at` through — the box, or a
+ *  piece of it the columns cut — about its origin there, its translation
+ *  too, seen in the perspective around the box (`movedAnchorRect`). */
+function transformProjection(b: Box, at: CbRect) {
+  const style = b.style;
+  const origin = style.transformOrigin;
+  const ox = at.x + resolve(origin[0], at.width, 0);
+  const oy = at.y + resolve(origin[1], at.height, 0);
+  const oz = style.transformOriginZ;
+  const m =
+    matrix4Of(style, at.width, at.height) ??
+    lift(matrixOf(style, at.width, at.height));
+  let placed = multiply4(
+    translate4(ox, oy, oz),
+    multiply4(m, translate4(-ox, -oy, -oz)),
+  );
+  const seen = perspectiveAround(b);
+  if (seen) placed = multiply4(seen, placed);
+  return projectionOf(placed);
 }
 
 /**
