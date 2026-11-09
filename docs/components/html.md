@@ -9177,9 +9177,10 @@ window at none of 96 steps, where it did at 12.
 **A page hears less of a drag that fell behind.** A page's script is a
 second cycle at each width: its `resize`, or its `ResizeObserver`, asks for
 an animation frame, the frame renders, and what that changes is styled,
-built and painted over what the width's own layout has just drawn. Through
-a drag that fell behind (above), a page whose scripts have had more than a
-tenth of the time since it last heard waits to hear of its viewport: its
+built and painted over what the width's own layout has just drawn. From
+the first frame of a drag that ran past its budget since the hand last held
+still, a page whose scripts have had more than a tenth of the time since it
+last heard waits to hear of its viewport: its
 window's and its `visualViewport`'s `resize`, its media query lists'
 `change` and its `ResizeObserver`s. What it reads stays what is there:
 `innerWidth`, `matches` and a rectangle answer for the width on screen, and
@@ -9187,7 +9188,11 @@ nothing the page's sheets say waits. It hears where the drag has come to
 when its scripts' part of the time comes round, when the hand holds still
 for 300 ms, and when it lets go: one `resize` and one `change`, where the
 answer moved, and each observer the size it has now, and nothing where the
-window is back where the page last heard of it. A task that runs for 300 ms
+window is back where the page last heard of it. And a page that waited in
+one drag waits from the first slow frame of each drag after it, whatever
+its scripts have taken since, since what a reaction costs is known only
+once it has run: a webmail page that heard the first width of a drag
+reacted for a quarter of a second in the middle of it. A task that runs for 300 ms
 is no rest of the hand, or the page's own reaction would tell it again. A
 page whose scripts take little hears every width, a drag the document keeps
 up with tells every page every width, and so does a window that says

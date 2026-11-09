@@ -6924,23 +6924,33 @@ core hook times itself with `_counted`, or a drag behind its edge is not
 seen to be.
 
 **What a page hears of a drag that fell behind waits, and what it reads
-does not** (`viewportHeld`, over `_cheap`). A page's `resize` and its
+does not** (`viewportHeld`, over `_cheap` and `_dragSlow`). A page's `resize` and its
 `ResizeObserver`s are a second cycle at each width — a webmail page's two
 each ask for the same animation frame, whose render, build and paint came
 to more than the width's own layout — and either alone starts it, which is
 why slowing one did nothing and holding the other did nothing. So
 `_viewportHeld` (`DomHost`) answers both: `rendering` hands the rendering
 steps what they last saw, and a look at the observers (`geometry`) finds
-what the last one found. Five things are load-bearing. **Nothing a page
+what the last one found. Six things are load-bearing. **Nothing a page
 reads is held**: a stale `innerWidth` works too, and tells a page reading
 it nothing true, where a late `resize` is a thing a browser's frame does as
 well. **Anything new that tells a page of its viewport asks
 `_viewportHeld`**, or it starts the cycle by itself. **A page holds only what it cannot afford**: it goes on
 hearing while its scripts are under `SCRIPT_SHARE` of the time since it
 last did (`ScriptEngine.busy`), so a small reaction stays at every width.
-**A rest wakes it itself**: `_drawAtRest` calls `onPaint`, since a drag
-that drew nothing cheaper paints nothing there, and the hold's end would
-go unheard. And **a timer that comes late is no rest of the hand**
+**It holds from a drag's first slow frame** (`_dragSlow`), where drawing
+cheaper waits for two of three, **and a page it held in one drag it holds
+from the first slow frame of each drag after**, whatever its scripts have
+spent since (`_viewportDear`): what a reaction costs is known only once it
+has run. A webmail page heard a drag's first width and reacted for some
+250 ms in the middle of it — a frame callback that sized its panes and read
+them back, and the timers it armed — and held, its later drags drew 16 to
+18 widths a second where they drew 11 to 14. That is learnt as the drag
+ends and not at a rest of the hand, so after a rest a page that has spent
+nothing hears the next step, as before. **A rest wakes it itself**:
+`_tellPage` calls `onPaint`, from `_drawAtRest` and from the rest of a drag
+that held the page and drew nothing cheaper, since a rest may paint nothing
+and the hold's end would go unheard. And **a timer that comes late is no rest of the hand**
 (`_armSettle`): the page's reaction held the thread past `DRAG_REST_MS`,
 the settle timer ran before the step waiting behind it, and that took the
 hold off, which told the page, which held the thread. An
