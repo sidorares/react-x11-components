@@ -200,6 +200,42 @@ export class PageSources {
     };
   }
 
+  /**
+   * A source as a peer connection's sender reads it (`peers.ts`): a source
+   * of its own whose `listen` reads frames through `read`, as one reader
+   * among the others, and whose `stop` stops only that, where the source's
+   * own `listen` would take it from the host and its `stop` would end it for
+   * every track. Null where no track is over the number.
+   */
+  tap(id: number): MediaSourceLike | null {
+    const held = this._held.get(id);
+    if (!held) return null;
+    const { source } = held;
+    let off: (() => void) | null = null;
+    return {
+      kind: source.kind,
+      label: source.label,
+      listen: (events) => {
+        off?.();
+        off = null;
+        const video = source.kind === 'video' ? events.video : undefined;
+        const audio = source.kind === 'audio' ? events.audio : undefined;
+        if (video) {
+          off = this.read(id, (frame) => video(frame as MediaVideoFrame));
+        } else if (audio) {
+          off = this.read(id, (data) => audio(data as MediaAudioData));
+        }
+      },
+      settings: () => source.settings(),
+      capabilities: () => source.capabilities(),
+      reconfigure: () => Promise.resolve(false),
+      stop: () => {
+        off?.();
+        off = null;
+      },
+    };
+  }
+
   /** A source as `<Html>` mounts it over a media element, or null where no
    *  track is over it any more. */
   shown(id: number, enabled: boolean): ShownSource | null {

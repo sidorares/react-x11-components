@@ -240,6 +240,7 @@
   },
   "peerDependencies": {
     "@embedpdf/pdfium": ">=2.15.0 <3.0.0",
+    "@libav.js/variant-webm-vp9": ">=6.10.9 <7.0.0",
     "@lezer/highlight": "^1.0.0",
     "@lydell/node-pty": "^1.0.0",
     "node-pty": "^1.0.0",
@@ -254,6 +255,9 @@
   },
   "peerDependenciesMeta": {
     "@embedpdf/pdfium": {
+      "optional": true
+    },
+    "@libav.js/variant-webm-vp9": {
       "optional": true
     },
     "@lezer/highlight": {
@@ -289,6 +293,7 @@
     "@eslint/js": "^9.32.0",
     "@json-render/core": "^0.22.0",
     "@json-render/react": "^0.22.0",
+    "@libav.js/variant-webm-vp9": "^6.10.9",
     "@lydell/node-pty": "^1.2.0-beta.15",
     "@types/node": "^26.2.0",
     "@types/pngjs": "^6.0.5",

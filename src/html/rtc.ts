@@ -143,14 +143,17 @@ export interface RTCCandidateLike {
 export interface RTCRtpSourceLike {
   kind: 'synchronization' | 'contributing';
   source: number;
-  /** When its last packet was delivered, on the page's time origin. */
+  /** When its last packet was delivered, as `performance.timeOrigin +
+   *  performance.now()` reads it. */
   timestamp: number;
   rtpTimestamp: number;
   audioLevel?: number;
 }
 
 /** One stats object, as an `RTCStatsReport` holds it: its fields are the
- *  type's dictionary's. */
+ *  type's dictionary's. An RTP stream's names its transceiver's `mid`,
+ *  which the page's realm finds the receiver's track by: an inbound-rtp's
+ *  `trackIdentifier` is that track's id, which only the realm knows. */
 export interface RTCStatsLike {
   id: string;
   type: string;
@@ -163,7 +166,9 @@ export interface RTCStatsLike {
 export interface RTCTransceiverInit {
   kind: 'audio' | 'video';
   direction: Exclude<RTCDirectionLike, 'stopped'>;
-  /** What its sender sends, or null. */
+  /** What its sender sends, or null: a source of its own to listen to for
+   *  frames and to stop, which takes nothing from the page's tracks of it
+   *  (the host hands a tap, `PageSources.tap`). */
   source: MediaSourceLike | null;
   /** The id of the track it sends, which a description's `msid` names. */
   trackId: string | null;
@@ -179,7 +184,8 @@ export interface RTCTransceiverLike {
    *  same object for the transceiver's life, as `receiver.track` is. */
   readonly received: MediaSourceLike;
   /** What its sender sends, and the id of the track it is — `addTrack`,
-   *  `replaceTrack`, `removeTrack`. */
+   *  `replaceTrack`, `removeTrack`. The source is the sender's own, as
+   *  `RTCTransceiverInit.source` is, and stopped once replaced. */
   setTrack(source: MediaSourceLike | null, trackId: string | null): void;
   setDirection(direction: Exclude<RTCDirectionLike, 'stopped'>): void;
   /** The streams its sender's track is in (`setStreams`). */

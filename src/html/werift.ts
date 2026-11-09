@@ -31,6 +31,12 @@ import {
 } from './rtc-codecs.js';
 import { unreachableServers } from './ice-servers.js';
 import { rtcError } from './rtc.js';
+import { MediaReceiver, MediaSender, hasMedia } from './werift-media.js';
+import type {
+  WMediaTrack,
+  WMediaTransceiver,
+  WeriftMediaModule,
+} from './werift-media.js';
 import { WeriftTransports } from './werift-transports.js';
 import type {
   WCandidate,
@@ -506,10 +512,25 @@ function codecOf(c: WCodec): RTCCodecParametersLike {
 
 // --- a connection -----------------------------------------------------------
 
+/** What a transceiver's stats are asked of: the connection's. */
+type StatsOf = (
+  t: WeriftTransceiver,
+  side: 'sender' | 'receiver',
+) => Promise<RTCStatsLike[]>;
+
 /** One of a connection's transceivers. */
 class WeriftTransceiver implements RTCTransceiverLike {
   readonly kind: 'audio' | 'video';
   readonly received: MediaSourceLike;
+  /** What sends its track's media, and what receives the peer's, where
+   *  werift has the packetizers to (`./werift-media.ts`). */
+  private readonly _send: MediaSender | null;
+  private readonly _receive: MediaReceiver | null;
+  /** Negotiated to send at some point: what an outbound-rtp's lifetime
+   *  starts at (WebRTC Statistics, 3.2). */
+  everSent = false;
+  /** `stop()` was asked for, whether or not werift was told yet. */
+  stopAsked = false;
 
   constructor(
     readonly t: WTransceiver,
@@ -517,19 +538,37 @@ class WeriftTransceiver implements RTCTransceiverLike {
     private readonly _codecs: WCodec[],
     /** Whether a negotiation is under way. */
     private readonly _session: { negotiating(): boolean },
+    media: WeriftMediaModule | null = null,
+    private readonly _statsOf: StatsOf = () => Promise.resolve([]),
   ) {
     this.kind = t.kind;
-    this.received = idleSource(t.kind);
+    const mt = t as unknown as WMediaTransceiver;
+    this._receive = media ? new MediaReceiver(media, mt) : null;
+    this._send = media ? new MediaSender(media, mt) : null;
+    this.received = this._receive ?? idleSource(t.kind);
   }
 
-  setTrack(source: MediaSourceLike | null, trackId: string | null): void {
-    const track = source
+  /** The werift track a sender's media is written into: a new one for each
+   *  track the page sends, as `replaceTrack` takes. */
+  trackFor(source: MediaSourceLike | null, trackId: string | null): unknown {
+    return source
       ? new this._w.MediaStreamTrack({
           kind: this.kind,
           ...(trackId ? { id: trackId } : {}),
         })
       : null;
+  }
+
+  /** Sends what a page's track gives, into the werift track its sender
+   *  sends from. */
+  sendFrom(source: MediaSourceLike | null, track: unknown): void {
+    this._send?.attach(source, track as WMediaTrack | null);
+  }
+
+  setTrack(source: MediaSourceLike | null, trackId: string | null): void {
+    const track = this.trackFor(source, trackId);
     this.t.sender.replaceTrack(track).catch(() => {});
+    this.sendFrom(source, track);
   }
   setDirection(direction: Exclude<RTCDirectionLike, 'stopped'>): void {
     this.t.setDirection(direction);
@@ -560,6 +599,8 @@ class WeriftTransceiver implements RTCTransceiverLike {
    * (`flushStop`).
    */
   stop(): void {
+    this.stopAsked = true;
+    this._send?.stop();
     if (this._session.negotiating()) {
       this._stopWaiting = true;
       this.t.setDirection('inactive');
@@ -572,15 +613,50 @@ class WeriftTransceiver implements RTCTransceiverLike {
     this._stopWaiting = false;
     this.t.stop();
   }
-  sources() {
-    return [];
+  /** What a description applied changed: the receiver's werift tracks to
+   *  hear, and whether it was ever negotiated to send. */
+  poll(currentDirection: RTCDirectionLike | null): void {
+    this._receive?.watch();
+    if (currentDirection === 'sendrecv' || currentDirection === 'sendonly') {
+      this.everSent = true;
+    }
   }
-  setJitterBufferTarget(): void {}
+  /** Whether it is done with: stopped, by the page or by a negotiation. */
+  get done(): boolean {
+    return this.stopAsked || this.t.stopped || this.t.stopping;
+  }
+  /** The SSRC its sender sends with. */
+  get senderSsrc(): number | undefined {
+    return (this.t as unknown as WMediaTransceiver).sender?.ssrc;
+  }
+  /** The SSRCs its receiver heard, or a description named. */
+  receiverSsrcs(): Set<number> {
+    return this._receive?.ssrcs() ?? new Set();
+  }
+  /** What its sender adds to its outbound-rtp and media-source stats,
+   *  and its receiver to its inbound-rtp. */
+  sendStats() {
+    return this._send?.stats() ?? { outbound: {}, source: {} };
+  }
+  receiveStats(): Record<string, unknown> {
+    return this._receive?.stats() ?? {};
+  }
+  /** The connection closed: nothing is sent or heard any more. */
+  dispose(): void {
+    this._send?.stop();
+    this._receive?.end();
+  }
+  sources() {
+    return this._receive?.sources() ?? [];
+  }
+  setJitterBufferTarget(ms: number | null): void {
+    this._receive?.setTarget(ms);
+  }
   sendTone(): boolean {
     return false;
   }
-  stats(): Promise<RTCStatsLike[]> {
-    return Promise.resolve([]);
+  stats(side: 'sender' | 'receiver'): Promise<RTCStatsLike[]> {
+    return this._statsOf(this, side);
   }
 }
 
@@ -651,6 +727,9 @@ class WeriftConnection implements RTCConnectionLike {
     negotiating: () => this._offered || this._pc.signalingState !== 'stable',
   };
   private readonly _net: WeriftTransports;
+  /** werift's packetizers, where it has them: what the media pipeline
+   *  stands on. */
+  private readonly _media: WeriftMediaModule | null;
   /** The m-lines of the remote offer's m-sections of kinds werift does
    *  not read, by mid: rejected in the answer as their own kinds. */
   private _unknown = new Map<string, string>();
@@ -677,6 +756,7 @@ class WeriftConnection implements RTCConnectionLike {
     this._codecs = [...codecs.audio, ...codecs.video];
     this._net = new WeriftTransports(this._pc, _events, () => this._closed);
     this._namesStun = namesStun(request);
+    this._media = hasMedia(_w) ? _w : null;
     this._servers = request.iceServers;
   }
 
@@ -742,7 +822,14 @@ class WeriftConnection implements RTCConnectionLike {
   private _wrap(t: WTransceiver): WeriftTransceiver {
     let w = this._wrapped.get(t);
     if (!w) {
-      w = new WeriftTransceiver(t, this._w, this._codecs, this._session);
+      w = new WeriftTransceiver(
+        t,
+        this._w,
+        this._codecs,
+        this._session,
+        this._media,
+        (x, side) => this._selected(x, side),
+      );
       this._wrapped.set(t, w);
     }
     return w;
@@ -799,8 +886,13 @@ class WeriftConnection implements RTCConnectionLike {
         const sends =
           section?.direction === 'sendrecv' ||
           section?.direction === 'sendonly';
+        const currentDirection = (this._negotiated.get(t) ??
+          (t.currentDirection as RTCDirectionLike | null) ??
+          null) as RTCDirectionLike | null;
+        const wrapped = this._wrap(t);
+        wrapped.poll(currentDirection);
         return {
-          transceiver: this._wrap(t),
+          transceiver: wrapped,
           mid: t.mid,
           direction: (t.stopping ||
           t.stopped ||
@@ -811,9 +903,7 @@ class WeriftConnection implements RTCConnectionLike {
           // what the last answer as handed says, which is WebRTC 1.0's
           // definition, before werift's own: it has a transceiver stopping
           // since inactive, or none
-          currentDirection: (this._negotiated.get(t) ??
-            (t.currentDirection as RTCDirectionLike | null) ??
-            null) as RTCDirectionLike | null,
+          currentDirection,
           remoteDirection: section ? section.direction : null,
           stopped: t.stopped,
           sender: { transport, parameters: parameters() },
@@ -963,7 +1053,9 @@ class WeriftConnection implements RTCConnectionLike {
           }
         : {}),
     });
-    return this._wrap(t);
+    const wrapped = this._wrap(t);
+    wrapped.sendFrom(init.source, track);
+    return wrapped;
   }
 
   async createOffer(options: { iceRestart: boolean }): Promise<string> {
@@ -1058,13 +1150,109 @@ class WeriftConnection implements RTCConnectionLike {
     return this._net.channel(init);
   }
 
-  stats(): Promise<RTCStatsLike[]> {
-    return this._net.stats();
+  /**
+   * The connection's stats, its RTP streams' as long as WebRTC Statistics
+   * has them live (3.2): an outbound-rtp from the answer that first
+   * negotiated its sender to send, which werift has from the transceiver's
+   * making, and an inbound-rtp from its first packet, which werift has from
+   * the description that named its SSRC. Neither of a transceiver stopped.
+   * Each names its transceiver's mid, which the page's realm finds its
+   * track by, and the remote streams and codecs go with what they are of.
+   */
+  async stats(): Promise<RTCStatsLike[]> {
+    // the transceivers as they are when the page asked, which a stop it
+    // asks for next does not change
+    type Seen = { mid: string | null; live: boolean; w: WeriftTransceiver };
+    const senders = new Map<number, Seen>();
+    const receivers = new Map<number, Seen>();
+    for (const w of this._wrapped.values()) {
+      const mid = w.t.mid;
+      if (w.senderSsrc !== undefined) {
+        senders.set(w.senderSsrc, { mid, live: w.everSent && !w.done, w });
+      }
+      for (const ssrc of w.receiverSsrcs()) {
+        receivers.set(ssrc, { mid, live: !w.done, w });
+      }
+    }
+    const list = await this._net.stats();
+    const byId = new Map(list.map((s) => [s.id, s]));
+    const live = list.filter((s) => {
+      if (s.type === 'outbound-rtp' || s.type === 'inbound-rtp') {
+        const seen = (s.type === 'outbound-rtp' ? senders : receivers).get(
+          Number(s.ssrc),
+        );
+        if (!seen || !seen.live) return false;
+        if (s.type === 'inbound-rtp' && !(Number(s.packetsReceived) > 0)) {
+          return false;
+        }
+        if (s.mid === undefined && seen.mid !== null) s.mid = seen.mid;
+        // what werift leaves out at 0, and what the media pipeline counts
+        s.nackCount ??= 0;
+        s.firCount ??= 0;
+        s.pliCount ??= 0;
+        if (s.type === 'outbound-rtp') {
+          s.retransmittedPacketsSent ??= 0;
+          s.retransmittedBytesSent ??= 0;
+          const { outbound, source } = seen.w.sendStats();
+          Object.assign(s, outbound);
+          const media = byId.get(String(s.mediaSourceId));
+          if (media?.type === 'media-source') Object.assign(media, source);
+        } else Object.assign(s, seen.w.receiveStats());
+        return true;
+      }
+      return true;
+    });
+    const ids = new Set(live.map((s) => s.id));
+    const kept = live.filter(
+      (s) =>
+        (s.type !== 'remote-inbound-rtp' && s.type !== 'remote-outbound-rtp') ||
+        ids.has(String(s.localId)),
+    );
+    for (const s of kept) {
+      if (s.remoteId !== undefined && !ids.has(String(s.remoteId))) {
+        delete s.remoteId;
+      }
+    }
+    const codecs = new Set(kept.map((s) => s.codecId).filter(Boolean));
+    return kept.filter((s) => s.type !== 'codec' || codecs.has(s.id));
+  }
+
+  /**
+   * A sender's or a receiver's stats (WebRTC 1.0, 8.5, the stats selection
+   * algorithm): its RTP streams, and every object they name, and those name,
+   * by the `…Id` fields that refer to another.
+   */
+  private async _selected(
+    t: WeriftTransceiver,
+    side: 'sender' | 'receiver',
+  ): Promise<RTCStatsLike[]> {
+    const ssrcs = side === 'receiver' ? t.receiverSsrcs() : null;
+    const ssrc = t.senderSsrc;
+    const all = await this.stats();
+    const byId = new Map(all.map((s) => [s.id, s]));
+    const queue = all.filter((s) =>
+      side === 'sender'
+        ? s.type === 'outbound-rtp' && Number(s.ssrc) === ssrc
+        : s.type === 'inbound-rtp' && ssrcs!.has(Number(s.ssrc)),
+    );
+    const out = new Map<string, RTCStatsLike>();
+    while (queue.length) {
+      const s = queue.shift()!;
+      if (out.has(s.id)) continue;
+      out.set(s.id, s);
+      for (const [key, value] of Object.entries(s)) {
+        if (!key.endsWith('Id') || typeof value !== 'string') continue;
+        const next = byId.get(value);
+        if (next) queue.push(next);
+      }
+    }
+    return [...out.values()];
   }
 
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    for (const w of this._wrapped.values()) w.dispose();
     this._pc.close().catch(() => {});
   }
 }
