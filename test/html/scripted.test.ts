@@ -916,8 +916,12 @@ test('a page held in one drag is held from the first slow frame of the next, tho
   await act(async () => void (await drag.clock.finish()));
   await drag.hears('resize 384');
   await drag.hears('observer 384');
-  // a drag the document keeps up with tells it every width, as ever
+  // a drag the document keeps up with tells it every width, as ever — once
+  // what the page wrote as it heard is painted, at the drag's own cost: a
+  // slow runner painted it in the drag's first frame, at the slow drag's,
+  // and the frame came out slow
   drag.work.value = 1;
+  await drag.rests();
   drag.live(true);
   await drag.step(380);
   await drag.hears('resize 380');
