@@ -313,6 +313,7 @@ import {
   forgetSizesIn,
   isInlineLevel,
 } from './layout/block.js';
+import { containingParent } from './layout/multicol.js';
 import type { PlacedTransition } from './layout/block.js';
 import {
   FRAME_ROOTS,
@@ -18290,7 +18291,9 @@ function offsetParentOf(box: Box, element: Element): Box | null {
   const position = box.style.position;
   const fixed = position === 'fixed';
   if (fixed && !containingBlockOf(box)) return null;
-  for (let at: Box | null = box.parent; at; at = at.parent) {
+  // up its containing blocks, as Blink goes: what is in a spanner has the
+  // multicol container it spans next, past the boxes it is laid out through
+  for (let at: Box | null = box.parent; at; at = containingParent(at)) {
     const el = at.el;
     if (!el) continue;
     if (containsOutOfFlow(at, fixed)) return at;

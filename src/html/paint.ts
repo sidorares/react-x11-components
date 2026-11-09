@@ -107,6 +107,7 @@ import {
   placedMatrix,
   holdsOutOfFlow,
 } from './layout/block.js';
+import { containingParent } from './layout/multicol.js';
 import { isScroller, scrollBarsOf, thumbRect } from './layout/scroll.js';
 import {
   FRAME_ROOTS,
@@ -7569,7 +7570,7 @@ export function containingBlockOf(box: Box): Box | null {
     return root;
   }
   if (box.style.position === 'fixed') {
-    for (let at = box.parent; at?.parent; at = at.parent) {
+    for (let at = box.parent; at?.parent; at = containingParent(at)) {
       if (holdsFixed(at)) return at;
       if (at.topLayer) return null;
     }
@@ -7582,7 +7583,7 @@ export function containingBlockOf(box: Box): Box | null {
     !transformed(containing.style) &&
     !holdsOutOfFlow(containing, false)
   ) {
-    containing = containing.parent;
+    containing = containingParent(containing);
   }
   return containing;
 }

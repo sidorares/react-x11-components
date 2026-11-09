@@ -140,13 +140,16 @@ import {
   forgetColumns,
   layoutColumns,
   spansColumns,
+  spannedRows,
+  isSpanner,
+  containingParent,
   columnsSet,
   cutIntoColumns,
   moveColumns,
   stripOf,
   stripStatic,
 } from './multicol.js';
-import type { Columns } from './multicol.js';
+import type { Columns, SpannedRows } from './multicol.js';
 import {
   BOX_RAISES,
   Box,
@@ -174,6 +177,7 @@ import {
 } from './boxes.js';
 import type {
   BoxTree,
+  ColumnPiece,
   FirstLineStyler,
   ForeignObject,
   Intrinsic,
@@ -4219,9 +4223,10 @@ function layoutBoxAt(
   // a column wide while its content is laid out, for what reads the box
   // it is in rather than the width it is handed
   // and about a box that spans them, in rows of columns (`layoutRows`)
+  const spanned = columns && columns.count > 1 ? spannedRows(box) : null;
   const rows =
-    columns && columns.count > 1 && box.children.some(spansColumns)
-      ? layoutRows(box, ctx, columns, contentWidth, borderBoxWidth)
+    columns && spanned
+      ? layoutRows(box, ctx, columns, contentWidth, borderBoxWidth, spanned)
       : null;
   if (columns) box.width = columns.width + box.horizontalExtra;
   const flow =
@@ -4524,21 +4529,46 @@ function layoutRows(
   columns: Columns,
   contentWidth: number,
   borderBoxWidth: number,
+  split: SpannedRows,
 ): number {
-  const all = box.children;
   const limit = columnLimit(box);
   const top = box.contentY;
   let y = top;
   /** The bottom margin of the spanner just before, which the next thing
    *  comes under: all of it, or what the next spanner's does not cover. */
   let margin: number | null = null;
-  let from = 0;
+  const { spanners, slices } = split;
+  /** Each box a spanner is in: what it holds, its edges as they are, and
+   *  the pieces each row of columns made of it. */
+  const broken = new Map<
+    Box,
+    {
+      children: Box[];
+      edges: [number, number, number, number, number, number];
+      pieces: CutPiece[];
+      first: number;
+      last: number;
+    }
+  >();
+  for (const [b, slice] of slices) {
+    if (b === box) continue;
+    broken.set(b, {
+      children: b.children,
+      edges: [0, 0, 0, 0, 0, 0],
+      pieces: [],
+      first: slice.first,
+      last: slice.last,
+    });
+  }
+  const all = box.children;
   try {
-    for (let i = 0; i <= all.length; i += 1) {
-      const child = all[i];
-      if (child && !spansColumns(child)) continue;
-      const row = all.slice(from, i);
-      from = i + 1;
+    for (let r = 0; r <= spanners.length; r += 1) {
+      const row = slices.get(box)!.rows[r] ?? [];
+      for (const [b, piece] of broken) {
+        if (r < piece.first || r > piece.last) continue;
+        b.children = slices.get(b)!.rows[r] ?? [];
+        CUT_EDGES.set(b, { top: r > piece.first, bottom: r < piece.last });
+      }
       if (row.length) {
         const set = row.some(
           (in_) =>
@@ -4568,8 +4598,14 @@ function layoutRows(
           strip,
           Math.max(0, limit - (y - top)),
           y,
+          r < spanners.length,
         );
       }
+      for (const [b, piece] of broken) {
+        if (r < piece.first || r > piece.last) continue;
+        notePiece(b, piece, r);
+      }
+      const child = spanners[r];
       if (!child) break;
       resolveEdges(child, contentWidth);
       y +=
@@ -4588,8 +4624,103 @@ function layoutRows(
   } finally {
     box.children = all;
     box.width = borderBoxWidth;
+    for (const [b, piece] of broken) {
+      b.children = piece.children;
+      CUT_EDGES.delete(b);
+    }
+  }
+  // each box a spanner broke: as one rect around its pieces, as a box a
+  // column break falls inside is, with its edges as its first and its last
+  // pieces have them
+  for (const [b, piece] of broken) {
+    const [mt, bt, pt, mb, bb, pb] = piece.edges;
+    b.marginTop = mt;
+    b.borderTop = bt;
+    b.padTop = pt;
+    b.marginBottom = mb;
+    b.borderBottom = bb;
+    b.padBottom = pb;
+    // what a piece has cut away, which the whole box it paints a part of
+    // has beyond it
+    const pieces: ColumnPiece[] = [];
+    for (const { piece: p, above, below } of piece.pieces) {
+      if (!(p.width > 0 || p.height > 0)) continue;
+      const lift = above ? bt + pt : 0;
+      pieces.push({
+        ...p,
+        wholeY: p.wholeY - lift,
+        wholeHeight: p.wholeHeight + lift + (below ? bb + pb : 0),
+      });
+    }
+    if (!pieces.length) continue;
+    let x1 = Infinity;
+    let y1 = Infinity;
+    let x2 = -Infinity;
+    let y2 = -Infinity;
+    for (const p of pieces) {
+      x1 = Math.min(x1, p.x);
+      y1 = Math.min(y1, p.y);
+      x2 = Math.max(x2, p.x + p.width);
+      y2 = Math.max(y2, p.y + p.height);
+    }
+    b.x = x1;
+    b.y = y1;
+    b.width = x2 - x1;
+    b.height = y2 - y1;
+    COLUMN_PIECES.set(b, pieces);
   }
   return y + (margin ?? 0) - top;
+}
+
+/** A piece of a box a spanner is in, and whether its top and its bottom
+ *  edges were cut away from it. */
+interface CutPiece {
+  piece: ColumnPiece;
+  above: boolean;
+  below: boolean;
+}
+
+/** A box a spanner breaks: what its pieces paint as the box (`layoutRows`).
+ *  Its top edges in its first row of columns and its bottom ones in its
+ *  last, as `box-decoration-break: slice` has them (CSS Fragmentation 3). */
+const CUT_EDGES = new WeakMap<Box, { top: boolean; bottom: boolean }>();
+
+/** What a row of columns made of a box a spanner is in: its pieces in that
+ *  row — the ones a column break made of it, or the box — and its edges as
+ *  the row it is first or last in has them. */
+function notePiece(
+  b: Box,
+  piece: {
+    edges: [number, number, number, number, number, number];
+    pieces: CutPiece[];
+    first: number;
+    last: number;
+  },
+  r: number,
+): void {
+  if (r === piece.first) {
+    piece.edges[0] = b.marginTop;
+    piece.edges[1] = b.borderTop;
+    piece.edges[2] = b.padTop;
+  }
+  if (r === piece.last) {
+    piece.edges[3] = b.marginBottom;
+    piece.edges[4] = b.borderBottom;
+    piece.edges[5] = b.padBottom;
+  }
+  const above = r > piece.first;
+  const below = r < piece.last;
+  const made = COLUMN_PIECES.get(b) ?? [
+    {
+      x: b.x,
+      y: b.y,
+      width: b.width,
+      height: b.height,
+      wholeY: b.y,
+      wholeHeight: b.height,
+    },
+  ];
+  for (const p of made) piece.pieces.push({ piece: p, above, below });
 }
 
 /** The tallest a multicol container's columns may be: its own height where
@@ -9034,12 +9165,13 @@ function acceptableAnchor(
   const positioned = (b: Box) =>
     b.style.position === 'absolute' || b.style.position === 'fixed';
   const cbOf = (b: Box): Box | null =>
-    positioned(b) ? containingBlockOf(b) : b.parent;
+    positioned(b) ? containingBlockOf(b) : containingParent(b);
   const cb = cbOf(box);
   const initial = cb === null || cb.parent === null;
   if (!initial) {
     let within = false;
-    for (let at = anchor.parent; at; at = at.parent) {
+    // up its containing blocks, which pass a spanner's boxes by
+    for (let at = containingParent(anchor); at; at = containingParent(at)) {
       if (at === cb) {
         within = true;
         break;
@@ -10679,7 +10811,7 @@ function containingBlockFor(box: Box): Box | null {
   }
   while (node) {
     if (containsOutOfFlow(node, fixed) || node.parent === null) return node;
-    node = node.parent;
+    node = containingParent(node);
   }
   return null;
 }
@@ -10923,6 +11055,14 @@ export function resolveEdges(box: Box, containingWidth: number): void {
   box.marginBottom = edge(style.marginBottom, containingWidth);
   box.marginLeft = edge(style.marginLeft, containingWidth);
   box.bottomStrut = null;
+  // a piece of a box a spanner breaks (`layoutRows`): its top edges in its
+  // first row of columns and its bottom ones in its last (CSS
+  // Fragmentation 3, `box-decoration-break: slice`)
+  const cut = columned.any ? CUT_EDGES.get(box) : undefined;
+  if (cut) {
+    if (cut.top) box.marginTop = box.borderTop = box.padTop = 0;
+    if (cut.bottom) box.marginBottom = box.borderBottom = box.padBottom = 0;
+  }
   // A table's parts but its caption have no margins, and its rows and row
   // groups no padding either (CSS 2.1 8.3, 8.4): a cell set `margin: 50px`
   // left a gap in its table that no browser draws. The values stay theirs,
@@ -11014,7 +11154,7 @@ export function establishesBFC(box: Box): boolean {
   // a multicol container (CSS Multi-column 1, 2), and a box that spans
   // one's columns (6)
   if (style.columns && box.kind === 'block') return true;
-  if (style.columnSpan && box.parent?.style.columns) return true;
+  if (style.columnSpan && isSpanner(box)) return true;
   if (
     style.display === 'inline-block' ||
     style.display === 'flex' ||

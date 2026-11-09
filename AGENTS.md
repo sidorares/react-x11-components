@@ -7914,6 +7914,22 @@ widget** (`blockedByModal`): a widget is a node over the document, which
 the backdrop is drawn under, so the page's fields would be drawn over the
 backdrop and over the dialog where the two meet.
 
+**A box that spans columns from inside a block breaks the blocks it is
+in, and skips them on the way up** (CSS Multi-column 1, 6; `spannedRows`,
+`layoutRows`, `containingParent`). `layoutRows` lays the container's
+content out a row of columns at a time, each block a spanner is in given
+the children it holds in that row and its edges cut where the spanner
+breaks it (`CUT_EDGES`, read by `resolveEdges`), and afterwards one
+rectangle around the pieces of all its rows with its edges as its first
+and last rows had them. Two things are load-bearing. **Anything new that
+walks up containing blocks goes through `containingParent`**, as layout's
+and paint's containing block, anchor acceptability and `offsetParent` do:
+a spanner's is the container, and what is positioned in it is not in the
+blocks it was laid out through. And **nothing a row lays out may be kept
+across rows**: a block is laid out once a row with other children, so
+nothing in a multicol container is kept (`inMulticol`), which this stands
+on.
+
 **A view transition's tree is boxes in the top layer, and what it
 captured is a hole** (`src/html/transition.ts`). The page's realm runs
 the transition's steps and asks the element to capture each state; the

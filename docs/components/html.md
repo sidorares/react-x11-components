@@ -4949,12 +4949,19 @@ on in columns past its edge; under `column-fill: auto` its columns are that
 tall, each filled before the next is started, and with no height to fill
 to the first holds everything. A float that cannot be cut, an image, stays
 with the lines beside it, where a browser takes it to the next column and
-sets those lines again without it. A child of the container that says
-`column-span: all` is set across all its columns: what comes before it is
-balanced in columns of its own, the box under them as wide as the
+sets those lines again without it. A box that says `column-span: all` is
+set across all the columns of the container it is in, as a child of it or
+further in, through blocks in the container's flow that are no formatting
+context of their own: what comes before it is balanced in columns of its
+own, whatever `column-fill` says, the box under them as wide as the
 container, and what follows in columns under it; its margins collapse only
 with those of a spanner next to it, and the container is no narrower than
-it where its content sets its width. A box a break falls inside has a piece in each
+it where its content sets its width. A block a spanner is in is broken
+about it, its top edges in the row before and its bottom ones in the row
+after, and is one rectangle around its pieces in both. What is positioned
+in a spanner, and in nothing positioned in it, is positioned in the
+container, its offset parent with it, and an anchor in it is in none of the
+boxes it is laid out through. A box a break falls inside has a piece in each
 column: its background and its borders are drawn a piece at a time, with no
 edge at the break, `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
@@ -4973,9 +4980,10 @@ Positioning 1, 2). A multicol container in a vertical writing mode sets its
 columns in its frame, along the inline axis down the page and as tall as its
 block size, and what is positioned in them is cut where they are. A
 multicol container in another's columns goes to a column whole, where a
-browser breaks it, and a spanner further in than a child of the container is
-set in its column, where a browser breaks the boxes around it about it
-(WPT's `anchor-position-multicol-015` to `017` and `-colspan-`).
+browser breaks it, and a box positioned in a block a spanner breaks is
+laid out in the row it is in alone, where a browser cuts it across the rows
+on both sides of the spanner (WPT's `anchor-position-multicol-015`, `016`
+and `-colspan-003`).
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -7587,7 +7595,7 @@ round for `!important`. Tailwind 4 writes all of its CSS in four of them.
 
 **Not implemented:** the parts of CSS grid above, `transform-style:
 preserve-3d`,
-`column-span` on a box further in than its children, forced breaks, and
+forced breaks, and
 a table in one broken
 between its rows — it goes to the next column whole, and a box a break
 falls inside casts no shadow — conic and repeating
