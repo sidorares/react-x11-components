@@ -1225,6 +1225,10 @@ export class HtmlViewNode extends Node {
     if (!kept) return UNRENDERED;
     if (this._styledWith !== this._cascade) return null;
     if (pseudo === '') return kept;
+    // a `::backdrop`'s, which it has where its element is in the top layer
+    if (pseudo === 'backdrop') {
+      return this._backdropOf(tree, el)?.style ?? UNRENDERED;
+    }
     if (
       pseudo !== 'before' &&
       pseudo !== 'after' &&
@@ -10266,6 +10270,14 @@ export class HtmlViewNode extends Node {
     const generated = new Map<Element, number>();
     const redecorated: [Box, Box['decoration']][] = [];
     const walk: Box[] = blocks.slice();
+    // and the `::backdrop` of each reached element in the top layer, which
+    // is beside its element's box and in none of the blocks
+    if (pseudoRules !== HOVER_PSEUDO_NONE && topLayerBoxes(tree.root).length) {
+      for (const el of reach) {
+        const backdrop = this._backdropOf(tree, el);
+        if (backdrop) walk.push(backdrop);
+      }
+    }
     while (walk.length) {
       const box = walk.pop()!;
       for (const child of box.children) walk.push(child);
@@ -10355,9 +10367,25 @@ export class HtmlViewNode extends Node {
         ink = diff.ink;
       } else if (box.pseudo === 'backdrop') {
         // a `::backdrop`, which inherits from its element and not from the
-        // box around it: built again where its element was restyled
+        // box around it: built again where its element was restyled, and
+        // otherwise restyled where its element was reached, as its
+        // transitions and animations run
         const from = GENERATED_FROM.get(box);
-        if (from && changed.has(from)) return false;
+        if (!from) continue;
+        if (changed.has(from)) return false;
+        if (!reach.has(from)) continue;
+        const inherits = fresh.get(from);
+        if (!inherits) return false;
+        const made = cascade.backdropStyleFor(from, inherits);
+        const diff = hoverChange(box.style, made);
+        if (diff === false) return false;
+        if (!diff) continue;
+        if (diff.move && !movable(box, box.style, made)) return false;
+        if (diff.reach) reaches = true;
+        if (diff.order) reorders = true;
+        if (diff.move) movingBoxes.add(box);
+        style = made;
+        ink = diff.ink;
       } else if (box.pseudo) {
         // a first letter, styled from the box its letter is in
         if (above) return false;

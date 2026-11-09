@@ -17189,6 +17189,31 @@ test('an animation plays and pauses through pending tasks and its ready promise,
   );
 });
 
+test('a ::backdrop runs its transitions from its starting style, as a ::before does, and comes to where they end', async () => {
+  // CSS Transitions 2, 3.1; WPT css-anchor-position/popover-anchor-backdrop-transition
+  const doc = await hosted(
+    '<style>::backdrop{transition:opacity 1s step-end;opacity:1}' +
+      '@starting-style{::backdrop{opacity:0}}' +
+      '#p::before{content:"x";transition:opacity 1s step-end;opacity:1}' +
+      '@starting-style{#p::before{opacity:0}}</style>' +
+      '<div id="p" popover>a</div><p id="out"></p><script>' +
+      'var p = document.getElementById("p"), r = [];' +
+      'p.showPopover();' +
+      'r.push(getComputedStyle(p, "::backdrop").opacity);' +
+      'setTimeout(function () {' +
+      '  r.push(getComputedStyle(p, "::backdrop").opacity, getComputedStyle(p, "::before").opacity);' +
+      "  document.getElementById('out').textContent = r.join('|');" +
+      '}, 1300);</script>',
+  );
+  assert.equal(
+    await settled(doc, 'out', (t) => t !== ''),
+    // the backdrop's box is restyled at the frames a ::before's is, though it
+    // is in none of its element's blocks: it stood at its starting style
+    '0|1|1',
+    doc.logs.join('\n'),
+  );
+});
+
 test('CSS numeric values are made, added, converted and parsed as CSS Typed OM has them', async () => {
   const doc = await hosted(
     '<p id="out"></p><script>' +

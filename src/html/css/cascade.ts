@@ -4407,6 +4407,7 @@ export class Cascade {
     '': new RuleIndex(),
     before: new RuleIndex(true),
     after: new RuleIndex(true),
+    backdrop: new RuleIndex(true),
   };
   /** The `@keyframes` a view transition under way makes, each group's
    *  from where its element was to where it is (CSS View Transitions 1,
@@ -5219,7 +5220,11 @@ export class Cascade {
         const pseudo = splitPseudoElement(rule);
         if (!pseudo) {
           this._starting[''].add(rule, rightmostKey(rule.selector), scope);
-        } else if (pseudo.which === 'before' || pseudo.which === 'after') {
+        } else if (
+          pseudo.which === 'before' ||
+          pseudo.which === 'after' ||
+          pseudo.which === 'backdrop'
+        ) {
           this._starting[pseudo.which].add(pseudo.rule, undefined, scope);
           this._restated.push(pseudo.rule, rule);
         }
@@ -8295,13 +8300,14 @@ export class Cascade {
       this._scopedInto(el, 'backdrop', candidates);
     }
     candidates.sort(byCascade);
+    // its animations and transitions run, as a `::before`'s do
     const style = this._computeStyle(
       el,
       elementStyle,
       false,
       candidates,
       false,
-      null,
+      'backdrop',
     );
     // in the top layer with its element, and out of the flow as it is
     if (style.position !== 'absolute' && style.position !== 'fixed') {
@@ -8888,7 +8894,10 @@ export class Cascade {
   ): ComputedStyle | null {
     if (this.unrendered) return null;
     const index =
-      pseudo === '' || pseudo === 'before' || pseudo === 'after'
+      pseudo === '' ||
+      pseudo === 'before' ||
+      pseudo === 'after' ||
+      pseudo === 'backdrop'
         ? this._starting[pseudo]
         : null;
     if (!index?.size) return null;
