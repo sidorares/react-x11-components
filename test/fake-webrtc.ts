@@ -161,6 +161,7 @@ export class FakeTransceiver implements RTCTransceiverLike {
     streams: string[],
     trackId: string | null,
     media = false,
+    private readonly _now: () => number = () => performance.now(),
   ) {
     this.received = media ? new FakeReceived(kind) : idleSource(kind);
     this.streams = streams;
@@ -196,11 +197,11 @@ export class FakeTransceiver implements RTCTransceiverLike {
   setJitterBufferTarget(): void {}
   /** The tones sent, each with its duration, in the order sent. */
   readonly tones: string[] = [];
-  /** When each tone was sent, by `performance.now()`. */
+  /** When each tone was sent, by the stack's `now`. */
   readonly toneTimes: number[] = [];
   sendTone(tone: string, duration: number): boolean {
     this.tones.push(`${tone}:${duration}`);
-    this.toneTimes.push(performance.now());
+    this.toneTimes.push(this._now());
     return this.kind === 'audio';
   }
   /** A sender's or a receiver's stats, which the media mode selects from
@@ -276,6 +277,7 @@ export class FakeConnection implements RTCConnectionLike {
       init.streams,
       init.trackId,
       this.stack.media,
+      this.stack.now,
     );
     t.source = init.source;
     this._media(t);
@@ -570,6 +572,7 @@ export class FakeConnection implements RTCConnectionLike {
             [],
             null,
             this.stack.media,
+            this.stack.now,
           );
           this._media(t);
           t.mid = s.mid;
@@ -670,8 +673,12 @@ export class FakeWebRTC implements HtmlWebRTC {
   /** Whether a connection carries its senders' frames to the other's
    *  receivers, as a stack with a media pipeline does. */
   readonly media: boolean;
-  constructor(options: { media?: boolean } = {}) {
+  /** What a transceiver stamps a tone it is handed with: the wall clock, or
+   *  a clock the test holds. */
+  readonly now: () => number;
+  constructor(options: { media?: boolean; now?: () => number } = {}) {
     this.media = !!options.media;
+    this.now = options.now ?? (() => performance.now());
   }
   connect(
     request: RTCConnectRequest,

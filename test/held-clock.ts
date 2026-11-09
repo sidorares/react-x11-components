@@ -1,6 +1,6 @@
 // An animation's clock, held: its time moves only when the test says so.
 //
-// Ten things here run on the wall clock on purpose — the maps wheel's glide
+// Eleven things here run on the wall clock on purpose — the maps wheel's glide
 // and the window a map counts as moving in after it (`glideClock` and
 // `settleClock` in ../src/maps/controller.ts), a reorder drop's flight home
 // (`flightClock` in ../src/reorder/clock.ts), the march of `<Flow>`'s dashed
@@ -9,13 +9,15 @@
 // the virtual window's idea of a scroll in flight (`windowClock` in
 // ../src/internal/window.ts), the rest `<Html>` holds a hover for while its
 // content moves under the pointer (`hoverClock` in ../src/html/node.ts),
-// `<CodeEditor>`'s caret blink (`blinkClock` in ../src/code-editor/node.ts)
-// and the limit on how long a response may go with nothing arriving
-// (`stallClock` in ../src/html/network.ts). Each waits on a timer for its next
-// step, and all but the blink and the limit read the time as they go. A runner
-// slow enough to spend a step's wait inside one `await` finds the step already
-// taken, and each has failed that way. Held, a step is taken when a `frame()`
-// the test takes brings the time to it.
+// `<CodeEditor>`'s caret blink (`blinkClock` in ../src/code-editor/node.ts),
+// the limit on how long a response may go with nothing arriving
+// (`stallClock` in ../src/html/network.ts) and a page's own timers, which its
+// DTMF tones are played on (`timerClock` in ../src/html/scripts/host.ts). Each
+// waits on a timer for its next step, and all but the blink, the limit and the
+// page's timers read the time as they go. A runner slow enough to spend a
+// step's wait inside one `await` finds the step already taken, and each has
+// failed that way. Held, a step is taken when a `frame()` the test takes
+// brings the time to it.
 //
 // It stands in for the clock and nothing else: the event still goes through
 // the in-process X server, and the harness's own timers and the component's
@@ -41,6 +43,9 @@ export const FRAME_MS = 16;
 export interface HeldClock {
   /** Whether a step is waiting for its time. */
   readonly pending: boolean;
+  /** How far the clock has come since it was held — what a test stamps
+   *  what it sees with, for a clock with no `now` of its own. */
+  readonly time: number;
   /** One frame: the clock moves on by a frame and the steps due by then
    *  are taken. False when none was waiting. */
   frame(): Promise<boolean>;
@@ -71,6 +76,9 @@ export function holdClock(t: TestContext, clock: AnimationClock): HeldClock {
   const held: HeldClock = {
     get pending() {
       return waiting.size > 0;
+    },
+    get time() {
+      return time;
     },
     async frame() {
       if (waiting.size === 0) return false;
