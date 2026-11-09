@@ -4062,6 +4062,14 @@ export interface TreeReach {
    *  nth-last-child(2) ~ .card` changes nothing in a holder of no `.card`.
    *  True for any child. */
   later: Tested;
+  /** Where `bits` reach the holder's own later siblings (`CHANGES_LATER`):
+   *  the holders a test of what an element holds before a sibling
+   *  combinator is of, by the compound it is in, and what among those
+   *  siblings, and in them, its rule's subject names (`subjects`, null for
+   *  all of it) — `.cell:not(:empty) ~ .label` reaches nothing past a
+   *  `<head>` a script came or went in. Null for every later sibling of
+   *  any holder, with what is in them. */
+  holderLater: TreeBelow | null;
   anchors: ChangeAnchors | null;
   /** Which pseudo-elements' rules it can change the answer to, which a
    *  restyle compares no style of (`HtmlViewNode._seedsThatMoved`). */
@@ -5527,6 +5535,11 @@ export class Cascade {
       below,
       self,
       later: kidsLater ? this._treeLater() : false,
+      // a text's own tests are of no holder this says
+      holderLater:
+        later && !(text && rules.bits('t') & CHANGES_LATER)
+          ? this._treeHolderLater()
+          : null,
       anchors: this._changeAnchors([
         text ? asked : this._heldReached(asked, nodes),
       ]),
@@ -5691,6 +5704,24 @@ export class Cascade {
   }
 
   private _treeLaterKept: Tested | undefined = undefined;
+
+  /** `TreeReach.holderLater` for this cascade's rules: null where a
+   *  compound could not be compiled. */
+  private _treeHolderLater(): TreeBelow | null {
+    if (this._treeHolderLaterKept !== undefined) {
+      return this._treeHolderLaterKept;
+    }
+    const tested = this._treeTested('later');
+    const subjects = this._changeRules.later('h');
+    this._treeHolderLaterKept = tested && {
+      ...tested,
+      subjects:
+        subjects && subjects.size ? this._subjectsMatcher(subjects) : null,
+    };
+    return this._treeHolderLaterKept;
+  }
+
+  private _treeHolderLaterKept: TreeBelow | null | undefined = undefined;
 
   /** `TreeReach.siblings` for this cascade's rules: any element, where a
    *  compound could not be compiled. */

@@ -3048,6 +3048,81 @@ test("a child put in reaches the later siblings of its new siblings, and its hol
   assert.notStrictEqual(el2.computedStyle(p2)?.color, 'rgb(0, 0, 255)');
 });
 
+test("a child put in reaches its holder's later siblings only where the test of what holds it can be of that holder, and there what its rule's subject names", async () => {
+  // A webmail page styles its rows' cells `.cell:not(:empty) ~ .label`, and
+  // puts a <script> in its <head> and takes it out twice a second: each one
+  // reached the <head>'s later sibling, the <body>, and restyled, built and
+  // laid out all of it
+  const { node } = await render(
+    '<html><head><script></script></head><body>' +
+      '<div class="row" id="row"><span class="cell" id="cell"></span>' +
+      '<span class="label" id="label">x</span>' +
+      '<span class="other" id="other">y</span></div>' +
+      '<div class="row2"><span class="hold" id="hold"></span>' +
+      '<span class="far"><b class="x" id="x">z</b><i id="i">w</i></span></div>' +
+      '</body></html><style>' +
+      '.cell:not(:empty) ~ .label { color: #ff0000 } ' +
+      '.hold:empty ~ .far .x { color: #00aa00 }</style>',
+    300,
+  );
+  const el = view(node);
+  await act();
+  const put = (holder: Element, kid: ChildNode): HtmlChange => {
+    appendChild(holder as never, kid as never);
+    return {
+      type: 'childList',
+      target: holder as never,
+      addedNodes: [kid as never],
+      removedNodes: [],
+    };
+  };
+  const [label, other, x, i] = ['label', 'other', 'x', 'i'].map((id) =>
+    byId(el, id),
+  );
+  const body = byId(el, 'row').parent as Element;
+  const head = (body.parent as Element).children.find(
+    (n) => (n as Element).name === 'head',
+  ) as Element;
+
+  const script = put(head, createElement('script', {}));
+  const fromHead = scopeOf(el, [script]);
+  assert.ok(fromHead, 'a script in the <head> restyled everything');
+  for (const one of [body, label, other, x, i]) {
+    assert.ok(
+      !fromHead.has(one),
+      `the <head> reached ${one.attribs.id ?? one.name}`,
+    );
+  }
+  // nor does a row that is no cell reach the row after it
+  const row = put(byId(el, 'row'), createElement('span', {}));
+  const fromRow = scopeOf(el, [row]);
+  assert.ok(fromRow && !fromRow.has(x) && !fromRow.has(i), 'a row reached');
+  el.touchDocument([script, row]);
+  await act();
+
+  // a cell that comes to hold something reaches the label after it, and not
+  // what else follows it
+  const filled = put(byId(el, 'cell'), createText('3'));
+  const fromCell = scopeOf(el, [filled]);
+  assert.ok(fromCell, 'a cell restyled everything');
+  assert.ok(fromCell.has(label), 'the label was not reached');
+  assert.ok(!fromCell.has(other), 'what the rule does not style was reached');
+  el.touchDocument([filled]);
+  await act();
+  assert.strictEqual(el.computedStyle(label)?.color, 'rgb(255, 0, 0)');
+
+  // and one whose rule's subject is in what follows reaches that, inside it
+  assert.strictEqual(el.computedStyle(x)?.color, 'rgb(0, 170, 0)');
+  const held = put(byId(el, 'hold'), createElement('em', {}));
+  const fromHold = scopeOf(el, [held]);
+  assert.ok(fromHold, 'a holder restyled everything');
+  assert.ok(fromHold.has(x), 'the subject in a later sibling was not reached');
+  assert.ok(!fromHold.has(i), 'what the subject does not name was reached');
+  el.touchDocument([held]);
+  await act();
+  assert.notStrictEqual(el.computedStyle(x)?.color, 'rgb(0, 170, 0)');
+});
+
 test('a change a :has() anchors at the root of a long document is restyled in place where the root’s style comes out as it was', async () => {
   // Next.js puts scripts and styles in its <head> as it loads, and a
   // `:root:has(…)` in its sheets puts the root among the elements each one

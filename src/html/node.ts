@@ -13398,8 +13398,20 @@ export class HtmlViewNode extends Node {
       reach;
     if (reach.pseudo > scope.treePseudo) scope.treePseudo = reach.pseudo;
     let bits = reach.bits;
-    if (!drawn && !bits && !kidsLater && !followers && !anchors) return true;
     const holder = root ? root.host : (parent as Element);
+    // The holder's own later siblings, and what is in them, a test of what
+    // it holds before a sibling combinator reaches: where the test can be
+    // of the holder, and there what its rule's subject names
+    // (`TreeReach.holderLater`). A webmail page styles its rows' cells
+    // `.cell:not(:empty) ~ .label`, and every script it put in its
+    // `<head>` and took out again restyled, built and laid out all of the
+    // `<body>`, its later sibling, twice a second.
+    const holderLater =
+      bits & CHANGES_LATER && !root ? reach.holderLater : null;
+    if (holderLater && !testedOf(holderLater.holder, holder)) {
+      bits &= ~CHANGES_LATER;
+    }
+    if (!drawn && !bits && !kidsLater && !followers && !anchors) return true;
     // under a holder nothing draws nothing it reaches is drawn — but its
     // own later siblings, which a test of what it holds before a sibling
     // combinator reaches, are not under it: `.panel:empty ~ .hint` with the
@@ -13504,6 +13516,8 @@ export class HtmlViewNode extends Node {
         scope.own,
         crossing,
         from === undefined,
+        null,
+        holderLater?.subjects ?? null,
       );
       if (from !== undefined && !(bits & CHANGES_BELOW)) {
         const reached: Element[] = [];

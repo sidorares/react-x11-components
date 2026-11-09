@@ -2671,7 +2671,12 @@ combinator (`:empty + x`), and a sibling combinator alone reaches the
 holder's children after where the child came or went and what is in them
 (`TreeReach.followers`, `followersOf`) — all of them where the record does
 not say where; the Guardian's ad scripts put a `<script>` in its `<head>`
-some thirty times a load, and each restyled the whole `<body>`. **A test
+some thirty times a load, and each restyled the whole `<body>`. The first
+reaches them only where that test can be of the holder, and of them only
+what its rule's subject names (`TreeReach.holderLater`): a webmail page
+styles its rows' cells `.cell:not(:empty) ~ .label`, and every `<script>`
+it put in its `<head>` and took out, twice a second, restyled, built and
+laid out the whole `<body>`, the `<head>`'s later sibling. **A test
 of where a child sits, or of what an element holds, reaches from what its
 compound names** (`TreeReach.self` and `below`, `MutationRules.tested`):
 the holder for a test of what an element holds (`:empty`), its children
