@@ -4973,6 +4973,10 @@ edge at the break, `elementRect` answers the rectangle that takes in all of
 them, as a browser's bounding rect does, and a point between two of them is
 not over it. Right to left, the first column is the one at the right. A
 container as wide as its content is as wide as its columns side by side.
+What a block is taller than its content — a height its content does not
+fill, its padding and border at the end — is room a column break falls in,
+as in a box with nothing in it, so a box that goes whole before it stays in
+the column it fits in, and the room goes on into the next.
 A transform makes no box monolithic, so a containing block made by one is
 broken as any block is, and an empty block with a height as well, though
 its pieces are drawn through the matrix of the whole. As an anchor such a
@@ -7541,7 +7545,9 @@ anchor — an edge of what it is placed in that is the anchor's, a
 pane's, for a box fixed to the viewport anchored in the document and for a
 box in the document anchored to one fixed to the viewport, which lays
 nothing out. A box anchored to such a box, or to something in it, follows
-it as a chain, on the axes both follow on, from its first layout. A page's
+it as a chain, on the axes both follow on, from its first layout. What is in
+such a box and positioned against something outside it — a fixed box in a
+fixed box — is not moved with it, and follows its own anchor alone. A page's
 own scroll that the pane cannot take yet, since it has not measured how
 far the document reaches, is the scroll such a box is placed at, as a
 browser has it at once. A scroll in a container a transform scales or

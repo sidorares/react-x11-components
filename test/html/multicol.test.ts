@@ -1451,3 +1451,18 @@ test('an anchor a transform scales is broken across the columns as any block is,
   assert.deepStrictEqual(at('c'), [22, 20, 32, 50]);
   assert.deepStrictEqual(at('l').slice(0, 3), [0, 0, 22]);
 });
+
+test('what a block is taller than its content is room a column break falls in, and a box that goes whole before it stays in its column', async () => {
+  // WPT css-anchor-position/anchor-scroll-003: a scroll container 80 tall
+  // ten pixels into the second column fits there, and the 110 its block
+  // has under it is cut across the columns as a box with nothing in it is
+  const { el } = await renderScrolled(
+    '<style>body{margin:0}</style><div style="column-count:3;column-gap:10px;' +
+      'width:300px;height:100px"><div style="height:300px"><div style="height:110px">' +
+      '</div><div id="s" style="overflow-y:scroll;height:80px"></div></div></div>',
+    400,
+    400,
+  );
+  const s = boxOf(el, 's');
+  assert.deepStrictEqual([Math.round(s.x), s.y, s.height], [103, 10, 80]);
+});
