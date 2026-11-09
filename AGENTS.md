@@ -4573,8 +4573,14 @@ closes a way out a DOM binding opens by accident:
   `elementRect` and `elementAt` measure from `_scrolledOrigin` — `abs`
   moved by the scroll since a pass placed it, noted where core calls the
   element only after one, its paint and the blit's `viewportFixedRects`.
+  A scroll down a page asked for before the pane had the extent for it is
+  held for the pane's next pass (`oweScrollDown`), and the page's `scrollY`
+  is there already, so what is fixed to the viewport is moved by it too
+  (`_pageShift`): read without it, a box fixed `bottom: 50px` under a
+  `scrollTo(0, 300)` the first scripts made was 300 above the viewport's
+  foot. Not a sticky box, which `_viewportAt` places for the held scroll.
   **Anything new that answers a page in `elementRect`'s coordinates
-  measures from it**, and what core asks — paint, damage, the cursor, the
+  measures from it, through `_pageShift`**, and what core asks — paint, damage, the cursor, the
   text accessors — keeps `abs`, as core's own nodes do until the pass.
   So a rect cannot say whether a scroll moves its box, and what scrolls
   for an element asks, through `HandleInternals` (which
