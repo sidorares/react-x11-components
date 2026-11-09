@@ -7482,7 +7482,9 @@ are the page's sides in any direction, and `flip-start` takes them to the
 end of the block axis they come to, `self-start` or `self-end` by the box's
 own writing mode. A box too big for
 where it is aligned is held inside its containing block as far as it
-goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2). For a
+goes, covering what its insets leave (CSS Box Alignment 3, 4.4.1.2), and at
+its start where it is larger still: its right, where the inline axis runs
+from the right. For a
 box in a `position-area` that is its original containing block (CSS Anchor
 Positioning 1, 4.1), the one before grid placement: a grid item takes its
 cells of its grid area, and is held only within the grid, so one whose

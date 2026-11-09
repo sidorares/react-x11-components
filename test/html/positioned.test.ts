@@ -4055,3 +4055,21 @@ test('an absolute box in an absolute box is not cut by a box that clips which th
   const [green] = clipsAround(ops, '#00ff00');
   assert.deepStrictEqual(green, []);
 });
+
+test('a positioned box too big for all it can be in starts at the inline start, which is the right in a right-to-left containing block', async () => {
+  // CSS Box Alignment 3, 4.4.1.2; WPT css-anchor-position/anchor-center-overflow-003
+  const page = (dir: string) =>
+    // in from the document's left, which nothing is placed past
+    '<style>body{margin:0}.cb{position:relative;width:80px;height:80px;margin-left:50px}' +
+    '.a{position:absolute;left:16px;top:16px;width:10px;height:10px;anchor-name:--a}' +
+    '.t{position:absolute;inset:6px;width:90px;height:90px;' +
+    'position-anchor:--a;justify-self:anchor-center}</style>' +
+    `<div class="cb" dir="${dir}"><div class="a"></div><div id="t" class="t"></div></div>`;
+  const at = async (dir: string) => {
+    const { node } = await render(page(dir));
+    const x = boxOf(view(node), 't').x;
+    cleanup();
+    return x;
+  };
+  assert.deepStrictEqual([await at('ltr'), await at('rtl')], [50, 40]);
+});

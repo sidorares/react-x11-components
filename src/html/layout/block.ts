@@ -10180,6 +10180,10 @@ interface SelfAligned {
    *  would hold it in: `normal` against the one inset it has in a
    *  `position-area` (CSS Anchor Positioning 1, 4.1). */
   unsafe: boolean;
+  /** Whether the axis starts at its high end: the inline axis of a
+   *  right-to-left containing block, where a box too big for all it can be
+   *  in starts (`alignedStart`). */
+  rtl: boolean;
 }
 
 /**
@@ -10289,6 +10293,7 @@ function selfAligned(
     centre,
     stretch,
     unsafe,
+    rtl,
   };
 }
 
@@ -10324,7 +10329,9 @@ function alignedStart(
     lo = further.lo === Infinity ? lo : Math.min(lo, further.lo);
     hi = further.hi === -Infinity ? hi : Math.max(hi, further.hi);
   }
-  if (outer > hi - lo) return lo;
+  // larger than that rectangle: at its start, which is its right where the
+  // inline axis runs from the right (CSS Box Alignment 3, 4.4.1.2)
+  if (outer > hi - lo) return a.rtl ? hi - outer : lo;
   return within(
     want,
     Math.max(lo, a.start + a.size - outer),
