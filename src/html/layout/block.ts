@@ -143,6 +143,8 @@ import {
   spannedRows,
   isSpanner,
   containingParent,
+  joinedGeometry,
+  setStripPlace,
   columnsSet,
   cutIntoColumns,
   moveColumns,
@@ -4548,6 +4550,7 @@ function layoutRows(
       pieces: CutPiece[];
       first: number;
       last: number;
+      strip: { x: number; y: number; width: number; bottom: number } | null;
     }
   >();
   for (const [b, slice] of slices) {
@@ -4558,9 +4561,14 @@ function layoutRows(
       pieces: [],
       first: slice.first,
       last: slice.last,
+      strip: null,
     });
   }
   const all = box.children;
+  /** Where the next row's content starts down the strip, and the columns
+   *  of all the rows (`joinedGeometry`). */
+  let from = top;
+  const joined = joinedGeometry(box);
   try {
     for (let r = 0; r <= spanners.length; r += 1) {
       const row = slices.get(box)!.rows[r] ?? [];
@@ -4586,11 +4594,13 @@ function layoutRows(
           box.contentX,
           box.contentX + columns.width,
         );
-        const flow = layoutChildren(box, ctx, floats, y, columns.width);
+        // down a strip that goes on from the row before's, which the row's
+        // columns are cut from and set at `y`
+        const flow = layoutChildren(box, ctx, floats, from, columns.width);
         box.width = borderBoxWidth;
         const strip = Math.max(
           flow.height,
-          floats.bottom === -Infinity ? 0 : floats.bottom - y,
+          floats.bottom === -Infinity ? 0 : floats.bottom - from,
         );
         y += layoutColumns(
           box,
@@ -4599,7 +4609,9 @@ function layoutRows(
           Math.max(0, limit - (y - top)),
           y,
           r < spanners.length,
+          { from, into: joined },
         );
+        from += strip;
       }
       for (const [b, piece] of broken) {
         if (r < piece.first || r > piece.last) continue;
@@ -4667,6 +4679,19 @@ function layoutRows(
     b.y = y1;
     b.width = x2 - x1;
     b.height = y2 - y1;
+    // and where the strip had it, all its rows one after another, for what
+    // is positioned in it (`stripOf`)
+    const strip = piece.strip;
+    if (strip) {
+      setStripPlace(
+        b,
+        joined,
+        x1 - strip.x,
+        y1 - strip.y,
+        strip.width,
+        strip.bottom - strip.y,
+      );
+    }
     COLUMN_PIECES.set(b, pieces);
   }
   return y + (margin ?? 0) - top;
@@ -4695,9 +4720,21 @@ function notePiece(
     pieces: CutPiece[];
     first: number;
     last: number;
+    strip: { x: number; y: number; width: number; bottom: number } | null;
   },
   r: number,
 ): void {
+  const strip = stripOf(b);
+  if (strip) {
+    if (!piece.strip) {
+      piece.strip = {
+        x: strip.x,
+        y: strip.y,
+        width: strip.width,
+        bottom: strip.y + strip.height,
+      };
+    } else piece.strip.bottom = strip.y + strip.height;
+  }
   if (r === piece.first) {
     piece.edges[0] = b.marginTop;
     piece.edges[1] = b.borderTop;

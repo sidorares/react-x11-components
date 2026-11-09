@@ -8983,6 +8983,16 @@ export class HtmlViewNode extends Node {
   ): { first: Rect; all: Rect } | null {
     if (box.kind !== 'inline' && box.kind !== 'text') {
       const rect = { x: box.x, y: box.y, width: box.width, height: box.height };
+      // a block broken across columns: its first piece is its first
+      // fragment, which Blink measures its offsets from
+      const pieces = columned.any ? COLUMN_PIECES.get(box) : undefined;
+      if (pieces?.length) {
+        const p = pieces[0];
+        return {
+          first: { x: p.x, y: p.y, width: p.width, height: p.height },
+          all: rect,
+        };
+      }
       return { first: rect, all: rect };
     }
     const bands: Rect[] = [];

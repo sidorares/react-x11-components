@@ -7921,7 +7921,16 @@ content out a row of columns at a time, each block a spanner is in given
 the children it holds in that row and its edges cut where the spanner
 breaks it (`CUT_EDGES`, read by `resolveEdges`), and afterwards one
 rectangle around the pieces of all its rows with its edges as its first
-and last rows had them. Two things are load-bearing. **Anything new that
+and last rows had them. Each row's content is laid out down a strip that
+goes on from the row before's, its columns set from where the row goes,
+and all the rows' columns are one geometry (`joinedGeometry`, its `ends`),
+as Blink's flow thread goes on past a spanner: so a block a spanner breaks
+is one block down the strip, and what is positioned in it is laid out
+against all of it and cut into both rows (`setStripPlace`). A spanner, and
+what is in it, is in no columns (`stripOf`). Three things are
+load-bearing. **Anything new that reads a column's extent reads `ends`**
+where it is there, since rows have columns of other heights, and moves it
+with `tops` (`moveColumns`). **Anything new that
 walks up containing blocks goes through `containingParent`**, as layout's
 and paint's containing block, anchor acceptability and `offsetParent` do:
 a spanner's is the container, and what is positioned in it is not in the

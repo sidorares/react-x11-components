@@ -1181,6 +1181,60 @@ test('what is positioned in a box that spans the columns, and in nothing in it, 
   assert.deepStrictEqual([offset.x, offset.y], [0, 5]);
 });
 
+test('what is positioned in a block a spanner breaks is laid out against all of it and cut into the columns of both rows', async () => {
+  // Each row's content goes on down the strip from the row before's, as
+  // Blink's flow thread goes on past a spanner, so a block a spanner
+  // breaks is one block there (WPT css-anchor-position/
+  // anchor-position-multicol-015, in horizontal writing): a box
+  // positioned in it, `height: 100%`, is as tall as both its pieces, and
+  // set beside its anchor wherever the columns took the anchor
+  const { node } = await render(
+    '<style>body{margin:0}</style>' +
+      '<div style="columns:5;gap:0;width:100px;height:100px">' +
+      '<div style="height:90px"></div>' +
+      '<div id="w" style="position:relative"><div style="height:90px"></div>' +
+      '<div id="a" style="anchor-name:--a;width:10px;height:90px"></div>' +
+      '<div style="height:130px"></div>' +
+      '<div id="t" style="position:absolute;position-anchor:--a;' +
+      'position-area:right center;width:10px;height:100%"></div>' +
+      '<div style="column-span:all;height:10px"></div>' +
+      '<div style="height:50px"></div></div></div>' +
+      // and a box of no size where a row before a spanner ends stays at the
+      // end of that row, its offsets from its block's first piece (WPT's
+      // anchor-position-multicol-colspan-001, a box with no anchor)
+      '<div id="m" style="position:relative;columns:2;column-fill:auto;' +
+      'gap:10px;width:210px;height:100px"><div style="height:40px"></div>' +
+      '<div id="v" style="position:relative">' +
+      '<div style="column-span:all;height:20px"></div>' +
+      '<div id="u" style="position:absolute"></div>' +
+      '</div></div>',
+    300,
+  );
+  const el = view(node);
+  const pieces = (id: string) =>
+    COLUMN_PIECES.get(boxOf(el, id) as never)?.map((p) => [
+      p.x,
+      p.y,
+      p.width,
+      p.height,
+    ]);
+  assert.deepStrictEqual(pieces('a'), [
+    [40, 20, 10, 60],
+    [60, 0, 10, 30],
+  ]);
+  assert.deepStrictEqual(
+    pieces('t'),
+    [
+      [50, 20, 10, 60],
+      [70, 0, 10, 30],
+    ],
+    'beside each piece',
+  );
+  const offset = el.offsetRect(findById(el.document, 'u')!)!;
+  assert.strictEqual(offset.parent, findById(el.document, 'v'));
+  assert.deepStrictEqual([offset.x, offset.y], [0, 0]);
+});
+
 test('a container as wide as its content is no narrower than a box that spans its columns', async () => {
   const { node } = await render(
     '<style>body{margin:0}</style>' +
