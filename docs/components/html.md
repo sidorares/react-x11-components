@@ -4982,9 +4982,7 @@ block size, and what is positioned in them is cut where they are. A
 multicol container in another's columns goes to a column whole, where a
 browser breaks it. A box positioned in a block a spanner breaks is laid out
 against all of the block, its rows one after another down the strip, and
-cut into the columns of each row it reaches. In a vertical writing mode, a
-box positioned in a block the columns break is laid out at the wrong width
-(WPT's `anchor-position-multicol-colspan-003`).
+cut into the columns of each row it reaches.
 A grid (CSS Grid 1) takes its tracks from `grid-template-columns` and
 `grid-template-rows`, or the `grid-template` and `grid` shorthands —
 lengths, percentages, `fr`s, `auto`, `minmax()`, `fit-content()`, and
@@ -7004,6 +7002,25 @@ tainted value anywhere else stands, beside a URL too:
 `image("a.png", attr(data-c type(<color>)))` is that image, and that
 colour where it does not load. A custom property shows what it holds,
 tainted or not.
+
+**`sibling-index()` and `sibling-count()`** (CSS Values 5, 9) are the
+element's place among its parent's element children, from 1, and how many
+those are, so `width: calc(sibling-index() * 10px)` widens each item of a
+list by its place in it. They are worked out where the declaration is
+applied: in a custom property they stay as written, and the element that
+reads the property counts itself, which is how a browser holds them there.
+A style that counted is its element's alone, and a child put in or taken
+out restyles its siblings, as for `:nth-child()`. They count the DOM's
+children, as the specification has it, so an element in a slot is counted
+among its host's children, and a `::before` counts as its element.
+
+**`ident()`** (CSS Values 5, 6.2) makes one name of its arguments, strings,
+integers and names, `ident("--item-" sibling-index())`, wherever a property
+takes a name. It is made where the declaration is applied, so an integer may
+be math in the element's units, `calc(2 * sign(1em - 16px))`, and a name
+that has to be escaped is: `ident(1 x)` is `\31 x`. An argument of another
+kind, math that comes to no number, and a name of nothing leave the
+property as though `unset`.
 
 **`if()`** (CSS Values 5): a value chosen by the first branch whose
 condition holds, `if(style(--size: big): 2rem; media(width < 40rem): 1rem;

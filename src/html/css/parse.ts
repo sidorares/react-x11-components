@@ -29,6 +29,8 @@ import {
 } from './values.js';
 import {
   closingParen,
+  hasIdentFunction,
+  hasTreeCounting,
   hasVar,
   namespacedAttrs,
   unbalanced,
@@ -953,6 +955,16 @@ export function parseDeclarations(text: string): Declaration[] {
               i = end + 1;
               continue;
             }
+            declaration.vars = true;
+          } else if (
+            !custom &&
+            (hasTreeCounting(value) || hasIdentFunction(value))
+          ) {
+            // a tree-counting function is the element's own number, worked
+            // out where the declaration is applied, as a `var()` is: in a
+            // custom property it stays as written, for the element that
+            // reads it to count itself. An `ident()` is made there too,
+            // since an integer in it may be in the element's units
             declaration.vars = true;
           }
           out.push(declaration);

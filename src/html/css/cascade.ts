@@ -19,6 +19,7 @@
 import { compile } from 'css-select';
 import * as DomUtils from 'domutils';
 import { Element as DomElement, isDocument, isTag } from 'domhandler';
+import { parseMathNumberWith } from './calc.js';
 import type { AnyNode, Element } from 'domhandler';
 
 import { CONTROL_PSEUDOS } from '../control-state.js';
@@ -168,10 +169,14 @@ import {
 } from './values.js';
 import {
   CustomProps,
+  countTree,
   customProperties,
+  hasIdentFunction,
   hasInherit,
+  hasTreeCounting,
   hasVar,
   substitute,
+  resolveIdentFunctions,
   substituteIn,
   validVars,
 } from './vars.js';
@@ -3908,7 +3913,20 @@ class MutationRules {
     const subject =
       parts.length > 1 ? stableCompound(parts[parts.length - 1].text) : null;
     scanChanges(selector, CHANGES_SELF, null, note, '', subject);
+    let counted = false;
     for (const declaration of declarations) {
+      // a tree-counting function reads where the element sits among its
+      // siblings from either end, as `:nth-child()` and `:nth-last-child()`
+      // on the subject do — or, in a custom property, where whatever reads
+      // it sits, which may be any element (`Cascade._counted`)
+      if (!counted && hasTreeCounting(declaration.value)) {
+        counted = true;
+        const stable = declaration.custom
+          ? '*'
+          : stableCompound(parts[parts.length - 1].text) || '*';
+        note('s', CHANGES_SELF, null, null, stable, 'sits', null);
+        note('n', CHANGES_SELF, null, null, stable);
+      }
       if (!declaration.value.includes('attr(')) continue;
       for (const m of declaration.value.matchAll(ATTR_FUNCTION)) {
         // a name a `var()` gives, or one in a namespace, which the element
@@ -7114,8 +7132,32 @@ export class Cascade {
   >();
   /** Whether the style being computed holds a length in a container's
    *  units, which is the element's alone: two elements of one key and one
-   *  set of rules are in containers of other sizes (`sharedStyleFor`). */
+   *  set of rules are in containers of other sizes (`sharedStyleFor`). A
+   *  tree-counting function says so too (`_counted`): two siblings of one
+   *  key and one set of rules are at other places among them. */
   private _containerUnitRead = false;
+
+  /**
+   * A value with its tree-counting functions (CSS Values 5, 9) replaced by
+   * the numbers they come to for the element being styled — a
+   * pseudo-element's, its originating element's — among its parent's
+   * element children in the DOM. What it comes to is the element's alone,
+   * so no other element shares the style (`_containerUnitRead`).
+   */
+  private _counted(value: string): string {
+    this._containerUnitRead = true;
+    const el = this._styling;
+    const siblings = el ? elementParent(el)?.children : undefined;
+    if (!el || !siblings) return countTree(value, 1, 1);
+    let index = 0;
+    let count = 0;
+    for (const child of siblings) {
+      if (!isTag(child)) continue;
+      count += 1;
+      if (child === el) index = count;
+    }
+    return countTree(value, index || 1, count || 1);
+  }
 
   /**
    * A container unit's basis for `el`, or its pseudo-element for `self`:
@@ -9651,7 +9693,19 @@ export class Cascade {
       ? this._inheritEnv(parentStyle, d.prop)
       : this._ifEnv;
     if (ATTR_IN.test(d.value)) env = { ...env, attribute: this._attributeOf };
-    const value = substituteIn(d.value, style.custom, env);
+    let value = substituteIn(d.value, style.custom, env);
+    // after the `var()`s, so one that brings a tree-counting function in
+    // counts the element that reads it and not the one that set it
+    if (value !== null && hasTreeCounting(value)) value = this._counted(value);
+    // and an `ident()`, whose integers are worked out in its units
+    if (value !== null && hasIdentFunction(value)) {
+      value = resolveIdentFunctions(value, (math) =>
+        parseMathNumberWith(math, (token) => {
+          const length = parseLength(token, ctx);
+          return typeof length === 'number' ? length : null;
+        }),
+      );
+    }
     // unset first: a value that does not parse once it is substituted is
     // invalid at computed-value time, and does not leave the property what
     // an earlier declaration gave it. `applyDeclaration` is what reads a

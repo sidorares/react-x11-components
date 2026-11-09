@@ -352,6 +352,137 @@ export function hasVar(value: string): boolean {
   return VAR.test(value) || (value.includes('--') && DASHED_CALL.test(value));
 }
 
+/** A tree-counting function (CSS Values 5, 9): `sibling-index()` or
+ *  `sibling-count()`, each of no arguments. */
+const TREE_COUNTING = /(^|[^\w-])sibling-(index|count)\(\s*\)/gi;
+
+/** Whether a value has a tree-counting function in it, which is the
+ *  element's own number and resolved where the value is applied. */
+export function hasTreeCounting(value: string): boolean {
+  TREE_COUNTING.lastIndex = 0;
+  return TREE_COUNTING.test(value);
+}
+
+/**
+ * A value with its tree-counting functions (CSS Values 5, 9) replaced by
+ * the numbers they come to: `index` is the element's place among its
+ * parent's element children, from 1, and `count` how many those are.
+ */
+export function countTree(value: string, index: number, count: number): string {
+  TREE_COUNTING.lastIndex = 0;
+  return value.replace(
+    TREE_COUNTING,
+    (_, before: string, fn: string) =>
+      `${before}${fn.toLowerCase() === 'index' ? index : count}`,
+  );
+}
+
+/** An `ident()` (CSS Values 5, 6.2), which makes a name of its arguments. */
+const IDENT_CALL = /(^|[^\w-])ident\(/gi;
+
+/** Whether a value has an `ident()` in it, whose integers may be in the
+ *  element's units and which is made where the value is applied. */
+export function hasIdentFunction(value: string): boolean {
+  IDENT_CALL.lastIndex = 0;
+  return IDENT_CALL.test(value);
+}
+
+/**
+ * A value with each `ident()` (CSS Values 5, 6.2) made the name it comes
+ * to: its arguments, each a string, an integer or a name, joined and
+ * written out as one name, escaped where it has to be. `integer` works an
+ * integer's math function out, in the element's units. Null where one is
+ * none — an argument of another kind, a math function that is no number,
+ * or a name of nothing.
+ */
+export function resolveIdentFunctions(
+  value: string,
+  integer: (math: string) => number | null,
+): string | null {
+  let out = '';
+  let from = 0;
+  IDENT_CALL.lastIndex = 0;
+  for (let m = IDENT_CALL.exec(value); m; m = IDENT_CALL.exec(value)) {
+    const open = m.index + m[0].length;
+    const close = closingParen(value, open);
+    if (close < 0) return null;
+    const name = identOf(value.slice(open, close), integer);
+    if (name === null) return null;
+    out += value.slice(from, m.index + m[1].length) + name;
+    from = close + 1;
+    IDENT_CALL.lastIndex = from;
+  }
+  return out + value.slice(from);
+}
+
+/** The name an `ident()`'s arguments come to, escaped as a name. */
+function identOf(
+  args: string,
+  integer: (math: string) => number | null,
+): string | null {
+  let name = '';
+  for (const arg of identArguments(args)) {
+    if (arg[0] === '"' || arg[0] === "'") {
+      // a string's characters, as they are
+      name += unescapeName(arg.slice(1, arg.endsWith(arg[0]) ? -1 : undefined));
+    } else if (/^[+-]?\d+$/.test(arg)) {
+      name += String(Number(arg));
+    } else if (/^[\w-]+\(/.test(arg)) {
+      const n = integer(arg);
+      if (n === null || !Number.isFinite(n)) return null;
+      name += String(Math.round(n));
+    } else if (/^(?:--|-?(?:[a-z_]|[^\x00-\x7f]|\\))/i.test(arg)) {
+      name += unescapeName(arg);
+    } else return null;
+  }
+  if (!name || name === '-') return null;
+  return escapeName(name);
+}
+
+/** An `ident()`'s arguments, apart at the white space between them. */
+function identArguments(args: string): string[] {
+  const out: string[] = [];
+  let at = -1;
+  for (let i = 0; i <= args.length; i += 1) {
+    const c = args[i];
+    if (i === args.length || /\s/.test(c)) {
+      if (at >= 0) out.push(args.slice(at, i));
+      at = -1;
+      continue;
+    }
+    if (at < 0) at = i;
+    if (c === '\\') i += 1;
+    else if (c === '"' || c === "'") {
+      const end = stringEnd(args, i);
+      i = end < 0 ? args.length - 1 : end;
+    } else if (c === '(') {
+      const end = closingParen(args, i + 1);
+      i = end < 0 ? args.length - 1 : end;
+    }
+  }
+  return out;
+}
+
+/** A name written out so that it reads back as itself (CSSOM 2.1). */
+function escapeName(name: string): string {
+  let out = '';
+  for (let i = 0; i < name.length; i += 1) {
+    const c = name[i];
+    const code = c.charCodeAt(0);
+    const digit = code >= 0x30 && code <= 0x39;
+    if (code === 0) out += '\uFFFD';
+    else if (
+      (code >= 1 && code <= 0x1f) ||
+      code === 0x7f ||
+      (digit && (i === 0 || (i === 1 && name[0] === '-')))
+    ) {
+      out += `\\${code.toString(16)} `;
+    } else if (/[\w-]/.test(c) || code > 0x7f) out += c;
+    else out += `\\${c}`;
+  }
+  return out;
+}
+
 /** Whether a value has an `inherit()` in it, which reads the parent. */
 export function hasInherit(value: string): boolean {
   return INHERIT_CALL.test(value);

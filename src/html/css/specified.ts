@@ -44,7 +44,9 @@ export function specifiedValue(
 ): string | null | undefined {
   // a value that is only known once it is substituted, or a keyword
   // every property takes, is kept as written
-  if (/\b(?:var|env|attr)\(/i.test(value)) return undefined;
+  if (/\b(?:var|env|attr|ident|sibling-index|sibling-count)\(/i.test(value)) {
+    return undefined;
+  }
   const name = prop.toLowerCase();
   // SVG's properties (`svg-properties.ts`), and `marker`, which is one
   // value for all three of its longhands
