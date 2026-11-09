@@ -1072,6 +1072,29 @@ test('a scroll container in a `vertical-rl` flow scrolls across from its right a
   assert.deepStrictEqual([rect.x, rect.y], [100, -450], 'moved right and up');
 });
 
+test('a box fixed to the viewport reads where it is drawn under a scroll down the pane holds for its next pass', async () => {
+  // WPT css-anchor-position/anchor-sticky-fixed-drift: a page's scrollTo
+  // before the pane has the extent for it is held for the pane's next pass
+  // (`oweScrollDown`), and the page reads `scrollY` there already; a box
+  // fixed `bottom: 50px` read 300 higher than the viewport's foot, as
+  // though the scroll had carried it off
+  const { el: node } = await renderScrolled(
+    '<!doctype html><style>body{margin:0;height:2000px}' +
+      '#f{position:fixed;bottom:50px;left:0;width:100px;height:100px}' +
+      '#s{position:relative;top:700px;height:10px}</style>' +
+      '<div id="s"></div><div id="f"></div>',
+    600,
+    800,
+  );
+  assert.strictEqual(node.elementRect(el(node, 'f'))!.y, 450);
+  node.oweScrollDown(300);
+  assert.strictEqual(node.pageScrollY(), 300, 'held');
+  // in the document, as a page reads it: 300 down, less the scroll, is 450
+  assert.strictEqual(node.elementRect(el(node, 'f'))!.y, 750);
+  // and what scrolls with the document is where it was
+  assert.strictEqual(node.elementRect(el(node, 's'))!.y, 700);
+});
+
 test('the wheel does not scroll an `overflow: hidden` box, and the handle does', async () => {
   const { el: node } = await renderScrolled(
     LIST.replace('overflow-y:auto', 'overflow:hidden'),

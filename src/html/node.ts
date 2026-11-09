@@ -7729,7 +7729,7 @@ export class HtmlViewNode extends Node {
     if (!tree?.textNodes?.length) return null;
     const from = unitOfPoint(tree, start, startOffset);
     const to = unitOfPoint(tree, end, endOffset);
-    const shift = this._fixedShift(this._scrolledOrigin());
+    const shift = this._pageShift();
     const s = this._scale;
     const out: Rect[] = [];
     if (to <= from) {
@@ -7886,7 +7886,7 @@ export class HtmlViewNode extends Node {
     const first = this._firstBoxesOf(tree);
     const rootBox = root ? first.get(root) : null;
     if (rootBox === undefined) return null;
-    const shift = this._fixedShift(this._scrolledOrigin());
+    const shift = this._pageShift();
     let rootRect: Rect | null = null;
     if (rootBox) {
       const edge = overflowClipRect(rootBox, this._scale);
@@ -8958,7 +8958,7 @@ export class HtmlViewNode extends Node {
   private _moveToViewport(
     box: Box,
     rect: Rect,
-    shift = this._fixedShift(this._scrolledOrigin()),
+    shift = this._pageShift(),
   ): Rect {
     const moved = shift && drawnAtViewport(box);
     const s = this._scale;
@@ -9257,7 +9257,7 @@ export class HtmlViewNode extends Node {
       }
       return [x, y];
     }
-    const shift = this._fixedShift(this._scrolledOrigin());
+    const shift = this._pageShift();
     const moved = shift && drawnAtViewport(box);
     let px = x * s - (moved ? shift.x : 0);
     let py = y * s - (moved ? shift.y : 0);
@@ -9441,6 +9441,26 @@ export class HtmlViewNode extends Node {
     const viewport = tree && FIXED_BOXES.has(tree) && this._viewport();
     if (!tree || !viewport) return null;
     return { x: viewport.x - origin.x, y: viewport.y - origin.y };
+  }
+
+  /**
+   * `_fixedShift` for what a page reads: for the offsets the pane has now
+   * (`_scrolledOrigin`), and a scroll down held for the pane's next pass
+   * (`pageScrollY`) with them, which a page has already, as its `scrollY`
+   * says. A page that scrolled as it loaded, before the pane had the
+   * extent, read a box fixed to the viewport as though the scroll had
+   * carried it off: `scrollTo(0, 300)` and its `bottom: 50px` box read 300
+   * higher than the viewport's foot. Only what is fixed reads it: a box
+   * held at the viewport by `position: sticky` is placed for the held
+   * scroll already (`_viewportAt`), and paint and core's own questions are
+   * at the pane's offsets.
+   */
+  private _pageShift(): { x: number; y: number } | null {
+    const shift = this._fixedShift(this._scrolledOrigin());
+    const down = shift ? this.pageScrollY() : null;
+    const pane = down === null ? null : this._pane();
+    if (!shift || !pane || down === null) return shift;
+    return { x: shift.x, y: shift.y + (down - pane.scrollY) };
   }
 
   /**
